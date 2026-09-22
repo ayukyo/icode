@@ -172,6 +172,53 @@ class TestSideEffectReceipts(unittest.TestCase):
         self.assertFalse((self.root / "a.py").exists(), "歧义时必须停止执行，禁止盲目重放")
 
 
+class TestToolCallPairing(unittest.TestCase):
+    """协议不变量：assistant 里每个 tool_call 必须有配对的 tool 消息。
+
+    回归背景：单回合工具调用数超上限时，我们曾把多余的调用**直接丢掉**，
+    于是发给模型的 assistant 消息列着 5 个 tool_calls 却只有 4 条结果，
+    OpenAI 兼容端点直接返回 HTTP 400 invalid params。真实链路跑出来的坑。
+    """
+
+    def setUp(self) -> None:
+        self._ws = temp_workspace()
+        self.root: Path = self._ws.__enter__()
+
+    def tearDown(self) -> None:
+        self._ws.__exit__(None, None, None)
+
+    def _many(self, n: int) -> dict:
+        return {"content": "", "tool_calls": [
+            {"id": f"c{i}", "name": "write_file",
+             "arguments": {"path": f"f{i}.py", "content": "x"}}
+            for i in range(n)
+        ]}
+
+    def test_超上限的调用也有配对结果(self) -> None:
+        loop = _loop([self._many(5), "完成"], self.root,
+                     config=LoopConfig(max_turns=2, max_tool_calls_per_turn=2))
+        r = loop.run([{"role": "user", "content": "写 5 个文件"}])
+
+        assistant = next(m for m in r.messages if m.get("role") == "assistant")
+        tool_ids = {m["tool_call_id"] for m in r.messages if m.get("role") == "tool"}
+        declared = {c["id"] for c in assistant["tool_calls"]}
+        self.assertEqual(declared, tool_ids, "每个 tool_call 必须有配对 tool 消息")
+        self.assertEqual(len(declared), 5)
+
+    def test_未执行的调用如实标注未执行(self) -> None:
+        loop = _loop([self._many(3), "完成"], self.root,
+                     config=LoopConfig(max_turns=2, max_tool_calls_per_turn=1))
+        r = loop.run([{"role": "user", "content": "写 3 个文件"}])
+        skipped = [i for i in r.turns[0].invocations if i.result and
+                   i.result.meta.get("error") == "turn_tool_budget"]
+        self.assertEqual(len(skipped), 2)
+        for inv in skipped:
+            self.assertIn("未执行", inv.result.content)
+        # 未执行的不能落盘
+        self.assertTrue((self.root / "f0.py").is_file())
+        self.assertFalse((self.root / "f1.py").exists())
+
+
 class TestLoopBounds(unittest.TestCase):
     def setUp(self) -> None:
         self._ws = temp_workspace()
@@ -195,7 +242,9 @@ class TestLoopBounds(unittest.TestCase):
         ]}
         loop = _loop([many, "完成"], self.root, config=LoopConfig(max_turns=2, max_tool_calls_per_turn=2))
         r = loop.run([{"role": "user", "content": "写多个"}])
-        self.assertEqual(len(r.turns[0].invocations), 2)
+        executed = [i for i in r.turns[0].invocations if i.approved]
+        self.assertEqual(len(executed), 2, "实际执行数受上限约束")
+        self.assertEqual(len(r.turns[0].invocations), 5, "声明过的调用都要留痕（含未执行）")
 
     def test_预算超限即停止(self) -> None:
         from icode.backends import Usage

@@ -243,6 +243,43 @@ WebUI 闭环：网页放行 → 200，approver 返回 True
 因此 `pipx install` 的端到端未能在本环境验证；已用 `pip install --target` 覆盖到包发现、
 资源分发与控制台脚本层面。
 
+### Phase 6 —— 缺口收口（2026-09-23）
+
+四个遗留缺口的处理结果：
+
+| 缺口 | 状态 | 关键证据 |
+|---|---|---|
+| ① 推理门禁未满足 | ✅ **闭环** | L2 由本仓自实现的 `sequential` 承担；trace `result=success attempted=True 推演=5步`；**`plan` 步骤首次推进到 `plan_done`** |
+| ② 完整 1→6 链路 | ⚠️ **部分**：编排器已建，`plan` 走通，`review` 阻塞 | 链路顺序由状态机派生；两个阻塞点已精确复现并定位（见下） |
+| ③ Windows 内核级隔离 | ✅ **落地并诚实标注** | 新增 `WslSandbox`（真隔离，需显式指定）+ `WindowsJobLimits`（**部分强制：仅资源**，明说不是沙箱） |
+| ④ pipx 端到端未验证 | ✅ **用 wheel 验证** | 构建 → 核验 entry_points/资源/RECORD → 安装 → 仓库外执行 → **12 子命令齐全** |
+
+**诚实说明（缺口②）**：本轮**没有**让 1→6 全链路跑完。已经做到的是：
+编排器可用、链路顺序不写死、`plan` 全绿并推进状态；`review` 及之后仍未通过。
+阻塞点两条，均可复现：
+
+1. **模型不落盘**：`review` 里模型倾向在文本里回答，不调用 `write_file` 写 `02_review.md`
+   与 `review_round_1.json`。已加**有界补救回合**（列出缺失产物的绝对路径并要求立即写），
+   本轮仍未救回，需要继续调优提示或改成"文本产出 → 本仓落盘"的显式通道。
+2. **`operation_finish` 失败留下未闭合动作**：导致同名副作用再次 start 被判
+   `ambiguous_side_effect`，运行时如实拒绝执行。已改为**显式暴露**（`inv.note` /
+   `tool_result.meta.operation_finish_failed` / `operation_finish_failed` 事件），
+   不再静默；但"为什么 finish 会失败"仍需下一轮定位。
+
+**Phase 6 实测中修掉的真 bug**：
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | **tool_call 与 tool 消息不配对**：单回合超上限时直接丢弃多余调用，assistant 仍列着它们 → OpenAI 兼容端点 **HTTP 400 invalid params**（整条链路曾因此走不动） | 未执行的调用也回一条**"未执行"**配对结果；单回合上限 4→8。加回归测试锁死一一对应 |
+| 2 | 推演 `max_tokens=300` 对推理模型太小：思考吃满 token，剥离 `<think>` 后正文为空，5 步里 4 步空转 | 提到 1200；空响应立即停止并如实记录（不烧完额度） |
+| 3 | `extra_instructions` 里写裸文件名（`01_plan.md`）与"必须写绝对路径"冲突，模型把产物写到工作区根目录 | 步骤说明**只描述内容、不写裸文件名**；提示词末尾再次钉住绝对路径并禁止写到工作区根目录 |
+| 4 | 补救回合新建 `OperationRecorder` 导致 occurrence 计数重启、request 键重复 → 副作用歧义 | 回执器改为**整步共用** |
+| 5 | WSL 只因 `wsl.exe` 存在就被自动选中（本机被安全策略拦截，命令全失败） | **存在 ≠ 可用**：WSL 不进自动选择列表，仅显式指定才用；`doctor` 区分"有可执行文件"与"可用" |
+| 6 | `_ensure_gate_metadata` 用了 `json` 但 runner 未 import → `NameError` 中断整条链路 | 补 `import json` |
+
+> 教训：本轮有**两次**用 `str.replace` 打补丁**静默未生效**（`run_contract_step` 的签名与 `sandbox` 参数），
+> 之后改成"改完立刻 grep 核对"，才没有继续带着错往下跑。
+
 ---
 
 ## 4. 为什么是这个顺序

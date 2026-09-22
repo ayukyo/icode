@@ -187,6 +187,10 @@ class ContractSet:
                 out.append(str(item.get("to")))
         return tuple(out)
 
+    def state_machine(self) -> dict:
+        """状态机真源（只读）。"""
+        return self._sm
+
     def raw(self) -> dict:
         return self._em
 

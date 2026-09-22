@@ -107,6 +107,19 @@ def _build_parser() -> argparse.ArgumentParser:
     # 命名划线（D13 补充）：上游的 `/icode ui` 是**宿主的工单浏览器**，
     # 本命令是我们的**执行前端**。为免混淆，本仓用 `webui` 而不是 `ui`。
 
+    # ---- Phase 6：完整链路 ----
+
+    p_chain = _add("chain", help="串起完整链路 plan→review→merge→code→deepcheck→audit")
+    p_chain.add_argument("--workspace", required=True)
+    p_chain.add_argument("--requirement", required=True)
+    p_chain.add_argument("--ticket-id", default="CHAIN-1")
+    p_chain.add_argument("--only", default="", help="只跑指定步骤（逗号分隔），默认全部")
+    p_chain.add_argument("--delivery-verdict", default="verification_pending",
+                         choices=["verified", "verification_pending", "blocked", "not_applicable"],
+                         help="completed 状态的交付结论；默认取最保守值，不自动升级为 verified")
+    _add_model_args(p_chain)
+    _add_loop_args(p_chain, default_turns=20)
+
     p_ui = _add("webui", help="启动本地审批台（仅监听 127.0.0.1）")
     p_ui.add_argument("--port", type=int, default=0, help="0 = 由系统分配空闲端口")
     p_ui.add_argument("--no-browser", action="store_true")
@@ -205,9 +218,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print("         ⚠ 无内核/容器级隔离：模型若绕过运行时直接执行 shell，应用层规则不构成保障")
         print("           可安装 bubblewrap（Linux）/ 容器运行时后重试，或用 --isolation 显式指定")
     if avail:
-        print("         探测到的可用后端：" + "、".join(p["name"] for p in avail))
+        names = "、".join(p["name"] for p in avail)
+        print(f"         探测到可执行文件：{names}")
+        print("         注意：可执行文件存在 ≠ 可用（受限环境会按安全策略拦截）。"
+              "WSL 需显式 --isolation wsl 指定后才实测。")
     else:
-        print("         未探测到可用后端（bwrap / sandbox-exec / docker / podman 均不可用）")
+        print("         未探测到任何后端可执行文件（bwrap / sandbox-exec / wsl / docker / podman）")
 
     try:
         key = resolve_api_key()
@@ -536,8 +552,32 @@ def cmd_webui(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_chain(args: argparse.Namespace) -> int:
+    from .chain import run_chain
+    from .loop import LoopConfig
+
+    settings = load_settings(args.skill_root)
+    backend, approver, budget, on_event, sandbox = _build_runner(args)
+    steps = tuple(x.strip() for x in args.only.split(",") if x.strip()) or None
+    if steps:
+        print(f"仅执行指定步骤：{steps}")
+    print()
+    report = run_chain(
+        settings, backend=backend, workspace=Path(args.workspace),
+        requirement=args.requirement, ticket_id=args.ticket_id, steps=steps,
+        approver=approver, loop_config=LoopConfig(max_turns=args.max_turns),
+        budget=budget, on_event=on_event, sandbox=sandbox,
+        on_step=lambda name, sr: print(f"\n===== 步骤 {name} 完成："
+                                       f"{'OK' if sr.ok else 'FAIL'} =====\n{sr.render()}\n"),
+    )
+    print(report.render())
+    print("成本：" + _budget_line(backend))
+    return 0 if report.ok else 1
+
+
 _COMMANDS = {
     "doctor": cmd_doctor,
+    "chain": cmd_chain,
     "handshake": cmd_handshake,
     "steps": cmd_steps,
     "brief": cmd_brief,

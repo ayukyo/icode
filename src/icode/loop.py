@@ -28,7 +28,7 @@ from .tools import OPCLASS_READ_ONLY, ToolContext, ToolRegistry, ToolResult
 @dataclass
 class LoopConfig:
     max_turns: int = 12
-    max_tool_calls_per_turn: int = 4
+    max_tool_calls_per_turn: int = 8
     max_output_tokens: int = 2048
 
 
@@ -178,13 +178,22 @@ class AgentLoop:
         self.on_event("tool_result", {"tool": call_name, "ok": result.ok, "meta": result.meta})
 
         if op_attempt and self.operations is not None:
-            self.operations.finish(
+            finished = self.operations.finish(
                 op_attempt,
                 outcome="success" if result.ok else "failure",
                 evidence=f"tool={call_name}",
                 check_ref=json.dumps(result.meta, ensure_ascii=False)[:200],
                 failure=None if result.ok else "deterministic_failure",
             )
+            if not finished:
+                # 终结回执失败必须**可见**：它会在控制面留下未闭合动作，
+                # 导致同名副作用再次 start 时被判 ambiguous_side_effect 而拒绝执行。
+                # 以前这里静默失败，排查时只看到一串"副作用歧义，拒绝重放"。
+                inv.note = (inv.note + "｜" if inv.note else "") + "副作用回执终结失败"
+                if inv.result is not None:
+                    inv.result.meta["operation_finish_failed"] = True
+                self.on_event("operation_finish_failed",
+                              {"tool": call_name, "attempt": op_attempt})
         return inv
 
     # ---- 主循环 ----
@@ -226,10 +235,39 @@ class AgentLoop:
                 _notify_turn(self.on_turn, index, total_tool_calls, history)
                 return LoopResult(True, stop_reason, turns, history, self.budget.usage)
 
-            for call in assistant.tool_calls[: self.config.max_tool_calls_per_turn]:
+            allowed = assistant.tool_calls[: self.config.max_tool_calls_per_turn]
+            skipped = assistant.tool_calls[len(allowed) :]
+
+            for call in allowed:
                 inv = self._invoke(call.name, dict(call.arguments or {}))
                 turn.invocations.append(inv)
                 history.append(_tool_message(call.id, inv))
+
+            # 超出单回合上限的调用**也要回一条配对结果**：
+            # OpenAI 兼容协议要求 assistant 消息里每个 tool_call 都有对应的 tool 消息，
+            # 否则下一次请求会因参数不合法被拒（实测 HTTP 400）。
+            # 而且这里如实说明"未执行"，而不是假装执行过。
+            for call in skipped:
+                inv = ToolInvocation(
+                    name=call.name,
+                    arguments=dict(call.arguments or {}),
+                    decision=Decision.DENY.value,
+                    approved=False,
+                    result=ToolResult(
+                        ok=False,
+                        content=(
+                            f"未执行：本回合工具调用数超过上限"
+                            f"（{self.config.max_tool_calls_per_turn}）。"
+                            "请缩小批次，在下一回合重发这条调用。"
+                        ),
+                        meta={"error": "turn_tool_budget"},
+                    ),
+                    note="超出单回合工具调用上限，未执行",
+                )
+                turn.invocations.append(inv)
+                history.append(_tool_message(call.id, inv))
+                self.on_event("tool_skipped_budget", {"tool": call.name})
+
             total_tool_calls += len(turn.invocations)
             turns.append(turn)
             _notify_turn(self.on_turn, index, total_tool_calls, history)

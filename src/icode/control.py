@@ -224,13 +224,26 @@ class ControlPlane:
 
     # ---- 状态流转 ----
 
-    def transition(self, out_dir: Path | str, to_status: str, *, ticket_id: str) -> ControlResult:
-        """状态流转。**不抛异常**：门禁拦截是正常结果，由调用方判定。"""
-        return self.run(
+    def transition(
+        self,
+        out_dir: Path | str,
+        to_status: str,
+        *,
+        ticket_id: str,
+        delivery_verdict: str | None = None,
+    ) -> ControlResult:
+        """状态流转。**不抛异常**：门禁拦截是正常结果，由调用方判定。
+
+        `to_status == "completed"` 时上游**强制**显式回填 `--delivery-verdict`
+        （交付分层契约：宿主验证通过不得自动映射为 verified）。
+        """
+        args = [
             "transition", "--dir", str(out_dir), "--to", to_status,
-            "--request", make_request(ticket_id, f"transition-{to_status}"),
-            check=False,
-        )
+            "--request-id", make_request(ticket_id, f"transition-{to_status}"),
+        ]
+        if delivery_verdict:
+            args += ["--delivery-verdict", delivery_verdict]
+        return self.run(*args, check=False)
 
     # ---- 长动作回执（副作用） ----
 

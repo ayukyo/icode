@@ -87,6 +87,8 @@ python scripts/preflight.py                                         # 提交前�
 | `icode evidence --ticket <dir> --dest <dir>` | 把工单导出为可独立校验的证据包 | 否 |
 | `icode verify-pack <包目录>` | 校验证据包（与包内 verify.py 同一套逻辑） | 否 |
 | `icode recover --ticket <dir> --step plan` | 分析被中断的工单该怎么继续（默认只分析） | 否 / `--resume` 时是 |
+| `icode chain --workspace <dir> --requirement "..."` | 串起完整链路（顺序由状态机派生） | 是 |
+| `icode webui` | 启动本地审批台（仅 127.0.0.1） | 否 |
 
 安装为命令后可直接用 `icode`：
 
@@ -323,6 +325,81 @@ icode --version
 实测（`pip install --target` 到临时目录）：包发现正常、**`web_assets/` 随包分发**、
 控制台脚本 `icode.exe` 生成、从仓库外可执行；11 个子命令齐全。
 （本沙箱禁止创建新 venv，故 `pipx install` 的端到端未能在此验证 —— 如实记录。）
+
+---
+
+### Phase 6 —— 缺口收口（四个遗留项）
+
+#### ① 推理门禁 —— ✅ 已闭环（可验证）
+
+上游词表规定 L2 必须由 `sequential-thinking` 机制承担。上游用 npm MCP 提供该机制；
+**本仓自实现了同一机制**（`sequential.py`：有界分步推演，最少 3 步、最多 5 步）。
+
+诚实标注：我们**不声称**调用了上游 MCP。trace 行里按词表填 `mechanism`（机制名，硬约束），
+并用额外字段 `provider` / `provider_kind` 写明实现来源（上游只检必需键，不拒绝额外键）。
+
+更关键的一条：**没真跑推演就不许写成功行**——`build_row()` 只在拿到满足下限步数的推演结果时
+才给 `success`，否则一律 `degraded`。
+
+实测（`icode chain`，真模型）：
+
+```text
+OK   plan（finish=success，前移：已前移）
+OK   结构化推演 :: L2 推演 5 步
+OK   推理 trace 写入 :: result=success attempted=True 推演=5步
+事件链 status = plan_done          ← 整项目第一次推进到完成态
+```
+
+#### ② 完整链路 —— ⚠️ 部分闭环，已如实定位阻塞点
+
+```bash
+PYTHONPATH=src python -m icode.cli chain --workspace <dir> --requirement "..." [--only plan,review]
+```
+
+**链路顺序从状态机派生**，不写死：`plan → review → merge → code → deepcheck → audit`。
+`review_manifest.json` / `*_worklist.json` 等机器产物由本仓**装配**（数据来自模型产出的
+round 文件或控制面计算），不让模型手写。
+
+| 步骤 | 状态 |
+|---|---|
+| `plan` | ✅ 走通：产物登记、finish success、**状态前移成功（plan_done）** |
+| `review` | ⚠️ 未走通：模型读了大量文件但**没落盘** `02_review.md` / `review_round_1.json`；补救回合已触发但同回合内又遇下面的副作用歧义 |
+| `merge`/`code`/`deepcheck`/`audit` | ⏳ 未到达 |
+
+**阻塞点已定位（两条，都可复现）**：
+
+1. **模型不落盘**：`review` 步骤里模型倾向在回复文本里给出审查意见，而不是调用 `write_file`。
+   已加**有界补救回合**（明确列出缺失产物的绝对路径并要求立即写），但本轮仍未成功。
+2. **副作用回执终结失败留下未闭合动作**：`operation_finish` 失败时控制面残留 open operation，
+   下一次同名 start 被判 `ambiguous_side_effect` → 我们（正确地）拒绝执行。
+   以前这个失败是静默的，现在会在 `inv.note`、`tool_result.meta` 与事件里显式暴露。
+
+#### ③ Windows 隔离 —— ✅ 已落地并诚实标注
+
+新增两条 Windows 路径：
+
+| 后端 | 强制什么 | 说明 |
+|---|---|---|
+| **WSL**（`--isolation wsl`） | Linux 内核命名空间：文件系统视图 + `unshare -n` 断网 | 真隔离；但**需显式指定** |
+| **Job Object**（`WindowsJobLimits`） | **仅资源**：活动进程上限、Job 内存上限、Job 关闭即回收子进程 | **部分强制**，`is_real_isolation=False`，描述里明说"不含文件系统与网络，不得据此宣称沙箱" |
+
+**踩坑并修正**：一度只因 `wsl.exe` 存在就自动选中 WSL 沙箱，结果本机安全策略拦截 wsl.exe，
+每条命令都被包进 wsl 而失败。**"存在"不等于"可用"**——现在 WSL 不进自动选择列表，
+只有显式 `--isolation wsl` 才用；`doctor` 也改为分别报告"探测到可执行文件"与"实际可用"。
+
+#### ④ 分发 —— ✅ 已用 wheel 验证
+
+```text
+构建：icode_agent-0.1.0-py3-none-any.whl（115KB）
+核验：entry_points → icode = icode.cli:main
+      WebUI 资源 3 个（index.html / app.js / style.css）在包内，RECORD 覆盖
+       29 个模块；METADATA 齐全
+安装：pip install --target <dir> <whl> → icode.exe 生成
+执行：从仓库外运行 → icode-agent 0.1.0
+      12 个子命令齐全（含 chain / webui）
+```
+
+`pipx install <wheel>` / `uv tool install` 走的就是这套元数据。
 
 ---
 

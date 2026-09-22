@@ -13,10 +13,13 @@ from tests._support import temp_workspace
 
 from icode.isolation import (
     BASELINE_CLAIM,
+    PARTIAL_CLAIM,
     BubblewrapSandbox,
     ContainerSandbox,
     MacSeatbeltSandbox,
     NoIsolation,
+    WindowsJobLimits,
+    WslSandbox,
     capability_report,
     probe_capabilities,
     select_sandbox,
@@ -28,7 +31,7 @@ class TestProbe(unittest.TestCase):
     def test_探测不抛异常且覆盖四类后端(self) -> None:
         caps = probe_capabilities()
         names = {c.name for c in caps}
-        self.assertEqual(names, {"bwrap", "sandbox-exec", "docker", "podman"})
+        self.assertEqual(names, {"bwrap", "sandbox-exec", "wsl", "docker", "podman"})
         for c in caps:
             self.assertIn(c.kind, ("kernel", "container", "none"))
             self.assertIn("可执行文件", c.detail)
@@ -64,10 +67,76 @@ class TestHonesty(unittest.TestCase):
         if not selected["is_real_isolation"]:
             self.assertEqual(report["honest_label"], BASELINE_CLAIM)
 
-    def test_本机若无后端则选中基线(self) -> None:
-        if any(c.is_kernel_or_container for c in probe_capabilities()):
-            self.skipTest("本机有可用隔离后端")
-        self.assertFalse(select_sandbox().is_real_isolation)
+    def test_本机无自动可选后端时退回基线(self) -> None:
+        """判据是**自动选择结果**，而不是"探测到可执行文件"。
+
+        否则只要机器上装了 wsl.exe 就会误判为"有隔离"。
+        """
+        sandbox = select_sandbox()
+        if sandbox.is_real_isolation:
+            self.skipTest(f"本机确实自动选中了可用后端：{sandbox.name}")
+        self.assertFalse(sandbox.is_real_isolation)
+        self.assertEqual(sandbox.describe()["claim"], BASELINE_CLAIM)
+
+
+class TestWslAndJobLimits(unittest.TestCase):
+    """WSL 沙箱与 Windows Job Object。
+
+    注意：这些测试**只校验 argv 构造与声明**，不实际启动任何后端
+    （受限环境会按安全策略拦截 wsl.exe，且不应反复尝试）。
+    """
+
+    def test_wsl_路径映射(self) -> None:
+        sb = WslSandbox()
+        self.assertEqual(sb.to_wsl_path(Path("C:/a/b")), "/mnt/c/a/b")
+
+    def test_wsl_包装含工作目录与断网(self) -> None:
+        sb = WslSandbox()
+        argv = sb.wrap(["python", "-V"], workspace=Path("C:/ws"))
+        self.assertEqual(argv[0], "wsl")
+        self.assertIn("--cd", argv)
+        self.assertEqual(argv[argv.index("--cd") + 1], "/mnt/c/ws")
+        self.assertIn("unshare", argv)
+        self.assertIn("-n", argv)
+        self.assertEqual(argv[-2:], ["python", "-V"])
+        self.assertTrue(sb.is_real_isolation)
+
+    def test_wsl_允许网络时不加_unshare(self) -> None:
+        argv = WslSandbox().wrap(["curl"], workspace=Path("C:/ws"), network=True)
+        self.assertNotIn("unshare", argv)
+
+    def test_仅存在_wsl_可执行文件时不自动选中(self) -> None:
+        """回归：曾因"存在 wsl.exe"就自动选中 WSL，导致每条命令都被包进 wsl 而失败。
+
+        存在 ≠ 可用；自动选择不得包含 WSL。
+        """
+        sandbox = select_sandbox()
+        if any(c.name == "wsl" and c.available for c in probe_capabilities()):
+            self.assertNotIsInstance(sandbox, WslSandbox,
+                                     "WSL 不得进入自动选择列表")
+            self.assertFalse(sandbox.is_real_isolation,
+                             "本机只有 wsl.exe 时，自动选择应退回基线而非假装有隔离")
+
+    def test_JobObject_是部分强制且明确表态(self) -> None:
+        jl = WindowsJobLimits()
+        desc = jl.describe()
+        self.assertFalse(desc["is_real_isolation"])
+        self.assertEqual(desc["claim"], PARTIAL_CLAIM)
+        self.assertIn("文件系统", desc["not_enforced"])
+        self.assertIn("网络", desc["not_enforced"])
+        self.assertIn("活动进程数上限", desc["enforced"])
+        self.assertIn("不得据此宣称沙箱", desc["note"])
+
+    def test_JobObject_wrap_不改写命令(self) -> None:
+        jl = WindowsJobLimits()
+        self.assertEqual(jl.wrap(["python", "-V"], workspace=Path("C:/ws")),
+                         ["python", "-V"])
+
+    def test_JobObject_apply_不抛异常(self) -> None:
+        """apply 是尽力而为：成功与否都要返回可读说明，绝不抛。"""
+        ok, detail = WindowsJobLimits(active_process_limit=32, memory_mb=1024).apply()
+        self.assertIsInstance(ok, bool)
+        self.assertTrue(detail)
 
 
 class TestSandboxWrapping(unittest.TestCase):

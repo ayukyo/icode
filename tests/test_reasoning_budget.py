@@ -49,8 +49,13 @@ class TestReasoningGate(unittest.TestCase):
             self.assertIsNone(self.gate.build_row("T-1", "status"))
 
     def test_不满足的步骤可枚举(self) -> None:
+        """L2 已由本仓自实现提供；未实现的等级（如 L3）仍应被如实列出。"""
         unsatisfied = {s.step for s in self.gate.unsatisfied_steps()}
-        self.assertIn("plan", unsatisfied)
+        self.assertNotIn("plan", unsatisfied, "plan 是 L2，已具备自实现能力")
+        for step in unsatisfied:
+            info = self.gate.for_step(step)
+            assert info is not None
+            self.assertNotIn(info.default_tier, ("L0", "L1", "L2"))
 
     def test_写读_trace_往返一致(self) -> None:
         with temp_workspace() as ws:
@@ -66,11 +71,63 @@ class TestReasoningGate(unittest.TestCase):
             # 字段严格对齐上游 schema
             expected = {"schema_version", "ticket_id", "step", "tier", "default_tier",
                         "triggers", "mechanism", "attempted", "result", "degraded_reason",
-                        "over_invoked", "at"}
+                        "over_invoked", "at",
+                        # 额外字段：如实记录机制由谁提供（上游只检必需键）
+                        "provider", "provider_kind", "deliberation_steps", "deliberation_digest"}
             self.assertEqual(set(rows[0]), expected)
             self.assertIn("at", json.dumps(rows[0]))
             # LF 结尾
             self.assertNotIn(b"\r\n", path.read_bytes())
+
+
+class TestDeliberationGate(unittest.TestCase):
+    """L2 门禁的诚实性：**真跑过才给成功**。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.settings = require_skill()
+        cls.gate = ReasoningGate.load(
+            cls.settings.skill_root / "mcp" / "reasoning-gate" / "gates.json")
+
+    def test_真跑推演才给成功(self) -> None:
+        from icode.sequential import Deliberation
+
+        d = Deliberation(tier="L2", steps=["第一步", "第二步", "第三步"], converged=True)
+        row = self.gate.build_row("T-1", "plan", deliberation=d)
+        assert row is not None
+        self.assertTrue(row.attempted)
+        self.assertEqual(row.result, "success")
+        self.assertIsNone(row.degraded_reason)
+        self.assertEqual(row.provider_kind, "in_repo")
+        self.assertEqual(row.provider, "icode-in-repo-sequential-thinking")
+        self.assertEqual(row.deliberation_steps, 3)
+        self.assertTrue(row.deliberation_digest)
+
+    def test_推演步数不足时如实降级(self) -> None:
+        from icode.sequential import Deliberation
+
+        d = Deliberation(tier="L2", steps=["只有一步"], converged=True)
+        row = self.gate.build_row("T-1", "plan", deliberation=d)
+        assert row is not None
+        self.assertFalse(row.attempted)
+        self.assertEqual(row.result, "degraded")
+        self.assertIn("未取得有效推演", row.degraded_reason or "")
+
+    def test_没给推演结果时不得报成功(self) -> None:
+        row = self.gate.build_row("T-1", "plan")
+        assert row is not None
+        self.assertFalse(row.attempted)
+        self.assertEqual(row.result, "degraded")
+
+    def test_推演不落正文只记摘要(self) -> None:
+        from icode.sequential import Deliberation
+
+        d = Deliberation(tier="L2", steps=["敏感推演正文 A", "敏感推演正文 B", "敏感推演正文 C"])
+        row = self.gate.build_row("T-1", "plan", deliberation=d)
+        assert row is not None
+        blob = json.dumps(row.as_dict(), ensure_ascii=False)
+        self.assertNotIn("敏感推演正文", blob, "推演正文不得进入 trace")
+        self.assertLess(len(blob), 4096, "trace 行必须在上游上限内")
 
 
 class TestBudget(unittest.TestCase):

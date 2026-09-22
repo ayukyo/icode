@@ -19,11 +19,13 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from .approvals import Approver, DenyAllApprover
 from .backends import Backend, Usage
@@ -37,7 +39,7 @@ from .guard import Guard, Scope
 from .isolation import NoIsolation, Sandbox, select_sandbox
 from .loop import AgentLoop, LoopConfig, LoopResult
 from .operations import OperationRecorder
-from .reasoning import ReasoningGate, TraceRow, append_trace
+from .reasoning import ReasoningGate, TraceRow, append_trace, run_deliberation
 from .recovery import Recoverer
 from .tools import ToolContext, default_registry
 
@@ -206,8 +208,18 @@ def run_contract_step(
     loop_config: LoopConfig | None = None,
     budget: Budget | None = None,
     on_event=None,
+    sandbox: Sandbox | None = None,
+    out_dir: Path | None = None,
+    extra_instructions: str = "",
+    post_write: "Callable[[Path, str, str], None] | None" = None,
 ) -> StepReport:
-    """按契约执行一个步骤，模型通过工具循环完成该步骤的产物。"""
+    """按契约执行一个步骤，模型通过工具循环完成该步骤的产物。
+
+    `out_dir` 给定时复用该工单目录（**不再新建、不再建单**），用于串起多步链路。
+    `extra_instructions` 追加到系统提示（步骤特化交付要求）。
+    `post_write(out_dir, step, attempt)` 在模型工作完成后、产物登记前调用
+    （用于装配机器可读索引、跑控制面原生自查清单等**非模型**动作）。
+    """
     workspace = Path(workspace).resolve()
     cp = ControlPlane(settings)
     report = StepReport(step=step, ok=False, out_dir="")
@@ -221,26 +233,27 @@ def run_contract_step(
         report.add(f"契约载入（{step}）", True, f"复检点={list(contract.required_checks)}")
 
         # 渐进披露：只取门禁强制层，不整篇注入
-        guide = load_guide(settings.steps_dir, step)
-        brief = ""
-        if guide is not None:
-            # 先分配工单目录，才能把"输入是否存在"如实写进简报
-            from .handshake import next_out_dir
-
-            out_dir = next_out_dir(workspace)
+        reuse = out_dir is not None
+        if reuse:
+            out_dir = Path(out_dir).resolve()
             report.out_dir = str(out_dir)
-            brief, _ = guide.mandatory_brief(contract, ticket_dir=out_dir)
-            report.add("门禁简报（强制层）", bool(brief), f"{len(brief)} 字符")
         else:
             from .handshake import next_out_dir
 
             out_dir = next_out_dir(workspace)
             report.out_dir = str(out_dir)
 
-        ok_create = cp.create(out_dir, ticket_id=ticket_id,
-                              requirement=requirement or DEFAULT_TASK, birth="plan")
-        report.add("工单创建", ok_create.data.get("ok") is True,
-                   f"status={ok_create.data.get('status')}")
+        guide = load_guide(settings.steps_dir, step)
+        brief = ""
+        if guide is not None:
+            brief, _ = guide.mandatory_brief(contract, ticket_dir=out_dir)
+            report.add("门禁简报（强制层）", bool(brief), f"{len(brief)} 字符")
+
+        if not reuse:
+            ok_create = cp.create(out_dir, ticket_id=ticket_id,
+                                  requirement=requirement or DEFAULT_TASK, birth="plan")
+            report.add("工单创建", ok_create.data.get("ok") is True,
+                       f"status={ok_create.data.get('status')}")
 
         attempt = cp.step_start(out_dir, step, ticket_id=ticket_id)
         report.add("step start", bool(attempt), f"attempt={attempt}")
@@ -248,6 +261,11 @@ def run_contract_step(
         # 检查点：让中断后可恢复（不保存模型正文）
         ckpt = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt=attempt)
         report.checkpoint_path = str(ckpt.path)
+        # 副作用回执器：**整步共用一个**。
+        # 若每个 loop 各建一个，occurrence 计数会从 1 重来，
+        # 于是同一 request 键重复出现 → 控制面判定 ambiguous_side_effect → 命令被拒。
+        # （实测踩过：补救回合里所有 run_command 都变成"副作用歧义，拒绝重放"。）
+        step_ops = OperationRecorder(cp, out_dir, ticket_id)
 
         # 契约驱动的复检点 + 模型工作
         occurrence = 0
@@ -268,7 +286,8 @@ def run_contract_step(
                     ticket_id=ticket_id, step=step, brief=brief, contract=contract,
                     requirement=requirement or DEFAULT_TASK, approver=approver,
                     loop_config=loop_config, budget=budget, on_event=on_event,
-                    checkpointer=ckpt,
+                    checkpointer=ckpt, extra_instructions=extra_instructions,
+                    operations=step_ops,
                 )
                 report.loop = loop
                 if not loop.ok:
@@ -279,18 +298,70 @@ def run_contract_step(
                         f"{'：' + loop.error if loop.error else ''}）；"
                         "本次仍以契约产物是否齐备作为判定依据"
                     )
+                if post_write is not None:
+                    post_write(out_dir, step, attempt)
                 missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
+
+                # 缺件修复：模型常在文本里回答却不落盘（实测 review 步骤就这么丢过产物）。
+                # 允许**一个有界的补救回合**，并把"缺了什么"明确摆到它面前；
+                # 这既不是伪造产物，也不是放宽门禁 —— 只是为了把话说完。
+                for repair_round in range(1, 2):
+                    declared = [
+                        p for p in contract.outputs
+                        if p.kind == "ticket_file" and p.value and not (out_dir / p.value).is_file()
+                    ]
+                    if not declared:
+                        break
+                    if post_write is not None:
+                        # 机器装配型产物（如 review_manifest）此刻还没法装 —— 先跳过
+                        pass
+                    still_missing = [
+                        p for p in declared
+                        if p.value not in ("review_manifest.json",)
+                    ]
+                    if not still_missing:
+                        break
+                    report.warn(
+                        f"产物缺失，进入补救回合 {repair_round}："
+                        + "、".join(p.value for p in still_missing)
+                    )
+                    repair = _run_agent(
+                        backend=backend, workspace=workspace, out_dir=out_dir,
+                        ticket_id=ticket_id, step=step, brief=brief, contract=contract,
+                        requirement=requirement or DEFAULT_TASK, approver=approver,
+                        loop_config=loop_config, budget=budget, on_event=on_event,
+                        checkpointer=ckpt,
+                        extra_instructions=REPAIR_INSTRUCTIONS.format(
+                            missing="\n".join(f"  - {out_dir / p.value}" for p in still_missing)
+                        ),
+                        operations=step_ops,
+                    )
+                    report.loop = repair
+                    if post_write is not None:
+                        post_write(out_dir, step, attempt)
+                    _reset_artifact_checkpoints(report)
+                    missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
 
         _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
         if report.finish_outcome == "success":
             ckpt.clear()  # 步骤已干净终结，检查点不再需要
 
-        _finalize(settings, cp, out_dir, step, ticket_id, contracts, report)
+        _finalize(settings, cp, out_dir, step, ticket_id, contracts, report,
+                  backend=backend, requirement=requirement or DEFAULT_TASK)
         return report
 
     except Exception as exc:  # noqa: BLE001
         report.error = f"{type(exc).__name__}: {exc}"
         return report
+
+
+def _reset_artifact_checkpoints(report: StepReport) -> None:
+    """丢弃上一轮的产物登记/缺失结论，让最终判定以**补救后的实际状态**为准。"""
+    report.checkpoints = [
+        c for c in report.checkpoints
+        if not (c[0].startswith("产物缺失") or c[0].startswith("产物登记"))
+    ]
+    report.artifacts = []
 
 
 def _register_outputs(
@@ -336,10 +407,20 @@ def _make_ctx(workspace: Path, sandbox: Sandbox | None) -> ToolContext:
     return ToolContext(root=workspace, sandbox=sandbox if sandbox is not None else select_sandbox())
 
 
+REPAIR_INSTRUCTIONS = (
+    "【产物缺失 · 必须立即补救】\n"
+    "上一次运行**没有落盘**下面这些必需产物 —— 只在回复文本里描述不算完成：\n"
+    "{missing}\n"
+    "请现在**立即调用 write_file** 把这些文件写到上面列出的**绝对路径**（一个都不能少），"
+    "内容就是你上一轮已经想好的东西。不要再去读文件调研，不要解释，直接写。\n"
+)
+
+
 def _run_agent(
     *, backend, workspace, out_dir, ticket_id, step, brief, contract, requirement,
     approver, loop_config, budget, on_event, checkpointer=None, resume_context: str = "",
-    sandbox: Sandbox | None = None,
+    sandbox: Sandbox | None = None, extra_instructions: str = "",
+    operations: OperationRecorder | None = None,
 ) -> LoopResult:
     registry = default_registry()
     guard = Guard(Scope(workspace_root=workspace))
@@ -355,7 +436,8 @@ def _run_agent(
         guard=guard,
         ctx=ctx,
         approver=approver or DenyAllApprover(),
-        operations=OperationRecorder(ControlPlane(load_settings_for(workspace)), out_dir, ticket_id),
+        operations=operations or OperationRecorder(
+            ControlPlane(load_settings_for(workspace)), out_dir, ticket_id),
         budget=BudgetTracker(budget or Budget()),
         config=loop_config or LoopConfig(),
         on_event=on_event,
@@ -391,6 +473,15 @@ def _run_agent(
     )
     if requirement:
         system += f"\n【本次需求】\n{requirement}\n"
+    if extra_instructions:
+        system += f"\n【本步骤的额外交付要求（只描述内容，落盘路径以上方清单为准）】\n{extra_instructions}\n"
+        # 把交付路径再钉一次：模型容易把产物写到工作区根目录（实测踩过）
+        if deliverable_lines:
+            system += (
+                "\n【再次强调 · 产物必须写这些绝对路径】\n"
+                + "\n".join(deliverable_lines)
+                + "\n不要把产物写到工作区根目录或其它位置，否则本步骤会因产物缺失而失败。\n"
+            )
     if resume_context:
         system += f"\n{resume_context}\n"
     messages = [
@@ -403,21 +494,70 @@ def _run_agent(
     return loop.run(messages)
 
 
+def _ensure_gate_metadata(
+    cp: ControlPlane, out_dir: Path, ticket_id: str, report: StepReport
+) -> None:
+    """补齐 strict 门禁要求的 metadata 键。
+
+    `workflow_contract` 在 `--strict` 下要求 `semantic_decisions` 与
+    `requirement_deltas` **存在**。本运行时在**确实没有**待裁决语义决策/需求偏移时，
+    显式写入**空数组**，语义是"本步骤无待裁决项"——这是如实声明，不是伪造记录。
+    已有值一律不覆盖（只补缺失键）。
+    """
+    path = Path(out_dir) / ".ico_metadata.json"
+    if not path.is_file():
+        return
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    missing = {k: [] for k in ("semantic_decisions", "requirement_deltas") if k not in meta}
+    if not missing:
+        return
+    res = cp.metadata_update(out_dir, ticket_id=ticket_id, set_json=missing)
+    ok = res.returncode == 0 and res.data.get("ok") is True
+    report.add("门禁 metadata 补齐（缺失键写空数组）", ok,
+               "、".join(missing) + ("" if ok else f"｜{str(res.data)[:120]}"))
+
+
 def _finalize(
     settings: Settings, cp: ControlPlane, out_dir: Path, step: str, ticket_id: str,
-    contracts, report: StepReport,
+    contracts, report: StepReport, *, backend: Backend | None = None,
+    requirement: str = "", delivery_verdict: str = "verification_pending",
 ) -> None:
-    """收尾三件事：如实写推理 trace、尝试状态前移、校验事件链。"""
+    """收尾：**真跑推演**（若该步骤要求）、如实写推理 trace、尝试状态前移、校验事件链。"""
     gate = ReasoningGate.load(settings.skill_root / "mcp" / "reasoning-gate" / "gates.json")
-    row = gate.build_row(ticket_id, step)
+
+    deliberation = None
+    info = gate.for_step(step)
+    if backend is not None and info is not None and info.requires_trace:
+        question = (
+            f"完成 ICODE 工作流的 {step} 步骤（等级 {info.default_tier}）："
+            f"{requirement or '按契约产出该步骤的交付物'}。"
+            f"已登记产物：{'、'.join(report.artifacts) or '无'}。"
+            "请分步推演出关键判断与依据。"
+        )
+        deliberation = run_deliberation(gate, backend, step=step, question=question)
+
+    row = gate.build_row(ticket_id, step, deliberation=deliberation)
     if row is not None:
         append_trace(out_dir / ".thinking_gate_trace.jsonl", [row])
         report.reasoning_rows.append(row)
-        report.add("推理 trace 写入", True, f"result={row.result} attempted={row.attempted}")
+        detail = f"result={row.result} attempted={row.attempted}"
+        if row.deliberation_steps:
+            detail += f" 推演={row.deliberation_steps}步"
+        if deliberation is not None:
+            report.add("结构化推演", deliberation.step_count >= 3,
+                       f"{deliberation.summary()} provider={row.provider}")
+        report.add("推理 trace 写入", row.result == "success", detail)
 
     target_status = contracts.status_for_step(step)
     if target_status:
-        tr = cp.transition(out_dir, target_status, ticket_id=ticket_id)
+        _ensure_gate_metadata(cp, out_dir, ticket_id, report)
+        # completed 必须显式回填交付结论；默认取最保守的 verification_pending
+        verdict = delivery_verdict if target_status == "completed" else None
+        tr = cp.transition(out_dir, target_status, ticket_id=ticket_id,
+                           delivery_verdict=verdict)
         if tr.data.get("ok") is True:
             report.advance_status = "已前移"
         else:
@@ -523,7 +663,8 @@ def resume_contract_step(
         if report.finish_outcome == "success":
             checkpointer.clear()
 
-        _finalize(settings, cp, out_dir, step, ticket_id, contracts, report)
+        _finalize(settings, cp, out_dir, step, ticket_id, contracts, report,
+                  backend=backend, requirement=requirement or DEFAULT_TASK)
         return report
 
     except Exception as exc:  # noqa: BLE001

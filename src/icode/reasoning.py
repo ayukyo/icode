@@ -5,9 +5,15 @@
 
 诚实原则（重要）：
     上游词表规定 L2 必须 `mechanism=sequential-thinking` 且 `attempted=true`。
-    本运行时**尚未接入**该 MCP，因此对 L2/L3 步骤我们**不允许**写成功行——
-    宁可如实写 `attempted=false` + `result=degraded` + 明确原因，让门禁拦下，
-    也不伪造一行"看起来做过 L2"的 trace。
+    上游用一个 npm MCP 服务器提供该机制；**本仓自实现了同一机制**
+    （`sequential.py`：有界分步推演），因此 L2 现在可以真实满足。
+
+    但**不声称**调用了上游的 MCP：trace 行里按词表填 `mechanism`（机制名，硬约束），
+    并额外用 `provider` / `provider_kind` 字段如实写明实现来源。
+    `REQUIRED_FIELDS` 只检缺失、不拒绝额外键，因此这是允许的。
+
+    更关键的一条：**没有真跑推演就不许写成功行**。`build_row` 只有在拿到
+    满足下限步数的推演结果时才给 `result=success`，否则一律 `degraded`。
 """
 
 from __future__ import annotations
@@ -23,10 +29,13 @@ TRACE_FILENAME = ".thinking_gate_trace.jsonl"
 VALID_TIERS = ("L0", "L1", "L2", "L3")
 VALID_RESULTS = ("success", "degraded", "blocked")
 
-# 本运行时**真正具备**的推理机制（按等级）。未列出的等级一律走 degraded。
+# 本运行时**真正具备**的推理机制（按等级 → provider 标识）。未列出的等级一律走 degraded。
 SUPPORTED_MECHANISMS: dict[str, str] = {
     "L0": "deterministic_checks",
+    "L1": "decision_record",
+    "L2": "icode-in-repo-sequential-thinking",
 }
+# noqa: L3 尚未实现（需独立对抗者），因此仍在 unsatisfied 列表里
 
 
 class ReasoningGateError(RuntimeError):
@@ -57,6 +66,11 @@ class TraceRow:
     over_invoked: bool = False
     at: str = ""
     schema_version: int = 1
+    # --- 以下为额外字段：如实记录机制由谁提供（上游只检必需键，不拒绝额外键） ---
+    provider: str = ""
+    provider_kind: str = "in_repo"
+    deliberation_steps: int = 0
+    deliberation_digest: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -72,6 +86,10 @@ class TraceRow:
             "degraded_reason": self.degraded_reason,
             "over_invoked": self.over_invoked,
             "at": self.at or _now_iso(),
+            "provider": self.provider,
+            "provider_kind": self.provider_kind,
+            "deliberation_steps": self.deliberation_steps,
+            "deliberation_digest": self.deliberation_digest,
         }
 
 
@@ -132,30 +150,66 @@ class ReasoningGate:
                 out.append(info)
         return tuple(out)
 
-    def build_row(self, ticket_id: str, step: str) -> TraceRow | None:
+    def build_row(
+        self, ticket_id: str, step: str, *, deliberation=None
+    ) -> TraceRow | None:
         """为该步骤构造**如实**的 trace 行。
 
         不需要 trace 的步骤返回 None（不该写行）。
+        `deliberation` 为本 attempt 真实跑出的推演结果（`sequential.Deliberation`）。
+
+        **成功行的前提是真跑过**：步数达到该等级下限才算 success，
+        否则一律 degraded 并给出原因 —— 不允许"没做却报成功"。
         """
         info = self.for_step(step)
         if info is None or not info.requires_trace:
             return None
         mechanism, capable = self.capability_for(info.default_tier)
+        provider = SUPPORTED_MECHANISMS.get(info.default_tier, "")
+
+        min_steps = 3 if info.default_tier in ("L2", "L3") else 0
         if capable:
+            steps = int(getattr(deliberation, "step_count", 0) or 0)
+            if deliberation is not None and steps >= min_steps:
+                return TraceRow(
+                    ticket_id=ticket_id, step=step, tier=info.default_tier,
+                    default_tier=info.default_tier, mechanism=mechanism,
+                    attempted=True, result="success", degraded_reason=None,
+                    provider=provider, provider_kind="in_repo",
+                    deliberation_steps=steps,
+                    deliberation_digest=str(getattr(deliberation, "digest", "")),
+                )
             return TraceRow(
                 ticket_id=ticket_id, step=step, tier=info.default_tier,
                 default_tier=info.default_tier, mechanism=mechanism,
-                attempted=True, result="success", degraded_reason=None,
+                attempted=False, result="degraded",
+                degraded_reason=(
+                    f"具备 {mechanism} 能力但本 attempt 未取得有效推演"
+                    f"（步数 {steps} < 下限 {min_steps}）；如实降级，不冒充成功"
+                ),
+                provider=provider, provider_kind="in_repo",
             )
         return TraceRow(
             ticket_id=ticket_id, step=step, tier=info.default_tier,
             default_tier=info.default_tier, mechanism=mechanism,
             attempted=False, result="degraded",
             degraded_reason=(
-                f"本运行时尚未接入 {mechanism}（Phase 2 剩余项）；"
-                "以有界回合循环替代，但**不冒充该等级机制**，因此不算满足推理门禁"
+                f"本运行时尚未实现 {mechanism}（该等级需要独立对抗者）；"
+                "不冒充该等级机制，因此不算满足推理门禁"
             ),
         )
+
+
+def run_deliberation(gate: ReasoningGate, backend, *, step: str, question: str):
+    """按该步骤的等级要求，真跑一次推演；不需要 trace 的步骤返回 None。"""
+    info = gate.for_step(step)
+    if info is None or not info.requires_trace:
+        return None
+    if info.default_tier not in SUPPORTED_MECHANISMS:
+        return None
+    from .sequential import SequentialThinking
+
+    return SequentialThinking(backend).run(question, tier=info.default_tier)
 
 
 def append_trace(path: Path, rows: Iterable[TraceRow]) -> int:
