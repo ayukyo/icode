@@ -45,6 +45,28 @@
 | D10 | 架构分层 | core 库与 UI 解耦，UI 可缺省 | 见 §3 |
 | D11 | 证据包构成 | **正文快照 + 与事件链 hash 的对应表**，校验器验证 hash 匹配 | 事件链只存摘要（防泄密），审计方需正文才能核实——快照 + hash 兼顾"安全"与"可验证" |
 | D12 | 交付节奏 | **每完成一个 Phase 立即自动 commit + push 一次**，提交前跑三道守护（密钥扫描 / 子模块完整性 / 测试全绿） | 自动提交没有人工把关机会，守护与 `.gitignore` 必须先行（见 roadmap §7） |
+| D13 | **与上游的调用面** | **只用 `icode_control.py` 的子命令**；**不使用** `/icode <step>` slash 命令、不使用 `install.sh` 与宿主命令桥 | `/icode <step>` 是**给宿主 LLM 的入口**（宿主理解后自己执行）；我们就是执行者，不需要另一个执行者。见 §4 |
+| D14 | UI 层边界 | UI 只发「意图 + 动作枚举 + revision」；**不做状态第二写入者**、**不收路径/命令/shell**、**挂起审批重启后不自动放行** | 与上游 UI 的既有约束对齐；第三条最容易漏，必须 fail-closed |
+
+---
+
+## 4. 与 icode-skill 的调用面（D13）
+
+三种"入口"必须分清，否则会造成两套执行者互相打架：
+
+| 入口 | 目标使用者 | 本仓 |
+|---|---|---|
+| `/icode plan`、`/icode code` 等 slash 命令 | **宿主 LLM**（Claude Code / Codex 读 `SKILL.md` 后由模型执行步骤） | ❌ 不使用 |
+| `install.sh`、`integrations/codebuddy/commands/icode.md` 命令桥 | 把 skill 与命令桥装进宿主机 | ❌ 不使用 |
+| `tools/icode_control.py` 子命令（`step` / `artifact` / `operation` / `transition` / `trace`） | 任何想**合法推进工单**的执行者 | ✅ **唯一必需** |
+
+**为什么不用 slash 命令**：`/icode <step>` 的语义是"请宿主模型去执行这个步骤"。
+本仓自带 Tool Loop，**本身就是执行者**——再引入一层"请别人执行"的入口，
+只会产生两个写者，破坏事件链唯一真源。
+
+**保留的能力**：流程语义仍全部来自上游（`steps/*.md` 步骤合同 + `gates.json` 契约真源），
+我们只是不消费它的"命令桥"这一层皮。
+
 
 ---
 
@@ -64,8 +86,25 @@ core（纯库）
 
 frontends
 ├── cli            一期：自测、CI、无人值守
-└── webui          二期：loopback HTTP + SSE，仅留接口
+└── webui          Phase 5：loopback HTTP + SSE
 ```
+
+**前端可替换的只有一处：`Approver`（审批协议）。**
+
+```text
+core  ──调用──> Approver.ask(ApprovalRequest) -> bool
+                 ├── DenyAllApprover   默认：一律拒绝（非交互环境的安全默认）
+                 ├── CliApprover       终端：打印完整上下文 + 等待显式确认
+                 ├── ScriptedApprover  测试：按预设回答（必须显式构造）
+                 └── WebApprover       Phase 5：SSE 推给浏览器 + 等待用户点击
+```
+
+因此 WebUI 的引入**不触碰** Tool Loop / Guard / OperationRecorder / ControlPlane。
+浏览器永远碰不到 `icode_control.py`——它只在后端进程里被调用。
+
+**命名冲突提醒**：上游有 `/icode ui`（它自己的 ICODE Manager），我们将来也会有
+`icode ui`。两者不是一回事：前者是**宿主的工单浏览器**，后者是**我们的执行前端**。
+落地时必须明确划线，避免用户混淆。
 
 这样一期只做 CLI 就能自测并进 CI；UI 延后不阻塞任何东西，
 将来想换形态（TUI / IDE 插件 / 其他宿主）也不用动核心。

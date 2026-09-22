@@ -189,7 +189,9 @@ class ControlPlane:
         ticket_id: str,
         evidence: Sequence[str] = (),
         request: str | None = None,
+        check: bool = True,
     ) -> ControlResult:
+        """终结回执。`check=False` 时**不抛异常**，由调用方如实上报门禁拒绝。"""
         args = [
             "step", "--dir", str(out_dir), "--step", step, "--phase", "finish",
             "--attempt", attempt, "--outcome", outcome,
@@ -198,7 +200,7 @@ class ControlPlane:
             args += ["--evidence", item]
         args += ["--request", request or make_request(
             ticket_id, f"step-{step}-finish", attempt=attempt)]
-        return self.run(*args)
+        return self.run(*args, check=check)
 
     def artifact(
         self,
@@ -229,6 +231,63 @@ class ControlPlane:
             "--request", make_request(ticket_id, f"transition-{to_status}"),
             check=False,
         )
+
+    # ---- 长动作回执（副作用） ----
+
+    def operation_start(
+        self,
+        out_dir: Path | str,
+        *,
+        ticket_id: str,
+        name: str,
+        opclass: str,
+        input_desc: str,
+        occurrence: int = 1,
+    ) -> ControlResult:
+        """开始一个长动作。**不抛异常**：`ambiguous_side_effect` 必须由调用方处理。"""
+        return self.run(
+            "operation", "--dir", str(out_dir), "--phase", "start",
+            "--name", name, "--opclass", opclass, "--input", input_desc,
+            "--request", make_request(ticket_id, f"op-{name}-start", occurrence=occurrence),
+            check=False,
+        )
+
+    def operation_finish(
+        self,
+        out_dir: Path | str,
+        *,
+        attempt: str,
+        outcome: str,
+        evidence: str,
+        check_ref: str,
+        failure: str | None = None,
+    ) -> ControlResult:
+        args = [
+            "operation", "--dir", str(out_dir), "--phase", "finish",
+            "--attempt", attempt, "--outcome", outcome,
+            "--evidence", evidence, "--check", check_ref,
+        ]
+        if failure:
+            args += ["--failure", failure]
+        return self.run(*args, check=False)
+
+    # ---- 元数据 ----
+
+    def metadata_update(
+        self,
+        out_dir: Path | str,
+        *,
+        ticket_id: str,
+        set_json: dict | None = None,
+        append_json: dict | None = None,
+    ) -> ControlResult:
+        args = ["metadata-update", "--dir", str(out_dir), "--request-id",
+                make_request(ticket_id, "metadata-update")]
+        if set_json is not None:
+            args += ["--set-json", json.dumps(set_json, ensure_ascii=False)]
+        if append_json is not None:
+            args += ["--append-json", json.dumps(append_json, ensure_ascii=False)]
+        return self.run(*args, check=False)
 
     # ---- 只读查询 ----
 

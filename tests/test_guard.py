@@ -81,6 +81,35 @@ class TestGuard(unittest.TestCase):
     def test_空命令拒绝(self) -> None:
         self.assertEqual(self.guard.check_command("").decision, Decision.DENY)
 
+    def test_单参数内拼shell被拒并给出可纠正提示(self) -> None:
+        """回归：模型常想传 'ls -la' / 'python && -m unittest' 这类 shell 串。
+
+        这属于**请求形态错误**，必须返回可纠正的明确错误，
+        而不是当成"未知命令等审批"——后者会浪费回合，也放大误批风险。
+        """
+        for bad in (["ls && -la"], ["python && -m && unittest"], ["a | b"], ["x > y"],
+                    ["echo $(whoami)"], ["a;b"], ["cat f | grep x"]):
+            v = self.guard.check_command(bad)
+            self.assertEqual(v.decision, Decision.DENY, bad)
+            self.assertIn("不经过 shell", v.reason, bad)
+            self.assertIn("参数列表", v.reason, bad)
+
+    def test_不误伤正常的美元符号参数(self) -> None:
+        """只拦命令替换 $(...) 与反引号，不因为参数里出现 $ 就拒绝（避免过度拦截）。"""
+        self.assertNotIn("不经过 shell",
+                         self.guard.check_command(["python", "-c", "print('$100')"]).reason)
+
+    def test_正常参数列表不受形态校验影响(self) -> None:
+        self.assertEqual(self.guard.check_command(["ls", "-la"]).decision, Decision.ALLOW)
+        self.assertEqual(self.guard.check_command(["python", "-m", "unittest"]).decision,
+                         Decision.ALLOW)
+
+    def test_形态校验优先于危险模式(self) -> None:
+        """拼 shell 且含危险内容时，也应先得到"写法错了"的提示。"""
+        v = self.guard.check_command(["rm -rf / && echo done"])
+        self.assertEqual(v.decision, Decision.DENY)
+        self.assertIn("不经过 shell", v.reason)
+
     def test_exe后缀被归一化(self) -> None:
         self.assertEqual(self.guard.check_command(["python.exe", "-V"]).decision, Decision.ALLOW)
 

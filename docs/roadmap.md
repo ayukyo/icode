@@ -117,22 +117,32 @@
 
 ---
 
-### Phase 2 —— 真模型 + Tool Loop（第一个可用版本）
+### Phase 2 —— 真模型 + Tool Loop（**已完成**，2026-09-23）
 
 **目标**：在 `pycalc` 上真正跑完一条端到端流程，用退出码验收。
 
 | 项 | 内容 |
 |---|---|
-| backend | MiniMax-M3（OpenAI 兼容），保留 anthropic / 本地 backend 接口 |
+| backend | MiniMax-M3（OpenAI 兼容，**标准库实现，零依赖**）；保留 anthropic / 本地扩展位 |
 | 工具集 | `read / grep / glob / write / edit`（最小集）；**`bash` 默认禁用，仅开放白名单命令**（如 `python -m unittest`）——沙箱在 P5，执行类工具的开放程度必须与阶段绑定 |
 | 副作用处理 | 所有写与执行动作包 `operation` 回执（start/finish），支持 `ambiguous_side_effect` 拒绝重放 |
-| **人机交互协议** | 定义 CLI 人在环形态：门禁要求人工决定时（destructive / `ambiguous_side_effect` / 工作区外写）**暂停并显式提示，用户确认后才继续**；协议在 P2 初定义并文档化 |
+| **人机交互协议** | CLI 形态：门禁要求人工决定时（destructive / `ambiguous_side_effect` / 工作区外写）**暂停并显式提示，用户确认后才继续**；非交互环境**一律拒绝** |
 | **E2E 隔离** | 运行前**把靶场复制到临时工作区**再操作，跑完丢弃——避免污染 `tests/fixtures/` 基线 |
-| **幂等键** | 引入**确定性**幂等键（由稳定的逻辑上下文派生，**不用随机 UUID**），让可幂等动作自动重试，把人工介入留给真正不可逆的动作 |
-| 权限模型（应用层） | 同上；随工具增加同步扩展拒绝清单 |
-| 验收 | 在 `pycalc` 上完成"新增 `calc_gcd`"：计划→编码→`python -m unittest` **退出码 0**，且事件链与产物 `artifact` 登记完整 |
-| 成本 | 需评估单工单 token 消耗，设定预算上限 |
-| 风险闸门 | 若单工单成本超预算 3 倍以上，回到 Phase 1 重新设计上下文策略 |
+| **幂等键** | **确定性**幂等键（由稳定逻辑坐标派生，**不用随机 UUID**）；只读动作的传输类失败可自动重试 |
+| **实测验收** | ① `icode task`：隔离靶场改 `calc.py`/`test_calc.py`，**独立跑 unittest 退出码 0**（11 回合 / 41,343 tokens）<br>② `icode step-run --step plan`：产物 `01_plan.md` 登记成功、`finish success`、事件链 24 条无未闭合 |
+| 成本 | 实测 41K tokens / 任务（cached 33.9K）；预算闸门就绪 |
+| 遗留 | 状态前移仍被 `thinking_gate` 拦下（未接 sequential-thinking，如实 degraded 不冒充）；完整 1→6 链路待后续 |
+
+**Phase 2 实测中修掉的真问题**（都是真实运行才暴露的）：
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | 模型习惯传 `"ls && -la"` 这类 shell 串，被当作"未知命令等审批"，提示词对模型毫无指导 | guard 增加**形态校验**：单参数含 shell 元字符 → DENY + 可纠正提示 |
+| 2 | 简报里的上游相对链接 `../references/x.md` 诱导模型读工作区外文件，白烧整轮 | 简报**降级相对链接为纯文本** + 声明上游路径不可读 |
+| 3 | 简报只列输入文件名不报存在性，模型满目录找 `00_init.md`，12 回合全耗尽在侦察 | 简报**逐项标注输入实际存在性** + 提示词禁止无目的侦察 |
+| 4 | `ProxyHandler({})` 不注册为 handler，直连逻辑形同虚设；托管环境隧道代理 502 | 改为 `_proxy_mapping()` 显式契约；新增 `--no-proxy` / `ICODE_LLM_NO_PROXY` |
+| 5 | 模型调用无重试，网络抖动即中断整步 | 只读动作的**传输类失败自动重试**（4xx 不重试），`Usage.retries` 可观测 |
+| 6 | 触到 `max_turns` 时即使产物齐备也判失败 | **由证据判定成败**，不由循环停止原因判定；非自然结束降级为提示 |
 
 ---
 
@@ -167,7 +177,9 @@
 |---|---|
 | 沙箱升级 | 评估并落地真正的隔离（Windows: Job Object / AppContainer 或容器；Linux: bwrap；macOS: Seatbelt）。**这是 P1 原则的唯一真正保障** |
 | 落不了怎么办 | 若某平台确实无法落地，**诚实标注该平台仍是"应用层限制"**，不宣称沙箱 |
-| WebUI | 二期形态（loopback + SSE），复用 core，不动核心逻辑 |
+| **WebUI** | 二期形态（loopback + SSE），复用 core，不动核心逻辑。**唯一需要新写的是 `WebApprover`**（审批协议的第 4 个实现），core 其余部分一行不改 |
+| **UI 层三条硬边界**（D14） | ① **不做状态第二写入者**——状态推进只能过 `ControlPlane`，UI 自己写 metadata 会让事件链失效<br>② **不收路径 / 命令 / shell**——只收「工单 ID + 动作枚举 + revision」<br>③ **挂起审批重启后不自动放行**——必须 fail-closed，重启后显示"待重新确认" |
+| **命名划线** | 上游有 `/icode ui`（宿主的工单浏览器），我们也会有 `icode ui`（我们的执行前端）。**两者不是一回事，必须明确区分**，避免用户混淆 |
 | 分发 | `pipx install icode-agent` / `uv tool install` |
 
 > ⚠️ **长期风险提示**：Phase 5 之前，P1（门禁不可绕过）**始终只有应用层保障**。

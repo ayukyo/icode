@@ -28,8 +28,8 @@ from .disclosure import load_guide
 
 PROBE_BANNER = "<!-- 契约探测产物：由 icode handshake 生成，非真实计划，不可作为交付证据 -->"
 
-# 状态机真源在 gates.json 的 state_machine；plan 完成后进入 plan_done
-STEP_TARGET_STATUS = {"plan": "plan_done", "review": "review_done", "code": "code_done"}
+# 步骤 -> 完成后目标状态：**从 gates.json 的 state_machine 派生**（不写死映射）。
+# 见 ContractSet.status_for_step()。
 
 
 @dataclass
@@ -264,9 +264,9 @@ def run_handshake(
         report.add("步骤终结（finish success）", finish.data.get("ok") is True,
                    f"outcome={finish.data.get('outcome')}")
 
-        # 5) 状态流转（若契约步骤映射到主流程状态）
+        # 5) 状态流转（目标状态由 gates.json 的状态机派生，不写死）
         #    门禁要求真实证据，探测件通常会被拦下 —— 如实记录，不造假、不算失败。
-        target_status = STEP_TARGET_STATUS.get(step)
+        target_status = contracts.status_for_step(step)
         if target_status:
             tr = cp.transition(out_dir, target_status, ticket_id=ticket_id)
             if tr.returncode == 0 and tr.data.get("ok") is True:

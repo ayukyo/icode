@@ -63,6 +63,26 @@ class TestDisclosure(unittest.TestCase):
             for a, b in zip(heads, heads[1:]):
                 self.assertNotEqual(a, b, f"{step} 的门禁简报出现连续重复标题：{a}")
 
+    def test_相对链接被降级为纯文本(self) -> None:
+        """回归：简报里的 `../references/x.md` 会诱导模型访问工作区外的文件。
+
+        实测浪费了整轮工具调用（模型连续 3 次尝试读工作区外路径被拒），
+        因此简报必须把相对链接降级，并明确声明这些路径不可读。
+        """
+        from icode.disclosure import neutralize_links
+
+        self.assertEqual(neutralize_links("[依懒检查](../references/a.md)"), "依懒检查")
+        self.assertEqual(neutralize_links("[限流](../steps/limit.md)"), "限流")
+        # 外链保留（对模型无害）
+        self.assertEqual(neutralize_links("[doc](https://example.com/a)"),
+                         "[doc](https://example.com/a)")
+
+    def test_简报声明上游路径不可读(self) -> None:
+        guide = load_guide(self.settings.steps_dir, "plan")
+        brief, _ = guide.mandatory_brief(self.contracts.step("plan"))
+        self.assertIn("无法读取", brief)
+        self.assertNotIn("](../", brief, "简报中不应残留相对链接")
+
     def test_章节可按需取用(self) -> None:
         guide = load_guide(self.settings.steps_dir, "plan")
         sections = guide.outline()

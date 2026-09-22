@@ -17,7 +17,9 @@ from tests._support import REPO_ROOT, require_skill, temp_workspace
 
 from icode.handshake import run_handshake
 
-# Phase 1 必须完全离线的模块（相对 src/）
+# 必须完全离线的"契约核心"模块（相对 src/）。
+# 注：Phase 2 起 cli.py 与 backends/__init__.py 会（传递）引用网络模块
+#     （真模型后端 + 代理自检），因此不再列入；但契约内核必须始终无网络依赖。
 OFFLINE_MODULES = (
     "icode/__init__.py",
     "icode/config.py",
@@ -26,10 +28,14 @@ OFFLINE_MODULES = (
     "icode/disclosure.py",
     "icode/guard.py",
     "icode/handshake.py",
-    "icode/cli.py",
-    "icode/backends/__init__.py",
+    "icode/reasoning.py",
+    "icode/budget.py",
+    "icode/approvals.py",
+    "icode/operations.py",
     "icode/backends/base.py",
     "icode/backends/fake.py",
+    "icode/tools/base.py",
+    "icode/tools/builtin.py",
 )
 
 NETWORK_IMPORTS = {"socket", "ssl", "urllib", "http", "requests", "httpx", "aiohttp", "ftplib", "smtplib"}

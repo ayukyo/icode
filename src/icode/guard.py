@@ -21,6 +21,17 @@ class Decision(str, Enum):
     DENY = "deny"
 
 
+# shell 元字符：出现在**单个参数**里通常意味着调用方想拼 shell 命令，
+# 而本工具不经 shell 执行。这属于"请求形态错误"，应给出可纠正的明确错误，
+# 而不是当成"未知命令等审批"（那会让模型白白浪费回合，也放大了误批风险）。
+_SHELL_METACHARS = ("&&", "||", "|", ";", ">", "<", "$(", "`", "\n", "&")
+
+_SHELL_SHAPE_HINT = (
+    "检测到 shell 语法：本工具**不经过 shell**，请把命令拆成参数列表。"
+    "例如 {\"argv\": [\"ls\", \"-la\"]}，需要串联多条命令时请分多次调用。"
+)
+
+
 @dataclass(frozen=True)
 class Verdict:
     decision: Decision
@@ -119,6 +130,11 @@ class Guard:
         if not stripped:
             return Verdict(Decision.DENY, "空命令")
 
+        # 形态校验优先于权限判定：拼 shell 的命令是"请求写错了"，不是"没权限"
+        shell_shape = self._shell_shape_problem(argv)
+        if shell_shape:
+            return Verdict(Decision.DENY, shell_shape)
+
         for pattern, label in _DANGEROUS_PATTERNS:
             if re.search(pattern, stripped, flags=re.IGNORECASE):
                 return Verdict(Decision.DENY, f"命中危险模式：{label}")
@@ -129,6 +145,15 @@ class Guard:
         if head in self.scope.command_allowlist:
             return Verdict(Decision.ALLOW, f"命令白名单：{head}")
         return Verdict(Decision.REQUIRE_APPROVAL, f"不在白名单：{head}")
+
+    @staticmethod
+    def _shell_shape_problem(argv: list[str] | tuple[str, ...] | str) -> str:
+        """单参数内出现 shell 元字符 → 提示改成参数列表。"""
+        parts = [argv] if isinstance(argv, str) else list(argv)
+        for part in parts:
+            if any(meta in part for meta in _SHELL_METACHARS):
+                return f"{_SHELL_SHAPE_HINT}（问题参数：{part!r}）"
+        return ""
 
     # ---- 内部 ----
 

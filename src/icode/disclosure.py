@@ -26,6 +26,29 @@ _GATE_KEYWORDS = (
 )
 
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.*?)[ \t]*$")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+# 简报顶部固定声明：避免模型去追上游文档里的相对链接（那些路径不在工作区内）
+_BRIEF_SCOPE_NOTE = (
+    "> 本简报只含门禁要求；文中形如 `../references/xxx.md` 的路径属于上游文档体系，"
+    "**不在你的工作区内、也无法读取**，不要尝试访问。"
+)
+
+
+def neutralize_links(text: str) -> str:
+    """把 Markdown 相对链接降级为纯文本。
+
+    门禁简报是从上游文档抽出来的，`.md` 里大量使用 `[x](../references/y.md)` 这类
+    相对链接。若原样注入，模型会去追这些工作区外的路径（实测浪费整轮工具调用），
+    因此这里只保留可读标签，去掉链接目标。
+    """
+    def _sub(match: re.Match[str]) -> str:
+        label, href = match.group(1), match.group(2)
+        if href.startswith(("http://", "https://")):
+            return match.group(0)  # 外链保留，模型也用不到但无害
+        return label
+
+    return _MD_LINK_RE.sub(_sub, text)
 
 
 @dataclass(frozen=True)
@@ -136,6 +159,7 @@ class StepGuide:
         contract: StepContract | None = None,
         *,
         budget: int = DEFAULT_MANDATORY_BUDGET,
+        ticket_dir: Path | None = None,
     ) -> tuple[str, bool]:
         """构造「必须注入」的门禁简报。
 
@@ -143,20 +167,18 @@ class StepGuide:
         - 机器契约（gates.json）优先级最高，永远完整给出；
         - 文档中的门禁段落按预算顺序追加，放不下就跳过并置 truncated=True；
         - 文本本身超预算时才做截断。
+
+        `ticket_dir` 给定时，会**逐项标注声明的输入文件当前是否存在**。
+        这一点很关键：契约里常有「可选输入」（如 `00_init.md`、`log_analysis.md`），
+        若只报文件名不报存在性，模型会满目录去找它们，实测能把整轮回合耗尽在环境侦察上。
         """
-        parts: list[str] = [f"# 门禁简报：{self.step}"]
+        parts: list[str] = [f"# 门禁简报：{self.step}", _BRIEF_SCOPE_NOTE]
 
         if contract is not None:
             parts.append("## 机器契约（gates.json，权威）")
-            if contract.required_inputs:
-                parts.append("必需输入：" + "、".join(p.value or p.id for p in contract.required_inputs))
-            if contract.protected_inputs:
-                parts.append(
-                    "受保护输入（执行中漂移即 fail-closed）："
-                    + "、".join(p.value or p.id for p in contract.protected_inputs)
-                )
+            if contract.inputs:
+                parts.append(self._render_inputs(contract, ticket_dir))
             if contract.outputs:
-                # 产物端口全部列出（未标 required 的也是契约产物，落盘即需 artifact 登记）
                 rendered = "、".join(
                     f"{p.value or p.id}{'（必需）' if p.required else ''}"
                     for p in contract.outputs
@@ -170,7 +192,8 @@ class StepGuide:
 
         truncated = False
         for s in self.gate_sections():
-            chunk = "\n".join(self._lines[s.start - 1 : s.end])  # 已含标题行，不再重复加
+            # 已含标题行，不再重复加；并降级相对链接，避免诱导模型访问工作区外
+            chunk = neutralize_links("\n".join(self._lines[s.start - 1 : s.end]))
             if sum(len(p) for p in parts) + len(chunk) > budget:
                 truncated = True
                 continue
@@ -181,6 +204,32 @@ class StepGuide:
             text = text[:budget] + "\n…（超出预算被截断）"
             truncated = True
         return text, truncated
+
+    @staticmethod
+    def _render_inputs(contract: StepContract, ticket_dir: Path | None) -> str:
+        """渲染输入清单，并标注存在性；受保护输入单独标出（漂移即 fail-closed）。"""
+        lines = ["输入清单："]
+        found_any_missing = False
+        for port in contract.inputs:
+            tag = "必需" if port.required else "可选"
+            if port.kind == "ticket_file" and port.value:
+                if ticket_dir is None:
+                    status = ""
+                elif (Path(ticket_dir) / port.value).is_file():
+                    status = " —— 已存在"
+                else:
+                    status = " —— **本次不存在，忽略它，不要去找**"
+                    found_any_missing = True
+                name = port.value
+            else:
+                name = f"metadata:{port.value}" if port.kind == "metadata_pointer" else (
+                    port.value or port.id)
+                status = ""
+            protect = "（受保护：执行中漂移即 fail-closed）" if port.protected else ""
+            lines.append(f"  - [{tag}] {name}{protect}{status}")
+        if found_any_missing:
+            lines.append("  说明：标为「本次不存在」的输入**不需要寻找**，请直接基于现有信息产出。")
+        return "\n".join(lines)
 
     # ---- 报告 ----
 

@@ -1,11 +1,15 @@
 """命令行入口。
 
-Phase 1 命令（全部离线、零成本）：
+Phase 1（离线、零成本）：
     icode doctor            自检：能力与环境（不上网）
     icode handshake         契约握手：证明与控制面对齐
     icode steps             列出 gates.json 登记的步骤契约
     icode brief <step>      打印该步骤的门禁简报（渐进披露的强制层）
     icode outline <step>    打印该步骤文档的章节索引（渐进披露的懒加载入口）
+
+Phase 2（真模型）：
+    icode step-run --workspace <dir> --step plan --backend openai-compatible ...
+    icode task --fixture pycalc --backend openai-compatible ...
 """
 
 from __future__ import annotations
@@ -15,12 +19,14 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import ConfigError, load_settings, mask_secret, resolve_api_key
+from .config import ConfigError, load_settings, mask_secret, repo_root, resolve_api_key
 from .contracts import ContractError, ContractSet, check_steps_alignment
 from .control import ControlError, ControlPlane
 from .disclosure import disclosure_report, load_guide, summarize
 from .guard import Guard, Scope
 from .handshake import run_handshake
+
+REPO_ROOT = repo_root()
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -49,7 +55,42 @@ def _build_parser() -> argparse.ArgumentParser:
     p_outline = sub.add_parser("outline", help="打印步骤文档章节索引（懒加载入口）")
     p_outline.add_argument("step")
 
+    # ---- Phase 2：真模型运行 ----
+
+    p_step = sub.add_parser("step-run", help="用真模型按契约执行一个步骤（plan 等）")
+    p_step.add_argument("--workspace", required=True)
+    p_step.add_argument("--step", default="plan")
+    p_step.add_argument("--ticket-id", default="E2E-1")
+    p_step.add_argument("--requirement", default="")
+    _add_model_args(p_step)
+    _add_loop_args(p_step, default_turns=16)
+
+    p_task = sub.add_parser("task", help="在隔离的靶场副本上做能力验证（真模型 + 独立跑测试）")
+    p_task.add_argument("--fixture", default="pycalc", help="tests/fixtures 下的靶场名")
+    p_task.add_argument("--workspace", help="指定工作区（默认自动建临时隔离副本）")
+    p_task.add_argument("--task", default="", help="任务描述（默认新增 calc_gcd/calc_lcm）")
+    _add_model_args(p_task)
+    _add_loop_args(p_task)
+
     return parser
+
+
+def _add_model_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--backend", default="fake", choices=["fake", "openai-compatible"])
+    parser.add_argument("--model", default="", help="模型名（默认 MiniMax-M3）")
+    parser.add_argument("--base-url", default="", help="OpenAI 兼容端点")
+    parser.add_argument("--key-file", default="", help="仓外密钥文件路径（绝不入库）")
+    parser.add_argument("--no-proxy", action="store_true",
+                        help="强制直连，忽略 HTTP(S)_PROXY（托管环境的隧道代理常导致 502）")
+    parser.add_argument("--proxy", default="", help="只走指定代理")
+
+
+def _add_loop_args(parser: argparse.ArgumentParser, *, default_turns: int = 12) -> None:
+    parser.add_argument("--max-turns", type=int, default=default_turns)
+    parser.add_argument("--budget-tokens", type=int, default=0, help="0=只观测不设闸门")
+    parser.add_argument("--approve", action="store_true",
+                        help="交互式审批（默认拒绝一切需人工确认的动作）")
+    parser.add_argument("--quiet", action="store_true", help="不打印回合过程")
 
 
 def _load(args: argparse.Namespace) -> tuple[object, ContractSet]:
@@ -100,9 +141,23 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     try:
         key = resolve_api_key()
-        print(f"  [OK  ] 模型密钥可解析：{mask_secret(key)}（Phase 1 不使用）")
+        print(f"  [OK  ] 模型密钥可解析：{mask_secret(key)}（Phase 2 真模型后端使用）")
     except ConfigError:
-        print("  [SKIP] 模型密钥未配置（Phase 1 离线流程不需要）")
+        print("  [SKIP] 模型密钥未配置（离线流程不需要）")
+
+    from .config import llm_no_proxy, llm_proxy
+
+    if llm_no_proxy():
+        proxy_desc = "强制直连（ICODE_LLM_NO_PROXY）"
+    elif llm_proxy():
+        proxy_desc = f"显式代理 {llm_proxy()}"
+    else:
+        import urllib.request
+
+        env = urllib.request.getproxies()
+        proxy_desc = (env.get("https") or env.get("http") or "无") + "（跟随环境）"
+    print(f"  [INFO] 模型端点代理：{proxy_desc}")
+    print("         若经代理出现 502/407，用 --no-proxy 或 ICODE_LLM_NO_PROXY=1 绕过")
 
     print("\n结果：自检完成")
     return 0
@@ -168,12 +223,108 @@ def cmd_outline(args: argparse.Namespace) -> int:
     return 0
 
 
+def _build_runner(args: argparse.Namespace):
+    """构造 backend / approver / 预算 / 事件钩子。"""
+    from .approvals import CliApprover, DenyAllApprover
+    from .backends import build_backend
+    from .budget import Budget
+
+    backend = build_backend(
+        args.backend,
+        key_file=args.key_file or None,
+        model=args.model or None,
+        base_url=args.base_url or None,
+        proxy=args.proxy or None,
+        no_proxy=args.no_proxy,
+    )
+    approver = CliApprover() if args.approve else DenyAllApprover()
+    budget = Budget(expected_tokens=args.budget_tokens)
+    if hasattr(backend, "active_proxy"):
+        print(f"  代理：{backend.active_proxy()}")  # type: ignore[attr-defined]
+
+    def on_event(kind: str, payload: dict) -> None:
+        if args.quiet:
+            return
+        if kind == "assistant":
+            calls = payload.get("tool_calls") or []
+            text = (payload.get("content") or "").strip().replace("\n", " ")[:120]
+            print(f"  [回合 {payload.get('index')}] {text}"
+                  + (f"  → 工具 {calls}" if calls else ""))
+        elif kind == "tool_start":
+            print(f"      · 调用 {payload.get('tool')}")
+        elif kind == "tool_result":
+            print(f"        {'成功' if payload.get('ok') else '失败'}")
+        elif kind == "tool_denied":
+            print(f"        [拒绝] {payload.get('reason')}")
+        elif kind == "approval_requested":
+            print(f"        [待确认] {payload.get('reason')}")
+        elif kind == "operation_ambiguous":
+            print(f"        [副作用歧义] {payload.get('detail')}")
+
+    return backend, approver, budget, on_event
+
+
+def cmd_step_run(args: argparse.Namespace) -> int:
+    from .loop import LoopConfig
+    from .runner import run_contract_step
+
+    settings = load_settings(args.skill_root)
+    backend, approver, budget, on_event = _build_runner(args)
+    print(f"契约步骤执行：{args.step}（backend={getattr(backend, 'name', '?')}）")
+    report = run_contract_step(
+        settings, backend=backend, workspace=Path(args.workspace), step=args.step,
+        ticket_id=args.ticket_id, requirement=args.requirement,
+        approver=approver, loop_config=LoopConfig(max_turns=args.max_turns),
+        budget=budget, on_event=on_event,
+    )
+    print(report.render())
+    return 0 if report.ok else 1
+
+
+def cmd_task(args: argparse.Namespace) -> int:
+    import tempfile
+
+    from .loop import LoopConfig
+    from .runner import DEFAULT_TASK, prepare_workspace, run_task
+
+    settings = load_settings(args.skill_root)
+    backend, approver, budget, on_event = _build_runner(args)
+
+    if args.workspace:
+        workspace = Path(args.workspace)
+    else:
+        tmp = Path(tempfile.mkdtemp(prefix="icode_task_"))
+        workspace = prepare_workspace(args.fixture, tmp / args.fixture, repo_root=REPO_ROOT)
+        print(f"隔离工作区：{workspace}（靶场副本，与仓库基线隔离）")
+
+    print(f"能力验证（backend={getattr(backend, 'name', '?')}，独立跑测试取退出码）")
+    report = run_task(
+        settings, backend=backend, workspace=workspace,
+        task=args.task or DEFAULT_TASK, approver=approver,
+        loop_config=LoopConfig(max_turns=args.max_turns), budget=budget, on_event=on_event,
+    )
+    print(report.render())
+    print("成本：" + _budget_line(backend))
+    return 0 if report.ok else 1
+
+
+def _budget_line(backend) -> str:
+    usage = getattr(backend, "usage", None)
+    if usage is None:
+        return "n/a"
+    return (f"{usage.calls} 次调用 / {usage.total_tokens:,} tokens"
+            f"（prompt {usage.prompt_tokens:,} / completion {usage.completion_tokens:,}"
+            f" / cached {usage.cached_tokens:,}）")
+
+
 _COMMANDS = {
     "doctor": cmd_doctor,
     "handshake": cmd_handshake,
     "steps": cmd_steps,
     "brief": cmd_brief,
     "outline": cmd_outline,
+    "step-run": cmd_step_run,
+    "task": cmd_task,
 }
 
 
@@ -189,6 +340,13 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, ContractError, ControlError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001 - 后端/网络错误要给可读提示而非堆栈
+        from .backends import BackendError
+
+        if isinstance(exc, BackendError):
+            print(f"模型调用错误：{exc}", file=sys.stderr)
+            return 3
+        raise
 
 
 if __name__ == "__main__":  # pragma: no cover

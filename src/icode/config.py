@@ -151,5 +151,30 @@ def load_settings(skill_root: str | os.PathLike[str] | None = None) -> Settings:
     return Settings(skill_root=find_skill_root(skill_root))
 
 
+# ---------------------------------------------------------------------------
+# 模型端点代理策略
+#
+# 默认跟随环境变量（HTTP(S)_PROXY）—— 最不意外，企业代理场景能正常工作。
+# 但托管环境常注入内部隧道代理，它对模型端点可能直接 502，
+# 因此必须提供显式绕过的开关，而不是让人去猜。
+# ---------------------------------------------------------------------------
+
+
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def llm_no_proxy() -> bool:
+    """是否强制直连：环境变量优先，其次本地（gitignore）配置。"""
+    if _env_flag("ICODE_LLM_NO_PROXY"):
+        return True
+    return bool(_load_local_config().get("no_proxy", False))
+
+
+def llm_proxy() -> str | None:
+    """显式代理地址；未配置则返回 None（意为跟随环境）。"""
+    return os.environ.get("ICODE_LLM_PROXY") or _load_local_config().get("proxy") or None
+
+
 def dump_json(data: object) -> str:
     return json.dumps(data, ensure_ascii=False, indent=2, sort_keys=False)

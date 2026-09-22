@@ -99,6 +99,7 @@ class ContractSet:
         if not isinstance(em, dict):
             raise ContractError("gates.json 缺少 execution_model")
         self._em = em
+        self._sm = raw.get("state_machine") or {}
         self.schema_version = raw.get("schema_version")
         self._contracts: dict[str, StepContract] = {
             str(name): _to_contract(str(name), body)
@@ -150,6 +151,41 @@ class ContractSet:
 
     def finish_gate_steps(self) -> tuple[str, ...]:
         return tuple(str(s) for s in (self._em.get("finish_gate_steps") or ()))
+
+    # ---- 状态机（真源 gates.json 的 state_machine） ----
+
+    def status_for_step(self, step: str) -> str | None:
+        """步骤完成后应推进到的状态。
+
+        **从 `state_machine.gate_policy.step_by_target` 反向派生**，
+        不在本仓写死映射 —— 上游调整状态机时我们自动跟上。
+        """
+        policy = self._sm.get("gate_policy") or {}
+        for target, mapped in dict(policy.get("step_by_target") or {}).items():
+            if str(mapped) == step:
+                return str(target)
+        return None
+
+    def gated_targets(self) -> tuple[str, ...]:
+        policy = self._sm.get("gate_policy") or {}
+        return tuple(str(t) for t in (policy.get("gated_targets") or ()))
+
+    def completed_step_marker(self, step: str) -> str | None:
+        """状态推进时写入 `completed_steps` 的标记值。"""
+        policy = self._sm.get("gate_policy") or {}
+        target = self.status_for_step(step)
+        if target is None:
+            return None
+        mapping = dict(policy.get("completed_step_by_target") or {})
+        marker = mapping.get(target)
+        return str(marker) if marker is not None else None
+
+    def legal_transitions(self, frm: str) -> tuple[str, ...]:
+        out: list[str] = []
+        for item in self._sm.get("transitions") or ():
+            if isinstance(item, dict) and str(item.get("from")) == frm:
+                out.append(str(item.get("to")))
+        return tuple(out)
 
     def raw(self) -> dict:
         return self._em

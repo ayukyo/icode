@@ -56,6 +56,22 @@ class TestContractSet(unittest.TestCase):
         missing_docs = [i for i in issues if i.kind == "contract_without_doc"]
         self.assertEqual(missing_docs, [], f"契约登记的步骤缺少 steps/ 文档：{missing_docs}")
 
+    def test_步骤到状态的映射由真源派生(self) -> None:
+        """回归：不得在本仓写死 "步骤 -> 状态" 映射（上游改状态机时我们要自动跟上）。"""
+        self.assertEqual(self.contracts.status_for_step("plan"), "plan_done")
+        self.assertEqual(self.contracts.status_for_step("review"), "review_done")
+        self.assertIsNone(self.contracts.status_for_step("no_such_step"))
+        self.assertIn("plan_done", self.contracts.gated_targets())
+
+    def test_合法状态流转来自真源(self) -> None:
+        self.assertIn("plan_done", self.contracts.legal_transitions("init_in_progress"))
+        # 注意：上游允许 completed -> review_in_progress（重新审查），
+        # 所以这里不断言"终止态无出边"，只断言未知状态无出边。
+        self.assertEqual(self.contracts.legal_transitions("__no_such_state__"), ())
+
+    def test_状态推进标记也来自真源(self) -> None:
+        self.assertEqual(self.contracts.completed_step_marker("plan"), "1")
+
     def test_契约文件缺失时抛出明确错误(self) -> None:
         with self.assertRaises(ContractError):
             ContractSet.load(self.settings.gates_json.parent / "__not_exist__.json")
