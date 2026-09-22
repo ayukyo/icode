@@ -1,0 +1,249 @@
+"""控制面适配：把 `tools/icode_control.py` 包装成可编程接口。
+
+边界（不要越过）：
+- 控制面是**唯一写入口**；本模块不直接读写 `.ico_metadata.json` / `.ico_events.jsonl`。
+- 本模块只调用上游 CLI，**不修改子模块内任何文件**。
+- 事件幂等使用**确定性 request 键**（由逻辑坐标派生），重试沿用同一键，避免盲重放。
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Sequence
+
+from .config import Settings
+
+
+class ControlError(RuntimeError):
+    """控制面调用失败。"""
+
+    def __init__(self, message: str, *, returncode: int | None = None, stderr: str = "") -> None:
+        super().__init__(message)
+        self.returncode = returncode
+        self.stderr = stderr
+
+
+@dataclass(frozen=True)
+class ControlResult:
+    args: tuple[str, ...]
+    returncode: int
+    data: dict[str, Any]
+
+    @property
+    def ok(self) -> bool:
+        return self.returncode == 0 and bool(self.data.get("ok", True))
+
+
+def make_request(
+    ticket_id: str,
+    action: str,
+    *,
+    attempt: str | None = None,
+    boundary: str | None = None,
+    occurrence: int = 1,
+) -> str:
+    """派生**确定性** request 幂等键。
+
+    同一个逻辑动作重复调用得到同一个键（重试安全）；
+    同一动作的第 N 次真实发生用 occurrence 区分（避免 payload 冲突）。
+    """
+    parts = [ticket_id, action, attempt or "-", boundary or "-", str(occurrence)]
+    digest = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+    return f"{action}-{digest}"
+
+
+class ControlPlane:
+    """`icode_control.py` 的受控包装。"""
+
+    def __init__(self, settings: Settings, *, check: bool = True) -> None:
+        self.settings = settings
+        self.check = check
+
+    # ---- 底层调用 ----
+
+    def run(self, *args: str, check: bool | None = None) -> ControlResult:
+        script = self.settings.control_script
+        if not script.is_file():
+            raise ControlError(f"控制面脚本不存在：{script}")
+        cmd: Sequence[str] = [self.settings.python, str(script), *args]
+        proc = subprocess.run(  # noqa: S603 - 参数列表且 shell=False
+            list(cmd),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=self.settings.skill_subcommand_timeout,
+            shell=False,
+        )
+        data: dict[str, Any] = {}
+        text = (proc.stdout or "").strip()
+        if text:
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    data = parsed
+                else:
+                    data = {"value": parsed}
+            except json.JSONDecodeError:
+                data = {"raw": text}
+        result = ControlResult(args=tuple(args), returncode=proc.returncode, data=data)
+
+        strict = self.check if check is None else check
+        if strict and not result.ok:
+            detail = data.get("error") or data.get("message") or (proc.stderr or "").strip()[:400]
+            raise ControlError(
+                f"控制面命令失败：{' '.join(args)} :: {detail}",
+                returncode=proc.returncode,
+                stderr=proc.stderr or "",
+            )
+        return result
+
+    # ---- 工单 ----
+
+    def create(
+        self,
+        out_dir: Path | str,
+        *,
+        ticket_id: str,
+        requirement: str,
+        birth: str = "plan",
+        request: str | None = None,
+        metadata_json: str | None = None,
+    ) -> ControlResult:
+        args = [
+            "create",
+            "--dir", str(out_dir),
+            "--ticket-id", ticket_id,
+            "--requirement", requirement,
+            "--birth", birth,
+        ]
+        if metadata_json:
+            args += ["--metadata-json", metadata_json]
+        args += ["--request-id", request or make_request(ticket_id, "create")]
+        return self.run(*args)
+
+    def resolve_ticket(
+        self,
+        *,
+        out_dir: Path | str | None = None,
+        ticket: str | None = None,
+        latest: bool = False,
+        workspace: Path | str | None = None,
+    ) -> ControlResult:
+        args = ["resolve-ticket"]
+        if out_dir:
+            args += ["--dir", str(out_dir)]
+        elif ticket:
+            args += ["--ticket", ticket]
+        elif latest:
+            args += ["--latest"]
+        else:
+            raise ControlError("resolve-ticket 需要 --dir / --ticket / --latest 之一")
+        if workspace:
+            args += ["--workspace", str(workspace)]
+        return self.run(*args)
+
+    # ---- 步骤端口 ----
+
+    def step_start(self, out_dir: Path | str, step: str, *, ticket_id: str, request: str | None = None) -> str:
+        result = self.run(
+            "step", "--dir", str(out_dir), "--step", step, "--phase", "start",
+            "--request", request or make_request(ticket_id, f"step-{step}-start"),
+        )
+        attempt = result.data.get("attempt")
+        if not attempt:
+            raise ControlError(f"step start 未返回 attempt：{result.data}")
+        return str(attempt)
+
+    def step_check(
+        self,
+        out_dir: Path | str,
+        step: str,
+        attempt: str,
+        boundary: str,
+        *,
+        ticket_id: str,
+        occurrence: int = 1,
+        request: str | None = None,
+    ) -> ControlResult:
+        return self.run(
+            "step", "--dir", str(out_dir), "--step", step, "--phase", "check",
+            "--attempt", attempt, "--boundary", boundary,
+            "--request", request or make_request(
+                ticket_id, f"step-{step}-check", attempt=attempt,
+                boundary=boundary, occurrence=occurrence,
+            ),
+        )
+
+    def step_finish(
+        self,
+        out_dir: Path | str,
+        step: str,
+        attempt: str,
+        outcome: str,
+        *,
+        ticket_id: str,
+        evidence: Sequence[str] = (),
+        request: str | None = None,
+    ) -> ControlResult:
+        args = [
+            "step", "--dir", str(out_dir), "--step", step, "--phase", "finish",
+            "--attempt", attempt, "--outcome", outcome,
+        ]
+        for item in evidence:
+            args += ["--evidence", item]
+        args += ["--request", request or make_request(
+            ticket_id, f"step-{step}-finish", attempt=attempt)]
+        return self.run(*args)
+
+    def artifact(
+        self,
+        out_dir: Path | str,
+        step: str,
+        attempt: str,
+        path: Path | str,
+        *,
+        ticket_id: str,
+        scope: str = "ticket",
+        occurrence: int = 1,
+        request: str | None = None,
+    ) -> ControlResult:
+        return self.run(
+            "artifact", "--dir", str(out_dir), "--step", step, "--attempt", attempt,
+            "--path", str(path), "--scope", scope,
+            "--request", request or make_request(
+                ticket_id, f"artifact-{Path(path).name}", attempt=attempt, occurrence=occurrence,
+            ),
+        )
+
+    # ---- 状态流转 ----
+
+    def transition(self, out_dir: Path | str, to_status: str, *, ticket_id: str) -> ControlResult:
+        """状态流转。**不抛异常**：门禁拦截是正常结果，由调用方判定。"""
+        return self.run(
+            "transition", "--dir", str(out_dir), "--to", to_status,
+            "--request", make_request(ticket_id, f"transition-{to_status}"),
+            check=False,
+        )
+
+    # ---- 只读查询 ----
+
+    def trace(self, out_dir: Path | str, *, limit: int = 50) -> ControlResult:
+        return self.run("trace", "--dir", str(out_dir), "--limit", str(limit))
+
+    def validate(self, out_dir: Path | str) -> ControlResult:
+        return self.run("validate", "--dir", str(out_dir), check=False)
+
+    def check_outputs(self, out_dir: Path | str, step: str) -> ControlResult:
+        return self.run("check-outputs", "--dir", str(out_dir), "--step", step, check=False)
+
+    # ---- 副作用策略（只读） ----
+
+    def policy(self, *, opclass: str, failure: str, attempts: int) -> ControlResult:
+        return self.run(
+            "policy", "--opclass", opclass, "--failure", failure, "--attempts", str(attempts)
+        )

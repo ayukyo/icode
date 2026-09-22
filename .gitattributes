@@ -1,0 +1,60 @@
+# ===========================================================================
+# 跨平台换行统一
+#
+# 背景：本机（及很多开发机）全局 core.autocrlf=true，会把文本文件检出成 CRLF。
+#       对 Python 无害，但对 make / shebang / 脚本解析是致命的
+#       （demo/Makefile 一旦 CRLF，Unix 侧 make 直接报错）。
+# 策略：用 eol=lf 覆盖 core.autocrlf —— 入库与检出都保持 LF，三平台一致。
+# 参考：git help gitattributes；core.autocrlf 只对未声明 text 属性的文件生效，
+#       因此下面显式声明后 autocrlf 即被旁路。
+# ===========================================================================
+
+* text=auto eol=lf
+
+# --- 仓库自身元数据：改动会被 git 直接解析，必须 LF ---
+.gitattributes text eol=lf
+.gitmodules    text eol=lf
+.gitignore     text eol=lf
+
+# --- Python ---
+*.py     text eol=lf
+*.pyi    text eol=lf
+*.toml   text eol=lf
+*.cfg    text eol=lf
+*.ini    text eol=lf
+
+# --- 数据与文档 ---
+*.json   text eol=lf
+*.jsonl  text eol=lf
+*.md     text eol=lf
+*.txt    text eol=lf
+*.yml    text eol=lf
+*.yaml   text eol=lf
+
+# --- C 靶场（tests/fixtures/demo）：Makefile 必须 LF ---
+*.c         text eol=lf
+*.h         text eol=lf
+Makefile    text eol=lf
+Makefile.*  text eol=lf
+*.mk        text eol=lf
+
+# --- Windows 专用脚本（若将来引入）必须 CRLF，否则 cmd.exe 解析异常 ---
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# --- 二进制：禁止任何转换 ---
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.whl   binary
+*.exe   binary
+*.so    binary
+*.dll   binary
+*.dylib binary
+
+# 注：vendor/icode-skill 是独立子模块，其工作树换行由子模块自己的
+#     .gitattributes 决定，本文件不干预。

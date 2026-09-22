@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "icode-agent"
+version = "0.1.0"
+description = "ICODE 的自主 Agent 运行时：过程可审计，消费 icode-skill 的流程真源与控制面"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["agent", "icode", "audit", "workflow", "ai-coding"]
+
+# core 零第三方依赖：离线契约测试与基础运行不需要任何额外包
+dependencies = []
+
+[project.optional-dependencies]
+# 真模型接入（OpenAI 兼容 / Anthropic）——P2 使用
+llm = ["httpx>=0.27"]
+# 本地 WebUI —— P5 使用
+web = []
+dev = ["pytest>=7.4", "ruff>=0.5"]
+
+[project.scripts]
+icode = "icode.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
