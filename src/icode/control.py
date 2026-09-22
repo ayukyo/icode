@@ -256,12 +256,14 @@ class ControlPlane:
         opclass: str,
         input_desc: str,
         occurrence: int = 1,
+        request: str | None = None,
     ) -> ControlResult:
         """开始一个长动作。**不抛异常**：`ambiguous_side_effect` 必须由调用方处理。"""
         return self.run(
             "operation", "--dir", str(out_dir), "--phase", "start",
             "--name", name, "--opclass", opclass, "--input", input_desc,
-            "--request", make_request(ticket_id, f"op-{name}-start", occurrence=occurrence),
+            "--request", request or make_request(
+                ticket_id, f"op-{name}-start", occurrence=occurrence),
             check=False,
         )
 

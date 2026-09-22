@@ -265,7 +265,7 @@ def run_contract_step(
         # 若每个 loop 各建一个，occurrence 计数会从 1 重来，
         # 于是同一 request 键重复出现 → 控制面判定 ambiguous_side_effect → 命令被拒。
         # （实测踩过：补救回合里所有 run_command 都变成"副作用歧义，拒绝重放"。）
-        step_ops = OperationRecorder(cp, out_dir, ticket_id)
+        step_ops = OperationRecorder(cp, out_dir, ticket_id, scope=step)
 
         # 契约驱动的复检点 + 模型工作
         occurrence = 0

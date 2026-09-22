@@ -35,6 +35,16 @@ from icode.recovery import (
 from icode.tools import ToolContext, default_registry
 
 
+def _open_plan_step(cp, workspace: Path, ticket_id: str = "RC-1") -> Path:
+    """造一条"plan 已 start 但未 finish"的工单（步骤处于打开状态）。"""
+    from icode.handshake import next_out_dir
+
+    out_dir = next_out_dir(workspace)
+    cp.create(out_dir, ticket_id=ticket_id, requirement="韧性测试", birth="plan")
+    cp.step_start(out_dir, "plan", ticket_id=ticket_id)  # 故意不 finish
+    return out_dir
+
+
 def _count_events(out_dir: Path, event_type: str) -> int:
     path = out_dir / ".ico_events.jsonl"
     if not path.is_file():
@@ -113,14 +123,6 @@ class TestRecoveryDecision(unittest.TestCase):
     def tearDown(self) -> None:
         self._ws.__exit__(None, None, None)
 
-    def _open_plan_step(self, ticket_id: str = "RC-1") -> Path:
-        from icode.handshake import next_out_dir
-
-        out_dir = next_out_dir(self.ws)
-        self.cp.create(out_dir, ticket_id=ticket_id, requirement="韧性测试", birth="plan")
-        self.cp.step_start(out_dir, "plan", ticket_id=ticket_id)  # 故意不 finish
-        return out_dir
-
     def test_干净工单判定为_start_fresh(self) -> None:
         out_dir = make_finished_plan_ticket(self.settings, self.ws)
         decision = Recoverer(self.cp, out_dir, "EV-1").analyze("plan")
@@ -129,14 +131,14 @@ class TestRecoveryDecision(unittest.TestCase):
         self.assertFalse(decision.needs_human)
 
     def test_未闭合步骤判定为_resume(self) -> None:
-        out_dir = self._open_plan_step()
+        out_dir = _open_plan_step(self.cp, self.ws)
         decision = Recoverer(self.cp, out_dir, "RC-1").analyze("plan")
         self.assertEqual(decision.action, ACTION_RESUME)
         self.assertTrue(decision.open_steps)
         self.assertTrue(decision.can_resume)
 
     def test_未终结副作用判定为_verify_side_effect_first(self) -> None:
-        out_dir = self._open_plan_step("RC-2")
+        out_dir = _open_plan_step(self.cp, self.ws, "RC-2")
         rec = OperationRecorder(self.cp, out_dir, "RC-2")
         started = rec.start(name="write-report", opclass="managed_write", input_desc="x")
         self.assertTrue(started.can_execute)
@@ -150,7 +152,7 @@ class TestRecoveryDecision(unittest.TestCase):
         self.assertIn("禁止直接重放", decision.reason)
 
     def test_只读未闭合动作不阻断恢复(self) -> None:
-        out_dir = self._open_plan_step("RC-3")
+        out_dir = _open_plan_step(self.cp, self.ws, "RC-3")
         rec = OperationRecorder(self.cp, out_dir, "RC-3")
         rec.start(name="fetch-remote", opclass="read_only", input_desc="y")
         decision = Recoverer(self.cp, out_dir, "RC-3").analyze("plan")
@@ -176,7 +178,7 @@ class TestRecoveryDecision(unittest.TestCase):
 
     def test_检查点与事件链冲突时事件链优先(self) -> None:
         """检查点声称 attempt=X，但事件链上没有该未闭合步骤 → 丢弃检查点。"""
-        out_dir = self._open_plan_step("RC-4")
+        out_dir = _open_plan_step(self.cp, self.ws, "RC-4")
         stale = Checkpointer(out_dir, ticket_id="RC-4", step="plan", attempt="step-不存在的attempt")
         stale.save(turn_index=9, tool_calls=9, history=[])
         decision = Recoverer(self.cp, out_dir, "RC-4").analyze("plan", checkpointer=stale)
@@ -185,7 +187,7 @@ class TestRecoveryDecision(unittest.TestCase):
         self.assertFalse(stale.exists(), "失效检查点应被清除")
 
     def test_检查点归属其它工单时忽略(self) -> None:
-        out_dir = self._open_plan_step("RC-5")
+        out_dir = _open_plan_step(self.cp, self.ws, "RC-5")
         foreign = Checkpointer(out_dir, ticket_id="OTHER", step="plan", attempt="x")
         foreign.save(turn_index=1, tool_calls=0, history=[])
         decision = Recoverer(self.cp, out_dir, "RC-5").analyze("plan", checkpointer=foreign)
@@ -193,7 +195,7 @@ class TestRecoveryDecision(unittest.TestCase):
         self.assertTrue(any("其它工单" in w for w in decision.warnings), decision.warnings)
 
     def test_未决审批在恢复提示中被明确要求重新确认(self) -> None:
-        out_dir = self._open_plan_step("RC-6")
+        out_dir = _open_plan_step(self.cp, self.ws, "RC-6")
         ck = Checkpointer(out_dir, ticket_id="RC-6", step="plan", attempt="x")
         # 用真实 attempt 写检查点
         attempt = self.cp.step_start(out_dir, "plan", ticket_id="RC-6")
@@ -353,6 +355,33 @@ class TestCrashDrills(unittest.TestCase):
         after = recoverer.analyze("plan")
         self.assertNotEqual(after.action, ACTION_VERIFY_SIDE_EFFECT)
         self.assertTrue(after.can_resume)
+
+    def test_不同步骤的回执键不得冲突(self) -> None:
+        """回归：request 键若不含步骤，plan 与 review 的第 1 次同名工具调用
+        会生成同一个幂等键，而 payload（input_desc）不同 → 上游判冲突。
+        实测整条链路因此走不动（第二个步骤的所有命令被误拒）。
+        """
+        from icode.control import make_request
+        from icode.operations import OperationRecorder
+
+        # 键必须按 scope 区分
+        k1 = make_request("T-1", "op-plan-tool:write_file-start", occurrence=1)
+        k2 = make_request("T-1", "op-review-tool:write_file-start", occurrence=1)
+        self.assertNotEqual(k1, k2)
+
+        # 不同 scope 的同名工具调用， occurrence 相同 → request 键必须不同
+        out_dir = _open_plan_step(self.cp, self.ws, "T-1")
+        r1 = OperationRecorder(self.cp, out_dir, "T-1", scope="plan")
+        r2 = OperationRecorder(self.cp, out_dir, "T-1", scope="review")
+        a1 = r1.start(name="tool:write_file", opclass="managed_write", input_desc="plan 写")
+        self.assertTrue(a1.ok, a1.detail)
+        self.assertTrue(r1.finish(a1.attempt or "", outcome="success",
+                                  evidence="t", check_ref="ok"),
+                        "第一个动作应能正常终结")
+        # 注意：必须先终结第一个（上游按 name 拒绝同名未终结动作，这是正确行为）
+        a2 = r2.start(name="tool:write_file", opclass="managed_write", input_desc="review 写")
+        self.assertTrue(a2.ok, f"第二个步骤的副作用被误拒：{a2.detail}")
+        self.assertNotEqual(a1.attempt, a2.attempt)
 
     def test_演练2b_未核对时再次尝试同名副作用会被控制面拦下(self) -> None:
         """禁止盲重放的机制验证：同名副作用只有 start 无 finish，再 start 必须报歧义。"""
