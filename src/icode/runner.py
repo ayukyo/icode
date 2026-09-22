@@ -28,6 +28,7 @@ from pathlib import Path
 from .approvals import Approver, DenyAllApprover
 from .backends import Backend, Usage
 from .budget import Budget, BudgetTracker
+from .checkpoint import Checkpointer
 from .config import Settings
 from .contracts import ContractSet
 from .control import ControlPlane, make_request
@@ -36,6 +37,7 @@ from .guard import Guard, Scope
 from .loop import AgentLoop, LoopConfig, LoopResult
 from .operations import OperationRecorder
 from .reasoning import ReasoningGate, TraceRow, append_trace
+from .recovery import Recoverer
 from .tools import ToolContext, default_registry
 
 # 靶场默认位置（相对仓库根）
@@ -64,6 +66,8 @@ class StepReport:
     advance_status: str = ""
     advance_gates: list[str] = field(default_factory=list)
     finish_outcome: str = ""
+    checkpoint_path: str = ""
+    recovery_action: str = ""
     error: str = ""
 
     def add(self, name: str, ok: bool, detail: str = "") -> None:
@@ -97,6 +101,10 @@ class StepReport:
         if self.advance_status:
             gates = f"（门禁：{', '.join(self.advance_gates)}）" if self.advance_gates else ""
             lines += ["", f"【状态前移】{self.advance_status}{gates}"]
+        if self.recovery_action:
+            lines += ["", f"【恢复】{self.recovery_action}"]
+        if self.checkpoint_path:
+            lines += ["", f"【检查点】{self.checkpoint_path}"]
         if self.warnings:
             lines += ["", "【提示（不阻断）】"] + [f"  - {w}" for w in self.warnings]
         if self.error:
@@ -236,8 +244,13 @@ def run_contract_step(
         attempt = cp.step_start(out_dir, step, ticket_id=ticket_id)
         report.add("step start", bool(attempt), f"attempt={attempt}")
 
+        # 检查点：让中断后可恢复（不保存模型正文）
+        ckpt = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt=attempt)
+        report.checkpoint_path = str(ckpt.path)
+
         # 契约驱动的复检点 + 模型工作
         occurrence = 0
+        missing: list[str] = []
         for boundary in contract.required_checks:
             occurrence += 1
             res = cp.step_check(out_dir, step, attempt, boundary,
@@ -254,6 +267,7 @@ def run_contract_step(
                     ticket_id=ticket_id, step=step, brief=brief, contract=contract,
                     requirement=requirement or DEFAULT_TASK, approver=approver,
                     loop_config=loop_config, budget=budget, on_event=on_event,
+                    checkpointer=ckpt,
                 )
                 report.loop = loop
                 if not loop.ok:
@@ -264,60 +278,13 @@ def run_contract_step(
                         f"{'：' + loop.error if loop.error else ''}）；"
                         "本次仍以契约产物是否齐备作为判定依据"
                     )
-                # 登记本步骤声明的产物
-                missing: list[str] = []
-                for port in contract.outputs:
-                    if port.kind != "ticket_file" or not port.value:
-                        continue
-                    target = out_dir / port.value
-                    if not target.is_file():
-                        report.add(f"产物缺失 {port.value}", False, "模型未产出该文件")
-                        missing.append(port.value)
-                        continue
-                    art = cp.artifact(out_dir, step, attempt, port.value, ticket_id=ticket_id)
-                    report.add(f"产物登记 {port.value}", art.data.get("ok") is True, f"port={port.id}")
-                    report.artifacts.append(port.value)
+                missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
 
-        finish = cp.step_finish(
-            out_dir, step, attempt,
-            "success" if not missing else "failure",
-            ticket_id=ticket_id, evidence=["e2e:model-run"], check=False,
-        )
-        report.finish_outcome = str(finish.data.get("outcome") or "")
-        if finish.data.get("ok") is True:
-            report.add(f"step finish（outcome={report.finish_outcome}）", True,
-                       "回执被控制面接受")
-        else:
-            detail = str(finish.data.get("error") or "未知原因")
-            report.add("step finish（被门禁拒绝，如实上报）", False, detail[:160])
+        _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
+        if report.finish_outcome == "success":
+            ckpt.clear()  # 步骤已干净终结，检查点不再需要
 
-        # 推理 trace：如实写（能力不足就是 degraded）
-        gate = ReasoningGate.load(settings.skill_root / "mcp" / "reasoning-gate" / "gates.json")
-        row = gate.build_row(ticket_id, step)
-        if row is not None:
-            append_trace(out_dir / ".thinking_gate_trace.jsonl", [row])
-            report.reasoning_rows.append(row)
-            report.add("推理 trace 写入", True,
-                       f"result={row.result} attempted={row.attempted}")
-
-        # 状态前移（目标状态由 gates.json 的状态机派生；门禁可能拦截，如实上报）
-        target_status = contracts.status_for_step(step)
-        if target_status:
-            tr = cp.transition(out_dir, target_status, ticket_id=ticket_id)
-            if tr.data.get("ok") is True:
-                report.advance_status = "已前移"
-            else:
-                report.advance_status = "被门禁拦截（如实上报，未造假）"
-                report.advance_gates = [str(g.get("gate_id")) for g in (tr.data.get("failed_gates") or [])]
-
-        trace = cp.trace(out_dir)
-        report.trace = trace.data
-        report.add("事件链可读", bool(trace.data.get("ok")),
-                   f"event_count={trace.data.get('event_count')}")
-        report.add("无未闭合步骤/动作",
-                   not any([trace.data.get("open_steps"), trace.data.get("open_operations")]))
-
-        report.ok = all(ok for _, ok, _ in report.checkpoints) and not report.error
+        _finalize(settings, cp, out_dir, step, ticket_id, contracts, report)
         return report
 
     except Exception as exc:  # noqa: BLE001
@@ -325,13 +292,56 @@ def run_contract_step(
         return report
 
 
+def _register_outputs(
+    cp: ControlPlane, out_dir: Path, step: str, attempt: str, ticket_id: str,
+    contract, report: StepReport,
+) -> list[str]:
+    """登记本步骤声明的产物，返回缺失列表。"""
+    missing: list[str] = []
+    for port in contract.outputs:
+        if port.kind != "ticket_file" or not port.value:
+            continue
+        target = out_dir / port.value
+        if not target.is_file():
+            report.add(f"产物缺失 {port.value}", False, "模型未产出该文件")
+            missing.append(port.value)
+            continue
+        art = cp.artifact(out_dir, step, attempt, port.value, ticket_id=ticket_id)
+        report.add(f"产物登记 {port.value}", art.data.get("ok") is True, f"port={port.id}")
+        report.artifacts.append(port.value)
+    return missing
+
+
+def _finish_step(
+    cp: ControlPlane, out_dir: Path, step: str, attempt: str, ticket_id: str,
+    report: StepReport, missing: list[str],
+) -> None:
+    """终结回执。**由证据判定 outcome**，门禁拒绝则如实上报。"""
+    finish = cp.step_finish(
+        out_dir, step, attempt,
+        "success" if not missing else "failure",
+        ticket_id=ticket_id, evidence=["e2e:model-run"], check=False,
+    )
+    report.finish_outcome = str(finish.data.get("outcome") or "")
+    if finish.data.get("ok") is True:
+        report.add(f"step finish（outcome={report.finish_outcome}）", True, "回执被控制面接受")
+    else:
+        detail = str(finish.data.get("error") or "未知原因")
+        report.add("step finish（被门禁拒绝，如实上报）", False, detail[:160])
+
+
 def _run_agent(
     *, backend, workspace, out_dir, ticket_id, step, brief, contract, requirement,
-    approver, loop_config, budget, on_event,
+    approver, loop_config, budget, on_event, checkpointer=None, resume_context: str = "",
 ) -> LoopResult:
     registry = default_registry()
     guard = Guard(Scope(workspace_root=workspace))
     ctx = ToolContext(root=workspace)
+    on_turn = None
+    if checkpointer is not None:
+        def on_turn(turn_index: int, total_tool_calls: int, history: list[dict]) -> None:
+            checkpointer.save(turn_index=turn_index, tool_calls=total_tool_calls, history=history)
+
     loop = AgentLoop(
         backend=backend,
         registry=registry,
@@ -342,6 +352,7 @@ def _run_agent(
         budget=BudgetTracker(budget or Budget()),
         config=loop_config or LoopConfig(),
         on_event=on_event,
+        on_turn=on_turn,
     )
     outputs = [p.value for p in contract.outputs if p.kind == "ticket_file" and p.value]
     deliverable_lines = [
@@ -373,6 +384,8 @@ def _run_agent(
     )
     if requirement:
         system += f"\n【本次需求】\n{requirement}\n"
+    if resume_context:
+        system += f"\n{resume_context}\n"
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": (
@@ -381,6 +394,134 @@ def _run_agent(
         )},
     ]
     return loop.run(messages)
+
+
+def _finalize(
+    settings: Settings, cp: ControlPlane, out_dir: Path, step: str, ticket_id: str,
+    contracts, report: StepReport,
+) -> None:
+    """收尾三件事：如实写推理 trace、尝试状态前移、校验事件链。"""
+    gate = ReasoningGate.load(settings.skill_root / "mcp" / "reasoning-gate" / "gates.json")
+    row = gate.build_row(ticket_id, step)
+    if row is not None:
+        append_trace(out_dir / ".thinking_gate_trace.jsonl", [row])
+        report.reasoning_rows.append(row)
+        report.add("推理 trace 写入", True, f"result={row.result} attempted={row.attempted}")
+
+    target_status = contracts.status_for_step(step)
+    if target_status:
+        tr = cp.transition(out_dir, target_status, ticket_id=ticket_id)
+        if tr.data.get("ok") is True:
+            report.advance_status = "已前移"
+        else:
+            report.advance_status = "被门禁拦截（如实上报，未造假）"
+            report.advance_gates = [str(g.get("gate_id")) for g in (tr.data.get("failed_gates") or [])]
+
+    trace = cp.trace(out_dir)
+    report.trace = trace.data
+    report.add("事件链可读", bool(trace.data.get("ok")),
+               f"event_count={trace.data.get('event_count')}")
+    report.add("无未闭合步骤/动作",
+               not any([trace.data.get("open_steps"), trace.data.get("open_operations")]))
+    report.ok = all(ok for _, ok, _ in report.checkpoints) and not report.error
+
+
+def _open_attempt(decision) -> str | None:
+    """从恢复分析里取出未闭合步骤的 attempt。"""
+    for key, value in (decision.open_steps or {}).items():
+        if isinstance(value, dict) and value.get("attempt"):
+            return str(value["attempt"])
+        if isinstance(key, str) and key.startswith("step-"):
+            return key
+    return None
+
+
+def resume_contract_step(
+    settings: Settings,
+    *,
+    backend: Backend,
+    out_dir: Path,
+    step: str = "plan",
+    ticket_id: str = "",
+    approver: Approver | None = None,
+    loop_config: LoopConfig | None = None,
+    budget: Budget | None = None,
+    on_event=None,
+) -> StepReport:
+    """恢复一个被中断的步骤。
+
+    **不重放已完成动作**：决策来自事件链（`recover` 分析），上下文由事件链水合，
+    而不是回放模型聊天记录。存在未终结副作用时必须先人工核对真实状态 → fail-closed。
+    """
+    out_dir = Path(out_dir).resolve()
+    cp = ControlPlane(settings)
+    report = StepReport(step=step, ok=False, out_dir=str(out_dir))
+
+    try:
+        meta_path = out_dir / ".ico_metadata.json"
+        if not meta_path.is_file():
+            report.error = f"不是 v3 工单目录：{out_dir}"
+            return report
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        ticket_id = str(meta.get("ticket_id") or ticket_id)
+
+        contracts = ContractSet.load(settings.gates_json)
+        if not contracts.has(step):
+            report.error = f"契约未登记步骤 {step}"
+            return report
+        contract = contracts.step(step)
+
+        probe_ck = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt="")
+        decision = Recoverer(cp, out_dir, ticket_id).analyze(step, checkpointer=probe_ck)
+        report.recovery_action = decision.action
+        report.add(f"恢复分析（{decision.action}）", not decision.needs_human, decision.reason[:200])
+        if decision.needs_human:
+            report.error = (
+                f"恢复被阻断（{decision.action}）：{decision.reason} "
+                "请先人工核对真实状态，再显式补 finish 后重试"
+            )
+            return report
+
+        attempt = (
+            decision.checkpoint.attempt
+            if decision.checkpoint is not None and decision.checkpoint_valid
+            else None
+        ) or _open_attempt(decision)
+        if not attempt:
+            report.error = "无法确定未闭合步骤的 attempt，拒绝盲目恢复"
+            return report
+
+        checkpointer = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt=attempt)
+        report.checkpoint_path = str(checkpointer.path)
+
+        guide = load_guide(settings.steps_dir, step)
+        brief = ""
+        if guide is not None:
+            brief, _ = guide.mandatory_brief(contract, ticket_dir=out_dir)
+
+        requirement = str(meta.get("requirement") or DEFAULT_TASK)
+        loop = _run_agent(
+            backend=backend, workspace=out_dir.parent.parent, out_dir=out_dir,
+            ticket_id=ticket_id, step=step, brief=brief, contract=contract,
+            requirement=requirement, approver=approver, loop_config=loop_config,
+            budget=budget, on_event=on_event, checkpointer=checkpointer,
+            resume_context=decision.resume_brief(),
+        )
+        report.loop = loop
+        if not loop.ok:
+            report.warn(f"恢复后的回合循环未自然结束（stop_reason={loop.stop_reason}）")
+
+        missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
+        _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
+        if report.finish_outcome == "success":
+            checkpointer.clear()
+
+        _finalize(settings, cp, out_dir, step, ticket_id, contracts, report)
+        return report
+
+    except Exception as exc:  # noqa: BLE001
+        report.error = f"{type(exc).__name__}: {exc}"
+        return report
 
 
 def load_settings_for(_workspace: Path) -> Settings:

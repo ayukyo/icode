@@ -86,6 +86,7 @@ python scripts/preflight.py                                         # 提交前�
 | `icode task --fixture pycalc` | 在隔离靶场副本上做能力验证（独立跑测试取退出码） | 是 |
 | `icode evidence --ticket <dir> --dest <dir>` | 把工单导出为可独立校验的证据包 | 否 |
 | `icode verify-pack <包目录>` | 校验证据包（与包内 verify.py 同一套逻辑） | 否 |
+| `icode recover --ticket <dir> --step plan` | 分析被中断的工单该怎么继续（默认只分析） | 否 / `--resume` 时是 |
 
 安装为命令后可直接用 `icode`：
 
@@ -201,6 +202,54 @@ python verify.py <证据包目录>     # 0 通过 / 1 被篡改 / 2 用法错误
 2. `pack_digest` 需**外部渠道锚定**才具抗抵赖力，否则持有整包者可整体重签
 3. 权限模型是**应用层限制，不是内核级沙箱**
 4. 未接入 `sequential-thinking`，推理 trace 如实标 `degraded`，**不冒充已满足**
+
+---
+
+### Phase 4 —— 韧性与恢复（已完成）
+
+**双轨分工**：事件链管「发生了什么」（审计），检查点管「走到哪了」（恢复）。
+
+```bash
+PYTHONPATH=src python -m icode.cli recover --ticket <工单目录> --step plan   # 只分析，不动业务
+PYTHONPATH=src python -m icode.cli recover --ticket <dir> --step plan \
+    --resolve-attempt <attempt> --evidence "..." --check "人工核对：..."     # 核对后补回执
+PYTHONPATH=src python -m icode.cli recover --ticket <dir> --step plan --resume  # 判定可恢复后继续跑
+```
+
+恢复决策有四种结果：
+
+| 决策 | 含义 | 会自动继续吗 |
+|---|---|---|
+| `start_fresh` | 无未闭合项 | 可 |
+| `resume` | 有未闭合步骤 / 只有只读动作 | 可（从事件链水合上下文） |
+| `verify_side_effect_first` | 有**未终结的副作用** | ❌ **必须先人工核对真实状态** |
+| `blocked` | 事件链不可读或自相矛盾 | ❌ 停下，绝不猜 |
+
+两条不可妥协的原则（都有测试锁住）：
+
+1. **真源是事件链，不是检查点。** 两者冲突时事件链优先，检查点被丢弃。
+2. **检查点不保存模型正文。** 只存回合数 / 工具调用数 / 历史摘要；恢复时**从事件链重新水合上下文**，不回放聊天记录 —— 既不把模型正文落盘（安全），也不把对话当证据（审计）。
+
+#### 崩溃演练（roadmap 验收项）
+
+**① 写到一半中断**
+
+```text
+第一回合写产物 → 第二回合后端崩溃 → 检查点留下进度（turn_index ≥ 1）
+工单侧：step_finished=0、artifact_written=0（未误报完成）
+恢复分析 → resume（checkpoint 有效，attempt 一致）
+恢复后续跑 → 登记产物 → 复检 → 终结        outcome=success
+关键不变量：artifact_written=1、step_finished=1（**不重复登记**）
+```
+
+**② 副作用已发出但回执未知**
+
+```text
+开始一个 external_side_effect 动作 → 进程死亡（无 finish）
+恢复分析 → verify_side_effect_first，needs_human=True，拒绝自动继续
+人工核对真实状态 → resolve_open_operation() 补 finish（上游规定的正确收尾）
+再分析 → 不再阻断
+```
 
 ---
 

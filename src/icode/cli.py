@@ -83,6 +83,20 @@ def _build_parser() -> argparse.ArgumentParser:
     p_evv = sub.add_parser("verify-pack", help="校验证据包（使用包内同一套逻辑）")
     p_evv.add_argument("pack")
 
+    # ---- Phase 4：韧性 ----
+
+    p_rec = sub.add_parser("recover", help="分析被中断的工单该怎么继续（默认只分析，不执行业务动作）")
+    p_rec.add_argument("--ticket", required=True, help="v3 工单目录")
+    p_rec.add_argument("--step", default="plan")
+    p_rec.add_argument("--resolve-attempt", help="人工核对真实状态后，为该 attempt 补 operation finish")
+    p_rec.add_argument("--outcome", default="success", help="补 finish 时的结果")
+    p_rec.add_argument("--evidence", default="", help="补 finish 的证据引用")
+    p_rec.add_argument("--check", default="", help="补 finish 的核对说明")
+    p_rec.add_argument("--resume", action="store_true",
+                       help="判定可恢复后，立即用真模型继续执行该步骤")
+    _add_model_args(p_rec)
+    _add_loop_args(p_rec, default_turns=16)
+
     return parser
 
 
@@ -376,6 +390,60 @@ def cmd_verify_pack(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recover(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from .checkpoint import Checkpointer
+    from .recovery import Recoverer
+
+    settings = load_settings(args.skill_root)
+    out_dir = Path(args.ticket).resolve()
+    meta_path = out_dir / ".ico_metadata.json"
+    if not meta_path.is_file():
+        print(f"不是 v3 工单目录（缺 .ico_metadata.json）：{out_dir}", file=sys.stderr)
+        return 2
+    ticket_id = str(_json.loads(meta_path.read_text(encoding="utf-8")).get("ticket_id") or "")
+
+    cp = ControlPlane(settings)
+    ck = Checkpointer(out_dir, ticket_id=ticket_id, step=args.step, attempt="")
+    recoverer = Recoverer(cp, out_dir, ticket_id)
+
+    if args.resolve_attempt:
+        ok = recoverer.resolve_open_operation(
+            args.resolve_attempt, outcome=args.outcome,
+            evidence=args.evidence or "manual-verify", check_ref=args.check or "人工核对",
+        )
+        print(f"  补 finish：{'成功' if ok else '失败'}（attempt={args.resolve_attempt}）")
+        print()
+
+    decision = recoverer.analyze(args.step, checkpointer=ck)
+    print(decision.render())
+    print()
+    print(decision.resume_brief())
+
+    if not args.resume:
+        if decision.needs_human:
+            print("\n（存在需人工处理项：未自动继续。核对后可用 --resolve-attempt 补回执，再 --resume）")
+        return 0 if not decision.needs_human else 1
+
+    if decision.needs_human:
+        print("\n拒绝自动恢复：请先人工核对真实状态。", file=sys.stderr)
+        return 1
+
+    from .loop import LoopConfig
+    from .runner import resume_contract_step
+
+    backend, approver, budget, on_event = _build_runner(args)
+    print(f"\n恢复执行（backend={getattr(backend, 'name', '?')}）")
+    report = resume_contract_step(
+        settings, backend=backend, out_dir=out_dir, step=args.step, ticket_id=ticket_id,
+        approver=approver, loop_config=LoopConfig(max_turns=args.max_turns),
+        budget=budget, on_event=on_event,
+    )
+    print(report.render())
+    return 0 if report.ok else 1
+
+
 _COMMANDS = {
     "doctor": cmd_doctor,
     "handshake": cmd_handshake,
@@ -386,6 +454,7 @@ _COMMANDS = {
     "task": cmd_task,
     "evidence": cmd_evidence,
     "verify-pack": cmd_verify_pack,
+    "recover": cmd_recover,
 }
 
 

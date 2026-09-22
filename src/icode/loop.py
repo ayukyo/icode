@@ -74,6 +74,7 @@ class LoopResult:
 
 
 EventHook = Callable[[str, dict], None]
+TurnHook = Callable[[int, int, list[dict]], None]  # (turn_index, tool_calls, history)
 
 
 class AgentLoop:
@@ -91,6 +92,7 @@ class AgentLoop:
         budget: BudgetTracker | None = None,
         config: LoopConfig | None = None,
         on_event: EventHook | None = None,
+        on_turn: TurnHook | None = None,
     ) -> None:
         self.backend = backend
         self.registry = registry
@@ -101,6 +103,8 @@ class AgentLoop:
         self.budget = budget or BudgetTracker()
         self.config = config or LoopConfig()
         self.on_event = on_event or (lambda kind, payload: None)
+        # 每个回合结束后回调（用于写检查点；不得在此抛错中断循环）
+        self.on_turn = on_turn
 
     # ---- 权限判定 ----
 
@@ -190,6 +194,7 @@ class AgentLoop:
         turns: list[Turn] = []
         stop_reason = "max_turns"
         error = ""
+        total_tool_calls = 0
 
         for index in range(1, self.config.max_turns + 1):
             if self.budget.verdict == "over_budget":
@@ -218,16 +223,31 @@ class AgentLoop:
             if not assistant.has_tool_calls:
                 turns.append(turn)
                 stop_reason = "no_tool_calls"
+                _notify_turn(self.on_turn, index, total_tool_calls, history)
                 return LoopResult(True, stop_reason, turns, history, self.budget.usage)
 
             for call in assistant.tool_calls[: self.config.max_tool_calls_per_turn]:
                 inv = self._invoke(call.name, dict(call.arguments or {}))
                 turn.invocations.append(inv)
                 history.append(_tool_message(call.id, inv))
+            total_tool_calls += len(turn.invocations)
             turns.append(turn)
+            _notify_turn(self.on_turn, index, total_tool_calls, history)
 
         return LoopResult(stop_reason == "no_tool_calls", stop_reason, turns, history,
                           self.budget.usage, error)
+
+
+def _notify_turn(
+    hook: TurnHook | None, turn_index: int, total_tool_calls: int, history: list[dict]
+) -> None:
+    """回合结束回调。**钩子异常不得中断循环**——检查点写失败不该毁掉整次运行。"""
+    if hook is None:
+        return
+    try:
+        hook(turn_index, total_tool_calls, history)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _assistant_message(msg: AssistantMessage) -> dict:

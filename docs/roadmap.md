@@ -177,13 +177,35 @@
 
 ---
 
-### Phase 4 —— 韧性与恢复
+### Phase 4 —— 韧性与恢复（**已完成**，2026-09-23）
+
+**双轨分工**：事件链管"发生了什么"（审计），检查点管"走到哪了"（恢复）。
 
 | 项 | 内容 |
 |---|---|
-| 检查点 | 引入 checkpointer，与哈希事件链形成**双轨**：事件链管"发生了什么"（审计），检查点管"如何恢复"（韧性） |
-| 崩溃恢复 | 中断后按 `open_steps / open_operations / open_agents` 恢复，**副作用操作先核对真实状态再续** |
-| 验收 | 崩溃恢复演练通过（含"写到一半中断"与"副作用已发出但回执未知"两类场景） |
+| **检查点** | `.agent_checkpoint.json`，**原子写**（临时文件 + `os.replace`）；只存回合数 / 工具调用数 / 历史摘要 / 未决审批计数 |
+| **不保存模型正文** | 安全底线：模型对话内容绝不落盘；恢复时**从事件链重新水合上下文**，不回放聊天记录 |
+| **真源优先级** | 检查点与事件链冲突时**事件链优先**，检查点被丢弃并告警 |
+| **恢复决策** | `start_fresh` / `resume` / `verify_side_effect_first` / `blocked`；由 `trace` 的 `open_steps`·`open_operations`·`open_agents` 投影判定 |
+| **副作用 fail-closed** | 有未终结副作用时**拒绝自动恢复**，要求先核对真实状态，再用 `resolve_open_operation()` 补 finish（上游规定的正确收尾） |
+| **未决审批** | `pending_approvals > 0` 时明确提示"不会自动放行"，必须重新人工确认 |
+| 类别未知时 | **按副作用处理**（fail-safe）——误判为只读会导致重放副作用 |
+| 验收 | 两类崩溃演练均通过（见下） |
+
+**崩溃演练实测**：
+
+```text
+① 写到一半中断
+   第一回合写产物 → 第二回合后端崩溃 → 检查点留下进度
+   工单侧：step_finished=0 / artifact_written=0（未误报完成）
+   恢复分析 → resume → 续跑 → 登记产物 → 复检 → finish success
+   不变量：artifact_written=1、step_finished=1（不重复登记）
+
+② 副作用已发出但回执未知
+   开一个 external_side_effect 动作 → 进程死亡（无 finish）
+   恢复分析 → verify_side_effect_first（needs_human=True，拒绝自动继续）
+   人工核对 → resolve_open_operation() 补 finish → 再分析不再阻断
+```
 
 ---
 
