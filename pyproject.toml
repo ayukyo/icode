@@ -27,6 +27,14 @@ icode = "icode.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+# WebUI 资源必须随包分发（页面、脚本、样式；无 CDN / 无内联脚本）
+icode = ["web_assets/*"]
+
+[project.urls]
+Homepage = "https://github.com/ayukyo/icode"
+Repository = "https://github.com/ayukyo/icode"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

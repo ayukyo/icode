@@ -24,14 +24,49 @@ OPCLASS_DESTRUCTIVE = "destructive_hardware"
 
 @dataclass
 class ToolContext:
-    """工具运行上下文。"""
+    """工具运行上下文。
+
+    `sandbox` 为可选的隔离后端（见 `isolation.py`）。**没有可用后端时它是 None**，
+    此时执行类工具走的是"应用层限制"，元数据里会如实标注，不得宣称沙箱。
+    """
 
     root: Path
     output_limit: int = DEFAULT_OUTPUT_LIMIT
+    sandbox: object | None = None
 
     def resolve(self, path: str) -> Path:
         p = Path(path)
         return p if p.is_absolute() else (self.root / p)
+
+    # ---- 隔离 ----
+
+    def needs_real_isolation(self) -> bool:
+        return bool(getattr(self.sandbox, "is_real_isolation", False))
+
+    def isolation_label(self) -> str:
+        if self.sandbox is None:
+            return "应用层限制，非内核级沙箱"
+        describe = getattr(self.sandbox, "describe", None)
+        if callable(describe):
+            return str(describe().get("claim") or describe().get("backend") or "未知")
+        return "应用层限制，非内核级沙箱"
+
+    def wrap_command(self, argv: list[str], *, network: bool = False) -> list[str]:
+        """把命令包进沙箱（没有后端时原样返回）。"""
+        wrap = getattr(self.sandbox, "wrap", None)
+        if not callable(wrap):
+            return list(argv)
+        try:
+            return list(wrap(argv, workspace=self.root, network=network))
+        except Exception:  # noqa: BLE001 - 隔离失败时必须退回安全侧：不执行
+            raise IsolationUnavailable(
+                f"隔离后端 {getattr(self.sandbox, 'name', '?')} 包装命令失败；"
+                "为避免在无隔离状态下执行，已拒绝该命令"
+            ) from None
+
+
+class IsolationUnavailable(RuntimeError):
+    """隔离后端不可用/包装失败。**此时拒绝执行，而不是降级执行。**"""
 
 
 @dataclass

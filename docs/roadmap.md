@@ -209,19 +209,39 @@
 
 ---
 
-### Phase 5 —— 隔离升级与分发
+### Phase 5 —— 隔离升级 · WebUI · 分发（**已完成**，2026-09-23）
 
 | 项 | 内容 |
 |---|---|
-| 沙箱升级 | 评估并落地真正的隔离（Windows: Job Object / AppContainer 或容器；Linux: bwrap；macOS: Seatbelt）。**这是 P1 原则的唯一真正保障** |
-| 落不了怎么办 | 若某平台确实无法落地，**诚实标注该平台仍是"应用层限制"**，不宣称沙箱 |
-| **WebUI** | 二期形态（loopback + SSE），复用 core，不动核心逻辑。**唯一需要新写的是 `WebApprover`**（审批协议的第 4 个实现），core 其余部分一行不改 |
-| **UI 层三条硬边界**（D14） | ① **不做状态第二写入者**——状态推进只能过 `ControlPlane`，UI 自己写 metadata 会让事件链失效<br>② **不收路径 / 命令 / shell**——只收「工单 ID + 动作枚举 + revision」<br>③ **挂起审批重启后不自动放行**——必须 fail-closed，重启后显示"待重新确认" |
-| **命名划线** | 上游有 `/icode ui`（宿主的工单浏览器），我们也会有 `icode ui`（我们的执行前端）。**两者不是一回事，必须明确区分**，避免用户混淆 |
-| 分发 | `pipx install icode-agent` / `uv tool install` |
+| **隔离能力层** | `isolation.py`：`probe_capabilities()` **实测**本机后端（bwrap / sandbox-exec / docker / podman），`select_sandbox()` 按结果选择 |
+| 平台落地 | Linux → `bwrap`（文件系统 + 默认断网 + PID/IPC/UTS）；macOS → `sandbox-exec` Seatbelt profile；容器 → `docker`/`podman`（仅挂工作区 + `--network none`） |
+| **Windows** | **未实现内核级隔离**（Job Object 只限资源不限文件/网络；AppContainer 需 Win32 组包）→ **如实报告「应用层限制，非内核级沙箱」** |
+| 三条铁律 | ①能力靠探测不靠假设 ②没落地不许宣称沙箱 ③**隔离包装失败时拒绝执行，不降级执行** |
+| 接入方式 | `--isolation auto|none|bwrap|docker|podman`；`doctor` 打印能力与诚实标注；执行结果 meta 带 `isolation` / `real_isolation` |
+| **WebUI** | `webui.py` + `web_assets/`：唯一监听 `127.0.0.1`（无 `--host`）；`WebApprover` 是审批协议的第 4 个实现，core 不改 |
+| **三条硬边界** | ①不做状态第二写入者（静态断言不 import 控制面）②不收路径/命令/shell（未知字段 400）③重启后不自动放行（挂起项只在内存） |
+| **命名划线** | 上游 `/icode ui` 是宿主的工单浏览器；本仓叫 **`webui`** 而非 `ui`，避免混淆 |
+| 安全细节 | 同源 Cookie（`SameSite=Strict`）、拒绝跨源 Origin、严格 JSON + 64KiB、无 CDN、无内联脚本、不用 `innerHTML` |
+| 分发 | `console_scripts` 入口 `icode`；`package-data` 含 `web_assets/*`；`pipx` / `uv tool install` |
 
-> ⚠️ **长期风险提示**：Phase 5 之前，P1（门禁不可绕过）**始终只有应用层保障**。
-> 这是本路线图最大的风险敞口，必须在 README 与对外材料中持续明示，不得含糊。
+**实测**：
+
+```text
+隔离（本机 Windows）：[WARN] 应用层限制，非内核级沙箱 / 后端=none / 无可探测后端
+WebUI 边界（真实 HTTP）：GET / →200（下发 Cookie）；无 Cookie 读 →403；带 argv 字段 →400；
+                        跨源 Origin →403；未知 approval_id →409；错误 Content-Type →400
+WebUI 闭环：网页放行 → 200，approver 返回 True
+重启后挂起项：[]（不会自动放行）
+分发：pip install --target → 包发现正常、web_assets 随包分发、bin/icode.exe 生成、
+      从仓库外可执行、11 个子命令齐全
+```
+
+**顺带修**：`--skill-root` 原本只能写在子命令**之前**；现在通过 `parents` 让它在前后都能用
+（用户和我自己都自然地写到了后面）。
+
+**未验证项（如实记录）**：本沙箱禁止创建新 venv（`python -m venv` 返回 0 但目录不落盘），
+因此 `pipx install` 的端到端未能在本环境验证；已用 `pip install --target` 覆盖到包发现、
+资源分发与控制台脚本层面。
 
 ---
 

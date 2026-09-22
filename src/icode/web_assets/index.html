@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICODE 审批台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<h1>ICODE 审批台</h1>
+<p class="note">
+  本页只做一件事：把「需要你确认的动作」显示出来，并回传放行/拒绝。
+  它<strong>不写入工单状态</strong>、<strong>不接受任何路径或命令</strong>；
+  关闭页面或重启进程后，挂起项一律作废（按拒绝处理）。
+</p>
+
+<section>
+  <h2>待你确认 <span id="pending-count" class="pill">0</span></h2>
+  <ul id="pending" class="list"></ul>
+  <p id="pending-empty" class="empty">当前没有待确认项。</p>
+</section>
+
+<section>
+  <h2>最近决定</h2>
+  <ul id="history" class="list history"></ul>
+  <p id="history-empty" class="empty">暂无记录。</p>
+</section>
+
+<p id="status" class="status">连接中…</p>
+<script src="/static/app.js"></script>
+</body>
+</html>

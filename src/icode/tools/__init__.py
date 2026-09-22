@@ -2,6 +2,7 @@
 
 from .base import (
     DEFAULT_OUTPUT_LIMIT,
+    IsolationUnavailable,
     OPCLASS_DESTRUCTIVE,
     OPCLASS_EXTERNAL,
     OPCLASS_MANAGED_WRITE,
@@ -15,6 +16,7 @@ from .builtin import default_registry
 
 __all__ = [
     "DEFAULT_OUTPUT_LIMIT",
+    "IsolationUnavailable",
     "OPCLASS_DESTRUCTIVE",
     "OPCLASS_EXTERNAL",
     "OPCLASS_MANAGED_WRITE",

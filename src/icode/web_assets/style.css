@@ -1,0 +1,85 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1f1f1f;
+  --muted: #5f5e5a;
+  --line: rgba(0, 0, 0, 0.15);
+  --card: #f7f6f3;
+  --ok: #27500a;
+  --ok-bg: #eaf3de;
+  --no: #791f1f;
+  --no-bg: #fcebeb;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0 auto;
+  max-width: 760px;
+  padding: 24px 20px 48px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+h1 { font-size: 18px; font-weight: 500; margin: 0 0 8px; }
+h2 { font-size: 14px; font-weight: 500; margin: 24px 0 8px; }
+
+.note { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+.empty { color: var(--muted); font-size: 13px; }
+.status { color: var(--muted); font-size: 12px; margin-top: 24px; }
+
+section { border-top: 1px solid var(--line); }
+
+.list { list-style: none; margin: 0; padding: 0; }
+
+.list > li {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 8px;
+  background: var(--card);
+}
+
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.pill {
+  font-size: 12px;
+  border-radius: 999px;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+}
+.pill.dim { color: var(--muted); }
+.pill.ok { color: var(--ok); background: var(--ok-bg); border-color: var(--ok); }
+.pill.no { color: var(--no); background: var(--no-bg); border-color: var(--no); }
+
+.reason { margin-top: 6px; }
+.dim { color: var(--muted); }
+
+.args {
+  margin: 8px 0 0;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.actions { margin-top: 10px; display: flex; gap: 8px; }
+
+button {
+  font: inherit;
+  padding: 4px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  cursor: pointer;
+}
+button:disabled { opacity: 0.5; cursor: default; }
+button.allow { border-color: var(--ok); color: var(--ok); }
+button.deny { border-color: var(--no); color: var(--no); }

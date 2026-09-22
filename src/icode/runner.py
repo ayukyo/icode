@@ -34,6 +34,7 @@ from .contracts import ContractSet
 from .control import ControlPlane, make_request
 from .disclosure import load_guide
 from .guard import Guard, Scope
+from .isolation import NoIsolation, Sandbox, select_sandbox
 from .loop import AgentLoop, LoopConfig, LoopResult
 from .operations import OperationRecorder
 from .reasoning import ReasoningGate, TraceRow, append_trace
@@ -330,13 +331,19 @@ def _finish_step(
         report.add("step finish（被门禁拒绝，如实上报）", False, detail[:160])
 
 
+def _make_ctx(workspace: Path, sandbox: Sandbox | None) -> ToolContext:
+    """构造工具上下文；未显式指定时按本机实测能力自动选隔离后端。"""
+    return ToolContext(root=workspace, sandbox=sandbox if sandbox is not None else select_sandbox())
+
+
 def _run_agent(
     *, backend, workspace, out_dir, ticket_id, step, brief, contract, requirement,
     approver, loop_config, budget, on_event, checkpointer=None, resume_context: str = "",
+    sandbox: Sandbox | None = None,
 ) -> LoopResult:
     registry = default_registry()
     guard = Guard(Scope(workspace_root=workspace))
-    ctx = ToolContext(root=workspace)
+    ctx = _make_ctx(workspace, sandbox)
     on_turn = None
     if checkpointer is not None:
         def on_turn(turn_index: int, total_tool_calls: int, history: list[dict]) -> None:
@@ -546,6 +553,7 @@ def run_task(
     loop_config: LoopConfig | None = None,
     budget: Budget | None = None,
     on_event=None,
+    sandbox: Sandbox | None = None,
 ) -> TaskReport:
     """在隔离工作区用真模型完成一个编码任务，并用**独立跑测试**的退出码验收。"""
     workspace = Path(workspace).resolve()
@@ -553,7 +561,7 @@ def run_task(
 
     registry = default_registry()
     guard = Guard(Scope(workspace_root=workspace))
-    ctx = ToolContext(root=workspace)
+    ctx = _make_ctx(workspace, sandbox)
     loop = AgentLoop(
         backend=backend, registry=registry, guard=guard, ctx=ctx,
         approver=approver or DenyAllApprover(),

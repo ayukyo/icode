@@ -30,6 +30,8 @@ REPO_ROOT = repo_root()
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    common = argparse.ArgumentParser(add_help=False)
+    _add_common_args(common)
     parser = argparse.ArgumentParser(
         prog="icode",
         description="ICODE 自主 Agent 运行时（过程可审计）",
@@ -38,26 +40,30 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skill-root", help="icode-skill 源仓路径（默认自动探测）")
     sub = parser.add_subparsers(dest="command")
 
-    p_doc = sub.add_parser("doctor", help="自检环境与能力（离线）")
+    def _add(name: str, **kw):
+        """统一挂载公共参数，保证 --skill-root 位置无关。"""
+        return sub.add_parser(name, parents=[common], **kw)
+
+    p_doc = _add("doctor", help="自检环境与能力（离线）")
     p_doc.add_argument("--workspace", default=".", help="工作区根，用于权限模型自检")
 
-    p_hs = sub.add_parser("handshake", help="离线契约握手（不调用模型、不联网）")
+    p_hs = _add("handshake", help="离线契约握手（不调用模型、不联网）")
     p_hs.add_argument("--workspace", required=True, help="握手工程根（工单将落在其 .icode_output/ 下）")
     p_hs.add_argument("--step", default="plan", help="要握手的步骤（默认 plan）")
     p_hs.add_argument("--ticket-id", default="HANDSHAKE-1")
     p_hs.add_argument("--requirement", default="离线契约握手：验证 Agent 与控制面的步骤/边界/产物契约对齐")
 
-    sub.add_parser("steps", help="列出 gates.json 登记的步骤契约")
+    _add("steps", help="列出 gates.json 登记的步骤契约")
 
-    p_brief = sub.add_parser("brief", help="打印步骤的门禁简报（强制注入层）")
+    p_brief = _add("brief", help="打印步骤的门禁简报（强制注入层）")
     p_brief.add_argument("step")
 
-    p_outline = sub.add_parser("outline", help="打印步骤文档章节索引（懒加载入口）")
+    p_outline = _add("outline", help="打印步骤文档章节索引（懒加载入口）")
     p_outline.add_argument("step")
 
     # ---- Phase 2：真模型运行 ----
 
-    p_step = sub.add_parser("step-run", help="用真模型按契约执行一个步骤（plan 等）")
+    p_step = _add("step-run", help="用真模型按契约执行一个步骤（plan 等）")
     p_step.add_argument("--workspace", required=True)
     p_step.add_argument("--step", default="plan")
     p_step.add_argument("--ticket-id", default="E2E-1")
@@ -65,7 +71,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_model_args(p_step)
     _add_loop_args(p_step, default_turns=16)
 
-    p_task = sub.add_parser("task", help="在隔离的靶场副本上做能力验证（真模型 + 独立跑测试）")
+    p_task = _add("task", help="在隔离的靶场副本上做能力验证（真模型 + 独立跑测试）")
     p_task.add_argument("--fixture", default="pycalc", help="tests/fixtures 下的靶场名")
     p_task.add_argument("--workspace", help="指定工作区（默认自动建临时隔离副本）")
     p_task.add_argument("--task", default="", help="任务描述（默认新增 calc_gcd/calc_lcm）")
@@ -74,18 +80,18 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ---- Phase 3：证据包 ----
 
-    p_ev = sub.add_parser("evidence", help="把工单导出为可独立校验的证据包")
+    p_ev = _add("evidence", help="把工单导出为可独立校验的证据包")
     p_ev.add_argument("--ticket", required=True, help="v3 工单目录")
     p_ev.add_argument("--dest", required=True, help="证据包输出目录")
     p_ev.add_argument("--receipt-from", help="在该目录独立跑 python -m unittest 并把退出码写入回执")
     p_ev.add_argument("--receipt", action="append", default=[], help="额外回执 JSON 文件（可重复）")
 
-    p_evv = sub.add_parser("verify-pack", help="校验证据包（使用包内同一套逻辑）")
+    p_evv = _add("verify-pack", help="校验证据包（使用包内同一套逻辑）")
     p_evv.add_argument("pack")
 
     # ---- Phase 4：韧性 ----
 
-    p_rec = sub.add_parser("recover", help="分析被中断的工单该怎么继续（默认只分析，不执行业务动作）")
+    p_rec = _add("recover", help="分析被中断的工单该怎么继续（默认只分析，不执行业务动作）")
     p_rec.add_argument("--ticket", required=True, help="v3 工单目录")
     p_rec.add_argument("--step", default="plan")
     p_rec.add_argument("--resolve-attempt", help="人工核对真实状态后，为该 attempt 补 operation finish")
@@ -97,7 +103,28 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_model_args(p_rec)
     _add_loop_args(p_rec, default_turns=16)
 
+    # ---- Phase 5：WebUI ----
+    # 命名划线（D13 补充）：上游的 `/icode ui` 是**宿主的工单浏览器**，
+    # 本命令是我们的**执行前端**。为免混淆，本仓用 `webui` 而不是 `ui`。
+
+    p_ui = _add("webui", help="启动本地审批台（仅监听 127.0.0.1）")
+    p_ui.add_argument("--port", type=int, default=0, help="0 = 由系统分配空闲端口")
+    p_ui.add_argument("--no-browser", action="store_true")
+    p_ui.add_argument("--approval-timeout", type=float, default=300.0,
+                      help="等待人工确认的秒数；超时按拒绝处理")
+    p_ui.add_argument("--demo", action="store_true",
+                      help="放入一条示例待确认项，便于空跑体验（不执行任何真实动作）")
+
     return parser
+
+
+def _add_common_args(parser: argparse.ArgumentParser) -> None:
+    """子命令级公共参数。
+
+    用独立 dest 承接，避免覆盖全局同名参数的解析结果（两者都写时以子命令为准）。
+    """
+    parser.add_argument("--skill-root", dest="skill_root_sub", default=None,
+                        help="icode-skill 源仓路径（也可写在子命令之前）")
 
 
 def _add_model_args(parser: argparse.ArgumentParser) -> None:
@@ -116,6 +143,8 @@ def _add_loop_args(parser: argparse.ArgumentParser, *, default_turns: int = 12) 
     parser.add_argument("--approve", action="store_true",
                         help="交互式审批（默认拒绝一切需人工确认的动作）")
     parser.add_argument("--quiet", action="store_true", help="不打印回合过程")
+    parser.add_argument("--isolation", default="auto",
+                        help="隔离后端：auto（默认，按实测能力选择）/ none / bwrap / docker / podman")
 
 
 def _load(args: argparse.Namespace) -> tuple[object, ContractSet]:
@@ -162,7 +191,23 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     g = guard.summary()
     print(f"  [OK  ] 权限模型：应用层限制（is_sandbox={g['is_sandbox']}）"
           f" 工作区={g['workspace_root']}")
-    print("         ⚠ 非内核级沙箱，Phase 5 之前不得对外宣称安全沙箱")
+
+    # 隔离能力：只报实测结果，措辞不得超出实际能力
+    from .isolation import capability_report
+
+    report = capability_report()
+    selected = report["selected"]
+    avail = [p for p in report["probes"] if p["available"]]
+    print(f"  [{'OK  ' if selected['is_real_isolation'] else 'WARN'}] 隔离后端：{report['honest_label']}")
+    print(f"         后端={selected['backend']}"
+          + (f"；已强制={selected.get('enforced')}" if selected.get("enforced") else ""))
+    if not selected.get("is_real_isolation"):
+        print("         ⚠ 无内核/容器级隔离：模型若绕过运行时直接执行 shell，应用层规则不构成保障")
+        print("           可安装 bubblewrap（Linux）/ 容器运行时后重试，或用 --isolation 显式指定")
+    if avail:
+        print("         探测到的可用后端：" + "、".join(p["name"] for p in avail))
+    else:
+        print("         未探测到可用后端（bwrap / sandbox-exec / docker / podman 均不可用）")
 
     try:
         key = resolve_api_key()
@@ -286,7 +331,13 @@ def _build_runner(args: argparse.Namespace):
         elif kind == "operation_ambiguous":
             print(f"        [副作用歧义] {payload.get('detail')}")
 
-    return backend, approver, budget, on_event
+    from .isolation import select_sandbox
+
+    sandbox = select_sandbox(None if args.isolation == "auto" else args.isolation)
+    if hasattr(sandbox, "describe"):
+        claim = sandbox.describe().get("claim", "")
+        print(f"  隔离：{claim}")
+    return backend, approver, budget, on_event, sandbox
 
 
 def cmd_step_run(args: argparse.Namespace) -> int:
@@ -294,13 +345,13 @@ def cmd_step_run(args: argparse.Namespace) -> int:
     from .runner import run_contract_step
 
     settings = load_settings(args.skill_root)
-    backend, approver, budget, on_event = _build_runner(args)
+    backend, approver, budget, on_event, sandbox = _build_runner(args)
     print(f"契约步骤执行：{args.step}（backend={getattr(backend, 'name', '?')}）")
     report = run_contract_step(
         settings, backend=backend, workspace=Path(args.workspace), step=args.step,
         ticket_id=args.ticket_id, requirement=args.requirement,
         approver=approver, loop_config=LoopConfig(max_turns=args.max_turns),
-        budget=budget, on_event=on_event,
+        budget=budget, on_event=on_event, sandbox=sandbox,
     )
     print(report.render())
     return 0 if report.ok else 1
@@ -313,7 +364,7 @@ def cmd_task(args: argparse.Namespace) -> int:
     from .runner import DEFAULT_TASK, prepare_workspace, run_task
 
     settings = load_settings(args.skill_root)
-    backend, approver, budget, on_event = _build_runner(args)
+    backend, approver, budget, on_event, sandbox = _build_runner(args)
 
     if args.workspace:
         workspace = Path(args.workspace)
@@ -327,6 +378,7 @@ def cmd_task(args: argparse.Namespace) -> int:
         settings, backend=backend, workspace=workspace,
         task=args.task or DEFAULT_TASK, approver=approver,
         loop_config=LoopConfig(max_turns=args.max_turns), budget=budget, on_event=on_event,
+        sandbox=sandbox,
     )
     print(report.render())
     print("成本：" + _budget_line(backend))
@@ -433,15 +485,55 @@ def cmd_recover(args: argparse.Namespace) -> int:
     from .loop import LoopConfig
     from .runner import resume_contract_step
 
-    backend, approver, budget, on_event = _build_runner(args)
+    backend, approver, budget, on_event, sandbox = _build_runner(args)
     print(f"\n恢复执行（backend={getattr(backend, 'name', '?')}）")
     report = resume_contract_step(
         settings, backend=backend, out_dir=out_dir, step=args.step, ticket_id=ticket_id,
         approver=approver, loop_config=LoopConfig(max_turns=args.max_turns),
-        budget=budget, on_event=on_event,
+        budget=budget, on_event=on_event, sandbox=sandbox,
     )
     print(report.render())
     return 0 if report.ok else 1
+
+
+def cmd_webui(args: argparse.Namespace) -> int:
+    """启动本地审批台。
+
+    注意本命令**只负责"审批"这一层**：它不写工单状态、不接受路径或命令。
+    """
+    import threading
+
+    from .approvals import ApprovalRequest
+    from .webui import serve
+
+    server, approver = serve(
+        port=args.port, open_browser=not args.no_browser, timeout=args.approval_timeout
+    )
+    print(f"  服务地址：{server.url}")
+    print("  按 Ctrl+C 结束（结束即作废所有挂起项）")
+
+    if args.demo:
+        sample = ApprovalRequest(
+            tool="run_command",
+            arguments={"argv": ["some-unknown-binary", "--go"]},
+            reason="不在白名单：some-unknown-binary",
+            opclass="managed_write",
+            workspace=str(Path.cwd()),
+        )
+
+        def _ask() -> None:
+            granted = approver.ask(sample)
+            print(f"\n  示例审批结果：{'已放行' if granted else '已拒绝/超时'}")
+
+        threading.Thread(target=_ask, daemon=True).start()
+
+    try:
+        while True:
+            threading.Event().wait(1.0)
+    except KeyboardInterrupt:
+        print("\n  正在关闭 WebUI…")
+        server.stop()
+    return 0
 
 
 _COMMANDS = {
@@ -455,12 +547,16 @@ _COMMANDS = {
     "evidence": cmd_evidence,
     "verify-pack": cmd_verify_pack,
     "recover": cmd_recover,
+    "webui": cmd_webui,
 }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    # 子命令级 --skill-root 优先（让位置无关）
+    if getattr(args, "skill_root_sub", None):
+        args.skill_root = args.skill_root_sub
     if not args.command:
         parser.print_help()
         return 0

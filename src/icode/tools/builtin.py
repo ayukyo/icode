@@ -152,7 +152,8 @@ def run_command(
 ) -> ToolResult:
     """执行一条命令（**无 shell**）。
 
-    权限判定由 guard 在调用前完成；本函数只负责执行。
+    权限判定由 guard 在调用前完成；本函数负责**按当前隔离能力**执行，
+    并在 meta 里如实标注用的是哪种隔离（或没有）。
     """
     import subprocess
 
@@ -167,8 +168,18 @@ def run_command(
                           opclass=OPCLASS_MANAGED_WRITE)
 
     workdir = ctx.resolve(cwd) if cwd else ctx.root
+    try:
+        exec_argv = ctx.wrap_command(args)
+    except Exception as exc:  # noqa: BLE001 - 隔离不可用时拒绝执行，不降级
+        return ToolResult(
+            False,
+            f"隔离不可用，已拒绝执行：{exc}",
+            {"error": "isolation_unavailable", "sandbox": ctx.isolation_label()},
+            opclass=OPCLASS_MANAGED_WRITE,
+        )
+
     proc = subprocess.run(  # noqa: S603 - 参数列表 + shell=False
-        args,
+        exec_argv,
         cwd=str(workdir),
         capture_output=True,
         text=True,
@@ -181,7 +192,13 @@ def run_command(
     return ToolResult(
         proc.returncode == 0,
         f"$ {' '.join(args)}\nexit={proc.returncode}\n{body.strip() or '<无输出>'}",
-        {"argv": args, "exit_code": proc.returncode, "cwd": str(workdir)},
+        {
+            "argv": args,
+            "exit_code": proc.returncode,
+            "cwd": str(workdir),
+            "isolation": ctx.isolation_label(),
+            "real_isolation": ctx.needs_real_isolation(),
+        },
         opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
     )
 

@@ -253,6 +253,79 @@ PYTHONPATH=src python -m icode.cli recover --ticket <dir> --step plan --resume  
 
 ---
 
+### Phase 5 —— 隔离升级 · WebUI · 分发（已完成）
+
+#### 隔离：能力靠探测，不靠假设
+
+```bash
+PYTHONPATH=src python -m icode.cli doctor        # 会打印本机隔离能力与诚实标注
+--isolation auto|none|bwrap|docker|podman        # 各真模型命令均可指定
+```
+
+| 平台 | 后端 | 强制什么 |
+|---|---|---|
+| Linux | `bwrap` | 文件系统（除工作区只读）+ **默认断网** + PID/IPC/UTS |
+| macOS | `sandbox-exec` | Seatbelt profile：白名单外文件拒绝 + 默认拒绝网络 |
+| 容器 | `docker` / `podman` | 仅挂载工作区 + `--network none` |
+| **Windows** | **未实现内核级隔离** | **如实报告为「应用层限制，非内核级沙箱」** |
+
+三条铁律，都有测试锁住：
+
+1. **能力靠探测**——`probe_capabilities()` 实测本机有哪些后端，不假设。
+2. **没落地就不许宣称沙箱**——无后端时 `is_real_isolation=False`，且措辞固定为「应用层限制，非内核级沙箱」。
+3. **默认更严格的一侧**——无法确认按"无隔离"处理；**隔离包装失败时拒绝执行，而不是降级执行**。
+
+> 本机（Windows）实测输出：`[WARN] 隔离后端：应用层限制，非内核级沙箱 / 后端=none /
+> 未探测到可用后端（bwrap / sandbox-exec / docker / podman 均不可用）`。
+> Windows 的 Job Object 只限资源不限文件/网络，AppContainer 需 Win32 组包——**本项目尚未做，所以明说没做。**
+
+#### WebUI：只把「审批」搬到浏览器
+
+```bash
+PYTHONPATH=src python -m icode.cli webui --demo     # 仅监听 127.0.0.1
+```
+
+**命名划线**：上游的 `/icode ui` 是宿主自己的工单浏览器；我们的是执行前端，
+故本仓命令叫 **`webui`** 而不是 `ui`，避免混淆。
+
+三条硬边界（实测 + 测试双重锁）：
+
+| 边界 | 实现 | 实测 |
+|---|---|---|
+| ① 不做状态第二写入者 | 不 import 控制面/契约/证据（静态断言） | 只处理审批，不写工单 |
+| ② 不收路径/命令/shell | 只接受 `approval_id`（须为已知挂起项）+ `decision` 枚举 + 可选 `reason`；未知字段拒绝 | 带 `argv` 字段 → **400** |
+| ③ 重启后不自动放行 | 挂起项只在内存；等待超时即拒绝 | 新进程挂起项 = `[]` |
+
+安全细节：loopback 硬编码（无 `--host`）、写请求需同源 Cookie（`SameSite=Strict`）、
+拒绝跨源 Origin、严格 JSON + 64KiB 上限、无 CDN、无内联脚本、不用 `innerHTML`。
+
+实测边界（真实 HTTP 状态码）：
+
+```text
+GET /  下发会话 Cookie            → 200
+GET /api/state 无 Cookie          → 403
+GET /api/state 有 Cookie          → 200
+POST 带 argv 字段（路径/命令）     → 400
+POST 跨源 Origin                  → 403
+POST 未知 approval_id             → 409（不猜测、不新建）
+POST 错误 Content-Type            → 400
+真实审批闭环：网页点「放行」→ 200，approver 返回 True
+重启后挂起项：[]                  → 不会自动放行
+```
+
+#### 分发
+
+```bash
+pipx install .        # 或 uv tool install .
+icode --version
+```
+
+实测（`pip install --target` 到临时目录）：包发现正常、**`web_assets/` 随包分发**、
+控制台脚本 `icode.exe` 生成、从仓库外可执行；11 个子命令齐全。
+（本沙箱禁止创建新 venv，故 `pipx install` 的端到端未能在此验证 —— 如实记录。）
+
+---
+
 ## 一个刻意的设计：门禁会拦下我们，这是对的
 
 `icode handshake` 跑完契约后尝试状态前移，但会被门禁拒绝并列出缺口
