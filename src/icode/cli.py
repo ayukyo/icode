@@ -72,6 +72,17 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_model_args(p_task)
     _add_loop_args(p_task)
 
+    # ---- Phase 3：证据包 ----
+
+    p_ev = sub.add_parser("evidence", help="把工单导出为可独立校验的证据包")
+    p_ev.add_argument("--ticket", required=True, help="v3 工单目录")
+    p_ev.add_argument("--dest", required=True, help="证据包输出目录")
+    p_ev.add_argument("--receipt-from", help="在该目录独立跑 python -m unittest 并把退出码写入回执")
+    p_ev.add_argument("--receipt", action="append", default=[], help="额外回执 JSON 文件（可重复）")
+
+    p_evv = sub.add_parser("verify-pack", help="校验证据包（使用包内同一套逻辑）")
+    p_evv.add_argument("pack")
+
     return parser
 
 
@@ -317,6 +328,54 @@ def _budget_line(backend) -> str:
             f" / cached {usage.cached_tokens:,}）")
 
 
+def cmd_evidence(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from .evidence import build_evidence_pack, collect_verifications
+    from .runner import run_unittest
+
+    settings = load_settings(args.skill_root)
+
+    receipts: list[dict] = []
+    for path in args.receipt:
+        p = Path(path)
+        if not p.is_file():
+            print(f"回执文件不存在：{p}", file=sys.stderr)
+            return 2
+        data = _json.loads(p.read_text(encoding="utf-8"))
+        receipts.extend(data if isinstance(data, list) else [data])
+
+    if args.receipt_from:
+        workdir = Path(args.receipt_from).resolve()
+        code, output = run_unittest(workdir)
+        receipts.append(collect_verifications(code, [sys.executable, "-m", "unittest"], output))
+        print(f"  外部验证回执：python -m unittest @ {workdir} → 退出码 {code}")
+
+    report = build_evidence_pack(
+        args.ticket, dest=args.dest, gates_json=settings.gates_json, verifications=receipts,
+    )
+    print(report.render())
+    if report.ok:
+        print("\n独立校验（不依赖本工具）：")
+        print(f"  python {Path(report.pack_dir) / 'verify.py'} {report.pack_dir}")
+    return 0 if report.ok else 1
+
+
+def cmd_verify_pack(args: argparse.Namespace) -> int:
+    from .pack_verify import verify_pack
+
+    pack = Path(args.pack)
+    problems = verify_pack(pack)
+    if problems:
+        print(f"证据包校验失败：{pack}")
+        for p in problems:
+            print(f"  - {p}")
+        return 1
+    print(f"证据包校验通过：{pack}")
+    print("  已核验：清单完整性 · 事件链哈希链 · 正文与链上哈希对应 · 包摘要")
+    return 0
+
+
 _COMMANDS = {
     "doctor": cmd_doctor,
     "handshake": cmd_handshake,
@@ -325,6 +384,8 @@ _COMMANDS = {
     "outline": cmd_outline,
     "step-run": cmd_step_run,
     "task": cmd_task,
+    "evidence": cmd_evidence,
+    "verify-pack": cmd_verify_pack,
 }
 
 
@@ -339,6 +400,15 @@ def main(argv: list[str] | None = None) -> int:
         return handler(args)
     except (ConfigError, ContractError, ControlError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
+        return 2
+    except NotADirectoryError as exc:
+        # 跨平台常见坑：把 Git Bash 的 /c/xxx 传给 Windows Python
+        print(f"路径无效（不是目录）：{exc}\n"
+              "  提示：Windows 上请使用 `C:/...` 形式的路径，"
+              "Git Bash 的 `/c/...` 形式 Windows Python 无法识别。", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"文件系统错误：{type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001 - 后端/网络错误要给可读提示而非堆栈
         from .backends import BackendError

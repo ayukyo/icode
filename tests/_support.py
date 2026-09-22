@@ -40,3 +40,33 @@ def temp_workspace() -> Iterator[Path]:
     """临时工作区：握手产物落在这里，绝不污染仓库。"""
     with tempfile.TemporaryDirectory(prefix="icode_test_") as tmp:
         yield Path(tmp)
+
+
+def make_finished_plan_ticket(
+    settings: Settings,
+    workspace: Path,
+    *,
+    ticket_id: str = "EV-1",
+    plan_text: str = "# 计划\n\n用于证据包测试的产物正文。\n",
+) -> Path:
+    """在临时工作区造一条"plan 步骤已完成"的真实工单，返回工单目录。
+
+    走的是真控制面（create → step start → check → artifact → check → finish），
+    因此事件链是**真实**的，可直接用于证据包测试。
+    """
+    from icode.control import ControlPlane
+    from icode.handshake import next_out_dir
+
+    cp = ControlPlane(settings)
+    out_dir = next_out_dir(Path(workspace))
+    cp.create(out_dir, ticket_id=ticket_id,
+              requirement="证据包测试用需求", birth="plan")
+    attempt = cp.step_start(out_dir, "plan", ticket_id=ticket_id)
+    cp.step_check(out_dir, "plan", attempt, "before_write", ticket_id=ticket_id, occurrence=1)
+    (out_dir / "01_plan.md").write_text(plan_text, encoding="utf-8")
+    cp.artifact(out_dir, "plan", attempt, "01_plan.md", ticket_id=ticket_id)
+    cp.step_check(out_dir, "plan", attempt, "before_transition",
+                  ticket_id=ticket_id, occurrence=2)
+    cp.step_finish(out_dir, "plan", attempt, "success",
+                   ticket_id=ticket_id, evidence=["test"], check=False)
+    return out_dir

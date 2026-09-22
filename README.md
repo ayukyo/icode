@@ -84,6 +84,8 @@ python scripts/preflight.py                                         # 提交前�
 | `icode handshake --workspace <dir>` | 契约握手：跑通完整步骤契约并校验事件链 | 否 |
 | `icode step-run --workspace <dir> --step plan` | 用真模型按契约执行一个步骤 | 是 |
 | `icode task --fixture pycalc` | 在隔离靶场副本上做能力验证（独立跑测试取退出码） | 是 |
+| `icode evidence --ticket <dir> --dest <dir>` | 把工单导出为可独立校验的证据包 | 否 |
+| `icode verify-pack <包目录>` | 校验证据包（与包内 verify.py 同一套逻辑） | 否 |
 
 安装为命令后可直接用 `icode`：
 
@@ -148,6 +150,57 @@ OK   无未闭合步骤/动作
 > 状态前移仍被拦下（预期、且正确）：上游要求 `plan` 用 L2 的 `sequential-thinking`
 > 机制并留下真实 trace，本运行时尚未接入该 MCP，因此**如实写 degraded 而非冒充**。
 > 待补清单见 [上游依赖面 §4](./docs/upstream-contract.md)。
+
+---
+
+### Phase 3 —— 证据包导出（已完成）
+
+**这是产品形态**：把「过程」导出成外部可独立校验的凭证。
+
+```bash
+PYTHONPATH=src python -m icode.cli evidence --ticket <工单目录> --dest <包目录> --receipt-from <工程目录>
+```
+
+包结构：
+
+```text
+manifest.json          包清单 + pack_digest（每个文件的 sha256）
+ticket/events.jsonl    事件链（唯一执行账本，原样）
+ticket/metadata.json   工单状态元数据
+ticket/bodies/         产物正文快照
+artifacts.json         正文快照 ↔ 链上 sha256 对应表   ← D11 的核心
+contracts.json         本工单涉及步骤的契约快照
+verifications.json     外部验证回执（含命令退出码）
+verify.py              独立校验器（零依赖，不 import 本仓任何代码）
+```
+
+**审计方不需要安装任何东西**：
+
+```bash
+python verify.py <证据包目录>     # 0 通过 / 1 被篡改 / 2 用法错误
+```
+
+#### 实测（真实模型产出的工单，24 条事件）
+
+```text
+【审计方独立校验】cwd=/，无 PYTHONPATH
+证据包校验通过：工单 E2E-1
+  已核验：清单完整性 · 事件链哈希链 · 正文与链上哈希对应 · 包摘要    退出码=0
+
+【偷偷改掉计划正文】
+证据包校验失败：问题 4 处
+  - 文件内容与清单不符（疑似篡改）：清单=8c421d8a721b 实际=3ac7e84552ff
+  - 文件大小与清单不符
+  - 正文快照与事件链记录不符（疑似篡改）
+  - 事件链记录的产物缺少正文快照                             退出码=1
+```
+
+**四条诚实边界**（写在包内 README，不可省略）：
+
+1. 本包证明「**过程记录自洽且未被篡改**」，**不是**「代码绝对正确」
+2. `pack_digest` 需**外部渠道锚定**才具抗抵赖力，否则持有整包者可整体重签
+3. 权限模型是**应用层限制，不是内核级沙箱**
+4. 未接入 `sequential-thinking`，推理 trace 如实标 `degraded`，**不冒充已满足**
 
 ---
 
