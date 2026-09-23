@@ -233,7 +233,7 @@ class SandboxPolicy:
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 ```
 
-Create `src/icode/schemas/sandbox-policy-v1.schema.json` as a Draft 2020-12 object schema. It must set `additionalProperties` to `false`, require all fifteen dataclass fields, use `const: 1` for `schema_version`, constrain `network_mode` to `deny` or `proxy_allowlist`, require absolute non-empty path strings, require positive integer limits, and define domain items as lowercase hostnames without a scheme or path.
+Create `src/icode/schemas/sandbox-policy-v1.schema.json` as a Draft 2020-12 object schema. It must set `additionalProperties` to `false`, require all fifteen dataclass fields, use integer `const: 1` for `schema_version`, constrain `network_mode` to `deny` or `proxy_allowlist`, require absolute non-empty path strings, require positive integer limits, and define domain items as external DNS hostnames without a scheme, path, port, wildcard, localhost, or IP literal. Mixed-case DNS wire values are valid and the decoder canonicalizes them to lowercase. The schema covers wire shape and constraints expressible in Draft 2020-12 only. The Python/native strict decoder is the authoritative complete semantic validator: it rejects non-`int` runtime values such as `True` and `1.0`, applies current-platform absolute-path semantics, and enforces cross-array containment, deny, and protected-path relationships. Schema validation alone must never be described as complete policy acceptance.
 
 - [x] **Step 4: Run the focused tests and verify GREEN**
 
@@ -297,9 +297,9 @@ def test_limits_must_be_positive(self) -> None:
             with self.assertRaisesRegex(PolicyValidationError, field):
                 self.make_policy(**{field: 0})
 
-def test_protected_path_requires_a_deny_rule(self) -> None:
+def test_protected_path_requires_a_deny_write_rule(self) -> None:
     with self.assertRaisesRegex(PolicyValidationError, "protected path"):
-        self.make_policy(deny_read_roots=(), deny_write_roots=())
+        self.make_policy(deny_read_roots=(self.workspace / ".git",), deny_write_roots=())
 
 def test_tightening_can_reduce_paths_network_and_limits(self) -> None:
     base = self.make_policy(
@@ -348,7 +348,7 @@ In `src/icode/sandbox_policy.py`:
 - require all write roots to be at or below `workspace_root`;
 - allow a deny path below an allow path because `.git` protection relies on deny precedence;
 - reject an allow root that is itself at or below a deny root because it would be wholly unusable;
-- require every protected path to be covered by either a deny-read or deny-write root;
+- require every protected path to be covered by a deny-write root; a deny-read root may additionally cover the same path but is never sufficient by itself;
 - require `deny` to have no domains and `proxy_allowlist` to have at least one domain.
 
 Add these helpers and API:

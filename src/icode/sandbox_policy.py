@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, fields
 from enum import Enum
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, cast
 
 
 POLICY_SCHEMA_VERSION = 1
@@ -82,6 +82,8 @@ def _is_exact_dns_hostname(domain: str) -> bool:
         return False
 
     labels = domain.split(".")
+    if len(labels) < 2:
+        return False
     return all(
         len(label) <= 63 and _DNS_LABEL_PATTERN.fullmatch(label) is not None
         for label in labels
@@ -205,13 +207,14 @@ class SandboxPolicy:
                         f"{kind} root is fully covered by a deny root: {allow_root}"
                     )
 
-        deny_roots = self.deny_read_roots + self.deny_write_roots
         for protected_path in self.protected_paths:
             if not any(
-                _is_within(protected_path, deny_root) for deny_root in deny_roots
+                _is_within(protected_path, deny_root)
+                for deny_root in self.deny_write_roots
             ):
                 raise PolicyValidationError(
-                    f"protected path is not covered by a deny root: {protected_path}"
+                    "protected path is not covered by a deny-write root: "
+                    f"{protected_path}"
                 )
 
     def to_dict(self) -> dict[str, object]:
@@ -235,6 +238,9 @@ class SandboxPolicy:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, object]) -> SandboxPolicy:
+        if not isinstance(data, Mapping):
+            raise PolicyValidationError("sandbox policy wire must be a mapping")
+
         expected = {field.name for field in fields(cls)}
         supplied = set(data)
         missing = expected - supplied
@@ -244,26 +250,99 @@ class SandboxPolicy:
             if missing:
                 details.append(f"missing fields: {sorted(missing)}")
             if unknown:
-                details.append(f"unknown={sorted(unknown)}")
+                details.append(f"unknown={sorted(unknown, key=repr)}")
             raise PolicyValidationError("; ".join(details))
 
-        return cls(
-            schema_version=data["schema_version"],  # type: ignore[arg-type]
-            run_id=data["run_id"],  # type: ignore[arg-type]
-            ticket_id=data["ticket_id"],  # type: ignore[arg-type]
-            step=data["step"],  # type: ignore[arg-type]
-            workspace_root=Path(data["workspace_root"]),  # type: ignore[arg-type]
-            read_roots=tuple(Path(path) for path in data["read_roots"]),  # type: ignore[union-attr]
-            write_roots=tuple(Path(path) for path in data["write_roots"]),  # type: ignore[union-attr]
-            deny_read_roots=tuple(Path(path) for path in data["deny_read_roots"]),  # type: ignore[union-attr]
-            deny_write_roots=tuple(Path(path) for path in data["deny_write_roots"]),  # type: ignore[union-attr]
-            network_mode=NetworkMode(data["network_mode"]),  # type: ignore[arg-type]
-            allowed_domains=tuple(data["allowed_domains"]),  # type: ignore[arg-type]
-            process_limit=data["process_limit"],  # type: ignore[arg-type]
-            wall_timeout_seconds=data["wall_timeout_seconds"],  # type: ignore[arg-type]
-            output_limit_bytes=data["output_limit_bytes"],  # type: ignore[arg-type]
-            protected_paths=tuple(Path(path) for path in data["protected_paths"]),  # type: ignore[union-attr]
+        schema_version = data["schema_version"]
+        if type(schema_version) is not int or schema_version != POLICY_SCHEMA_VERSION:
+            raise PolicyValidationError("schema_version must be integer 1")
+
+        for name in ("run_id", "ticket_id", "step", "workspace_root"):
+            if type(data[name]) is not str:
+                raise PolicyValidationError(f"{name} must be a string")
+
+        path_list_names = (
+            "read_roots",
+            "write_roots",
+            "deny_read_roots",
+            "deny_write_roots",
+            "protected_paths",
         )
+        for name in path_list_names:
+            value = data[name]
+            if type(value) is not list:
+                raise PolicyValidationError(f"{name} must be a list")
+            if any(type(item) is not str for item in value):
+                raise PolicyValidationError(f"{name} items must be strings")
+
+        allowed_domains = data["allowed_domains"]
+        if type(allowed_domains) is not list:
+            raise PolicyValidationError("allowed_domains must be a list")
+        if any(type(domain) is not str for domain in allowed_domains):
+            raise PolicyValidationError("allowed_domains items must be strings")
+
+        for name in (
+            "process_limit",
+            "wall_timeout_seconds",
+            "output_limit_bytes",
+        ):
+            if type(data[name]) is not int:
+                raise PolicyValidationError(f"{name} must be an integer")
+
+        network_mode = data["network_mode"]
+        if type(network_mode) is not str:
+            raise PolicyValidationError("network_mode must be a string")
+        if network_mode not in {mode.value for mode in NetworkMode}:
+            raise PolicyValidationError(
+                f"unsupported network_mode: {network_mode!r}"
+            )
+
+        workspace_root_value = cast(str, data["workspace_root"])
+        if not Path(workspace_root_value).is_absolute():
+            raise PolicyValidationError("workspace_root must be an absolute path")
+        for name in path_list_names:
+            value = cast(list[str], data[name])
+            for path_value in value:
+                if not Path(path_value).is_absolute():
+                    raise PolicyValidationError(
+                        f"{name} items must be absolute paths"
+                    )
+
+        try:
+            return cls(
+                schema_version=schema_version,
+                run_id=cast(str, data["run_id"]),
+                ticket_id=cast(str, data["ticket_id"]),
+                step=cast(str, data["step"]),
+                workspace_root=Path(workspace_root_value),
+                read_roots=tuple(
+                    Path(path) for path in cast(list[str], data["read_roots"])
+                ),
+                write_roots=tuple(
+                    Path(path) for path in cast(list[str], data["write_roots"])
+                ),
+                deny_read_roots=tuple(
+                    Path(path)
+                    for path in cast(list[str], data["deny_read_roots"])
+                ),
+                deny_write_roots=tuple(
+                    Path(path)
+                    for path in cast(list[str], data["deny_write_roots"])
+                ),
+                network_mode=NetworkMode(network_mode),
+                allowed_domains=tuple(cast(list[str], allowed_domains)),
+                process_limit=cast(int, data["process_limit"]),
+                wall_timeout_seconds=cast(int, data["wall_timeout_seconds"]),
+                output_limit_bytes=cast(int, data["output_limit_bytes"]),
+                protected_paths=tuple(
+                    Path(path)
+                    for path in cast(list[str], data["protected_paths"])
+                ),
+            )
+        except PolicyValidationError:
+            raise
+        except (OSError, TypeError, ValueError) as error:
+            raise PolicyValidationError("invalid sandbox policy wire value") from error
 
     def canonical_json(self) -> str:
         return json.dumps(

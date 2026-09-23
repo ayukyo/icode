@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from dataclasses import FrozenInstanceError, replace
+from importlib.resources import files
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import ANY
 
 from tests import _support  # noqa: F401  # Add the repository's src/ to sys.path.
 
@@ -44,6 +47,14 @@ class SandboxPolicyTestCase(unittest.TestCase):
         }
         values.update(overrides)
         return SandboxPolicy(**values)
+
+    def assert_wire_rejected(self, wire: object) -> None:
+        try:
+            SandboxPolicy.from_dict(wire)  # type: ignore[arg-type]
+        except Exception as error:  # Assert the public exception boundary.
+            self.assertIsInstance(error, PolicyValidationError)
+        else:
+            self.fail("wire policy was accepted")
 
     def test_policy_is_frozen_and_normalizes_duplicate_paths(self) -> None:
         policy = self.make_policy(
@@ -87,6 +98,135 @@ class SandboxPolicyTestCase(unittest.TestCase):
         with self.assertRaisesRegex(PolicyValidationError, r"unknown=.*shell"):
             SandboxPolicy.from_dict(wire)
 
+    def test_from_dict_rejects_missing_fields_as_policy_error(self) -> None:
+        wire = self.make_policy().to_dict()
+        del wire["run_id"]
+
+        self.assert_wire_rejected(wire)
+
+    def test_from_dict_requires_strict_integer_schema_version(self) -> None:
+        for value in (True, 1.0):
+            with self.subTest(value=value):
+                wire = self.make_policy().to_dict()
+                wire["schema_version"] = value
+                self.assert_wire_rejected(wire)
+
+    def test_from_dict_requires_string_identity_fields(self) -> None:
+        for field_name in ("run_id", "ticket_id", "step", "workspace_root"):
+            with self.subTest(field_name=field_name):
+                wire = self.make_policy().to_dict()
+                wire[field_name] = 42
+                self.assert_wire_rejected(wire)
+
+    def test_from_dict_requires_path_lists_not_other_iterables(self) -> None:
+        for field_name in (
+            "read_roots",
+            "write_roots",
+            "deny_read_roots",
+            "deny_write_roots",
+            "protected_paths",
+        ):
+            with self.subTest(field_name=field_name):
+                wire = self.make_policy().to_dict()
+                wire[field_name] = ""
+                self.assert_wire_rejected(wire)
+
+    def test_from_dict_requires_string_path_list_items(self) -> None:
+        for field_name in (
+            "read_roots",
+            "write_roots",
+            "deny_read_roots",
+            "deny_write_roots",
+            "protected_paths",
+        ):
+            with self.subTest(field_name=field_name):
+                wire = self.make_policy().to_dict()
+                wire[field_name] = [42]
+                self.assert_wire_rejected(wire)
+
+    def test_from_dict_requires_allowed_domains_list(self) -> None:
+        wire = self.make_policy().to_dict()
+        wire["allowed_domains"] = ""
+
+        self.assert_wire_rejected(wire)
+
+    def test_from_dict_requires_string_allowed_domain_items(self) -> None:
+        wire = self.make_policy().to_dict()
+        wire["network_mode"] = "proxy_allowlist"
+        wire["allowed_domains"] = [42]
+
+        self.assert_wire_rejected(wire)
+
+    def test_from_dict_requires_strict_integer_limits(self) -> None:
+        for field_name in (
+            "process_limit",
+            "wall_timeout_seconds",
+            "output_limit_bytes",
+        ):
+            for value in (True, 1.0, "1"):
+                with self.subTest(field_name=field_name, value=value):
+                    wire = self.make_policy().to_dict()
+                    wire[field_name] = value
+                    self.assert_wire_rejected(wire)
+
+    def test_from_dict_rejects_relative_workspace_root(self) -> None:
+        wire = self.make_policy().to_dict()
+        wire["workspace_root"] = "relative/workspace"
+        wire["read_roots"] = ["relative/workspace"]
+        wire["write_roots"] = ["relative/workspace"]
+        wire["deny_read_roots"] = ["relative/workspace/.git"]
+        wire["deny_write_roots"] = ["relative/workspace/.git"]
+        wire["protected_paths"] = ["relative/workspace/.git"]
+
+        self.assert_wire_rejected(wire)
+
+    def test_from_dict_rejects_relative_paths_in_every_path_list(self) -> None:
+        for field_name in (
+            "read_roots",
+            "write_roots",
+            "deny_read_roots",
+            "deny_write_roots",
+            "protected_paths",
+        ):
+            with self.subTest(field_name=field_name):
+                wire = self.make_policy().to_dict()
+                current_workspace = Path.cwd().resolve()
+                relative_path = "relative/path"
+                absolute_path = str(current_workspace / relative_path)
+                protected_path = str(current_workspace / ".git")
+                wire["workspace_root"] = str(current_workspace)
+                wire["read_roots"] = [str(current_workspace)]
+                wire["write_roots"] = [str(current_workspace)]
+                wire["deny_read_roots"] = [protected_path]
+                wire["deny_write_roots"] = [protected_path]
+                wire["protected_paths"] = [protected_path]
+                if field_name == "deny_write_roots":
+                    wire["protected_paths"] = [absolute_path]
+                elif field_name == "protected_paths":
+                    wire["deny_write_roots"] = [absolute_path]
+                wire[field_name] = ["relative/path"]
+                self.assert_wire_rejected(wire)
+
+    def test_from_dict_rejects_invalid_network_mode_as_policy_error(self) -> None:
+        for value in (42, "unrestricted"):
+            with self.subTest(value=value):
+                wire = self.make_policy().to_dict()
+                wire["network_mode"] = value
+                self.assert_wire_rejected(wire)
+
+    def test_from_dict_canonicalizes_legal_domain_wire(self) -> None:
+        wire = self.make_policy(
+            network_mode=NetworkMode.PROXY_ALLOWLIST,
+            allowed_domains=("pypi.org",),
+        ).to_dict()
+        wire["allowed_domains"] = ["PYPI.org", "pypi.org"]
+
+        policy = SandboxPolicy.from_dict(wire)
+        canonical = SandboxPolicy.from_dict(policy.to_dict())
+
+        self.assertEqual(policy.allowed_domains, ("pypi.org",))
+        self.assertEqual(policy.policy_hash, canonical.policy_hash)
+
     def test_deny_network_mode_rejects_allowed_domains(self) -> None:
         with self.assertRaisesRegex(
             PolicyValidationError,
@@ -106,16 +246,21 @@ class SandboxPolicyTestCase(unittest.TestCase):
             "https://pypi.org",
             "*.pypi.org",
             "pypi.org/simple",
+            "pypi.org:443",
+            "localhost",
             "127.0.0.1",
+            "::1",
         )
 
         for domain in invalid_domains:
             with self.subTest(domain=domain):
                 with self.assertRaisesRegex(PolicyValidationError, r"(?i)domain"):
-                    self.make_policy(
+                    wire = self.make_policy(
                         network_mode=NetworkMode.PROXY_ALLOWLIST,
-                        allowed_domains=(domain,),
-                    )
+                        allowed_domains=("pypi.org",),
+                    ).to_dict()
+                    wire["allowed_domains"] = [domain]
+                    SandboxPolicy.from_dict(wire)
 
     def test_write_root_must_stay_within_workspace(self) -> None:
         with self.assertRaisesRegex(PolicyValidationError, r"(?i)write root"):
@@ -141,9 +286,19 @@ class SandboxPolicyTestCase(unittest.TestCase):
                 with self.assertRaisesRegex(PolicyValidationError, field_name):
                     self.make_policy(**{field_name: True})
 
-    def test_protected_path_must_be_covered_by_a_deny_root(self) -> None:
+    def test_protected_path_must_be_covered_by_deny_write_root(self) -> None:
         with self.assertRaisesRegex(PolicyValidationError, r"(?i)protected path"):
-            self.make_policy(protected_paths=(self.workspace / "secrets",))
+            self.make_policy(
+                deny_read_roots=(self.workspace / "secrets",),
+                deny_write_roots=(),
+                protected_paths=(self.workspace / "secrets",),
+            )
+
+    def test_deny_write_coverage_passes_without_deny_read_coverage(self) -> None:
+        policy = self.make_policy(deny_read_roots=())
+
+        self.assertEqual(policy.protected_paths, (self.workspace / ".git",))
+        self.assertEqual(policy.deny_write_roots, (self.workspace / ".git",))
 
     def test_identity_fields_reject_blank_and_control_characters(self) -> None:
         for field_name in ("run_id", "ticket_id", "step"):
@@ -231,8 +386,16 @@ class SandboxPolicyTestCase(unittest.TestCase):
             tighten_policy(base, candidate)
 
     def test_tighten_policy_rejects_removed_deny_rule(self) -> None:
-        base = self.make_policy()
-        candidate = replace(base, deny_write_roots=())
+        base = self.make_policy(
+            deny_write_roots=(
+                self.workspace / ".git",
+                self.workspace / "secrets",
+            )
+        )
+        candidate = replace(
+            base,
+            deny_write_roots=(self.workspace / ".git",),
+        )
 
         with self.assertRaisesRegex(PolicyValidationError, r"(?i)broadens"):
             tighten_policy(base, candidate)
@@ -250,6 +413,111 @@ class SandboxPolicyTestCase(unittest.TestCase):
 
         with self.assertRaisesRegex(PolicyValidationError, r"(?i)broadens"):
             tighten_policy(base, candidate)
+
+
+class SandboxPolicySchemaTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        resource = files("icode").joinpath(
+            "schemas/sandbox-policy-v1.schema.json"
+        )
+        cls.schema = json.loads(resource.read_text(encoding="utf-8"))
+
+    def assert_pattern_accepts(
+        self,
+        pattern: str,
+        accepted: tuple[str, ...],
+        rejected: tuple[str, ...],
+    ) -> None:
+        for value in accepted:
+            with self.subTest(value=value):
+                self.assertIsNotNone(re.fullmatch(pattern, value))
+        for value in rejected:
+            with self.subTest(value=value):
+                self.assertIsNone(re.fullmatch(pattern, value))
+
+    def test_schema_documents_shape_and_authoritative_semantic_boundary(self) -> None:
+        description = self.schema["description"].lower()
+
+        self.assertIn("wire", description)
+        self.assertIn("python", description)
+        self.assertIn("semantic", description)
+        self.assertIn("authoritative", description)
+        self.assertIn("cross", description)
+
+    def test_schema_locks_version_and_identity_shape(self) -> None:
+        properties = self.schema["properties"]
+        self.assertEqual(
+            properties["schema_version"],
+            {
+                "type": "integer",
+                "const": 1,
+                "description": ANY,
+            },
+        )
+        self.assertIn("strict", properties["schema_version"]["description"].lower())
+        for field_name in ("run_id", "ticket_id", "step"):
+            definition = properties[field_name]
+            self.assertEqual(definition["type"], "string")
+            self.assertEqual(definition["minLength"], 1)
+            self.assert_pattern_accepts(
+                definition["pattern"],
+                ("run-001", " ticket "),
+                ("", "   ", "line\nbreak", "nul\x00byte", "delete\x7f"),
+            )
+
+    def test_schema_path_and_domain_patterns_reject_attack_shapes(self) -> None:
+        definitions = self.schema["$defs"]
+        path_pattern = definitions["absolutePath"]["pattern"]
+        self.assert_pattern_accepts(
+            path_pattern,
+            ("/workspace", "C:\\workspace", "\\\\server\\share\\dir"),
+            ("relative/path", "./workspace", "C:relative"),
+        )
+        self.assertEqual(definitions["pathList"]["type"], "array")
+        self.assertEqual(
+            definitions["pathList"]["items"],
+            {"$ref": "#/$defs/absolutePath"},
+        )
+
+        domain_pattern = definitions["domain"]["pattern"]
+        self.assert_pattern_accepts(
+            domain_pattern,
+            ("pypi.org", "PYPI.org", "files.pythonhosted.org"),
+            (
+                "localhost",
+                "127.0.0.1",
+                "::1",
+                "https://pypi.org",
+                "pypi.org/simple",
+                "pypi.org:443",
+                "*.pypi.org",
+            ),
+        )
+
+    def test_schema_encodes_network_mode_domain_cardinality(self) -> None:
+        all_of = self.schema.get("allOf")
+        self.assertIsInstance(all_of, list)
+        if not isinstance(all_of, list):
+            return
+        self.assertIn(
+            {
+                "if": {"properties": {"network_mode": {"const": "deny"}}},
+                "then": {"properties": {"allowed_domains": {"maxItems": 0}}},
+            },
+            all_of,
+        )
+        self.assertIn(
+            {
+                "if": {
+                    "properties": {
+                        "network_mode": {"const": "proxy_allowlist"}
+                    }
+                },
+                "then": {"properties": {"allowed_domains": {"minItems": 1}}},
+            },
+            all_of,
+        )
 
 
 if __name__ == "__main__":

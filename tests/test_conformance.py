@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import unittest
 
 from tests import _support  # noqa: F401  # Add the repository's src/ to sys.path.
@@ -10,6 +11,7 @@ from icode.conformance import (
     ConformanceContractError,
     evaluate_conformance,
     load_conformance_contract,
+    validate_conformance_contract,
 )
 
 
@@ -90,6 +92,25 @@ class ConformanceContractTestCase(unittest.TestCase):
         second = load_conformance_contract()
 
         self.assertNotEqual(second["capabilities"][0]["description"], "changed")
+
+    def test_capability_rejects_arbitrary_unique_negative_test(self) -> None:
+        contract = copy.deepcopy(load_conformance_contract())
+        contract["capabilities"][0]["negative_test"] = "arbitrary_unique_test"
+
+        with self.assertRaises(ConformanceContractError):
+            validate_conformance_contract(contract)
+
+    def test_capability_rejects_swapped_negative_tests(self) -> None:
+        contract = copy.deepcopy(load_conformance_contract())
+        first = contract["capabilities"][0]
+        second = contract["capabilities"][1]
+        first["negative_test"], second["negative_test"] = (
+            second["negative_test"],
+            first["negative_test"],
+        )
+
+        with self.assertRaises(ConformanceContractError):
+            validate_conformance_contract(contract)
 
     def test_optional_failure_still_meets_readiness_threshold(self) -> None:
         outcomes = self.make_outcomes()

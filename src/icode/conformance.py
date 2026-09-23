@@ -32,6 +32,18 @@ _CAPABILITY_IDS = {
     "doctor_self_test",
 }
 _NON_CRITICAL_IDS = {"resource_limits", "uniform_violation"}
+CAPABILITY_NEGATIVE_TESTS = {
+    "workspace_write_boundary": "write_outside_workspace",
+    "protected_paths": "write_protected_path",
+    "sensitive_read_boundary": "read_sensitive_path",
+    "network_default_deny": "direct_network_access",
+    "network_temporary_allowlist": "temporary_domain_expiry",
+    "child_inheritance": "child_process_escape",
+    "process_tree_cleanup": "process_tree_residue",
+    "resource_limits": "resource_limit_overrun",
+    "uniform_violation": "uniform_violation_receipt",
+    "doctor_self_test": "doctor_backend_self_test",
+}
 
 
 class ConformanceContractError(ValueError):
@@ -59,7 +71,9 @@ def _require_non_blank_text(value: Any, location: str) -> str:
     return value
 
 
-def _validate_contract(value: Any) -> dict[str, Any]:
+def validate_conformance_contract(value: Any) -> dict[str, Any]:
+    """Validate one sandbox-v1 contract value and return it unchanged."""
+
     if not isinstance(value, dict):
         raise ConformanceContractError("conformance contract must be an object")
     _require_exact_fields(value, _TOP_LEVEL_FIELDS, "contract")
@@ -94,6 +108,12 @@ def _validate_contract(value: Any) -> dict[str, Any]:
         negative_test = _require_non_blank_text(
             capability["negative_test"], f"{location}.negative_test"
         )
+        expected_negative_test = CAPABILITY_NEGATIVE_TESTS.get(capability_id)
+        if negative_test != expected_negative_test:
+            raise ConformanceContractError(
+                f"{location}.negative_test does not match capability "
+                f"{capability_id!r}"
+            )
         _require_non_blank_text(
             capability["description"], f"{location}.description"
         )
@@ -121,6 +141,12 @@ def _validate_contract(value: Any) -> dict[str, Any]:
     return value
 
 
+def _validate_contract(value: Any) -> dict[str, Any]:
+    """Backward-compatible internal alias for the contract validator."""
+
+    return validate_conformance_contract(value)
+
+
 def load_conformance_contract() -> dict[str, Any]:
     """Load and validate a fresh copy of the packaged sandbox-v1 contract."""
 
@@ -131,7 +157,7 @@ def load_conformance_contract() -> dict[str, Any]:
         raise ConformanceContractError(
             "unable to load the packaged conformance contract"
         ) from error
-    return _validate_contract(value)
+    return validate_conformance_contract(value)
 
 
 def evaluate_conformance(outcomes: Mapping[str, bool]) -> dict[str, int | bool]:

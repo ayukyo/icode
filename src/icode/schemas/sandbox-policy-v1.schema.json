@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://icode.local/schemas/sandbox-policy-v1.schema.json",
   "title": "ICODE Sandbox Policy v1",
-  "description": "Platform-neutral sandbox policy wire shape. This schema does not enable sandbox enforcement.",
+  "description": "Platform-neutral sandbox policy wire shape and JSON Schema-expressible constraints. The Python/native strict decoder is the authoritative complete semantic validator, including runtime-type checks and cross-array path containment, deny coverage, and protected-path relationships. Schema validation alone is not complete policy acceptance and does not enable sandbox enforcement.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -36,21 +36,30 @@
     },
     "domain": {
       "type": "string",
-      "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$"
+      "description": "Exact external DNS hostname. Strict decoders canonicalize ASCII letter case to lowercase.",
+      "pattern": "^(?=.{1,253}$)(?![0-9.]+$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)\\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*$"
     }
   },
   "properties": {
     "schema_version": {
+      "type": "integer",
+      "description": "Wire version 1. JSON Schema treats 1.0 as integer-equivalent; Python/native strict decoders must reject non-int runtime types and non-integer lexical forms.",
       "const": 1
     },
     "run_id": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]*$"
     },
     "ticket_id": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]*$"
     },
     "step": {
-      "type": "string"
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F]*$"
     },
     "workspace_root": {
       "$ref": "#/$defs/absolutePath"
@@ -95,5 +104,39 @@
     "protected_paths": {
       "$ref": "#/$defs/pathList"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "network_mode": {
+            "const": "deny"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "allowed_domains": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "network_mode": {
+            "const": "proxy_allowlist"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "allowed_domains": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
 }
