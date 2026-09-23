@@ -147,10 +147,12 @@ class BlockingExecutor:
         self.calls += 1
         self.contexts.append(context)
         self.started.set()
-        if not self.allow_safe_point.wait(3):
+        if not self.allow_safe_point.wait(ASYNC_TEST_TIMEOUT_SECONDS):
             raise RuntimeError("test safe-point timeout")
         control.safe_point("plan")
-        if self.block_after_safe_point and not self.release.wait(3):
+        if self.block_after_safe_point and not self.release.wait(
+            ASYNC_TEST_TIMEOUT_SECONDS
+        ):
             raise RuntimeError("test release timeout")
         return ExecutionResult(state="succeeded", last_step="plan")
 
@@ -165,7 +167,7 @@ class ResumeExecutor:
         self.calls += 1
         if self.calls == 1:
             self.first_started.set()
-            if not self.first_safe_point.wait(3):
+            if not self.first_safe_point.wait(ASYNC_TEST_TIMEOUT_SECONDS):
                 raise RuntimeError("test resume timeout")
             control.safe_point("plan")
             raise AssertionError("paused safe point must stop the first run")
@@ -203,7 +205,7 @@ class BlockingLastStepRunner:
         if kwargs.get("steps") != ("audit",):
             raise AssertionError("test must execute only the final audit step")
         self.started.set()
-        if not self.release.wait(3):
+        if not self.release.wait(ASYNC_TEST_TIMEOUT_SECONDS):
             raise RuntimeError("test final-step timeout")
         return self.report
 
@@ -218,7 +220,7 @@ class ShutdownSafePointExecutor:
 
     def execute(self, context, control) -> ExecutionResult:
         self.started.set()
-        if not self.allow_safe_point.wait(3):
+        if not self.allow_safe_point.wait(ASYNC_TEST_TIMEOUT_SECONDS):
             raise RuntimeError("test shutdown safe-point timeout")
         try:
             control.safe_point("code")

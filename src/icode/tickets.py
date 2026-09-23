@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,8 @@ CREATE_TICKET_FIELDS = frozenset({
 
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,140}$")
 _OUT_DIR_RE = re.compile(r"^\.icode_output_([0-9]+)$")
+_METADATA_READ_ATTEMPTS = 5
+_METADATA_READ_RETRY_SECONDS = 0.01
 
 AUTONOMOUS_RUN_STATES = frozenset({
     "pending",
@@ -137,13 +140,21 @@ def _project_id(workspace: Path) -> str:
 
 
 def _load_metadata(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise TicketError("工单 metadata 不可读") from exc
-    if not isinstance(value, dict):
-        raise TicketError("工单 metadata 必须是对象")
-    return value
+    for attempt in range(_METADATA_READ_ATTEMPTS):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, PermissionError) as exc:
+            # Windows 原子替换 metadata 时，读句柄可能短暂无法打开目标。
+            if attempt + 1 == _METADATA_READ_ATTEMPTS:
+                raise TicketError("工单 metadata 不可读") from exc
+            time.sleep(_METADATA_READ_RETRY_SECONDS)
+            continue
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TicketError("工单 metadata 不可读") from exc
+        if not isinstance(value, dict):
+            raise TicketError("工单 metadata 必须是对象")
+        return value
+    raise TicketError("工单 metadata 不可读")
 
 
 class TicketService:

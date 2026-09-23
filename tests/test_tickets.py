@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from tests._support import require_skill, temp_workspace
 
 from icode.tickets import (
     TicketError,
     TicketService,
+    _load_metadata,
     normalize_create_ticket_payload,
 )
 
@@ -101,6 +104,39 @@ class TestTicketService(unittest.TestCase):
             for line in (out_dirs[0] / ".ico_events.jsonl").read_text(encoding="utf-8").splitlines()
         ]
         self.assertIn("metadata_updated", event_types)
+
+    def test_metadata原子替换窗口短暂不可读可恢复(self) -> None:
+        metadata_path = self.workspace / "metadata.json"
+        metadata_path.write_text('{"ticket_id":"T-1"}', encoding="utf-8")
+        original_read_text = Path.read_text
+        attempts = 0
+
+        def transient_read(path: Path, *args, **kwargs) -> str:
+            nonlocal attempts
+            if path == metadata_path and attempts < 2:
+                attempts += 1
+                raise PermissionError("simulated replace window")
+            return original_read_text(path, *args, **kwargs)
+
+        with patch("icode.tickets.Path.read_text", autospec=True, side_effect=transient_read):
+            self.assertEqual(_load_metadata(metadata_path), {"ticket_id": "T-1"})
+        self.assertEqual(attempts, 2)
+
+    def test_metadata持续不可读有界失败且不暴露路径(self) -> None:
+        metadata_path = self.workspace / "metadata.json"
+        with (
+            patch(
+                "icode.tickets.Path.read_text",
+                autospec=True,
+                side_effect=PermissionError("private path"),
+            ) as read_text,
+            patch("icode.tickets.time.sleep") as sleep,
+            self.assertRaises(TicketError) as caught,
+        ):
+            _load_metadata(metadata_path)
+        self.assertEqual(read_text.call_count, 5)
+        self.assertEqual(sleep.call_count, 4)
+        self.assertNotIn(str(metadata_path), str(caught.exception))
 
     def test_会话模式立即生效(self) -> None:
         created = self.service.create_ticket(_payload(
