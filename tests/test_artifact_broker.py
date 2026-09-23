@@ -84,10 +84,14 @@ class TestArtifactBroker(unittest.TestCase):
     def test_模型只能通过启用的受控工具访问合同端口(self) -> None:
         registry = default_registry(include_artifacts=True)
         context = ToolContext(root=self.root, artifact_broker=self.broker)
-        (self.out_dir / "01_plan.md").write_text("plan", encoding="utf-8")
-        self.assertEqual(registry.invoke(
-            "read_artifact", context, {"name": "01_plan.md"},
-        ).content, "plan")
+        (self.out_dir / "01_plan.md").write_text("one\ntwo\nthree", encoding="utf-8")
+        page = registry.invoke(
+            "read_artifact", context,
+            {"name": "01_plan.md", "offset": 2, "limit": 1},
+        )
+        self.assertTrue(page.ok)
+        self.assertIn("2| two", page.content)
+        self.assertNotIn("one", page.content)
         self.assertTrue(registry.invoke(
             "submit_artifact", context,
             {"name": "02_review.md", "content": "review"},

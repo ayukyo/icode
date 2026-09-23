@@ -154,7 +154,9 @@ def submit_artifact(ctx: ToolContext, name: str, content: str) -> ToolResult:
                       {"name": name, "bytes": size}, opclass=OPCLASS_MANAGED_WRITE)
 
 
-def read_artifact(ctx: ToolContext, name: str) -> ToolResult:
+def read_artifact(
+    ctx: ToolContext, name: str, offset: int = 1, limit: int = 400,
+) -> ToolResult:
     if ctx.artifact_broker is None:
         return ToolResult(False, "当前步骤未开放受控产物端口",
                           {"error": "artifact_unavailable"})
@@ -162,7 +164,18 @@ def read_artifact(ctx: ToolContext, name: str) -> ToolResult:
         body = ctx.artifact_broker.read(name)
     except ArtifactAccessError as exc:
         return ToolResult(False, str(exc), {"error": "artifact_denied"})
-    return ToolResult(True, body, {"name": name, "bytes": len(body.encode("utf-8"))})
+    try:
+        first = max(1, int(offset))
+        count = min(1000, max(1, int(limit)))
+    except (TypeError, ValueError):
+        return ToolResult(False, "读取范围非法", {"error": "bad_range"})
+    lines = body.splitlines()
+    end = min(len(lines), first - 1 + count)
+    excerpt = "\n".join(f"{index:>5}| {lines[index - 1]}" for index in range(first, end + 1))
+    return ToolResult(
+        True, f"{name}（共 {len(lines)} 行，显示 {first}-{end}）\n{excerpt}",
+        {"name": name, "total_lines": len(lines), "start": first, "end": end},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +365,8 @@ def default_registry(*, include_artifacts: bool = False) -> ToolRegistry:
             description="读取当前步骤合同声明的旧工单输入；只传文件名。",
             parameters=_params({
                 "name": {"type": "string", "description": "当前步骤输入文件名"},
+                "offset": {"type": "integer", "description": "起始行，默认 1"},
+                "limit": {"type": "integer", "description": "读取行数，默认 400，最多 1000"},
             }, ["name"]),
             handler=read_artifact,
         ))
