@@ -72,11 +72,6 @@ class TestChainOffline(unittest.TestCase):
         order = chain_steps(self.contracts)
         self.assertEqual(order, ("plan", "review", "merge", "code", "deepcheck", "audit"))
 
-    @unittest.skip(
-        "review_manifest 的 origin_receipt 链需要更多上游合同研究："
-        "origin_attempt 需要对应的 operation 回执（不只是 step_started），"
-        "当前缺口已定位（见 docs/upstream-contract.md），待下一轮专攻"
-    )
     def test_plan_review_merge_三步走通(self) -> None:
         """离线验证：plan → review → merge 三步全部通过，事件链完整。"""
         with temp_workspace() as ws:
@@ -155,6 +150,12 @@ class TestChainOffline(unittest.TestCase):
                         art = cp.artifact(out_dir, step, attempt, port.value, ticket_id=ticket_id)
                         self.assertTrue(art.data.get("ok") is True,
                                         f"{step} artifact {port.value}: {art.data}")
+                # review 的 round 文件**也必须登记**（origin_receipt 链要求）
+                if step == "review":
+                    for rf in sorted(out_dir.glob("review_round_*.json")):
+                        art = cp.artifact(out_dir, step, attempt, rf.name, ticket_id=ticket_id)
+                        self.assertTrue(art.data.get("ok") is True,
+                                        f"review round artifact {rf.name}: {art.data}")
 
                 # after_wait（review 有）
                 if "after_wait" in contract.required_checks:

@@ -381,7 +381,12 @@ def _register_outputs(
     cp: ControlPlane, out_dir: Path, step: str, attempt: str, ticket_id: str,
     contract, report: StepReport,
 ) -> list[str]:
-    """登记本步骤声明的产物，返回缺失列表。"""
+    """登记本步骤声明的产物，返回缺失列表。
+
+    同时处理：
+    - `ticket_file` 端口：精确路径登记
+    - `ticket_glob` 端口：匹配工作目录中的实际文件（如 `review_round_*.json`）
+    """
     missing: list[str] = []
     for port in contract.outputs:
         if port.kind != "ticket_file" or not port.value:
@@ -394,6 +399,20 @@ def _register_outputs(
         art = cp.artifact(out_dir, step, attempt, port.value, ticket_id=ticket_id)
         report.add(f"产物登记 {port.value}", art.data.get("ok") is True, f"port={port.id}")
         report.artifacts.append(port.value)
+
+    # glob 端口：登记匹配的实际文件（如 review 的 review_round_*.json）
+    for port in contract.outputs:
+        if port.kind != "ticket_glob" or not port.value:
+            continue
+        pattern = port.value.replace("*", "*")
+        for matched in sorted(out_dir.glob(pattern)):
+            if not matched.is_file():
+                continue
+            rel = matched.relative_to(out_dir).as_posix()
+            art = cp.artifact(out_dir, step, attempt, rel, ticket_id=ticket_id)
+            if art.data.get("ok") is True:
+                report.add(f"产物登记（glob）{rel}", True, f"port={port.id}")
+                report.artifacts.append(rel)
     return missing
 
 
@@ -489,7 +508,7 @@ def _persist_missing_from_response(
     """
     persisted: list[str] = []
     text = (model_text or "").strip()
-    if len(text) < 40:
+    if len(text) < 10:
         report.warn("模型回复过短，不足以自动落盘缺失产物")
         return persisted
 

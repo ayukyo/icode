@@ -76,9 +76,10 @@ class SequentialThinking:
     因此成本可控，且失败不会污染主流程（返回带 error 的结果，由调用方决定降级）。
     """
 
-    def __init__(self, backend, *, max_tokens: int = 1200) -> None:
+    def __init__(self, backend, *, max_tokens: int = 3000) -> None:
         # 注意：推理模型（如 MiniMax-M3）会先在 <think> 里花 token，
         # max_tokens 给小了会导致剥离思考后正文为空 —— 实测曾因此 4 步全空。
+        # 3000 给足余量：思考 + 输出各约 1500。
         self.backend = backend
         self.max_tokens = max_tokens
 
