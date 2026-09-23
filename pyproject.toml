@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=80"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -29,7 +29,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # WebUI 资源必须随包分发（页面、脚本、样式；无 CDN / 无内联脚本）
-icode = ["web_assets/*", "workbench_assets/*", "schemas/*.json", "conformance/*.json"]
+icode = ["web_assets/*", "workbench_assets/*", "schemas/*.json", "conformance/*.json", "native/*"]
 
 [project.urls]
 Homepage = "https://github.com/ayukyo/icode"
