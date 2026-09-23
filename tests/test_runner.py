@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from tests._support import REPO_ROOT, temp_workspace
@@ -73,6 +74,96 @@ class TestIndependentVerification(unittest.TestCase):
             (dst / "calc.py").write_text("raise RuntimeError('boom')\n", encoding="utf-8")
             code, _ = run_unittest(dst)
             self.assertNotEqual(code, 0, "独立验证必须能识别破坏性改动")
+
+
+class TestAutoPersist(unittest.TestCase):
+    """"模型文本产出 → 运行时落盘"通道：内容必须来自模型，且诚实标注来源。"""
+
+    def test_提取JSON并落盘(self) -> None:
+        from icode.runner import _extract_json, _persist_missing_from_response
+
+        text = (
+            "审查结论如下：\n"
+            '```json\n{"round": 1, "new_issues": ["计划缺测试计划"],'
+            ' "refuted_issues": [], "pending_verification": []}\n```\n'
+        )
+        data = _extract_json(text)
+        self.assertEqual(data["round"], 1)
+        self.assertEqual(data["new_issues"], ["计划缺测试计划"])
+
+        with temp_workspace() as ws:
+            out = ws / "t"
+            out.mkdir()
+            report = _FakeReport()
+            from icode.contracts import _to_contract
+
+            contract = _to_contract("review", {"outputs": [
+                {"id": "review", "kind": "ticket_file", "value": "review_round_1.json",
+                 "required": True}]})
+            persisted = _persist_missing_from_response(out, contract, report, text)
+            self.assertEqual(len(persisted), 1)
+            self.assertIn("JSON 提取", persisted[0])
+            got = json.loads((out / "review_round_1.json").read_text(encoding="utf-8"))
+            self.assertEqual(got["round"], 1)
+
+    def test_Markdown产物带来源标注(self) -> None:
+        from icode.runner import AUTOPERSIST_HEADER, _persist_missing_from_response
+        from icode.contracts import _to_contract
+
+        with temp_workspace() as ws:
+            out = ws / "t"
+            out.mkdir()
+            report = _FakeReport()
+            contract = _to_contract("plan", {"outputs": [
+                {"id": "plan", "kind": "ticket_file", "value": "01_plan.md",
+                 "required": True}]})
+            text = "# 计划\n\n内容足够长。" * 10
+            persisted = _persist_missing_from_response(out, contract, report, text)
+            self.assertEqual(len(persisted), 1)
+            body = (out / "01_plan.md").read_text(encoding="utf-8")
+            self.assertTrue(body.startswith(AUTOPERSIST_HEADER.split("\n")[0][:20]))
+            self.assertIn("# 计划", body)
+
+    def test_提取不到JSON时诚实保持缺失(self) -> None:
+        from icode.runner import _persist_missing_from_response
+        from icode.contracts import _to_contract
+
+        with temp_workspace() as ws:
+            out = ws / "t"
+            out.mkdir()
+            report = _FakeReport()
+            contract = _to_contract("review", {"outputs": [
+                {"id": "r", "kind": "ticket_file", "value": "review_round_1.json",
+                 "required": True}]})
+            persisted = _persist_missing_from_response(
+                out, contract, report, "没有 JSON 对象的纯文本回复，" + "这段回复足够长以通过最短长度检查。" * 6)
+            self.assertEqual(persisted, [], "提取不到 JSON 不得伪造")
+            self.assertTrue(any("未提取到" in w for w in report.warnings))
+
+    def test_已有产物不覆盖(self) -> None:
+        from icode.runner import _persist_missing_from_response
+        from icode.contracts import _to_contract
+
+        with temp_workspace() as ws:
+            out = ws / "t"
+            out.mkdir()
+            (out / "01_plan.md").write_text("模型自己写的", encoding="utf-8")
+            report = _FakeReport()
+            contract = _to_contract("plan", {"outputs": [
+                {"id": "plan", "kind": "ticket_file", "value": "01_plan.md",
+                 "required": True}]})
+            persisted = _persist_missing_from_response(out, contract, report, "长文本" * 100)
+            self.assertEqual(persisted, [], "已有产物不得覆盖")
+            self.assertEqual((out / "01_plan.md").read_text(encoding="utf-8"), "模型自己写的")
+
+
+class _FakeReport:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+        self.notes: list[str] = []
+
+    def warn(self, text: str) -> None:
+        self.warnings.append(text)
 
 
 class TestBackendFactory(unittest.TestCase):

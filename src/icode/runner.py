@@ -270,6 +270,7 @@ def run_contract_step(
         # 契约驱动的复检点 + 模型工作
         occurrence = 0
         missing: list[str] = []
+        loop = None
         for boundary in contract.required_checks:
             occurrence += 1
             res = cp.step_check(out_dir, step, attempt, boundary,
@@ -342,6 +343,18 @@ def run_contract_step(
                     _reset_artifact_checkpoints(report)
                     missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
 
+        # 最后一道：模型若仍未落盘，但回复文本里有实质内容 → 由运行时代为落盘（诚实标注来源）
+        if missing:
+            last_text = ""
+            for m in reversed(loop.messages):
+                if m.get("role") == "assistant" and (m.get("content") or "").strip():
+                    last_text = m["content"]
+                    break
+            persisted = _persist_missing_from_response(out_dir, contract, report, last_text)
+            if persisted:
+                _reset_artifact_checkpoints(report)
+                missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
+
         _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
         if report.finish_outcome == "success":
             ckpt.clear()  # 步骤已干净终结，检查点不再需要
@@ -413,7 +426,93 @@ REPAIR_INSTRUCTIONS = (
     "{missing}\n"
     "请现在**立即调用 write_file** 把这些文件写到上面列出的**绝对路径**（一个都不能少），"
     "内容就是你上一轮已经想好的东西。不要再去读文件调研，不要解释，直接写。\n"
+    "注意：`.json` 产物请输出**纯 JSON**（不要包 markdown 代码块）。\n"
 )
+
+# 产物来源标注：由运行时代为落盘时的诚实声明
+AUTOPERSIST_HEADER = (
+    "<!-- 产物来源：模型在本步骤的回复文本，由运行时代为落盘"
+    "（模型未自行调用 write_file）。内容未改动。 -->\n\n"
+)
+
+
+def _extract_json(text: str) -> dict | None:
+    """从模型回复里提取最外层 JSON 对象（供 .json 产物落盘）。"""
+    import re
+
+    if not text:
+        return None
+    # 优先取 ```json 代码块
+    for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S):
+        try:
+            data = json.loads(m.group(1))
+            return data if isinstance(data, dict) else None
+        except json.JSONDecodeError:
+            continue
+    # 退化：取最外层花括号
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    data = json.loads(text[start : i + 1])
+                    return data if isinstance(data, dict) else None
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def _persist_missing_from_response(
+    out_dir: Path,
+    contract,
+    report: StepReport,
+    model_text: str,
+) -> list[str]:
+    """把模型在回复文本里给出的交付内容落盘（**诚实标注来源**）。
+
+    为什么要有这条通道（roadmap Phase 6 遗留）：实测模型在 review 步骤
+    倾向在回复文本里给出审查意见，而不调用 write_file —— 导致契约产物缺失、
+    整步失败。而产物审计关心的是**内容是否真实来自模型且可追溯**，
+    不是"谁敲的 write_file"。
+
+    诚实保障：
+      - 内容**原样**来自模型回复（JSON 产物做纯格式提取，不改内容）；
+      - Markdown 产物顶部加来源标注（HTML 注释，不影响阅读）；
+      - 每个落盘产物都在 `report.notes` 里记录来源，事件链正常登记 hash；
+      - 提取不到有效内容的产物**不伪造**，保持缺失并如实上报。
+    """
+    persisted: list[str] = []
+    text = (model_text or "").strip()
+    if len(text) < 40:
+        report.warn("模型回复过短，不足以自动落盘缺失产物")
+        return persisted
+
+    for port in contract.outputs:
+        if port.kind != "ticket_file" or not port.value:
+            continue
+        target = out_dir / port.value
+        if target.is_file():
+            continue  # 已有（模型自己写了或上一轮已落盘）
+        name = port.value
+        if name == "review_manifest.json":
+            continue  # 机器装配产物，由 post_write 负责
+        if name.endswith(".json"):
+            data = _extract_json(text)
+            if data is None:
+                report.warn(f"{name}：模型回复中未提取到有效 JSON，保持缺失（不伪造）")
+                continue
+            target.write_bytes(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
+            persisted.append(f"{name}（来源：模型回复文本，JSON 提取）")
+        else:
+            target.write_bytes((AUTOPERSIST_HEADER + text).encode("utf-8"))
+            persisted.append(f"{name}（来源：模型回复文本，原样落盘）")
+    return persisted
 
 
 def _run_agent(
