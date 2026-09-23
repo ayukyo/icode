@@ -29,7 +29,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # WebUI 资源必须随包分发（页面、脚本、样式；无 CDN / 无内联脚本）
-icode = ["web_assets/*", "workbench_assets/*"]
+icode = ["web_assets/*", "workbench_assets/*", "schemas/*.json", "conformance/*.json"]
 
 [project.urls]
 Homepage = "https://github.com/ayukyo/icode"

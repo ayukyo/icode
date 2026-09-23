@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "contract_id": "icode-sandbox-v1",
+  "minimum_passed": 9,
+  "capabilities": [
+    {
+      "id": "workspace_write_boundary",
+      "critical": true,
+      "description": "Writes remain within the configured workspace write boundary.",
+      "negative_test": "write_outside_workspace"
+    },
+    {
+      "id": "protected_paths",
+      "critical": true,
+      "description": "Writes to configured protected paths are denied.",
+      "negative_test": "write_protected_path"
+    },
+    {
+      "id": "sensitive_read_boundary",
+      "critical": true,
+      "description": "Reads from configured sensitive paths are denied.",
+      "negative_test": "read_sensitive_path"
+    },
+    {
+      "id": "network_default_deny",
+      "critical": true,
+      "description": "Direct network access is denied by default.",
+      "negative_test": "direct_network_access"
+    },
+    {
+      "id": "network_temporary_allowlist",
+      "critical": true,
+      "description": "Temporary network allowlist entries expire after their authorized scope.",
+      "negative_test": "temporary_domain_expiry"
+    },
+    {
+      "id": "child_inheritance",
+      "critical": true,
+      "description": "Child processes remain subject to the parent sandbox boundaries.",
+      "negative_test": "child_process_escape"
+    },
+    {
+      "id": "process_tree_cleanup",
+      "critical": true,
+      "description": "Sandbox shutdown leaves no descendant processes running.",
+      "negative_test": "process_tree_residue"
+    },
+    {
+      "id": "resource_limits",
+      "critical": false,
+      "description": "Configured process, time, and output limits are enforced.",
+      "negative_test": "resource_limit_overrun"
+    },
+    {
+      "id": "uniform_violation",
+      "critical": false,
+      "description": "Policy violations produce a uniform machine-readable receipt.",
+      "negative_test": "uniform_violation_receipt"
+    },
+    {
+      "id": "doctor_self_test",
+      "critical": true,
+      "description": "The backend self-test reports whether its sandbox checks pass.",
+      "negative_test": "doctor_backend_self_test"
+    }
+  ]
+}
