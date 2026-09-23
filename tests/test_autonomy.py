@@ -121,6 +121,17 @@ def _acquire_lease_in_child(
     return completed.stdout.strip()
 
 
+def _fail_only_autonomy_thread_start(message: str):
+    original_start = threading.Thread.start
+
+    def start(thread: threading.Thread) -> None:
+        if thread.name.startswith("icode-autonomy-"):
+            raise RuntimeError(message)
+        original_start(thread)
+
+    return start
+
+
 class BlockingExecutor:
     """由测试决定何时到达真实 safe point。"""
 
@@ -879,7 +890,7 @@ class TestAutonomyManager(unittest.TestCase):
         with (
             patch(
                 "icode.autonomy.threading.Thread.start",
-                side_effect=RuntimeError("private thread failure"),
+                new=_fail_only_autonomy_thread_start("private thread failure"),
             ),
             self.assertRaises(AutonomyError) as caught,
         ):
@@ -1107,7 +1118,9 @@ class TestAutonomyManager(unittest.TestCase):
 
         with patch(
             "icode.autonomy.threading.Thread.start",
-            side_effect=RuntimeError(f"private start failure at {self.workspace}"),
+            new=_fail_only_autonomy_thread_start(
+                f"private start failure at {self.workspace}"
+            ),
         ), self.assertRaises(AutonomyError) as caught:
             manager.handle_intent(
                 ticket_id,

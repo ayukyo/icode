@@ -26,11 +26,8 @@ def main(modules: tuple[str, ...] = DEFAULT_MODULES) -> int:
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     if os.environ.get("GITHUB_ACTIONS") == "true":
         for test, traceback in (*result.failures, *result.errors):
-            details = next(
-                (line.strip() for line in reversed(traceback.splitlines()) if line.strip()),
-                "test failed without traceback",
-            )
-            summary = _workflow_escape(f"{test.id()}: {details}"[:1200])
+            details = traceback[-1800:] if traceback else "test failed without traceback"
+            summary = _workflow_escape(f"{test.id()}:\n{details}")
             print(f"::error title=R2.1 workspace test failure::{summary}", flush=True)
     return 0 if result.wasSuccessful() else 1
 
