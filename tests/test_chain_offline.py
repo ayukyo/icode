@@ -23,7 +23,9 @@ from icode.contracts import ContractSet
 from icode.control import ControlPlane
 from icode.runner import run_contract_step, run_unittest
 from icode.runner import StepReport
+from icode.isolation import NoIsolation
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
+from icode.tools import default_registry
 
 # 各步骤的模拟产物内容（模型"应该"写的内容）
 PLAN_TEXT = "# 实施计划\n\n## 需求理解\n为 calc.py 新增 gcd/lcm。\n"
@@ -205,6 +207,51 @@ class TestChainOffline(unittest.TestCase):
                 and call.kwargs.get("policy") is policy
                 for call in agent.call_args_list
             ))
+            self.assertIn("submit_artifact",
+                          agent.call_args_list[1].kwargs["extra_instructions"])
+            self.assertNotIn("write_file",
+                             agent.call_args_list[1].kwargs["extra_instructions"].split(
+                                 "不要用 write_file", 1
+                             )[0])
+
+    def test_策略会话只通过受控工具提交宿主工单产物(self) -> None:
+        with temp_workspace() as project:
+            checkout = project / "checkout"
+            checkout.mkdir()
+            from icode.handshake import next_out_dir as allocate_ticket_dir
+
+            out_dir = allocate_ticket_dir(project)
+            ticket_id = "OFFLINE-BROKER-1"
+            ControlPlane(self.settings).create(
+                out_dir, ticket_id=ticket_id, requirement="受控产物", birth="plan",
+            )
+            policy = _policy(checkout.resolve(), "plan", ticket_id)
+            backend = FakeBackend([{
+                "content": "", "tool_calls": [
+                    {"id": "spoof-ledger", "name": "write_file",
+                     "arguments": {"path": str(out_dir / ".ico_metadata.json"),
+                                   "content": "spoof"}},
+                    {"id": "submit-plan", "name": "submit_artifact",
+                     "arguments": {"name": "01_plan.md", "content": PLAN_TEXT}},
+                ],
+            }, "完成"])
+            with patch("icode.runner._finalize"):
+                report = run_contract_step(
+                    self.settings, backend=backend, workspace=checkout,
+                    step="plan", ticket_id=ticket_id, out_dir=out_dir,
+                    sandbox=NoIsolation(), policy=policy,
+                )
+            self.assertEqual((out_dir / "01_plan.md").read_text(encoding="utf-8"),
+                             PLAN_TEXT)
+            self.assertEqual(report.loop.turns[0].invocations[0].decision, "deny")
+            self.assertTrue(report.loop.turns[0].invocations[1].result.ok)
+            self.assertEqual(json.loads((out_dir / ".ico_metadata.json").read_text(
+                encoding="utf-8"))["ticket_id"], ticket_id)
+            prompt = backend.calls[0]["messages"][0]["content"]
+            self.assertIn("submit_artifact", prompt)
+            self.assertNotIn("这些路径位于工单目录内（属于工作区）", prompt)
+            self.assertIn("submit_artifact", backend.calls[0]["messages"][1]["content"])
+            self.assertNotIn("submit_artifact", default_registry().names())
 
     def test_plan_review_merge_三步走通(self) -> None:
         """离线验证：plan → review → merge 三步全部通过，事件链完整。"""

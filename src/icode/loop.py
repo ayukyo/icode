@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +21,7 @@ from typing import Any, Callable
 from .approvals import ApprovalRequest, Approver, DenyAllApprover
 from .backends import AssistantMessage, Backend, Usage
 from .budget import BudgetTracker
-from .guard import Decision, Guard
+from .guard import Decision, Guard, Verdict
 from .operations import OperationRecorder
 from .tools import OPCLASS_READ_ONLY, ToolContext, ToolRegistry, ToolResult
 
@@ -109,6 +110,10 @@ class AgentLoop:
     # ---- 权限判定 ----
 
     def _decide(self, name: str, args: dict[str, Any]):
+        if name in ("submit_artifact", "read_artifact"):
+            if self.ctx.artifact_broker is None:
+                return Verdict(Decision.DENY, "当前步骤未开放受控产物端口")
+            return Verdict(Decision.ALLOW, "受控产物端口按步骤合同校验")
         if name in ("read_file", "grep"):
             return self.guard.check_read(str(args.get("path") or "."))
         if name == "glob":
@@ -151,12 +156,19 @@ class AgentLoop:
             inv.note = f"{verdict.reason}｜已人工放行"
 
         # 副作用回执：写与执行类动作必须留 start/finish
+        # 回执和公开事件只保留参数摘要；正文、命令参数及私有路径不外泄。
+        safe_args = {
+            "arg_keys": sorted(args),
+            "args_sha256": hashlib.sha256(
+                json.dumps(args, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+            ).hexdigest(),
+        }
         op_attempt: str | None = None
         if self.operations is not None and tool.opclass != OPCLASS_READ_ONLY:
             started = self.operations.start(
                 name=f"tool:{call_name}",
                 opclass=tool.opclass,
-                input_desc=json.dumps(args, ensure_ascii=False)[:200],
+                input_desc=json.dumps(safe_args, ensure_ascii=False),
             )
             if not started.can_execute:
                 inv.result = ToolResult(
@@ -172,7 +184,7 @@ class AgentLoop:
             op_attempt = started.attempt
 
         inv.approved = True
-        self.on_event("tool_start", {"tool": call_name, "arguments": args})
+        self.on_event("tool_start", {"tool": call_name, "arguments": safe_args})
         result = self.registry.invoke(call_name, self.ctx, args)
         inv.result = result
         self.on_event("tool_result", {"tool": call_name, "ok": result.ok, "meta": result.meta})

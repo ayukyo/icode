@@ -43,6 +43,7 @@ def main() -> int:
             clean_env = os.environ.copy()
             clean_env.pop("PYTHONPATH", None)
             code = (
+                "from icode.artifact_broker import ArtifactBroker; "
                 "from icode.native_helper import bundled_linux_helper; "
                 "from icode.isolation import LandlockSandbox, probe_native_sandbox; "
                 "p = bundled_linux_helper(); assert p is not None, 'helper missing'; "

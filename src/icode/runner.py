@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Callable
 
 from .approvals import Approver, DenyAllApprover
+from .artifact_broker import ArtifactAccessError, ArtifactBroker
 from .backends import Backend, Usage
 from .budget import Budget, BudgetTracker
 from .checkpoint import Checkpointer
@@ -342,6 +343,13 @@ def run_contract_step(
                         f"产物缺失，进入补救回合 {repair_round}："
                         + "、".join(p.value for p in still_missing)
                     )
+                    repair_instructions = (
+                        REPAIR_INSTRUCTIONS_POLICY.format(
+                            missing="\n".join(f"  - {p.value}" for p in still_missing)
+                        ) if policy is not None else REPAIR_INSTRUCTIONS.format(
+                            missing="\n".join(f"  - {out_dir / p.value}" for p in still_missing)
+                        )
+                    )
                     repair = _run_agent(
                         backend=backend, workspace=workspace, out_dir=out_dir,
                         ticket_id=ticket_id, step=step, brief=brief, contract=contract,
@@ -350,9 +358,7 @@ def run_contract_step(
                         checkpointer=ckpt,
                         sandbox=sandbox,
                         policy=policy,
-                        extra_instructions=REPAIR_INSTRUCTIONS.format(
-                            missing="\n".join(f"  - {out_dir / p.value}" for p in still_missing)
-                        ),
+                        extra_instructions=repair_instructions,
                         operations=step_ops,
                     )
                     report.loop = repair
@@ -368,7 +374,13 @@ def run_contract_step(
                 if m.get("role") == "assistant" and (m.get("content") or "").strip():
                     last_text = m["content"]
                     break
-            persisted = _persist_missing_from_response(out_dir, contract, report, last_text)
+            broker = (
+                ArtifactBroker(out_dir, contract, max_bytes=policy.output_limit_bytes)
+                if policy is not None else None
+            )
+            persisted = _persist_missing_from_response(
+                out_dir, contract, report, last_text, artifact_broker=broker,
+            )
             if persisted:
                 _reset_artifact_checkpoints(report)
                 missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
@@ -410,7 +422,7 @@ def _register_outputs(
         if port.kind != "ticket_file" or not port.value:
             continue
         target = out_dir / port.value
-        if not target.is_file():
+        if target.is_symlink() or not target.is_file():
             report.add(f"产物缺失 {port.value}", False, "模型未产出该文件")
             missing.append(port.value)
             continue
@@ -424,7 +436,7 @@ def _register_outputs(
             continue
         pattern = port.value.replace("*", "*")
         for matched in sorted(out_dir.glob(pattern)):
-            if not matched.is_file():
+            if matched.is_symlink() or not matched.is_file():
                 continue
             rel = matched.relative_to(out_dir).as_posix()
             art = cp.artifact(out_dir, step, attempt, rel, ticket_id=ticket_id)
@@ -454,11 +466,12 @@ def _finish_step(
 
 def _make_ctx(
     workspace: Path, sandbox: Sandbox | None, policy: SandboxPolicy | None = None,
+    artifact_broker: ArtifactBroker | None = None,
 ) -> ToolContext:
     """构造工具上下文；未显式指定时按本机实测能力自动选隔离后端。"""
     return ToolContext(
         root=workspace, sandbox=sandbox if sandbox is not None else select_sandbox(),
-        policy=policy,
+        policy=policy, artifact_broker=artifact_broker,
     )
 
 
@@ -469,6 +482,13 @@ REPAIR_INSTRUCTIONS = (
     "请现在**立即调用 write_file** 把这些文件写到上面列出的**绝对路径**（一个都不能少），"
     "内容就是你上一轮已经想好的东西。不要再去读文件调研，不要解释，直接写。\n"
     "注意：`.json` 产物请输出**纯 JSON**（不要包 markdown 代码块）。\n"
+)
+
+REPAIR_INSTRUCTIONS_POLICY = (
+    "【产物缺失 · 必须立即补救】\n"
+    "上一次没有提交下面这些当前步骤产物：\n{missing}\n"
+    "请立即调用 submit_artifact，把 name 设为上面的文件名、content 设为正文。"
+    "不要用 write_file 写工单目录，也不要只在回复文本里描述。\n"
 )
 
 # 产物来源标注：由运行时代为落盘时的诚实声明
@@ -515,6 +535,8 @@ def _persist_missing_from_response(
     contract,
     report: StepReport,
     model_text: str,
+    *,
+    artifact_broker: ArtifactBroker | None = None,
 ) -> list[str]:
     """把模型在回复文本里给出的交付内容落盘（**诚实标注来源**）。
 
@@ -539,6 +561,9 @@ def _persist_missing_from_response(
         if port.kind != "ticket_file" or not port.value:
             continue
         target = out_dir / port.value
+        if target.is_symlink():
+            report.warn(f"{port.value}：目标是符号链接，保持缺失")
+            continue
         if target.is_file():
             continue  # 已有（模型自己写了或上一轮已落盘）
         name = port.value
@@ -549,10 +574,26 @@ def _persist_missing_from_response(
             if data is None:
                 report.warn(f"{name}：模型回复中未提取到有效 JSON，保持缺失（不伪造）")
                 continue
-            target.write_bytes(json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
+            body = json.dumps(data, ensure_ascii=False, indent=2)
+            if artifact_broker is not None:
+                try:
+                    artifact_broker.submit(name, body)
+                except ArtifactAccessError:
+                    report.warn(f"{name}：受控产物端口拒绝补落盘")
+                    continue
+            else:
+                target.write_bytes(body.encode("utf-8"))
             persisted.append(f"{name}（来源：模型回复文本，JSON 提取）")
         else:
-            target.write_bytes((AUTOPERSIST_HEADER + text).encode("utf-8"))
+            body = AUTOPERSIST_HEADER + text
+            if artifact_broker is not None:
+                try:
+                    artifact_broker.submit(name, body)
+                except ArtifactAccessError:
+                    report.warn(f"{name}：受控产物端口拒绝补落盘")
+                    continue
+            else:
+                target.write_bytes(body.encode("utf-8"))
             persisted.append(f"{name}（来源：模型回复文本，原样落盘）")
     return persisted
 
@@ -564,7 +605,11 @@ def _run_agent(
     policy: SandboxPolicy | None = None,
     operations: OperationRecorder | None = None,
 ) -> LoopResult:
-    registry = default_registry()
+    artifact_broker = (
+        ArtifactBroker(out_dir, contract, max_bytes=policy.output_limit_bytes)
+        if policy is not None else None
+    )
+    registry = default_registry(include_artifacts=artifact_broker is not None)
     scope = Scope(
         workspace_root=workspace,
         allowed_read_roots=policy.read_roots if policy is not None else None,
@@ -573,7 +618,7 @@ def _run_agent(
         deny_write_roots=policy.deny_write_roots if policy is not None else (),
     )
     guard = Guard(scope)
-    ctx = _make_ctx(workspace, sandbox, policy)
+    ctx = _make_ctx(workspace, sandbox, policy, artifact_broker)
     on_turn = None
     if checkpointer is not None:
         def on_turn(turn_index: int, total_tool_calls: int, history: list[dict]) -> None:
@@ -592,7 +637,6 @@ def _run_agent(
         on_event=on_event,
         on_turn=on_turn,
     )
-    outputs = [p.value for p in contract.outputs if p.kind == "ticket_file" and p.value]
     deliverable_lines = [
         f"  - {Path(out_dir) / name}   （端口 {port.id}）"
         for name, port in (
@@ -620,25 +664,69 @@ def _run_agent(
         "  - 禁止为了探查环境而执行 whoami / uname / printenv / basename 这类与产出无关的命令；\n"
         "  - 不确定路径时用 glob 一次即可，不要反复 ls 同一目录。\n"
     )
+    if artifact_broker is not None:
+        deliverable_lines = [
+            f"  - {port.value}（端口 {port.id}）"
+            for port in contract.outputs
+            if port.kind in ("ticket_file", "ticket_glob")
+            and port.value != "review_manifest.json"
+        ]
+        available_inputs: list[str] = []
+        for port in contract.inputs:
+            if (port.kind == "ticket_file"
+                    and (Path(out_dir) / port.value).is_file()
+                    and not (Path(out_dir) / port.value).is_symlink()):
+                available_inputs.append(port.value)
+            elif port.kind == "ticket_glob":
+                available_inputs.extend(
+                    path.name for path in sorted(Path(out_dir).glob(port.value))
+                    if path.is_file() and not path.is_symlink()
+                )
+        system = (
+            "你是 ICODE 工作流中的执行代理，工程源码位于隔离工作区。"
+            "工单账本位于宿主，不属于工作区，模型命令不可直接读写。\n\n"
+            "【门禁要求（必须遵守）】\n" + brief + "\n\n"
+            "【本次实际提供的输入】\n"
+            "  - 需求已在下方给出。\n"
+            "  - 当前步骤可通过 read_artifact(name) 读取的旧工单文件："
+            + ("、".join(dict.fromkeys(available_inputs)) or "无") + "。\n"
+            "  - 简报中的宿主路径只供定位，不要对它们调用 read_file/write_file。\n\n"
+            "【本步骤必须提交的产物】\n"
+            + ("\n".join(deliverable_lines) if deliverable_lines else "  （无模型产物）")
+            + "\n必须调用 submit_artifact(name, content) 提交，name 只填文件名或"
+            "匹配模式的具体文件名；由宿主验证后代写并登记。"
+            "write_file/edit_file 仅用于隔离工作区内的工程文件，不能写工单账本。"
+            "提交后可调用 read_artifact 回读旧输入；本步骤新产物以工具回执为准。\n"
+        )
     if requirement:
         system += f"\n【本次需求】\n{requirement}\n"
     if extra_instructions:
         system += f"\n【本步骤的额外交付要求（只描述内容，落盘路径以上方清单为准）】\n{extra_instructions}\n"
         # 把交付路径再钉一次：模型容易把产物写到工作区根目录（实测踩过）
-        if deliverable_lines:
+        if deliverable_lines and artifact_broker is None:
             system += (
                 "\n【再次强调 · 产物必须写这些绝对路径】\n"
                 + "\n".join(deliverable_lines)
                 + "\n不要把产物写到工作区根目录或其它位置，否则本步骤会因产物缺失而失败。\n"
             )
+        elif deliverable_lines:
+            system += (
+                "\n【再次强调 · 仅提交这些产物文件名】\n"
+                + "\n".join(deliverable_lines)
+                + "\n工单产物用 submit_artifact，不使用 write_file。\n"
+            )
     if resume_context:
         system += f"\n{resume_context}\n"
+    user_instruction = (
+        f"请完成 {step} 步骤，并调用 submit_artifact 提交上方列出的产物文件名。"
+        "完成后简要说明提交了哪些产物。"
+        if artifact_broker is not None else
+        f"请完成 {step} 步骤，并把产物写入上面列出的绝对路径。"
+        "完成后简要说明你写了哪个文件、内容要点是什么。"
+    )
     messages = [
         {"role": "system", "content": system},
-        {"role": "user", "content": (
-            f"请完成 {step} 步骤，并把产物写入上面列出的绝对路径。"
-            "完成后简要说明你写了哪个文件、内容要点是什么。"
-        )},
+        {"role": "user", "content": user_instruction},
     ]
     return loop.run(messages)
 

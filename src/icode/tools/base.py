@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
+from ..artifact_broker import ArtifactBroker
 from ..sandbox_policy import SandboxPolicy
 
 # 工具输出回灌模型时的字符上限（渐进披露原则：不要把大段正文塞回上下文）
@@ -36,6 +37,7 @@ class ToolContext:
     output_limit: int = DEFAULT_OUTPUT_LIMIT
     sandbox: object | None = None
     policy: SandboxPolicy | None = None
+    artifact_broker: ArtifactBroker | None = None
 
     def resolve(self, path: str) -> Path:
         p = Path(path)

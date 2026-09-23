@@ -874,6 +874,30 @@ class TestAutonomyManager(unittest.TestCase):
             with workspace_manager.open(ticket_id, "reacquired-run"):
                 pass
 
+    def test_真实workspace会话无策略后端时自动工单阻断且释放租约(self) -> None:
+        ticket_id = self._ticket("native-policy-block-ticket")
+        source_file = self.workspace / "source.txt"
+        source_file.write_text("source\n", encoding="utf-8")
+        with tempfile.TemporaryDirectory(prefix="icode_policy_data_") as raw_data_root:
+            workspace_manager = WorkspaceManager(
+                self.workspace, Path(raw_data_root), self.service.project_id,
+            )
+            executor = NativeChainExecutor(
+                self.settings, backend=FakeBackend(["完成"]),
+                step_runner=lambda *args, **kwargs: self.fail("模型不得启动"),
+            )
+            manager = self._manager(executor, workspace_manager=workspace_manager)
+            manager.handle_intent(ticket_id, {
+                "intent": "start", "request_id": "native-policy-block-start",
+            })
+            blocked = _wait_state(self.service, ticket_id, "blocked")
+            _wait_worker_release(manager, ticket_id)
+            self.assertEqual(blocked["autonomous_run"]["error_code"],
+                             "isolation_unavailable")
+            self.assertEqual(source_file.read_text(encoding="utf-8"), "source\n")
+            with workspace_manager.open(ticket_id, "reacquired-run"):
+                pass
+
     def test_workspace_busy在持久化和worker前稳定拒绝(self) -> None:
         ticket_id = self._ticket("workspace-busy-ticket")
         executor = BlockingExecutor()

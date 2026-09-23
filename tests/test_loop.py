@@ -16,9 +16,11 @@ from typing import Any
 from tests._support import temp_workspace
 
 from icode.approvals import ApprovalRequest, DenyAllApprover, ScriptedApprover
+from icode.artifact_broker import ArtifactBroker
 from icode.backends import FakeBackend
 from icode.budget import Budget, BudgetTracker
-from icode.guard import Guard, Scope
+from icode.contracts import Port, StepContract
+from icode.guard import Decision, Guard, Scope
 from icode.loop import AgentLoop, LoopConfig
 from icode.operations import StartedOperation
 from icode.tools import ToolContext, default_registry
@@ -33,7 +35,8 @@ class _StubOps:
         self.ambiguous = ambiguous
 
     def start(self, *, name: str, opclass: str, input_desc: str) -> StartedOperation:
-        self.started.append({"name": name, "opclass": opclass})
+        self.started.append({"name": name, "opclass": opclass,
+                             "input_desc": input_desc})
         return StartedOperation(
             name=name, opclass=opclass,
             attempt=None if self.ambiguous else f"op-{len(self.started)}",
@@ -81,6 +84,20 @@ class TestLoopGuards(unittest.TestCase):
         self.assertTrue(r.ok)
         self.assertEqual(r.stop_reason, "no_tool_calls")
         self.assertEqual(r.tool_calls, 0)
+
+    def test_受控产物端口不依赖工作区读取授权(self) -> None:
+        out_dir = self.root / "ticket"
+        out_dir.mkdir()
+        broker = ArtifactBroker(out_dir, StepContract(
+            step="plan", outputs=(Port("plan", "ticket_file", "01_plan.md"),),
+        ), max_bytes=1024)
+        loop = _loop(["完成"], self.root)
+        loop.ctx.artifact_broker = broker
+        loop.guard = Guard(Scope(
+            workspace_root=self.root, allowed_read_roots=(),
+        ))
+        self.assertEqual(loop._decide("submit_artifact", {"name": "01_plan.md"}).decision,
+                         Decision.ALLOW)
 
     def test_工作区内写入被放行(self) -> None:
         loop = _loop([_write_call("a.py"), "完成"], self.root)
@@ -152,6 +169,17 @@ class TestSideEffectReceipts(unittest.TestCase):
         self.assertEqual(ops.started[0]["opclass"], "managed_write")
         self.assertEqual(len(ops.finished), 1)
         self.assertEqual(ops.finished[0]["outcome"], "success")
+
+    def test_工具正文不进入操作回执或公开事件(self) -> None:
+        secret = "private-content-never-in-receipt"
+        ops = _StubOps()
+        events: list[dict] = []
+        loop = _loop([_write_call("a.py", secret), "完成"], self.root, ops=ops)
+        loop.on_event = lambda kind, payload: events.append({"kind": kind, **payload})
+        loop.run([{"role": "user", "content": "写"}])
+        self.assertNotIn(secret, ops.started[0]["input_desc"])
+        self.assertIn("args_sha256", ops.started[0]["input_desc"])
+        self.assertNotIn(secret, str(events))
 
     def test_只读动作不产生回执(self) -> None:
         ops = _StubOps()

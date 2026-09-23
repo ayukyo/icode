@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from ..artifact_broker import ArtifactAccessError
 from .base import (
     OPCLASS_MANAGED_WRITE,
     OPCLASS_READ_ONLY,
@@ -139,6 +140,31 @@ def edit_file(ctx: ToolContext, path: str, old: str, new: str) -> ToolResult:
                       {"path": str(target)}, opclass=OPCLASS_MANAGED_WRITE)
 
 
+def submit_artifact(ctx: ToolContext, name: str, content: str) -> ToolResult:
+    """仅在策略会话中由宿主代写当前步骤声明的产物。"""
+    if ctx.artifact_broker is None:
+        return ToolResult(False, "当前步骤未开放受控产物端口",
+                          {"error": "artifact_unavailable"}, opclass=OPCLASS_MANAGED_WRITE)
+    try:
+        size = ctx.artifact_broker.submit(name, content)
+    except ArtifactAccessError as exc:
+        return ToolResult(False, str(exc), {"error": "artifact_denied"},
+                          opclass=OPCLASS_MANAGED_WRITE)
+    return ToolResult(True, f"已提交步骤产物 {name}（{size} 字节）",
+                      {"name": name, "bytes": size}, opclass=OPCLASS_MANAGED_WRITE)
+
+
+def read_artifact(ctx: ToolContext, name: str) -> ToolResult:
+    if ctx.artifact_broker is None:
+        return ToolResult(False, "当前步骤未开放受控产物端口",
+                          {"error": "artifact_unavailable"})
+    try:
+        body = ctx.artifact_broker.read(name)
+    except ArtifactAccessError as exc:
+        return ToolResult(False, str(exc), {"error": "artifact_denied"})
+    return ToolResult(True, body, {"name": name, "bytes": len(body.encode("utf-8"))})
+
+
 # ---------------------------------------------------------------------------
 # 执行
 # ---------------------------------------------------------------------------
@@ -234,7 +260,7 @@ def _looks_read_only(args: list[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def default_registry() -> ToolRegistry:
+def default_registry(*, include_artifacts: bool = False) -> ToolRegistry:
     """Phase 2 最小工具集。
 
     **不含任意 shell 执行**：`run_command` 需经 guard 白名单放行，
@@ -310,4 +336,23 @@ def default_registry() -> ToolRegistry:
         handler=run_command,
         opclass=OPCLASS_MANAGED_WRITE,
     ))
+    if include_artifacts:
+        reg.register(Tool(
+            name="submit_artifact",
+            description="按当前步骤合同提交工单产物正文；只传文件名，不传路径。",
+            parameters=_params({
+                "name": {"type": "string", "description": "当前步骤产物文件名"},
+                "content": {"type": "string", "description": "UTF-8 产物正文"},
+            }, ["name", "content"]),
+            handler=submit_artifact,
+            opclass=OPCLASS_MANAGED_WRITE,
+        ))
+        reg.register(Tool(
+            name="read_artifact",
+            description="读取当前步骤合同声明的旧工单输入；只传文件名。",
+            parameters=_params({
+                "name": {"type": "string", "description": "当前步骤输入文件名"},
+            }, ["name"]),
+            handler=read_artifact,
+        ))
     return reg

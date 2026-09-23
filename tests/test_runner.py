@@ -124,6 +124,53 @@ class TestAutoPersist(unittest.TestCase):
             self.assertTrue(body.startswith(AUTOPERSIST_HEADER.split("\n")[0][:20]))
             self.assertIn("# 计划", body)
 
+    def test_策略会话的文本补落盘也经过合同端口(self) -> None:
+        from icode.artifact_broker import ArtifactBroker
+        from icode.contracts import _to_contract
+        from icode.runner import _persist_missing_from_response
+
+        with temp_workspace() as ws:
+            out = ws / "ticket"
+            out.mkdir()
+            contract = _to_contract("plan", {"outputs": [
+                {"id": "plan", "kind": "ticket_file", "value": "01_plan.md",
+                 "required": True},
+            ]})
+            broker = ArtifactBroker(out, contract, max_bytes=1024)
+            persisted = _persist_missing_from_response(
+                out, contract, _FakeReport(), "# 计划\n" * 4,
+                artifact_broker=broker,
+            )
+            self.assertEqual(len(persisted), 1)
+            self.assertTrue((out / "01_plan.md").is_file())
+
+    def test_符号链接不能冒充已登记的工单产物(self) -> None:
+        from icode.contracts import _to_contract
+        from icode.runner import StepReport, _register_outputs
+
+        class RejectArtifactCall:
+            def artifact(self, *args, **kwargs):
+                raise AssertionError("符号链接不可登记")
+
+        with temp_workspace() as ws:
+            out = ws / "ticket"
+            out.mkdir()
+            outside = ws / "outside.md"
+            outside.write_text("untrusted", encoding="utf-8")
+            try:
+                (out / "01_plan.md").symlink_to(outside)
+            except OSError:
+                self.skipTest("当前账户无法创建符号链接")
+            contract = _to_contract("plan", {"outputs": [
+                {"id": "plan", "kind": "ticket_file", "value": "01_plan.md",
+                 "required": True},
+            ]})
+            report = StepReport(step="plan", ok=False, out_dir=str(out))
+            missing = _register_outputs(
+                RejectArtifactCall(), out, "plan", "attempt", "ticket", contract, report,
+            )
+            self.assertEqual(missing, ["01_plan.md"])
+
     def test_提取不到JSON时诚实保持缺失(self) -> None:
         from icode.runner import _persist_missing_from_response
         from icode.contracts import _to_contract
