@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,32 @@ CREATE_TICKET_FIELDS = frozenset({
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,140}$")
 _OUT_DIR_RE = re.compile(r"^\.icode_output_([0-9]+)$")
 
+AUTONOMOUS_RUN_STATES = frozenset({
+    "pending",
+    "starting",
+    "running",
+    "pause_requested",
+    "paused",
+    "cancel_requested",
+    "cancelled",
+    "succeeded",
+    "failed",
+    "blocked",
+    "interrupted",
+})
+_AUTONOMOUS_RUN_TIMESTAMP_FIELDS = frozenset({
+    "requested_at",
+    "started_at",
+    "updated_at",
+    "finished_at",
+})
+_RUNTIME_TOKEN_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
+_RUNTIME_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_RUNTIME_TIMESTAMP_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
+    r"(?:\.[0-9]{1,6})?Z$"
+)
+
 STATUS_STAGE_KEYS = {
     "log_in_progress": "understanding",
     "log_done": "understanding",
@@ -52,6 +79,14 @@ STATUS_STAGE_KEYS = {
 
 class TicketError(RuntimeError):
     """工单请求或公开投影无法被安全解释。"""
+
+
+@dataclass(frozen=True)
+class _TicketRecord:
+    """仅供服务端执行器使用的可信工单记录；不得进入公开投影。"""
+
+    out_dir: Path
+    metadata: dict[str, Any]
 
 
 def _required_text(payload: dict[str, Any], field: str, *, limit: int) -> str:
@@ -150,6 +185,31 @@ class TicketService:
         value = extensions.get("icode_agent")
         return value if isinstance(value, dict) else {}
 
+    @staticmethod
+    def _public_autonomous_run(agent: dict[str, Any]) -> dict[str, Any] | None:
+        runtime = agent.get("autonomous_run")
+        if not isinstance(runtime, dict):
+            return None
+        public: dict[str, Any] = {}
+        state = runtime.get("state")
+        if state in AUTONOMOUS_RUN_STATES:
+            public["state"] = state
+        revision = runtime.get("revision")
+        if isinstance(revision, int) and not isinstance(revision, bool) and revision >= 0:
+            public["revision"] = revision
+        for field in ("run_id", "last_step"):
+            value = runtime.get(field)
+            if isinstance(value, str) and _RUNTIME_TOKEN_RE.fullmatch(value) is not None:
+                public[field] = value
+        error_code = runtime.get("error_code")
+        if isinstance(error_code, str) and _RUNTIME_CODE_RE.fullmatch(error_code) is not None:
+            public["error_code"] = error_code
+        for field in _AUTONOMOUS_RUN_TIMESTAMP_FIELDS:
+            value = runtime.get(field)
+            if isinstance(value, str) and _RUNTIME_TIMESTAMP_RE.fullmatch(value) is not None:
+                public[field] = value
+        return public
+
     def _public_ticket(self, metadata: dict[str, Any]) -> dict[str, Any]:
         ticket_id = metadata.get("ticket_id")
         if not isinstance(ticket_id, str) or not ticket_id:
@@ -161,7 +221,7 @@ class TicketService:
             title = metadata.get("requirement_summary")
         if not isinstance(title, str) or not title:
             title = ticket_id
-        return {
+        public = {
             "ticket_id": ticket_id,
             "project_id": self.project_id,
             "project_name": self.workspace.name or "project",
@@ -182,6 +242,26 @@ class TicketService:
             if isinstance(metadata.get("updated_at"), str)
             else metadata.get("created_at", ""),
         }
+        autonomous_run = self._public_autonomous_run(agent)
+        if autonomous_run is not None:
+            public["autonomous_run"] = autonomous_run
+        return public
+
+    def _resolve_ticket_record(self, ticket_id: str) -> _TicketRecord:
+        """按不透明 ID 唯一解析可信目录和 metadata。"""
+        if not isinstance(ticket_id, str) or not ticket_id:
+            raise TicketError("工单不存在或身份不唯一")
+        matches: list[_TicketRecord] = []
+        for _, out_dir in self._ticket_dirs():
+            try:
+                metadata = _load_metadata(out_dir / ".ico_metadata.json")
+            except TicketError:
+                continue
+            if metadata.get("ticket_id") == ticket_id:
+                matches.append(_TicketRecord(out_dir=out_dir, metadata=metadata))
+        if len(matches) != 1:
+            raise TicketError("工单不存在或身份不唯一")
+        return matches[0]
 
     def snapshot(self, *, query: str | None = None) -> dict[str, Any]:
         tickets: list[dict[str, Any]] = []
@@ -213,28 +293,47 @@ class TicketService:
         }
 
     def ticket_detail(self, ticket_id: str) -> dict[str, Any]:
-        matches: list[dict[str, Any]] = []
-        for _, out_dir in self._ticket_dirs():
-            try:
-                metadata = _load_metadata(out_dir / ".ico_metadata.json")
-            except TicketError:
-                continue
-            if metadata.get("ticket_id") == ticket_id:
-                public = self._public_ticket(metadata)
-                public["requirement"] = metadata.get("requirement") \
-                    if isinstance(metadata.get("requirement"), str) else ""
-                agent = self._agent_extension(metadata)
-                public["description"] = agent.get("description") \
-                    if isinstance(agent.get("description"), str) else ""
-                public["expected_result"] = agent.get("expected_result") \
-                    if isinstance(agent.get("expected_result"), str) else ""
-                public["completed_steps"] = [
-                    str(item) for item in metadata.get("completed_steps", [])
-                ] if isinstance(metadata.get("completed_steps"), list) else []
-                matches.append(public)
-        if len(matches) != 1:
-            raise TicketError("工单不存在或身份不唯一")
-        return matches[0]
+        metadata = self._resolve_ticket_record(ticket_id).metadata
+        public = self._public_ticket(metadata)
+        public["requirement"] = metadata.get("requirement") \
+            if isinstance(metadata.get("requirement"), str) else ""
+        agent = self._agent_extension(metadata)
+        public["description"] = agent.get("description") \
+            if isinstance(agent.get("description"), str) else ""
+        public["expected_result"] = agent.get("expected_result") \
+            if isinstance(agent.get("expected_result"), str) else ""
+        public["completed_steps"] = [
+            str(item) for item in metadata.get("completed_steps", [])
+        ] if isinstance(metadata.get("completed_steps"), list) else []
+        return public
+
+    def update_agent_extension(
+        self,
+        ticket_id: str,
+        patch: dict[str, Any],
+        *,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """经控制面合并 ``extensions.icode_agent``，并返回安全公开投影。"""
+        if not isinstance(patch, dict):
+            raise TicketError("Agent 扩展补丁必须是对象")
+        if not isinstance(request_id, str) or _REQUEST_ID_RE.fullmatch(request_id) is None:
+            raise TicketError("request_id 格式非法")
+        record = self._resolve_ticket_record(ticket_id)
+        extensions = record.metadata.get("extensions")
+        merged_extensions = dict(extensions) if isinstance(extensions, dict) else {}
+        merged_agent = dict(self._agent_extension(record.metadata))
+        merged_agent.update(patch)
+        merged_extensions["icode_agent"] = merged_agent
+        updated = self.control.metadata_update(
+            record.out_dir,
+            ticket_id=ticket_id,
+            set_json={"extensions": merged_extensions},
+            request=request_id,
+        )
+        if not updated.ok:
+            raise TicketError("Agent 扩展更新被控制面拒绝")
+        return self.ticket_detail(ticket_id)
 
     @staticmethod
     def _requirement(clean: dict[str, str]) -> str:
@@ -288,7 +387,7 @@ class TicketService:
         extensions = metadata.get("extensions")
         merged_extensions = dict(extensions) if isinstance(extensions, dict) else {}
         requested = clean["execution_mode"]
-        merged_extensions["icode_agent"] = {
+        agent_extension: dict[str, Any] = {
             "title": clean["title"],
             "description": clean["description"],
             "expected_result": clean["expected_result"],
@@ -299,6 +398,9 @@ class TicketService:
             "effective_execution_mode": "interactive",
             "mode_status": "active" if requested == "interactive" else "pending_activation",
         }
+        if requested == "autonomous":
+            agent_extension["autonomous_run"] = {"state": "pending", "revision": 0}
+        merged_extensions["icode_agent"] = agent_extension
         updated = self.control.metadata_update(
             out_dir,
             ticket_id=ticket_id,

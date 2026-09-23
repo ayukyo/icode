@@ -123,6 +123,28 @@ icode workbench --workspace /path/to/project
 
 工作台只监听 loopback，以中文或英文显示真实控制面工单状态；普通用户先看到任务信息，技术细节仍可按需展开。
 
+自主执行是需要服务端显式开启的能力。不加 `--enable-autonomous` 时，自动模式工单只会保持“等待激活”，
+服务端不会构造执行器；即使已开启能力，建单本身也不会启动模型，用户仍需在工单详情中点击“启动自动处理”。
+
+```bash
+icode workbench \
+  --workspace /path/to/project \
+  --enable-autonomous \
+  --backend openai-compatible \
+  --key-file /path/outside/repository/model-key.txt \
+  --max-turns 20 \
+  --isolation auto
+```
+
+模型、端点、密钥、预算和隔离配置只存在于服务端进程。浏览器只提交不透明工单编号、
+`start/pause/resume/cancel/takeover` 枚举和幂等 ID；工单状态与事件仍只能通过固定版本的
+ICODE-SKILL 控制面写入。
+
+暂停、取消和接管只在 ICODE 契约步骤边界生效，不会强杀正在进行的模型调用或工具动作。
+关服会在有界等待内记录 `interrupted`，重启不会静默续跑残留任务。同一 Workbench 进程内的租约可避免
+重复 worker，但**不支持多个独立 Workbench 进程同时指向同一 workspace**：它不是跨进程或分布式锁。
+门禁、审批、预算或环境不满足时会如实显示 `blocked`、`failed` 或 `interrupted`，不会冒充成功。
+
 ![ICODE 双语单工程工作台：工单列表与来自控制面的真实状态](docs/assets/workbench-preview.png)
 
 ## 命令入口
@@ -139,7 +161,7 @@ icode workbench --workspace /path/to/project
 | `icode verify-pack <dir>` | 校验已导出的证据包 | 否 |
 | `icode recover --ticket <dir> --step <step>` | 分析或显式恢复中断步骤 | 否 / 恢复时是 |
 | `icode webui` | 在 `127.0.0.1` 启动本地审批台 | 否 |
-| `icode workbench --workspace <dir>` | 启动单工程工单工作台 | 否 |
+| `icode workbench --workspace <dir>` | 启动单工程工单工作台 | 否 / 仅自主执行时联网 |
 
 当前参数和默认值以 `icode <command> --help` 为准。
 

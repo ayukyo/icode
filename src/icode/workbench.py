@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import threading
 from http import HTTPStatus
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from .autonomy import AutonomyError, AutonomyManager, Executor
 from .config import Settings
 from .control import ControlError
 from .tickets import TicketError, TicketService
@@ -29,13 +31,26 @@ CONTENT_SECURITY_POLICY = (
     "img-src 'self' data:; connect-src 'self'; base-uri 'none'; "
     "form-action 'self'; frame-ancestors 'none'"
 )
+_TICKET_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,140}$")
+_INTENT_PREFIX = "/api/v1/tickets/"
+_INTENT_SUFFIX = "/intents"
+_PUBLIC_INTENTS = ["start", "pause", "resume", "cancel", "takeover"]
+_ISOLATION_LEVELS = frozenset({"enforced", "application_only", "not_configured"})
 
 
 class WorkbenchHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], service: TicketService) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        service: TicketService,
+        autonomy: AutonomyManager,
+        autonomy_capability: dict[str, Any],
+    ) -> None:
         self.service = service
+        self.autonomy = autonomy
+        self.autonomy_capability = autonomy_capability
         self.session_token = secrets.token_urlsafe(32)
         super().__init__(address, WorkbenchRequestHandler)
 
@@ -173,12 +188,24 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             if path == "/api/v1/bootstrap":
-                self._send_json(HTTPStatus.OK, {"ok": True, **self.server.service.snapshot()})
+                self._send_json(HTTPStatus.OK, {
+                    "ok": True,
+                    **self.server.service.snapshot(),
+                    "capabilities": {
+                        "autonomous": self.server.autonomy_capability,
+                    },
+                })
                 return
             if path == "/api/v1/tickets":
                 query = parse_qs(parsed.query, keep_blank_values=False)
                 result = self.server.service.snapshot(query=(query.get("query") or [None])[0])
-                self._send_json(HTTPStatus.OK, {"ok": True, **result})
+                self._send_json(HTTPStatus.OK, {
+                    "ok": True,
+                    **result,
+                    "capabilities": {
+                        "autonomous": self.server.autonomy_capability,
+                    },
+                })
                 return
             if path.startswith("/api/v1/tickets/"):
                 ticket_id = unquote(path.removeprefix("/api/v1/tickets/"))
@@ -196,14 +223,35 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         if not self._host_ok():
             return
         path = urlsplit(self.path).path
-        if path != "/api/v1/tickets":
+        is_create = path == "/api/v1/tickets"
+        is_intent = path.startswith(_INTENT_PREFIX) and path.endswith(_INTENT_SUFFIX)
+        if not is_create and not is_intent:
             self._error(HTTPStatus.NOT_FOUND, "not_found", "路径不存在")
             return
         if not self._api_access(write=True):
             return
         try:
             payload = self._read_json()
-            result = self.server.service.create_ticket(payload)
+            if is_create:
+                result = self.server.service.create_ticket(payload)
+            else:
+                raw_ticket_id = path[len(_INTENT_PREFIX):-len(_INTENT_SUFFIX)]
+                ticket_id = unquote(raw_ticket_id)
+                if (
+                    not ticket_id
+                    or "/" in ticket_id
+                    or "\\" in ticket_id
+                    or _TICKET_ID_RE.fullmatch(ticket_id) is None
+                ):
+                    self._error(
+                        HTTPStatus.BAD_REQUEST,
+                        "invalid_ticket_id",
+                        "ticket_id 非法",
+                    )
+                    return
+                ticket = self.server.autonomy.handle_intent(ticket_id, payload)
+                self._send_json(HTTPStatus.ACCEPTED, {"ok": True, "ticket": ticket})
+                return
         except RequestTooLarge as exc:
             self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large", str(exc))
             return
@@ -211,6 +259,14 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             status = HTTPStatus.UNSUPPORTED_MEDIA_TYPE \
                 if "Content-Type" in str(exc) else HTTPStatus.BAD_REQUEST
             self._error(status, "invalid_request", str(exc))
+            return
+        except AutonomyError as exc:
+            status = {
+                "invalid_intent": HTTPStatus.BAD_REQUEST,
+                "ticket_not_found": HTTPStatus.NOT_FOUND,
+                "manager_shutdown": HTTPStatus.SERVICE_UNAVAILABLE,
+            }.get(exc.code, HTTPStatus.CONFLICT)
+            self._error(status, exc.code, str(exc))
             return
         except ControlError:
             self._error(HTTPStatus.CONFLICT, "control_rejected", "控制面拒绝创建或更新工单")
@@ -229,6 +285,9 @@ class WorkbenchServer:
         workspace: Path | str,
         port: int = 0,
         index_path: Path | str | None = None,
+        enable_autonomous: bool = False,
+        autonomy_executor: Executor | None = None,
+        autonomy_limits: dict[str, Any] | None = None,
     ) -> None:
         if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
             raise ValueError("port 必须是 0..65535 的整数")
@@ -237,8 +296,47 @@ class WorkbenchServer:
             workspace=workspace,
             index_path=index_path,
         )
-        self.httpd = WorkbenchHTTPServer((LOOPBACK_HOST, port), self.service)
+        self.autonomy = AutonomyManager(
+            self.service,
+            executor=autonomy_executor,
+            enabled=enable_autonomous,
+        )
+        limits = self._safe_autonomy_limits(autonomy_limits)
+        self.autonomy_capability = {
+            "enabled": self.autonomy.enabled,
+            "pause_semantics": "contract_step_boundary",
+            "intents": list(_PUBLIC_INTENTS),
+            "limits": limits,
+        }
+        self.httpd = WorkbenchHTTPServer(
+            (LOOPBACK_HOST, port),
+            self.service,
+            self.autonomy,
+            self.autonomy_capability,
+        )
         self.thread: threading.Thread | None = None
+
+    @staticmethod
+    def _safe_autonomy_limits(raw: dict[str, Any] | None) -> dict[str, Any]:
+        raw = raw if isinstance(raw, dict) else {}
+        max_turns = raw.get("max_turns", 0)
+        if isinstance(max_turns, bool) or not isinstance(max_turns, int) or max_turns < 0:
+            max_turns = 0
+        budget_tokens = raw.get("budget_tokens", 0)
+        if (
+            isinstance(budget_tokens, bool)
+            or not isinstance(budget_tokens, int)
+            or budget_tokens < 0
+        ):
+            budget_tokens = 0
+        isolation_level = raw.get("isolation_level", "not_configured")
+        if isolation_level not in _ISOLATION_LEVELS:
+            isolation_level = "not_configured"
+        return {
+            "max_turns": max_turns,
+            "budget_tokens": budget_tokens,
+            "isolation_level": isolation_level,
+        }
 
     @property
     def url(self) -> str:
@@ -251,8 +349,20 @@ class WorkbenchServer:
         return self.url
 
     def stop(self) -> None:
-        if self.thread is not None:
-            self.httpd.shutdown()
-            self.thread.join(timeout=5)
-            self.thread = None
-        self.httpd.server_close()
+        thread = self.thread
+        try:
+            if thread is not None:
+                try:
+                    self.httpd.shutdown()
+                finally:
+                    try:
+                        self.autonomy.shutdown(timeout=2.0)
+                    finally:
+                        try:
+                            thread.join(timeout=5)
+                        finally:
+                            self.thread = None
+            else:
+                self.autonomy.shutdown(timeout=2.0)
+        finally:
+            self.httpd.server_close()

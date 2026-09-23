@@ -132,6 +132,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_workbench.add_argument("--workspace", required=True, help="服务端可信工程根")
     p_workbench.add_argument("--port", type=int, default=0, help="0 = 由系统分配空闲端口")
     p_workbench.add_argument("--no-browser", action="store_true")
+    p_workbench.add_argument(
+        "--enable-autonomous",
+        action="store_true",
+        help="显式启用自主执行（默认关闭）",
+    )
+    _add_model_args(p_workbench)
+    _add_loop_args(p_workbench, default_turns=20)
 
     return parser
 
@@ -565,14 +572,43 @@ def cmd_workbench(args: argparse.Namespace) -> int:
     from .workbench import WorkbenchServer
 
     settings = load_settings(args.skill_root)
+    executor = None
+    isolation_level = "not_configured"
+    if args.enable_autonomous:
+        if args.max_turns <= 0:
+            raise ConfigError("--max-turns 必须大于 0")
+        if args.budget_tokens < 0:
+            raise ConfigError("--budget-tokens 不能小于 0")
+        from .autonomy import NativeChainExecutor
+        from .loop import LoopConfig
+
+        backend, approver, budget, on_event, sandbox = _build_runner(args)
+        executor = NativeChainExecutor(
+            settings,
+            backend=backend,
+            approver=approver,
+            loop_config=LoopConfig(max_turns=args.max_turns),
+            budget=budget,
+            on_event=on_event,
+            sandbox=sandbox,
+        )
+        isolation_level = "enforced" if sandbox.is_real_isolation else "application_only"
     server = WorkbenchServer(
         settings=settings,
         workspace=Path(args.workspace),
         port=args.port,
+        enable_autonomous=args.enable_autonomous,
+        autonomy_executor=executor,
+        autonomy_limits={
+            "max_turns": args.max_turns,
+            "budget_tokens": args.budget_tokens,
+            "isolation_level": isolation_level,
+        },
     )
     url = server.start()
     print(f"  工作台：{url}")
     print(f"  工程：{Path(args.workspace).expanduser().resolve()}")
+    print(f"  自主执行：{'已启用' if args.enable_autonomous else '未启用'}")
     print("  按 Ctrl+C 结束")
     if not args.no_browser:
         webbrowser.open(url)

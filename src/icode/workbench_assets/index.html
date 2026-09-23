@@ -54,6 +54,22 @@
         </div>
         <section class="detail-section"><h3 data-i18n="problemDescription">问题或需求</h3><p id="detail-description" class="preserve-lines"></p></section>
         <section class="detail-section"><h3 data-i18n="expectedResult">希望得到的结果</h3><p id="detail-expected" class="preserve-lines"></p></section>
+        <section id="autonomy-panel" class="autonomy-panel" hidden>
+          <div class="autonomy-heading"><div><p class="eyebrow" data-i18n="autonomyEyebrow">自动处理</p><h3 data-i18n="autonomyTitle">自主运行</h3></div><span id="autonomy-state" class="runtime-badge"></span></div>
+          <p class="safe-point-note" data-i18n="pauseSemantics">仅在当前契约步骤完成后暂停；正在进行的模型调用不会被中途截断。</p>
+          <dl class="runtime-facts">
+            <div><dt data-i18n="runtimeCapability">运行能力</dt><dd id="autonomy-capability"></dd></div>
+            <div><dt data-i18n="configuredLimits">配置限制</dt><dd id="autonomy-limits"></dd></div>
+            <div><dt data-i18n="lastStep">最近步骤</dt><dd id="autonomy-last-step"></dd></div>
+          </dl>
+          <div class="intent-actions" aria-label="Autonomous run actions">
+            <button id="intent-start" class="primary" type="button" data-intent="start" data-i18n="startAutonomy">启动自动处理</button>
+            <button id="intent-pause" type="button" data-intent="pause" data-i18n="pauseAutonomy">在步骤边界暂停</button>
+            <button id="intent-resume" type="button" data-intent="resume" data-i18n="resumeAutonomy">继续自动处理</button>
+            <button id="intent-cancel" type="button" data-intent="cancel" data-i18n="cancelAutonomy">取消自动处理</button>
+            <button id="intent-takeover" type="button" data-intent="takeover" data-i18n="takeoverAutonomy">接管为会话模式</button>
+          </div>
+        </section>
         <details id="technical-details" class="technical-details">
           <summary data-i18n="technicalDetails">技术详情</summary>
           <dl>

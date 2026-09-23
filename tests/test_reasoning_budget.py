@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 
 from tests._support import require_skill, temp_workspace
@@ -171,18 +172,22 @@ class TestApprovers(unittest.TestCase):
     def test_CLI_审批者默认回车即拒绝(self) -> None:
         from unittest import mock
 
-        with mock.patch("builtins.input", return_value=""):
-            self.assertFalse(CliApprover(stream=open(__import__("os").devnull, "w")).ask(self._req()))
-        with mock.patch("builtins.input", return_value="y"):
-            self.assertTrue(CliApprover(stream=open(__import__("os").devnull, "w")).ask(self._req()))
+        with open(os.devnull, "w") as stream, mock.patch(
+            "builtins.input", return_value=""
+        ):
+            self.assertFalse(CliApprover(stream=stream).ask(self._req()))
+        with open(os.devnull, "w") as stream, mock.patch(
+            "builtins.input", return_value="y"
+        ):
+            self.assertTrue(CliApprover(stream=stream).ask(self._req()))
 
     def test_CLI_审批者遇中断视为拒绝(self) -> None:
         from unittest import mock
 
-        import os
-
-        with mock.patch("builtins.input", side_effect=KeyboardInterrupt):
-            self.assertFalse(CliApprover(stream=open(os.devnull, "w")).ask(self._req()))
+        with open(os.devnull, "w") as stream, mock.patch(
+            "builtins.input", side_effect=KeyboardInterrupt
+        ):
+            self.assertFalse(CliApprover(stream=stream).ask(self._req()))
 
 
 if __name__ == "__main__":

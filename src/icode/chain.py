@@ -126,6 +126,11 @@ def chain_steps(contracts: ContractSet, *, from_status: str = "init_in_progress"
         因此用 visited 集合防止绕圈，而不是"步骤去重"。
     """
     sm = contracts.state_machine()
+    terminal_states = {
+        str(value) for value in (sm.get("terminal_states_of_ticket") or ())
+    }
+    if from_status in terminal_states:
+        return ()
     policy = sm.get("gate_policy") or {}
     step_by_target = {str(k): str(v) for k, v in dict(policy.get("step_by_target") or {}).items()}
     transitions: list[dict] = list(sm.get("transitions") or [])
@@ -276,6 +281,7 @@ def run_chain(
     on_event=None,
     sandbox=None,
     on_step=None,
+    out_dir: Path | None = None,
 ) -> ChainReport:
     """串起完整链路。**任一步骤被门禁拒绝即停步**，并如实报告。"""
     workspace = Path(workspace).resolve()
@@ -283,11 +289,22 @@ def run_chain(
     contracts = ContractSet.load(settings.gates_json)
     report = ChainReport(ticket_id=ticket_id)
 
+    if out_dir is not None:
+        out_dir = Path(out_dir).resolve()
+        metadata_path = out_dir / ".ico_metadata.json"
+        if not metadata_path.is_file():
+            raise ValueError("已有工单目录缺少 .ico_metadata.json")
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("已有工单 metadata 不可读") from exc
+        if not isinstance(metadata, dict) or metadata.get("ticket_id") != ticket_id:
+            raise ValueError("已有工单目录与 ticket_id 不匹配")
+
     order = tuple(steps) if steps else chain_steps(contracts)
     report.notes.append("链路顺序（由状态机派生）：" + " → ".join(order))
 
     before = _snapshot(workspace)
-    out_dir: Path | None = None
 
     for name in order:
         instructions = STEP_INSTRUCTIONS.get(name, "")

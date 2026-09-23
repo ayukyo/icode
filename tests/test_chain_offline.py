@@ -11,6 +11,7 @@ import json
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from tests._support import REPO_ROOT, require_skill, temp_workspace
 
@@ -20,6 +21,7 @@ from icode.config import load_settings
 from icode.contracts import ContractSet
 from icode.control import ControlPlane
 from icode.runner import run_unittest
+from icode.runner import StepReport
 
 # 各步骤的模拟产物内容（模型"应该"写的内容）
 PLAN_TEXT = "# 实施计划\n\n## 需求理解\n为 calc.py 新增 gcd/lcm。\n"
@@ -71,6 +73,94 @@ class TestChainOffline(unittest.TestCase):
     def test_链路顺序从状态机派生(self) -> None:
         order = chain_steps(self.contracts)
         self.assertEqual(order, ("plan", "review", "merge", "code", "deepcheck", "audit"))
+
+    def test_run_chain复用可信已有工单目录(self) -> None:
+        with temp_workspace() as workspace:
+            from icode.handshake import next_out_dir
+
+            existing_ticket = next_out_dir(workspace)
+            ticket_id = "OFFLINE-EXISTING-1"
+            ControlPlane(self.settings).create(
+                existing_ticket,
+                ticket_id=ticket_id,
+                requirement="续跑已有工单",
+                birth="plan",
+            )
+            before = sorted((workspace / ".icode_output").iterdir())
+            step_report = StepReport(
+                step="plan",
+                ok=True,
+                out_dir=str(existing_ticket.resolve()),
+                finish_outcome="success",
+            )
+
+            with patch("icode.chain.run_contract_step", return_value=step_report) as invoked:
+                report = run_chain(
+                    self.settings,
+                    backend=FakeBackend(["完成"]),
+                    workspace=workspace,
+                    requirement="续跑已有工单",
+                    ticket_id=ticket_id,
+                    steps=("plan",),
+                    out_dir=existing_ticket,
+                )
+
+            self.assertTrue(report.ok)
+            self.assertEqual(sorted((workspace / ".icode_output").iterdir()), before)
+            self.assertEqual(invoked.call_args.kwargs["ticket_id"], ticket_id)
+            self.assertEqual(invoked.call_args.kwargs["out_dir"], existing_ticket.resolve())
+
+    def test_run_chain拒绝非工单目录与身份不匹配目录(self) -> None:
+        with temp_workspace() as workspace:
+            not_a_ticket = workspace / "not-a-ticket"
+            not_a_ticket.mkdir()
+            with self.assertRaisesRegex(ValueError, r"\.ico_metadata\.json"):
+                run_chain(
+                    self.settings,
+                    backend=FakeBackend(["完成"]),
+                    workspace=workspace,
+                    requirement="invalid existing ticket",
+                    ticket_id="EXPECTED-1",
+                    steps=("plan",),
+                    out_dir=not_a_ticket,
+                )
+
+            from icode.handshake import next_out_dir
+
+            mismatched = next_out_dir(workspace)
+            ControlPlane(self.settings).create(
+                mismatched,
+                ticket_id="ACTUAL-1",
+                requirement="mismatched ticket",
+                birth="plan",
+            )
+            with self.assertRaisesRegex(ValueError, "ticket_id"):
+                run_chain(
+                    self.settings,
+                    backend=FakeBackend(["完成"]),
+                    workspace=workspace,
+                    requirement="mismatched ticket",
+                    ticket_id="EXPECTED-1",
+                    steps=("plan",),
+                    out_dir=mismatched,
+                )
+
+    def test_run_chain拒绝非UTF8_metadata(self) -> None:
+        with temp_workspace() as workspace:
+            invalid = workspace / "invalid-ticket"
+            invalid.mkdir()
+            (invalid / ".ico_metadata.json").write_bytes(b"\xff\xfe")
+
+            with self.assertRaisesRegex(ValueError, "metadata"):
+                run_chain(
+                    self.settings,
+                    backend=FakeBackend(["完成"]),
+                    workspace=workspace,
+                    requirement="invalid metadata encoding",
+                    ticket_id="INVALID-UTF8-1",
+                    steps=("plan",),
+                    out_dir=invalid,
+                )
 
     def test_plan_review_merge_三步走通(self) -> None:
         """离线验证：plan → review → merge 三步全部通过，事件链完整。"""

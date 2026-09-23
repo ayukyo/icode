@@ -1032,6 +1032,23 @@ ICODE UI 采用“**工单工作台优先**”，不采用“聊天框优先”�
 
 接口同时返回 `requested_execution_mode` 和 `effective_execution_mode`。用户点击切换只会产生模式变更意图；只有 Agent 在安全点完成 checkpoint 且控制面接受后，实际生效模式才改变。UI 在此期间显示“正在切换”，不得提前显示切换成功。
 
+#### R1B 已验证的自主运行边界
+
+R1B 以同一套 Agent core 和 ICODE-SKILL 控制面实现了本地单工程自主运行的最小闭环，
+不新建第二套工单状态机：
+
+1. `icode workbench` 默认不启用自主 executor；只有服务端显式传入 `--enable-autonomous`、模型和隔离配置后才公布该能力。
+2. 建单时选择 `autonomous` 只记录请求模式；必须再提交一次 `start` 意图才创建 worker，防止页面表单成为隐式执行授权。
+3. 浏览器只能发送工单 ID、稳定动作枚举和幂等 request ID。服务端在工单运行时中仅持久化最近 64 个已接受意图的哈希回执，支持进程重启和后续动作之后的安全重放且不公开原始 request ID；更早回执超出窗口后不再承诺跨重启幂等，并由控制面继续 fail-closed。凭据、端点、模型、真实路径、命令、预算和隔离实现均停留在服务端信任边界内。
+4. `NativeChainExecutor` 每次只执行一个由当前控制面状态派生的待办步骤，并在每个契约步骤开始前与正常返回后触达 safe point。暂停/取消/接管不会强杀当前模型请求或工具调用，因此 UI 必须保留 `pause_requested` 而不得提前显示已暂停。
+5. 有界关服立即公开标记 `interrupted`，同进程 worker 租约防止旧 worker 退出前启动第二个 worker；旧 worker 的迟到成功结果不能覆写中断终态。
+6. 全进程重启时，持久化为 `starting/running/pause_requested/cancel_requested` 但无本进程 worker 的残留运行会降级为 `interrupted/process_restarted`，不自动续跑；后续恢复必须显式提交 `resume`。
+
+当前限制是：仅本地 loopback、单工程、单进程内每工单单 worker；暂停延迟上界取决于当前契约步骤耗时；
+不支持多个独立 Workbench 进程同时指向同一 workspace，进程内 worker 租约不能当作跨进程或跨主机分布式锁；
+没有远程调度、持久化 worker 队列、通知、多租户权限或跨主机租约。完整六步链路仍可被控制面门禁、人工审批、预算或环境能力阻断；
+运行时会如实记录 `blocked/failed/interrupted`，不会将部分执行写成成功。
+
 ### 14.10 工单详情
 
 普通用户默认看到四个页签：

@@ -85,6 +85,7 @@ class TestTicketService(unittest.TestCase):
         self.assertEqual(ticket["requested_execution_mode"], "autonomous")
         self.assertEqual(ticket["effective_execution_mode"], "interactive")
         self.assertEqual(ticket["mode_status"], "pending_activation")
+        self.assertEqual(ticket["autonomous_run"], {"state": "pending", "revision": 0})
         self.assertEqual(ticket["locale"], "en-US")
         self.assertNotIn(str(self.workspace), json.dumps(ticket))
 
@@ -129,6 +130,91 @@ class TestTicketService(unittest.TestCase):
         self.assertNotIn(str(self.workspace), raw)
         self.assertNotIn("out_dir", raw)
         self.assertNotIn("project_path", raw)
+
+    def test_Agent扩展更新经控制面合并且保留兄弟扩展(self) -> None:
+        created = self.service.create_ticket(_payload(self.service.project_id))
+        ticket_id = created["ticket"]["ticket_id"]
+        record = self.service._resolve_ticket_record(ticket_id)
+        seeded_extensions = dict(record.metadata["extensions"])
+        seeded_extensions["other_system"] = {"keep": True}
+        self.service.control.metadata_update(
+            record.out_dir,
+            ticket_id=ticket_id,
+            set_json={"extensions": seeded_extensions},
+            request="seed-sibling-extension",
+        )
+
+        ticket = self.service.update_agent_extension(
+            ticket_id,
+            {"autonomous_run": {"state": "pending", "revision": 1}},
+            request_id="agent-runtime-1",
+        )
+
+        refreshed = self.service._resolve_ticket_record(ticket_id)
+        self.assertEqual(refreshed.metadata["extensions"]["other_system"], {"keep": True})
+        self.assertEqual(
+            refreshed.metadata["extensions"]["icode_agent"]["autonomous_run"]["state"],
+            "pending",
+        )
+        self.assertEqual(ticket["autonomous_run"], {"state": "pending", "revision": 1})
+        event_types = [
+            json.loads(line)["event_type"]
+            for line in (record.out_dir / ".ico_events.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        self.assertGreaterEqual(event_types.count("metadata_updated"), 3)
+
+    def test_自动运行公开投影只含安全字段(self) -> None:
+        created = self.service.create_ticket(_payload(self.service.project_id))
+        ticket_id = created["ticket"]["ticket_id"]
+        safe = {
+            "state": "running",
+            "run_id": "run-public-1",
+            "revision": 7,
+            "requested_at": "2026-09-23T01:00:00Z",
+            "started_at": "2026-09-23T01:00:01Z",
+            "updated_at": "2026-09-23T01:00:02Z",
+            "last_step": "plan",
+            "error_code": "executor_error",
+        }
+        unsafe = {
+            "out_dir": str(self.workspace),
+            "exception": f"boom at {self.workspace}",
+            "credential": "secret",
+            "unknown_runtime_field": {"nested": "private"},
+        }
+
+        ticket = self.service.update_agent_extension(
+            ticket_id,
+            {"autonomous_run": {**safe, **unsafe}},
+            request_id="agent-runtime-safe-projection",
+        )
+
+        self.assertEqual(ticket["autonomous_run"], safe)
+        raw = json.dumps(ticket, ensure_ascii=False)
+        self.assertNotIn(str(self.workspace), raw)
+        for field in unsafe:
+            self.assertNotIn(field, ticket["autonomous_run"])
+
+    def test_自动运行公开投影拒绝伪装成安全字段的路径值(self) -> None:
+        created = self.service.create_ticket(_payload(self.service.project_id))
+        ticket_id = created["ticket"]["ticket_id"]
+        ticket = self.service.update_agent_extension(
+            ticket_id,
+            {"autonomous_run": {
+                "state": "failed",
+                "revision": 2,
+                "run_id": str(self.workspace),
+                "last_step": str(self.workspace / "private-step"),
+                "error_code": f"exception_at_{self.workspace}",
+                "updated_at": f"trace:{self.workspace}",
+            }},
+            request_id="agent-runtime-unsafe-values",
+        )
+
+        self.assertEqual(ticket["autonomous_run"], {"state": "failed", "revision": 2})
+        self.assertNotIn(str(self.workspace), json.dumps(ticket, ensure_ascii=False))
 
     def test_错误项目身份被拒绝(self) -> None:
         with self.assertRaises(TicketError):

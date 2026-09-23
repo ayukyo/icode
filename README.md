@@ -123,6 +123,36 @@ icode workbench --workspace /path/to/project
 
 The workbench binds to loopback only. It presents real control-plane ticket state in Chinese or English and keeps technical detail available without making it the default view.
 
+Autonomous execution is an explicit server-side capability. Without
+`--enable-autonomous`, an autonomous ticket remains pending and no executor is
+constructed. Even when enabled, creating a ticket does not start model work;
+the user must select **Start autonomous work** in the ticket detail.
+
+```bash
+icode workbench \
+  --workspace /path/to/project \
+  --enable-autonomous \
+  --backend openai-compatible \
+  --key-file /path/outside/repository/model-key.txt \
+  --max-turns 20 \
+  --isolation auto
+```
+
+Model, endpoint, credential, budget, and isolation settings stay inside the
+server process. The browser sends only an opaque ticket ID, one of
+`start/pause/resume/cancel/takeover`, and an idempotency ID. Ticket state and
+events are still written exclusively through the pinned ICODE-SKILL control
+plane.
+
+Pause, cancellation, and takeover take effect at ICODE contract-step
+boundaries; an in-flight model call or tool action is not killed midway.
+Shutdown records `interrupted` within a bounded wait, and restart never silently
+resumes stale work. A process-local lease prevents duplicate workers inside one
+Workbench process, but multiple independent Workbench processes must not point
+at the same workspace: the lease is not a cross-process or distributed lock.
+Gate, approval, budget, and environment failures remain visible as
+`blocked`, `failed`, or `interrupted` rather than being reported as success.
+
 ![ICODE bilingual single-project workbench showing a ticket list and evidence-backed status](docs/assets/workbench-preview.png)
 
 ## Commands
@@ -139,7 +169,7 @@ The workbench binds to loopback only. It presents real control-plane ticket stat
 | `icode verify-pack <dir>` | Verify an exported evidence package | No |
 | `icode recover --ticket <dir> --step <step>` | Analyze or explicitly resume interrupted work | No / resume only |
 | `icode webui` | Start the local approval console on `127.0.0.1` | No |
-| `icode workbench --workspace <dir>` | Start the single-project ticket workbench | No |
+| `icode workbench --workspace <dir>` | Start the single-project ticket workbench | No / Yes in autonomous mode |
 
 Use `icode <command> --help` for current arguments and defaults.
 
