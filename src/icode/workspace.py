@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -22,6 +23,12 @@ class _LockUnavailable(Exception):
     """底层非阻塞锁未能取得。"""
 
 
+_LOCK_BYTE = b"\0"
+_POSIX_CONTENTION_ERRNOS = frozenset((errno.EACCES, errno.EAGAIN))
+_WINDOWS_CONTENTION_ERRNOS = frozenset((errno.EACCES, errno.EAGAIN))
+_WINDOWS_LOCK_VIOLATION = 33
+
+
 def _validated_bytes(name: str, value: str) -> bytes:
     if not isinstance(value, str) or not value:
         raise WorkspaceError(f"{name} 必须是非空字符串")
@@ -33,12 +40,51 @@ def _validated_bytes(name: str, value: str) -> bytes:
         raise WorkspaceError(f"{name} 必须可编码为 UTF-8") from exc
 
 
-def _ensure_lock_byte(stream: BinaryIO) -> None:
-    stream.seek(0, os.SEEK_END)
-    if stream.tell() == 0:
-        stream.write(b"\0")
-        stream.flush()
+def _open_lock_file(path: Path) -> BinaryIO:
+    """打开锁 inode；仅创建者负责写入初始锁字节。"""
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
+    try:
+        descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+    except FileExistsError:
+        descriptor = os.open(path, flags)
+        created = False
+
+    try:
+        stream = os.fdopen(descriptor, "r+b")
+    except Exception:
+        os.close(descriptor)
+        raise
+
+    try:
+        if created:
+            stream.write(_LOCK_BYTE)
+            stream.flush()
+            os.fsync(stream.fileno())
+        elif os.fstat(stream.fileno()).st_size < 1:
+            raise WorkspaceError("锁文件尚未完成初始化")
+    except Exception:
+        stream.close()
+        raise
     stream.seek(0)
+    return stream
+
+
+def _is_lock_contention(exc: OSError) -> bool:
+    if os.name == "posix":
+        return exc.errno in _POSIX_CONTENTION_ERRNOS
+    if os.name == "nt":  # pragma: no cover - 在 Windows CI 上执行
+        return (
+            exc.errno in _WINDOWS_CONTENTION_ERRNOS
+            or getattr(exc, "winerror", None) == _WINDOWS_LOCK_VIOLATION
+        )
+    return False
+
+
+def _raise_lock_error(exc: OSError) -> None:
+    if _is_lock_contention(exc):
+        raise _LockUnavailable from exc
+    raise WorkspaceError(f"无法获取工单文件锁：{exc}") from exc
 
 
 def _acquire_file_lock(stream: BinaryIO) -> None:
@@ -50,7 +96,7 @@ def _acquire_file_lock(stream: BinaryIO) -> None:
         try:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            raise _LockUnavailable from exc
+            _raise_lock_error(exc)
         return
 
     if os.name == "nt":  # pragma: no cover - 在 Windows CI 上执行
@@ -62,7 +108,7 @@ def _acquire_file_lock(stream: BinaryIO) -> None:
         try:
             msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
         except OSError as exc:
-            raise _LockUnavailable from exc
+            _raise_lock_error(exc)
         return
 
     raise WorkspaceError(f"不支持的平台：{os.name}")
@@ -126,8 +172,7 @@ class TicketLease:
             lease_dir = Path(data_root) / "ticket-leases"
             lease_dir.mkdir(parents=True, exist_ok=True)
             path = lease_dir / digest
-            stream = path.open("a+b")
-            _ensure_lock_byte(stream)
+            stream = _open_lock_file(path)
             try:
                 _acquire_file_lock(stream)
             except _LockUnavailable as exc:
@@ -150,7 +195,9 @@ class TicketLease:
                 + "\n"
             ).encode("utf-8")
             stream.seek(0)
-            stream.truncate(0)
+            stream.write(_LOCK_BYTE)
+            stream.truncate(1)
+            stream.seek(1)
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
