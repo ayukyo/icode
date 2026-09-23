@@ -166,6 +166,23 @@ class ContractSet:
                 return str(target)
         return None
 
+    def in_progress_status_for(self, step: str) -> str | None:
+        """找该步骤的 `in_progress` 状态（如果有）。
+
+        逻辑：从状态机 transitions 里找 `to == done_status` 的那条，
+        其 `from` 就是该步骤的 in_progress 状态。
+        例如 review_done 的 from 是 review_in_progress。
+        """
+        done = self.status_for_step(step)
+        if done is None:
+            return None
+        for item in self._sm.get("transitions") or ():
+            if str(item.get("to")) == done:
+                frm = str(item.get("from"))
+                if frm.endswith("_in_progress"):
+                    return frm
+        return None
+
     def gated_targets(self) -> tuple[str, ...]:
         policy = self._sm.get("gate_policy") or {}
         return tuple(str(t) for t in (policy.get("gated_targets") or ()))

@@ -258,6 +258,15 @@ def run_contract_step(
         attempt = cp.step_start(out_dir, step, ticket_id=ticket_id)
         report.add("step start", bool(attempt), f"attempt={attempt}")
 
+        # 中间状态流转：review/code/deepcheck 有 in_progress 状态，
+        # 必须先流转到 in_progress 才能做工作（否则后续的 done 流转会被状态机拒绝）。
+        # plan / merge / audit 没有独立的 in_progress 状态（create 时的状态即为起点）。
+        in_prog = contracts.in_progress_status_for(step)
+        if in_prog:
+            tr = cp.transition(out_dir, in_prog, ticket_id=ticket_id)
+            report.add(f"中间状态流转 → {in_prog}", tr.data.get("ok") is True,
+                       f"status={tr.data.get('status')}")
+
         # 检查点：让中断后可恢复（不保存模型正文）
         ckpt = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt=attempt)
         report.checkpoint_path = str(ckpt.path)
