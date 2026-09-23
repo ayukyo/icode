@@ -647,9 +647,10 @@ class TestWorkspaceManager(unittest.TestCase):
                 self.assertEqual(
                     session.workspace_root.joinpath(name).read_bytes(), content
                 )
-            self.assertTrue(
-                session.workspace_root.joinpath("executable.sh").stat().st_mode & 0o111
-            )
+            if os.name == "posix":
+                self.assertTrue(
+                    session.workspace_root.joinpath("executable.sh").stat().st_mode & 0o111
+                )
             self.assertEqual(
                 _run_git(session.workspace_root, "write-tree"),
                 _run_git(repository, "rev-parse", "HEAD^{tree}"),
@@ -935,7 +936,7 @@ class TestWorkspaceManager(unittest.TestCase):
             )
             entries = {item["path"]: item for item in baseline["entries"]}
             self.assertEqual(entries["file.txt"]["type"], "file")
-            self.assertEqual(entries["file.txt"]["size"], len(b"snapshot\n"))
+            self.assertEqual(entries["file.txt"]["size"], (source / "file.txt").stat().st_size)
             self.assertEqual(entries["internal-link"]["type"], "symlink")
             self.assertEqual(entries["internal-link"]["target"], "file.txt")
             self.assertIn("sha256", entries["directory/nested.bin"])
@@ -1321,7 +1322,12 @@ class TestWorkspaceManager(unittest.TestCase):
             manager.open("targeted-cleanup-ticket", "run-1")
 
         registrations = _run_git(repository, "worktree", "list", "--porcelain")
-        self.assertIn(str(unrelated), registrations)
+        registration_paths = [
+            Path(line.removeprefix("worktree ")).resolve()
+            for line in registrations.splitlines()
+            if line.startswith("worktree ")
+        ]
+        self.assertIn(unrelated.resolve(), registration_paths)
 
     def test_quarantine_rename窗口替换的foreign目录仍保留(self) -> None:
         source = self._snapshot_source()
@@ -1573,6 +1579,7 @@ class TestDefaultDataRoot(unittest.TestCase):
             self.assertEqual(default_data_root(), Path("relative-data").resolve())
 
     def test_windows_macos及xdg默认路径(self) -> None:
+        home = Path.home()
         cases = (
             (
                 "win32",
@@ -1588,6 +1595,7 @@ class TestDefaultDataRoot(unittest.TestCase):
                 self.subTest(platform=platform, environment=environment),
                 mock.patch("icode.workspace.sys.platform", platform),
                 mock.patch.dict(os.environ, environment, clear=True),
+                mock.patch("icode.workspace.Path.home", return_value=home),
             ):
                 self.assertEqual(default_data_root(), expected.resolve())
 
