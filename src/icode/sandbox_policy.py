@@ -40,7 +40,7 @@ def _normalize_path(path: Path, location: str) -> Path:
     _require_utf8_scalar(str(path), location)
     try:
         return path.expanduser().resolve(strict=False)
-    except (OSError, RuntimeError, UnicodeError) as error:
+    except (OSError, RuntimeError, UnicodeError, ValueError) as error:
         raise PolicyValidationError(f"unable to normalize {location}") from error
 
 
@@ -454,8 +454,19 @@ class SandboxPolicy:
 def tighten_policy(base: SandboxPolicy, candidate: SandboxPolicy) -> SandboxPolicy:
     """Return *candidate* when it can only reduce the authority in *base*."""
 
-    base.validate()
-    candidate.validate()
+    try:
+        base.validate()
+    except PolicyValidationError as error:
+        raise PolicyValidationError(
+            "base invalid; candidate policy broadens or cannot be proven narrower"
+        ) from error
+
+    try:
+        candidate.validate()
+    except PolicyValidationError as error:
+        raise PolicyValidationError(
+            "candidate invalid; candidate policy broadens or cannot be proven narrower"
+        ) from error
 
     identity_fields = (
         "schema_version",

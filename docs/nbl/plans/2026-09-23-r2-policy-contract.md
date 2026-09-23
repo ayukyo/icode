@@ -34,7 +34,9 @@
 
 - [x] **Step 1: Write the failing construction and serialization tests**
 
-Create `tests/test_sandbox_policy.py` with a temporary absolute workspace and this public API:
+Create `tests/test_sandbox_policy.py` with a temporary absolute workspace and this public API.
+
+> **历史骨架，非完成态实现：** 下方 Task 1 各代码块只记录当时用于取得第一个最小 GREEN 的骨架，随后已由 Task 2 和两轮代码审查加固、替换。它们不能作为最终实现复制或解释；完成态公共合同以 `src/icode/sandbox_policy.py` 及代码块后的“完成态修订（权威）”为准。
 
 ```python
 from __future__ import annotations
@@ -166,8 +168,8 @@ class SandboxPolicy:
             "deny_write_roots", "protected_paths",
         ):
             object.__setattr__(self, field_name, _normalize_paths(tuple(getattr(self, field_name))))
-        # Public direct construction first requires the declared dataclass types;
-        # from_dict performs validated wire conversions before reaching here.
+        # Historical minimal-GREEN behavior only; completed strict type checks
+        # and decoder boundaries are defined in the authoritative revision below.
         domains = tuple(sorted({item.lower() for item in self.allowed_domains}))
         object.__setattr__(self, "allowed_domains", domains)
         self.validate()
@@ -234,7 +236,19 @@ class SandboxPolicy:
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 ```
 
-Create `src/icode/schemas/sandbox-policy-v1.schema.json` as a Draft 2020-12 object schema. It must set `additionalProperties` to `false`, require all fifteen dataclass fields, use integer `const: 1` for `schema_version`, constrain `network_mode` to `deny` or `proxy_allowlist`, require absolute non-empty path strings, require positive integer limits, and define domain items as external ASCII DNS hostnames without surrounding whitespace, a trailing dot, scheme, path, port, wildcard, localhost, IP literal, or 1-4-part legacy numeric IPv4 text. Public direct construction requires the declared dataclass types (`int` but not `bool`, `Path`, path tuples, `NetworkMode`, and domain string tuples); `from_dict` performs strict wire-shape checks and validated conversion before construction. Mixed-case DNS wire values are valid and the decoder canonicalizes them with `lower()` only; it never repairs untrusted input with `strip()` or `rstrip()`. The schema covers wire shape and constraints expressible in Draft 2020-12 only. The Python/native strict decoder is the authoritative complete semantic validator: it rejects non-`int` runtime values such as `True` and `1.0`, rejects strings that are not UTF-8-encodable Unicode scalar text, applies current-platform absolute-path semantics, and enforces cross-array containment, deny, and protected-path relationships. JSON Schema engines cannot consistently express the Unicode scalar boundary, so schema validation alone must never be described as complete policy acceptance.
+#### 完成态修订（权威）
+
+Task 1 中前述各代码块已被后续实现替换。完成态公共合同以 `src/icode/sandbox_policy.py` 为准，并遵循以下规则：
+
+- direct constructor 严格要求声明类型：`int` 不接受 `bool`/浮点数，路径为 `Path`/路径元组，网络模式为 `NetworkMode`，域名为字符串元组；wire decoder 同样严格校验 JSON 运行时类型及数组形状后才转换。
+- 所有身份、路径和域名字符串都必须是可编码为 UTF-8 的 Unicode scalar text。
+- wire 中的 `workspace_root` 及每个路径数组项都必须符合当前平台的绝对路径语义；相对路径不得由 decoder 修复。
+- 路径规范化抛出的 `ValueError`、`OSError`、`RuntimeError` 和 Unicode 错误都统一转换为保留 cause 的 `PolicyValidationError`。
+- 合法混合大小写域名只使用 `lower()` 规范化，绝不以 `strip()`、`rstrip()` 或其他修复接受不可信输入。
+- 每个 `protected_path` 必须由 `deny_write_roots` 覆盖；`deny_read_roots` 不能替代 deny-write 保护。
+- Draft 2020-12 schema 只描述其可表达的 wire 形状与约束。Python/native strict semantic decoder 是完整语义验证的唯一权威，负责 strict types、Unicode scalar、当前平台绝对路径及跨数组 containment/deny/protected 关系；schema validation 不能单独表示策略已被接受。
+
+Create `src/icode/schemas/sandbox-policy-v1.schema.json` as a Draft 2020-12 object schema. It must set `additionalProperties` to `false`, require all fifteen dataclass fields, use integer `const: 1` for `schema_version`, constrain `network_mode` to `deny` or `proxy_allowlist`, require absolute non-empty path strings, require positive integer limits, and define domain items as external ASCII DNS hostnames without surrounding whitespace, a trailing dot, scheme, path, port, wildcard, localhost, IP literal, or 1-4-part legacy numeric IPv4 text. These schema requirements are subordinate to the authoritative completed-state rules above.
 
 - [x] **Step 4: Run the focused tests and verify GREEN**
 
@@ -345,7 +359,7 @@ In `src/icode/sandbox_policy.py`:
 
 - validate non-empty `run_id`, `ticket_id`, and `step`, rejecting ASCII control characters;
 - validate positive limits;
-- accept only exact DNS hostnames matching lowercase labels, reject IP literals, schemes, paths, ports, and wildcards;
+- canonicalize mixed-case DNS hostnames with `lower()` only, then accept only exact lowercase-label hostnames; reject surrounding whitespace, trailing dots, IP literals, schemes, paths, ports, and wildcards;
 - require all write roots to be at or below `workspace_root`;
 - allow a deny path below an allow path because `.git` protection relies on deny precedence;
 - reject an allow root that is itself at or below a deny root because it would be wholly unusable;

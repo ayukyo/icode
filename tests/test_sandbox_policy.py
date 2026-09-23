@@ -393,6 +393,25 @@ class SandboxPolicyTestCase(unittest.TestCase):
                 SandboxPolicy.from_dict(wire)
             self.assertIsInstance(raised.exception.__cause__, RuntimeError)
 
+    def test_direct_constructor_wraps_nul_path_as_policy_validation_error(
+        self,
+    ) -> None:
+        invalid_path = self.workspace / "bad\0path"
+
+        with self.assertRaises(PolicyValidationError) as raised:
+            self.make_policy(read_roots=(invalid_path,))
+
+        self.assertIsInstance(raised.exception.__cause__, ValueError)
+
+    def test_from_dict_wraps_nul_path_as_policy_validation_error(self) -> None:
+        wire = self.make_policy().to_dict()
+        wire["read_roots"] = [str(self.workspace / "bad\0path")]
+
+        with self.assertRaises(PolicyValidationError) as raised:
+            SandboxPolicy.from_dict(wire)
+
+        self.assertIsInstance(raised.exception.__cause__, ValueError)
+
     def test_write_root_must_stay_within_workspace(self) -> None:
         with self.assertRaisesRegex(PolicyValidationError, r"(?i)write root"):
             self.make_policy(write_roots=(self.workspace.parent,))
@@ -545,18 +564,31 @@ class SandboxPolicyTestCase(unittest.TestCase):
         with self.assertRaisesRegex(PolicyValidationError, r"(?i)broadens"):
             tighten_policy(base, candidate)
 
-    def test_tighten_policy_revalidates_both_inputs(self) -> None:
-        for corrupted_side in ("base", "candidate"):
-            with self.subTest(corrupted_side=corrupted_side):
-                base = self.make_policy()
-                candidate = self.make_policy()
-                object.__setattr__(
-                    base if corrupted_side == "base" else candidate,
-                    "schema_version",
-                    True,
-                )
-                with self.assertRaises(PolicyValidationError):
-                    tighten_policy(base, candidate)
+    def test_tighten_policy_classifies_invalid_base_as_broadening(self) -> None:
+        base = self.make_policy()
+        candidate = self.make_policy()
+        object.__setattr__(base, "schema_version", True)
+
+        with self.assertRaisesRegex(
+            PolicyValidationError,
+            r"(?i)(?=.*base invalid)(?=.*broadens)",
+        ) as raised:
+            tighten_policy(base, candidate)
+
+        self.assertIsInstance(raised.exception.__cause__, PolicyValidationError)
+
+    def test_tighten_policy_classifies_invalid_candidate_as_broadening(self) -> None:
+        base = self.make_policy()
+        candidate = self.make_policy()
+        object.__setattr__(candidate, "schema_version", True)
+
+        with self.assertRaisesRegex(
+            PolicyValidationError,
+            r"(?i)(?=.*candidate invalid)(?=.*broadens)",
+        ) as raised:
+            tighten_policy(base, candidate)
+
+        self.assertIsInstance(raised.exception.__cause__, PolicyValidationError)
 
 
 class SandboxPolicySchemaTestCase(unittest.TestCase):
