@@ -226,6 +226,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"  [{'OK  ' if selected['is_real_isolation'] else 'WARN'}] 隔离后端：{report['honest_label']}")
     print(f"         后端={selected['backend']}"
           + (f"；已强制={selected.get('enforced')}" if selected.get("enforced") else ""))
+    print(f"  [INFO] R2 策略合同：v{report['policy_schema_version']}")
+    print("         一致性测试：尚未执行（下一阶段原生后端自测后才会产生结果）")
     if not selected.get("is_real_isolation"):
         print("         ⚠ 无内核/容器级隔离：模型若绕过运行时直接执行 shell，应用层规则不构成保障")
         print("           可安装 bubblewrap（Linux）/ 容器运行时后重试，或用 --isolation 显式指定")

@@ -63,6 +63,12 @@ class TestHonesty(unittest.TestCase):
     def test_能力报告口径与所选后端一致(self) -> None:
         report = capability_report()
         selected = report["selected"]
+        self.assertEqual(report["policy_schema_version"], 1)
+        self.assertEqual(report["conformance_contract"]["id"], "icode-sandbox-v1")
+        self.assertEqual(report["conformance_contract"]["total"], 10)
+        self.assertEqual(report["conformance_contract"]["critical"], 8)
+        self.assertEqual(report["conformance_contract"]["minimum_passed"], 9)
+        self.assertFalse(report["conformance_contract"]["executed"])
         self.assertEqual(report["honest_label"], selected["claim"])
         if not selected["is_real_isolation"]:
             self.assertEqual(report["honest_label"], BASELINE_CLAIM)

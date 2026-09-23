@@ -280,6 +280,16 @@ WebUI 闭环：网页放行 → 200，approver 返回 True
 > 教训：本轮有**两次**用 `str.replace` 打补丁**静默未生效**（`run_contract_step` 的签名与 `sandbox` 参数），
 > 之后改成"改完立刻 grep 核对"，才没有继续带着错往下跑。
 
+### R2 —— 跨平台隔离策略（实施中）
+
+R2.0 只发布版本化 policy schema、冲突规则与 contract vectors/score，供后续实现共享；
+**合同存在不代表 native enforcement 已落地，也不代表任何平台一致性测试已经通过**。
+R2.1–R2.4 才依次实现工作区边界、各平台原生后端、网络控制与 Git broker。
+完整 R2 的验收门槛仍是 Linux、macOS、Windows 每个平台均达到 ≥9/10，且 8 项 critical 全部通过。
+
+设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
+[R2.0 policy contract 实施计划](./nbl/plans/2026-09-23-r2-policy-contract.md)
+
 ---
 
 ## 4. 为什么是这个顺序

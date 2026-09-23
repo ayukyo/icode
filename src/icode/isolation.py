@@ -434,8 +434,12 @@ def select_sandbox(preference: str | None = None) -> Sandbox:
 
 def capability_report() -> dict:
     """给 `icode doctor` 用的隔离能力报告（措辞必须能追溯到实测）。"""
+    from .conformance import load_conformance_contract
+    from .sandbox_policy import POLICY_SCHEMA_VERSION
+
     caps = probe_capabilities()
     sandbox = select_sandbox()
+    contract = load_conformance_contract()
     return {
         "probes": [
             {"name": c.name, "available": c.available, "kind": c.kind, "detail": c.detail}
@@ -445,4 +449,12 @@ def capability_report() -> dict:
         "honest_label": (
             sandbox.describe()["claim"] if sandbox.is_real_isolation else BASELINE_CLAIM
         ),
+        "policy_schema_version": POLICY_SCHEMA_VERSION,
+        "conformance_contract": {
+            "id": contract["contract_id"],
+            "total": len(contract["capabilities"]),
+            "critical": sum(item["critical"] for item in contract["capabilities"]),
+            "minimum_passed": contract["minimum_passed"],
+            "executed": False,
+        },
     }

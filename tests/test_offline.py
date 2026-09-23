@@ -10,11 +10,15 @@ from __future__ import annotations
 import ast
 import socket
 import unittest
+from argparse import Namespace
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
 from tests._support import REPO_ROOT, require_skill, temp_workspace
 
+from icode.cli import cmd_doctor
 from icode.handshake import run_handshake
 
 # 必须完全离线的"契约核心"模块（相对 src/）。
@@ -70,6 +74,24 @@ class TestStaticOffline(unittest.TestCase):
 
 
 class TestRuntimeOffline(unittest.TestCase):
+    def test_doctor_如实报告_r2_合同尚未执行(self) -> None:
+        settings = require_skill()
+
+        with temp_workspace() as ws:
+            stdout = StringIO()
+            args = Namespace(
+                skill_root=str(settings.skill_root),
+                workspace=str(ws),
+            )
+            with redirect_stdout(stdout):
+                rc = cmd_doctor(args)
+
+        output = stdout.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("隔离后端：", output)
+        self.assertIn("R2 策略合同：v1", output)
+        self.assertIn("一致性测试：尚未执行", output)
+
     def test_socket_被禁用时握手仍通过(self) -> None:
         settings = require_skill()
 
