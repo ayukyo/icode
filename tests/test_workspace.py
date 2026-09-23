@@ -578,6 +578,157 @@ class TestWorkspaceManager(unittest.TestCase):
         self.assertEqual(materialized, "lowercase\n")
         self.assertFalse(marker.exists())
 
+    def test_git路径拒绝windows逃逸形态并安全映射到checkout(self) -> None:
+        invalid_paths = (
+            b"C:\\outside\\file.txt",
+            b"..\\..\\outside.txt",
+            b"directory\\file.txt",
+            b"drive:C/file.txt",
+            b"nul\x00file.txt",
+            b"/absolute.txt",
+            b"directory//file.txt",
+            b"directory/./file.txt",
+            b"directory/../file.txt",
+        )
+        for raw_path in invalid_paths:
+            with (
+                self.subTest(raw_path=raw_path),
+                self.assertRaises(WorkspaceError),
+            ):
+                workspace_module._safe_git_relative_path(raw_path)
+
+        checkout = self.root / "checkout"
+        checkout.mkdir()
+        relative = workspace_module._safe_git_relative_path(b"directory/file.txt")
+        destination = workspace_module._safe_git_destination(checkout, relative)
+
+        self.assertEqual(destination, checkout / "directory" / "file.txt")
+
+    def test_git多个大blob逐文件流式物化且不使用batch聚合输出(self) -> None:
+        repository = _create_git_repository(self.root)
+        expected: dict[str, bytes] = {}
+        for index, byte in enumerate((b"a", b"b", b"c")):
+            name = f"large-{index}.bin"
+            content = byte * (2 * 1024 * 1024)
+            repository.joinpath(name).write_bytes(content)
+            expected[name] = content
+        executable = repository / "executable.sh"
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+        _run_git(repository, "add", ".")
+        _run_git(repository, "commit", "-qm", "add large blobs")
+
+        original_run = subprocess.run
+        cat_file_calls: list[tuple[tuple[str, ...], bool, bool, bool]] = []
+
+        def recording_run(*args, **kwargs):
+            command = tuple(args[0])
+            if "cat-file" in command:
+                cat_file_calls.append(
+                    (
+                        command,
+                        kwargs.get("capture_output") is True,
+                        kwargs.get("stderr") is subprocess.DEVNULL,
+                        hasattr(kwargs.get("stdout"), "write"),
+                    )
+                )
+            return original_run(*args, **kwargs)
+
+        with (
+            mock.patch("icode.workspace.subprocess.run", side_effect=recording_run),
+            WorkspaceManager(repository, self.data_root, "project-1").open(
+                "streamed-git-ticket", "run-1"
+            ) as session,
+        ):
+            for name, content in expected.items():
+                self.assertEqual(
+                    session.workspace_root.joinpath(name).read_bytes(), content
+                )
+            self.assertTrue(
+                session.workspace_root.joinpath("executable.sh").stat().st_mode & 0o111
+            )
+            self.assertEqual(
+                _run_git(session.workspace_root, "write-tree"),
+                _run_git(repository, "rev-parse", "HEAD^{tree}"),
+            )
+
+        self.assertFalse(
+            any("--batch" in command for command, *_ in cat_file_calls),
+            cat_file_calls,
+        )
+        blob_calls = [
+            call
+            for call in cat_file_calls
+            for command in (call[0],)
+            if "blob" in command
+        ]
+        self.assertGreaterEqual(len(blob_calls), len(expected))
+        for _, captured_output, stderr_discarded, stdout_is_stream in blob_calls:
+            self.assertFalse(captured_output)
+            self.assertTrue(stderr_discarded)
+            self.assertTrue(stdout_is_stream)
+
+    def test_git_symlink能力关闭写普通文件且开启时创建内部链接(self) -> None:
+        checkout = self.root / "symlink-checkout"
+        checkout.mkdir()
+        (checkout / "target.txt").write_text("target", encoding="utf-8")
+
+        fallback = checkout / "fallback-link"
+        fallback.write_bytes(b"target.txt")
+        workspace_module._materialize_git_symlink(
+            fallback,
+            checkout,
+            symlink_enabled=False,
+        )
+        self.assertFalse(fallback.is_symlink())
+        self.assertEqual(fallback.read_bytes(), b"target.txt")
+
+        native = checkout / "native-link"
+        native.write_bytes(b"target.txt")
+        workspace_module._materialize_git_symlink(
+            native,
+            checkout,
+            symlink_enabled=True,
+        )
+        self.assertTrue(native.is_symlink())
+        self.assertEqual(os.readlink(native), "target.txt")
+
+        unsupported = checkout / "unsupported-link"
+        unsupported.write_bytes(b"target.txt")
+        with (
+            mock.patch.object(
+                Path,
+                "symlink_to",
+                side_effect=PermissionError("symlink unavailable"),
+            ),
+            self.assertRaises(WorkspaceError),
+        ):
+            workspace_module._materialize_git_symlink(
+                unsupported,
+                checkout,
+                symlink_enabled=True,
+            )
+        self.assertFalse(unsupported.exists())
+
+    def test_git物化按显式symlink能力降级为普通文件(self) -> None:
+        repository = _create_git_repository(self.root)
+        repository.joinpath("tracked-link").symlink_to("nested/tracked.txt")
+        _run_git(repository, "add", "tracked-link")
+        _run_git(repository, "commit", "-qm", "add symlink")
+
+        with (
+            mock.patch(
+                "icode.workspace._git_symlinks_enabled",
+                return_value=False,
+            ),
+            WorkspaceManager(repository, self.data_root, "project-1").open(
+                "symlink-fallback-ticket", "run-1"
+            ) as session,
+        ):
+            materialized = session.workspace_root / "tracked-link"
+            self.assertFalse(materialized.is_symlink())
+            self.assertEqual(materialized.read_bytes(), b"nested/tracked.txt")
+
     def test_git命令清除继承重定向环境并设置timeout(self) -> None:
         source = self._snapshot_source()
         redirect_repository = _create_git_repository(self.root)
@@ -883,6 +1034,79 @@ class TestWorkspaceManager(unittest.TestCase):
 
         self.assertEqual(marker.read_text(encoding="utf-8"), "do not remove")
         self.assert_lease_released("project-1", "ticket-1")
+
+    def test_git失败清理不删除被替换checkout也不调用worktree_remove(self) -> None:
+        repository = _create_git_repository(self.root)
+        checkout_marker: Path | None = None
+        git_calls: list[tuple[str, ...]] = []
+        original_run_git = workspace_module._run_git
+
+        def recording_run_git(working_directory, arguments, **kwargs):
+            git_calls.append(tuple(arguments))
+            return original_run_git(working_directory, arguments, **kwargs)
+
+        def replace_checkout(checkout_root, identity):
+            nonlocal checkout_marker
+            checkout_root.rename(checkout_root.with_name("owned-checkout"))
+            checkout_root.mkdir()
+            checkout_marker = checkout_root / "foreign-marker.txt"
+            checkout_marker.write_text("foreign", encoding="utf-8")
+            raise WorkspaceError("injected materialization failure")
+
+        with (
+            mock.patch("icode.workspace._run_git", side_effect=recording_run_git),
+            mock.patch(
+                "icode.workspace._materialize_git_tree",
+                side_effect=replace_checkout,
+            ),
+            self.assertRaises(WorkspaceError),
+        ):
+            WorkspaceManager(repository, self.data_root, "project-1").open(
+                "git-cleanup-ticket", "run-1"
+            )
+
+        self.assertIsNotNone(checkout_marker)
+        self.assertEqual(checkout_marker.read_text(encoding="utf-8"), "foreign")
+        self.assertFalse(
+            any(call[:2] == ("worktree", "remove") for call in git_calls),
+            git_calls,
+        )
+        self.assert_lease_released("project-1", "git-cleanup-ticket")
+
+    def test_snapshot失败清理只删除创建时同inode目录(self) -> None:
+        source = self._snapshot_source()
+        foreign_markers: list[Path] = []
+        original_write_atomic = workspace_module._write_atomic
+
+        def replace_workspace_directories(path: Path, payload: bytes) -> None:
+            if path.name != "workspace.json":
+                original_write_atomic(path, payload)
+                return
+            ticket_root = path.parent
+            for name in ("checkout", "runtime", "receipts"):
+                directory = ticket_root / name
+                directory.rename(ticket_root / f"owned-{name}")
+                directory.mkdir()
+                marker = directory / "foreign-marker.txt"
+                marker.write_text("foreign", encoding="utf-8")
+                foreign_markers.append(marker)
+            raise OSError("injected metadata publish failure")
+
+        with (
+            mock.patch(
+                "icode.workspace._write_atomic",
+                side_effect=replace_workspace_directories,
+            ),
+            self.assertRaises(WorkspaceError),
+        ):
+            WorkspaceManager(source, self.data_root, "project-1").open(
+                "snapshot-cleanup-ticket", "run-1"
+            )
+
+        self.assertEqual(len(foreign_markers), 3)
+        for marker in foreign_markers:
+            self.assertEqual(marker.read_text(encoding="utf-8"), "foreign")
+        self.assert_lease_released("project-1", "snapshot-cleanup-ticket")
 
     def test_拒绝逃出source的symlink并释放租约(self) -> None:
         source = self._snapshot_source()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import errno
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -45,6 +44,7 @@ _WINDOWS_CONTENTION_ERRNOS = frozenset((errno.EACCES, errno.EAGAIN))
 _WINDOWS_LOCK_VIOLATION = 33
 _GIT_COMMAND_TIMEOUT_SECONDS = 60
 _HASH_CHUNK_SIZE_BYTES = 1024 * 1024
+_MAX_GIT_SYMLINK_TARGET_BYTES = 4096
 
 
 def _validated_bytes(name: str, value: str) -> bytes:
@@ -535,6 +535,53 @@ def _remove_created_tree(path: Path, ticket_root: Path) -> None:
         shutil.rmtree(path)
 
 
+@dataclass(frozen=True)
+class _PathIdentity:
+    device: int
+    inode: int
+
+
+def _capture_directory_identity(path: Path) -> _PathIdentity:
+    try:
+        status = os.lstat(path)
+    except OSError as exc:
+        raise WorkspaceError("无法确认新建工作区目录身份") from exc
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    is_reparse = bool(
+        reparse_flag and getattr(status, "st_file_attributes", 0) & reparse_flag
+    )
+    if stat.S_ISLNK(status.st_mode) or is_reparse or not stat.S_ISDIR(status.st_mode):
+        raise WorkspaceError("新建工作区目录身份无效")
+    return _PathIdentity(status.st_dev, status.st_ino)
+
+
+def _directory_identity_matches(path: Path, identity: _PathIdentity) -> bool:
+    try:
+        status = os.lstat(path)
+    except OSError:
+        return False
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    is_reparse = bool(
+        reparse_flag and getattr(status, "st_file_attributes", 0) & reparse_flag
+    )
+    return (
+        not stat.S_ISLNK(status.st_mode)
+        and not is_reparse
+        and stat.S_ISDIR(status.st_mode)
+        and (status.st_dev, status.st_ino) == (identity.device, identity.inode)
+    )
+
+
+def _remove_owned_tree(
+    path: Path,
+    ticket_root: Path,
+    identity: _PathIdentity | None,
+) -> None:
+    if identity is None or not _directory_identity_matches(path, identity):
+        return
+    _remove_created_tree(path, ticket_root)
+
+
 def _ensure_managed_directory(
     path: Path,
     *,
@@ -674,6 +721,7 @@ class _GitTreeEntry:
     mode: str
     object_type: str
     object_id: str
+    size: int | None
     relative_path: PurePosixPath
 
 
@@ -686,16 +734,32 @@ def _safe_git_relative_path(raw_path: bytes) -> PurePosixPath:
     if (
         not text
         or text.startswith("/")
+        or "\\" in text
+        or "\0" in text
+        or ":" in text
         or any(part in ("", ".", "..") for part in parts)
     ):
         raise WorkspaceError("Git 树包含不可安全物化的路径")
     return PurePosixPath(*parts)
 
 
+def _safe_git_destination(checkout_root: Path, relative_path: PurePosixPath) -> Path:
+    """将已验证的 Git 路径映射到 checkout 内，拒绝平台路径语义逃逸。"""
+
+    validated_path = _safe_git_relative_path(relative_path.as_posix().encode("utf-8"))
+    normalized_root = _normalize_path(checkout_root)
+    destination = _normalize_path(normalized_root.joinpath(*validated_path.parts))
+    if destination == normalized_root or not _path_is_within(
+        destination, normalized_root
+    ):
+        raise WorkspaceError("Git 树路径逃出工作区")
+    return destination
+
+
 def _git_tree_entries(identity: _GitIdentity) -> list[_GitTreeEntry]:
     result = _run_git_bytes(
         identity.top_level,
-        ("ls-tree", "-rz", "--full-tree", "-r", "-t", identity.revision),
+        ("ls-tree", "-rz", "-l", "--full-tree", "-r", "-t", identity.revision),
     )
     entries: list[_GitTreeEntry] = []
     for record in result.stdout.split(b"\0"):
@@ -703,10 +767,14 @@ def _git_tree_entries(identity: _GitIdentity) -> list[_GitTreeEntry]:
             continue
         try:
             raw_metadata, raw_path = record.split(b"\t", 1)
-            raw_mode, raw_type, raw_object_id = raw_metadata.split(b" ", 2)
+            fields = raw_metadata.split()
+            if len(fields) != 4:
+                raise ValueError
+            raw_mode, raw_type, raw_object_id, raw_size = fields
             mode = raw_mode.decode("ascii")
             object_type = raw_type.decode("ascii")
             object_id = raw_object_id.decode("ascii")
+            size = None if raw_size == b"-" else int(raw_size)
         except (UnicodeDecodeError, ValueError):
             raise WorkspaceError("Git 树清单无效") from None
         if object_type not in {"blob", "tree", "commit"}:
@@ -716,78 +784,184 @@ def _git_tree_entries(identity: _GitIdentity) -> list[_GitTreeEntry]:
                 mode=mode,
                 object_type=object_type,
                 object_id=object_id,
+                size=size,
                 relative_path=_safe_git_relative_path(raw_path),
             )
         )
     return entries
 
 
-def _read_git_blobs(
+def _stream_git_blob(
     identity: _GitIdentity,
-    entries: Iterable[_GitTreeEntry],
-) -> dict[str, bytes]:
-    blob_ids = [entry.object_id for entry in entries if entry.object_type == "blob"]
-    if not blob_ids:
-        return {}
-    result = _run_git_bytes(
+    entry: _GitTreeEntry,
+    destination: Path,
+) -> None:
+    """将单个 blob 直接写入独占文件，避免聚合对象内容驻留内存。"""
+
+    if entry.size is None or entry.size < 0:
+        raise WorkspaceError("Git blob 大小无效")
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("GIT_")
+    }
+    file_identity: _PathIdentity | None = None
+    try:
+        with (
+            tempfile.TemporaryDirectory(prefix="icode-empty-hooks-") as hooks_dir,
+            destination.open("xb") as stream,
+        ):
+            status = os.fstat(stream.fileno())
+            file_identity = _PathIdentity(status.st_dev, status.st_ino)
+            completed = subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    f"core.hooksPath={hooks_dir}",
+                    "-c",
+                    "core.fsmonitor=false",
+                    "-C",
+                    str(identity.top_level),
+                    "cat-file",
+                    "blob",
+                    entry.object_id,
+                ],
+                shell=False,
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=stream,
+                stderr=subprocess.DEVNULL,
+                env=environment,
+                timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
+            )
+    except (OSError, subprocess.SubprocessError):
+        _unlink_owned_regular_file(destination, file_identity)
+        raise WorkspaceError("Git blob 物化失败") from None
+    if completed.returncode != 0:
+        _unlink_owned_regular_file(destination, file_identity)
+        raise WorkspaceError("Git blob 物化失败")
+    if not _regular_file_identity_matches(destination, file_identity):
+        raise WorkspaceError("Git blob 目标身份发生变化")
+    if destination.stat().st_size != entry.size:
+        _unlink_owned_regular_file(destination, file_identity)
+        raise WorkspaceError("Git blob 大小不匹配")
+    actual_id = _run_git(
         identity.top_level,
-        ("cat-file", "--batch"),
-        input_data=b"".join(
-            object_id.encode("ascii") + b"\n" for object_id in blob_ids
-        ),
+        ("hash-object", "--no-filters", str(destination)),
+    ).stdout.strip()
+    if actual_id != entry.object_id:
+        _unlink_owned_regular_file(destination, file_identity)
+        raise WorkspaceError("Git blob 身份不匹配")
+
+
+def _regular_file_identity_matches(path: Path, identity: _PathIdentity | None) -> bool:
+    if identity is None:
+        return False
+    try:
+        status = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(status.st_mode) and (status.st_dev, status.st_ino) == (
+        identity.device,
+        identity.inode,
     )
-    output = io.BytesIO(result.stdout)
-    blobs: dict[str, bytes] = {}
-    for expected_id in blob_ids:
-        header = output.readline().rstrip(b"\n")
-        try:
-            raw_object_id, object_type, raw_size = header.split(b" ", 2)
-            size = int(raw_size)
-        except ValueError:
-            raise WorkspaceError("Git blob 批量输出无效") from None
-        try:
-            actual_id = raw_object_id.decode("ascii", "strict")
-        except UnicodeDecodeError:
-            raise WorkspaceError("Git blob 身份不匹配") from None
-        if actual_id != expected_id or object_type != b"blob" or size < 0:
-            raise WorkspaceError("Git blob 身份不匹配")
-        content = output.read(size)
-        if len(content) != size or output.read(1) != b"\n":
-            raise WorkspaceError("Git blob 输出不完整")
-        blobs[expected_id] = content
-    if output.read(1):
-        raise WorkspaceError("Git blob 输出包含多余数据")
-    return blobs
+
+
+def _unlink_owned_regular_file(path: Path, identity: _PathIdentity | None) -> None:
+    if not _regular_file_identity_matches(path, identity):
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
+def _git_symlinks_enabled(checkout_root: Path) -> bool:
+    result = _run_git(
+        checkout_root,
+        ("config", "--bool", "core.symlinks"),
+        check=False,
+    )
+    if result.returncode != 0:
+        return os.name != "nt"
+    value = result.stdout.strip().lower()
+    if value in {"true", "yes", "on", "1"}:
+        return True
+    if value in {"false", "no", "off", "0"}:
+        return False
+    raise WorkspaceError("Git 符号链接配置无效")
+
+
+def _materialize_git_symlink(
+    destination: Path,
+    checkout_root: Path,
+    *,
+    symlink_enabled: bool,
+) -> None:
+    """按显式能力选择真实 symlink 或 Git for Windows 的普通文件表示。"""
+
+    if not symlink_enabled:
+        destination.chmod(0o644)
+        return
+    try:
+        status = os.lstat(destination)
+        if not stat.S_ISREG(status.st_mode):
+            raise WorkspaceError("Git 符号链接暂存文件身份无效")
+        if status.st_size > _MAX_GIT_SYMLINK_TARGET_BYTES:
+            raise WorkspaceError("Git 符号链接目标过长")
+        with destination.open("rb") as stream:
+            raw_target = stream.read(_MAX_GIT_SYMLINK_TARGET_BYTES + 1)
+        if len(raw_target) > _MAX_GIT_SYMLINK_TARGET_BYTES:
+            raise WorkspaceError("Git 符号链接目标过长")
+        link_target = raw_target.decode("utf-8")
+    except WorkspaceError:
+        raise
+    except (OSError, UnicodeDecodeError):
+        raise WorkspaceError("Git 树包含无效符号链接") from None
+    if (
+        not link_target
+        or "\0" in link_target
+        or "\\" in link_target
+        or ":" in link_target
+    ):
+        raise WorkspaceError("Git 树包含无效符号链接")
+    target_path = Path(link_target)
+    resolved_target = _normalize_path(destination.parent / target_path)
+    normalized_root = _normalize_path(checkout_root)
+    if target_path.is_absolute() or not _path_is_within(
+        resolved_target, normalized_root
+    ):
+        raise WorkspaceError("Git 树符号链接逃出工作区")
+    identity = _PathIdentity(status.st_dev, status.st_ino)
+    if not _regular_file_identity_matches(destination, identity):
+        raise WorkspaceError("Git 符号链接暂存文件身份发生变化")
+    destination.unlink()
+    try:
+        destination.symlink_to(link_target)
+    except OSError:
+        raise WorkspaceError("无法创建 Git 符号链接") from None
 
 
 def _materialize_git_tree(checkout_root: Path, identity: _GitIdentity) -> None:
     entries = _git_tree_entries(identity)
-    blobs = _read_git_blobs(identity, entries)
     for entry in entries:
-        destination = checkout_root.joinpath(*entry.relative_path.parts)
+        destination = _safe_git_destination(checkout_root, entry.relative_path)
         if entry.object_type in {"tree", "commit"}:
             destination.mkdir(parents=True, exist_ok=True)
+    symlink_enabled = _git_symlinks_enabled(checkout_root)
     for entry in entries:
         if entry.object_type != "blob":
             continue
-        destination = checkout_root.joinpath(*entry.relative_path.parts)
+        destination = _safe_git_destination(checkout_root, entry.relative_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        content = blobs[entry.object_id]
+        _stream_git_blob(identity, entry, destination)
         if entry.mode == "120000":
-            try:
-                link_target = content.decode("utf-8")
-            except UnicodeDecodeError:
-                raise WorkspaceError("Git 树包含无效符号链接") from None
-            target_path = Path(link_target)
-            resolved_target = _normalize_path(destination.parent / target_path)
-            if target_path.is_absolute() or not _path_is_within(
-                resolved_target, checkout_root
-            ):
-                raise WorkspaceError("Git 树符号链接逃出工作区")
-            destination.symlink_to(link_target)
+            _materialize_git_symlink(
+                destination,
+                checkout_root,
+                symlink_enabled=symlink_enabled,
+            )
         elif entry.mode in {"100644", "100755"}:
-            with destination.open("xb") as stream:
-                stream.write(content)
             destination.chmod(0o755 if entry.mode == "100755" else 0o644)
         else:
             raise WorkspaceError("Git 树包含不支持的文件模式")
@@ -892,7 +1066,6 @@ def _copy_snapshot(
     destination: Path,
     entries: Iterable[Mapping[str, object]],
 ) -> None:
-    destination.mkdir()
     for entry in entries:
         relative = Path(cast(str, entry["path"]))
         source = source_root / relative
@@ -1004,7 +1177,7 @@ class WorkspaceManager:
             created_ticket_root = ticket_root
             _ensure_managed_directory(ticket_root, parent=project_root)
             if git_identity is not None:
-                metadata = self._create_git(
+                metadata, owned_directories = self._create_git(
                     ticket_id,
                     ticket_root,
                     checkout_root,
@@ -1013,7 +1186,7 @@ class WorkspaceManager:
                     git_identity,
                 )
             else:
-                metadata = self._create_snapshot(
+                metadata, owned_directories = self._create_snapshot(
                     ticket_id,
                     ticket_root,
                     checkout_root,
@@ -1030,6 +1203,7 @@ class WorkspaceManager:
                     checkout_root,
                     runtime_root,
                     receipts_root,
+                    owned_directories,
                 )
                 raise
             return self._session(
@@ -1066,8 +1240,15 @@ class WorkspaceManager:
         checkout_root: Path,
         runtime_root: Path,
         receipts_root: Path,
+        owned_directories: Mapping[Path, _PathIdentity],
     ) -> None:
-        if kind == "git_worktree" and git_identity is not None:
+        checkout_identity = owned_directories.get(checkout_root)
+        checkout_is_owned = (
+            _directory_identity_matches(checkout_root, checkout_identity)
+            if checkout_identity is not None
+            else False
+        )
+        if kind == "git_worktree" and git_identity is not None and checkout_is_owned:
             try:
                 _run_git(
                     git_identity.top_level,
@@ -1081,7 +1262,7 @@ class WorkspaceManager:
                 pass
         for path in (checkout_root, runtime_root, receipts_root):
             try:
-                _remove_created_tree(path, ticket_root)
+                _remove_owned_tree(path, ticket_root, owned_directories.get(path))
             except WorkspaceError:
                 pass
 
@@ -1112,8 +1293,9 @@ class WorkspaceManager:
         runtime_root: Path,
         receipts_root: Path,
         identity: _GitIdentity,
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], dict[Path, _PathIdentity]]:
         registered = False
+        owned_directories: dict[Path, _PathIdentity] = {}
         try:
             if checkout_root.exists() or checkout_root.is_symlink():
                 raise WorkspaceError("checkout 路径冲突")
@@ -1129,6 +1311,9 @@ class WorkspaceManager:
                 ),
             )
             registered = True
+            owned_directories[checkout_root] = _capture_directory_identity(
+                checkout_root
+            )
             _materialize_git_tree(checkout_root, identity)
             git_dir_result = _run_git(checkout_root, ("rev-parse", "--git-dir"))
             git_worktree_dir = _git_path(git_dir_result.stdout.strip(), checkout_root)
@@ -1138,7 +1323,11 @@ class WorkspaceManager:
                 git_worktree_identity.encode("ascii"),
             )
             runtime_root.mkdir()
+            owned_directories[runtime_root] = _capture_directory_identity(runtime_root)
             receipts_root.mkdir()
+            owned_directories[receipts_root] = _capture_directory_identity(
+                receipts_root
+            )
             metadata = self._common_metadata(
                 ticket_id,
                 "git_worktree",
@@ -1156,12 +1345,21 @@ class WorkspaceManager:
                     "source_relative_path": identity.relative_source.as_posix(),
                 }
             )
-            return metadata
+            return metadata, owned_directories
         except Exception:
-            owned_checkout = registered or _registered_worktree_matches(
-                identity, checkout_root
+            if not registered and _registered_worktree_matches(identity, checkout_root):
+                try:
+                    owned_directories[checkout_root] = _capture_directory_identity(
+                        checkout_root
+                    )
+                except WorkspaceError:
+                    pass
+            checkout_identity = owned_directories.get(checkout_root)
+            checkout_is_owned = (
+                checkout_identity is not None
+                and _directory_identity_matches(checkout_root, checkout_identity)
             )
-            if owned_checkout:
+            if checkout_is_owned:
                 try:
                     _run_git(
                         identity.top_level,
@@ -1174,12 +1372,12 @@ class WorkspaceManager:
                 except WorkspaceError:
                     pass
                 try:
-                    _remove_created_tree(checkout_root, ticket_root)
+                    _remove_owned_tree(checkout_root, ticket_root, checkout_identity)
                 except WorkspaceError:
                     pass
             for path in (runtime_root, receipts_root):
                 try:
-                    _remove_created_tree(path, ticket_root)
+                    _remove_owned_tree(path, ticket_root, owned_directories.get(path))
                 except WorkspaceError:
                     pass
             raise
@@ -1191,22 +1389,30 @@ class WorkspaceManager:
         checkout_root: Path,
         runtime_root: Path,
         receipts_root: Path,
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], dict[Path, _PathIdentity]]:
         temporary_checkout = ticket_root / f".checkout-{uuid.uuid4().hex}.tmp"
-        checkout_created = False
+        owned_directories: dict[Path, _PathIdentity] = {}
         try:
             if checkout_root.exists() or checkout_root.is_symlink():
                 raise WorkspaceError("checkout 路径冲突")
             manifest_payload, manifest_hash, entries = _snapshot_manifest(
                 self.source_root
             )
+            temporary_checkout.mkdir()
+            owned_directories[temporary_checkout] = _capture_directory_identity(
+                temporary_checkout
+            )
             _copy_snapshot(self.source_root, temporary_checkout, entries)
             if checkout_root.exists() or checkout_root.is_symlink():
                 raise WorkspaceError("checkout 路径冲突")
             temporary_checkout.rename(checkout_root)
-            checkout_created = True
+            owned_directories[checkout_root] = owned_directories.pop(temporary_checkout)
             runtime_root.mkdir()
+            owned_directories[runtime_root] = _capture_directory_identity(runtime_root)
             receipts_root.mkdir()
+            owned_directories[receipts_root] = _capture_directory_identity(
+                receipts_root
+            )
             snapshot_manifest_path = runtime_root / "snapshot-manifest.json"
             _write_atomic(snapshot_manifest_path, manifest_payload)
             metadata = self._common_metadata(
@@ -1222,16 +1428,16 @@ class WorkspaceManager:
                     "snapshot_manifest_sha256": manifest_hash,
                 }
             )
-            return metadata
+            return metadata, owned_directories
         except Exception:
             for path in (
                 temporary_checkout,
-                checkout_root if checkout_created else temporary_checkout,
+                checkout_root,
                 runtime_root,
                 receipts_root,
             ):
                 try:
-                    _remove_created_tree(path, ticket_root)
+                    _remove_owned_tree(path, ticket_root, owned_directories.get(path))
                 except WorkspaceError:
                     pass
             raise
