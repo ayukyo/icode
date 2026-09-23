@@ -23,12 +23,24 @@ from icode.contracts import ContractSet
 from icode.control import ControlPlane
 from icode.runner import run_contract_step, run_unittest
 from icode.runner import StepReport
+from icode.sandbox_policy import NetworkMode, SandboxPolicy
 
 # 各步骤的模拟产物内容（模型"应该"写的内容）
 PLAN_TEXT = "# 实施计划\n\n## 需求理解\n为 calc.py 新增 gcd/lcm。\n"
 REVIEW_TEXT = "# 审查报告\n\n计划合理，建议补充边界测试。\n"
 REVIEW_JSON = {"round": 1, "new_issues": [], "refuted_issues": [], "pending_verification": []}
 MERGED_TEXT = "# 定稿计划\n\n合并审查意见后的最终实施计划。\n"
+
+
+def _policy(workspace: Path, step: str, ticket_id: str) -> SandboxPolicy:
+    return SandboxPolicy(
+        schema_version=1, run_id="offline-run", ticket_id=ticket_id,
+        step=step, workspace_root=workspace, read_roots=(workspace,),
+        write_roots=(workspace,), deny_read_roots=(),
+        deny_write_roots=(workspace / ".git",), network_mode=NetworkMode.DENY,
+        allowed_domains=(), process_limit=16, wall_timeout_seconds=60,
+        output_limit_bytes=1024, protected_paths=(workspace / ".git",),
+    )
 
 
 def _script_for_step(step: str, out_dir: Path) -> list[dict[str, Any]]:
@@ -94,6 +106,7 @@ class TestChainOffline(unittest.TestCase):
                 out_dir=str(existing_ticket.resolve()),
                 finish_outcome="success",
             )
+            policy = _policy(workspace.resolve(), "plan", ticket_id)
 
             with patch("icode.chain.run_contract_step", return_value=step_report) as invoked:
                 report = run_chain(
@@ -104,12 +117,14 @@ class TestChainOffline(unittest.TestCase):
                     ticket_id=ticket_id,
                     steps=("plan",),
                     out_dir=existing_ticket,
+                    policy=policy,
                 )
 
             self.assertTrue(report.ok)
             self.assertEqual(sorted((workspace / ".icode_output").iterdir()), before)
             self.assertEqual(invoked.call_args.kwargs["ticket_id"], ticket_id)
             self.assertEqual(invoked.call_args.kwargs["out_dir"], existing_ticket.resolve())
+            self.assertIs(invoked.call_args.kwargs["policy"], policy)
 
     def test_run_chain拒绝非工单目录与身份不匹配目录(self) -> None:
         with temp_workspace() as workspace:
@@ -173,6 +188,7 @@ class TestChainOffline(unittest.TestCase):
                 out_dir, ticket_id=ticket_id, requirement="隔离透传", birth="plan",
             )
             sandbox = object()
+            policy = _policy(workspace.resolve(), "plan", ticket_id)
             loop = SimpleNamespace(ok=True, messages=[], stop_reason="done", error="")
             with patch("icode.runner._run_agent", return_value=loop) as agent, patch(
                 "icode.runner._finalize"
@@ -180,12 +196,14 @@ class TestChainOffline(unittest.TestCase):
                 run_contract_step(
                     self.settings, backend=FakeBackend(["完成"]), workspace=workspace,
                     step="plan", ticket_id=ticket_id, out_dir=out_dir,
-                    sandbox=sandbox,
+                    sandbox=sandbox, policy=policy,
                 )
 
             self.assertGreaterEqual(agent.call_count, 2, "必须覆盖首次与补救回合")
             self.assertTrue(all(
-                call.kwargs.get("sandbox") is sandbox for call in agent.call_args_list
+                call.kwargs.get("sandbox") is sandbox
+                and call.kwargs.get("policy") is policy
+                for call in agent.call_args_list
             ))
 
     def test_plan_review_merge_三步走通(self) -> None:

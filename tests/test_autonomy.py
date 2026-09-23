@@ -26,6 +26,7 @@ from icode.autonomy import (
 from icode.backends import FakeBackend
 from icode.chain import ChainReport, run_chain
 from icode.runner import StepReport
+from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.tickets import TicketError, TicketService
 from icode.workspace import (
     WorkspaceBusyError,
@@ -327,6 +328,67 @@ class RecordingWorkspaceManager:
 
 
 class TestNativeChainExecutor(unittest.TestCase):
+    def test_自动会话无策略级后端时阻断模型执行(self) -> None:
+        settings = require_skill()
+        with temp_workspace() as workspace:
+            policy = SandboxPolicy(
+                schema_version=1, run_id="run-1", ticket_id="AUTO-POLICY-1",
+                step="plan", workspace_root=workspace,
+                read_roots=(workspace,), write_roots=(workspace,),
+                deny_read_roots=(), deny_write_roots=(workspace / ".git",),
+                network_mode=NetworkMode.DENY, allowed_domains=(),
+                process_limit=16, wall_timeout_seconds=60,
+                output_limit_bytes=1024, protected_paths=(workspace / ".git",),
+            )
+            steps: list[str] = []
+            control = RecordingControl()
+            control.session = SimpleNamespace(policy=lambda step: (
+                steps.append(step), policy
+            )[1])
+            executor = NativeChainExecutor(
+                settings, backend=FakeBackend(["完成"]),
+                step_runner=lambda *args, **kwargs: self.fail("不能进入模型链路"),
+            )
+            context = ExecutionContext(
+                ticket_id=policy.ticket_id, out_dir=workspace / "ticket",
+                workspace=workspace, requirement="安全阻断", status="init_in_progress",
+                completed_steps=(),
+            )
+            with patch("icode.autonomy.ControlPlane.trace", return_value=SimpleNamespace(
+                returncode=0, data={"ok": True, "ticket_id": policy.ticket_id,
+                                    "status": "init_in_progress"},
+            )):
+                result = executor.execute(context, control)
+            self.assertEqual(steps, ["plan"])
+            self.assertEqual(result, ExecutionResult(
+                state="blocked", last_step="plan", error_code="isolation_unavailable",
+            ))
+
+            calls: list[dict] = []
+            policy_backend = SimpleNamespace(
+                is_real_isolation=True,
+                wrap_policy=lambda *args, **kwargs: [],
+            )
+
+            def step_runner(*args, **kwargs):
+                calls.append(kwargs)
+                return ChainReport(delivered=True)
+
+            executor = NativeChainExecutor(
+                settings, backend=FakeBackend(["完成"]),
+                step_runner=step_runner, sandbox=policy_backend,
+            )
+            with patch("icode.autonomy.chain_steps", return_value=("plan",)), patch(
+                "icode.autonomy.ControlPlane.trace", return_value=SimpleNamespace(
+                    returncode=0, data={"ok": True, "ticket_id": policy.ticket_id,
+                                        "status": "init_in_progress"},
+                ),
+            ):
+                result = executor.execute(context, control)
+            self.assertEqual(result.state, "succeeded")
+            self.assertIs(calls[0]["policy"], policy)
+            self.assertIs(calls[0]["sandbox"], policy_backend)
+
     def test_从当前控制面状态续跑且每步先safe_point(self) -> None:
         settings = require_skill()
         calls: list[dict] = []

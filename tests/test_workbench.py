@@ -608,6 +608,13 @@ class TestWorkbenchAssets(unittest.TestCase):
 
 
 class TestWorkbenchCLI(unittest.TestCase):
+    def test_策略后端未就绪状态必须在服务端保留(self) -> None:
+        limits = WorkbenchServer._safe_autonomy_limits({
+            "max_turns": 7, "budget_tokens": 1200,
+            "isolation_level": "policy_unavailable",
+        })
+        self.assertEqual(limits["isolation_level"], "policy_unavailable")
+
     def test_workbench_命令绑定可信工作区且不提供_host(self) -> None:
         parser = _build_parser()
         args = parser.parse_args([

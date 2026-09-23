@@ -79,6 +79,10 @@ class Scope:
 
     workspace_root: Path
     readable_roots: tuple[Path, ...] = ()
+    allowed_read_roots: tuple[Path, ...] | None = None
+    allowed_write_roots: tuple[Path, ...] | None = None
+    deny_read_roots: tuple[Path, ...] = ()
+    deny_write_roots: tuple[Path, ...] = ()
     command_allowlist: tuple[str, ...] = _DEFAULT_COMMAND_ALLOWLIST
 
     def __post_init__(self) -> None:
@@ -86,6 +90,15 @@ class Scope:
         object.__setattr__(
             self, "readable_roots", tuple(Path(p).resolve() for p in self.readable_roots)
         )
+        for name in (
+            "allowed_read_roots", "allowed_write_roots",
+            "deny_read_roots", "deny_write_roots",
+        ):
+            if getattr(self, name) is None:
+                continue
+            object.__setattr__(
+                self, name, tuple(Path(p).resolve() for p in getattr(self, name))
+            )
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -107,6 +120,12 @@ class Guard:
 
     def check_read(self, path: PurePath | str) -> Verdict:
         target = self._resolve(path)
+        if any(_is_within(target, root) for root in self.scope.deny_read_roots):
+            return Verdict(Decision.DENY, "受保护路径禁止读取")
+        if self.scope.allowed_read_roots is not None:
+            if any(_is_within(target, root) for root in self.scope.allowed_read_roots):
+                return Verdict(Decision.ALLOW, "策略允许读取")
+            return Verdict(Decision.DENY, "策略未授权读取")
         if _is_within(target, self.scope.workspace_root):
             return Verdict(Decision.ALLOW, "工作区内读取")
         for root in self.scope.readable_roots:
@@ -118,6 +137,12 @@ class Guard:
 
     def check_write(self, path: PurePath | str) -> Verdict:
         target = self._resolve(path)
+        if any(_is_within(target, root) for root in self.scope.deny_write_roots):
+            return Verdict(Decision.DENY, "受保护路径禁止写入")
+        if self.scope.allowed_write_roots is not None:
+            if any(_is_within(target, root) for root in self.scope.allowed_write_roots):
+                return Verdict(Decision.ALLOW, "策略允许写入")
+            return Verdict(Decision.DENY, "策略未授权写入")
         if _is_within(target, self.scope.workspace_root):
             return Verdict(Decision.ALLOW, "工作区内写入")
         return Verdict(Decision.DENY, "工作区外写入：默认拒绝")

@@ -41,6 +41,7 @@ from .loop import AgentLoop, LoopConfig, LoopResult
 from .operations import OperationRecorder
 from .reasoning import ReasoningGate, TraceRow, append_trace, run_deliberation
 from .recovery import Recoverer
+from .sandbox_policy import SandboxPolicy
 from .tools import ToolContext, default_registry
 
 # 靶场默认位置（相对仓库根）
@@ -209,6 +210,7 @@ def run_contract_step(
     budget: Budget | None = None,
     on_event=None,
     sandbox: Sandbox | None = None,
+    policy: SandboxPolicy | None = None,
     out_dir: Path | None = None,
     extra_instructions: str = "",
     post_write: "Callable[[Path, str, str], None] | None" = None,
@@ -221,6 +223,11 @@ def run_contract_step(
     （用于装配机器可读索引、跑控制面原生自查清单等**非模型**动作）。
     """
     workspace = Path(workspace).resolve()
+    if policy is not None and (
+        policy.workspace_root != workspace
+        or policy.step != step or policy.ticket_id != ticket_id
+    ):
+        raise ValueError("隔离策略与当前步骤身份不匹配")
     cp = ControlPlane(settings)
     report = StepReport(step=step, ok=False, out_dir="")
 
@@ -297,7 +304,7 @@ def run_contract_step(
                     requirement=requirement or DEFAULT_TASK, approver=approver,
                     loop_config=loop_config, budget=budget, on_event=on_event,
                     checkpointer=ckpt, extra_instructions=extra_instructions,
-                    operations=step_ops, sandbox=sandbox,
+                    operations=step_ops, sandbox=sandbox, policy=policy,
                 )
                 report.loop = loop
                 if not loop.ok:
@@ -342,6 +349,7 @@ def run_contract_step(
                         loop_config=loop_config, budget=budget, on_event=on_event,
                         checkpointer=ckpt,
                         sandbox=sandbox,
+                        policy=policy,
                         extra_instructions=REPAIR_INSTRUCTIONS.format(
                             missing="\n".join(f"  - {out_dir / p.value}" for p in still_missing)
                         ),
@@ -444,9 +452,14 @@ def _finish_step(
         report.add("step finish（被门禁拒绝，如实上报）", False, detail[:160])
 
 
-def _make_ctx(workspace: Path, sandbox: Sandbox | None) -> ToolContext:
+def _make_ctx(
+    workspace: Path, sandbox: Sandbox | None, policy: SandboxPolicy | None = None,
+) -> ToolContext:
     """构造工具上下文；未显式指定时按本机实测能力自动选隔离后端。"""
-    return ToolContext(root=workspace, sandbox=sandbox if sandbox is not None else select_sandbox())
+    return ToolContext(
+        root=workspace, sandbox=sandbox if sandbox is not None else select_sandbox(),
+        policy=policy,
+    )
 
 
 REPAIR_INSTRUCTIONS = (
@@ -548,11 +561,19 @@ def _run_agent(
     *, backend, workspace, out_dir, ticket_id, step, brief, contract, requirement,
     approver, loop_config, budget, on_event, checkpointer=None, resume_context: str = "",
     sandbox: Sandbox | None = None, extra_instructions: str = "",
+    policy: SandboxPolicy | None = None,
     operations: OperationRecorder | None = None,
 ) -> LoopResult:
     registry = default_registry()
-    guard = Guard(Scope(workspace_root=workspace))
-    ctx = _make_ctx(workspace, sandbox)
+    scope = Scope(
+        workspace_root=workspace,
+        allowed_read_roots=policy.read_roots if policy is not None else None,
+        allowed_write_roots=policy.write_roots if policy is not None else None,
+        deny_read_roots=policy.deny_read_roots if policy is not None else (),
+        deny_write_roots=policy.deny_write_roots if policy is not None else (),
+    )
+    guard = Guard(scope)
+    ctx = _make_ctx(workspace, sandbox, policy)
     on_turn = None
     if checkpointer is not None:
         def on_turn(turn_index: int, total_tool_calls: int, history: list[dict]) -> None:

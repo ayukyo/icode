@@ -27,6 +27,7 @@ from .contracts import ContractSet
 from .control import ControlPlane
 from .loop import LoopConfig
 from .runner import StepReport, _snapshot, run_contract_step
+from .sandbox_policy import SandboxPolicy
 
 # 各步骤的**额外交付要求**（步骤顺序不在这里，见 chain_steps）
 # 注意：这里**只描述内容要求，不写裸文件名**。
@@ -280,6 +281,7 @@ def run_chain(
     budget: Budget | None = None,
     on_event=None,
     sandbox=None,
+    policy: SandboxPolicy | None = None,
     on_step=None,
     out_dir: Path | None = None,
 ) -> ChainReport:
@@ -302,6 +304,11 @@ def run_chain(
             raise ValueError("已有工单目录与 ticket_id 不匹配")
 
     order = tuple(steps) if steps else chain_steps(contracts)
+    if policy is not None and (
+        len(order) != 1 or policy.step != order[0]
+        or policy.workspace_root != workspace or policy.ticket_id != ticket_id
+    ):
+        raise ValueError("隔离策略与当前单步链路身份不匹配")
     report.notes.append("链路顺序（由状态机派生）：" + " → ".join(order))
 
     before = _snapshot(workspace)
@@ -342,7 +349,7 @@ def run_chain(
             settings, backend=backend, workspace=workspace, step=name,
             ticket_id=ticket_id, requirement=requirement, approver=approver,
             loop_config=loop_config, budget=budget, on_event=on_event,
-            sandbox=sandbox, out_dir=out_dir,
+            sandbox=sandbox, policy=policy, out_dir=out_dir,
             extra_instructions=instructions, post_write=post,
         )
         report.steps.append(step_report)

@@ -36,7 +36,9 @@ _TICKET_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,140}$")
 _INTENT_PREFIX = "/api/v1/tickets/"
 _INTENT_SUFFIX = "/intents"
 _PUBLIC_INTENTS = ["start", "pause", "resume", "cancel", "takeover"]
-_ISOLATION_LEVELS = frozenset({"enforced", "application_only", "not_configured"})
+_ISOLATION_LEVELS = frozenset({
+    "enforced", "application_only", "not_configured", "policy_unavailable",
+})
 
 
 class WorkbenchHTTPServer(ThreadingHTTPServer):

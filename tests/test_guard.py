@@ -53,6 +53,35 @@ class TestGuard(unittest.TestCase):
     def test_工作区外写入即使穿越也拒绝(self) -> None:
         self.assertEqual(self.guard.check_write("../evil.sh").decision, Decision.DENY)
 
+    def test_工作区内受保护路径优先拒绝且符号链接不能绕过(self) -> None:
+        protected = self.ws / ".git"
+        protected.mkdir()
+        guard = Guard(Scope(
+            workspace_root=self.ws,
+            deny_read_roots=(protected,),
+            deny_write_roots=(protected,),
+        ))
+        self.assertEqual(guard.check_write("src/new.py").decision, Decision.ALLOW)
+        self.assertEqual(guard.check_read(".git/config").decision, Decision.DENY)
+        self.assertEqual(guard.check_write(".git/config").decision, Decision.DENY)
+        link = self.ws / "git-link"
+        try:
+            link.symlink_to(protected, target_is_directory=True)
+        except OSError:
+            return
+        self.assertEqual(guard.check_write("git-link/config").decision, Decision.DENY)
+
+    def test_策略收窄可读写根后不会回落到整个工作区(self) -> None:
+        guard = Guard(Scope(
+            workspace_root=self.ws,
+            allowed_read_roots=(self.ws / "src",),
+            allowed_write_roots=(self.ws / "src",),
+        ))
+        self.assertEqual(guard.check_read("src/a.py").decision, Decision.ALLOW)
+        self.assertEqual(guard.check_write("src/a.py").decision, Decision.ALLOW)
+        self.assertEqual(guard.check_read("outside.txt").decision, Decision.DENY)
+        self.assertEqual(guard.check_write("outside.txt").decision, Decision.DENY)
+
     # ---- 命令 ----
 
     def test_白名单命令放行(self) -> None:

@@ -25,6 +25,7 @@ from .config import Settings
 from .contracts import ContractSet
 from .control import ControlPlane
 from .loop import LoopConfig
+from .sandbox_policy import SandboxPolicy
 from .tickets import TicketError, TicketService
 from .workspace import (
     WorkspaceBusyError,
@@ -166,6 +167,28 @@ class NativeChainExecutor:
         last_step: str | None = None
         for step in pending:
             control.safe_point(step)
+            policy: SandboxPolicy | None = None
+            session = getattr(control, "session", None)
+            if session is not None:
+                try:
+                    policy = session.policy(step)
+                except Exception:  # noqa: BLE001 - 策略故障不可退回裸执行。
+                    return ExecutionResult(
+                        state="blocked", last_step=step,
+                        error_code="isolation_unavailable",
+                    )
+                if (
+                    not isinstance(policy, SandboxPolicy)
+                    or policy.workspace_root != context.workspace.resolve()
+                    or policy.ticket_id != context.ticket_id
+                    or policy.step != step
+                    or not bool(getattr(self.sandbox, "is_real_isolation", False))
+                    or not callable(getattr(self.sandbox, "wrap_policy", None))
+                ):
+                    return ExecutionResult(
+                        state="blocked", last_step=step,
+                        error_code="isolation_unavailable",
+                    )
             try:
                 report = self._step_runner(
                     self.settings,
@@ -180,6 +203,7 @@ class NativeChainExecutor:
                     budget=self.budget,
                     on_event=self.on_event,
                     sandbox=self.sandbox,
+                    policy=policy,
                 )
             except Exception:  # noqa: BLE001 - 只返回稳定码，不泄露异常正文。
                 return ExecutionResult(

@@ -31,6 +31,7 @@ from icode.isolation import (
     select_sandbox,
 )
 from icode.tools import IsolationUnavailable, ToolContext, default_registry
+from icode.sandbox_policy import NetworkMode, SandboxPolicy
 
 
 class TestProbe(unittest.TestCase):
@@ -349,6 +350,24 @@ class TestContextIntegration(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertEqual(result.meta.get("error"), "invalid_cwd")
             self.assertFalse((outside / "escaped").exists())
+
+    def test_策略未绑定原生后端时命令拒绝而不裸执行(self) -> None:
+        policy = SandboxPolicy(
+            schema_version=1, run_id="run-1", ticket_id="ticket-1", step="code",
+            workspace_root=self.ws, read_roots=(self.ws,), write_roots=(self.ws,),
+            deny_read_roots=(), deny_write_roots=(self.ws / ".git",),
+            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=16,
+            wall_timeout_seconds=60, output_limit_bytes=1024,
+            protected_paths=(self.ws / ".git",),
+        )
+        ctx = ToolContext(root=self.ws, sandbox=NoIsolation(), policy=policy)
+        result = default_registry().invoke(
+            "run_command", ctx,
+            {"argv": [sys.executable, "-c", "from pathlib import Path; Path('unsafe').touch()"]},
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta.get("error"), "isolation_unavailable")
+        self.assertFalse((self.ws / "unsafe").exists())
 
 
 if __name__ == "__main__":

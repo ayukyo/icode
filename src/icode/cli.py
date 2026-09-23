@@ -594,7 +594,11 @@ def cmd_workbench(args: argparse.Namespace) -> int:
             on_event=on_event,
             sandbox=sandbox,
         )
-        isolation_level = "enforced" if sandbox.is_real_isolation else "application_only"
+        isolation_level = (
+            "enforced" if sandbox.is_real_isolation
+            and callable(getattr(sandbox, "wrap_policy", None))
+            else "policy_unavailable"
+        )
     server = WorkbenchServer(
         settings=settings,
         workspace=Path(args.workspace),

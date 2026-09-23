@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
+from ..sandbox_policy import SandboxPolicy
+
 # 工具输出回灌模型时的字符上限（渐进披露原则：不要把大段正文塞回上下文）
 DEFAULT_OUTPUT_LIMIT = 8000
 
@@ -33,6 +35,7 @@ class ToolContext:
     root: Path
     output_limit: int = DEFAULT_OUTPUT_LIMIT
     sandbox: object | None = None
+    policy: SandboxPolicy | None = None
 
     def resolve(self, path: str) -> Path:
         p = Path(path)
@@ -53,6 +56,17 @@ class ToolContext:
 
     def wrap_command(self, argv: list[str], *, network: bool = False) -> list[str]:
         """把命令包进沙箱（没有后端时原样返回）。"""
+        if self.policy is not None:
+            # 自主会话的策略必须由后端完整绑定；普通 wrap 只证明最小探针，
+            # 无法保护可写工作区内的 .git 等例外路径。
+            wrap_policy = getattr(self.sandbox, "wrap_policy", None)
+            if (not self.needs_real_isolation() or not callable(wrap_policy)
+                    or self.policy.workspace_root != self.root.resolve()):
+                raise IsolationUnavailable("原生后端尚不能执行该工单的完整隔离策略")
+            try:
+                return list(wrap_policy(argv, policy=self.policy, network=network))
+            except Exception:  # noqa: BLE001 - 策略绑定失败不允许退回普通 wrap
+                raise IsolationUnavailable("工单隔离策略绑定失败，命令已拒绝") from None
         wrap = getattr(self.sandbox, "wrap", None)
         if not callable(wrap):
             return list(argv)
