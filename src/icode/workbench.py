@@ -20,6 +20,7 @@ from .autonomy import AutonomyError, AutonomyManager, Executor
 from .config import Settings
 from .control import ControlError
 from .tickets import TicketError, TicketService
+from .workspace import WorkspaceManager, default_data_root
 
 LOOPBACK_HOST = "127.0.0.1"
 ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -288,18 +289,39 @@ class WorkbenchServer:
         enable_autonomous: bool = False,
         autonomy_executor: Executor | None = None,
         autonomy_limits: dict[str, Any] | None = None,
+        workspace_manager: WorkspaceManager | None = None,
     ) -> None:
-        if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
+        if (
+            isinstance(port, bool)
+            or not isinstance(port, int)
+            or not 0 <= port <= 65535
+        ):
             raise ValueError("port 必须是 0..65535 的整数")
         self.service = TicketService(
             settings,
             workspace=workspace,
             index_path=index_path,
         )
+        if (
+            workspace_manager is None
+            and enable_autonomous
+            and autonomy_executor is not None
+        ):
+            protected_paths = [settings.skill_root]
+            vendored_skill = self.service.workspace / "vendor" / "icode-skill"
+            if vendored_skill.exists():
+                protected_paths.append(vendored_skill)
+            workspace_manager = WorkspaceManager(
+                self.service.workspace,
+                default_data_root(),
+                self.service.project_id,
+                extra_protected_paths=tuple(protected_paths),
+            )
         self.autonomy = AutonomyManager(
             self.service,
             executor=autonomy_executor,
             enabled=enable_autonomous,
+            workspace_manager=workspace_manager,
         )
         limits = self._safe_autonomy_limits(autonomy_limits)
         self.autonomy_capability = {

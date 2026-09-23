@@ -26,6 +26,12 @@ from .contracts import ContractSet
 from .control import ControlPlane
 from .loop import LoopConfig
 from .tickets import TicketError, TicketService
+from .workspace import (
+    WorkspaceBusyError,
+    WorkspaceError,
+    WorkspaceManager,
+    WorkspaceSession,
+)
 
 INTENTS = frozenset({"start", "pause", "resume", "cancel", "takeover"})
 ACTIVE_STATES = frozenset({
@@ -207,6 +213,8 @@ class RunControl:
         self.run_id = run_id
         self._manager = manager
         self._stop_intent: str | None = None
+        self.session: WorkspaceSession | None = None
+        self._worker_key: str | None = None
 
     def safe_point(self, step: str) -> None:
         if not isinstance(step, str) or _STEP_RE.fullmatch(step) is None:
@@ -223,10 +231,12 @@ class AutonomyManager:
         *,
         executor: Executor | None,
         enabled: bool = False,
+        workspace_manager: WorkspaceManager | None = None,
     ) -> None:
         self.tickets = tickets
         self.executor = executor
         self.enabled = bool(enabled and executor is not None)
+        self.workspace_manager = workspace_manager
         self._lock = threading.RLock()
         self._workers: dict[str, threading.Thread] = {}
         self._controls: dict[str, RunControl] = {}
@@ -296,7 +306,11 @@ class AutonomyManager:
         except TicketError as exc:
             raise AutonomyError("ticket_not_found", "工单不存在或身份不唯一") from exc
 
-    def _execution_context(self, ticket_id: str) -> ExecutionContext:
+    def _execution_context(
+        self,
+        ticket_id: str,
+        control: RunControl,
+    ) -> ExecutionContext:
         try:
             record = self.tickets._resolve_ticket_record(ticket_id)
         except TicketError as exc:
@@ -308,11 +322,16 @@ class AutonomyManager:
         return ExecutionContext(
             ticket_id=ticket_id,
             out_dir=record.out_dir,
-            workspace=self.tickets.workspace,
+            workspace=(
+                control.session.workspace_root
+                if control.session is not None
+                else self.tickets.workspace
+            ),
             requirement=requirement if isinstance(requirement, str) else "",
             status=status if isinstance(status, str) else "unknown",
             completed_steps=tuple(str(item) for item in completed)
-            if isinstance(completed, list) else (),
+            if isinstance(completed, list)
+            else (),
         )
 
     def _raw_runtime(self, ticket_id: str) -> dict:
@@ -454,15 +473,23 @@ class AutonomyManager:
 
     def _release_worker_locked(self, ticket_id: str, control: RunControl) -> None:
         """在终态可见前后使用同一把锁原子释放当前 run 的注册。"""
+        session = control.session
+        control.session = None
+        if session is not None:
+            try:
+                session.close()
+            except Exception:  # noqa: BLE001,S110 - lease 失败不得卡住内存注册清理。
+                pass
         if self._controls.get(ticket_id) is control:
             worker = self._workers.get(ticket_id)
             self._controls.pop(ticket_id, None)
             self._workers.pop(ticket_id, None)
-            if worker is not None:
-                self._release_process_worker(
-                    self._process_worker_key(ticket_id), worker)
+            if worker is not None and control._worker_key is not None:
+                self._release_process_worker(control._worker_key, worker)
 
-    def _start_or_resume_locked(self, ticket: dict, intent: str, request_id: str) -> dict:
+    def _start_or_resume_locked(
+        self, ticket: dict, intent: str, request_id: str
+    ) -> dict:
         self._require_capability(ticket)
         ticket_id = ticket["ticket_id"]
         worker = self._workers.get(ticket_id)
@@ -472,7 +499,13 @@ class AutonomyManager:
         state = runtime.get("state")
         if intent == "start":
             allowed = {
-                None, "pending", "cancelled", "succeeded", "failed", "blocked", "interrupted",
+                None,
+                "pending",
+                "cancelled",
+                "succeeded",
+                "failed",
+                "blocked",
+                "interrupted",
             }
         else:
             allowed = {"paused", "failed", "blocked", "interrupted"}
@@ -490,7 +523,8 @@ class AutonomyManager:
             "last_intent": intent,
             "last_intent_request_id": request_id,
             "intent_receipts": self._append_intent_receipt(
-                ticket_id, runtime, intent, request_id),
+                ticket_id, runtime, intent, request_id
+            ),
         }
         control = RunControl(ticket_id, run_id, self)
         thread = threading.Thread(
@@ -500,9 +534,23 @@ class AutonomyManager:
             daemon=True,
         )
         worker_key = self._process_worker_key(ticket_id)
+        control._worker_key = worker_key
         if not self._reserve_process_worker(worker_key, thread):
             raise AutonomyError("invalid_transition", "该工单已有运行中的 worker")
+        self._controls[ticket_id] = control
+        self._workers[ticket_id] = thread
         try:
+            if self.workspace_manager is not None:
+                try:
+                    control.session = self.workspace_manager.open(ticket_id, run_id)
+                except WorkspaceBusyError as exc:
+                    raise AutonomyError(
+                        "workspace_busy", "该工单正在另一个进程中运行"
+                    ) from exc
+                except WorkspaceError as exc:
+                    raise AutonomyError(
+                        "workspace_setup_failed", "无法准备隔离工作区"
+                    ) from exc
             public = self._persist_intent(
                 ticket_id,
                 {
@@ -513,22 +561,22 @@ class AutonomyManager:
                 self._internal_request(ticket_id, f"intent-{intent}-{request_id}"),
             )
         except Exception:
-            self._release_process_worker(worker_key, thread)
+            self._release_worker_locked(ticket_id, control)
             raise
-        self._controls[ticket_id] = control
-        self._workers[ticket_id] = thread
         try:
             thread.start()
-        except RuntimeError:
+        except Exception:  # noqa: BLE001 - 任意 start 异常都必须释放尚未运行的 worker。
             self._release_worker_locked(ticket_id, control)
             interrupted = dict(starting)
-            interrupted.update({
-                "state": "interrupted",
-                "revision": self._revision(starting) + 1,
-                "updated_at": self._now(),
-                "finished_at": self._now(),
-                "error_code": "worker_start_failed",
-            })
+            interrupted.update(
+                {
+                    "state": "interrupted",
+                    "revision": self._revision(starting) + 1,
+                    "updated_at": self._now(),
+                    "finished_at": self._now(),
+                    "error_code": "worker_start_failed",
+                }
+            )
             self._persist_intent(
                 ticket_id,
                 {
@@ -600,7 +648,7 @@ class AutonomyManager:
                         request_id=self._internal_request(
                             ticket_id, f"run-{control.run_id}-{running['revision']}-running"),
                     )
-            context = self._execution_context(ticket_id)
+            context = self._execution_context(ticket_id, control)
             executor = self.executor
             if executor is None:  # 构造时已 fail-closed；防止未来热替换竞态。
                 raise RuntimeError("executor unavailable")
@@ -612,12 +660,14 @@ class AutonomyManager:
                 if runtime.get("run_id") != control.run_id:
                     return
                 terminal = dict(runtime)
-                terminal.update({
-                    "state": result.state,
-                    "revision": self._revision(runtime) + 1,
-                    "updated_at": self._now(),
-                    "finished_at": self._now(),
-                })
+                terminal.update(
+                    {
+                        "state": result.state,
+                        "revision": self._revision(runtime) + 1,
+                        "updated_at": self._now(),
+                        "finished_at": self._now(),
+                    }
+                )
                 if result.last_step is not None:
                     terminal["last_step"] = result.last_step
                 error_code = result.error_code
@@ -633,9 +683,10 @@ class AutonomyManager:
                     ticket_id,
                     {"autonomous_run": terminal},
                     request_id=self._internal_request(
-                        ticket_id, f"run-{control.run_id}-{terminal['revision']}-{result.state}"),
+                        ticket_id,
+                        f"run-{control.run_id}-{terminal['revision']}-{result.state}",
+                    ),
                 )
-                self._release_worker_locked(ticket_id, control)
         except _RunStopped:
             pass
         except Exception:
@@ -654,20 +705,22 @@ class AutonomyManager:
                 if runtime.get("run_id") != control.run_id:
                     return
                 failed = dict(runtime)
-                failed.update({
-                    "state": "failed",
-                    "revision": self._revision(runtime) + 1,
-                    "updated_at": self._now(),
-                    "finished_at": self._now(),
-                    "error_code": "executor_error",
-                })
+                failed.update(
+                    {
+                        "state": "failed",
+                        "revision": self._revision(runtime) + 1,
+                        "updated_at": self._now(),
+                        "finished_at": self._now(),
+                        "error_code": "executor_error",
+                    }
+                )
                 self.tickets.update_agent_extension(
                     ticket_id,
                     {"autonomous_run": failed},
                     request_id=self._internal_request(
-                        ticket_id, f"run-{control.run_id}-{failed['revision']}-failed"),
+                        ticket_id, f"run-{control.run_id}-{failed['revision']}-failed"
+                    ),
                 )
-                self._release_worker_locked(ticket_id, control)
             except (AutonomyError, TicketError):
                 return
 
@@ -680,11 +733,13 @@ class AutonomyManager:
                 raise _RunStopped()
             stop_intent = "interrupted" if self._shutting_down else control._stop_intent
             next_runtime = dict(runtime)
-            next_runtime.update({
-                "revision": self._revision(runtime) + 1,
-                "updated_at": self._now(),
-                "last_step": step,
-            })
+            next_runtime.update(
+                {
+                    "revision": self._revision(runtime) + 1,
+                    "updated_at": self._now(),
+                    "last_step": step,
+                }
+            )
             patch: dict = {"autonomous_run": next_runtime}
             if stop_intent is None:
                 next_runtime["state"] = "running"
@@ -708,10 +763,10 @@ class AutonomyManager:
                 patch,
                 request_id=self._internal_request(
                     control.ticket_id,
-                    f"run-{control.run_id}-{next_runtime['revision']}-safe-point"),
+                    f"run-{control.run_id}-{next_runtime['revision']}-safe-point",
+                ),
             )
             if stop_intent is not None:
-                self._release_worker_locked(control.ticket_id, control)
                 raise _RunStopped()
 
     def shutdown(self, *, timeout: float = 2.0) -> None:

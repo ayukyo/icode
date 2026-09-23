@@ -11,11 +11,13 @@ import urllib.error
 import urllib.request
 from unittest.mock import patch
 
-from tests._support import require_skill, temp_workspace
-
 from icode.autonomy import ExecutionResult
 from icode.cli import _build_parser
 from icode.workbench import ASSETS_DIR, MAX_BODY_BYTES, WorkbenchServer
+from icode.workspace import WorkspaceBusyError, WorkspaceError
+from tests._support import require_skill, temp_workspace
+
+HTTP_TEST_TIMEOUT_SECONDS = 15
 
 
 class _ImmediateExecutor:
@@ -28,6 +30,16 @@ class _ImmediateExecutor:
         self.called.set()
         control.safe_point("plan")
         return ExecutionResult(state="succeeded", last_step="plan")
+
+
+class _FailingWorkspaceManager:
+    def __init__(self, error: WorkspaceError) -> None:
+        self.error = error
+        self.calls = 0
+
+    def open(self, ticket_id: str, run_id: str):
+        self.calls += 1
+        raise self.error
 
 
 def _request(
@@ -48,7 +60,10 @@ def _request(
     if origin:
         request.add_header("Origin", origin)
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
+        with urllib.request.urlopen(
+            request,
+            timeout=HTTP_TEST_TIMEOUT_SECONDS,
+        ) as response:  # noqa: S310
             return response.status, dict(response.headers), response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         return exc.code, dict(exc.headers), exc.read().decode("utf-8")
@@ -342,6 +357,135 @@ class TestWorkbenchHTTP(unittest.TestCase):
                 self.assertNotIn("backend", bootstrap_body)
                 self.assertNotIn("model", bootstrap_body)
             finally:
+                server.stop()
+
+    def test_workspace_setup错误响应不泄露路径(self) -> None:
+        cases = (
+            (WorkspaceError, "workspace_setup_failed"),
+            (WorkspaceBusyError, "workspace_busy"),
+        )
+        for index, (error_type, expected_code) in enumerate(cases):
+            with self.subTest(code=expected_code), temp_workspace() as workspace:
+                executor = _ImmediateExecutor()
+                private_path = workspace / "private-manifest.json"
+                workspace_manager = _FailingWorkspaceManager(
+                    error_type(f"lease failed at {private_path}")
+                )
+                server = WorkbenchServer(
+                    settings=require_skill(),
+                    workspace=workspace,
+                    index_path=workspace / "index.json",
+                    port=0,
+                    enable_autonomous=True,
+                    autonomy_executor=executor,
+                    workspace_manager=workspace_manager,
+                )
+                url = server.start()
+                try:
+                    _, headers, _ = _request(url)
+                    cookie = headers["Set-Cookie"].split(";", 1)[0]
+                    _, _, create_body = _request(
+                        url + "api/v1/tickets",
+                        method="POST",
+                        payload={
+                            "project_id": server.service.project_id,
+                            "title": "Workspace failure",
+                            "description": "Do not leak server paths.",
+                            "expected_result": "Stable public error.",
+                            "priority": "normal",
+                            "locale": "en-US",
+                            "execution_mode": "autonomous",
+                            "request_id": f"workspace-error-create-{index}",
+                        },
+                        cookie=cookie,
+                    )
+                    ticket_id = json.loads(create_body)["ticket"]["ticket_id"]
+                    status, _, body = _request(
+                        url + f"api/v1/tickets/{ticket_id}/intents",
+                        method="POST",
+                        payload={
+                            "intent": "start",
+                            "request_id": f"workspace-error-start-{index}",
+                        },
+                        cookie=cookie,
+                    )
+
+                    self.assertEqual(status, 409)
+                    self.assertEqual(json.loads(body)["code"], expected_code)
+                    self.assertNotIn(str(workspace), body)
+                    self.assertNotIn("manifest", body)
+                    self.assertNotIn("lease failed", body)
+                    self.assertEqual(executor.calls, 0)
+                finally:
+                    server.stop()
+
+    def test_自动模式惰性构造workspace_manager并保护skill路径(self) -> None:
+        executor = _ImmediateExecutor()
+        with temp_workspace() as workspace:
+            vendored_skill = workspace / "vendor" / "icode-skill"
+            vendored_skill.mkdir(parents=True)
+            settings = require_skill()
+            data_root = workspace.parent / f"{workspace.name}-data"
+            with (
+                patch(
+                    "icode.workbench.default_data_root", return_value=data_root
+                ) as root_mock,
+                patch("icode.workbench.WorkspaceManager") as manager_type,
+            ):
+                manager_instance = manager_type.return_value
+                server = WorkbenchServer(
+                    settings=settings,
+                    workspace=workspace,
+                    index_path=workspace / "index.json",
+                    port=0,
+                    enable_autonomous=True,
+                    autonomy_executor=executor,
+                )
+                try:
+                    root_mock.assert_called_once_with()
+                    manager_type.assert_called_once()
+                    args, kwargs = manager_type.call_args
+                    self.assertEqual(
+                        args[:3],
+                        (
+                            server.service.workspace,
+                            data_root,
+                            server.service.project_id,
+                        ),
+                    )
+                    protected = kwargs["extra_protected_paths"]
+                    self.assertIn(settings.skill_root, protected)
+                    self.assertIn(vendored_skill, protected)
+                    self.assertIs(server.autonomy.workspace_manager, manager_instance)
+                    self.assertFalse((data_root / "workspaces").exists())
+                finally:
+                    server.stop()
+
+    def test_交互或无executor不解析默认data_root(self) -> None:
+        settings = require_skill()
+        for enabled, executor in (
+            (False, None),
+            (False, _ImmediateExecutor()),
+            (True, None),
+        ):
+            with (
+                self.subTest(enabled=enabled, executor=executor),
+                temp_workspace() as workspace,
+                patch(
+                    "icode.workbench.default_data_root",
+                    side_effect=AssertionError(
+                        "interactive mode must remain side-effect free"
+                    ),
+                ),
+            ):
+                server = WorkbenchServer(
+                    settings=settings,
+                    workspace=workspace,
+                    index_path=workspace / "index.json",
+                    port=0,
+                    enable_autonomous=enabled,
+                    autonomy_executor=executor,
+                )
                 server.stop()
 
     def test_stop即使自主manager异常也完成线程join与server_close(self) -> None:

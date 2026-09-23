@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-
-from tests._support import require_skill, temp_workspace
 
 from icode.autonomy import (
     ACTIVE_STATES,
@@ -23,8 +25,16 @@ from icode.autonomy import (
 )
 from icode.backends import FakeBackend
 from icode.chain import ChainReport, run_chain
-from icode.tickets import TicketError, TicketService
 from icode.runner import StepReport
+from icode.tickets import TicketError, TicketService
+from icode.workspace import (
+    WorkspaceBusyError,
+    WorkspaceError,
+    WorkspaceManager,
+)
+from tests._support import require_skill, temp_workspace
+
+ASYNC_TEST_TIMEOUT_SECONDS = 10.0
 
 
 def _payload(project_id: str, request_id: str, *, mode: str = "autonomous") -> dict:
@@ -40,7 +50,12 @@ def _payload(project_id: str, request_id: str, *, mode: str = "autonomous") -> d
     }
 
 
-def _wait_state(service: TicketService, ticket_id: str, state: str, timeout: float = 3.0) -> dict:
+def _wait_state(
+    service: TicketService,
+    ticket_id: str,
+    state: str,
+    timeout: float = ASYNC_TEST_TIMEOUT_SECONDS,
+) -> dict:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         ticket = service.ticket_detail(ticket_id)
@@ -49,6 +64,61 @@ def _wait_state(service: TicketService, ticket_id: str, state: str, timeout: flo
         time.sleep(0.01)
     current = service.ticket_detail(ticket_id)
     raise AssertionError(f"expected {state}, got {current.get('autonomous_run')}")
+
+
+def _wait_worker_release(
+    manager: AutonomyManager,
+    ticket_id: str,
+    timeout: float = ASYNC_TEST_TIMEOUT_SECONDS,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while ticket_id in manager._workers and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if ticket_id in manager._workers:
+        raise AssertionError(f"worker registry was not released for {ticket_id}")
+
+
+def _acquire_lease_in_child(
+    data_root: Path,
+    project_id: str,
+    ticket_id: str,
+) -> str:
+    source_root = Path(__file__).resolve().parents[1] / "src"
+    environment = os.environ.copy()
+    existing_path = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(source_root), existing_path) if part
+    )
+    program = "\n".join(
+        (
+            "from pathlib import Path",
+            "import sys",
+            "from icode.workspace import TicketLease, WorkspaceBusyError",
+            "try:",
+            '    lease = TicketLease.acquire(Path(sys.argv[1]), sys.argv[2], sys.argv[3], "child-run")',
+            "except WorkspaceBusyError:",
+            '    print("busy")',
+            "else:",
+            '    print("acquired")',
+            "    lease.release()",
+        )
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            program,
+            str(data_root),
+            project_id,
+            ticket_id,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=10,
+    )
+    return completed.stdout.strip()
 
 
 class BlockingExecutor:
@@ -104,7 +174,7 @@ class NeverSafePointExecutor:
 
     def execute(self, context, control) -> ExecutionResult:
         self.started.set()
-        self.release.wait(3)
+        self.release.wait()
         return ExecutionResult(state="succeeded")
 
 
@@ -203,6 +273,44 @@ class RecordingControl:
 
     def safe_point(self, step: str) -> None:
         self.steps.append(step)
+
+
+class RecordingWorkspaceSession:
+    def __init__(self, workspace_root: Path, *, fail_close: bool = False) -> None:
+        self.workspace_root = workspace_root
+        self.fail_close = fail_close
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+        if self.fail_close:
+            raise WorkspaceError("private close failure")
+
+
+class RecordingWorkspaceManager:
+    def __init__(
+        self,
+        workspace_root: Path,
+        *,
+        open_error: WorkspaceError | None = None,
+        fail_close: bool = False,
+    ) -> None:
+        self.workspace_root = workspace_root
+        self.open_error = open_error
+        self.fail_close = fail_close
+        self.open_calls: list[tuple[str, str]] = []
+        self.sessions: list[RecordingWorkspaceSession] = []
+
+    def open(self, ticket_id: str, run_id: str) -> RecordingWorkspaceSession:
+        self.open_calls.append((ticket_id, run_id))
+        if self.open_error is not None:
+            raise self.open_error
+        session = RecordingWorkspaceSession(
+            self.workspace_root,
+            fail_close=self.fail_close,
+        )
+        self.sessions.append(session)
+        return session
 
 
 class TestNativeChainExecutor(unittest.TestCase):
@@ -623,10 +731,328 @@ class TestAutonomyManager(unittest.TestCase):
             _payload(self.service.project_id, request_id, mode=mode))
         return created["ticket"]["ticket_id"]
 
-    def _manager(self, executor=None, *, enabled: bool = True) -> AutonomyManager:
-        manager = AutonomyManager(self.service, executor=executor, enabled=enabled)
+    def _manager(
+        self,
+        executor=None,
+        *,
+        enabled: bool = True,
+        workspace_manager=None,
+    ) -> AutonomyManager:
+        manager = AutonomyManager(
+            self.service,
+            executor=executor,
+            enabled=enabled,
+            workspace_manager=workspace_manager,
+        )
         self.managers.append(manager)
         return manager
+
+    def test_无workspace_manager保持原工作区兼容(self) -> None:
+        ticket_id = self._ticket("legacy-workspace-ticket")
+        executor = BlockingExecutor()
+        executor.allow_safe_point.set()
+        manager = self._manager(executor)
+
+        manager.handle_intent(
+            ticket_id, {"intent": "start", "request_id": "legacy-workspace-start"}
+        )
+        _wait_state(self.service, ticket_id, "succeeded")
+
+        self.assertEqual(executor.contexts[0].workspace, self.workspace)
+
+    def test_executor使用隔离checkout且不修改source(self) -> None:
+        ticket_id = self._ticket("isolated-checkout-ticket")
+        source_file = self.workspace / "source.txt"
+        source_file.write_text("source\n", encoding="utf-8")
+        with tempfile.TemporaryDirectory(
+            prefix="icode_autonomy_data_"
+        ) as raw_data_root:
+            workspace_manager = WorkspaceManager(
+                self.workspace,
+                Path(raw_data_root),
+                self.service.project_id,
+            )
+
+            class EditingExecutor:
+                def __init__(self) -> None:
+                    self.workspace: Path | None = None
+
+                def execute(inner_self, context, control) -> ExecutionResult:
+                    inner_self.workspace = context.workspace
+                    context.workspace.joinpath("source.txt").write_text(
+                        "isolated\n", encoding="utf-8"
+                    )
+                    return ExecutionResult(state="succeeded")
+
+            executor = EditingExecutor()
+            manager = self._manager(executor, workspace_manager=workspace_manager)
+            manager.handle_intent(
+                ticket_id,
+                {"intent": "start", "request_id": "isolated-checkout-start"},
+            )
+            _wait_state(self.service, ticket_id, "succeeded")
+            _wait_worker_release(manager, ticket_id)
+
+            self.assertIsNotNone(executor.workspace)
+            self.assertNotEqual(executor.workspace, self.workspace)
+            self.assertEqual(source_file.read_text(encoding="utf-8"), "source\n")
+            with workspace_manager.open(ticket_id, "reacquired-run"):
+                pass
+
+    def test_workspace_busy在持久化和worker前稳定拒绝(self) -> None:
+        ticket_id = self._ticket("workspace-busy-ticket")
+        executor = BlockingExecutor()
+        workspace_manager = RecordingWorkspaceManager(
+            self.workspace / "isolated",
+            open_error=WorkspaceBusyError(f"private busy path: {self.workspace}"),
+        )
+        manager = self._manager(executor, workspace_manager=workspace_manager)
+
+        with self.assertRaises(AutonomyError) as caught:
+            manager.handle_intent(
+                ticket_id, {"intent": "start", "request_id": "workspace-busy-start"}
+            )
+
+        self.assertEqual(caught.exception.code, "workspace_busy")
+        self.assertEqual(str(caught.exception), "该工单正在另一个进程中运行")
+        self.assertEqual(executor.calls, 0)
+        self.assertEqual(manager._workers, {})
+        self.assertEqual(
+            self.service.ticket_detail(ticket_id)["autonomous_run"],
+            {"state": "pending", "revision": 0},
+        )
+
+    def test_workspace_setup失败稳定且零worker(self) -> None:
+        ticket_id = self._ticket("workspace-setup-failure-ticket")
+        executor = BlockingExecutor()
+        workspace_manager = RecordingWorkspaceManager(
+            self.workspace / "isolated",
+            open_error=WorkspaceError(f"private setup path: {self.workspace}"),
+        )
+        manager = self._manager(executor, workspace_manager=workspace_manager)
+
+        with self.assertRaises(AutonomyError) as caught:
+            manager.handle_intent(
+                ticket_id, {"intent": "start", "request_id": "workspace-setup-start"}
+            )
+
+        self.assertEqual(caught.exception.code, "workspace_setup_failed")
+        self.assertEqual(str(caught.exception), "无法准备隔离工作区")
+        self.assertEqual(executor.calls, 0)
+        self.assertEqual(manager._workers, {})
+
+    def test_starting持久化失败释放workspace_session(self) -> None:
+        service = FailOnceTicketService(
+            self.settings,
+            workspace=self.workspace,
+            index_path=self.workspace / "persist-start-index.json",
+        )
+        ticket_id = service.create_ticket(
+            _payload(service.project_id, "persist-start-ticket")
+        )["ticket"]["ticket_id"]
+        executor = BlockingExecutor()
+        workspace_manager = RecordingWorkspaceManager(self.workspace / "isolated")
+        manager = AutonomyManager(
+            service,
+            executor=executor,
+            enabled=True,
+            workspace_manager=workspace_manager,
+        )
+        self.managers.append(manager)
+        service.fail_next_update = True
+
+        with self.assertRaises(AutonomyError) as caught:
+            manager.handle_intent(
+                ticket_id, {"intent": "start", "request_id": "persist-start"}
+            )
+
+        self.assertEqual(caught.exception.code, "state_persistence_failed")
+        self.assertEqual(workspace_manager.sessions[0].close_calls, 1)
+        self.assertEqual(manager._workers, {})
+        self.assertEqual(executor.calls, 0)
+
+    def test_thread_start失败释放workspace_session(self) -> None:
+        ticket_id = self._ticket("workspace-thread-start-failure-ticket")
+        workspace_manager = RecordingWorkspaceManager(self.workspace / "isolated")
+        manager = self._manager(BlockingExecutor(), workspace_manager=workspace_manager)
+
+        with (
+            patch(
+                "icode.autonomy.threading.Thread.start",
+                side_effect=RuntimeError("private thread failure"),
+            ),
+            self.assertRaises(AutonomyError) as caught,
+        ):
+            manager.handle_intent(
+                ticket_id, {"intent": "start", "request_id": "workspace-thread-start"}
+            )
+
+        self.assertEqual(caught.exception.code, "worker_start_failed")
+        self.assertEqual(workspace_manager.sessions[0].close_calls, 1)
+
+    def test_executor异常仍释放workspace_session且close异常不阻止registry释放(
+        self,
+    ) -> None:
+        ticket_id = self._ticket("workspace-executor-failure-ticket")
+        workspace_manager = RecordingWorkspaceManager(
+            self.workspace / "isolated", fail_close=True
+        )
+        manager = self._manager(RaisingExecutor(), workspace_manager=workspace_manager)
+
+        manager.handle_intent(
+            ticket_id, {"intent": "start", "request_id": "workspace-executor-failure"}
+        )
+        _wait_state(self.service, ticket_id, "failed")
+
+        deadline = time.monotonic() + ASYNC_TEST_TIMEOUT_SECONDS
+        while manager._workers and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(workspace_manager.sessions[0].close_calls, 1)
+        self.assertEqual(manager._workers, {})
+        self.assertEqual(manager._controls, {})
+
+    def test_executor正常终态succeeded_failed_blocked均释放workspace_session(
+        self,
+    ) -> None:
+        for index, state in enumerate(("succeeded", "failed", "blocked")):
+            with self.subTest(state=state):
+                ticket_id = self._ticket(f"workspace-{state}-terminal-{index}")
+                workspace_manager = RecordingWorkspaceManager(
+                    self.workspace / "isolated"
+                )
+
+                class TerminalExecutor:
+                    def __init__(self, terminal_state: str) -> None:
+                        self.terminal_state = terminal_state
+
+                    def execute(inner_self, context, control) -> ExecutionResult:
+                        error_code = (
+                            None
+                            if inner_self.terminal_state == "succeeded"
+                            else f"stable_{inner_self.terminal_state}"
+                        )
+                        return ExecutionResult(
+                            state=inner_self.terminal_state,
+                            error_code=error_code,
+                        )
+
+                manager = self._manager(
+                    TerminalExecutor(state), workspace_manager=workspace_manager
+                )
+                manager.handle_intent(
+                    ticket_id,
+                    {"intent": "start", "request_id": f"workspace-{state}-start"},
+                )
+                _wait_state(self.service, ticket_id, state)
+                _wait_worker_release(manager, ticket_id)
+
+                self.assertEqual(workspace_manager.sessions[0].close_calls, 1)
+
+    def test_pause_cancel_takeover和shutdown完成后释放workspace_session(self) -> None:
+        cases = (
+            ("pause", "paused"),
+            ("cancel", "cancelled"),
+            ("takeover", "paused"),
+        )
+        for index, (intent, terminal) in enumerate(cases):
+            with self.subTest(intent=intent):
+                ticket_id = self._ticket(f"workspace-{intent}-ticket-{index}")
+                executor = BlockingExecutor()
+                workspace_manager = RecordingWorkspaceManager(
+                    self.workspace / "isolated"
+                )
+                manager = self._manager(executor, workspace_manager=workspace_manager)
+                manager.handle_intent(
+                    ticket_id,
+                    {"intent": "start", "request_id": f"workspace-{intent}-start"},
+                )
+                self.assertTrue(executor.started.wait(ASYNC_TEST_TIMEOUT_SECONDS))
+                manager.handle_intent(
+                    ticket_id,
+                    {"intent": intent, "request_id": f"workspace-{intent}-stop"},
+                )
+                executor.allow_safe_point.set()
+                _wait_state(self.service, ticket_id, terminal)
+                _wait_worker_release(manager, ticket_id)
+                self.assertEqual(workspace_manager.sessions[0].close_calls, 1)
+
+        ticket_id = self._ticket("workspace-shutdown-ticket")
+        executor = ShutdownSafePointExecutor()
+        workspace_manager = RecordingWorkspaceManager(self.workspace / "isolated")
+        manager = self._manager(executor, workspace_manager=workspace_manager)
+        manager.handle_intent(
+            ticket_id, {"intent": "start", "request_id": "workspace-shutdown-start"}
+        )
+        self.assertTrue(executor.started.wait(ASYNC_TEST_TIMEOUT_SECONDS))
+        shutdown_thread = threading.Thread(
+            target=manager.shutdown,
+            kwargs={"timeout": 2},
+        )
+        shutdown_thread.start()
+        _wait_state(self.service, ticket_id, "interrupted")
+        executor.allow_safe_point.set()
+        shutdown_thread.join(ASYNC_TEST_TIMEOUT_SECONDS)
+        self.assertFalse(shutdown_thread.is_alive())
+        self.assertTrue(executor.stopped.wait(ASYNC_TEST_TIMEOUT_SECONDS))
+        self.assertEqual(workspace_manager.sessions[0].close_calls, 1)
+
+    def test_shutdown超时不提前释放真实ticket_lease(self) -> None:
+        ticket_id = self._ticket("workspace-shutdown-timeout-ticket")
+        executor = NeverSafePointExecutor()
+        with tempfile.TemporaryDirectory(
+            prefix="icode_shutdown_data_"
+        ) as raw_data_root:
+            data_root = Path(raw_data_root)
+            workspace_manager = WorkspaceManager(
+                self.workspace,
+                data_root,
+                self.service.project_id,
+            )
+            manager = self._manager(executor, workspace_manager=workspace_manager)
+            manager.handle_intent(
+                ticket_id,
+                {"intent": "start", "request_id": "workspace-shutdown-timeout-start"},
+            )
+            self.assertTrue(executor.started.wait(ASYNC_TEST_TIMEOUT_SECONDS))
+            second_workspace_manager = WorkspaceManager(
+                self.workspace,
+                data_root,
+                self.service.project_id,
+            )
+            try:
+                manager.shutdown(timeout=0.01)
+                self.assertEqual(
+                    _acquire_lease_in_child(
+                        data_root,
+                        self.service.project_id,
+                        ticket_id,
+                    ),
+                    "busy",
+                )
+                with self.assertRaises(WorkspaceBusyError):
+                    second_workspace_manager.open(ticket_id, "second-manager-run")
+            finally:
+                executor.release.set()
+
+            deadline = time.monotonic() + ASYNC_TEST_TIMEOUT_SECONDS
+            while time.monotonic() < deadline:
+                try:
+                    session = second_workspace_manager.open(ticket_id, "released-run")
+                except WorkspaceBusyError:
+                    time.sleep(0.01)
+                    continue
+                session.close()
+                break
+            else:
+                self.fail("worker exited but the real ticket lease was not released")
+            self.assertEqual(
+                _acquire_lease_in_child(
+                    data_root,
+                    self.service.project_id,
+                    ticket_id,
+                ),
+                "acquired",
+            )
 
     def test_start能力关闭时fail_closed(self) -> None:
         ticket_id = self._ticket("disabled-ticket")
@@ -957,6 +1383,7 @@ class TestAutonomyManager(unittest.TestCase):
         manager.handle_intent(ticket_id, {"intent": "pause", "request_id": "resume-pause"})
         executor.first_safe_point.set()
         paused = _wait_state(self.service, ticket_id, "paused")
+        _wait_worker_release(manager, ticket_id)
 
         manager.handle_intent(ticket_id, {"intent": "resume", "request_id": "resume-again"})
         succeeded = _wait_state(self.service, ticket_id, "succeeded")
