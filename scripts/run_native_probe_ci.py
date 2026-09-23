@@ -34,6 +34,9 @@ def main() -> int:
             if true_path is not None:
                 for name, profile in (
                     ("allow_default", "(version 1)(allow default)"),
+                    ("deny_with_process_read", "(version 1)(deny default)(allow process*)(allow file-read*)"),
+                    ("deny_with_process_read_sysctl", "(version 1)(deny default)(allow process*)(allow sysctl-read)(allow file-read*)"),
+                    ("current_with_read_all", backend._profile(Path.cwd(), False) + "(allow file-read*)"),
                     ("current_profile", backend._profile(Path.cwd(), False)),
                 ):
                     try:
