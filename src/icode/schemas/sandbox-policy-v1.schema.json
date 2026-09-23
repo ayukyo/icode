@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://icode.local/schemas/sandbox-policy-v1.schema.json",
+  "title": "ICODE Sandbox Policy v1",
+  "description": "Platform-neutral sandbox policy wire shape. This schema does not enable sandbox enforcement.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run_id",
+    "ticket_id",
+    "step",
+    "workspace_root",
+    "read_roots",
+    "write_roots",
+    "deny_read_roots",
+    "deny_write_roots",
+    "network_mode",
+    "allowed_domains",
+    "process_limit",
+    "wall_timeout_seconds",
+    "output_limit_bytes",
+    "protected_paths"
+  ],
+  "$defs": {
+    "absolutePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?:/[^\\u0000]*|[A-Za-z]:[\\\\/][^\\u0000]*|\\\\\\\\[^\\\\/]+[\\\\/][^\\\\/]+(?:[\\\\/].*)?)$"
+    },
+    "pathList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/absolutePath"
+      }
+    },
+    "domain": {
+      "type": "string",
+      "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "ticket_id": {
+      "type": "string"
+    },
+    "step": {
+      "type": "string"
+    },
+    "workspace_root": {
+      "$ref": "#/$defs/absolutePath"
+    },
+    "read_roots": {
+      "$ref": "#/$defs/pathList"
+    },
+    "write_roots": {
+      "$ref": "#/$defs/pathList"
+    },
+    "deny_read_roots": {
+      "$ref": "#/$defs/pathList"
+    },
+    "deny_write_roots": {
+      "$ref": "#/$defs/pathList"
+    },
+    "network_mode": {
+      "type": "string",
+      "enum": [
+        "deny",
+        "proxy_allowlist"
+      ]
+    },
+    "allowed_domains": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/domain"
+      }
+    },
+    "process_limit": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "wall_timeout_seconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "output_limit_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "protected_paths": {
+      "$ref": "#/$defs/pathList"
+    }
+  }
+}
