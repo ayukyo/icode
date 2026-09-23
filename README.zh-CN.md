@@ -4,6 +4,11 @@
 
 # ICODE Agent
 
+[![CI](https://github.com/ayukyo/icode/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ayukyo/icode/actions/workflows/ci.yml)
+[![Pages](https://github.com/ayukyo/icode/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/ayukyo/icode/actions/workflows/pages.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
+
 **一个必须证明自己所声称工作过程的可审计 AI 编码 Agent。**
 
 [ICODE-SKILL](https://github.com/ayukyo/icode-skill) 的执行平面：契约驱动、失败关闭、可恢复，并产出可独立校验的过程证据。

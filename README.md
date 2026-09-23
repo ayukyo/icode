@@ -4,6 +4,11 @@
 
 # ICODE Agent
 
+[![CI](https://github.com/ayukyo/icode/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ayukyo/icode/actions/workflows/ci.yml)
+[![Pages](https://github.com/ayukyo/icode/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/ayukyo/icode/actions/workflows/pages.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
+
 **An auditable AI coding agent that must prove the work it claims.**
 
 The execution plane for [ICODE-SKILL](https://github.com/ayukyo/icode-skill): contract-driven, fail-closed, resumable, and designed to produce independently verifiable evidence.
