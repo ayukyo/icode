@@ -22,12 +22,12 @@
 ### Task 1: 跨进程工单租约
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成
 
 **Dependencies:** None
 **Parallelizable:** No (后续所有工作区操作必须先持有同一租约)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 在 `tests/test_workspace.py` 新增真实多进程测试，约定公开接口：
 
@@ -57,13 +57,13 @@ def test_released_lease_can_be_reacquired(self):
 
 子进程探针必须通过 `python -c` 导入已检出的真实包，不能 mock 文件锁。
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `python -m pytest tests/test_workspace.py -q`
 
 Expected: FAIL，原因是 `icode.workspace` 尚不存在。
 
-- [ ] **Step 3: Implement the minimal lease**
+- [x] **Step 3: Implement the minimal lease**
 
 在 `src/icode/workspace.py` 实现：
 
@@ -94,13 +94,13 @@ class TicketLease:
 - 锁成功后原子更新只含稳定 ID、run ID、PID 的诊断元数据；元数据不能作为互斥依据；
 - 重复 `release()` 安全，锁失败统一抛 `WorkspaceBusyError`，其它 I/O 错误统一抛 `WorkspaceError`。
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `python -m pytest tests/test_workspace.py -q`
 
 Expected: PASS。
 
-- [ ] **Step 5: Self-review and commit**
+- [x] **Step 5: Self-review and commit**
 
 检查 Windows 单字节锁初始化、异常时句柄关闭、ID 不进入路径和子进程确实竞争同一个锁，然后提交：
 
