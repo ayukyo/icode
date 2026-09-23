@@ -75,6 +75,7 @@ def probe_native_sandbox(sandbox: Sandbox) -> NativeProbeResult:
         return NativeProbeResult(False, checks, "原生 POSIX 探测不适用于当前平台")
 
     with tempfile.TemporaryDirectory(prefix="icode-native-probe-") as raw:
+        diagnostics: list[str] = []
         parent = Path(raw).resolve()
         workspace = parent / "workspace"
         outside = parent / "outside"
@@ -93,15 +94,18 @@ def probe_native_sandbox(sandbox: Sandbox) -> NativeProbeResult:
             except (OSError, ValueError, subprocess.TimeoutExpired):
                 return None
 
-        def success(argv: list[str]) -> bool:
+        def success(argv: list[str], *, label: str = "") -> bool:
             result = run(argv)
+            if label and (result is None or result.returncode != 0):
+                reason = "启动失败或超时" if result is None else (result.stderr or result.stdout).strip()[:300]
+                diagnostics.append(f"{label}: {reason or '退出码非零'}")
             return result is not None and result.returncode == 0
 
-        checks["workspace_write"] = success(["/usr/bin/touch", str(workspace / "written")]) and (workspace / "written").is_file()
-        checks["workspace_read"] = success(["/usr/bin/cat", str(workspace / "marker")])
+        checks["workspace_write"] = success(["/usr/bin/touch", str(workspace / "written")], label="workspace_write") and (workspace / "written").is_file()
+        checks["workspace_read"] = success(["/usr/bin/cat", str(workspace / "marker")], label="workspace_read")
         checks["outside_write_denied"] = not success(["/usr/bin/touch", str(outside / "written")]) and not (outside / "written").exists()
         checks["secret_read_denied"] = not success(["/usr/bin/cat", str(outside / "secret")])
-        child_allowed = success(["/bin/sh", "-c", 'printf child > "$1"', "sh", str(workspace / "child")]) and (workspace / "child").is_file()
+        child_allowed = success(["/bin/sh", "-c", 'printf child > "$1"', "sh", str(workspace / "child")], label="child_allowed") and (workspace / "child").is_file()
         child_denied = not success(["/bin/sh", "-c", 'printf child > "$1"', "sh", str(outside / "child")]) and not (outside / "child").exists()
         checks["child_inherits"] = child_allowed and child_denied
 
@@ -123,7 +127,7 @@ def probe_native_sandbox(sandbox: Sandbox) -> NativeProbeResult:
             control = subprocess.run(curl, capture_output=True, timeout=4, check=False)
             checks["network_denied"] = (
                 control.returncode == 0
-                and success(["/usr/bin/curl", "--version"])
+                and success(["/usr/bin/curl", "--version"], label="curl_launch")
                 and not success(curl)
             )
         except (OSError, subprocess.TimeoutExpired):
@@ -134,7 +138,11 @@ def probe_native_sandbox(sandbox: Sandbox) -> NativeProbeResult:
                 server.server_close()
 
     failed = [name for name, ok in checks.items() if not ok]
-    return NativeProbeResult(not failed, checks, "通过最小负向探测" if not failed else "未通过：" + ", ".join(failed))
+    return NativeProbeResult(
+        not failed, checks,
+        "通过最小负向探测" if not failed else "未通过：" + ", ".join(failed)
+        + ("；诊断：" + " | ".join(diagnostics) if diagnostics else ""),
+    )
 
 
 def probe_capabilities() -> tuple[Capability, ...]:
