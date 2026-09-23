@@ -1600,5 +1600,15 @@ class TestDefaultDataRoot(unittest.TestCase):
             default_data_root()
 
 
+class TestWorkspaceRoadmapContract(unittest.TestCase):
+    def test_r21明确工作区能力和隔离边界(self) -> None:
+        roadmap = (
+            Path(__file__).resolve().parents[1] / "docs" / "roadmap.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("R2.1", roadmap)
+        self.assertIn("跨进程租约", roadmap)
+        self.assertIn("不等于操作系统强制隔离", roadmap)
+
+
 if __name__ == "__main__":
     unittest.main()
