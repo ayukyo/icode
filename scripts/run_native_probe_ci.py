@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
+from pathlib import Path
 
 from icode.isolation import BubblewrapSandbox, MacSeatbeltSandbox, probe_native_sandbox
 
@@ -27,6 +29,24 @@ def main() -> int:
     for name, passed in result.checks.items():
         print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
     if not result.ready:
+        if isinstance(backend, MacSeatbeltSandbox):
+            true_path = shutil.which("true")
+            if true_path is not None:
+                for name, profile in (
+                    ("allow_default", "(version 1)(allow default)"),
+                    ("current_profile", backend._profile(Path.cwd(), False)),
+                ):
+                    try:
+                        control = subprocess.run(
+                            [executable, "-p", profile, true_path],
+                            capture_output=True, text=True, timeout=4, check=False,
+                        )
+                        print(
+                            f"::warning::macOS diagnostic {name}: exit={control.returncode} "
+                            f"stderr={control.stderr.strip()[:300]!r}"
+                        )
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        print(f"::warning::macOS diagnostic {name}: {type(exc).__name__}")
         print(f"::error::{backend.name} native probe failed: {result.detail}")
         return 1
     return 0
