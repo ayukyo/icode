@@ -283,13 +283,18 @@ class MacSeatbeltSandbox:
 
     def _profile(self, workspace: Path, network: bool) -> str:
         ws = str(Path(workspace).resolve())
+        if any(ord(char) < 32 or ord(char) == 127 for char in ws):
+            raise ValueError("Seatbelt workspace path contains control characters")
+        escaped_ws = ws.replace("\\", "\\\\").replace('"', '\\"')
         net = "(allow network*)" if network else ""
         return (
             "(version 1)"
             "(deny default)"
             "(allow process*)"
             "(allow sysctl-read)"
-            f'(allow file-read* file-write* (subpath "{ws}"))'
+            f'(allow file-read-metadata file-test-existence (path-ancestors "{escaped_ws}"))'
+            '(allow file-read* file-test-existence (literal "/"))'
+            f'(allow file-read* file-write* (subpath "{escaped_ws}"))'
             "(allow file-read* (subpath \"/usr\") (subpath \"/System\") (subpath \"/Library\")"
             ' (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/private/tmp\"))'
             f"{net}"

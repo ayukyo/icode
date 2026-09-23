@@ -211,7 +211,16 @@ class TestSandboxWrapping(unittest.TestCase):
         profile = argv[argv.index("-p") + 1]
         self.assertIn("(deny default)", profile)
         self.assertIn(str(Path("/tmp/ws").resolve()), profile)
+        self.assertIn('(path-ancestors "', profile)
+        self.assertIn('(literal "/")', profile)
         self.assertNotIn("(allow network*)", profile)
+
+    def test_seatbelt_工作区路径不能注入_profile(self) -> None:
+        sb = MacSeatbeltSandbox()
+        profile = sb._profile(Path('/tmp/work"space'), False)
+        self.assertIn('work\\"space', profile)
+        with self.assertRaises(ValueError):
+            sb._profile(Path("/tmp/work\nspace"), False)
 
     def test_容器_包装默认断网且只挂工作区(self) -> None:
         argv = ContainerSandbox(runtime="podman").wrap(["python", "-V"], workspace=Path("/tmp/ws"))
