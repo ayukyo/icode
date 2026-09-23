@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -22,7 +23,7 @@ _CHILD_ACQUIRE = """
 from pathlib import Path
 import sys
 
-from icode.workspace import TicketLease, WorkspaceBusyError
+from icode.workspace import TicketLease, WorkspaceBusyError, WorkspaceError
 
 try:
     lease = TicketLease.acquire(
@@ -33,6 +34,8 @@ try:
     )
 except WorkspaceBusyError:
     print("busy")
+except WorkspaceError:
+    print("error")
 else:
     print("acquired")
     lease.release()
@@ -62,6 +65,32 @@ class _TrackingStream:
             with builtins.open(self._stream.name, "r+b", buffering=0) as competitor:
                 competitor.write(b"\0")
         return result
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
+
+
+class _BlockingInitialWriteStream:
+    """把首次锁字节写入暂停在精确可复现的初始化窗口。"""
+
+    def __init__(
+        self,
+        stream,
+        write_started: threading.Event,
+        allow_write: threading.Event,
+    ) -> None:
+        self._stream = stream
+        self._write_started = write_started
+        self._allow_write = allow_write
+        self._blocked = False
+
+    def write(self, data: bytes) -> int:
+        if not self._blocked and data == b"\0":
+            self._blocked = True
+            self._write_started.set()
+            if not self._allow_write.wait(timeout=10):
+                raise TimeoutError("test did not release initial write")
+        return self._stream.write(data)
 
     def __getattr__(self, name: str):
         return getattr(self._stream, name)
@@ -118,6 +147,49 @@ class TestTicketLease(unittest.TestCase):
     def test_不同工单可由两个进程同时持有(self) -> None:
         with TicketLease.acquire(self.data_root, "project-1", "ticket-1", "parent-run"):
             self.assertEqual(self._acquire_in_child("ticket-2"), "acquired")
+
+    def test_首次并发初始化不会向竞争者暴露零长目标文件(self) -> None:
+        write_started = threading.Event()
+        allow_write = threading.Event()
+        original_fdopen = os.fdopen
+        first_open = True
+        winner: dict[str, object] = {}
+
+        def blocking_fdopen(*args, **kwargs):
+            nonlocal first_open
+            stream = original_fdopen(*args, **kwargs)
+            if first_open:
+                first_open = False
+                return _BlockingInitialWriteStream(
+                    stream, write_started, allow_write
+                )
+            return stream
+
+        def acquire_winner() -> None:
+            try:
+                winner["lease"] = TicketLease.acquire(
+                    self.data_root, "project-1", "ticket-1", "winner-run"
+                )
+            except Exception as exc:  # 测试线程必须把异常带回主线程
+                winner["error"] = exc
+
+        with mock.patch("icode.workspace.os.fdopen", side_effect=blocking_fdopen):
+            thread = threading.Thread(target=acquire_winner)
+            thread.start()
+            self.assertTrue(write_started.wait(timeout=10))
+            try:
+                loser_result = self._acquire_in_child("ticket-1")
+            finally:
+                allow_write.set()
+                thread.join(timeout=10)
+
+        lease = winner.get("lease")
+        if isinstance(lease, TicketLease):
+            lease.release()
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", winner)
+        self.assertIn(loser_result, {"busy", "acquired"})
+        self.assertIsInstance(lease, TicketLease)
 
     def test_release_后另一进程可重新获取(self) -> None:
         lease = TicketLease.acquire(self.data_root, "project-1", "ticket-1", "parent-run")
@@ -214,7 +286,7 @@ class TestTicketLease(unittest.TestCase):
                     with self.assertRaises(WorkspaceError):
                         TicketLease.acquire(self.data_root, *values)
 
-    def test_元数据写入异常后关闭句柄并释放锁(self) -> None:
+    def test_初始化_fsync_异常后关闭句柄且后续可获取(self) -> None:
         with mock.patch("icode.workspace.os.fsync", side_effect=OSError("disk error")):
             with self.assertRaises(WorkspaceError):
                 TicketLease.acquire(
@@ -222,6 +294,64 @@ class TestTicketLease(unittest.TestCase):
                 )
 
         self.assertEqual(self._acquire_in_child("ticket-1"), "acquired")
+
+    def test_第二次_metadata_fsync_异常后关闭句柄并释放锁(self) -> None:
+        metadata_error = OSError("metadata fsync error")
+        with mock.patch(
+            "icode.workspace.os.fsync",
+            side_effect=(None, metadata_error),
+        ) as fsync:
+            with self.assertRaises(WorkspaceError) as caught:
+                TicketLease.acquire(
+                    self.data_root, "project-1", "ticket-1", "parent-run"
+                )
+
+        self.assertEqual(fsync.call_count, 2)
+        self.assertIs(caught.exception.__cause__, metadata_error)
+        self.assertEqual(self._acquire_in_child("ticket-1"), "acquired")
+
+    def test_遗留零长锁文件被占用时_busy_释放后安全恢复(self) -> None:
+        lease = TicketLease.acquire(
+            self.data_root, "project-1", "ticket-1", "seed-run"
+        )
+        path = lease.path
+        lease.release()
+        path.write_bytes(b"")
+
+        with path.open("r+b") as legacy_stream:
+            if os.name == "posix":
+                import fcntl
+
+                fcntl.flock(legacy_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif os.name == "nt":  # pragma: no cover - Windows CI
+                import msvcrt
+
+                legacy_stream.seek(0)
+                msvcrt.locking(legacy_stream.fileno(), msvcrt.LK_NBLCK, 1)
+            else:  # pragma: no cover - 公开接口只支持 POSIX/Windows
+                self.skipTest(f"unsupported platform: {os.name}")
+            try:
+                self.assertEqual(self._acquire_in_child("ticket-1"), "busy")
+            finally:
+                if os.name == "posix":
+                    fcntl.flock(legacy_stream.fileno(), fcntl.LOCK_UN)
+                else:  # pragma: no cover - Windows CI
+                    legacy_stream.seek(0)
+                    msvcrt.locking(legacy_stream.fileno(), msvcrt.LK_UNLCK, 1)
+
+        with TicketLease.acquire(
+            self.data_root, "project-1", "ticket-1", "recovery-run"
+        ) as recovered:
+            self.assertEqual(
+                _read_metadata(recovered.path),
+                {
+                    "pid": os.getpid(),
+                    "project_id": "project-1",
+                    "run_id": "recovery-run",
+                    "schema_version": 1,
+                    "ticket_id": "ticket-1",
+                },
+            )
 
     @unittest.skipUnless(os.name == "posix", "POSIX flock errno contract")
     def test_flock_eio_统一为_workspace_error_而非_busy(self) -> None:

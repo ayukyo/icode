@@ -6,6 +6,7 @@ import errno
 import hashlib
 import json
 import os
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import BinaryIO
@@ -40,31 +41,60 @@ def _validated_bytes(name: str, value: str) -> bytes:
         raise WorkspaceError(f"{name} 必须可编码为 UTF-8") from exc
 
 
+def _publish_initialized_lock_file(path: Path) -> None:
+    """在同目录准备完整 inode，再以硬链接原子发布且绝不覆盖目标。"""
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=".ticket-lease-",
+        dir=path.parent,
+    )
+    temporary_path = Path(temporary_name)
+    stream: BinaryIO | None = None
+    try:
+        stream = os.fdopen(descriptor, "r+b")
+        descriptor = -1
+        stream.write(_LOCK_BYTE)
+        stream.flush()
+        os.fsync(stream.fileno())
+        stream.close()
+        stream = None
+
+        try:
+            os.link(temporary_path, path)
+        except FileExistsError:
+            # 另一创建者已经发布了一个完整初始化的 inode。
+            pass
+        except OSError as exc:
+            raise WorkspaceError("文件系统不支持安全发布工单锁文件") from exc
+    finally:
+        if stream is not None:
+            _close_quietly(stream)
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # 目标 inode 已安全发布；临时硬链接清理失败不改变互斥语义。
+            pass
+
+
 def _open_lock_file(path: Path) -> BinaryIO:
-    """打开锁 inode；仅创建者负责写入初始锁字节。"""
+    """打开已完整初始化的锁 inode；不存在时先原子发布。"""
     flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
     try:
-        descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
-        created = True
-    except FileExistsError:
         descriptor = os.open(path, flags)
-        created = False
+    except FileNotFoundError:
+        _publish_initialized_lock_file(path)
+        descriptor = os.open(path, flags)
 
     try:
         stream = os.fdopen(descriptor, "r+b")
     except Exception:
         os.close(descriptor)
-        raise
-
-    try:
-        if created:
-            stream.write(_LOCK_BYTE)
-            stream.flush()
-            os.fsync(stream.fileno())
-        elif os.fstat(stream.fileno()).st_size < 1:
-            raise WorkspaceError("锁文件尚未完成初始化")
-    except Exception:
-        stream.close()
         raise
     stream.seek(0)
     return stream
@@ -177,6 +207,14 @@ class TicketLease:
                 _acquire_file_lock(stream)
             except _LockUnavailable as exc:
                 raise WorkspaceBusyError("工单已被其他进程占用") from exc
+
+            if os.fstat(stream.fileno()).st_size == 0:
+                # POSIX flock 与 Windows _locking 都允许锁定越过 EOF 的区间；
+                # 因此遗留零长 inode 也必须先锁住，绝不能先写再锁。
+                stream.seek(0)
+                stream.write(_LOCK_BYTE)
+                stream.flush()
+                os.fsync(stream.fileno())
 
             metadata = {
                 "pid": os.getpid(),
