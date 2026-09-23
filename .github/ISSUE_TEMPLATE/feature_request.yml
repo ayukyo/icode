@@ -1,0 +1,57 @@
+name: Feature request
+description: Propose a focused improvement to the ICODE Agent execution plane.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What real workflow or verification problem cannot be handled today?
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and current workaround
+      description: How do you know this is a current gap, and what do users do now?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe observable behavior, not a preferred implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: boundary
+    attributes:
+      label: Primary area
+      options:
+        - Model loop and tools
+        - Guard, approval, or isolation
+        - Workflow/control-plane integration
+        - Evidence and verification
+        - Recovery and resumability
+        - CLI, WebUI, or workbench
+        - Documentation or website
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: Acceptance evidence
+      description: What test or observable result would prove this feature works without overstating it?
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This belongs to ICODE Agent's execution plane, or I explained why the control-plane contract must change.
+          required: true
+        - label: I have not included credentials, private source, ticket contents, or private logs.
+          required: true

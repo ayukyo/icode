@@ -1,0 +1,74 @@
+name: Bug report
+description: Report a reproducible ICODE Agent defect without sensitive data.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Do not paste credentials, private source, ticket contents, or exploit details. Security issues belong in the private channel described in SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: ICODE Agent version
+      description: Commit SHA or `icode --version` output.
+      placeholder: 0.1.0 / commit SHA
+    validations:
+      required: true
+  - type: input
+    id: upstream
+    attributes:
+      label: ICODE-SKILL commit
+      description: Run `git -C vendor/icode-skill rev-parse HEAD` when available.
+      placeholder: 40-character commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Windows with WSL
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: isolation
+    attributes:
+      label: Isolation backend
+      description: The backend reported by `icode doctor`, including whether real isolation was active.
+      placeholder: bwrap / docker / podman / wsl / none
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest safe command sequence and sanitized inputs.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior and evidence
+      description: Include exit codes and short sanitized excerpts. State what was not verified.
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed credentials, private source, ticket bodies, and private logs.
+          required: true
+        - label: This report does not contain a security vulnerability or exploit detail.
+          required: true

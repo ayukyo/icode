@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/ayukyo/icode/security/advisories/new
+    about: Report vulnerabilities privately. Do not open a public issue.
+  - name: ICODE-SKILL workflow questions
+    url: https://github.com/ayukyo/icode-skill/issues
+    about: Use the control-plane repository for workflow and Skill-specific issues.

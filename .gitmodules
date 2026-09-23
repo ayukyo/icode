@@ -1,4 +1,4 @@
 [submodule "vendor/icode-skill"]
 	path = vendor/icode-skill
-	url = git@github.com:ayukyo/icode-skill.git
+	url = https://github.com/ayukyo/icode-skill.git
 	branch = main
