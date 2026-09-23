@@ -5,26 +5,42 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
-from icode.isolation import BubblewrapSandbox, MacSeatbeltSandbox, probe_native_sandbox
+from icode.isolation import LandlockSandbox, MacSeatbeltSandbox, probe_native_sandbox
 
 
 def main() -> int:
     if sys.platform.startswith("linux"):
-        executable = shutil.which("bwrap")
-        backend = BubblewrapSandbox(bwrap=executable or "bwrap")
+        compiler = shutil.which("cc")
+        if compiler is None:
+            print("::error::Linux C compiler is missing from the development runner")
+            return 1
+        source = Path(__file__).resolve().parents[1] / "native" / "linux" / "icode_landlock.c"
+        with tempfile.TemporaryDirectory(prefix="icode-native-ci-") as raw:
+            helper = Path(raw) / "icode-landlock"
+            build = subprocess.run(
+                [compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                 str(source), "-o", str(helper)],
+                capture_output=True, text=True, check=False,
+            )
+            if build.returncode != 0:
+                print(f"::error::Linux helper build failed: {build.stderr[-1500:]}")
+                return 1
+            return _check(LandlockSandbox(helper=str(helper)), str(helper))
     elif sys.platform == "darwin":
         executable = shutil.which("sandbox-exec")
-        backend = MacSeatbeltSandbox(sandbox_exec=executable or "sandbox-exec")
+        if executable is None:
+            print("::error::sandbox-exec executable is missing")
+            return 1
+        return _check(MacSeatbeltSandbox(sandbox_exec=executable), executable)
     else:
         print("::error::R2.2 native probe CI only supports Linux and macOS")
         return 1
 
-    if executable is None:
-        print(f"::error::{backend.name} executable is missing")
-        return 1
 
+def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> int:
     result = probe_native_sandbox(backend)
     for name, passed in result.checks.items():
         print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")

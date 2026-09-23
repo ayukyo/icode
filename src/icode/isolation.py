@@ -226,6 +226,35 @@ class NoIsolation:
 
 
 @dataclass
+class LandlockSandbox:
+    """R2.2 开发期 Linux 原生助手；未打包/绑定策略前不参与自动选择。"""
+
+    helper: str
+    name: str = "landlock"
+
+    @property
+    def is_real_isolation(self) -> bool:
+        return True
+
+    def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
+        if network:
+            raise RuntimeError("Landlock helper does not support network grants")
+        helper = Path(self.helper).resolve()
+        if not helper.is_file():
+            raise RuntimeError("Landlock helper is unavailable")
+        return [str(helper), "--workspace", str(Path(workspace).resolve()), "--", *argv]
+
+    def describe(self) -> dict:
+        return {
+            "backend": self.name,
+            "is_real_isolation": True,
+            "claim": "开发期 Landlock/seccomp 原生边界，尚未达到 R2 完整合同",
+            "enforced": ["工作区读写", "默认断网", "子进程继承"],
+            "not_enforced": ["R2 完整策略映射与发布包校验"],
+        }
+
+
+@dataclass
 class BubblewrapSandbox:
     """Linux：bwrap 绑定工作区 + 可选断网。"""
 

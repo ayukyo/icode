@@ -37,7 +37,8 @@
 
 ## 验证与风险
 
-- [开发分支首次三平台 CI](https://github.com/ayukyo/icode/actions/runs/35882823179) 已明确暴露两项真实环境差异：Ubuntu runner 上 `bwrap` 的 loopback 设置被权限策略拒绝，macOS 初版探测脚本误用了 Linux 的 `cat` 路径。两者均不计为通过；前者需要 Landlock/seccomp 原生路径，后者已修正并待 CI 复测。
+- [开发分支首次三平台 CI](https://github.com/ayukyo/icode/actions/runs/35882823179) 暴露两项真实环境差异：Ubuntu runner 上 `bwrap` 的 loopback 设置被权限策略拒绝，macOS 初版探测脚本误用了 Linux 的 `cat` 路径。前者转向 Landlock/seccomp 路径，后者已修正并通过后续复测。
+- [macOS 原生探测 CI](https://github.com/ayukyo/icode/actions/runs/35885909727) 已通过 6 项最小探测；Linux 的同次 CI 仍验证旧 `bwrap` 路径而失败。随后新增 Landlock/seccomp 开发期 C 助手，本机通过相同 6 项和 Unix socket 拒绝测试，待 GitHub Linux runner 验证。该助手目前只从源码临时编译，**未随 wheel 发布、未接入自动执行，也未覆盖完整策略和进程树清理**。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。

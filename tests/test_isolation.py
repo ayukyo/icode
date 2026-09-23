@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import unittest
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
@@ -18,6 +19,7 @@ from icode.isolation import (
     BASELINE_CLAIM,
     PARTIAL_CLAIM,
     BubblewrapSandbox,
+    LandlockSandbox,
     ContainerSandbox,
     MacSeatbeltSandbox,
     NoIsolation,
@@ -32,6 +34,41 @@ from icode.tools import IsolationUnavailable, ToolContext, default_registry
 
 
 class TestProbe(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc"),
+                         "需要 Linux C 编译器验证原生助手")
+    def test_landlock_助手真实阻断文件与网络越权(self) -> None:
+        from tests._support import temp_workspace
+
+        source = Path(__file__).resolve().parents[1] / "native" / "linux" / "icode_landlock.c"
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                 str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            result = probe_native_sandbox(LandlockSandbox(helper=str(helper)))
+            self.assertTrue(result.ready, result.detail)
+            system_python = Path("/usr/bin/python3")
+            self.assertTrue(system_python.is_file(), "Linux CI must have a system Python")
+            checkout = root / "checkout"
+            checkout.mkdir()
+            sandbox = LandlockSandbox(helper=str(helper))
+            positive = subprocess.run(
+                sandbox.wrap([str(system_python), "-c", "print('ready')"], workspace=checkout),
+                capture_output=True, text=True, timeout=4, check=False,
+            )
+            self.assertEqual(positive.returncode, 0, positive.stderr)
+            denied = subprocess.run(
+                sandbox.wrap(
+                    [str(system_python), "-c", "import socket; socket.socket(socket.AF_UNIX)"],
+                    workspace=checkout,
+                ),
+                capture_output=True, text=True, timeout=4, check=False,
+            )
+            self.assertNotEqual(denied.returncode, 0)
+            self.assertIn("PermissionError", denied.stderr)
+
     def test_恒等包装不能通过原生负向探测(self) -> None:
         result = probe_native_sandbox(NoIsolation())
         self.assertFalse(result.ready)
