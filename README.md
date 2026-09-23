@@ -89,12 +89,31 @@ python scripts/preflight.py                                         # 提交前�
 | `icode recover --ticket <dir> --step plan` | 分析被中断的工单该怎么继续（默认只分析） | 否 / `--resume` 时是 |
 | `icode chain --workspace <dir> --requirement "..."` | 串起完整链路（顺序由状态机派生） | 是 |
 | `icode webui` | 启动本地审批台（仅 127.0.0.1） | 否 |
+| `icode workbench --workspace <dir>` | 启动单工程研发工单工作台（仅 127.0.0.1） | 否 |
 
 安装为命令后可直接用 `icode`：
 
 ```bash
 pipx install .          # 或 uv tool install .
 ```
+
+### 单工程工单工作台（R1A）
+
+```bash
+PYTHONPATH=src python -m icode.cli workbench --workspace /path/to/project
+```
+
+工作台面向不熟悉代码术语的需求提出者，第一版支持：
+
+- 真实 ICODE 工单列表、搜索、详情和新建；
+- 简体中文 / 英文，默认按浏览器语言环境选择并允许手动切换；
+- 会话模式和自动模式的受控建单意图；
+- 控制面原始状态与普通用户状态标签并存，技术详情按需展开。
+
+当前诚实边界：R1A 已记录自动模式请求，但自动连续执行器尚未接入。因此选择自动模式时，
+工单显示为“等待激活”，实际执行方式仍是会话模式；不会用前端标签冒充后台已经自主运行。
+浏览器只提交不透明 `project_id` 和结构化需求字段，不提交真实工程路径、命令或 shell；
+工单编号、metadata、事件链和索引仍全部由 `vendor/icode-skill` 控制面写入。
 
 ---
 

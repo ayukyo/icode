@@ -126,6 +126,28 @@ class ControlPlane:
         args += ["--request-id", request or make_request(ticket_id, "create")]
         return self.run(*args)
 
+    def create_next(
+        self,
+        *,
+        workspace: Path | str,
+        requirement: str,
+        request_id: str,
+        index_path: Path | str | None = None,
+    ) -> ControlResult:
+        """通过控制面原子分配下一工单目录并写入索引。
+
+        ``workspace`` 只能来自服务端可信配置；浏览器不得提交真实路径。
+        """
+        args = [
+            "create-next",
+            "--workspace", str(workspace),
+            "--requirement", requirement,
+            "--request-id", request_id,
+        ]
+        if index_path is not None:
+            args += ["--index", str(index_path)]
+        return self.run(*args)
+
     def resolve_ticket(
         self,
         *,
@@ -295,9 +317,10 @@ class ControlPlane:
         ticket_id: str,
         set_json: dict | None = None,
         append_json: dict | None = None,
+        request: str | None = None,
     ) -> ControlResult:
         args = ["metadata-update", "--dir", str(out_dir), "--request-id",
-                make_request(ticket_id, "metadata-update")]
+                request or make_request(ticket_id, "metadata-update")]
         if set_json is not None:
             args += ["--set-json", json.dumps(set_json, ensure_ascii=False)]
         if append_json is not None:

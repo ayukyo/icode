@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ICODE Workbench</title>
+  <link rel="stylesheet" href="/static/workbench.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">I</span>
+      <div><strong>ICODE</strong><span data-i18n="productSubtitle">研发工单工作台</span></div>
+    </div>
+    <div class="top-actions">
+      <label class="language-control">
+        <span class="sr-only" data-i18n="language">语言</span>
+        <select id="language-select" aria-label="Language">
+          <option value="zh-CN">中文</option><option value="en-US">English</option>
+        </select>
+      </label>
+      <button id="new-ticket-button" class="primary" type="button" data-i18n="newTicket">新建工单</button>
+    </div>
+  </header>
+
+  <main class="workbench">
+    <aside class="sidebar" aria-label="Ticket views">
+      <p class="eyebrow" data-i18n="workspace">工作台</p>
+      <button class="nav-item active" type="button"><span data-i18n="allTickets">全部工单</span><span id="ticket-count" class="count">0</span></button>
+      <button class="nav-item" type="button" disabled><span data-i18n="needsAttention">需要我处理</span><span class="count">0</span></button>
+      <button class="nav-item" type="button" disabled><span data-i18n="inProgress">处理中</span></button>
+      <button class="nav-item" type="button" disabled><span data-i18n="completed">已完成</span></button>
+      <div class="boundary-note"><strong data-i18n="scopeTitle">当前范围</strong><span data-i18n="scopeBody">单工程研发任务；不会执行通用办公自动化。</span></div>
+    </aside>
+
+    <section class="ticket-column" aria-labelledby="tickets-heading">
+      <div class="column-header">
+        <div><p class="eyebrow" data-i18n="currentProject">当前工程</p><h1 id="project-name">ICODE</h1></div>
+        <label class="search-box"><span class="sr-only" data-i18n="search">搜索工单</span><input id="ticket-search" type="search" data-i18n-placeholder="searchPlaceholder" placeholder="搜索编号、标题或内容"></label>
+      </div>
+      <h2 id="tickets-heading" class="sr-only" data-i18n="ticketList">工单列表</h2>
+      <div id="ticket-list" class="ticket-list" aria-live="polite"></div>
+      <div id="ticket-empty" class="empty-state"><strong data-i18n="emptyTitle">还没有工单</strong><p data-i18n="emptyBody">创建第一张研发工单，ICODE 会记录状态和处理证据。</p></div>
+    </section>
+
+    <section class="detail-column" aria-live="polite">
+      <div id="welcome-panel" class="welcome-panel"><span class="welcome-icon" aria-hidden="true">✓</span><h2 data-i18n="welcomeTitle">选择一张工单</h2><p data-i18n="welcomeBody">在这里查看当前状态、执行方式、目标和下一步。</p></div>
+      <article id="ticket-detail" hidden>
+        <div class="detail-header"><div><p id="detail-id" class="eyebrow"></p><h2 id="detail-title"></h2></div><span id="detail-status" class="badge"></span></div>
+        <div class="fact-grid">
+          <div><span data-i18n="executionMode">执行方式</span><strong id="detail-mode"></strong></div>
+          <div><span data-i18n="priority">紧急程度</span><strong id="detail-priority"></strong></div>
+          <div><span data-i18n="updatedAt">最近更新</span><strong id="detail-updated"></strong></div>
+        </div>
+        <section class="detail-section"><h3 data-i18n="problemDescription">问题或需求</h3><p id="detail-description" class="preserve-lines"></p></section>
+        <section class="detail-section"><h3 data-i18n="expectedResult">希望得到的结果</h3><p id="detail-expected" class="preserve-lines"></p></section>
+        <details id="technical-details" class="technical-details">
+          <summary data-i18n="technicalDetails">技术详情</summary>
+          <dl>
+            <div><dt data-i18n="rawStatus">控制面状态</dt><dd id="detail-raw-status"></dd></div>
+            <div><dt data-i18n="completedSteps">已完成步骤</dt><dd id="detail-steps"></dd></div>
+            <div><dt data-i18n="communicationLanguage">工单沟通语言</dt><dd id="detail-locale"></dd></div>
+          </dl>
+        </details>
+      </article>
+    </section>
+  </main>
+
+  <footer><p id="status" role="status" aria-live="polite" data-i18n="connecting">正在连接…</p></footer>
+
+  <dialog id="new-ticket-dialog">
+    <form id="new-ticket-form" method="dialog">
+      <div class="dialog-header"><div><p class="eyebrow" data-i18n="softwareRequest">软件研发需求</p><h2 data-i18n="newTicket">新建工单</h2></div><button id="close-dialog" class="icon-button" type="button" aria-label="Close">×</button></div>
+      <label><span data-i18n="project">业务系统</span><select id="new-ticket-project" required></select></label>
+      <label><span data-i18n="title">问题或需求标题</span><input id="ticket-title" maxlength="160" required></label>
+      <label><span data-i18n="problemDescription">问题或需求</span><textarea id="ticket-description" maxlength="5600" rows="5" required></textarea></label>
+      <label><span data-i18n="expectedResult">希望得到的结果</span><textarea id="expected-result" maxlength="1600" rows="3" required></textarea></label>
+      <div class="form-row">
+        <label><span data-i18n="priority">紧急程度</span><select id="ticket-priority"><option value="low" data-i18n="priorityLow">低</option><option value="normal" selected data-i18n="priorityNormal">普通</option><option value="high" data-i18n="priorityHigh">高</option><option value="urgent" data-i18n="priorityUrgent">紧急</option></select></label>
+        <label><span data-i18n="executionMode">执行方式</span><select id="execution-mode"><option value="interactive" data-i18n="interactiveMode">会话模式</option><option value="autonomous" data-i18n="autonomousMode">自动模式</option></select></label>
+      </div>
+      <p id="mode-help" class="help" data-i18n="interactiveHelp">适合需要逐步沟通和确认的需求。</p>
+      <div class="dialog-actions"><button id="cancel-ticket" type="button" data-i18n="cancel">取消</button><button id="submit-ticket" class="primary" type="submit" data-i18n="submitTicket">提交工单</button></div>
+    </form>
+  </dialog>
+  <script src="/static/workbench.js"></script>
+</body>
+</html>

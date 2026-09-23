@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Protocol, Sequence, runtime_checkable
 
 KIND_KERNEL = "kernel"
@@ -214,10 +214,13 @@ class WslSandbox:
 
     def to_wsl_path(self, path: Path) -> str:
         """`C:\\a\\b` → `/mnt/c/a/b`（WSL 默认自动挂载格式）。"""
-        p = Path(path).resolve()
-        drive = p.drive.rstrip(":").lower()
-        rest = str(p)[len(p.drive):].replace("\\", "/")
-        return f"/mnt/{drive}{rest}" if drive else rest
+        raw = str(path)
+        windows = PureWindowsPath(raw)
+        if windows.drive:
+            drive = windows.drive.rstrip(":").lower()
+            rest = "/".join(windows.parts[1:])
+            return f"/mnt/{drive}/{rest}".rstrip("/")
+        return str(Path(path).resolve())
 
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         cwd = self.to_wsl_path(workspace)

@@ -128,6 +128,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ui.add_argument("--demo", action="store_true",
                       help="放入一条示例待确认项，便于空跑体验（不执行任何真实动作）")
 
+    p_workbench = _add("workbench", help="启动单工程研发工单工作台（仅监听 127.0.0.1）")
+    p_workbench.add_argument("--workspace", required=True, help="服务端可信工程根")
+    p_workbench.add_argument("--port", type=int, default=0, help="0 = 由系统分配空闲端口")
+    p_workbench.add_argument("--no-browser", action="store_true")
+
     return parser
 
 
@@ -552,6 +557,34 @@ def cmd_webui(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_workbench(args: argparse.Namespace) -> int:
+    """启动单工程工单工作台；工程路径只在服务端配置。"""
+    import threading
+    import webbrowser
+
+    from .workbench import WorkbenchServer
+
+    settings = load_settings(args.skill_root)
+    server = WorkbenchServer(
+        settings=settings,
+        workspace=Path(args.workspace),
+        port=args.port,
+    )
+    url = server.start()
+    print(f"  工作台：{url}")
+    print(f"  工程：{Path(args.workspace).expanduser().resolve()}")
+    print("  按 Ctrl+C 结束")
+    if not args.no_browser:
+        webbrowser.open(url)
+    try:
+        while True:
+            threading.Event().wait(1.0)
+    except KeyboardInterrupt:
+        print("\n  正在关闭工作台…")
+        server.stop()
+    return 0
+
+
 def cmd_chain(args: argparse.Namespace) -> int:
     from .chain import run_chain
     from .loop import LoopConfig
@@ -588,6 +621,7 @@ _COMMANDS = {
     "verify-pack": cmd_verify_pack,
     "recover": cmd_recover,
     "webui": cmd_webui,
+    "workbench": cmd_workbench,
 }
 
 
