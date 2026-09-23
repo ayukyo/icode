@@ -1,0 +1,44 @@
+# R2.2 Linux/macOS 原生隔离实施计划
+
+- 日期：2026-09-23
+- 状态：实施中；尚未达到 R2.2 退出条件
+- 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6、§14、§16
+
+## 三问与边界
+
+1. 真实问题：现有 `probe_capabilities()` 只看可执行文件是否存在，`select_sandbox()` 因此可能宣称未验证的隔离能力；自主执行链也未消费 R2.1 的 `SandboxPolicy`。
+2. 已有实现：保留 `WorkspaceSession.policy()`、现有 `Sandbox`/`ToolContext` 与 R2.0 的 10 项合同；先修复探测，再建立统一执行入口，不再平行维护第二套策略。
+3. 调用链：工作台启动 → `AutonomyManager` → `NativeChainExecutor` → `run_chain` → `run_contract_step` → `ToolContext` → `run_command`。运行时自己的测试命令也必须经同一执行入口，否则会绕过边界。会话模式保持兼容；自动模式无可用且已实测的后端时禁止外部命令。
+
+## 实施任务
+
+### 1. 真实能力探测与回执
+
+- 为 Linux/macOS 后端添加短时、独立临时目录中的启动和负向探测：工作区外写入、受保护目录读取、默认网络、子进程继承；返回逐项证据，不把可执行文件存在当成 `ready`。
+- `icode doctor` 区分“找到候选工具”和“实际验证通过”；探测超时或异常按不可用处理，不裸执行。测试用失败注入覆盖候选存在但启动失败的情况。
+- macOS profile 的路径转义和系统读取白名单由测试锁定；每个 CI macOS 版本真实运行负向用例。
+
+### 2. Linux 随包助手与策略映射
+
+- 以包内助手为首选，不依赖用户 PATH 中的 `bwrap`；x86_64/arm64 wheel 包含对应构建产物、哈希与来源记录。辅助工具缺失或哈希不符时 fail-closed。
+- 按 `SandboxPolicy` 生成挂载/权限边界，工作区可写，原仓、gitdir、Skill、账本与证据不可写，敏感目录不可读，默认断网；验证 `..`、符号链接与子进程负例。
+- 若采用 Landlock，必须检查实际 ABI 与构建配置；Linux 5.13 仅保证初版文件系统接口，网络限制仍需另一原语，不能把 kernel 版本等同于完整能力。
+
+### 3. macOS Seatbelt 后端
+
+- 使用系统 `/usr/bin/sandbox-exec` 与由可信策略编译的 profile；工作区允许、受保护路径优先拒绝、默认拒绝网络。`sandbox-exec` 虽仍被主流 Agent 使用，但 Apple 将其标为 deprecated，故只以受测系统版本的真实负向结果作为能力声明。
+- CI 在 macOS runner 测试真实写外、敏感读取、网络、子进程与清理；失败时保持自动模式阻断。
+
+### 4. 唯一执行入口与阶段验收
+
+- `run_command`、运行时测试命令及自动链路统一走带策略的执行 broker，命令无 shell、环境显式、cwd 限于工作区；超时回收进程树，输出有界并留脱敏回执。
+- 旧会话模式及可注入测试 executor 保持兼容；自动模式未完成探测不能退回 `NoIsolation` 裸执行。
+- Linux/macOS 在 R2.2 范围内的关键负向测试（文件读写、默认断网、子进程继承、清理、启动失败阻断）全部通过；代理临时授权属于 R2.4，不把它提前计为通过。完整 8 项 critical 与 ≥9/10 一致性是 R2 最终发布门槛。独立安装 wheel 验证，无 Docker/WSL/Node/系统包前置；本阶段任一退出项未达到时只推送开发分支，不把 R2.2 标为完成或合入主线。
+
+## 验证与风险
+
+- 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
+- Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
+- macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。
+
+参考：[Linux Landlock 官方文档](https://docs.kernel.org/userspace-api/landlock.html) · [Bubblewrap 手册](https://manpages.debian.org/bookworm/bubblewrap/bwrap.1.en.html) · [Apple 开发者论坛关于 sandbox-exec 支持状态](https://developer.apple.com/forums/thread/661939) · [Codex 当前 Seatbelt 实现](https://github.com/openai/codex/blob/main/codex-rs/sandboxing/src/seatbelt.rs)

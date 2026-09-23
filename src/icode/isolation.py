@@ -9,9 +9,9 @@
    必须明说"应用层限制，非沙箱"。
 3. **默认更严格的一侧。** 无法确认时按"无隔离"处理，而不是假设有隔离。
 
-当前各平台现状（2026-09-23 实测于 Windows）：
-    Linux   → `bwrap` 可用则给文件系统 + 网络隔离（需自行安装 bubblewrap）
-    macOS   → `sandbox-exec` + 自写 profile
+当前各平台现状（R2.2 实施中）：
+    Linux   → `bwrap` 需通过最小真实负向探测（目前仍依赖系统安装）
+    macOS   → `sandbox-exec` 需通过最小真实负向探测
     容器    → `docker` / `podman` 可用则用容器
     Windows → **未实现内核级隔离**（Job Object 只限资源不限文件/网络；AppContainer
               需 Win32 组包，本运行时尚未做）→ 明确报告为「应用层限制」
@@ -19,7 +19,13 @@
 
 from __future__ import annotations
 
+import http.server
+import os
 import shutil
+import subprocess
+import sys
+import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Protocol, Sequence, runtime_checkable
@@ -47,13 +53,92 @@ class Capability:
         return self.available and self.kind in (KIND_KERNEL, KIND_CONTAINER)
 
 
-def probe_capabilities() -> tuple[Capability, ...]:
-    """探测本机可用的隔离后端。**只报告实测结果，不推断。**
+@dataclass(frozen=True)
+class NativeProbeResult:
+    """原生后端的实际启动和最小负向探测结果。"""
 
-    注意：这里只做**可执行文件存在性**探测，不实际启动后端
-    （某些环境会拦截特定程序；启动探测本身可能被安全策略阻断）。
-    真正的可用性由使用时的失败来暴露，并会被如实上报。
-    """
+    ready: bool
+    checks: dict[str, bool]
+    detail: str
+
+
+_NATIVE_PROBE_CHECKS = (
+    "workspace_write", "workspace_read", "outside_write_denied",
+    "secret_read_denied", "child_inherits", "network_denied",
+)
+
+
+def probe_native_sandbox(sandbox: Sandbox) -> NativeProbeResult:
+    """用真实子进程验证本机后端；任何启动或探测故障均不可当作保护。"""
+    checks = dict.fromkeys(_NATIVE_PROBE_CHECKS, False)
+    if os.name != "posix":
+        return NativeProbeResult(False, checks, "原生 POSIX 探测不适用于当前平台")
+
+    with tempfile.TemporaryDirectory(prefix="icode-native-probe-") as raw:
+        parent = Path(raw).resolve()
+        workspace = parent / "workspace"
+        outside = parent / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        (workspace / "marker").write_text("workspace", encoding="utf-8")
+        (outside / "secret").write_text("probe-secret", encoding="utf-8")
+
+        def run(argv: list[str]) -> subprocess.CompletedProcess[str] | None:
+            try:
+                wrapped = sandbox.wrap(argv, workspace=workspace)
+                return subprocess.run(
+                    wrapped, cwd=workspace, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=4, check=False,
+                )
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                return None
+
+        def success(argv: list[str]) -> bool:
+            result = run(argv)
+            return result is not None and result.returncode == 0
+
+        checks["workspace_write"] = success(["/usr/bin/touch", str(workspace / "written")]) and (workspace / "written").is_file()
+        checks["workspace_read"] = success(["/usr/bin/cat", str(workspace / "marker")])
+        checks["outside_write_denied"] = not success(["/usr/bin/touch", str(outside / "written")]) and not (outside / "written").exists()
+        checks["secret_read_denied"] = not success(["/usr/bin/cat", str(outside / "secret")])
+        child_allowed = success(["/bin/sh", "-c", 'printf child > "$1"', "sh", str(workspace / "child")]) and (workspace / "child").is_file()
+        child_denied = not success(["/bin/sh", "-c", 'printf child > "$1"', "sh", str(outside / "child")]) and not (outside / "child").exists()
+        checks["child_inherits"] = child_allowed and child_denied
+
+        class _Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"probe-ok")
+
+            def log_message(self, format: str, *args: object) -> None:
+                pass
+
+        try:
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            url = f"http://127.0.0.1:{server.server_port}/"
+            curl = ["/usr/bin/curl", "--noproxy", "*", "--max-time", "2", "--silent", "--fail", url]
+            control = subprocess.run(curl, capture_output=True, timeout=4, check=False)
+            checks["network_denied"] = (
+                control.returncode == 0
+                and success(["/usr/bin/curl", "--version"])
+                and not success(curl)
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        finally:
+            if "server" in locals():
+                server.shutdown()
+                server.server_close()
+
+    failed = [name for name, ok in checks.items() if not ok]
+    return NativeProbeResult(not failed, checks, "通过最小负向探测" if not failed else "未通过：" + ", ".join(failed))
+
+
+def probe_capabilities() -> tuple[Capability, ...]:
+    """Linux/macOS 原生后端实际探测；旧容器/WSL 仍仅作候选发现。"""
     probes: list[Capability] = []
     for name, kind, detail in (
         ("bwrap", KIND_KERNEL, "bubblewrap：可 unshare 文件系统与网络命名空间"),
@@ -63,11 +148,22 @@ def probe_capabilities() -> tuple[Capability, ...]:
         ("podman", KIND_CONTAINER, "容器：可限制挂载与网络"),
     ):
         found = shutil.which(name)
+        verified = None
+        try:
+            if found and name == "bwrap" and sys.platform.startswith("linux"):
+                verified = probe_native_sandbox(BubblewrapSandbox(bwrap=found))
+            elif found and name == "sandbox-exec" and sys.platform == "darwin":
+                verified = probe_native_sandbox(MacSeatbeltSandbox(sandbox_exec=found))
+        except Exception:  # noqa: BLE001 - 能力探测异常必须安全地视为不可用
+            verified = NativeProbeResult(False, dict.fromkeys(_NATIVE_PROBE_CHECKS, False), "探测异常")
+        platform_mismatch = found and name in ("bwrap", "sandbox-exec") and verified is None
         probes.append(Capability(
             name=name,
-            available=bool(found),
+            available=verified.ready if verified is not None else bool(found and not platform_mismatch),
             kind=kind,
-            detail=f"{detail}；可执行文件：{found or '未找到'}",
+            detail=f"{detail}；可执行文件：{found or '未找到'}"
+                   + (f"；真实探测：{verified.detail}" if verified is not None else "")
+                   + ("；当前平台不适用" if platform_mismatch else ""),
         ))
     return tuple(probes)
 
@@ -139,10 +235,12 @@ class BubblewrapSandbox:
             "--ro-bind", "/lib", "/lib",
             "--proc", "/proc",
             "--dev", "/dev",
+            "--tmpfs", "/tmp",
             "--bind", ws, ws,          # 工作区可写
             "--chdir", ws,
-            "--tmpfs", "/tmp",
         ]
+        if Path("/lib64").exists():
+            out += ["--ro-bind", "/lib64", "/lib64"]
         if not network:
             out.append("--unshare-net")
         out += ["--", *argv]
@@ -406,9 +504,9 @@ def select_sandbox(preference: str | None = None) -> Sandbox:
         if pref in ("none", "off", "no"):
             return NoIsolation(reason="显式选择不使用隔离后端")
         if pref == "bwrap" and _ok("bwrap"):
-            return BubblewrapSandbox()
+            return BubblewrapSandbox(bwrap=shutil.which("bwrap") or "bwrap")
         if pref in ("seatbelt", "sandbox-exec") and _ok("sandbox-exec"):
-            return MacSeatbeltSandbox()
+            return MacSeatbeltSandbox(sandbox_exec=shutil.which("sandbox-exec") or "sandbox-exec")
         if pref in ("wsl",) and _ok("wsl"):
             return WslSandbox()
         if pref in ("docker", "podman", "container"):
@@ -422,8 +520,8 @@ def select_sandbox(preference: str | None = None) -> Sandbox:
     # 直接拦截它）。实测踩过：只因存在 wsl.exe 就自动选中，导致每条命令都被包进
     # wsl 而失败 —— "存在"不等于"可用"，必须显式指定 `--isolation wsl` 才用。
     for name, factory in (
-        ("bwrap", BubblewrapSandbox),
-        ("sandbox-exec", MacSeatbeltSandbox),
+        ("bwrap", lambda: BubblewrapSandbox(bwrap=shutil.which("bwrap") or "bwrap")),
+        ("sandbox-exec", lambda: MacSeatbeltSandbox(sandbox_exec=shutil.which("sandbox-exec") or "sandbox-exec")),
         ("docker", lambda: ContainerSandbox(runtime="docker")),
         ("podman", lambda: ContainerSandbox(runtime="podman")),
     ):

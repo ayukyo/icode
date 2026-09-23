@@ -7,7 +7,10 @@
 from __future__ import annotations
 
 import unittest
+import shutil
+import sys
 from pathlib import Path
+from unittest import mock
 
 from tests._support import temp_workspace
 
@@ -22,12 +25,44 @@ from icode.isolation import (
     WslSandbox,
     capability_report,
     probe_capabilities,
+    probe_native_sandbox,
     select_sandbox,
 )
 from icode.tools import IsolationUnavailable, ToolContext, default_registry
 
 
 class TestProbe(unittest.TestCase):
+    def test_恒等包装不能通过原生负向探测(self) -> None:
+        result = probe_native_sandbox(NoIsolation())
+        self.assertFalse(result.ready)
+        self.assertIn("outside_write_denied", result.checks)
+        self.assertFalse(result.checks["outside_write_denied"])
+
+    def test_无法启动的候选后端不能报告可用(self) -> None:
+        result = probe_native_sandbox(BubblewrapSandbox(bwrap="/no/such/bwrap"))
+        self.assertFalse(result.ready)
+        self.assertFalse(result.checks["workspace_write"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux 原生后端测试")
+    def test_探测异常不能自动选择候选程序(self) -> None:
+        def which(name: str) -> str | None:
+            return "/usr/bin/bwrap" if name == "bwrap" else None
+
+        with mock.patch("icode.isolation.shutil.which", side_effect=which), mock.patch(
+            "icode.isolation.probe_native_sandbox", side_effect=RuntimeError("probe failed")
+        ):
+            cap = next(item for item in probe_capabilities() if item.name == "bwrap")
+            self.assertFalse(cap.available)
+            self.assertIsInstance(select_sandbox(), NoIsolation)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"),
+                         "当前主机没有 Linux bwrap")
+    def test_bwrap_在临时工作区真实阻断越权(self) -> None:
+        result = probe_native_sandbox(BubblewrapSandbox(bwrap=shutil.which("bwrap") or "bwrap"))
+        if not result.checks["workspace_write"]:
+            self.skipTest("本机内核策略不允许启动 bwrap")
+        self.assertTrue(result.ready, result.detail)
+
     def test_探测不抛异常且覆盖四类后端(self) -> None:
         caps = probe_capabilities()
         names = {c.name for c in caps}
@@ -39,7 +74,11 @@ class TestProbe(unittest.TestCase):
     def test_探测只报实测结果(self) -> None:
         for c in probe_capabilities():
             if not c.available:
-                self.assertIn("未找到", c.detail)
+                self.assertTrue(
+                    "未找到" in c.detail or "真实探测：未通过" in c.detail
+                    or "当前平台不适用" in c.detail,
+                    c.detail,
+                )
 
 
 class TestHonesty(unittest.TestCase):
@@ -159,6 +198,7 @@ class TestSandboxWrapping(unittest.TestCase):
         self.assertIn("--bind", argv)
         self.assertEqual(argv[argv.index("--bind") + 1], str(Path("/tmp/ws").resolve()))
         self.assertEqual(argv[-2:], ["ls", "-la"])
+        self.assertLess(argv.index("--tmpfs"), argv.index("--bind"))
 
     def test_bwrap_显式允许网络时不加_unshare_net(self) -> None:
         argv = BubblewrapSandbox().wrap(["curl"], workspace=Path("/tmp/ws"), network=True)
