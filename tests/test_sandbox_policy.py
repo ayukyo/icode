@@ -56,6 +56,14 @@ class SandboxPolicyTestCase(unittest.TestCase):
         else:
             self.fail("wire policy was accepted")
 
+    def assert_direct_rejected(self, **overrides: object) -> None:
+        try:
+            self.make_policy(**overrides)
+        except Exception as error:  # Assert the public exception boundary.
+            self.assertIsInstance(error, PolicyValidationError)
+        else:
+            self.fail("direct policy construction was accepted")
+
     def test_policy_is_frozen_and_normalizes_duplicate_paths(self) -> None:
         policy = self.make_policy(
             read_roots=(self.workspace / ".", self.workspace, self.workspace)
@@ -110,6 +118,38 @@ class SandboxPolicyTestCase(unittest.TestCase):
                 wire = self.make_policy().to_dict()
                 wire["schema_version"] = value
                 self.assert_wire_rejected(wire)
+
+    def test_direct_constructor_and_replace_require_strict_schema_version(self) -> None:
+        for value in (True, 1.0):
+            with self.subTest(construction="direct", value=value):
+                self.assert_direct_rejected(schema_version=value)
+
+            with self.subTest(construction="replace", value=value):
+                policy = self.make_policy()
+                with self.assertRaises(PolicyValidationError):
+                    replace(policy, schema_version=value)
+
+    def test_direct_constructor_requires_annotation_types(self) -> None:
+        invalid_values: tuple[tuple[str, object], ...] = (
+            ("run_id", 42),
+            ("ticket_id", True),
+            ("step", b"code"),
+            ("workspace_root", str(self.workspace)),
+            ("read_roots", [self.workspace]),
+            ("write_roots", (str(self.workspace),)),
+            ("deny_read_roots", {self.workspace / ".git"}),
+            ("deny_write_roots", (42,)),
+            ("protected_paths", (str(self.workspace / ".git"),)),
+            ("network_mode", "deny"),
+            ("allowed_domains", []),
+            ("allowed_domains", (42,)),
+            ("process_limit", True),
+            ("wall_timeout_seconds", 1.0),
+            ("output_limit_bytes", False),
+        )
+        for field_name, value in invalid_values:
+            with self.subTest(field_name=field_name, value=value):
+                self.assert_direct_rejected(**{field_name: value})
 
     def test_from_dict_requires_string_identity_fields(self) -> None:
         for field_name in ("run_id", "ticket_id", "step", "workspace_root"):
@@ -227,6 +267,19 @@ class SandboxPolicyTestCase(unittest.TestCase):
         self.assertEqual(policy.allowed_domains, ("pypi.org",))
         self.assertEqual(policy.policy_hash, canonical.policy_hash)
 
+    def test_mixed_case_domains_are_canonicalized_without_other_rewriting(self) -> None:
+        direct = self.make_policy(
+            network_mode=NetworkMode.PROXY_ALLOWLIST,
+            allowed_domains=("V1.Example.Com",),
+        )
+        wire = direct.to_dict()
+        wire["allowed_domains"] = ["FILES.PythonHosted.Org"]
+
+        decoded = SandboxPolicy.from_dict(wire)
+
+        self.assertEqual(direct.allowed_domains, ("v1.example.com",))
+        self.assertEqual(decoded.allowed_domains, ("files.pythonhosted.org",))
+
     def test_deny_network_mode_rejects_allowed_domains(self) -> None:
         with self.assertRaisesRegex(
             PolicyValidationError,
@@ -261,6 +314,84 @@ class SandboxPolicyTestCase(unittest.TestCase):
                     ).to_dict()
                     wire["allowed_domains"] = [domain]
                     SandboxPolicy.from_dict(wire)
+
+    def test_domains_reject_legacy_ipv4_and_untrusted_surrounding_text(self) -> None:
+        attacks = (
+            "127.1",
+            "0177.0.0.1",
+            "0x7f.0.0.1",
+            " pypi.org",
+            "pypi.org ",
+            "pypi.org.",
+            "pypi.org\n",
+        )
+        for domain in attacks:
+            with self.subTest(source="direct", domain=domain):
+                self.assert_direct_rejected(
+                    network_mode=NetworkMode.PROXY_ALLOWLIST,
+                    allowed_domains=(domain,),
+                )
+
+            with self.subTest(source="wire", domain=domain):
+                wire = self.make_policy(
+                    network_mode=NetworkMode.PROXY_ALLOWLIST,
+                    allowed_domains=("pypi.org",),
+                ).to_dict()
+                wire["allowed_domains"] = [domain]
+                self.assert_wire_rejected(wire)
+
+    def test_policy_strings_must_be_utf8_encodable_unicode_scalars(self) -> None:
+        invalid_text = "bad\ud800"
+        with self.subTest(field="identity", source="direct"):
+            self.assert_direct_rejected(run_id=invalid_text)
+        with self.subTest(field="identity", source="wire"):
+            wire = self.make_policy().to_dict()
+            wire["run_id"] = invalid_text
+            self.assert_wire_rejected(wire)
+        with self.subTest(field="path", source="direct"):
+            self.assert_direct_rejected(
+                read_roots=(self.workspace / invalid_text,),
+            )
+        with self.subTest(field="path", source="wire"):
+            wire = self.make_policy().to_dict()
+            wire["read_roots"] = [str(self.workspace / invalid_text)]
+            self.assert_wire_rejected(wire)
+        with self.subTest(field="domain", source="direct"):
+            self.assert_direct_rejected(
+                network_mode=NetworkMode.PROXY_ALLOWLIST,
+                allowed_domains=(f"{invalid_text}.example",),
+            )
+        with self.subTest(field="domain", source="wire"):
+            wire = self.make_policy(
+                network_mode=NetworkMode.PROXY_ALLOWLIST,
+                allowed_domains=("pypi.org",),
+            ).to_dict()
+            wire["allowed_domains"] = [f"{invalid_text}.example"]
+            self.assert_wire_rejected(wire)
+
+    def test_path_resolution_errors_are_wrapped_as_policy_validation_errors(
+        self,
+    ) -> None:
+        first = self.workspace / "a"
+        second = self.workspace / "b"
+        try:
+            first.symlink_to(second)
+            second.symlink_to(first)
+        except (NotImplementedError, OSError) as error:
+            if __import__("sys").platform == "win32":
+                self.skipTest(f"symlink creation unavailable: {error}")
+            raise
+
+        with self.subTest(source="direct"):
+            with self.assertRaises(PolicyValidationError) as raised:
+                self.make_policy(read_roots=(first,))
+            self.assertIsInstance(raised.exception.__cause__, RuntimeError)
+        with self.subTest(source="wire"):
+            wire = self.make_policy().to_dict()
+            wire["read_roots"] = [str(first)]
+            with self.assertRaises(PolicyValidationError) as raised:
+                SandboxPolicy.from_dict(wire)
+            self.assertIsInstance(raised.exception.__cause__, RuntimeError)
 
     def test_write_root_must_stay_within_workspace(self) -> None:
         with self.assertRaisesRegex(PolicyValidationError, r"(?i)write root"):
@@ -414,6 +545,19 @@ class SandboxPolicyTestCase(unittest.TestCase):
         with self.assertRaisesRegex(PolicyValidationError, r"(?i)broadens"):
             tighten_policy(base, candidate)
 
+    def test_tighten_policy_revalidates_both_inputs(self) -> None:
+        for corrupted_side in ("base", "candidate"):
+            with self.subTest(corrupted_side=corrupted_side):
+                base = self.make_policy()
+                candidate = self.make_policy()
+                object.__setattr__(
+                    base if corrupted_side == "base" else candidate,
+                    "schema_version",
+                    True,
+                )
+                with self.assertRaises(PolicyValidationError):
+                    tighten_policy(base, candidate)
+
 
 class SandboxPolicySchemaTestCase(unittest.TestCase):
     @classmethod
@@ -483,17 +627,32 @@ class SandboxPolicySchemaTestCase(unittest.TestCase):
         domain_pattern = definitions["domain"]["pattern"]
         self.assert_pattern_accepts(
             domain_pattern,
-            ("pypi.org", "PYPI.org", "files.pythonhosted.org"),
+            ("pypi.org", "PYPI.org", "files.pythonhosted.org", "v1.example.com"),
             (
                 "localhost",
                 "127.0.0.1",
+                "127.1",
+                "0177.0.0.1",
+                "0x7f.0.0.1",
                 "::1",
                 "https://pypi.org",
                 "pypi.org/simple",
                 "pypi.org:443",
                 "*.pypi.org",
+                " pypi.org",
+                "pypi.org ",
+                "pypi.org.",
+                "pypi.org\n",
             ),
         )
+        domain_description = definitions["domain"]["description"].lower()
+        self.assertIn("legacy", domain_description)
+
+    def test_schema_documents_unicode_scalar_decoder_boundary(self) -> None:
+        description = self.schema["description"].lower()
+
+        self.assertIn("unicode scalar", description)
+        self.assertIn("strict decoder", description)
 
     def test_schema_encodes_network_mode_domain_cardinality(self) -> None:
         all_of = self.schema.get("allOf")

@@ -50,11 +50,21 @@ class ConformanceContractError(ValueError):
     """Raised when the conformance contract or supplied outcomes are invalid."""
 
 
+def _require_string_keys(value: Mapping[Any, Any], location: str) -> None:
+    invalid_keys = [key for key in value if type(key) is not str]
+    if invalid_keys:
+        raise ConformanceContractError(
+            f"{location} keys must be strings: "
+            f"{[repr(key) for key in invalid_keys]!r}"
+        )
+
+
 def _require_exact_fields(
     value: Mapping[str, Any],
     expected: set[str],
     location: str,
 ) -> None:
+    _require_string_keys(value, location)
     actual = set(value)
     if actual != expected:
         missing = sorted(expected - actual)
@@ -165,6 +175,7 @@ def evaluate_conformance(outcomes: Mapping[str, bool]) -> dict[str, int | bool]:
 
     if not isinstance(outcomes, Mapping):
         raise ConformanceContractError("outcomes must be a mapping")
+    _require_string_keys(outcomes, "outcomes")
 
     contract = load_conformance_contract()
     capabilities = contract["capabilities"]

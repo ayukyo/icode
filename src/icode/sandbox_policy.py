@@ -27,9 +27,29 @@ class NetworkMode(str, Enum):
     PROXY_ALLOWLIST = "proxy_allowlist"
 
 
-def _normalize_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
+def _require_utf8_scalar(value: str, location: str) -> None:
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise PolicyValidationError(
+            f"{location} must contain only UTF-8 encodable Unicode scalars"
+        ) from error
+
+
+def _normalize_path(path: Path, location: str) -> Path:
+    _require_utf8_scalar(str(path), location)
+    try:
+        return path.expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, UnicodeError) as error:
+        raise PolicyValidationError(f"unable to normalize {location}") from error
+
+
+def _normalize_paths(
+    paths: Iterable[Path],
+    location: str,
+) -> tuple[Path, ...]:
     normalized = {
-        Path(path).expanduser().resolve(strict=False)
+        _normalize_path(path, f"{location} item")
         for path in paths
     }
     return tuple(sorted(normalized, key=str))
@@ -66,6 +86,19 @@ def _denies_preserved(
 
 
 _DNS_LABEL_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_DECIMAL_IPV4_PART_PATTERN = re.compile(r"[0-9]+")
+_HEX_IPV4_PART_PATTERN = re.compile(r"0x[0-9a-f]+", re.IGNORECASE)
+
+
+def _is_legacy_ipv4_text(domain: str) -> bool:
+    """Recognize legacy numeric IPv4 text without DNS or platform parsing."""
+
+    parts = domain.split(".")
+    return 1 <= len(parts) <= 4 and all(
+        _DECIMAL_IPV4_PART_PATTERN.fullmatch(part) is not None
+        or _HEX_IPV4_PART_PATTERN.fullmatch(part) is not None
+        for part in parts
+    )
 
 
 def _is_exact_dns_hostname(domain: str) -> bool:
@@ -73,9 +106,12 @@ def _is_exact_dns_hostname(domain: str) -> bool:
         return False
     try:
         domain.encode("ascii")
-        ipaddress.ip_address(domain)
     except UnicodeEncodeError:
         return False
+    if _is_legacy_ipv4_text(domain):
+        return False
+    try:
+        ipaddress.ip_address(domain)
     except ValueError:
         pass
     else:
@@ -109,10 +145,12 @@ class SandboxPolicy:
     protected_paths: tuple[Path, ...]
 
     def __post_init__(self) -> None:
+        self._validate_declared_types()
+        self._validate_unicode_scalars()
         object.__setattr__(
             self,
             "workspace_root",
-            Path(self.workspace_root).expanduser().resolve(strict=False),
+            _normalize_path(self.workspace_root, "workspace_root"),
         )
         for name in (
             "read_roots",
@@ -121,23 +159,80 @@ class SandboxPolicy:
             "deny_write_roots",
             "protected_paths",
         ):
-            object.__setattr__(self, name, _normalize_paths(getattr(self, name)))
-        object.__setattr__(self, "network_mode", NetworkMode(self.network_mode))
+            object.__setattr__(
+                self,
+                name,
+                _normalize_paths(getattr(self, name), name),
+            )
         object.__setattr__(
             self,
             "allowed_domains",
-            tuple(
-                sorted(
-                    {
-                        domain.strip().lower().rstrip(".")
-                        for domain in self.allowed_domains
-                    }
-                )
-            ),
+            tuple(sorted({domain.lower() for domain in self.allowed_domains})),
         )
         self.validate()
 
+    def _validate_declared_types(self) -> None:
+        if type(self.schema_version) is not int:
+            raise PolicyValidationError("schema_version must be integer 1")
+
+        for name in ("run_id", "ticket_id", "step"):
+            if type(getattr(self, name)) is not str:
+                raise PolicyValidationError(f"{name} must be a string")
+
+        if not isinstance(self.workspace_root, Path):
+            raise PolicyValidationError("workspace_root must be a Path")
+
+        for name in (
+            "read_roots",
+            "write_roots",
+            "deny_read_roots",
+            "deny_write_roots",
+            "protected_paths",
+        ):
+            value = getattr(self, name)
+            if type(value) is not tuple:
+                raise PolicyValidationError(f"{name} must be a tuple")
+            if any(not isinstance(path, Path) for path in value):
+                raise PolicyValidationError(f"{name} items must be Path instances")
+
+        if not isinstance(self.network_mode, NetworkMode):
+            raise PolicyValidationError("network_mode must be a NetworkMode")
+
+        if type(self.allowed_domains) is not tuple:
+            raise PolicyValidationError("allowed_domains must be a tuple")
+        if any(type(domain) is not str for domain in self.allowed_domains):
+            raise PolicyValidationError("allowed_domains items must be strings")
+
+        for name in (
+            "process_limit",
+            "wall_timeout_seconds",
+            "output_limit_bytes",
+        ):
+            if type(getattr(self, name)) is not int:
+                raise PolicyValidationError(
+                    f"{name} must be a strictly positive integer"
+                )
+
+    def _validate_unicode_scalars(self) -> None:
+        for name in ("run_id", "ticket_id", "step"):
+            _require_utf8_scalar(getattr(self, name), name)
+        _require_utf8_scalar(str(self.workspace_root), "workspace_root")
+        for name in (
+            "read_roots",
+            "write_roots",
+            "deny_read_roots",
+            "deny_write_roots",
+            "protected_paths",
+        ):
+            for path in getattr(self, name):
+                _require_utf8_scalar(str(path), f"{name} item")
+        for domain in self.allowed_domains:
+            _require_utf8_scalar(domain, "allowed_domains item")
+
     def validate(self) -> None:
+        self._validate_declared_types()
+        self._validate_unicode_scalars()
+
         if self.schema_version != POLICY_SCHEMA_VERSION:
             raise PolicyValidationError(
                 f"unsupported sandbox policy schema_version: {self.schema_version!r}"
@@ -146,8 +241,7 @@ class SandboxPolicy:
         for name in ("run_id", "ticket_id", "step"):
             value = getattr(self, name)
             if (
-                not isinstance(value, str)
-                or not value.strip()
+                not value.strip()
                 or any(
                     ord(character) < 32 or ord(character) == 127
                     for character in value
@@ -163,7 +257,7 @@ class SandboxPolicy:
             "output_limit_bytes",
         ):
             value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            if value <= 0:
                 raise PolicyValidationError(
                     f"{name} must be a strictly positive integer"
                 )
@@ -187,7 +281,7 @@ class SandboxPolicy:
         ]
         if invalid_domains:
             raise PolicyValidationError(
-                "allowed domain must be an exact lowercase DNS hostname: "
+                "allowed domain must be an exact ASCII DNS hostname: "
                 f"{invalid_domains!r}"
             )
 
@@ -341,7 +435,7 @@ class SandboxPolicy:
             )
         except PolicyValidationError:
             raise
-        except (OSError, TypeError, ValueError) as error:
+        except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as error:
             raise PolicyValidationError("invalid sandbox policy wire value") from error
 
     def canonical_json(self) -> str:
@@ -359,6 +453,9 @@ class SandboxPolicy:
 
 def tighten_policy(base: SandboxPolicy, candidate: SandboxPolicy) -> SandboxPolicy:
     """Return *candidate* when it can only reduce the authority in *base*."""
+
+    base.validate()
+    candidate.validate()
 
     identity_fields = (
         "schema_version",

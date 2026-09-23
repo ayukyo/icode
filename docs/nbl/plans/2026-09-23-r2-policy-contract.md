@@ -166,8 +166,9 @@ class SandboxPolicy:
             "deny_write_roots", "protected_paths",
         ):
             object.__setattr__(self, field_name, _normalize_paths(tuple(getattr(self, field_name))))
-        object.__setattr__(self, "network_mode", NetworkMode(self.network_mode))
-        domains = tuple(sorted({str(item).strip().lower().rstrip(".") for item in self.allowed_domains}))
+        # Public direct construction first requires the declared dataclass types;
+        # from_dict performs validated wire conversions before reaching here.
+        domains = tuple(sorted({item.lower() for item in self.allowed_domains}))
         object.__setattr__(self, "allowed_domains", domains)
         self.validate()
 
@@ -233,7 +234,7 @@ class SandboxPolicy:
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 ```
 
-Create `src/icode/schemas/sandbox-policy-v1.schema.json` as a Draft 2020-12 object schema. It must set `additionalProperties` to `false`, require all fifteen dataclass fields, use integer `const: 1` for `schema_version`, constrain `network_mode` to `deny` or `proxy_allowlist`, require absolute non-empty path strings, require positive integer limits, and define domain items as external DNS hostnames without a scheme, path, port, wildcard, localhost, or IP literal. Mixed-case DNS wire values are valid and the decoder canonicalizes them to lowercase. The schema covers wire shape and constraints expressible in Draft 2020-12 only. The Python/native strict decoder is the authoritative complete semantic validator: it rejects non-`int` runtime values such as `True` and `1.0`, applies current-platform absolute-path semantics, and enforces cross-array containment, deny, and protected-path relationships. Schema validation alone must never be described as complete policy acceptance.
+Create `src/icode/schemas/sandbox-policy-v1.schema.json` as a Draft 2020-12 object schema. It must set `additionalProperties` to `false`, require all fifteen dataclass fields, use integer `const: 1` for `schema_version`, constrain `network_mode` to `deny` or `proxy_allowlist`, require absolute non-empty path strings, require positive integer limits, and define domain items as external ASCII DNS hostnames without surrounding whitespace, a trailing dot, scheme, path, port, wildcard, localhost, IP literal, or 1-4-part legacy numeric IPv4 text. Public direct construction requires the declared dataclass types (`int` but not `bool`, `Path`, path tuples, `NetworkMode`, and domain string tuples); `from_dict` performs strict wire-shape checks and validated conversion before construction. Mixed-case DNS wire values are valid and the decoder canonicalizes them with `lower()` only; it never repairs untrusted input with `strip()` or `rstrip()`. The schema covers wire shape and constraints expressible in Draft 2020-12 only. The Python/native strict decoder is the authoritative complete semantic validator: it rejects non-`int` runtime values such as `True` and `1.0`, rejects strings that are not UTF-8-encodable Unicode scalar text, applies current-platform absolute-path semantics, and enforces cross-array containment, deny, and protected-path relationships. JSON Schema engines cannot consistently express the Unicode scalar boundary, so schema validation alone must never be described as complete policy acceptance.
 
 - [x] **Step 4: Run the focused tests and verify GREEN**
 

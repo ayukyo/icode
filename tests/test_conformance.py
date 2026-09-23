@@ -112,6 +112,26 @@ class ConformanceContractTestCase(unittest.TestCase):
         with self.assertRaises(ConformanceContractError):
             validate_conformance_contract(contract)
 
+    def test_contract_and_capability_keys_must_be_strings(self) -> None:
+        malformed_contract = copy.deepcopy(load_conformance_contract())
+        malformed_contract[1] = "integer key"
+        malformed_contract[None] = "null key"
+
+        malformed_capability = copy.deepcopy(load_conformance_contract())
+        malformed_capability["capabilities"][0][1] = "integer key"
+        malformed_capability["capabilities"][0][None] = "null key"
+
+        for location, contract in (
+            ("contract", malformed_contract),
+            ("capability", malformed_capability),
+        ):
+            with self.subTest(location=location):
+                with self.assertRaisesRegex(
+                    ConformanceContractError,
+                    r"keys must be strings",
+                ):
+                    validate_conformance_contract(contract)
+
     def test_optional_failure_still_meets_readiness_threshold(self) -> None:
         outcomes = self.make_outcomes()
         outcomes["resource_limits"] = False
@@ -159,6 +179,17 @@ class ConformanceContractTestCase(unittest.TestCase):
             with self.subTest(value=value):
                 with self.assertRaises(ConformanceContractError):
                     evaluate_conformance(outcomes)  # type: ignore[arg-type]
+
+    def test_outcome_keys_must_be_strings(self) -> None:
+        outcomes: dict[object, object] = self.make_outcomes()
+        outcomes[1] = True
+        outcomes[None] = False
+
+        with self.assertRaisesRegex(
+            ConformanceContractError,
+            r"keys must be strings",
+        ):
+            evaluate_conformance(outcomes)  # type: ignore[arg-type]
 
 
 if __name__ == "__main__":
