@@ -223,12 +223,12 @@ git commit -m "feat: create isolated ticket workspaces"
 ### Task 3: 自主执行生命周期接入
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成
 
 **Dependencies:** Task 2
 **Parallelizable:** No (依赖稳定的 WorkspaceSession 生命周期)
 
-- [ ] **Step 1: Write failing autonomy tests**
+- [x] **Step 1: Write failing autonomy tests**
 
 修改 `tests/test_autonomy.py` 与 `tests/test_workbench.py`，增加：
 
@@ -253,13 +253,13 @@ def test_workbench_autonomous_mode_constructs_default_workspace_manager(self): .
 def test_workbench_interactive_mode_does_not_create_workspace_data(self): ...
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run: `python -m pytest tests/test_autonomy.py tests/test_workbench.py -q`
 
 Expected: FAIL，构造器不接受 `workspace_manager`，执行上下文仍指向原工程。
 
-- [ ] **Step 3: Implement lifecycle binding**
+- [x] **Step 3: Implement lifecycle binding**
 
 修改 `src/icode/autonomy.py`：
 
@@ -273,13 +273,13 @@ Expected: FAIL，构造器不接受 `workspace_manager`，执行上下文仍指�
 
 修改 `src/icode/workbench.py`：仅当 `enable_autonomous` 且 executor 可用时，根据可信 workspace、project ID 与默认用户数据根构造 `WorkspaceManager`；交互模式不创建目录。把 `vendor/icode-skill`/实际 skill root 作为额外保护路径传入。
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run: `python -m pytest tests/test_autonomy.py tests/test_workbench.py tests/test_workspace.py -q`
 
 Expected: PASS。
 
-- [ ] **Step 5: Run related regression and commit**
+- [x] **Step 5: Run related regression and commit**
 
 Run: `python -m pytest tests/test_chain_offline.py tests/test_guard.py tests/test_runner.py tests/test_autonomy.py tests/test_workbench.py tests/test_workspace.py -q`
 
