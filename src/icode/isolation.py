@@ -10,7 +10,7 @@
 3. **默认更严格的一侧。** 无法确认时按"无隔离"处理，而不是假设有隔离。
 
 当前各平台现状（R2.2 实施中）：
-    Linux   → `bwrap` 需通过最小真实负向探测（目前仍依赖系统安装）
+    Linux   → `bwrap` 需通过最小真实负向探测；随包 Landlock 助手仍在策略接入前
     macOS   → `sandbox-exec` 需通过最小真实负向探测
     容器    → `docker` / `podman` 可用则用容器
     Windows → **未实现内核级隔离**（Job Object 只限资源不限文件/网络；AppContainer
@@ -227,7 +227,7 @@ class NoIsolation:
 
 @dataclass
 class LandlockSandbox:
-    """R2.2 开发期 Linux 原生助手；未打包/绑定策略前不参与自动选择。"""
+    """R2.2 开发期 Linux 原生助手；已打包，但完整策略绑定前不参与自动选择。"""
 
     helper: str
     name: str = "landlock"
@@ -250,7 +250,7 @@ class LandlockSandbox:
             "is_real_isolation": True,
             "claim": "开发期 Landlock/seccomp 原生边界，尚未达到 R2 完整合同",
             "enforced": ["工作区读写", "默认断网", "子进程继承"],
-            "not_enforced": ["R2 完整策略映射与发布包校验"],
+            "not_enforced": ["受保护子路径", "R2 完整策略映射", "进程树清理"],
         }
 
 

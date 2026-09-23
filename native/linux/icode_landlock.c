@@ -1,6 +1,6 @@
 /* R2.2 prototype: Landlock filesystem boundary plus seccomp network denial.
- * This helper is intentionally not selected for user runs until platform wheels,
- * policy binding, protected metadata and complete conformance are in place.
+ * This helper is packaged in Linux wheels but intentionally not selected for
+ * user runs until policy binding, protected metadata and conformance are in place.
  */
 #define _GNU_SOURCE
 

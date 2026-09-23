@@ -169,6 +169,16 @@ def run_command(
 
     workdir = ctx.resolve(cwd) if cwd else ctx.root
     try:
+        workdir = workdir.resolve(strict=True)
+        workdir.relative_to(ctx.root.resolve(strict=True))
+        if not workdir.is_dir():
+            raise ValueError("not a directory")
+    except (OSError, ValueError):
+        return ToolResult(
+            False, "执行目录必须位于工作区内且为已有目录",
+            {"error": "invalid_cwd"}, opclass=OPCLASS_MANAGED_WRITE,
+        )
+    try:
         exec_argv = ctx.wrap_command(args)
     except Exception as exc:  # noqa: BLE001 - 隔离不可用时拒绝执行，不降级
         return ToolResult(

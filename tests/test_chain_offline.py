@@ -10,6 +10,7 @@ import hashlib
 import json
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
@@ -20,7 +21,7 @@ from icode.chain import chain_steps, run_chain
 from icode.config import load_settings
 from icode.contracts import ContractSet
 from icode.control import ControlPlane
-from icode.runner import run_unittest
+from icode.runner import run_contract_step, run_unittest
 from icode.runner import StepReport
 
 # 各步骤的模拟产物内容（模型"应该"写的内容）
@@ -161,6 +162,31 @@ class TestChainOffline(unittest.TestCase):
                     steps=("plan",),
                     out_dir=invalid,
                 )
+
+    def test_contract_step的模型与补救回合继承隔离后端(self) -> None:
+        with temp_workspace() as workspace:
+            from icode.handshake import next_out_dir
+
+            out_dir = next_out_dir(workspace)
+            ticket_id = "OFFLINE-SANDBOX-1"
+            ControlPlane(self.settings).create(
+                out_dir, ticket_id=ticket_id, requirement="隔离透传", birth="plan",
+            )
+            sandbox = object()
+            loop = SimpleNamespace(ok=True, messages=[], stop_reason="done", error="")
+            with patch("icode.runner._run_agent", return_value=loop) as agent, patch(
+                "icode.runner._finalize"
+            ):
+                run_contract_step(
+                    self.settings, backend=FakeBackend(["完成"]), workspace=workspace,
+                    step="plan", ticket_id=ticket_id, out_dir=out_dir,
+                    sandbox=sandbox,
+                )
+
+            self.assertGreaterEqual(agent.call_count, 2, "必须覆盖首次与补救回合")
+            self.assertTrue(all(
+                call.kwargs.get("sandbox") is sandbox for call in agent.call_args_list
+            ))
 
     def test_plan_review_merge_三步走通(self) -> None:
         """离线验证：plan → review → merge 三步全部通过，事件链完整。"""

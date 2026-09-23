@@ -297,7 +297,7 @@ def run_contract_step(
                     requirement=requirement or DEFAULT_TASK, approver=approver,
                     loop_config=loop_config, budget=budget, on_event=on_event,
                     checkpointer=ckpt, extra_instructions=extra_instructions,
-                    operations=step_ops,
+                    operations=step_ops, sandbox=sandbox,
                 )
                 report.loop = loop
                 if not loop.ok:
@@ -341,6 +341,7 @@ def run_contract_step(
                         requirement=requirement or DEFAULT_TASK, approver=approver,
                         loop_config=loop_config, budget=budget, on_event=on_event,
                         checkpointer=ckpt,
+                        sandbox=sandbox,
                         extra_instructions=REPAIR_INSTRUCTIONS.format(
                             missing="\n".join(f"  - {out_dir / p.value}" for p in still_missing)
                         ),

@@ -324,6 +324,32 @@ class TestContextIntegration(unittest.TestCase):
         self.assertFalse(r.meta["real_isolation"])
         self.assertIn("应用层限制", r.meta["isolation"])
 
+    def test_执行目录不能逃出工作区(self) -> None:
+        import sys
+
+        ctx = ToolContext(root=self.ws, sandbox=NoIsolation())
+        with temp_workspace() as outside:
+            command = [sys.executable, "-c", "from pathlib import Path; Path('escaped').touch()"]
+            for cwd in (str(outside), str(self.ws / ".." / outside.name)):
+                result = default_registry().invoke(
+                    "run_command", ctx, {"argv": command, "cwd": cwd}
+                )
+                self.assertFalse(result.ok)
+                self.assertEqual(result.meta.get("error"), "invalid_cwd")
+                self.assertFalse((outside / "escaped").exists())
+
+            link = self.ws / "outside-link"
+            try:
+                link.symlink_to(outside, target_is_directory=True)
+            except OSError:
+                return  # Windows 受限账户可能不允许创建符号链接。
+            result = default_registry().invoke(
+                "run_command", ctx, {"argv": command, "cwd": "outside-link"}
+            )
+            self.assertFalse(result.ok)
+            self.assertEqual(result.meta.get("error"), "invalid_cwd")
+            self.assertFalse((outside / "escaped").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
