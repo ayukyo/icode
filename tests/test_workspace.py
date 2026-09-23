@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import errno
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -604,7 +605,7 @@ class TestWorkspaceManager(unittest.TestCase):
 
         self.assertEqual(destination, checkout / "directory" / "file.txt")
 
-    def test_git多个大blob逐文件流式物化且不使用batch聚合输出(self) -> None:
+    def test_git多个大blob使用单一batch流式物化(self) -> None:
         repository = _create_git_repository(self.root)
         expected: dict[str, bytes] = {}
         for index, byte in enumerate((b"a", b"b", b"c")):
@@ -618,24 +619,26 @@ class TestWorkspaceManager(unittest.TestCase):
         _run_git(repository, "add", ".")
         _run_git(repository, "commit", "-qm", "add large blobs")
 
-        original_run = subprocess.run
-        cat_file_calls: list[tuple[tuple[str, ...], bool, bool, bool]] = []
+        original_popen = subprocess.Popen
+        process_calls: list[tuple[tuple[str, ...], bool, bool, bool, bool]] = []
 
-        def recording_run(*args, **kwargs):
+        def recording_popen(*args, **kwargs):
             command = tuple(args[0])
-            if "cat-file" in command:
-                cat_file_calls.append(
-                    (
-                        command,
-                        kwargs.get("capture_output") is True,
-                        kwargs.get("stderr") is subprocess.DEVNULL,
-                        hasattr(kwargs.get("stdout"), "write"),
-                    )
+            environment = kwargs.get("env")
+            process_calls.append(
+                (
+                    command,
+                    kwargs.get("stdin") is subprocess.PIPE,
+                    kwargs.get("stdout") is subprocess.PIPE,
+                    kwargs.get("stderr") is subprocess.DEVNULL,
+                    isinstance(environment, dict)
+                    and not any(key.upper().startswith("GIT_") for key in environment),
                 )
-            return original_run(*args, **kwargs)
+            )
+            return original_popen(*args, **kwargs)
 
         with (
-            mock.patch("icode.workspace.subprocess.run", side_effect=recording_run),
+            mock.patch("icode.workspace.subprocess.Popen", side_effect=recording_popen),
             WorkspaceManager(repository, self.data_root, "project-1").open(
                 "streamed-git-ticket", "run-1"
             ) as session,
@@ -652,21 +655,157 @@ class TestWorkspaceManager(unittest.TestCase):
                 _run_git(repository, "rev-parse", "HEAD^{tree}"),
             )
 
-        self.assertFalse(
-            any("--batch" in command for command, *_ in cat_file_calls),
-            cat_file_calls,
+        cat_file_calls = [call for call in process_calls if "cat-file" in call[0]]
+        self.assertEqual(len(cat_file_calls), 1, cat_file_calls)
+        (
+            command,
+            stdin_is_pipe,
+            stdout_is_pipe,
+            stderr_discarded,
+            git_environment_clean,
+        ) = cat_file_calls[0]
+        self.assertIn("--batch", command)
+        self.assertTrue(stdin_is_pipe)
+        self.assertTrue(stdout_is_pipe)
+        self.assertTrue(stderr_discarded)
+        self.assertTrue(git_environment_clean)
+        self.assertFalse(any("hash-object" in call[0] for call in process_calls))
+
+    def test_git三百小文件物化使用常数个子进程(self) -> None:
+        repository = _create_git_repository(self.root)
+        small_files = repository / "small-files"
+        small_files.mkdir()
+        for index in range(300):
+            small_files.joinpath(f"file-{index:03d}.txt").write_text(
+                f"content-{index}\n", encoding="utf-8"
+            )
+        _run_git(repository, "add", ".")
+        _run_git(repository, "commit", "-qm", "add many small files")
+
+        original_popen = subprocess.Popen
+        process_commands: list[tuple[str, ...]] = []
+
+        def recording_popen(*args, **kwargs):
+            process_commands.append(tuple(args[0]))
+            return original_popen(*args, **kwargs)
+
+        with (
+            mock.patch("icode.workspace.subprocess.Popen", side_effect=recording_popen),
+            WorkspaceManager(repository, self.data_root, "project-1").open(
+                "many-small-files-ticket", "run-1"
+            ),
+        ):
+            pass
+
+        self.assertLessEqual(len(process_commands), 16, process_commands)
+        self.assertEqual(
+            sum("cat-file" in command for command in process_commands),
+            1,
+            process_commands,
         )
-        blob_calls = [
-            call
-            for call in cat_file_calls
-            for command in (call[0],)
-            if "blob" in command
-        ]
-        self.assertGreaterEqual(len(blob_calls), len(expected))
-        for _, captured_output, stderr_discarded, stdout_is_stream in blob_calls:
-            self.assertFalse(captured_output)
-            self.assertTrue(stderr_discarded)
-            self.assertTrue(stdout_is_stream)
+        self.assertFalse(
+            any("hash-object" in command for command in process_commands),
+            process_commands,
+        )
+
+    def test_git_batch中途EOF和timeout清理partial并结束进程(self) -> None:
+        class BatchOutput:
+            def __init__(self, header: bytes, *, block: bool) -> None:
+                self._header = header
+                self._block = block
+                self._read_count = 0
+                self.released = threading.Event()
+
+            def readline(self) -> bytes:
+                header, self._header = self._header, b""
+                return header
+
+            def read(self, size: int) -> bytes:
+                self._read_count += 1
+                if self._read_count == 1:
+                    return b"x" * min(10, size)
+                if self._block:
+                    self.released.wait(timeout=2)
+                return b""
+
+            def close(self) -> None:
+                self.released.set()
+
+        class FakeBatchProcess:
+            def __init__(self, header: bytes, *, block: bool) -> None:
+                self.stdin = io.BytesIO()
+                self.stdout = BatchOutput(header, block=block)
+                self.returncode: int | None = None
+                self.killed = False
+                self.terminated = False
+                self.waited = False
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                self.waited = True
+                if self.returncode is None:
+                    self.returncode = 1
+                return self.returncode
+
+            def terminate(self) -> None:
+                self.terminated = True
+                self.returncode = -15
+                self.stdout.released.set()
+
+            def kill(self) -> None:
+                self.killed = True
+                self.returncode = -9
+                self.stdout.released.set()
+
+        content = b"x" * 100
+        digest = hashlib.sha1(b"blob 100\0" + content).hexdigest()
+        entry = workspace_module._GitTreeEntry(
+            mode="100644",
+            object_type="blob",
+            object_id=digest,
+            size=len(content),
+            relative_path=workspace_module.PurePosixPath("partial.bin"),
+        )
+        identity = workspace_module._GitIdentity(
+            top_level=self.root,
+            common_dir=self.root,
+            revision="0" * 40,
+            relative_source=Path(),
+        )
+
+        for name, block, timeout_seconds in (
+            ("eof", False, 5.0),
+            ("timeout", True, 0.05),
+        ):
+            with self.subTest(name=name):
+                checkout = self.root / f"batch-{name}"
+                checkout.mkdir()
+                process = FakeBatchProcess(
+                    f"{digest} blob {len(content)}\n".encode("ascii"),
+                    block=block,
+                )
+                with (
+                    mock.patch(
+                        "icode.workspace._start_git_blob_batch",
+                        return_value=process,
+                    ),
+                    self.assertRaises(WorkspaceError),
+                ):
+                    workspace_module._materialize_git_blobs(
+                        checkout,
+                        identity,
+                        (entry,),
+                        symlink_enabled=True,
+                        deadline=time.monotonic() + timeout_seconds,
+                    )
+
+                self.assertFalse(checkout.joinpath("partial.bin").exists())
+                self.assertTrue(process.waited)
+                self.assertIsNotNone(process.poll())
+                if block:
+                    self.assertTrue(process.killed)
 
     def test_git_symlink能力关闭写普通文件且开启时创建内部链接(self) -> None:
         checkout = self.root / "symlink-checkout"
@@ -1072,6 +1211,126 @@ class TestWorkspaceManager(unittest.TestCase):
             git_calls,
         )
         self.assert_lease_released("project-1", "git-cleanup-ticket")
+
+    def test_git_worktree_add异常后不追认并清理匹配注册目录(self) -> None:
+        repository = _create_git_repository(self.root)
+        foreign_marker: Path | None = None
+        git_calls: list[tuple[str, ...]] = []
+        original_run_git = workspace_module._run_git
+        original_rename = os.rename
+
+        def fail_after_registration(working_directory, arguments, **kwargs):
+            nonlocal foreign_marker
+            command = tuple(arguments)
+            git_calls.append(command)
+            if command[:2] != ("worktree", "add"):
+                return original_run_git(working_directory, arguments, **kwargs)
+            original_run_git(working_directory, arguments, **kwargs)
+            checkout = Path(command[-2])
+            original_rename(checkout, checkout.with_name("unreturned-add-checkout"))
+            checkout.mkdir()
+            foreign_marker = checkout / "foreign-marker.txt"
+            foreign_marker.write_text("foreign", encoding="utf-8")
+            raise WorkspaceError("injected worktree add transport failure")
+
+        with (
+            mock.patch(
+                "icode.workspace._run_git",
+                side_effect=fail_after_registration,
+            ),
+            self.assertRaises(WorkspaceError),
+        ):
+            WorkspaceManager(repository, self.data_root, "project-1").open(
+                "unreturned-add-ticket", "run-1"
+            )
+
+        self.assertIsNotNone(foreign_marker)
+        self.assertEqual(foreign_marker.read_text(encoding="utf-8"), "foreign")
+        self.assertFalse(
+            any(call[:2] == ("worktree", "remove") for call in git_calls),
+            git_calls,
+        )
+
+    def test_创建失败将owned目录移入quarantine且允许retry(self) -> None:
+        repository = _create_git_repository(self.root)
+        manager = WorkspaceManager(repository, self.data_root, "project-1")
+        original_write_atomic = workspace_module._write_atomic
+
+        def fail_workspace_manifest(path: Path, payload: bytes) -> None:
+            if path.name == "workspace.json":
+                raise OSError("injected metadata publish failure")
+            original_write_atomic(path, payload)
+
+        with (
+            mock.patch(
+                "icode.workspace._write_atomic",
+                side_effect=fail_workspace_manifest,
+            ),
+            self.assertRaises(WorkspaceError),
+        ):
+            manager.open("quarantine-ticket", "run-1")
+
+        ticket_root = self._ticket_root("project-1", "quarantine-ticket")
+        self.assertFalse(ticket_root.exists())
+        quarantine = self.data_root / "workspace-quarantine"
+        quarantined_names = {
+            path.name
+            for container in quarantine.iterdir()
+            for path in container.iterdir()
+        }
+        self.assertEqual(quarantined_names, {"checkout", "runtime", "receipts"})
+        self.assertTrue(any(quarantine.rglob("tracked.txt")))
+
+        with manager.open("quarantine-ticket", "run-2") as retried:
+            self.assertEqual(
+                retried.workspace_root.joinpath("nested", "tracked.txt").read_text(
+                    encoding="utf-8"
+                ),
+                "source\n",
+            )
+
+    def test_quarantine_rename窗口替换的foreign目录仍保留(self) -> None:
+        source = self._snapshot_source()
+        original_write_atomic = workspace_module._write_atomic
+        original_rename = os.rename
+        injected = False
+
+        def fail_workspace_manifest(path: Path, payload: bytes) -> None:
+            if path.name == "workspace.json":
+                raise OSError("injected metadata publish failure")
+            original_write_atomic(path, payload)
+
+        def replace_at_rename(source_path, destination_path, *args, **kwargs):
+            nonlocal injected
+            source_path = Path(source_path)
+            if source_path.name == "runtime" and not injected:
+                injected = True
+                original_rename(
+                    source_path,
+                    source_path.with_name("owned-runtime-before-race"),
+                )
+                source_path.mkdir()
+                source_path.joinpath("foreign-marker.txt").write_text(
+                    "foreign", encoding="utf-8"
+                )
+            return original_rename(source_path, destination_path, *args, **kwargs)
+
+        with (
+            mock.patch(
+                "icode.workspace._write_atomic",
+                side_effect=fail_workspace_manifest,
+            ),
+            mock.patch("icode.workspace.os.rename", side_effect=replace_at_rename),
+            self.assertRaises(WorkspaceError),
+        ):
+            WorkspaceManager(source, self.data_root, "project-1").open(
+                "rename-race-ticket", "run-1"
+            )
+
+        self.assertTrue(injected)
+        markers = list(self.data_root.rglob("foreign-marker.txt"))
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(markers[0].read_text(encoding="utf-8"), "foreign")
 
     def test_snapshot失败清理只删除创建时同inode目录(self) -> None:
         source = self._snapshot_source()

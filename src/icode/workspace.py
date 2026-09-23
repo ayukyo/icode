@@ -11,6 +11,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import uuid
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -520,21 +522,6 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     return _path_is_within(left, right) or _path_is_within(right, left)
 
 
-def _remove_created_tree(path: Path, ticket_root: Path) -> None:
-    """仅清理由当前创建流程登记且位于工单目录内的树。"""
-
-    normalized_ticket_root = _normalize_path(ticket_root)
-    normalized_path = _normalize_path(path)
-    if normalized_path == normalized_ticket_root or not _path_is_within(
-        normalized_path, normalized_ticket_root
-    ):
-        raise WorkspaceError("拒绝清理工单目录之外的路径")
-    if path.is_symlink() or path.is_file():
-        path.unlink(missing_ok=True)
-    elif path.exists():
-        shutil.rmtree(path)
-
-
 @dataclass(frozen=True)
 class _PathIdentity:
     device: int
@@ -572,14 +559,26 @@ def _directory_identity_matches(path: Path, identity: _PathIdentity) -> bool:
     )
 
 
-def _remove_owned_tree(
+def _quarantine_owned_tree(
     path: Path,
-    ticket_root: Path,
     identity: _PathIdentity | None,
-) -> None:
+    data_root: Path,
+) -> Path | None:
+    """原子移走仍匹配的目录；竞态替换也只会被保留而不会被删除。"""
+
     if identity is None or not _directory_identity_matches(path, identity):
-        return
-    _remove_created_tree(path, ticket_root)
+        return None
+    quarantine_root = data_root / "workspace-quarantine"
+    _ensure_managed_directory(quarantine_root, parent=data_root)
+    container = quarantine_root / uuid.uuid4().hex
+    container.mkdir(mode=0o700)
+    _ensure_managed_directory(container, parent=quarantine_root, create=False)
+    destination = container / path.name
+    try:
+        os.rename(path, destination)
+    except OSError as exc:
+        raise WorkspaceError("无法隔离创建失败的工作区目录") from exc
+    return destination
 
 
 def _ensure_managed_directory(
@@ -618,6 +617,7 @@ def _run_git(
     check: bool = True,
     input_data: bytes | None = None,
     text: bool = True,
+    timeout_seconds: float | None = None,
 ) -> subprocess.CompletedProcess:
     environment = {
         key: value
@@ -643,7 +643,11 @@ def _run_git(
                 text=text,
                 input=None if text else input_data,
                 env=environment,
-                timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
+                timeout=(
+                    _GIT_COMMAND_TIMEOUT_SECONDS
+                    if timeout_seconds is None
+                    else min(_GIT_COMMAND_TIMEOUT_SECONDS, timeout_seconds)
+                ),
             )
     except (OSError, subprocess.SubprocessError):
         # SubprocessError 会携带捕获的输出；异常边界不保留原异常链。
@@ -659,6 +663,7 @@ def _run_git_bytes(
     *,
     input_data: bytes | None = None,
     check: bool = True,
+    timeout_seconds: float | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     return cast(
         subprocess.CompletedProcess[bytes],
@@ -668,6 +673,7 @@ def _run_git_bytes(
             check=check,
             input_data=input_data,
             text=False,
+            timeout_seconds=timeout_seconds,
         ),
     )
 
@@ -731,6 +737,8 @@ def _safe_git_relative_path(raw_path: bytes) -> PurePosixPath:
     except UnicodeDecodeError:
         raise WorkspaceError("Git 树包含不可安全物化的路径") from None
     parts = text.split("/")
+    # Git 树路径规范使用“/”；拒绝反斜杠和冒号可避免同一清单在 Windows
+    # 被解释成目录分隔符或盘符，而在 POSIX 被解释成普通文件名。
     if (
         not text
         or text.startswith("/")
@@ -756,10 +764,20 @@ def _safe_git_destination(checkout_root: Path, relative_path: PurePosixPath) -> 
     return destination
 
 
-def _git_tree_entries(identity: _GitIdentity) -> list[_GitTreeEntry]:
+def _remaining_git_time(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise WorkspaceError("Git 工作区物化超时")
+    return remaining
+
+
+def _git_tree_entries(
+    identity: _GitIdentity, *, deadline: float
+) -> list[_GitTreeEntry]:
     result = _run_git_bytes(
         identity.top_level,
         ("ls-tree", "-rz", "-l", "--full-tree", "-r", "-t", identity.revision),
+        timeout_seconds=_remaining_git_time(deadline),
     )
     entries: list[_GitTreeEntry] = []
     for record in result.stdout.split(b"\0"):
@@ -791,67 +809,37 @@ def _git_tree_entries(identity: _GitIdentity) -> list[_GitTreeEntry]:
     return entries
 
 
-def _stream_git_blob(
+def _start_git_blob_batch(
     identity: _GitIdentity,
-    entry: _GitTreeEntry,
-    destination: Path,
-) -> None:
-    """将单个 blob 直接写入独占文件，避免聚合对象内容驻留内存。"""
-
-    if entry.size is None or entry.size < 0:
-        raise WorkspaceError("Git blob 大小无效")
+    hooks_dir: str,
+) -> subprocess.Popen[bytes]:
     environment = {
         key: value
         for key, value in os.environ.items()
         if not key.upper().startswith("GIT_")
     }
-    file_identity: _PathIdentity | None = None
     try:
-        with (
-            tempfile.TemporaryDirectory(prefix="icode-empty-hooks-") as hooks_dir,
-            destination.open("xb") as stream,
-        ):
-            status = os.fstat(stream.fileno())
-            file_identity = _PathIdentity(status.st_dev, status.st_ino)
-            completed = subprocess.run(
-                [
-                    "git",
-                    "-c",
-                    f"core.hooksPath={hooks_dir}",
-                    "-c",
-                    "core.fsmonitor=false",
-                    "-C",
-                    str(identity.top_level),
-                    "cat-file",
-                    "blob",
-                    entry.object_id,
-                ],
-                shell=False,
-                check=False,
-                stdin=subprocess.DEVNULL,
-                stdout=stream,
-                stderr=subprocess.DEVNULL,
-                env=environment,
-                timeout=_GIT_COMMAND_TIMEOUT_SECONDS,
-            )
-    except (OSError, subprocess.SubprocessError):
-        _unlink_owned_regular_file(destination, file_identity)
-        raise WorkspaceError("Git blob 物化失败") from None
-    if completed.returncode != 0:
-        _unlink_owned_regular_file(destination, file_identity)
-        raise WorkspaceError("Git blob 物化失败")
-    if not _regular_file_identity_matches(destination, file_identity):
-        raise WorkspaceError("Git blob 目标身份发生变化")
-    if destination.stat().st_size != entry.size:
-        _unlink_owned_regular_file(destination, file_identity)
-        raise WorkspaceError("Git blob 大小不匹配")
-    actual_id = _run_git(
-        identity.top_level,
-        ("hash-object", "--no-filters", str(destination)),
-    ).stdout.strip()
-    if actual_id != entry.object_id:
-        _unlink_owned_regular_file(destination, file_identity)
-        raise WorkspaceError("Git blob 身份不匹配")
+        return subprocess.Popen(
+            [
+                "git",
+                "-c",
+                f"core.hooksPath={hooks_dir}",
+                "-c",
+                "core.fsmonitor=false",
+                "-C",
+                str(identity.top_level),
+                "cat-file",
+                "--batch",
+            ],
+            shell=False,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            env=environment,
+            bufsize=0,
+        )
+    except OSError:
+        raise WorkspaceError("Git blob 批处理启动失败") from None
 
 
 def _regular_file_identity_matches(path: Path, identity: _PathIdentity | None) -> bool:
@@ -867,20 +855,212 @@ def _regular_file_identity_matches(path: Path, identity: _PathIdentity | None) -
     )
 
 
-def _unlink_owned_regular_file(path: Path, identity: _PathIdentity | None) -> None:
-    if not _regular_file_identity_matches(path, identity):
+def _quarantine_partial_file(path: Path, identity: _PathIdentity | None) -> None:
+    """移走批处理中断的文件；竞态替换时也绝不做路径式删除。"""
+
+    if identity is None or not _regular_file_identity_matches(path, identity):
         return
+    container = path.parent / f".icode-partial-{uuid.uuid4().hex}"
     try:
-        path.unlink()
+        container.mkdir(mode=0o700)
+        os.rename(path, container / "blob")
     except OSError:
         pass
 
 
-def _git_symlinks_enabled(checkout_root: Path) -> bool:
+def _git_blob_hasher(object_id: str, size: int):
+    try:
+        int(object_id, 16)
+    except ValueError:
+        raise WorkspaceError("Git blob 身份无效") from None
+    if len(object_id) == 40:
+        digest = hashlib.sha1(usedforsecurity=False)
+    elif len(object_id) == 64:
+        digest = hashlib.sha256()
+    else:
+        raise WorkspaceError("Git blob 身份无效")
+    digest.update(f"blob {size}\0".encode("ascii"))
+    return digest
+
+
+def _finish_git_blob_batch(
+    process: subprocess.Popen[bytes],
+    *,
+    deadline: float,
+) -> int:
+    if process.stdin is not None and not process.stdin.closed:
+        process.stdin.close()
+    try:
+        return process.wait(timeout=_remaining_git_time(deadline))
+    except (OSError, subprocess.TimeoutExpired):
+        if process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+        try:
+            return process.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            return -1
+
+
+def _stop_git_blob_batch(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is None:
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=1)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            process.kill()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    for stream in (process.stdin, process.stdout):
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
+def _materialize_git_blobs(
+    checkout_root: Path,
+    identity: _GitIdentity,
+    entries: Iterable[_GitTreeEntry],
+    *,
+    symlink_enabled: bool,
+    deadline: float,
+) -> None:
+    """通过单个长驻 batch 进程逐对象流式物化并校验 Git blob。"""
+
+    blob_entries = tuple(entries)
+    if not blob_entries:
+        return
+    for entry in blob_entries:
+        if entry.size is None or entry.size < 0:
+            raise WorkspaceError("Git blob 大小无效")
+        if entry.mode not in {"100644", "100755", "120000"}:
+            raise WorkspaceError("Git 树包含不支持的文件模式")
+
+    process: subprocess.Popen[bytes] | None = None
+    timer: threading.Timer | None = None
+    timed_out = threading.Event()
+    current_path: Path | None = None
+    current_identity: _PathIdentity | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="icode-empty-hooks-") as hooks_dir:
+            process = _start_git_blob_batch(identity, hooks_dir)
+            if process.stdin is None or process.stdout is None:
+                raise WorkspaceError("Git blob 批处理管道无效")
+
+            def expire_process() -> None:
+                timed_out.set()
+                if process is not None and process.poll() is None:
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+
+            timer = threading.Timer(_remaining_git_time(deadline), expire_process)
+            timer.daemon = True
+            timer.start()
+
+            for entry in blob_entries:
+                current_path = _safe_git_destination(checkout_root, entry.relative_path)
+                current_path.parent.mkdir(parents=True, exist_ok=True)
+                current_identity = None
+                try:
+                    process.stdin.write(entry.object_id.encode("ascii") + b"\n")
+                    process.stdin.flush()
+                    header = process.stdout.readline()
+                    if not header.endswith(b"\n"):
+                        raise WorkspaceError("Git blob 批处理输出不完整")
+                    fields = header[:-1].split()
+                    if len(fields) != 3:
+                        raise WorkspaceError("Git blob 批处理输出无效")
+                    raw_object_id, object_type, raw_size = fields
+                    actual_id = raw_object_id.decode("ascii")
+                    actual_size = int(raw_size)
+                    if (
+                        actual_id != entry.object_id
+                        or object_type != b"blob"
+                        or actual_size != entry.size
+                    ):
+                        raise WorkspaceError("Git blob 身份不匹配")
+
+                    digest = _git_blob_hasher(entry.object_id, actual_size)
+                    with current_path.open("xb") as stream:
+                        status = os.fstat(stream.fileno())
+                        current_identity = _PathIdentity(status.st_dev, status.st_ino)
+                        remaining = actual_size
+                        while remaining:
+                            chunk = process.stdout.read(
+                                min(_HASH_CHUNK_SIZE_BYTES, remaining)
+                            )
+                            if not chunk:
+                                raise WorkspaceError("Git blob 批处理输出不完整")
+                            stream.write(chunk)
+                            digest.update(chunk)
+                            remaining -= len(chunk)
+                    if process.stdout.read(1) != b"\n":
+                        raise WorkspaceError("Git blob 批处理输出不完整")
+                    if not _regular_file_identity_matches(
+                        current_path, current_identity
+                    ):
+                        raise WorkspaceError("Git blob 目标身份发生变化")
+                    if digest.hexdigest() != entry.object_id:
+                        raise WorkspaceError("Git blob 身份不匹配")
+                    if entry.mode == "120000":
+                        _materialize_git_symlink(
+                            current_path,
+                            checkout_root,
+                            symlink_enabled=symlink_enabled,
+                        )
+                    else:
+                        current_path.chmod(0o755 if entry.mode == "100755" else 0o644)
+                    current_path = None
+                    current_identity = None
+                except (OSError, UnicodeError, ValueError):
+                    raise WorkspaceError("Git blob 批处理失败") from None
+
+            return_code = _finish_git_blob_batch(process, deadline=deadline)
+            if timed_out.is_set():
+                raise WorkspaceError("Git 工作区物化超时")
+            if return_code != 0:
+                raise WorkspaceError("Git blob 批处理失败")
+    except WorkspaceError:
+        if current_path is not None:
+            _quarantine_partial_file(current_path, current_identity)
+        if timed_out.is_set():
+            raise WorkspaceError("Git 工作区物化超时") from None
+        raise
+    except (OSError, subprocess.SubprocessError):
+        if current_path is not None:
+            _quarantine_partial_file(current_path, current_identity)
+        raise WorkspaceError("Git blob 批处理失败") from None
+    finally:
+        if timer is not None:
+            timer.cancel()
+            timer.join(timeout=1)
+        if process is not None:
+            _stop_git_blob_batch(process)
+
+
+def _git_symlinks_enabled(
+    checkout_root: Path, *, deadline: float | None = None
+) -> bool:
     result = _run_git(
         checkout_root,
         ("config", "--bool", "core.symlinks"),
         check=False,
+        timeout_seconds=(None if deadline is None else _remaining_git_time(deadline)),
     )
     if result.returncode != 0:
         return os.name != "nt"
@@ -943,29 +1123,25 @@ def _materialize_git_symlink(
 
 
 def _materialize_git_tree(checkout_root: Path, identity: _GitIdentity) -> None:
-    entries = _git_tree_entries(identity)
+    deadline = time.monotonic() + _GIT_COMMAND_TIMEOUT_SECONDS
+    entries = _git_tree_entries(identity, deadline=deadline)
     for entry in entries:
         destination = _safe_git_destination(checkout_root, entry.relative_path)
         if entry.object_type in {"tree", "commit"}:
             destination.mkdir(parents=True, exist_ok=True)
-    symlink_enabled = _git_symlinks_enabled(checkout_root)
-    for entry in entries:
-        if entry.object_type != "blob":
-            continue
-        destination = _safe_git_destination(checkout_root, entry.relative_path)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        _stream_git_blob(identity, entry, destination)
-        if entry.mode == "120000":
-            _materialize_git_symlink(
-                destination,
-                checkout_root,
-                symlink_enabled=symlink_enabled,
-            )
-        elif entry.mode in {"100644", "100755"}:
-            destination.chmod(0o755 if entry.mode == "100755" else 0o644)
-        else:
-            raise WorkspaceError("Git 树包含不支持的文件模式")
-    _run_git(checkout_root, ("read-tree", identity.revision))
+    symlink_enabled = _git_symlinks_enabled(checkout_root, deadline=deadline)
+    _materialize_git_blobs(
+        checkout_root,
+        identity,
+        (entry for entry in entries if entry.object_type == "blob"),
+        symlink_enabled=symlink_enabled,
+        deadline=deadline,
+    )
+    _run_git(
+        checkout_root,
+        ("read-tree", identity.revision),
+        timeout_seconds=_remaining_git_time(deadline),
+    )
 
 
 def _registered_worktree_matches(
@@ -1242,27 +1418,21 @@ class WorkspaceManager:
         receipts_root: Path,
         owned_directories: Mapping[Path, _PathIdentity],
     ) -> None:
-        checkout_identity = owned_directories.get(checkout_root)
-        checkout_is_owned = (
-            _directory_identity_matches(checkout_root, checkout_identity)
-            if checkout_identity is not None
-            else False
-        )
-        if kind == "git_worktree" and git_identity is not None and checkout_is_owned:
+        for path in (checkout_root, runtime_root, receipts_root):
             try:
-                _run_git(
-                    git_identity.top_level,
-                    ("worktree", "remove", "--force", str(checkout_root)),
+                _quarantine_owned_tree(
+                    path,
+                    owned_directories.get(path),
+                    self.data_root,
                 )
             except WorkspaceError:
                 pass
+        if kind == "git_worktree" and git_identity is not None:
             try:
-                _run_git(git_identity.top_level, ("worktree", "prune"))
-            except WorkspaceError:
-                pass
-        for path in (checkout_root, runtime_root, receipts_root):
-            try:
-                _remove_owned_tree(path, ticket_root, owned_directories.get(path))
+                _run_git(
+                    git_identity.top_level,
+                    ("worktree", "prune", "--expire", "now"),
+                )
             except WorkspaceError:
                 pass
 
@@ -1347,37 +1517,31 @@ class WorkspaceManager:
             )
             return metadata, owned_directories
         except Exception:
-            if not registered and _registered_worktree_matches(identity, checkout_root):
-                try:
-                    owned_directories[checkout_root] = _capture_directory_identity(
-                        checkout_root
-                    )
-                except WorkspaceError:
-                    pass
             checkout_identity = owned_directories.get(checkout_root)
-            checkout_is_owned = (
-                checkout_identity is not None
-                and _directory_identity_matches(checkout_root, checkout_identity)
-            )
-            if checkout_is_owned:
+            if registered:
                 try:
-                    _run_git(
-                        identity.top_level,
-                        ("worktree", "remove", "--force", str(checkout_root)),
+                    _quarantine_owned_tree(
+                        checkout_root,
+                        checkout_identity,
+                        self.data_root,
                     )
-                except WorkspaceError:
-                    pass
-                try:
-                    _run_git(identity.top_level, ("worktree", "prune"))
-                except WorkspaceError:
-                    pass
-                try:
-                    _remove_owned_tree(checkout_root, ticket_root, checkout_identity)
                 except WorkspaceError:
                     pass
             for path in (runtime_root, receipts_root):
                 try:
-                    _remove_owned_tree(path, ticket_root, owned_directories.get(path))
+                    _quarantine_owned_tree(
+                        path,
+                        owned_directories.get(path),
+                        self.data_root,
+                    )
+                except WorkspaceError:
+                    pass
+            if registered:
+                try:
+                    _run_git(
+                        identity.top_level,
+                        ("worktree", "prune", "--expire", "now"),
+                    )
                 except WorkspaceError:
                     pass
             raise
@@ -1437,7 +1601,11 @@ class WorkspaceManager:
                 receipts_root,
             ):
                 try:
-                    _remove_owned_tree(path, ticket_root, owned_directories.get(path))
+                    _quarantine_owned_tree(
+                        path,
+                        owned_directories.get(path),
+                        self.data_root,
+                    )
                 except WorkspaceError:
                     pass
             raise
