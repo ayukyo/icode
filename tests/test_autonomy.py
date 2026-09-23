@@ -758,7 +758,7 @@ class TestAutonomyManager(unittest.TestCase):
         )
         _wait_state(self.service, ticket_id, "succeeded")
 
-        self.assertEqual(executor.contexts[0].workspace, self.workspace)
+        self.assertEqual(executor.contexts[0].workspace, self.workspace.resolve())
 
     def test_executor使用隔离checkout且不修改source(self) -> None:
         ticket_id = self._ticket("isolated-checkout-ticket")

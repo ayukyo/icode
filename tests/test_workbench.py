@@ -455,7 +455,7 @@ class TestWorkbenchHTTP(unittest.TestCase):
                     )
                     protected = kwargs["extra_protected_paths"]
                     self.assertIn(settings.skill_root, protected)
-                    self.assertIn(vendored_skill, protected)
+                    self.assertIn(vendored_skill.resolve(), protected)
                     self.assertIs(server.autonomy.workspace_manager, manager_instance)
                     self.assertFalse((data_root / "workspaces").exists())
                 finally:

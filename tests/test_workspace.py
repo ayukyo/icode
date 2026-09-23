@@ -513,7 +513,7 @@ class TestWorkspaceManager(unittest.TestCase):
                 (source / "tracked.txt").read_text(encoding="utf-8"), "source\n"
             )
             relative_ticket_root = str(
-                session.manifest_path.parent.relative_to(self.data_root)
+                session.manifest_path.parent.relative_to(self.data_root.resolve())
             )
             self.assertNotIn("project-secret", relative_ticket_root)
             self.assertNotIn("ticket-secret", relative_ticket_root)
@@ -603,7 +603,7 @@ class TestWorkspaceManager(unittest.TestCase):
         relative = workspace_module._safe_git_relative_path(b"directory/file.txt")
         destination = workspace_module._safe_git_destination(checkout, relative)
 
-        self.assertEqual(destination, checkout / "directory" / "file.txt")
+        self.assertEqual(destination, checkout.resolve() / "directory" / "file.txt")
 
     def test_git多个大blob使用单一batch流式物化(self) -> None:
         repository = _create_git_repository(self.root)
