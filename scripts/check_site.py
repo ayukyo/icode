@@ -35,8 +35,8 @@ EXPECTED_ASSETS = {
     "icode-ticket-hex-512.png": "32418a9c51ea02d5a6e6bc940f1f7ae8cd0bedddefa00b226d3815fe70573862",
 }
 EXPECTED_SITE_ASSETS = {
-    "social-preview.png": "6f024ac6604b8da617ac6184239603d2df5a325657b2f6822545999b5d638725",
-    "social-preview-en.png": "08e16518dfb33908abfcdebb49b512b3dcb0fed43117f56dbf259e169072217e",
+    "social-preview.png": "70d856c5706a3e8147725de53f838dc3cfdfcff1256addbfd4d9516aa9eea05e",
+    "social-preview-en.png": "3cf2e2a17a9f6364a330250f30b8a8d1946e9d6646c484fe057bd75d63ad48a3",
 }
 
 
@@ -178,7 +178,7 @@ def check_brand_assets() -> list[str]:
             problems.append(f"brand asset drift: {name}: expected {expected}, got {actual}")
     preview_sizes = {
         "social-preview.png": (1280, 640),
-        "social-preview-en.png": (1440, 720),
+        "social-preview-en.png": (1280, 640),
     }
     for name, expected_size in preview_sizes.items():
         preview = SITE / "assets" / name

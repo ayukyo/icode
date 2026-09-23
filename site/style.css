@@ -195,6 +195,14 @@ h1 span {
   color: var(--teal);
 }
 
+html[lang="en"] h1 {
+  font-size: clamp(2.8rem, 5.5vw, 4.7rem);
+}
+
+html[lang="en"] .site-header nav {
+  column-gap: 0.7rem;
+}
+
 .lead {
   max-width: 42rem;
   margin: 1.8rem 0 0;
