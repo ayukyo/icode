@@ -112,12 +112,12 @@ git commit -m "feat: add cross-process ticket leases"
 ### Task 2: Git worktree、非 Git 快照与保护策略
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成
 
 **Dependencies:** Task 1
 **Parallelizable:** No (复用 Task 1 的租约并定义 Task 3 的 session 接口)
 
-- [ ] **Step 1: Write the failing workspace tests**
+- [x] **Step 1: Write the failing workspace tests**
 
 在 `tests/test_workspace.py` 增加：
 
@@ -154,13 +154,13 @@ def test_session_policy_protects_source_git_control_and_runtime_paths(self):
 
 同时覆盖：不存在源目录、源路径为文件、checkout 路径冲突、外部符号链接、Git 命令失败、同 ticket 复用同一已验证工作区。
 
-- [ ] **Step 2: Run focused tests to verify RED**
+- [x] **Step 2: Run focused tests to verify RED**
 
 Run: `python -m pytest tests/test_workspace.py -q`
 
 Expected: FAIL，缺少 `WorkspaceManager`/`WorkspaceSession`。
 
-- [ ] **Step 3: Implement Workspace Manager**
+- [x] **Step 3: Implement Workspace Manager**
 
 在 `src/icode/workspace.py` 增加：
 
@@ -203,13 +203,13 @@ class WorkspaceManager:
 - `policy()` 使用 R2.0 `SandboxPolicy`，只允许读写 checkout，默认断网，并把全部保护路径纳入 deny-write/protected；不声称已经执行原生隔离；
 - 任何创建失败都释放租约，且只清理由本次创建、位于计算后 ticket 根内的临时目录。
 
-- [ ] **Step 4: Run focused tests to verify GREEN**
+- [x] **Step 4: Run focused tests to verify GREEN**
 
 Run: `python -m pytest tests/test_workspace.py -q`
 
 Expected: PASS。
 
-- [ ] **Step 5: Run policy regression and commit**
+- [x] **Step 5: Run policy regression and commit**
 
 Run: `python -m pytest tests/test_workspace.py tests/test_sandbox_policy.py tests/test_conformance.py -q`
 
