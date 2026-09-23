@@ -16,7 +16,17 @@ from unittest import mock
 
 from tests._support import temp_workspace
 
-from icode.workspace import TicketLease, WorkspaceBusyError, WorkspaceError
+import icode.workspace as workspace_module
+from icode.sandbox_policy import NetworkMode
+from icode.workspace import (
+    WORKSPACE_SCHEMA_VERSION,
+    TicketLease,
+    WorkspaceBusyError,
+    WorkspaceError,
+    WorkspaceManager,
+    WorkspaceSession,
+    default_data_root,
+)
 
 
 _CHILD_ACQUIRE = """
@@ -371,6 +381,387 @@ class TestTicketLease(unittest.TestCase):
 
         with self.assertRaises(WorkspaceError):
             TicketLease.acquire(not_a_directory, "project-1", "ticket-1", "run-1")
+
+
+def _run_git(repository: Path, *arguments: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repository), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def _create_git_repository(root: Path) -> Path:
+    repository = root / "source-repository"
+    repository.mkdir()
+    _run_git(repository, "init", "-q")
+    _run_git(repository, "config", "user.name", "ICODE Test")
+    _run_git(repository, "config", "user.email", "icode@example.invalid")
+    (repository / "nested").mkdir()
+    (repository / "nested" / "tracked.txt").write_text("source\n", encoding="utf-8")
+    _run_git(repository, "add", ".")
+    _run_git(repository, "commit", "-qm", "initial")
+    return repository
+
+
+class TestWorkspaceManager(unittest.TestCase):
+    def setUp(self) -> None:
+        self._workspace = temp_workspace()
+        self.root = self._workspace.__enter__()
+        self.data_root = self.root / "data"
+
+    def tearDown(self) -> None:
+        self._workspace.__exit__(None, None, None)
+
+    def _snapshot_source(self, name: str = "source") -> Path:
+        source = self.root / name
+        source.mkdir()
+        (source / "file.txt").write_text("snapshot\n", encoding="utf-8")
+        (source / "directory").mkdir()
+        (source / "directory" / "nested.bin").write_bytes(b"\x00\x01")
+        return source
+
+    def _ticket_root(self, project_id: str, ticket_id: str) -> Path:
+        project_hash = hashlib.sha256(project_id.encode("utf-8")).hexdigest()
+        ticket_hash = hashlib.sha256(ticket_id.encode("utf-8")).hexdigest()
+        return self.data_root / "workspaces" / project_hash / ticket_hash
+
+    def assert_lease_released(self, project_id: str, ticket_id: str) -> None:
+        lease = TicketLease.acquire(
+            self.data_root, project_id, ticket_id, "recovery-run"
+        )
+        lease.release()
+
+    def test_git子目录创建detached工作树且不修改原工作树(self) -> None:
+        repository = _create_git_repository(self.root)
+        source = repository / "nested"
+        (repository / "dirty.txt").write_text("untracked\n", encoding="utf-8")
+        status_before = _run_git(repository, "status", "--porcelain=v1", "-uall")
+
+        manager = WorkspaceManager(source, self.data_root, "../../project-secret")
+        with manager.open("../ticket-secret", "run-1") as session:
+            self.assertIsInstance(session, WorkspaceSession)
+            self.assertEqual(session.kind, "git_worktree")
+            self.assertEqual(
+                _run_git(session.workspace_root, "rev-parse", "--abbrev-ref", "HEAD"),
+                "HEAD",
+            )
+            self.assertEqual(
+                _run_git(session.workspace_root, "rev-parse", "HEAD"),
+                _run_git(repository, "rev-parse", "HEAD"),
+            )
+            checkout_file = session.workspace_root / "tracked.txt"
+            checkout_file.write_text("changed in checkout\n", encoding="utf-8")
+            self.assertEqual(
+                (source / "tracked.txt").read_text(encoding="utf-8"), "source\n"
+            )
+            relative_ticket_root = str(
+                session.manifest_path.parent.relative_to(self.data_root)
+            )
+            self.assertNotIn("project-secret", relative_ticket_root)
+            self.assertNotIn("ticket-secret", relative_ticket_root)
+
+        self.assertEqual(
+            _run_git(repository, "status", "--porcelain=v1", "-uall"), status_before
+        )
+        with manager.open("../ticket-secret", "run-2") as reused:
+            self.assertEqual(
+                reused.workspace_root.joinpath("tracked.txt").read_text(
+                    encoding="utf-8"
+                ),
+                "changed in checkout\n",
+            )
+
+    def test_非git目录生成带清单的原子快照并排除运行时目录(self) -> None:
+        source = self._snapshot_source()
+        (source / ".icode_output").mkdir()
+        (source / ".icode_output" / "ignored.txt").write_text("ignored", encoding="utf-8")
+        (source / ".icode_runtime").mkdir()
+        (source / ".icode_runtime" / "ignored.txt").write_text("ignored", encoding="utf-8")
+        (source / "internal-link").symlink_to("file.txt")
+
+        with WorkspaceManager(source, self.data_root, "project-1").open(
+            "ticket-1", "run-1"
+        ) as session:
+            self.assertEqual(session.kind, "snapshot")
+            self.assertEqual(
+                (session.workspace_root / "file.txt").read_text(encoding="utf-8"),
+                "snapshot\n",
+            )
+            self.assertTrue((session.workspace_root / "internal-link").is_symlink())
+            self.assertFalse((session.workspace_root / ".icode_output").exists())
+            self.assertFalse((session.workspace_root / ".icode_runtime").exists())
+            metadata = json.loads(session.manifest_path.read_text(encoding="utf-8"))
+            baseline_path = session.runtime_root / "snapshot-manifest.json"
+            baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["snapshot_manifest_sha256"], hashlib.sha256(
+                baseline_path.read_bytes()
+            ).hexdigest())
+            entries = {item["path"]: item for item in baseline["entries"]}
+            self.assertEqual(entries["file.txt"]["type"], "file")
+            self.assertEqual(entries["file.txt"]["size"], len(b"snapshot\n"))
+            self.assertEqual(entries["internal-link"]["type"], "symlink")
+            self.assertEqual(entries["internal-link"]["target"], "file.txt")
+            self.assertIn("sha256", entries["directory/nested.bin"])
+
+    def test_同一工单复用已存在快照并保留代理修改(self) -> None:
+        source = self._snapshot_source()
+        manager = WorkspaceManager(source, self.data_root, "project-1")
+        first = manager.open("ticket-1", "run-1")
+        first.workspace_root.joinpath("file.txt").write_text("agent change\n", encoding="utf-8")
+        original_checkout = first.workspace_root
+        first.close()
+
+        with manager.open("ticket-1", "run-2") as reused:
+            self.assertEqual(reused.workspace_root, original_checkout)
+            self.assertEqual(
+                reused.workspace_root.joinpath("file.txt").read_text(encoding="utf-8"),
+                "agent change\n",
+            )
+
+    def test_workspace元数据严格拒绝缺失未知字段及身份漂移(self) -> None:
+        source = self._snapshot_source()
+        manager = WorkspaceManager(source, self.data_root, "project-1")
+
+        mutations = {
+            "missing": lambda value: value.pop("kind"),
+            "unknown": lambda value: value.__setitem__("unexpected", True),
+            "schema": lambda value: value.__setitem__("schema_version", 999),
+            "source": lambda value: value.__setitem__("source_root", str(self.root)),
+        }
+        for index, (name, mutate) in enumerate(mutations.items()):
+            ticket_id = f"ticket-{index}"
+            session = manager.open(ticket_id, "run-create")
+            manifest_path = session.manifest_path
+            session.close()
+            metadata = json.loads(manifest_path.read_text(encoding="utf-8"))
+            mutate(metadata)
+            manifest_path.write_text(json.dumps(metadata), encoding="utf-8")
+            with self.subTest(mutation=name):
+                with self.assertRaises(WorkspaceError):
+                    manager.open(ticket_id, "run-reopen")
+                self.assert_lease_released("project-1", ticket_id)
+
+    def test_git_revision漂移被拒绝且不覆盖旧checkout(self) -> None:
+        repository = _create_git_repository(self.root)
+        manager = WorkspaceManager(repository, self.data_root, "project-1")
+        first = manager.open("ticket-1", "run-1")
+        old_revision = _run_git(first.workspace_root, "rev-parse", "HEAD")
+        first.close()
+        (repository / "second.txt").write_text("second\n", encoding="utf-8")
+        _run_git(repository, "add", ".")
+        _run_git(repository, "commit", "-qm", "second")
+
+        with self.assertRaises(WorkspaceError):
+            manager.open("ticket-1", "run-2")
+
+        checkout = self._ticket_root("project-1", "ticket-1") / "checkout"
+        self.assertEqual(_run_git(checkout, "rev-parse", "HEAD"), old_revision)
+        self.assert_lease_released("project-1", "ticket-1")
+
+    def test_snapshot基线清单漂移及checkout缺失被拒绝(self) -> None:
+        source = self._snapshot_source()
+        manager = WorkspaceManager(source, self.data_root, "project-1")
+
+        session = manager.open("manifest-ticket", "run-1")
+        session.runtime_root.joinpath("snapshot-manifest.json").write_text(
+            "{}", encoding="utf-8"
+        )
+        session.close()
+        with self.assertRaises(WorkspaceError):
+            manager.open("manifest-ticket", "run-2")
+
+        session = manager.open("checkout-ticket", "run-1")
+        checkout = session.workspace_root
+        session.close()
+        checkout.rename(checkout.with_name("checkout-moved"))
+        with self.assertRaises(WorkspaceError):
+            manager.open("checkout-ticket", "run-2")
+
+    def test_workspace元数据发布失败清理由本次创建的资源(self) -> None:
+        source = self._snapshot_source()
+        ticket_root = self._ticket_root("project-1", "ticket-1")
+        original_write_atomic = workspace_module._write_atomic
+
+        def fail_workspace_metadata(path: Path, payload: bytes) -> None:
+            if path.name == "workspace.json":
+                raise OSError("simulated metadata failure")
+            original_write_atomic(path, payload)
+
+        with mock.patch(
+            "icode.workspace._write_atomic", side_effect=fail_workspace_metadata
+        ):
+            with self.assertRaises(WorkspaceError):
+                WorkspaceManager(source, self.data_root, "project-1").open(
+                    "ticket-1", "run-1"
+                )
+
+        self.assertFalse(ticket_root.joinpath("checkout").exists())
+        self.assertFalse(ticket_root.joinpath("runtime").exists())
+        self.assertFalse(ticket_root.joinpath("receipts").exists())
+        self.assert_lease_released("project-1", "ticket-1")
+
+    def test_工作区布局父目录被symlink替换时拒绝越界写入(self) -> None:
+        source = self._snapshot_source()
+        project_hash = hashlib.sha256(b"project-1").hexdigest()
+        workspaces_root = self.data_root / "workspaces"
+        workspaces_root.mkdir(parents=True)
+        outside = self.root / "outside-workspaces"
+        outside.mkdir()
+        workspaces_root.joinpath(project_hash).symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaises(WorkspaceError):
+            WorkspaceManager(source, self.data_root, "project-1").open(
+                "ticket-1", "run-1"
+            )
+
+        self.assertEqual(list(outside.iterdir()), [])
+        self.assert_lease_released("project-1", "ticket-1")
+
+    def test_不存在或非目录source被拒绝并释放租约(self) -> None:
+        sources = (self.root / "missing", self.root / "plain-file")
+        sources[1].write_text("not a directory", encoding="utf-8")
+        for index, source in enumerate(sources):
+            ticket_id = f"ticket-{index}"
+            with self.subTest(source=source.name):
+                with self.assertRaises(WorkspaceError):
+                    WorkspaceManager(source, self.data_root, "project-1").open(
+                        ticket_id, "run-1"
+                    )
+                self.assert_lease_released("project-1", ticket_id)
+
+    def test_未知checkout冲突时失败且不删除内容(self) -> None:
+        source = self._snapshot_source()
+        ticket_root = self._ticket_root("project-1", "ticket-1")
+        checkout = ticket_root / "checkout"
+        checkout.mkdir(parents=True)
+        marker = checkout / "keep.txt"
+        marker.write_text("do not remove", encoding="utf-8")
+
+        with self.assertRaises(WorkspaceError):
+            WorkspaceManager(source, self.data_root, "project-1").open(
+                "ticket-1", "run-1"
+            )
+
+        self.assertEqual(marker.read_text(encoding="utf-8"), "do not remove")
+        self.assert_lease_released("project-1", "ticket-1")
+
+    def test_拒绝逃出source的symlink并释放租约(self) -> None:
+        source = self._snapshot_source()
+        outside = self.root / "outside.txt"
+        outside.write_text("secret", encoding="utf-8")
+        (source / "escape").symlink_to(outside)
+
+        with self.assertRaises(WorkspaceError):
+            WorkspaceManager(source, self.data_root, "project-1").open(
+                "ticket-1", "run-1"
+            )
+
+        self.assertFalse(self._ticket_root("project-1", "ticket-1").joinpath("checkout").exists())
+        self.assert_lease_released("project-1", "ticket-1")
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "requires FIFO support")
+    def test_拒绝特殊文件且不留下checkout(self) -> None:
+        source = self._snapshot_source()
+        os.mkfifo(source / "named-pipe")
+
+        with self.assertRaises(WorkspaceError):
+            WorkspaceManager(source, self.data_root, "project-1").open(
+                "ticket-1", "run-1"
+            )
+
+        self.assertFalse(self._ticket_root("project-1", "ticket-1").joinpath("checkout").exists())
+        self.assert_lease_released("project-1", "ticket-1")
+
+    def test_git命令失败统一异常且释放租约不泄露命令输出(self) -> None:
+        source = self._snapshot_source()
+        git_error = subprocess.CalledProcessError(
+            128, ["git"], output="sensitive stdout", stderr="sensitive stderr"
+        )
+        with mock.patch("icode.workspace.subprocess.run", side_effect=git_error):
+            with self.assertRaises(WorkspaceError) as caught:
+                WorkspaceManager(source, self.data_root, "project-1").open(
+                    "ticket-1", "run-1"
+                )
+
+        self.assertNotIn("sensitive", str(caught.exception))
+        self.assertIsNone(caught.exception.__cause__)
+        self.assert_lease_released("project-1", "ticket-1")
+
+    def test_session保护路径和deny网络策略完整且close幂等(self) -> None:
+        repository = _create_git_repository(self.root)
+        extra = self.root / "extra-protected"
+        manager = WorkspaceManager(
+            repository, self.data_root, "project-1", extra_protected_paths=(extra,)
+        )
+        session = manager.open("ticket-1", "run-1")
+
+        expected = {
+            repository.resolve(),
+            repository.joinpath(".git").resolve(),
+            repository.joinpath(".icode_output").resolve(),
+            session.workspace_root.joinpath(".git").resolve(),
+            session.runtime_root.resolve(),
+            session.receipts_root.resolve(),
+            extra.resolve(),
+        }
+        self.assertTrue(expected.issubset(set(session.protected_paths)))
+        self.assertEqual(
+            session.protected_paths, tuple(sorted(set(session.protected_paths), key=str))
+        )
+        policy = session.policy(
+            "implement", process_limit=7, wall_timeout_seconds=11, output_limit_bytes=13
+        )
+        self.assertEqual(policy.workspace_root, session.workspace_root)
+        self.assertEqual(policy.read_roots, (session.workspace_root,))
+        self.assertEqual(policy.write_roots, (session.workspace_root,))
+        self.assertEqual(policy.network_mode, NetworkMode.DENY)
+        self.assertEqual(policy.allowed_domains, ())
+        self.assertEqual(policy.deny_write_roots, session.protected_paths)
+        self.assertEqual(policy.protected_paths, session.protected_paths)
+        self.assertEqual(
+            (policy.process_limit, policy.wall_timeout_seconds, policy.output_limit_bytes),
+            (7, 11, 13),
+        )
+        session.close()
+        session.close()
+        self.assert_lease_released("project-1", "ticket-1")
+
+
+class TestDefaultDataRoot(unittest.TestCase):
+    def test_icode_data_home优先且返回绝对规范路径(self) -> None:
+        self.assertEqual(WORKSPACE_SCHEMA_VERSION, 1)
+        with mock.patch.dict(
+            os.environ,
+            {"ICODE_DATA_HOME": "relative-data", "XDG_DATA_HOME": "/ignored"},
+            clear=True,
+        ):
+            self.assertEqual(default_data_root(), Path("relative-data").resolve())
+
+    def test_windows_macos及xdg默认路径(self) -> None:
+        cases = (
+            ("win32", {"LOCALAPPDATA": "/local-app-data"}, Path("/local-app-data/ICODE Agent")),
+            ("darwin", {}, Path.home() / "Library/Application Support/ICODE Agent"),
+            ("linux", {"XDG_DATA_HOME": "/xdg"}, Path("/xdg/icode-agent")),
+            ("linux", {}, Path.home() / ".local/share/icode-agent"),
+        )
+        for platform, environment, expected in cases:
+            with self.subTest(platform=platform, environment=environment):
+                with (
+                    mock.patch("icode.workspace.sys.platform", platform),
+                    mock.patch.dict(os.environ, environment, clear=True),
+                ):
+                    self.assertEqual(default_data_root(), expected.resolve())
+
+    def test_windows缺少localappdata时失败(self) -> None:
+        with (
+            mock.patch("icode.workspace.sys.platform", "win32"),
+            mock.patch.dict(os.environ, {}, clear=True),
+            self.assertRaises(WorkspaceError),
+        ):
+            default_data_root()
 
 
 if __name__ == "__main__":

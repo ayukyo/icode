@@ -1,4 +1,4 @@
-"""跨进程工单工作区租约。"""
+"""跨进程工单租约与隔离工作区。"""
 
 from __future__ import annotations
 
@@ -6,10 +6,24 @@ import errno
 import hashlib
 import json
 import os
+import shutil
+import stat
+import subprocess
+import sys
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Iterable, Literal, Mapping, cast
+
+from icode.sandbox_policy import (
+    POLICY_SCHEMA_VERSION,
+    NetworkMode,
+    SandboxPolicy,
+)
+
+
+WORKSPACE_SCHEMA_VERSION = 1
 
 
 class WorkspaceError(RuntimeError):
@@ -277,3 +291,741 @@ class TicketLease:
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
         self.release()
+
+
+def _normalize_path(path: Path) -> Path:
+    try:
+        return Path(path).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        raise WorkspaceError("无法规范化工作区路径") from exc
+
+
+def default_data_root() -> Path:
+    """返回当前平台的 ICODE 用户数据目录。"""
+
+    configured = os.environ.get("ICODE_DATA_HOME")
+    if configured:
+        return _normalize_path(Path(configured))
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if not local_app_data:
+            raise WorkspaceError("Windows 环境缺少 LOCALAPPDATA")
+        return _normalize_path(Path(local_app_data) / "ICODE Agent")
+    if sys.platform == "darwin":
+        return _normalize_path(
+            Path.home() / "Library" / "Application Support" / "ICODE Agent"
+        )
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    if xdg_data_home:
+        return _normalize_path(Path(xdg_data_home) / "icode-agent")
+    return _normalize_path(Path.home() / ".local" / "share" / "icode-agent")
+
+
+@dataclass
+class WorkspaceSession:
+    """持有工单租约的隔离工作区会话。"""
+
+    project_id: str
+    ticket_id: str
+    run_id: str
+    kind: Literal["git_worktree", "snapshot"]
+    source_root: Path
+    workspace_root: Path
+    runtime_root: Path
+    receipts_root: Path
+    manifest_path: Path
+    protected_paths: tuple[Path, ...]
+    lease: TicketLease
+
+    def policy(
+        self,
+        step: str,
+        process_limit: int = 64,
+        wall_timeout_seconds: int = 1800,
+        output_limit_bytes: int = 16 * 1024 * 1024,
+    ) -> SandboxPolicy:
+        return SandboxPolicy(
+            schema_version=POLICY_SCHEMA_VERSION,
+            run_id=self.run_id,
+            ticket_id=self.ticket_id,
+            step=step,
+            workspace_root=self.workspace_root,
+            read_roots=(self.workspace_root,),
+            write_roots=(self.workspace_root,),
+            deny_read_roots=(),
+            deny_write_roots=self.protected_paths,
+            network_mode=NetworkMode.DENY,
+            allowed_domains=(),
+            process_limit=process_limit,
+            wall_timeout_seconds=wall_timeout_seconds,
+            output_limit_bytes=output_limit_bytes,
+            protected_paths=self.protected_paths,
+        )
+
+    def close(self) -> None:
+        self.lease.release()
+
+    def __enter__(self) -> WorkspaceSession:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+
+@dataclass(frozen=True)
+class _GitIdentity:
+    top_level: Path
+    common_dir: Path
+    revision: str
+    relative_source: Path
+
+
+_SNAPSHOT_EXCLUDED_TOP_LEVEL = frozenset(
+    (".icode_output", ".icode_runtime", "runtime", "receipts")
+)
+_COMMON_METADATA_FIELDS = frozenset(
+    (
+        "schema_version",
+        "project_id",
+        "ticket_id",
+        "kind",
+        "source_root",
+        "checkout_root",
+        "runtime_root",
+        "receipts_root",
+    )
+)
+_GIT_METADATA_FIELDS = _COMMON_METADATA_FIELDS | frozenset(
+    ("git_top_level", "git_common_dir", "git_revision", "source_relative_path")
+)
+_SNAPSHOT_METADATA_FIELDS = _COMMON_METADATA_FIELDS | frozenset(
+    ("snapshot_manifest_path", "snapshot_manifest_sha256")
+)
+
+
+def _identity_hash(value: str) -> str:
+    return hashlib.sha256(_validated_bytes("identity", value)).hexdigest()
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _write_atomic(path: Path, payload: bytes) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, path)
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _remove_created_tree(path: Path, ticket_root: Path) -> None:
+    """仅清理由当前创建流程登记且位于工单目录内的树。"""
+
+    normalized_ticket_root = _normalize_path(ticket_root)
+    normalized_path = _normalize_path(path)
+    if normalized_path == normalized_ticket_root or not _path_is_within(
+        normalized_path, normalized_ticket_root
+    ):
+        raise WorkspaceError("拒绝清理工单目录之外的路径")
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def _ensure_managed_directory(path: Path) -> None:
+    """创建固定布局目录，并拒绝已有 symlink 或其他路径重定向。"""
+
+    path.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir() or _normalize_path(path) != path:
+        raise WorkspaceError("工作区布局目录不可信")
+
+
+def _run_git(
+    working_directory: Path,
+    arguments: Iterable[str],
+    *,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(working_directory), *arguments],
+            shell=False,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # CalledProcessError/TimeoutExpired 会携带捕获的 stdout/stderr；异常边界
+        # 不保留原异常，避免通过 traceback 或 __cause__ 泄露命令输出。
+        raise WorkspaceError("Git 命令执行失败") from None
+    if check and completed.returncode != 0:
+        raise WorkspaceError("Git 命令执行失败")
+    return completed
+
+
+def _git_path(raw_path: str, working_directory: Path) -> Path:
+    candidate = Path(raw_path)
+    if not candidate.is_absolute():
+        candidate = working_directory / candidate
+    return _normalize_path(candidate)
+
+
+def _detect_git(source_root: Path) -> _GitIdentity | None:
+    probe = _run_git(source_root, ("rev-parse", "--show-toplevel"), check=False)
+    if probe.returncode != 0:
+        return None
+    top_level_text = probe.stdout.strip()
+    if not top_level_text:
+        raise WorkspaceError("Git 仓库身份无效")
+    top_level = _git_path(top_level_text, source_root)
+    try:
+        relative_source = source_root.relative_to(top_level)
+    except ValueError as exc:
+        raise WorkspaceError("源码目录不在 Git 顶层目录内") from exc
+
+    common_result = _run_git(source_root, ("rev-parse", "--git-common-dir"))
+    revision_result = _run_git(source_root, ("rev-parse", "HEAD"))
+    common_text = common_result.stdout.strip()
+    revision = revision_result.stdout.strip()
+    if not common_text or not revision:
+        raise WorkspaceError("Git 仓库身份无效")
+    return _GitIdentity(
+        top_level=top_level,
+        common_dir=_git_path(common_text, source_root),
+        revision=revision,
+        relative_source=relative_source,
+    )
+
+
+def _snapshot_entries(source_root: Path) -> list[dict[str, object]]:
+    entries: list[dict[str, object]] = []
+    pending = [source_root]
+    while pending:
+        directory = pending.pop()
+        try:
+            children = sorted(directory.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise WorkspaceError("无法读取快照源码目录") from exc
+        for child in children:
+            relative = child.relative_to(source_root)
+            if len(relative.parts) == 1 and child.name in _SNAPSHOT_EXCLUDED_TOP_LEVEL:
+                continue
+            try:
+                mode = child.lstat().st_mode
+            except OSError as exc:
+                raise WorkspaceError("无法检查快照源码条目") from exc
+            relative_text = relative.as_posix()
+            if stat.S_ISLNK(mode):
+                try:
+                    target = os.readlink(child)
+                    resolved_target = child.resolve(strict=True)
+                except (OSError, RuntimeError) as exc:
+                    raise WorkspaceError("快照包含无效符号链接") from exc
+                if not _path_is_within(resolved_target, source_root):
+                    raise WorkspaceError("快照符号链接逃出源码目录")
+                entries.append(
+                    {"path": relative_text, "target": target, "type": "symlink"}
+                )
+            elif stat.S_ISDIR(mode):
+                entries.append({"path": relative_text, "type": "directory"})
+                pending.append(child)
+            elif stat.S_ISREG(mode):
+                try:
+                    content = child.read_bytes()
+                except OSError as exc:
+                    raise WorkspaceError("无法读取快照源码文件") from exc
+                entries.append(
+                    {
+                        "path": relative_text,
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                        "size": len(content),
+                        "type": "file",
+                    }
+                )
+            else:
+                raise WorkspaceError("快照包含不支持的特殊文件")
+    return sorted(entries, key=lambda entry: cast(str, entry["path"]))
+
+
+def _snapshot_manifest(source_root: Path) -> tuple[bytes, str, list[dict[str, object]]]:
+    entries = _snapshot_entries(source_root)
+    payload = _canonical_json_bytes(
+        {"entries": entries, "schema_version": WORKSPACE_SCHEMA_VERSION}
+    )
+    return payload, hashlib.sha256(payload).hexdigest(), entries
+
+
+def _copy_snapshot(
+    source_root: Path,
+    destination: Path,
+    entries: Iterable[Mapping[str, object]],
+) -> None:
+    destination.mkdir()
+    for entry in entries:
+        relative = Path(cast(str, entry["path"]))
+        source = source_root / relative
+        target = destination / relative
+        entry_type = entry["type"]
+        if entry_type == "directory":
+            target.mkdir(parents=True, exist_ok=False)
+        elif entry_type == "symlink":
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if os.readlink(source) != entry["target"]:
+                raise WorkspaceError("复制期间快照符号链接发生变化")
+            target.symlink_to(cast(str, entry["target"]))
+        elif entry_type == "file":
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                mode = source.lstat().st_mode
+            except OSError as exc:
+                raise WorkspaceError("复制期间快照文件不可用") from exc
+            if not stat.S_ISREG(mode):
+                raise WorkspaceError("复制期间快照文件类型发生变化")
+            shutil.copy2(source, target, follow_symlinks=False)
+        else:  # pragma: no cover - 仅内部清单可达
+            raise WorkspaceError("快照清单条目类型无效")
+    copied_payload, _, _ = _snapshot_manifest(destination)
+    expected_payload = _canonical_json_bytes(
+        {"entries": list(entries), "schema_version": WORKSPACE_SCHEMA_VERSION}
+    )
+    if copied_payload != expected_payload:
+        raise WorkspaceError("复制期间快照内容发生变化")
+
+
+def _read_strict_metadata(path: Path) -> dict[str, object]:
+    if path.is_symlink() or not path.is_file():
+        raise WorkspaceError("工作区元数据缺失或类型无效")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise WorkspaceError("工作区元数据无效") from exc
+    if type(value) is not dict:
+        raise WorkspaceError("工作区元数据无效")
+    return cast(dict[str, object], value)
+
+
+class WorkspaceManager:
+    """创建或严格复用按工程、工单隔离的工作区。"""
+
+    def __init__(
+        self,
+        source_root: Path,
+        data_root: Path,
+        project_id: str,
+        *,
+        extra_protected_paths: Iterable[Path] = (),
+    ) -> None:
+        _validated_bytes("project_id", project_id)
+        self.source_root = _normalize_path(source_root)
+        self.data_root = _normalize_path(data_root)
+        self.project_id = project_id
+        self.extra_protected_paths = tuple(
+            _normalize_path(path) for path in extra_protected_paths
+        )
+
+    def open(self, ticket_id: str, run_id: str) -> WorkspaceSession:
+        lease = TicketLease.acquire(
+            self.data_root, self.project_id, ticket_id, run_id
+        )
+        try:
+            if self.source_root.is_symlink() or not self.source_root.is_dir():
+                raise WorkspaceError("源码路径必须是已存在的目录")
+            git_identity = _detect_git(self.source_root)
+            kind: Literal["git_worktree", "snapshot"] = (
+                "git_worktree" if git_identity is not None else "snapshot"
+            )
+            workspaces_root = self.data_root / "workspaces"
+            _ensure_managed_directory(workspaces_root)
+            project_root = workspaces_root / _identity_hash(self.project_id)
+            _ensure_managed_directory(project_root)
+            ticket_root = (
+                project_root / _identity_hash(ticket_id)
+            )
+            checkout_root = ticket_root / "checkout"
+            runtime_root = ticket_root / "runtime"
+            receipts_root = ticket_root / "receipts"
+            manifest_path = ticket_root / "workspace.json"
+
+            if manifest_path.exists() or manifest_path.is_symlink():
+                metadata = _read_strict_metadata(manifest_path)
+                return self._reuse(
+                    ticket_id,
+                    run_id,
+                    kind,
+                    git_identity,
+                    lease,
+                    checkout_root,
+                    runtime_root,
+                    receipts_root,
+                    manifest_path,
+                    metadata,
+                )
+            if ticket_root.exists() or ticket_root.is_symlink():
+                raise WorkspaceError("工单工作区已存在但缺少可信元数据")
+
+            ticket_root.mkdir()
+            if git_identity is not None:
+                metadata = self._create_git(
+                    ticket_id,
+                    ticket_root,
+                    checkout_root,
+                    runtime_root,
+                    receipts_root,
+                    git_identity,
+                )
+            else:
+                metadata = self._create_snapshot(
+                    ticket_id,
+                    ticket_root,
+                    checkout_root,
+                    runtime_root,
+                    receipts_root,
+                )
+            try:
+                _write_atomic(manifest_path, _canonical_json_bytes(metadata))
+            except Exception:
+                self._cleanup_created_workspace(
+                    kind,
+                    git_identity,
+                    ticket_root,
+                    checkout_root,
+                    runtime_root,
+                    receipts_root,
+                )
+                raise
+            return self._session(
+                ticket_id,
+                run_id,
+                kind,
+                git_identity,
+                lease,
+                checkout_root,
+                runtime_root,
+                receipts_root,
+                manifest_path,
+            )
+        except Exception as exc:
+            try:
+                lease.release()
+            except WorkspaceError:
+                pass
+            if isinstance(exc, WorkspaceError):
+                raise
+            raise WorkspaceError("无法打开隔离工作区") from exc
+
+    def _cleanup_created_workspace(
+        self,
+        kind: Literal["git_worktree", "snapshot"],
+        git_identity: _GitIdentity | None,
+        ticket_root: Path,
+        checkout_root: Path,
+        runtime_root: Path,
+        receipts_root: Path,
+    ) -> None:
+        if kind == "git_worktree" and git_identity is not None:
+            try:
+                _run_git(
+                    git_identity.top_level,
+                    ("worktree", "remove", "--force", str(checkout_root)),
+                )
+            except WorkspaceError:
+                pass
+            try:
+                _run_git(git_identity.top_level, ("worktree", "prune"))
+            except WorkspaceError:
+                pass
+        for path in (checkout_root, runtime_root, receipts_root):
+            try:
+                _remove_created_tree(path, ticket_root)
+            except WorkspaceError:
+                pass
+
+    def _common_metadata(
+        self,
+        ticket_id: str,
+        kind: Literal["git_worktree", "snapshot"],
+        checkout_root: Path,
+        runtime_root: Path,
+        receipts_root: Path,
+    ) -> dict[str, object]:
+        return {
+            "checkout_root": str(checkout_root),
+            "kind": kind,
+            "project_id": self.project_id,
+            "receipts_root": str(receipts_root),
+            "runtime_root": str(runtime_root),
+            "schema_version": WORKSPACE_SCHEMA_VERSION,
+            "source_root": str(self.source_root),
+            "ticket_id": ticket_id,
+        }
+
+    def _create_git(
+        self,
+        ticket_id: str,
+        ticket_root: Path,
+        checkout_root: Path,
+        runtime_root: Path,
+        receipts_root: Path,
+        identity: _GitIdentity,
+    ) -> dict[str, object]:
+        attempted_add = False
+        try:
+            if checkout_root.exists() or checkout_root.is_symlink():
+                raise WorkspaceError("checkout 路径冲突")
+            attempted_add = True
+            _run_git(
+                identity.top_level,
+                ("worktree", "add", "--detach", str(checkout_root), identity.revision),
+            )
+            runtime_root.mkdir()
+            receipts_root.mkdir()
+            metadata = self._common_metadata(
+                ticket_id,
+                "git_worktree",
+                checkout_root,
+                runtime_root,
+                receipts_root,
+            )
+            metadata.update(
+                {
+                    "git_common_dir": str(identity.common_dir),
+                    "git_revision": identity.revision,
+                    "git_top_level": str(identity.top_level),
+                    "source_relative_path": identity.relative_source.as_posix(),
+                }
+            )
+            return metadata
+        except Exception:
+            if attempted_add:
+                try:
+                    _run_git(
+                        identity.top_level,
+                        ("worktree", "remove", "--force", str(checkout_root)),
+                    )
+                except WorkspaceError:
+                    pass
+                try:
+                    _run_git(identity.top_level, ("worktree", "prune"))
+                except WorkspaceError:
+                    pass
+                try:
+                    _remove_created_tree(checkout_root, ticket_root)
+                except WorkspaceError:
+                    pass
+            for path in (runtime_root, receipts_root):
+                try:
+                    _remove_created_tree(path, ticket_root)
+                except WorkspaceError:
+                    pass
+            raise
+
+    def _create_snapshot(
+        self,
+        ticket_id: str,
+        ticket_root: Path,
+        checkout_root: Path,
+        runtime_root: Path,
+        receipts_root: Path,
+    ) -> dict[str, object]:
+        temporary_checkout = ticket_root / f".checkout-{uuid.uuid4().hex}.tmp"
+        checkout_created = False
+        try:
+            if checkout_root.exists() or checkout_root.is_symlink():
+                raise WorkspaceError("checkout 路径冲突")
+            manifest_payload, manifest_hash, entries = _snapshot_manifest(
+                self.source_root
+            )
+            _copy_snapshot(self.source_root, temporary_checkout, entries)
+            if checkout_root.exists() or checkout_root.is_symlink():
+                raise WorkspaceError("checkout 路径冲突")
+            temporary_checkout.rename(checkout_root)
+            checkout_created = True
+            runtime_root.mkdir()
+            receipts_root.mkdir()
+            snapshot_manifest_path = runtime_root / "snapshot-manifest.json"
+            _write_atomic(snapshot_manifest_path, manifest_payload)
+            metadata = self._common_metadata(
+                ticket_id,
+                "snapshot",
+                checkout_root,
+                runtime_root,
+                receipts_root,
+            )
+            metadata.update(
+                {
+                    "snapshot_manifest_path": str(snapshot_manifest_path),
+                    "snapshot_manifest_sha256": manifest_hash,
+                }
+            )
+            return metadata
+        except Exception:
+            for path in (
+                temporary_checkout,
+                checkout_root if checkout_created else temporary_checkout,
+                runtime_root,
+                receipts_root,
+            ):
+                try:
+                    _remove_created_tree(path, ticket_root)
+                except WorkspaceError:
+                    pass
+            raise
+
+    def _reuse(
+        self,
+        ticket_id: str,
+        run_id: str,
+        kind: Literal["git_worktree", "snapshot"],
+        git_identity: _GitIdentity | None,
+        lease: TicketLease,
+        checkout_root: Path,
+        runtime_root: Path,
+        receipts_root: Path,
+        manifest_path: Path,
+        metadata: dict[str, object],
+    ) -> WorkspaceSession:
+        expected_fields = (
+            _GIT_METADATA_FIELDS if kind == "git_worktree" else _SNAPSHOT_METADATA_FIELDS
+        )
+        if set(metadata) != expected_fields:
+            raise WorkspaceError("工作区元数据字段不匹配")
+        if any(type(metadata[field]) is not str for field in expected_fields - {"schema_version"}):
+            raise WorkspaceError("工作区元数据字段类型无效")
+        if type(metadata["schema_version"]) is not int:
+            raise WorkspaceError("工作区元数据版本类型无效")
+        expected = self._common_metadata(
+            ticket_id, kind, checkout_root, runtime_root, receipts_root
+        )
+        if kind == "git_worktree":
+            if git_identity is None:  # pragma: no cover - 由 kind 推导
+                raise WorkspaceError("Git 工作区身份缺失")
+            expected.update(
+                {
+                    "git_common_dir": str(git_identity.common_dir),
+                    "git_revision": git_identity.revision,
+                    "git_top_level": str(git_identity.top_level),
+                    "source_relative_path": git_identity.relative_source.as_posix(),
+                }
+            )
+        else:
+            snapshot_manifest_path = runtime_root / "snapshot-manifest.json"
+            current_payload, current_hash, _ = _snapshot_manifest(self.source_root)
+            expected.update(
+                {
+                    "snapshot_manifest_path": str(snapshot_manifest_path),
+                    "snapshot_manifest_sha256": current_hash,
+                }
+            )
+            if snapshot_manifest_path.is_symlink() or not snapshot_manifest_path.is_file():
+                raise WorkspaceError("快照基线清单缺失")
+            try:
+                stored_payload = snapshot_manifest_path.read_bytes()
+            except OSError as exc:
+                raise WorkspaceError("无法读取快照基线清单") from exc
+            if (
+                stored_payload != current_payload
+                or hashlib.sha256(stored_payload).hexdigest() != current_hash
+            ):
+                raise WorkspaceError("快照基线清单身份不匹配")
+        if metadata != expected:
+            raise WorkspaceError("工作区身份与当前请求不匹配")
+        for directory in (checkout_root, runtime_root, receipts_root):
+            if directory.is_symlink() or not directory.is_dir():
+                raise WorkspaceError("工作区目录缺失或类型无效")
+        if kind == "git_worktree":
+            assert git_identity is not None
+            workspace_root = checkout_root / git_identity.relative_source
+            if not workspace_root.is_dir() or workspace_root.is_symlink():
+                raise WorkspaceError("Git 工作区源码子目录缺失")
+            git_file = checkout_root / ".git"
+            if git_file.is_symlink() or not git_file.is_file():
+                raise WorkspaceError("Git worktree 管理文件缺失")
+            checkout_common = _run_git(
+                checkout_root, ("rev-parse", "--git-common-dir")
+            ).stdout.strip()
+            if _git_path(checkout_common, checkout_root) != git_identity.common_dir:
+                raise WorkspaceError("Git worktree 管理目录漂移")
+        return self._session(
+            ticket_id,
+            run_id,
+            kind,
+            git_identity,
+            lease,
+            checkout_root,
+            runtime_root,
+            receipts_root,
+            manifest_path,
+        )
+
+    def _session(
+        self,
+        ticket_id: str,
+        run_id: str,
+        kind: Literal["git_worktree", "snapshot"],
+        git_identity: _GitIdentity | None,
+        lease: TicketLease,
+        checkout_root: Path,
+        runtime_root: Path,
+        receipts_root: Path,
+        manifest_path: Path,
+    ) -> WorkspaceSession:
+        relative_source = git_identity.relative_source if git_identity else Path()
+        workspace_root = _normalize_path(checkout_root / relative_source)
+        protected = {
+            self.source_root,
+            _normalize_path(self.source_root / ".git"),
+            _normalize_path(self.source_root / ".icode_output"),
+            _normalize_path(checkout_root / ".git"),
+            _normalize_path(runtime_root),
+            _normalize_path(receipts_root),
+            *self.extra_protected_paths,
+        }
+        if git_identity is not None:
+            protected.update(
+                {
+                    git_identity.common_dir,
+                    _normalize_path(git_identity.top_level / ".git"),
+                }
+            )
+        return WorkspaceSession(
+            project_id=self.project_id,
+            ticket_id=ticket_id,
+            run_id=run_id,
+            kind=kind,
+            source_root=self.source_root,
+            workspace_root=workspace_root,
+            runtime_root=_normalize_path(runtime_root),
+            receipts_root=_normalize_path(receipts_root),
+            manifest_path=_normalize_path(manifest_path),
+            protected_paths=tuple(sorted(protected, key=str)),
+            lease=lease,
+        )
