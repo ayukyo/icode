@@ -213,6 +213,7 @@ class TestSandboxWrapping(unittest.TestCase):
         self.assertIn(str(Path("/tmp/ws").resolve()), profile)
         self.assertIn('(path-ancestors "', profile)
         self.assertIn('(literal "/")', profile)
+        self.assertIn('(subpath "/private/etc/ssl")', profile)
         self.assertNotIn("(allow network*)", profile)
 
     def test_seatbelt_工作区路径不能注入_profile(self) -> None:
