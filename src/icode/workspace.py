@@ -1418,20 +1418,27 @@ class WorkspaceManager:
         receipts_root: Path,
         owned_directories: Mapping[Path, _PathIdentity],
     ) -> None:
+        quarantined_checkout: Path | None = None
         for path in (checkout_root, runtime_root, receipts_root):
             try:
-                _quarantine_owned_tree(
+                quarantined = _quarantine_owned_tree(
                     path,
                     owned_directories.get(path),
                     self.data_root,
                 )
+                if path == checkout_root:
+                    quarantined_checkout = quarantined
             except WorkspaceError:
                 pass
-        if kind == "git_worktree" and git_identity is not None:
+        if (
+            kind == "git_worktree"
+            and git_identity is not None
+            and quarantined_checkout is not None
+        ):
             try:
                 _run_git(
                     git_identity.top_level,
-                    ("worktree", "prune", "--expire", "now"),
+                    ("worktree", "remove", "--force", str(checkout_root)),
                 )
             except WorkspaceError:
                 pass
@@ -1518,9 +1525,10 @@ class WorkspaceManager:
             return metadata, owned_directories
         except Exception:
             checkout_identity = owned_directories.get(checkout_root)
+            quarantined_checkout: Path | None = None
             if registered:
                 try:
-                    _quarantine_owned_tree(
+                    quarantined_checkout = _quarantine_owned_tree(
                         checkout_root,
                         checkout_identity,
                         self.data_root,
@@ -1536,11 +1544,11 @@ class WorkspaceManager:
                     )
                 except WorkspaceError:
                     pass
-            if registered:
+            if registered and quarantined_checkout is not None:
                 try:
                     _run_git(
                         identity.top_level,
-                        ("worktree", "prune", "--expire", "now"),
+                        ("worktree", "remove", "--force", str(checkout_root)),
                     )
                 except WorkspaceError:
                     pass

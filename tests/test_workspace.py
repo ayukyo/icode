@@ -1289,6 +1289,40 @@ class TestWorkspaceManager(unittest.TestCase):
                 "source\n",
             )
 
+    def test_git失败清理不prune用户其它离线worktree登记(self) -> None:
+        repository = _create_git_repository(self.root)
+        unrelated = self.root / "unrelated-worktree"
+        _run_git(
+            repository,
+            "worktree",
+            "add",
+            "--detach",
+            "--no-checkout",
+            str(unrelated),
+            "HEAD",
+        )
+        unrelated_quarantine = self.root / "unrelated-offline"
+        unrelated.rename(unrelated_quarantine)
+        manager = WorkspaceManager(repository, self.data_root, "project-1")
+        original_write_atomic = workspace_module._write_atomic
+
+        def fail_workspace_manifest(path: Path, payload: bytes) -> None:
+            if path.name == "workspace.json":
+                raise OSError("simulated workspace manifest failure")
+            original_write_atomic(path, payload)
+
+        with (
+            mock.patch(
+                "icode.workspace._write_atomic",
+                side_effect=fail_workspace_manifest,
+            ),
+            self.assertRaises(WorkspaceError),
+        ):
+            manager.open("targeted-cleanup-ticket", "run-1")
+
+        registrations = _run_git(repository, "worktree", "list", "--porcelain")
+        self.assertIn(str(unrelated), registrations)
+
     def test_quarantine_rename窗口替换的foreign目录仍保留(self) -> None:
         source = self._snapshot_source()
         original_write_atomic = workspace_module._write_atomic
