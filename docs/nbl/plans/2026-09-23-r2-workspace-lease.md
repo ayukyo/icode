@@ -293,12 +293,12 @@ git commit -m "feat: bind autonomous runs to isolated workspaces"
 ### Task 4: 文档、打包与阶段验收
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成
 
 **Dependencies:** Task 3
 **Parallelizable:** No (只能记录实际已通过的行为)
 
-- [ ] **Step 1: Add the failing documentation contract test**
+- [x] **Step 1: Add the failing documentation contract test**
 
 在 `tests/test_workspace.py` 增加路线图断言，要求同时出现：
 
@@ -309,13 +309,13 @@ self.assertIn("跨进程租约", roadmap)
 self.assertIn("不等于操作系统强制隔离", roadmap)
 ```
 
-- [ ] **Step 2: Run test to verify RED**
+- [x] **Step 2: Run test to verify RED**
 
 Run: `python -m pytest tests/test_workspace.py -q`
 
 Expected: FAIL，路线图尚未记录 R2.1 已验证边界。
 
-- [ ] **Step 3: Update roadmap without changing homepage claims**
+- [x] **Step 3: Update roadmap without changing homepage claims**
 
 修改 `docs/roadmap.md`：
 
@@ -324,7 +324,7 @@ Expected: FAIL，路线图尚未记录 R2.1 已验证边界。
 - R2.2–R2.5 继续保持未完成；
 - 官网不添加阶段标签，继续只展示最终能力和效果。
 
-- [ ] **Step 4: Run complete validation**
+- [x] **Step 4: Run complete validation**
 
 Run:
 
@@ -339,7 +339,7 @@ git diff --check
 
 Expected: 全部 PASS；仅保留项目既有条件性 skip。
 
-- [ ] **Step 5: Verify the installed wheel**
+- [x] **Step 5: Verify the installed wheel**
 
 Run:
 
@@ -352,12 +352,14 @@ python -m venv /tmp/icode-r21-venv
 
 Expected: `R2.1 wheel OK`。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/roadmap.md tests/test_workspace.py docs/nbl/plans/2026-09-23-r2-workspace-lease.md
 git commit -m "docs: record R2.1 workspace guarantees"
 ```
+
+验收记录：[Linux/macOS/Windows 专项、Python 3.11/3.12 全量与仓库展示 CI](https://github.com/ayukyo/icode/actions/runs/35880420396) 全部通过；独立虚拟环境安装 wheel 后可导入 `WorkspaceManager` 与 `TicketLease`。
 
 ---
 
