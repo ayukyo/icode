@@ -293,7 +293,8 @@ R2.2 已合入 main 持续验证 Linux/macOS 原生后端。[CI #85](https://git
 [R2.0 policy contract 实施计划](./nbl/plans/2026-09-23-r2-policy-contract.md) ·
 [R2.1 工作区与租约实施计划](./nbl/plans/2026-09-23-r2-workspace-lease.md) ·
 [R2.2 Linux/macOS 原生隔离实施计划](./nbl/plans/2026-09-23-r2-native-isolation.md) ·
-[R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md)
+[R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md) ·
+[R2.4 临时网络授权门禁](./nbl/plans/2026-09-24-r2-network-proxy-gate.md)
 
 ---
 
