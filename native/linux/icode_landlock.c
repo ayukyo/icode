@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <linux/audit.h>
 #include <linux/capability.h>
 #include <linux/filter.h>
@@ -174,9 +175,12 @@ static int restore_child_reaping(void) {
     return 0;
 }
 
-static int write_mapping(const char *path, const char *value) {
+static int write_mapping(const char *path, const char *value,
+                         int uid_only_on_permission_error) {
     int fd = open(path, O_WRONLY | O_CLOEXEC);
     if (fd < 0) {
+        if (uid_only_on_permission_error && (errno == EACCES || errno == EPERM))
+            return 1;
         perror(path);
         return -1;
     }
@@ -189,13 +193,81 @@ static int write_mapping(const char *path, const char *value) {
     close(fd);
     if (written != (ssize_t)length) {
         errno = written < 0 ? saved_errno : EIO;
+        if (uid_only_on_permission_error && (errno == EACCES || errno == EPERM))
+            return 1;
         perror(path);
         return -1;
     }
     return 0;
 }
 
-static int enter_task_namespaces(pid_t host_parent) {
+static int ensure_setgroups_denied(const char *path) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        perror(path);
+        return -1;
+    }
+    char state[16];
+    ssize_t length;
+    do {
+        length = read(fd, state, sizeof(state));
+    } while (length < 0 && errno == EINTR);
+    if (length < 0) {
+        perror(path);
+        close(fd);
+        return -1;
+    }
+    if (close(fd) != 0) {
+        perror(path);
+        return -1;
+    }
+    /* A parent user namespace may already prohibit setgroups. Rewriting its
+     * proc control is not always permitted, but an existing deny is sufficient.
+     */
+    if (length == 5 && memcmp(state, "deny\n", 5) == 0) return 0;
+    /* Some host LSMs forbid writing this proc control. Only EACCES/EPERM
+     * may take the verified UID-only path, without a spurious stderr error. */
+    if (length == 6 && memcmp(state, "allow\n", 6) == 0)
+        return write_mapping(path, "deny\n", 1);
+    fprintf(stderr, "unexpected setgroups state\n");
+    return -1;
+}
+
+static int verify_uid_only_mapping(void) {
+    int fd = open("/proc/self/gid_map", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        perror("/proc/self/gid_map");
+        return -1;
+    }
+    char value;
+    ssize_t length;
+    do {
+        length = read(fd, &value, 1);
+    } while (length < 0 && errno == EINTR);
+    if (length < 0) {
+        int saved_errno = errno;
+        close(fd);
+        errno = saved_errno;
+        perror("/proc/self/gid_map");
+        return -1;
+    }
+    if (close(fd) != 0) {
+        perror("/proc/self/gid_map");
+        return -1;
+    }
+    if (length != 0) {
+        fprintf(stderr, "UID-only sandbox requires an empty gid_map\n");
+        return -1;
+    }
+    errno = 0;
+    if (setgroups(0, NULL) != -1 || errno != EPERM) {
+        fprintf(stderr, "UID-only sandbox did not deny setgroups\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int enter_task_namespaces(pid_t host_parent, const char *setgroups_path) {
     uid_t outer_uid = geteuid();
     gid_t outer_gid = getegid();
     if (unshare(CLONE_NEWUSER | CLONE_NEWPID) != 0) {
@@ -203,13 +275,18 @@ static int enter_task_namespaces(pid_t host_parent) {
         return -1;
     }
     char mapping[64];
-    if (write_mapping("/proc/self/setgroups", "deny\n") != 0) return -1;
+    int setgroups_state = ensure_setgroups_denied(setgroups_path);
+    if (setgroups_state < 0) return -1;
     int size = snprintf(mapping, sizeof(mapping), "0 %u 1\n", (unsigned)outer_uid);
     if (size < 0 || (size_t)size >= sizeof(mapping) ||
-        write_mapping("/proc/self/uid_map", mapping) != 0) return -1;
-    size = snprintf(mapping, sizeof(mapping), "0 %u 1\n", (unsigned)outer_gid);
-    if (size < 0 || (size_t)size >= sizeof(mapping) ||
-        write_mapping("/proc/self/gid_map", mapping) != 0) return -1;
+        write_mapping("/proc/self/uid_map", mapping, 0) != 0) return -1;
+    if (setgroups_state == 1) {
+        if (verify_uid_only_mapping() != 0) return -1;
+    } else {
+        size = snprintf(mapping, sizeof(mapping), "0 %u 1\n", (unsigned)outer_gid);
+        if (size < 0 || (size_t)size >= sizeof(mapping) ||
+            write_mapping("/proc/self/gid_map", mapping, 0) != 0) return -1;
+    }
     /* Moving to a user namespace can change credentials and clear PDEATHSIG. */
     return install_parent_death_signal(host_parent);
 }
@@ -301,8 +378,9 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
 
 static int supervise_task(pid_t host_parent, const char *workspace,
                           const char *const *runtime_roots,
-                          size_t runtime_root_count, char **command) {
-    if (enter_task_namespaces(host_parent) != 0) return 1;
+                          size_t runtime_root_count, char **command,
+                          const char *setgroups_path) {
+    if (enter_task_namespaces(host_parent, setgroups_path) != 0) return 1;
     int control[2];
     if (pipe2(control, O_CLOEXEC) != 0) {
         perror("pipe2 sandbox parent");
@@ -336,7 +414,7 @@ static int supervise_task(pid_t host_parent, const char *workspace,
     return child_status(status);
 }
 
-int main(int argc, char **argv) {
+static int run_helper(int argc, char **argv, const char *setgroups_path) {
     /* Landlock cannot revoke a writable file already open in the host. */
     if (syscall(SYS_close_range, 3U, UINT_MAX, 0U) != 0) {
         perror("close_range inherited descriptors");
@@ -396,8 +474,13 @@ int main(int argc, char **argv) {
         return 1;
     }
     int result = supervise_task((pid_t)parent_value, workspace, runtime_roots,
-                                runtime_root_count, argv + command_index);
+                                runtime_root_count, argv + command_index,
+                                setgroups_path);
     free(workspace);
     free(runtime_roots);
     return result;
+}
+
+int main(int argc, char **argv) {
+    return run_helper(argc, argv, "/proc/self/setgroups");
 }

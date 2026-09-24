@@ -86,6 +86,7 @@
 - `icode doctor` 增加 Windows Job 正常退出/超时后的局部清理探测；结果和 macOS 一样独立于 10 项一致性回执展示，探测异常按失败报告。即使局部探测通过，Windows 自动模式仍显示未就绪。
 - Windows Job 另增宿主崩溃负例：独立 broker 创建 Job 和异组后代后由测试强制结束 broker，确认最后 Job 句柄被关闭后后代无法延迟写入。此项用于验证 `KILL_ON_JOB_CLOSE` 的故障路径，仍不验证受限身份、ACL、WFP 或首次 UAC；双架构 CI 结果待确认。
 - Linux 助手在原有 Landlock/seccomp 外增加 user+PID namespace 与可信 PID 1 监督链：受限命令不是 PID 1，主命令结束、宿主强杀、超时及输出超限时，PID 1 退出触发内核清理已主动 `setsid` 的后代。助手在凭据变化后重设父死信号、通过控制管道处理竞态；负载清空能力且不能 ptrace/改写监督者。宿主强杀负例以安全锁定的 pidfd 确认后代退出；`unshare` 失败不降级执行。审查又补上继承 `SIGCHLD=SIG_IGN` 和预开外部文件描述符两项先红后绿回归。本机源树 9 项定向测试、干净 wheel 安装探测和前置门禁通过；**Linux x64/ARM64 线上结果未出，进程数、Git/网络代理及完整十项回执未完成，自动模式继续阻断**。细节见[专项计划](2026-09-24-r2-linux-pidns-cleanup.md)。
+- [Linux PID namespace 首轮 CI](https://github.com/ayukyo/icode/actions/runs/35995535030) 在 x64/ARM64 同步暴露 `/proc/self/setgroups` 写入受限，助手正确失败关闭，未运行负载。已按内核规则增加“既有 deny 跳过重写”和“仅权限拒绝时严格核验 UID-only 映射”的本机先红后绿回归，模拟受限分支下文件/网络/进程清理及 wheel 测试均通过。真实 runner 是否允许 UID map、Landlock 与该映射组合，仍须第二轮 CI 验证；未通过则继续阻断，不以本机替身代替线上证据。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。

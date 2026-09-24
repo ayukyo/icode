@@ -328,6 +328,144 @@ class TestProbe(unittest.TestCase):
             time.sleep(1.2)
             self.assertFalse(survived.exists(), "宿主退出后沙箱命令仍在执行")
 
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc")
+                         and shutil.which("unshare"), "需要 Linux user namespace 测试工具")
+    def test_landlock_嵌套userns继承deny仍通过原生负向探测(self) -> None:
+        # CI 的外层 user namespace 可能已将 setgroups 置为 deny；该状态
+        # 会继承到新 namespace，不能再次写入 deny。
+        prefix = ["unshare", "--user", "--map-root-user"]
+        preflight = subprocess.run(
+            [*prefix, "sh", "-c", "cat /proc/self/setgroups"],
+            capture_output=True, text=True, timeout=4, check=False,
+        )
+        if preflight.returncode != 0:
+            self.skipTest(f"本机禁止创建测试用 user namespace: {preflight.stderr.strip()}")
+        self.assertEqual(preflight.stdout.strip(), "deny")
+
+        source = Path(__file__).resolve().parents[1] / "native" / "linux" / "icode_landlock.c"
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                 "-Werror", str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            # 调用助手的真实映射函数；util-linux 已在外层 namespace 写过
+            # deny，再写同一个 proc 文件会失败。仅靠完整 probe 在部分
+            # 内核上不能稳定复现这个时序。
+            driver = root / "setgroups-driver.c"
+            driver.write_text(
+                f'#define main icode_helper_main\n#include "{source}"\n#undef main\n'
+                'int main(int argc, char **argv) {\n'
+                '    if (argc == 2 && strcmp(argv[1], "--verify-uid-only") == 0)\n'
+                '        return verify_uid_only_mapping();\n'
+                '    if (argc <= 2) {\n'
+                '        int result = ensure_setgroups_denied(argc > 1 ? argv[1] : "/proc/self/setgroups");\n'
+                '        return argc > 1 ? (result == 1 ? 0 : 1) : result;\n'
+                '    }\n'
+                '    return run_helper(argc, argv, getenv("ICODE_TEST_SETGROUPS_PATH"));\n'
+                '}\n',
+                encoding="ascii",
+            )
+            driver_bin = root / "setgroups-driver"
+            driver_build = subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                 "-Werror", str(driver), "-o", str(driver_bin)],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(driver_build.returncode, 0, driver_build.stderr)
+            denied = subprocess.run(
+                [*prefix, str(driver_bin)], capture_output=True, text=True,
+                timeout=4, check=False,
+            )
+            self.assertEqual(denied.returncode, 0, denied.stdout + denied.stderr)
+            if Path("/proc/self/gid_map").read_text(encoding="ascii").strip():
+                mapped_gid = subprocess.run(
+                    [str(driver_bin), "--verify-uid-only"],
+                    capture_output=True, text=True, timeout=4, check=False,
+                )
+                self.assertNotEqual(mapped_gid.returncode, 0)
+                self.assertIn("empty gid_map", mapped_gid.stderr)
+            unreadable = subprocess.run(
+                [str(driver_bin), str(root / "missing-setgroups")],
+                capture_output=True, text=True, timeout=4, check=False,
+            )
+            self.assertNotEqual(unreadable.returncode, 0)
+            self.assertIn("missing-setgroups", unreadable.stderr)
+            # allow 状态但写入受系统策略拒绝时，只能转 UID-only 映射。
+            blocked = root / "setgroups-allow-readonly"
+            blocked.write_text("allow\n", encoding="ascii")
+            blocked.chmod(0o444)
+            if os.geteuid() != 0:
+                fallback = subprocess.run(
+                    [str(driver_bin), str(blocked)], capture_output=True, text=True,
+                    timeout=4, check=False,
+                )
+                self.assertEqual(fallback.returncode, 0, fallback.stdout + fallback.stderr)
+                self.assertEqual(fallback.stderr, "")
+            with mock.patch.dict(os.environ, {"ICODE_TEST_SETGROUPS_PATH": str(blocked)}):
+                restricted = probe_native_sandbox(LandlockSandbox(helper=str(driver_bin)))
+                positive = subprocess.run(
+                    LandlockSandbox(helper=str(driver_bin)).wrap(
+                        ["/bin/true"], workspace=root,
+                    ), capture_output=True, text=True, timeout=4, check=False,
+                )
+                started = root / "uid-only-child-started"
+                survived = root / "uid-only-child-survived"
+                child_code = (
+                    "import os, time\nfrom pathlib import Path\n"
+                    "os.setsid()\n"
+                    f"Path({str(started)!r}).write_text('ready')\n"
+                    "time.sleep(1.2)\n"
+                    f"Path({str(survived)!r}).write_text('escaped')\n"
+                )
+                parent_code = (
+                    "import subprocess, sys, time\nfrom pathlib import Path\n"
+                    f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                    "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                    "stderr=subprocess.DEVNULL)\n"
+                    "for _ in range(200):\n"
+                    f"    if Path({str(started)!r}).exists(): break\n"
+                    "    time.sleep(0.01)\n"
+                    "else: raise RuntimeError('detached child did not start')\n"
+                )
+                cleaned = subprocess.run(
+                    LandlockSandbox(helper=str(driver_bin)).wrap(
+                        [sys.executable, "-c", parent_code], workspace=root,
+                    ), capture_output=True, text=True, timeout=5, check=False,
+                )
+            self.assertTrue(restricted.ready, restricted.detail)
+            self.assertEqual(positive.returncode, 0, positive.stderr)
+            self.assertEqual(positive.stderr, "")
+            self.assertEqual(cleaned.returncode, 0, cleaned.stderr)
+            self.assertTrue(started.exists(), cleaned.stderr)
+            time.sleep(1.4)
+            self.assertFalse(survived.exists(), "UID-only 路径遗留了脱组后代")
+            blocked.chmod(0o644)
+            blocked.write_text("unknown\n", encoding="ascii")
+            malformed = subprocess.run(
+                [str(driver_bin), str(blocked)], capture_output=True, text=True,
+                timeout=4, check=False,
+            )
+            self.assertNotEqual(malformed.returncode, 0)
+            self.assertIn("unexpected setgroups state", malformed.stderr)
+            script = (
+                "import sys\n"
+                "from pathlib import Path\n"
+                "sys.path.insert(0, sys.argv[2])\n"
+                "from icode.isolation import LandlockSandbox, probe_native_sandbox\n"
+                "assert Path('/proc/self/setgroups').read_text().strip() == 'deny'\n"
+                "result = probe_native_sandbox(LandlockSandbox(helper=sys.argv[1]))\n"
+                "print(result.detail)\n"
+                "raise SystemExit(0 if result.ready else 1)\n"
+            )
+            result = subprocess.run(
+                [*prefix, sys.executable, "-c", script, str(helper),
+                 str(Path(__file__).resolve().parents[1] / "src")],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_恒等包装不能通过原生负向探测(self) -> None:
         result = probe_native_sandbox(NoIsolation())
         self.assertFalse(result.ready)
