@@ -47,7 +47,7 @@ class TestPolicyCommandBroker(unittest.TestCase):
                 result = default_registry().invoke("run_command", ctx, {
                     "argv": [sys.executable, "-c", "import os; print(os.getenv('ICODE_TEST_SECRET', 'clean'))", secret],
                 })
-            self.assertTrue(result.ok, result.content)
+            self.assertTrue(result.ok, f"{result.content} meta={result.meta}")
             self.assertIn("clean", result.content)
             self.assertNotIn(secret, result.content)
             self.assertNotIn(secret, str(result.meta))
@@ -61,7 +61,7 @@ class TestPolicyCommandBroker(unittest.TestCase):
             result = default_registry().invoke("run_command", _context(root), {
                 "argv": [sys.executable, "-c", "import project_module; print(project_module.VALUE)"],
             })
-            self.assertTrue(result.ok, result.content)
+            self.assertTrue(result.ok, f"{result.content} meta={result.meta}")
             self.assertIn("42", result.content)
 
     def test_策略命令输出超限即停止且回执有界(self) -> None:
