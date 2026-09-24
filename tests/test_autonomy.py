@@ -24,7 +24,7 @@ from icode.autonomy import (
     normalize_intent_payload,
 )
 from icode.backends import FakeBackend
-from icode.chain import ChainReport, run_chain
+from icode.chain import ChainReport
 from icode.runner import StepReport
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.tickets import TicketError, TicketService
@@ -289,11 +289,49 @@ class RecordingControl:
         self.steps.append(step)
 
 
+def _attach_verified_test_session(control: RecordingControl,
+                                  context: ExecutionContext) -> SimpleNamespace:
+    root = context.workspace.resolve()
+
+    def policy(step: str) -> SandboxPolicy:
+        protected = root / ".git"
+        return SandboxPolicy(
+            schema_version=1, run_id="test-run", ticket_id=context.ticket_id,
+            step=step, workspace_root=root, read_roots=(root,), write_roots=(root,),
+            deny_read_roots=(), deny_write_roots=(protected,),
+            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+            wall_timeout_seconds=10, output_limit_bytes=1024,
+            protected_paths=(protected,),
+        )
+
+    control.session = SimpleNamespace(policy=policy)
+    return SimpleNamespace(
+        is_real_isolation=True, policy_contract_ready=True,
+        prepare_policy=lambda candidate: None,
+        wrap_policy=lambda argv, **kwargs: list(argv),
+    )
+
+
 class RecordingWorkspaceSession:
-    def __init__(self, workspace_root: Path, *, fail_close: bool = False) -> None:
+    def __init__(self, workspace_root: Path, ticket_id: str, run_id: str,
+                 *, fail_close: bool = False) -> None:
         self.workspace_root = workspace_root
+        self.ticket_id = ticket_id
+        self.run_id = run_id
         self.fail_close = fail_close
         self.close_calls = 0
+
+    def policy(self, step: str) -> SandboxPolicy:
+        root = self.workspace_root.resolve()
+        protected = root / ".git"
+        return SandboxPolicy(
+            schema_version=1, run_id=self.run_id, ticket_id=self.ticket_id,
+            step=step, workspace_root=root, read_roots=(root,), write_roots=(root,),
+            deny_read_roots=(), deny_write_roots=(protected,),
+            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+            wall_timeout_seconds=10, output_limit_bytes=1024,
+            protected_paths=(protected,),
+        )
 
     def close(self) -> None:
         self.close_calls += 1
@@ -320,7 +358,7 @@ class RecordingWorkspaceManager:
         if self.open_error is not None:
             raise self.open_error
         session = RecordingWorkspaceSession(
-            self.workspace_root,
+            self.workspace_root, ticket_id, run_id,
             fail_close=self.fail_close,
         )
         self.sessions.append(session)
@@ -328,6 +366,27 @@ class RecordingWorkspaceManager:
 
 
 class TestNativeChainExecutor(unittest.TestCase):
+    def test_直接执行有待办步骤但无会话时不启动模型(self) -> None:
+        settings = require_skill()
+        with temp_workspace() as workspace:
+            context = ExecutionContext(
+                ticket_id="AUTO-NO-SESSION", out_dir=workspace / "ticket",
+                workspace=workspace, requirement="must isolate",
+                status="init_in_progress", completed_steps=(),
+            )
+            executor = NativeChainExecutor(
+                settings, backend=FakeBackend(["完成"]),
+                step_runner=lambda *args, **kwargs: self.fail("模型不得启动"),
+            )
+            with patch("icode.autonomy.ControlPlane.trace", return_value=SimpleNamespace(
+                returncode=0, data={"ok": True, "ticket_id": context.ticket_id,
+                                    "status": "init_in_progress"},
+            )):
+                result = executor.execute(context, RecordingControl())
+            self.assertEqual(result, ExecutionResult(
+                state="blocked", last_step="plan", error_code="isolation_unavailable",
+            ))
+
     def test_自动会话无策略级后端时阻断模型执行(self) -> None:
         settings = require_skill()
         with temp_workspace() as workspace:
@@ -432,6 +491,7 @@ class TestNativeChainExecutor(unittest.TestCase):
             completed_steps=(),
         )
         control = RecordingControl()
+        executor.sandbox = _attach_verified_test_session(control, context)
 
         with patch(
             "icode.autonomy.ControlPlane.trace",
@@ -515,6 +575,8 @@ class TestNativeChainExecutor(unittest.TestCase):
             status="stale",
             completed_steps=(),
         )
+        control = RecordingControl()
+        executor.sandbox = _attach_verified_test_session(control, context)
 
         with patch(
             "icode.autonomy.ControlPlane.trace",
@@ -527,7 +589,7 @@ class TestNativeChainExecutor(unittest.TestCase):
                 },
             ),
         ):
-            result = executor.execute(context, RecordingControl())
+            result = executor.execute(context, control)
 
         self.assertEqual(
             result,
@@ -691,7 +753,9 @@ class TestNativeChainExecutor(unittest.TestCase):
                     backend=FakeBackend(["完成"]),
                     step_runner=lambda *args, **kwargs: report,
                 )
-                result = executor.execute(context, RecordingControl())
+                control = RecordingControl()
+                executor.sandbox = _attach_verified_test_session(control, context)
+                result = executor.execute(context, control)
 
             self.assertEqual(
                 result,
@@ -704,7 +768,7 @@ class TestNativeChainExecutor(unittest.TestCase):
             self.assertNotIn("private", repr(result))
             self.assertNotIn("/tmp", repr(result))
 
-    def test_真实控制面工单由native_executor原地续跑(self) -> None:
+    def test_真实控制面工单无会话时不能由native_executor原地续跑(self) -> None:
         settings = require_skill()
         with temp_workspace() as workspace:
             service = TicketService(
@@ -718,39 +782,10 @@ class TestNativeChainExecutor(unittest.TestCase):
             record = service._resolve_ticket_record(ticket_id)
             before = sorted((workspace / ".icode_output").iterdir())
             plan_path = record.out_dir / "01_plan.md"
-            backend = FakeBackend([
-                {"content": "", "tool_calls": [{
-                    "id": "write-plan",
-                    "name": "write_file",
-                    "arguments": {
-                        "path": str(plan_path),
-                        "content": "# Native plan\n\nContinue the existing ticket.\n",
-                    },
-                }]},
-                "完成",
-                '{"step":"check requirement","next_thought_needed":true}',
-                '{"step":"check boundary","next_thought_needed":true}',
-                '{"step":"confirm evidence","next_thought_needed":false}',
-            ])
-            native_calls = 0
-
-            def real_first_step(*args, **kwargs):
-                nonlocal native_calls
-                native_calls += 1
-                if native_calls == 1:
-                    return run_chain(*args, **kwargs)
-                step = kwargs["steps"][0]
-                return ChainReport(
-                    stopped_at=step,
-                    reason="bounded integration stop",
-                    out_dir=str(kwargs["out_dir"]),
-                    ticket_id=kwargs["ticket_id"],
-                )
-
             executor = NativeChainExecutor(
                 settings,
-                backend=backend,
-                step_runner=real_first_step,
+                backend=FakeBackend(["完成"]),
+                step_runner=lambda *args, **kwargs: self.fail("模型不得启动"),
             )
             context = ExecutionContext(
                 ticket_id=ticket_id,
@@ -764,11 +799,12 @@ class TestNativeChainExecutor(unittest.TestCase):
 
             result = executor.execute(context, control)
 
-            self.assertEqual(result.state, "blocked")
-            self.assertGreaterEqual(native_calls, 1)
-            self.assertEqual(control.steps[0], "plan")
+            self.assertEqual(result, ExecutionResult(
+                state="blocked", last_step="plan", error_code="isolation_unavailable",
+            ))
+            self.assertEqual(control.steps, [])
             self.assertEqual(sorted((workspace / ".icode_output").iterdir()), before)
-            self.assertTrue(plan_path.is_file())
+            self.assertFalse(plan_path.exists())
             self.assertEqual(
                 json.loads((record.out_dir / ".ico_metadata.json").read_text(
                     encoding="utf-8"
@@ -838,6 +874,22 @@ class TestAutonomyManager(unittest.TestCase):
         )
         self.managers.append(manager)
         return manager
+
+    def test_原生自动执行器缺少隔离工作区时不能启用(self) -> None:
+        ticket_id = self._ticket("native-without-workspace-manager")
+        before = self.service.ticket_detail(ticket_id)
+        executor = NativeChainExecutor(
+            self.settings, backend=FakeBackend(["完成"]),
+            step_runner=lambda *args, **kwargs: self.fail("模型不得启动"),
+        )
+        manager = self._manager(executor)
+        self.assertFalse(manager.enabled)
+        with self.assertRaises(AutonomyError) as caught:
+            manager.handle_intent(ticket_id, {
+                "intent": "start", "request_id": "native-without-workspace-start",
+            })
+        self.assertEqual(caught.exception.code, "capability_disabled")
+        self.assertEqual(self.service.ticket_detail(ticket_id), before)
 
     def test_无workspace_manager保持原工作区兼容(self) -> None:
         ticket_id = self._ticket("legacy-workspace-ticket")
@@ -1433,8 +1485,15 @@ class TestAutonomyManager(unittest.TestCase):
             self.settings,
             backend=FakeBackend(["完成"]),
             step_runner=runner,
+            sandbox=SimpleNamespace(
+                is_real_isolation=True, policy_contract_ready=True,
+                prepare_policy=lambda policy: None,
+                wrap_policy=lambda argv, **kwargs: list(argv),
+            ),
         )
-        manager = self._manager(executor)
+        manager = self._manager(
+            executor, workspace_manager=RecordingWorkspaceManager(self.workspace / "isolated"),
+        )
 
         with patch("icode.autonomy.chain_steps", return_value=("audit",)), patch(
             "icode.autonomy.ControlPlane.trace",
@@ -1481,8 +1540,15 @@ class TestAutonomyManager(unittest.TestCase):
             self.settings,
             backend=FakeBackend(["完成"]),
             step_runner=runner,
+            sandbox=SimpleNamespace(
+                is_real_isolation=True, policy_contract_ready=True,
+                prepare_policy=lambda policy: None,
+                wrap_policy=lambda argv, **kwargs: list(argv),
+            ),
         )
-        manager = self._manager(executor)
+        manager = self._manager(
+            executor, workspace_manager=RecordingWorkspaceManager(self.workspace / "isolated"),
+        )
 
         with patch("icode.autonomy.chain_steps", return_value=("audit",)), patch(
             "icode.autonomy.ControlPlane.trace",

@@ -164,6 +164,11 @@ class NativeChainExecutor:
             return ExecutionResult(state="failed", error_code="invalid_status")
 
         pending = chain_steps(contracts, from_status=status)
+        if pending and getattr(control, "session", None) is None:
+            # 直接调用执行器也不能绕过 AutonomyManager 的工作区前置门禁。
+            return ExecutionResult(
+                state="blocked", last_step=pending[0], error_code="isolation_unavailable",
+            )
         last_step: str | None = None
         for step in pending:
             control.safe_point(step)
@@ -269,7 +274,12 @@ class AutonomyManager:
     ) -> None:
         self.tickets = tickets
         self.executor = executor
-        self.enabled = bool(enabled and executor is not None)
+        # 原生执行器不能沿用通用 Executor 的无工作区兼容路径；缺少会话时
+        # NativeChainExecutor 不会收到 SandboxPolicy，必须在接收 intent 前阻断。
+        self.enabled = bool(
+            enabled and executor is not None
+            and (not isinstance(executor, NativeChainExecutor) or workspace_manager is not None)
+        )
         self.workspace_manager = workspace_manager
         self._lock = threading.RLock()
         self._workers: dict[str, threading.Thread] = {}
