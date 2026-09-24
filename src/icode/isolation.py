@@ -482,6 +482,16 @@ class MacSeatbeltSandbox:
         )
         return "\n".join(filter(None, rules)) + "\n"
 
+    def experimental_wrap_policy(
+        self, argv: Sequence[str], *, policy: SandboxPolicy, network: bool = False,
+    ) -> list[str]:
+        """仅供真实联测；无 ``wrap_policy``，生产自动链仍保持阻断。"""
+        if network:
+            raise ValueError("Seatbelt experimental policy does not support network grants")
+        if not argv:
+            raise ValueError("empty command")
+        return [self.sandbox_exec, "-p", self._policy_profile(policy), *argv]
+
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         return [self.sandbox_exec, "-p", self._profile(workspace, network), *argv]
 

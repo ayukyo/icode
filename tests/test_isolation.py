@@ -524,6 +524,71 @@ class TestSandboxWrapping(unittest.TestCase):
             self.assertIn(f'(require-not (literal "{secret}"))', profile)
             self.assertNotIn("(allow network*)", profile)
 
+    def test_seatbelt_实验策略包装不开放完整_policy_接口(self) -> None:
+        with temp_workspace() as root:
+            workspace = (root / "workspace").resolve()
+            workspace.mkdir()
+            policy = SandboxPolicy(
+                schema_version=1, run_id="mac-experiment", ticket_id="mac-experiment",
+                step="code", workspace_root=workspace, read_roots=(workspace,),
+                write_roots=(workspace,), deny_read_roots=(), deny_write_roots=(),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+            )
+            sandbox = MacSeatbeltSandbox()
+            self.assertFalse(hasattr(sandbox, "wrap_policy"))
+            wrapped = sandbox.experimental_wrap_policy(["true"], policy=policy)
+            self.assertEqual(wrapped[0], "sandbox-exec")
+            self.assertIn("(deny default)", wrapped[wrapped.index("-p") + 1])
+            with self.assertRaises(ValueError):
+                sandbox.experimental_wrap_policy(["true"], policy=policy, network=True)
+
+    @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt + broker 联测")
+    def test_seatbelt_实验策略经命令broker执行(self) -> None:
+        with temp_workspace() as root:
+            workspace = (root / "workspace").resolve()
+            workspace.mkdir()
+            protected = workspace / ".git"
+            protected.write_text("protected", encoding="utf-8")
+            policy = SandboxPolicy(
+                schema_version=1, run_id="mac-broker", ticket_id="mac-broker",
+                step="code", workspace_root=workspace, read_roots=(workspace,),
+                write_roots=(workspace,), deny_read_roots=(),
+                deny_write_roots=(protected,), network_mode=NetworkMode.DENY,
+                allowed_domains=(), process_limit=8, wall_timeout_seconds=10,
+                output_limit_bytes=2048, protected_paths=(protected,),
+            )
+            sandbox = MacSeatbeltSandbox(
+                sandbox_exec=shutil.which("sandbox-exec") or "sandbox-exec"
+            )
+            allowed = execute_policy_command(
+                sandbox.experimental_wrap_policy(
+                    [sys.executable, "-c", "from pathlib import Path; "
+                     "Path('allowed').write_text('ok'); print('ready')"], policy=policy,
+                ),
+                cwd=workspace, policy=policy, timeout=5,
+            )
+            self.assertEqual(allowed.exit_code, 0, allowed)
+            self.assertIsNone(allowed.error, allowed)
+            self.assertEqual((workspace / "allowed").read_text(encoding="utf-8"), "ok")
+            denied = execute_policy_command(
+                sandbox.experimental_wrap_policy(
+                    [sys.executable, "-c", "from pathlib import Path; "
+                     "Path('.git').write_text('changed')"], policy=policy,
+                ),
+                cwd=workspace, policy=policy, timeout=5,
+            )
+            self.assertNotEqual(denied.exit_code, 0, denied)
+            self.assertEqual(protected.read_text(encoding="utf-8"), "protected")
+            network = execute_policy_command(
+                sandbox.experimental_wrap_policy(
+                    [sys.executable, "-c", "import socket; socket.socket()"],
+                    policy=policy,
+                ),
+                cwd=workspace, policy=policy, timeout=5,
+            )
+            self.assertNotEqual(network.exit_code, 0, network)
+
     @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt 实测")
     def test_seatbelt_策略profile真实阻断受保护文件与外部路径(self) -> None:
         with temp_workspace() as root:
