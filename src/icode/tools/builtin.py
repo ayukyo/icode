@@ -641,6 +641,11 @@ def run_command(
                 "output_truncated": outcome.output_truncated,
                 "cleanup_ok": outcome.cleanup_ok,
                 "cleanup_errno": outcome.cleanup_errno,
+                # cleanup_ok 只表示 broker 的进程组收束调用成功，不是整树证明。
+                "cleanup_scope": (
+                    "not_started" if outcome.error in ("launch_failed", "unsupported_platform")
+                    else "process_group"
+                ),
                 **({"error": outcome.error} if outcome.error else {}),
             },
             opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,

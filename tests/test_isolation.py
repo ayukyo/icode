@@ -674,9 +674,9 @@ class TestSandboxWrapping(unittest.TestCase):
             )
             parent_code = (
                 "import subprocess, sys, time\nfrom pathlib import Path\n"
-                f"subprocess.Popen([sys.executable, '-c', {grandchild_code!r}], "
-                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
-                "stderr=subprocess.DEVNULL)\n"
+                "with open('seatbelt-grandchild-output', 'wb') as sink:\n"
+                f"    subprocess.Popen([sys.executable, '-c', {grandchild_code!r}], "
+                "stdout=sink, stderr=subprocess.STDOUT)\n"
                 "for _ in range(200):\n"
                 "    if Path('seatbelt-grandchild-started').exists(): break\n"
                 "    time.sleep(0.01)\n"

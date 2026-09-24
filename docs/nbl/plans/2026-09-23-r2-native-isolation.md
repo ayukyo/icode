@@ -70,6 +70,7 @@
 - 程序化 `AutonomyManager` 原先可以组合 `NativeChainExecutor` 与空 `workspace_manager`，导致 `control.session=None` 时跳过策略链并运行模型。现在此组合在接收 `start` 之前将自主能力置为 disabled，工单状态保持不变；直接调用 `NativeChainExecutor.execute()` 遇到有待办步骤却无会话也在模型调用前返回 `isolation_unavailable`。已完成且无待办步骤的工单仍可报告成功；通用假执行器的无工作区状态机兼容路径保留，原先依赖裸执行的测试已改用受控假会话。
 - 进程数上限的原语核查：[`RLIMIT_NPROC`](https://man7.org/linux/man-pages/man2/getrlimit.2.html) 按真实用户 ID 合计线程/进程，且对 root/特定能力豁免，不能代表单工单 `process_limit`；Linux [`pids.max`](https://docs.kernel.org/admin-guide/cgroup-v2.html) 才是子树级硬上限，但需可委派的 cgroup，不能由“仅 pip 安装”推定所有主机都有。当前 broker 的超时/输出上限及 Linux 禁止脱组属于不同合同，不能代替进程数证明。`resource_limits` 在 v1 一致性合同中非 critical，最终 9/10 门槛容许它独立标为未通过，但所有 critical（特别是整树回收）必须实测通过，且运行时不得把未落实的 `process_limit` 宣称为已强制执行。
 - Linux 真实联测补上另一条清理分支：主进程正常退出前派生子进程与后台孙进程，孙进程尝试 `setsid` 脱组；助手拒绝脱组后，broker 在主进程返回时清理同组后代，延迟标记未写出。此前仅覆盖超时清理的用例不能替代这条正常退出路径。该结果仍只证明受测 Linux 进程组约束，不代表 macOS 脱组后代、宿主异常退出后的全树回收或硬进程数上限已通过。
+- 策略命令回执新增 `cleanup_scope`，明确区分未启动与仅收束 `process_group`；现有 `cleanup_ok` 只表示组信号与主进程等待操作成功，不是“所有后代已消失”的证明。该字段是口径修正，不提升后端能力。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。

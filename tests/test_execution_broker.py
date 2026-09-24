@@ -53,6 +53,7 @@ class TestPolicyCommandBroker(unittest.TestCase):
             self.assertNotIn(secret, str(result.meta))
             self.assertEqual(result.meta["policy_hash"], ctx.policy.policy_hash)
             self.assertIn("cleanup_errno", result.meta)
+            self.assertEqual(result.meta["cleanup_scope"], "process_group")
 
     def test_策略命令仍能运行本地_src_布局项目(self) -> None:
         with temp_workspace() as root:
@@ -85,6 +86,7 @@ class TestPolicyCommandBroker(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertEqual(result.meta["error"], "launch_failed")
             self.assertTrue(result.meta["cleanup_ok"])
+            self.assertEqual(result.meta["cleanup_scope"], "not_started")
             malformed = default_registry().invoke("run_command", ctx, {
                 "argv": ["bad\x00command"],
             })
