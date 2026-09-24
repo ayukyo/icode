@@ -191,7 +191,7 @@ Read [the security policy](SECURITY.md) before using ICODE with sensitive reposi
 - [Design decisions](docs/design-decisions.md) — decisions, rejected alternatives, and invariants
 - [Roadmap](docs/roadmap.md) — completed phases and remaining gaps
 - [Upstream contract](docs/upstream-contract.md) — the exact read/write interface to ICODE-SKILL
-- [Agent landscape](docs/agent-landscape.md) — evidence-bounded comparison with adjacent projects
+- [Living agent landscape](docs/agent-landscape-live.md) — source-anchored open-source comparisons and adoption decisions
 - [Brand assets](docs/brand-assets.md) — reused icon source, license, and content hashes
 
 ## Contributing

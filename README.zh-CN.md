@@ -181,7 +181,7 @@ ICODE-SKILL 控制面写入。
 - [方案与决策](docs/design-decisions.md)：已确认决策、被否方案和架构不变量
 - [开发路线图](docs/roadmap.md)：已完成阶段与剩余缺口
 - [上游依赖面](docs/upstream-contract.md)：ICODE-SKILL 的精确读写接口
-- [竞品与格局](docs/agent-landscape.md)：有证据边界的相邻项目比较
+- [持续竞品对照](docs/agent-landscape-live.md)：随开发阶段更新的开源 Agent 架构借鉴与取舍
 - [品牌资产](docs/brand-assets.md)：复用图标的来源、许可和内容哈希
 
 ## 参与贡献

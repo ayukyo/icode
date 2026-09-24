@@ -8,6 +8,7 @@ Thanks for helping make ICODE Agent easier to verify and harder to misreport.
 2. Keep the execution-plane/control-plane boundary intact: this repository must not copy ICODE-SKILL's gates or state machine into a second source of truth.
 3. State the user-visible problem, the evidence that it is real, and the smallest useful change.
 4. For security-sensitive findings, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
+5. Run a small, read-only parallel source study for relevant open-source agents as described in [AGENTS.md](AGENTS.md). Record adoption/defer/rejection and source versions in the [living landscape](docs/agent-landscape-live.md); a trivial documentation fix may state why no study was needed.
 
 ## Local setup
 

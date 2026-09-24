@@ -2,7 +2,7 @@
 
 - 日期：2026-09-24
 - 状态：**R2.1 工作区边界已验收；R2.2 在 main 实施中，尚未通过退出条件**
-- 依据：[主流格局调研](./agent-landscape.md) · [方案与决策记录](./design-decisions.md)
+- 依据：[持续竞品对照](./agent-landscape-live.md) · [方案与决策记录](./design-decisions.md)
 
 ---
 
@@ -10,7 +10,7 @@
 
 调研结论收敛成两条：
 
-1. **不做什么** —— 避开四个已被填满的坑，并明确列出"不学"清单（这才是调研的主要价值）
+1. **不做什么** —— 结合持续竞品对照，定期复核不学清单，避免把旧热度结论当成当前事实
 2. **先做什么** —— 把「**过程可审计**」做成内核，而不是把功能做多
 
 **战略主线**：功能广度上我们注定打不过 OpenCode / Codex / Claude Code，
@@ -91,7 +91,7 @@
 |---|---|
 | 预研报告 | ✅ `docs/preresearch-2026-09-22.md` |
 | 方案与决策记录 D1–D10 | ✅ `docs/design-decisions.md` |
-| 格局调研 | ✅ `docs/agent-landscape.md` |
+| 格局调研 | ✅ 历史快照 `docs/agent-landscape.md`；持续对照 `docs/agent-landscape-live.md` |
 | 子模块（ssh + main + 浅克隆） | ✅ `vendor/icode-skill` @ `a4ddbce` |
 | E2E 靶场 | ✅ `tests/fixtures/pycalc`（主）+ `tests/fixtures/demo`（附加） |
 | 跨平台换行治理 | ✅ `.gitattributes` + 4 个 C 文件规范化回 LF |

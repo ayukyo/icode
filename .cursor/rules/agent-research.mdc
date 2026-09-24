@@ -1,0 +1,8 @@
+---
+description: Keep open-source Agent architecture research parallel with ICODE development
+alwaysApply: true
+---
+
+# 并行研究约定
+
+所有开发任务遵守仓库根目录 [AGENTS.md](../../AGENTS.md) 的“开发与并行研究”规则。启动独立只读调研，优先核对 [持续竞品对照](../../docs/agent-landscape-live.md) 中与当前改动相关的 1–3 个项目；按源码版本和观察日期记录证据，选择性采纳，不阻塞安全的实现与验收。

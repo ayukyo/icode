@@ -1,0 +1,69 @@
+# 开源 AI Agent 持续对照与借鉴记录
+
+- 最近观察：2026-09-24；下次全量复核：不晚于 2026-10-24
+- 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
+- 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
+
+## 如何持续执行
+
+每个开发任务由实现线和只读研究线同时开始。研究线先回答：真实问题是什么、ICODE/ICODE-SKILL 是否已有实现、借鉴会影响哪些调用链；然后从下表选最相关的 1–3 项，检查上游**实际源码或官方文档**。工具支持时交给独立子代理；不支持时在实现工作的独立时间片完成。调研不替代实现和测试，也不因 GitHub 限流阻塞安全工作；受限时标记“待复核”。
+
+主阶段开始和结束时更新本页的“观察日期 / 上游提交或发布版本 / 证据 / 采纳决定 / ICODE 验收”，至少每 30 天复核观察名单。上游归档、许可证变化、安全问题、关键架构变化立即复核。只有实质代码或文档变动才触发设计重评；`pushed_at` 变化本身不是行为变化证据。变更历史由 Git 保留。
+
+记录格式：`任务/阶段 | 上游项目与 commit/tag | 源码或官方文档链接 | 上游已实现/仅设计 | ICODE 现状 | 采纳/暂缓/不适配 + 原因 | 验收测试 | 观察日期`。不能把星数、博客转述、源码注释或设计草案当作已验证能力；不能因为相似而复制许可不明的代码。
+
+## 20 个观察对象
+
+这是按 ICODE 相关性选取的**观察样本**，并非经过统一口径排序的“热度前 20”。“深读”表示本次检查了指定官方资料并记录上游提交；“观察”只列候选，机制判断仍需开发任务中核对。
+
+| 分组 | 项目 | 本次关注点 | 证据深度 |
+|---|---|---|---|
+| 编码 Agent | [Codex](https://github.com/openai/codex) | OS 沙箱与批准分离、跨平台边界 | 深读 |
+| 编码 Agent | [Gemini CLI](https://github.com/google-gemini/gemini-cli) | 工具沙箱、按需授权 | 深读 |
+| 编码 Agent | [Qwen Code](https://github.com/QwenLM/qwen-code) | 沙箱中未适配扩展的拒绝策略 | 深读 |
+| 编码 Agent | [OpenCode](https://github.com/anomalyco/opencode) | 会话持久化与恢复 | 深读；V2 规范仅作设计材料 |
+| 编码 Agent | [Aider](https://github.com/Aider-AI/aider) | 仓库映射与上下文选择 | 深读；活跃度待复核 |
+| 编码 Agent | [Cline](https://github.com/cline/cline) | Plan/Act、可见审批、检查点 | 深读 |
+| 编码 Agent | [Kilo Code](https://github.com/Kilo-Org/kilocode) | 工单/多工作区管理 | 观察 |
+| 编码 Agent | [Continue](https://github.com/continuedev/continue) | IDE/CLI 入口、规则 | 观察 |
+| 编码 Agent | [Goose](https://github.com/aaif-goose/goose) | 扩展与任务执行 | 观察 |
+| 编码 Agent | [OpenHands](https://github.com/OpenHands/OpenHands) | UI 与 Agent 服务边界 | 深读 |
+| 编码 Agent | [SWE-agent](https://github.com/SWE-agent/SWE-agent) | 工具接口与基准验证 | 观察 |
+| 编码 Agent | [Pi](https://github.com/earendil-works/pi) | 精简执行内核 | 观察；沙箱不能默认假设 |
+| 编码 Agent | [Open Interpreter](https://github.com/openinterpreter/openinterpreter) | 本地工具调用与用户确认 | 观察 |
+| 编排/运行时 | [LangGraph](https://github.com/langchain-ai/langgraph) | 检查点、恢复、幂等副作用 | 深读 |
+| 编排/运行时 | [CrewAI](https://github.com/crewAIInc/crewAI) | 多 Agent 流程 | 观察 |
+| 编排/运行时 | [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) | 状态与多 Agent 组合 | 观察 |
+| 编排/运行时 | [smolagents](https://github.com/huggingface/smolagents) | 轻量工具循环 | 观察 |
+| 编排/运行时 | [Pydantic AI](https://github.com/pydantic/pydantic-ai) | 类型化工具集合 | 观察 |
+| 编排/运行时 | [Langflow](https://github.com/langflow-ai/langflow) | 可视化编排（只做反例/局部参考） | 观察 |
+| 编排/运行时 | [Agno](https://github.com/agno-agi/agno) | 会话存储与运行时 | 观察 |
+
+归档/许可观察池（不混入 20 项）：[Roo Code](https://github.com/RooCodeInc/Roo-Code)、[Flowise](https://github.com/FlowiseAI/Flowise)、[AutoGen](https://github.com/microsoft/autogen)、[AutoGPT](https://github.com/Significant-Gravitas/AutoGPT)。本次研究提示其维护或许可边界可能变化；需要用当时的仓库状态和具体子目录许可证重新确认，不能仅凭旧快照下结论。
+
+## 本次深读的版本锚点
+
+以下是 2026-09-24 调研时观察到的默认分支短提交号；不是长期锁定依赖。链接指向上游仓库或官方资料，下一轮必须重新核对提交、文档和实际代码是否一致。
+
+| 项目 | 本次上游提交 | 核对入口 | 目前可借鉴的边界 |
+|---|---|---|---|
+| Codex | `b19cebe` | [仓库](https://github.com/openai/codex) · [授权与安全](https://learn.chatgpt.com/docs/agent-approvals-security) · [Windows 沙箱](https://learn.chatgpt.com/docs/windows/windows-sandbox) | 批准不等于 OS 隔离；Windows 安全级别需分层表述 |
+| Gemini CLI | `87de0b6` | [沙箱文档](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md) | 以工具为边界，对未覆盖路径显式处理 |
+| Qwen Code | `06192c7` | [沙箱文档](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sandbox.md) | 未适配的 MCP/扩展/宿主 Git 不应静默放行 |
+| OpenCode | `0f54984`（`dev`） | [V2 会话设计](https://github.com/anomalyco/opencode/blob/dev/specs/v2/session.md) | 仅参考持久化设计，采纳前检查落地代码 |
+| Aider | `5dc9490` | [Repo Map 文档](https://github.com/Aider-AI/aider/blob/main/aider/website/docs/repomap.md) | 相关上下文裁剪可借鉴，不照搬索引实现 |
+| Cline | `b51c27b` | [仓库 README](https://github.com/cline/cline/blob/main/README.md) | 人能理解的计划/执行和审批呈现 |
+| OpenHands | `e069808` | [仓库 README](https://github.com/OpenHands/OpenHands/blob/main/README.md) | UI/运行服务分离可借鉴；容器依赖不符合 pip-only 目标 |
+| LangGraph | `7daa3ab` | [持久执行文档](https://github.com/langchain-ai/docs/blob/main/src/oss/langgraph/durable-execution.mdx) | 恢复须处理副作用幂等；文档仓库另行核对 |
+
+## 当前开发决策
+
+| 阶段/需求 | 上游启发与证据 | ICODE 取舍 | 验收边界 |
+|---|---|---|---|
+| R2 跨平台隔离 | [Codex 授权/安全](https://learn.chatgpt.com/docs/agent-approvals-security)、[Gemini 沙箱](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md) | **采纳机制**：审批、OS 强制隔离、进程清理分开报告；不把应用层限制叫安全沙箱。macOS 按已确认的 Codex 式边界：文件/网络强制继承，同组清理，主动脱组后代不承诺零残留。 | Linux/macOS/Windows 各自的真实宿主测试和 policy critical 项；当前 R2 **未完成**，自动模式不得因此放行。 |
+| R2 Git/网络 broker | [Qwen 沙箱](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sandbox.md)、[Codex Windows 沙箱](https://learn.chatgpt.com/docs/windows/windows-sandbox) | **采纳原则，实施待验收**：未覆盖的扩展和 Git/网络路径 fail-closed；仅靠 Python 包安装的取舍须按平台能力声明。 | 宿主 Git 不得绕开工作区/网络策略；无权限时拒绝而非降级宣称成功。 |
+| 后续会话恢复 | [LangGraph 持久执行](https://github.com/langchain-ai/docs/blob/main/src/oss/langgraph/durable-execution.mdx)、[OpenCode V2 设计](https://github.com/anomalyco/opencode/blob/dev/specs/v2/session.md) | **暂缓到恢复阶段**：先定义写前意图、幂等键和不确定副作用的人工确认，不承诺任意副作用自动重放。 | 断电/崩溃恢复与重复写副作用的故障注入测试。 |
+| 后续上下文选择 | [Aider Repo Map](https://github.com/Aider-AI/aider/blob/main/aider/website/docs/repomap.md) | **采纳方向**：按任务检索相关结构，保留 ICODE-SKILL 必须输入与证据门禁；不复制其代码。 | 大仓库命中率、token 成本、必需上下文不遗漏。 |
+| 后续办公工单 UI | [Cline](https://github.com/cline/cline/blob/main/README.md)、[OpenHands](https://github.com/OpenHands/OpenHands/blob/main/README.md) | **选择性采纳**：计划/执行切换、可读审批、工单状态与执行服务分层；不把 Langflow 式节点画布作为小白首页。 | 中英双语、普通白领可新建/查找工单并理解状态；会话/自动模式清晰标识安全边界。 |
+
+本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
