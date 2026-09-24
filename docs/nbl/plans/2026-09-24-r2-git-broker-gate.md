@@ -46,3 +46,9 @@
 - 对照 [Git 官方 `git status` 格式文档](https://git-scm.com/docs/git-status)，实现 `src/icode/git_status.py` 的纯字节解析：要求完整 NUL 终止；保留任意路径字节；重命名/复制记录按格式消费紧随其后的旧路径字段；忽略可扩展的 `#` 头；损坏或未知状态记录整体拒绝，不返回部分结果。
 - 测试覆盖实际 Git CLI 输出、空格/换行/非 UTF-8 路径、重命名双路径、未合并/未跟踪/忽略类型、已文档化状态组合，以及错误字段和截断数据。此模块自身从不执行 Git。
 - **阶段结论：前置解析可用，Git broker 未实现。** 模块没有 OS 权限、网络、helper、仓库路径或会话控制能力，因此不是安全边界；它没有注册成工具，`git_broker_unavailable` 必须保留。接线前仍须完成上面的会话身份、固定参数、helper 禁止、只读 gitdir、无网络、原仓不变、恶意仓库和三平台 wheel 验收。
+
+### 独立格式审查修正（2026-09-25）
+
+- 上游 Git 回归用例确认 `git add --intent-to-add` 会产生合法 `.A` 状态；解析器现接受该组合，并以真实 Git CLI 输出回归。[Git 上游用例](https://github.com/git/git/blob/master/t/t7064-wtstatus-pv2.sh#L1934-L1953)
+- mode 字段由“任意六位八进制”收紧为已知类型集合 `000000`、`040000`、`100644`、`100755`、`120000`、`160000`，保留删除与 sparse-index 目录模式并拒绝 `777777`；依据 [Git 数据模型](https://git-scm.com/docs/gitdatamodel)与[索引格式](https://git-scm.com/docs/index-format)。
+- 仍忽略格式有效但未知的 `# ` 扩展头；拒绝空头、`#` 后无分隔符或重复空白的畸形头。测试同时验证合法模式集合、`.A`、畸形头及损坏记录 fail-closed。

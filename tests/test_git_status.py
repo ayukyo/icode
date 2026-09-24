@@ -47,6 +47,32 @@ class TestPorcelainV2Parser(unittest.TestCase):
             {("tracked", b"tracked.txt"), ("untracked", b"new file.txt")},
         )
 
+    def test_accepts_intent_to_add_status_from_real_git(self) -> None:
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("需要 Git CLI 验证真实 porcelain-v2 输出")
+
+        with tempfile.TemporaryDirectory(prefix="icode-git-intent-to-add-") as raw:
+            root = Path(raw)
+
+            def run_git(*args: str) -> bytes:
+                result = subprocess.run(
+                    [git, *args], cwd=root, capture_output=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr.decode(errors="replace"))
+                return result.stdout
+
+            run_git("init", "--quiet")
+            (root / "intent.txt").write_text("intent\n", encoding="utf-8")
+            run_git("add", "--intent-to-add", "--", "intent.txt")
+            entries = parse_porcelain_v2(
+                run_git("status", "--porcelain=v2", "-z", "--untracked-files=all"),
+            )
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual((entries[0].path, entries[0].index_status, entries[0].worktree_status),
+                         (b"intent.txt", ".", "A"))
+
     def test_tracked_path_keeps_xy_and_arbitrary_path_bytes(self) -> None:
         oid = b"a" * 40
         path = b"space and\nnewline-\xff.txt"
@@ -113,14 +139,26 @@ class TestPorcelainV2Parser(unittest.TestCase):
                 )
                 self.assertEqual(len(parse_porcelain_v2(output)), 1)
 
+    def test_accepts_documented_file_modes_including_sparse_index_and_deletion(self) -> None:
+        oid = b"f" * 40
+        for mode in (b"000000", b"040000", b"100644", b"100755", b"120000", b"160000"):
+            with self.subTest(mode=mode):
+                output = (
+                    b"1 M. N... " + mode + b" " + mode + b" " + mode
+                    + b" " + oid + b" " + oid + b" path\0"
+                )
+                self.assertEqual(len(parse_porcelain_v2(output)), 1)
+
     def test_malformed_or_truncated_stream_fails_closed(self) -> None:
         malformed = (
+            b"#\0",
             b"1 M. N... 100644 100644 100644 " + b"d" * 40 + b" " + b"d" * 40 + b" path",
             b"2 R. N... 100644 100644 100644 " + b"d" * 40 + b" " + b"d" * 40 + b" R100 new\0",
             b"1 Z. N... 100644 100644 100644 " + b"d" * 40 + b" " + b"d" * 40 + b" path\0",
             b"1 DA N... 100644 100644 100644 " + b"d" * 40 + b" " + b"d" * 40 + b" path\0",
             b"1 DD N... 100644 100644 100644 " + b"d" * 40 + b" " + b"d" * 40 + b" path\0",
             b"1 M. N... 10064x 100644 100644 " + b"d" * 40 + b" " + b"d" * 40 + b" path\0",
+            b"1 M. N... 777777 777777 777777 " + b"d" * 40 + b" " + b"d" * 40 + b" path\0",
             b"1 M. N... 100644 100644 100644 " + b"d" * 40 + b" " + b"d" * 39 + b" path\0",
             b"? \0",
             b"x unsupported\0",

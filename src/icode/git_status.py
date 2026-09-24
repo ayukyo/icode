@@ -24,7 +24,9 @@ class GitStatusEntry:
     original_path: bytes | None = None
 
 
-_MODE = re.compile(rb"[0-7]{6}\Z")
+_MODES = frozenset({
+    b"000000", b"040000", b"100644", b"100755", b"120000", b"160000",
+})
 _OBJECT_ID = re.compile(rb"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _RENAME_SCORE = re.compile(rb"([RC])([0-9]{1,3})\Z")
 _ORDINARY_STATUS_CHARS = frozenset(".MTADRC")
@@ -54,6 +56,12 @@ def parse_porcelain_v2(output: bytes) -> tuple[GitStatusEntry, ...]:
         if not record:
             raise GitStatusParseError("porcelain-v2 stream contains an empty record")
         if record.startswith(b"#"):
+            if (
+                not record.startswith(b"# ")
+                or len(record) == 2
+                or record[2:3] in (b" ", b"\t")
+            ):
+                raise GitStatusParseError("malformed porcelain-v2 header")
             continue
 
         if record.startswith(b"1 "):
@@ -130,7 +138,7 @@ def _validate_tracked_fields(fields: list[bytes]) -> str:
     if not (
         (index_status in "MTARC" and worktree_status in ".MTD")
         or (index_status == "D" and worktree_status == ".")
-        or (index_status == "." and worktree_status in "MTDRC")
+        or (index_status == "." and worktree_status in "MTDRCA")
     ):
         raise GitStatusParseError("invalid tracked XY status combination")
     _validate_submodule(fields[1])
@@ -168,7 +176,7 @@ def _validate_submodule(value: bytes) -> None:
 
 
 def _validate_mode(value: bytes) -> None:
-    if _MODE.fullmatch(value) is None:
+    if value not in _MODES:
         raise GitStatusParseError("invalid file mode")
 
 

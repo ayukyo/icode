@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import http.server
 import json
@@ -17,7 +18,7 @@ from urllib.parse import urlsplit
 
 from icode.windows_appcontainer import _AppContainerSetupError
 from icode.windows_appcontainer import _walk_workspace, run_windows_appcontainer
-from icode.windows_job import _build_windows_environment_block
+from icode.windows_job import _build_windows_environment_block, run_windows_job
 
 
 class TestWindowsAppContainer(unittest.TestCase):
@@ -95,6 +96,72 @@ class TestWindowsAppContainer(unittest.TestCase):
             self.assertTrue(result.executed, result)
             self.assertEqual(result.exit_code, 0, result)
             self.assertTrue(result.cleanup_ok, result)
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
+    def test_普通Job与AppContainer使用相同最小Unicode环境块(self) -> None:
+        """Use a matching safe environment block to isolate the AppContainer launch path."""
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        executable = system_root / "System32" / "whoami.exe"
+        target_executable = os.path.normcase(str(executable))
+        observed_blocks: list[str] = []
+        observed_metadata: list[str] = []
+
+        def build_and_observe(
+            executable_path: str | os.PathLike[str],
+            cwd: str | os.PathLike[str],
+            system_root_path: str | os.PathLike[str],
+        ) -> str:
+            block = _build_windows_environment_block(
+                executable_path, cwd, system_root_path,
+            )
+            if os.path.normcase(os.fspath(executable_path)) == target_executable:
+                observed_blocks.append(block)
+                entries = [entry for entry in block.split("\0") if entry]
+                names = [
+                    entry[:entry.index("=", 1)] if entry.startswith("=")
+                    else entry.split("=", 1)[0]
+                    for entry in entries
+                ]
+                observed_metadata.append(
+                    f"chars={len(block)} utf16_bytes={len(block.encode('utf-16-le'))} "
+                    f"nul_chars={block.count(chr(0))} names={names} "
+                    f"sha256={hashlib.sha256(block.encode('utf-16-le')).hexdigest()}"
+                )
+            return block
+
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-matched-env-") as raw:
+            workspace = Path(raw) / "task"
+            workspace.mkdir()
+            with mock.patch(
+                "icode.windows_job._build_windows_environment_block",
+                side_effect=build_and_observe,
+            ):
+                ordinary = run_windows_job(
+                    [str(executable)], cwd=workspace, timeout_seconds=10,
+                )
+                appcontainer = run_windows_appcontainer(
+                    [str(executable)], cwd=workspace, timeout_seconds=10,
+                    process_limit=2,
+                )
+
+        self._workflow_notice(
+            "matched minimal Unicode environment control",
+            f"ordinary=executed:{ordinary.executed},exit:{ordinary.exit_code},"
+            f"error:{ordinary.error},cleanup:{ordinary.cleanup_ok}; "
+            f"appcontainer=executed:{appcontainer.executed},exit:{appcontainer.exit_code},"
+            f"error:{appcontainer.error},cleanup:{appcontainer.cleanup_ok},"
+            f"detail:{appcontainer.detail}; captured_blocks={len(observed_blocks)} "
+            f"metadata={observed_metadata[:2]}",
+        )
+
+        self.assertTrue(ordinary.executed, ordinary)
+        self.assertEqual(ordinary.exit_code, 0, ordinary)
+        self.assertTrue(ordinary.cleanup_ok, ordinary)
+        self.assertGreaterEqual(len(observed_blocks), 2, "both primary launches must build an environment")
+        self.assertEqual(observed_blocks[0], observed_blocks[1])
+        self.assertTrue(appcontainer.executed, appcontainer)
+        self.assertEqual(appcontainer.exit_code, 0, appcontainer)
+        self.assertTrue(appcontainer.cleanup_ok, appcontainer)
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
     def test_在AppContainer中运行Python并解析工作路径(self) -> None:
