@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import http.server
+import json
 import os
 from pathlib import Path
 import sys
@@ -18,6 +19,13 @@ from icode.windows_appcontainer import _walk_workspace, run_windows_appcontainer
 
 
 class TestWindowsAppContainer(unittest.TestCase):
+    def _workflow_notice(self, name: str, detail: str) -> None:
+        """Expose only bounded probe outcomes in public Actions annotations."""
+        if os.environ.get("GITHUB_ACTIONS") != "true":
+            return
+        safe_detail = detail[:500].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        print(f"::notice title=R2.3 {name}::{safe_detail}", flush=True)
+
     def test_workspace目录拒绝链接与硬链接(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-paths-") as raw:
             root = Path(raw)
@@ -58,6 +66,49 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(result.error, "unsupported_platform")
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
+    def test_在AppContainer中运行Python并解析工作路径(self) -> None:
+        """Verify the actual pip-installed runtime shape, not only cmd.exe."""
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-python-") as raw:
+            root = Path(raw).resolve()
+            workspace = root / "task"
+            workspace.mkdir()
+            marker = workspace / "python-probe.json"
+            probe = (
+                "import json\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                "result = {}\n"
+                "for label, value in [('cwd', Path.cwd()), ('executable', Path(sys.executable))]:\n"
+                "    try:\n"
+                "        result[label] = str(value.resolve(strict=True))\n"
+                "    except Exception as exc:\n"
+                "        result[label] = f'{type(exc).__name__}: {exc}'\n"
+                f"Path({str(marker)!r}).write_text(json.dumps(result), encoding='utf-8')\n"
+            )
+            result = run_windows_appcontainer(
+                [sys.executable, "-S", "-c", probe],
+                cwd=workspace, timeout_seconds=15, process_limit=4,
+            )
+            self._workflow_notice(
+                "Python runtime",
+                f"executed={result.executed} exit={result.exit_code} error={result.error} "
+                f"cleanup={result.cleanup_ok} detail={result.detail}",
+            )
+            self.assertTrue(result.executed, result)
+            self.assertEqual(result.exit_code, 0, result)
+            self.assertTrue(result.cleanup_ok, result)
+            self.assertTrue(marker.is_file(), "AppContainer Python did not write its workspace marker")
+            path_result = marker.read_text(encoding="utf-8")
+            self._workflow_notice("Python path resolution", path_result)
+            resolved = json.loads(path_result)
+            self.assertEqual(set(resolved), {"cwd", "executable"})
+            for label, value in resolved.items():
+                self.assertTrue(
+                    Path(value).is_absolute(),
+                    f"AppContainer could not resolve {label}: {value}",
+                )
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
     def test_仅开放工单目录且默认拒绝网络(self) -> None:
         requests: list[str] = []
 
@@ -96,6 +147,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 connection.close()
                 self.assertEqual(requests, ["/probe"])
                 requests.clear()
+                self._workflow_notice("host loopback positive control", "listener reachable")
 
                 system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
                 curl = system_root / "System32" / "curl.exe"
@@ -132,6 +184,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                     [str(command), "/d", "/c", str(script)],
                     cwd=workspace, timeout_seconds=12, process_limit=8,
                 )
+                self._workflow_notice(
+                    "workspace and network probe",
+                    f"executed={result.executed} exit={result.exit_code} error={result.error} "
+                    f"cleanup={result.cleanup_ok} detail={result.detail}",
+                )
 
                 self.assertTrue(result.executed, result)
                 self.assertEqual(result.exit_code, 0, result)
@@ -165,6 +222,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                     [str(command), "/d", "/c", str(timeout_script)],
                     cwd=workspace, timeout_seconds=2, process_limit=8,
                 )
+                self._workflow_notice(
+                    "timeout cleanup probe",
+                    f"executed={timed_out.executed} error={timed_out.error} "
+                    f"cleanup={timed_out.cleanup_ok} detail={timed_out.detail}",
+                )
                 self.assertTrue(timed_out.executed, timed_out)
                 self.assertEqual(timed_out.error, "timeout", timed_out)
                 self.assertTrue(timed_out.cleanup_ok, timed_out)
@@ -187,6 +249,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                 limited = run_windows_appcontainer(
                     [str(command), "/d", "/c", str(limited_parent)],
                     cwd=workspace, timeout_seconds=5, process_limit=1,
+                )
+                self._workflow_notice(
+                    "process limit probe",
+                    f"executed={limited.executed} exit={limited.exit_code} error={limited.error} "
+                    f"cleanup={limited.cleanup_ok} detail={limited.detail}",
                 )
                 self.assertTrue(limited.executed, limited)
                 self.assertTrue(limited.cleanup_ok, limited)
