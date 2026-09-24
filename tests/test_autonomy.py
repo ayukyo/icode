@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -1917,11 +1918,20 @@ class TestAutonomyManager(unittest.TestCase):
         self.assertTrue(executor.started.wait(2))
         service.fail_ticket_id = first_ticket
         try:
-            before = time.monotonic()
-            manager.shutdown(timeout=0.05)
-            elapsed = time.monotonic() - before
-
-            self.assertLess(elapsed, 0.5)
+            # timeout 限定的是落盘之后的 join 阶段；整体 wall time 还含
+            # 两张工单的控制面 I/O，不应拿固定 0.5 秒阈值推断 join 越界。
+            with ExitStack() as stack:
+                join_spies = [
+                    stack.enter_context(patch.object(worker, "join", wraps=worker.join))
+                    for worker in manager._workers.values()
+                ]
+                manager.shutdown(timeout=0.05)
+            join_timeouts = [
+                call.args[0] for spy in join_spies for call in spy.call_args_list
+            ]
+            self.assertTrue(join_timeouts)
+            self.assertTrue(all(0 <= value <= 0.05 for value in join_timeouts))
+            self.assertLessEqual(sum(join_timeouts), 0.055)
             self.assertCountEqual(
                 service.shutdown_update_calls, [first_ticket, second_ticket])
             self.assertIn(

@@ -9,10 +9,13 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from contextlib import redirect_stdout
+from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from icode.autonomy import ExecutionResult
-from icode.cli import _build_parser
+from icode.cli import _build_parser, cmd_workbench
 from icode.workbench import ASSETS_DIR, MAX_BODY_BYTES, WorkbenchServer
 from icode.workspace import WorkspaceBusyError, WorkspaceError
 from tests._support import require_skill, temp_workspace
@@ -608,6 +611,27 @@ class TestWorkbenchAssets(unittest.TestCase):
 
 
 class TestWorkbenchCLI(unittest.TestCase):
+    def test_自动模式未就绪时启动文案不得声称已启用(self) -> None:
+        args = _build_parser().parse_args([
+            "workbench", "--workspace", "/srv/project", "--enable-autonomous",
+            "--no-browser",
+        ])
+        sandbox = SimpleNamespace(is_real_isolation=True, policy_contract_ready=False)
+        output = StringIO()
+        with patch("icode.cli.load_settings", return_value=object()), \
+             patch("icode.cli._build_runner", return_value=(None, None, None, None, sandbox)), \
+             patch("icode.autonomy.NativeChainExecutor"), \
+             patch("icode.workbench.WorkbenchServer") as server_class, \
+             patch("threading.Event") as event_class, redirect_stdout(output):
+            server_class.return_value.start.return_value = "http://127.0.0.1:1234/"
+            event_class.return_value.wait.side_effect = KeyboardInterrupt
+            self.assertEqual(cmd_workbench(args), 0)
+        self.assertIn("自主执行：已配置，执行前阻断（策略级隔离未就绪）", output.getvalue())
+        self.assertEqual(
+            server_class.call_args.kwargs["autonomy_limits"]["isolation_level"],
+            "policy_unavailable",
+        )
+
     def test_策略后端未就绪状态必须在服务端保留(self) -> None:
         limits = WorkbenchServer._safe_autonomy_limits({
             "max_turns": 7, "budget_tokens": 1200,

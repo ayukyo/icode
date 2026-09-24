@@ -622,7 +622,12 @@ def cmd_workbench(args: argparse.Namespace) -> int:
     url = server.start()
     print(f"  工作台：{url}")
     print(f"  工程：{Path(args.workspace).expanduser().resolve()}")
-    print(f"  自主执行：{'已启用' if args.enable_autonomous else '未启用'}")
+    autonomy_status = (
+        "未启用" if not args.enable_autonomous else
+        "已启用" if isolation_level == "enforced" else
+        "已配置，执行前阻断（策略级隔离未就绪）"
+    )
+    print(f"  自主执行：{autonomy_status}")
     print("  按 Ctrl+C 结束")
     if not args.no_browser:
         webbrowser.open(url)
