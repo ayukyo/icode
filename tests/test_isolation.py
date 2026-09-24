@@ -187,6 +187,35 @@ class TestProbe(unittest.TestCase):
                 time.sleep(1.5)
                 self.assertFalse((code_root / "late-child").exists())
 
+            started = checkout / "parent-exit-started"
+            survived = checkout / "parent-exit-survived"
+            child_code = (
+                "from pathlib import Path; import time; "
+                "Path('parent-exit-started').write_text('ready'); "
+                "time.sleep(1); Path('parent-exit-survived').write_text('escaped')"
+            )
+            wrapped = sandbox.wrap(
+                [sys.executable, "-c", child_code], workspace=checkout,
+            )
+            parent_code = (
+                "import subprocess, time\n"
+                "from pathlib import Path\n"
+                f"subprocess.Popen({wrapped!r}, stdin=subprocess.DEVNULL, "
+                "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                "for _ in range(200):\n"
+                f"    if Path({str(started)!r}).exists(): break\n"
+                "    time.sleep(0.01)\n"
+                "else: raise RuntimeError('sandbox child did not start')\n"
+            )
+            parent = subprocess.run(
+                [sys.executable, "-c", parent_code],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            self.assertEqual(parent.returncode, 0, parent.stderr)
+            self.assertTrue(started.is_file())
+            time.sleep(1.2)
+            self.assertFalse(survived.exists(), "宿主退出后沙箱命令仍在执行")
+
     def test_恒等包装不能通过原生负向探测(self) -> None:
         result = probe_native_sandbox(NoIsolation())
         self.assertFalse(result.ready)

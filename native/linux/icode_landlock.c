@@ -10,6 +10,7 @@
 #include <linux/filter.h>
 #include <linux/landlock.h>
 #include <linux/seccomp.h>
+#include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -142,6 +143,24 @@ static int install_network_deny(void) {
     return 0;
 }
 
+static int install_parent_death_signal(void) {
+    pid_t parent = getppid();
+    if (parent <= 1) {
+        fprintf(stderr, "sandbox parent is already gone\n");
+        return -1;
+    }
+    if (prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0) {
+        perror("PR_SET_PDEATHSIG");
+        return -1;
+    }
+    /* Parent exit between getppid and prctl would otherwise leave us alive. */
+    if (getppid() != parent) {
+        fprintf(stderr, "parent exited before sandbox setup\n");
+        return -1;
+    }
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc < 5 || strcmp(argv[1], "--workspace") != 0) {
         fprintf(stderr, "usage: icode-landlock --workspace PATH [--runtime-read PATH]... -- COMMAND [ARG...]\n");
@@ -170,6 +189,10 @@ int main(int argc, char **argv) {
         return 2;
     }
     ++command_index;
+    if (install_parent_death_signal() != 0) {
+        free(runtime_roots);
+        return 1;
+    }
     char *workspace = realpath(argv[2], NULL);
     if (!workspace) {
         perror("workspace realpath");
