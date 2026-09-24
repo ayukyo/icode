@@ -62,7 +62,9 @@ static int add_path(int ruleset, const char *path, uint64_t rights, int required
     return result;
 }
 
-static int install_filesystem(const char *workspace) {
+static int install_filesystem(const char *workspace,
+                              const char *const *runtime_roots,
+                              size_t runtime_root_count) {
     int abi = (int)syscall(SYS_landlock_create_ruleset, NULL, 0,
                            LANDLOCK_CREATE_RULESET_VERSION);
     /* ABI 3 is required to restrict both truncate and cross-directory refer. */
@@ -88,6 +90,9 @@ static int install_filesystem(const char *workspace) {
     if (add_path(fd, "/dev/null", LANDLOCK_ACCESS_FS_READ_FILE |
                  LANDLOCK_ACCESS_FS_WRITE_FILE, 1) != 0) goto fail;
     if (add_path(fd, workspace, FS_READ | FS_WRITE, 1) != 0) goto fail;
+    for (size_t i = 0; i < runtime_root_count; ++i) {
+        if (add_path(fd, runtime_roots[i], FS_READ, 1) != 0) goto fail;
+    }
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
         perror("PR_SET_NO_NEW_PRIVS");
         goto fail;
@@ -138,23 +143,49 @@ static int install_network_deny(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 5 || strcmp(argv[1], "--workspace") != 0 ||
-        strcmp(argv[3], "--") != 0) {
-        fprintf(stderr, "usage: icode-landlock --workspace PATH -- COMMAND [ARG...]\n");
+    if (argc < 5 || strcmp(argv[1], "--workspace") != 0) {
+        fprintf(stderr, "usage: icode-landlock --workspace PATH [--runtime-read PATH]... -- COMMAND [ARG...]\n");
         return 2;
     }
+    const char **runtime_roots = calloc((size_t)argc, sizeof(*runtime_roots));
+    if (!runtime_roots) {
+        perror("calloc");
+        return 2;
+    }
+    size_t runtime_root_count = 0;
+    int command_index = 3;
+    while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
+        if (strcmp(argv[command_index], "--runtime-read") != 0 ||
+            command_index + 1 >= argc || argv[command_index + 1][0] != '/') {
+            fprintf(stderr, "invalid runtime read root\n");
+            free(runtime_roots);
+            return 2;
+        }
+        runtime_roots[runtime_root_count++] = argv[command_index + 1];
+        command_index += 2;
+    }
+    if (command_index + 1 >= argc) {
+        fprintf(stderr, "missing command\n");
+        free(runtime_roots);
+        return 2;
+    }
+    ++command_index;
     char *workspace = realpath(argv[2], NULL);
     if (!workspace) {
         perror("workspace realpath");
+        free(runtime_roots);
         return 2;
     }
-    if (chdir(workspace) != 0 || install_filesystem(workspace) != 0 ||
+    if (chdir(workspace) != 0 ||
+        install_filesystem(workspace, runtime_roots, runtime_root_count) != 0 ||
         install_network_deny() != 0) {
         free(workspace);
+        free(runtime_roots);
         return 1;
     }
     free(workspace);
-    execvp(argv[4], argv + 4);
+    free(runtime_roots);
+    execvp(argv[command_index], argv + command_index);
     perror("execvp");
     return 127;
 }

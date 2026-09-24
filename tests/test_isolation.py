@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import unittest
 import shutil
 import subprocess
@@ -61,6 +62,14 @@ class TestProbe(unittest.TestCase):
                 capture_output=True, text=True, timeout=4, check=False,
             )
             self.assertEqual(positive.returncode, 0, positive.stderr)
+            installed_python = subprocess.run(
+                sandbox.wrap(
+                    [sys.executable, "-c", "import sys; print(sys.prefix)"],
+                    workspace=checkout,
+                ),
+                capture_output=True, text=True, timeout=4, check=False,
+            )
+            self.assertEqual(installed_python.returncode, 0, installed_python.stderr)
             denied = subprocess.run(
                 sandbox.wrap(
                     [str(system_python), "-c", "import socket; socket.socket(socket.AF_UNIX)"],
@@ -126,7 +135,9 @@ class TestProbe(unittest.TestCase):
             )
             with manager.open("real-layered", "run-1") as session:
                 code_root = session.workspace_root
-                self.assertEqual(session.policy("plan").write_roots, (code_root,))
+                policy = session.policy("plan")
+                self.assertEqual(policy.write_roots, (code_root,))
+                self.assertEqual(sandbox._checked_policy_workspace(policy), code_root)
                 allowed = subprocess.run(
                     sandbox.wrap(
                         [
@@ -307,6 +318,43 @@ class TestWslAndJobLimits(unittest.TestCase):
 
 
 class TestSandboxWrapping(unittest.TestCase):
+    def test_landlock_实验性策略路径映射拒绝不可表达合同(self) -> None:
+        with temp_workspace() as root:
+            workspace = (root / "code").resolve()
+            workspace.mkdir()
+            protected = root / ".git"
+            protected.write_text("gitdir: protected\n", encoding="utf-8")
+            policy = SandboxPolicy(
+                schema_version=1, run_id="map-test", ticket_id="map-test", step="code",
+                workspace_root=workspace,
+                read_roots=(workspace,), write_roots=(workspace,),
+                deny_read_roots=(), deny_write_roots=(protected,),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=10, output_limit_bytes=1024,
+                protected_paths=(protected,),
+            )
+            sandbox = LandlockSandbox(helper="/not-needed-for-static-check")
+            self.assertEqual(sandbox._checked_policy_workspace(policy), workspace)
+            self.assertFalse(callable(getattr(sandbox, "wrap_policy", None)))
+            for broad_root in (Path("/"), Path("/tmp"), Path.home()):
+                with self.assertRaises(RuntimeError):
+                    sandbox._validated_runtime_roots((broad_root,))
+            for changed in (
+                replace(policy, write_roots=(workspace / "nested",)),
+                replace(policy, read_roots=(workspace, root)),
+                replace(policy, deny_read_roots=(workspace / "secret",)),
+                replace(policy, deny_write_roots=(workspace / ".git",),
+                        protected_paths=(workspace / ".git",)),
+                replace(policy, deny_read_roots=(Path("/usr/bin"),)),
+                replace(policy, deny_write_roots=(Path("/dev/null"),),
+                        protected_paths=(Path("/dev/null"),)),
+                replace(policy, network_mode=NetworkMode.PROXY_ALLOWLIST,
+                        allowed_domains=("example.com",)),
+            ):
+                with self.subTest(changed=changed):
+                    with self.assertRaises(ValueError):
+                        sandbox._checked_policy_workspace(changed)
+
     def test_基线包装是恒等变换(self) -> None:
         sb = NoIsolation()
         argv = ["python", "-m", "unittest"]

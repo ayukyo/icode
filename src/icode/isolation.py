@@ -238,13 +238,73 @@ class LandlockSandbox:
     def is_real_isolation(self) -> bool:
         return True
 
+    @staticmethod
+    def _validated_runtime_roots(prefixes: Sequence[Path]) -> tuple[Path, ...]:
+        """仅授权 Python 安装前缀，不把用户主目录当作运行时。"""
+        home = Path.home().resolve()
+        roots = tuple(sorted({path.resolve() for path in prefixes}, key=str))
+        broad = {Path("/"), Path("/tmp"), Path("/var"), Path("/home")}
+        for root in roots:
+            if (
+                root in broad or home.is_relative_to(root)
+                or not root.is_dir()
+            ):
+                raise RuntimeError("Python 运行时前缀过宽或不可用")
+        return roots
+
+    def _runtime_read_roots(self) -> tuple[Path, ...]:
+        return self._validated_runtime_roots(
+            (Path(sys.prefix), Path(sys.base_prefix))
+        )
+
+    def _checked_policy_workspace(self, policy: SandboxPolicy) -> Path:
+        """仅核对当前助手能表达的文件/网络子集；不是完整策略绑定。"""
+        workspace = policy.workspace_root
+
+        def intersects(left: Path, right: Path) -> bool:
+            return left.is_relative_to(right) or right.is_relative_to(left)
+
+        if policy.network_mode is not NetworkMode.DENY or policy.allowed_domains:
+            raise ValueError("Landlock helper 尚不支持网络临时授权")
+        if policy.read_roots != (workspace,) or policy.write_roots != (workspace,):
+            raise ValueError("Landlock helper 仅支持单一代码读写根")
+        if any(
+            intersects(path, workspace)
+            for path in (*policy.deny_read_roots, *policy.deny_write_roots)
+        ):
+            raise ValueError("Landlock 无法从可写根中排除受保护子路径")
+
+        # 助手有 Python/动态链接器所需的固定系统只读白名单，以及 /dev/null
+        # 这一写入例外。拒绝规则若与这些路径重叠，不能宣称已完整执行策略。
+        runtime_read = (
+            "/usr", "/bin", "/lib", "/lib64", "/sbin",
+            "/etc/ld.so.cache", "/etc/passwd", "/etc/nsswitch.conf",
+            "/dev/urandom", "/dev/null",
+        )
+        runtime_paths = tuple(map(Path, runtime_read)) + self._runtime_read_roots()
+        if any(
+            intersects(denied, allowed)
+            for denied in policy.deny_read_roots
+            for allowed in runtime_paths
+        ):
+            raise ValueError("Landlock 系统运行时读取白名单与拒读路径冲突")
+        if any(
+            intersects(denied, Path("/dev/null"))
+            for denied in policy.deny_write_roots
+        ):
+            raise ValueError("Landlock /dev/null 写入例外与拒写路径冲突")
+        return workspace
+
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         if network:
             raise RuntimeError("Landlock helper does not support network grants")
         helper = Path(self.helper).resolve()
         if not helper.is_file():
             raise RuntimeError("Landlock helper is unavailable")
-        return [str(helper), "--workspace", str(Path(workspace).resolve()), "--", *argv]
+        wrapped = [str(helper), "--workspace", str(Path(workspace).resolve())]
+        for root in self._runtime_read_roots():
+            wrapped.extend(("--runtime-read", str(root)))
+        return [*wrapped, "--", *argv]
 
     def describe(self) -> dict:
         return {

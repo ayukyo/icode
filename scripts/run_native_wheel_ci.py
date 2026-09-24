@@ -43,13 +43,21 @@ def main() -> int:
             clean_env = os.environ.copy()
             clean_env.pop("PYTHONPATH", None)
             code = (
+                "import subprocess, sys, tempfile; from pathlib import Path; "
                 "from icode.artifact_broker import ArtifactBroker; "
                 "from icode.execution_broker import execute_policy_command; "
                 "from icode.native_helper import bundled_linux_helper; "
                 "from icode.isolation import LandlockSandbox, probe_native_sandbox; "
                 "p = bundled_linux_helper(); assert p is not None, 'helper missing'; "
-                "r = probe_native_sandbox(LandlockSandbox(helper=str(p))); "
-                "print(r.detail); raise SystemExit(0 if r.ready else 1)"
+                "s = LandlockSandbox(helper=str(p)); "
+                "r = probe_native_sandbox(s); assert r.ready, r.detail; "
+                "t = tempfile.TemporaryDirectory(); "
+                "child = subprocess.run(s.wrap([sys.executable, '-c', "
+                "'import icode; print(icode.__name__)'], workspace=Path(t.name)), "
+                "capture_output=True, text=True, timeout=5); "
+                "assert child.returncode == 0, child.stderr[-300:]; "
+                "assert child.stdout.strip() == 'icode', child.stdout; "
+                "t.cleanup(); print('native helper and installed Python: ready')"
             )
             _run("probe installed wheel", [str(python), "-c", code], cwd=root, env=clean_env)
     except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
