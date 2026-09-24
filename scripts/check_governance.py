@@ -100,6 +100,19 @@ def check_workflow_contracts() -> list[str]:
             ),
         )
     )
+    problems.extend(
+        _require_tokens(
+            WORKFLOWS / "research-refresh.yml",
+            common + (
+                "schedule:",
+                "workflow_dispatch:",
+                "python3 scripts/check_agent_landscape.py",
+            ),
+        )
+    )
+    problems.extend(_require_tokens(WORKFLOWS / "ci.yml", (
+        "python scripts/check_agent_landscape.py --warn-only",
+    )))
     return problems
 
 
@@ -129,6 +142,7 @@ def main() -> int:
     required = (
         WORKFLOWS / "ci.yml",
         WORKFLOWS / "pages.yml",
+        WORKFLOWS / "research-refresh.yml",
         ROOT / ".github" / "dependabot.yml",
     )
     missing = [

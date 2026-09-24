@@ -167,3 +167,5 @@ jobs:
         run: python scripts/check_site.py
       - name: Validate repository governance
         run: python scripts/check_governance.py
+      - name: Remind about open-source Agent research freshness
+        run: python scripts/check_agent_landscape.py --warn-only
