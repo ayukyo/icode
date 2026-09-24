@@ -88,6 +88,9 @@ jobs:
         run: python scripts/run_native_probe_ci.py
       - name: Verify policy command broker
         run: python -m unittest tests.test_execution_broker -v
+      - name: Verify protected-path Seatbelt policy
+        if: runner.os == 'macOS'
+        run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_策略profile真实阻断受保护文件与外部路径 -v
       - name: Build and verify installed Linux wheel
         if: runner.os == 'Linux'
         run: python scripts/run_native_wheel_ci.py

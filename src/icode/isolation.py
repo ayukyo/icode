@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Protocol, Sequence, runtime_checkable
 
+from .sandbox_policy import NetworkMode, SandboxPolicy
+
 KIND_KERNEL = "kernel"
 KIND_CONTAINER = "container"
 KIND_NONE = "none"
@@ -329,6 +331,59 @@ class MacSeatbeltSandbox:
             ' (subpath \"/private/etc/ssl\"))'
             f"{net}"
         )
+
+    def _policy_profile(self, policy: SandboxPolicy) -> str:
+        """编译 R2 策略以供负向试验；完整验收前不开放 ``wrap_policy``。"""
+        if policy.network_mode is not NetworkMode.DENY:
+            raise ValueError("Seatbelt policy profile does not support network grants")
+
+        def quoted(path: Path) -> str:
+            value = str(path)
+            if any(ord(char) < 32 or ord(char) == 127 for char in value):
+                raise ValueError("Seatbelt policy path contains control characters")
+            return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+        def access_rule(action: str, roots: Sequence[Path], denied: Sequence[Path]) -> str:
+            filters = []
+            for root in roots:
+                parts = [f"(subpath {quoted(root)})"]
+                for blocked in denied:
+                    if blocked.is_relative_to(root):
+                        parts.extend((
+                            f"(require-not (literal {quoted(blocked)}))",
+                            f"(require-not (subpath {quoted(blocked)}))",
+                        ))
+                filters.append("(require-all " + " ".join(parts) + ")")
+            return f"(allow {action} " + " ".join(filters) + ")" if filters else ""
+
+        system_roots = tuple(
+            Path(path) for path in ("/usr", "/System", "/Library", "/bin", "/sbin", "/private/etc/ssl")
+        )
+        toolchain_roots = tuple(sorted(
+            {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()}, key=str,
+        ))
+        read_roots = tuple(dict.fromkeys((*policy.read_roots, *system_roots, *toolchain_roots)))
+        rules = [
+            "(version 1)",
+            "(deny default)",
+            "(allow process*)",
+            "(allow sysctl-read)",
+            f"(allow file-read-metadata file-test-existence (path-ancestors {quoted(policy.workspace_root)}))",
+            '(allow file-read* file-test-existence (literal "/"))',
+            access_rule("file-read*", read_roots, policy.deny_read_roots),
+            access_rule("file-write*", policy.write_roots, policy.deny_write_roots),
+        ]
+        # 可写目录本身不可被移动；受保护条目若位于其子目录，祖先也不可移动。
+        anchors = set(policy.write_roots)
+        for blocked in policy.deny_write_roots:
+            for parent in blocked.parents:
+                if any(parent.is_relative_to(root) for root in policy.write_roots):
+                    anchors.add(parent)
+        rules.extend(
+            f"(deny file-write-unlink (literal {quoted(path)}))"
+            for path in sorted(anchors, key=str)
+        )
+        return "\n".join(filter(None, rules)) + "\n"
 
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         return [self.sandbox_exec, "-p", self._profile(workspace, network), *argv]

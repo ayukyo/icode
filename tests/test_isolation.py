@@ -261,6 +261,68 @@ class TestSandboxWrapping(unittest.TestCase):
         with self.assertRaises(ValueError):
             sb._profile(Path("/tmp/work\nspace"), False)
 
+    def test_seatbelt_策略profile排除受保护路径(self) -> None:
+        with temp_workspace() as root:
+            workspace = (root / "workspace").resolve()
+            workspace.mkdir()
+            protected = workspace / ".git"
+            secret = workspace / "secret"
+            policy = SandboxPolicy(
+                schema_version=1, run_id="profile-test", ticket_id="profile-test", step="code",
+                workspace_root=workspace, read_roots=(workspace,), write_roots=(workspace,),
+                deny_read_roots=(secret,), deny_write_roots=(protected,),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=10, output_limit_bytes=1024,
+                protected_paths=(protected,),
+            )
+            profile = MacSeatbeltSandbox()._policy_profile(policy)
+            self.assertIn("(deny default)", profile)
+            self.assertIn(f'(require-not (literal "{protected}"))', profile)
+            self.assertIn(f'(require-not (subpath "{protected}"))', profile)
+            self.assertIn(f'(require-not (literal "{secret}"))', profile)
+            self.assertNotIn("(allow network*)", profile)
+
+    @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt 实测")
+    def test_seatbelt_策略profile真实阻断受保护文件与外部路径(self) -> None:
+        with temp_workspace() as root:
+            workspace = (root / "workspace").resolve()
+            outside = (root / "outside").resolve()
+            workspace.mkdir()
+            outside.mkdir()
+            protected = workspace / ".git"
+            protected.write_text("protected", encoding="utf-8")
+            secret = workspace / "secret"
+            secret.write_text("private", encoding="utf-8")
+            policy = SandboxPolicy(
+                schema_version=1, run_id="profile-probe", ticket_id="profile-probe", step="code",
+                workspace_root=workspace, read_roots=(workspace,), write_roots=(workspace,),
+                deny_read_roots=(secret,), deny_write_roots=(protected,),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=10, output_limit_bytes=1024,
+                protected_paths=(protected,),
+            )
+            sb = MacSeatbeltSandbox(sandbox_exec=shutil.which("sandbox-exec") or "sandbox-exec")
+            profile = sb._policy_profile(policy)
+
+            def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    [sb.sandbox_exec, "-p", profile, *command],
+                    cwd=workspace, capture_output=True, text=True, timeout=5, check=False,
+                )
+
+            touch = shutil.which("touch") or "/usr/bin/touch"
+            cat = shutil.which("cat") or "/bin/cat"
+            allowed = run([touch, str(workspace / "allowed")])
+            self.assertEqual(allowed.returncode, 0, allowed.stderr)
+            python = run([sys.executable, "-c", "print('policy-python-ready')"])
+            self.assertEqual(python.returncode, 0, python.stderr)
+            self.assertIn("policy-python-ready", python.stdout)
+            self.assertNotEqual(run([touch, str(protected)]).returncode, 0)
+            self.assertEqual(protected.read_text(encoding="utf-8"), "protected")
+            self.assertNotEqual(run([touch, str(outside / "blocked")]).returncode, 0)
+            self.assertFalse((outside / "blocked").exists())
+            self.assertNotEqual(run([cat, str(secret)]).returncode, 0)
+
     def test_容器_包装默认断网且只挂工作区(self) -> None:
         argv = ContainerSandbox(runtime="podman").wrap(["python", "-V"], workspace=Path("/tmp/ws"))
         self.assertEqual(argv[:3], ["podman", "run", "--rm"])
