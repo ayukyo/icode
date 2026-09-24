@@ -114,10 +114,12 @@
 - 属性列表大小查询回执 `error=122, bytes=48` 符合 Microsoft 文档规定的首次空指针查询行为；初始化和安全属性更新随后成功，故不把此现象当作根因。来源：[Microsoft InitializeProcThreadAttributeList](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-initializeprocthreadattributelist)、[Microsoft AppContainer 启动示例](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)。
 - **受限 A/B 已完成，未改变结果：**CI [#104](https://github.com/ayukyo/icode/actions/runs/36056228159) 对固定、无参数 `SystemRoot\\System32\\whoami.exe` 分别显式传路径和传 `NULL`；两边均为 `CreateProcessW` 错误 203，清理状态为 true。原生测试观测到两次实际环境块相等，flags 仍为 `0x00080404`。因此此单一差异不能解释/修复当前失败；它也不足以判定 hosted runner 是根因。AppContainer 启动门槛仍未通过，自动模式继续关闭；下一项差分等待独立研究筛选后实施。[Microsoft CreateProcessW 参数说明](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。
 
-### 2026-09-25 UTC Windows AppContainer profile 路径候选
+### 2026-09-25 UTC Windows AppContainer profile 路径与清理边界
 
 - 微软[启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)为 profile 给出 `LOCALAPPDATA` 目录示例，并指向 `GetAppContainerFolderPath`；其[API 页面](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)定义输出内存必须使用 `CoTaskMemFree`。这是核验某个显式环境变量是否影响 `CreateProcessW 203` 的依据，不代表 API 可以修复该错误。
-- Chromium 固定观察点 [`19e92f6`](https://chromium.googlesource.com/chromium/src/%2B/19e92f6a6088ac35a31d74cbf4d64b32ef54957c/sandbox/win/src/app_container_profile_base.cc#178) 先把 SID 转为字符串再调用该 API。ICODE 采纳 API 所需的 SID 表示与内存所有权处理，只新增开发期、固定系统探针的诊断路径；不复制 Chromium 代码、不传宿主环境值。
-- 同一个临时 SID 下执行 baseline 与 candidate，candidate 仅增加该 profile 的 `LOCALAPPDATA`；测试对比完整环境块除该键以外相等。**状态：候选已实现，等待 Windows x64/ARM64 CI 原生 A/B；不连接自动工单，安全沙箱与 R2 仍未验收。**
+- Chromium 固定观察点 [`19e92f6`](https://chromium.googlesource.com/chromium/src/%2B/19e92f6a6088ac35a31d74cbf4d64b32ef54957c/sandbox/win/src/app_container_profile_base.cc#178) 先把 SID 转为字符串再调用该 API。ICODE 采纳 API 所需的 SID 表示与内存所有权处理，不复制 Chromium 代码、不传宿主环境值。
+- 同一个临时 SID 下执行 baseline 与 candidate，candidate 仅增加该 profile 的 `LOCALAPPDATA`；测试对比完整环境块除该键以外相等。CI [#105 x64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836254760) 与 [#105 ARM64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836255639) 两边均观测到 baseline 启动失败 203、candidate 成功且清理通过。该固定探针结果验证了受控变量差异，但不构成完整沙箱通过；同一轮完整容器用例仍失败，因为正常启动路径尚未附加变量。当前改动已将 API 返回的 profile 路径附加到所有常规 AppContainer 命令，并在路径查询失败时保持 fail-closed 与准确清理状态；新代码的 Windows x64/ARM64 原生复验待 CI。
+- profile 目录是本次容器的独立临时数据区，不等同于仅工单目录可写。微软说明 profile 属于 per-user/per-app 存储，并警告句柄未关闭时删除可能不完整；ICODE 现按 API 约定重试删除并要求已知的 `LOCALAPPDATA` 目录消失，否则将清理标记失败。[CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile) · [DeleteAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-deleteappcontainerprofile)。CI 将另验证 Python 在 profile 中创建临时标记、容器退出后目录确实删除。
+- **状态：常规路径及 profile 数据清理门禁已实现，等待 Windows x64/ARM64 CI；**不连接自动工单，安全沙箱与 R2 仍未验收。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。

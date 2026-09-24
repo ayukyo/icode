@@ -299,7 +299,7 @@ R2.2 已合入 main 持续验证 Linux/macOS 原生后端。[CI #85](https://git
 
 R2.3 Windows AppContainer 原生探针现已有 CI #91–#104 结果；Windows x64 与 ARM64 多轮原生作业均失败，#92–#104 可见的 AppContainer `CreateProcessW` 错误码为 203。CI #96–#102 普通 Job 对照双架构通过；#104 windows-latest 普通 Job 对照也成功。问题收窄到 AppContainer 启动路径；runner 根因尚未证实。#97 修正了创建失败的回执分类。#98 证明省略 `=X:` 盘符伪变量无效；#99 证明显式对齐属性列表缓冲区仍未改变 203，因此该分配作为稳健性改进保留而非修复结论。#101/#102 同一最小 Unicode 环境块普通 Job 对照成功、AppContainer 仍失败；CI #102 的 profile 创建、属性初始化/更新成功；122/48 为预期大小查询回执。#104 固定 whoami 的 `lpApplicationName` 显式/NULL A/B 均返回 203 且环境块相等，CreateProcessW 根因仍未定位。macOS Intel/ARM64 的脱组后代握手负例在 #101 通过，按已批准的 Codex 式边界验收。Windows AppContainer 仍为实验态，不接自动工单。
 
-下一原生差分已加入：用官方 `GetAppContainerFolderPath` 获取当前 profile 的 `LOCALAPPDATA`，在同一 SID 下比较原环境块与仅添加该项的固定 `whoami.exe` 探针；Windows x64/ARM64 原生 CI 尚未验证。
+CI [#105 x64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836254760) 与 [#105 ARM64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836255639) 的固定 whoami 同-profile A/B 均显示：省略容器 `LOCALAPPDATA` 时 `CreateProcessW` 返回 203，加入系统 API 返回的 profile 路径后成功且清理通过；但当时完整 AppContainer 流程的常规命令尚未带该变量，整组作业仍失败。当前代码已将容器专属路径接入常规 AppContainer 命令及撤权探针，并新增路径查询失败不启动、准确报告清理状态、临时 profile 数据目录删除/残留核验的测试；这条常规路径尚待新的 Windows x64/ARM64 CI。Windows AppContainer 与完整 R2 仍未验收，自动模式保持关闭。
 
 ---
 

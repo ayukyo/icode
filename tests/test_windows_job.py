@@ -18,7 +18,6 @@ from icode.windows_job import (
     _append_windows_environment_value,
     _build_windows_environment_block,
     _is_fixed_system_whoami_probe,
-    _is_fixed_workspace_revocation_probe,
     probe_windows_job_cleanup,
     run_windows_job,
 )
@@ -172,7 +171,7 @@ class TestWindowsJob(unittest.TestCase):
             r"C:\Users\runner\AppData\Local\Packages\icode\AC",
         )
 
-    def test_LOCALAPPDATA差分拒绝宿主Job和非固定探针(self) -> None:
+    def test_AppContainer_LOCALAPPDATA要求有效SID和绝对路径(self) -> None:
         with temp_workspace() as workspace, \
              mock.patch("icode.windows_job.sys.platform", "win32"), \
              mock.patch("icode.windows_job.Path.is_absolute", return_value=True), \
@@ -180,34 +179,17 @@ class TestWindowsJob(unittest.TestCase):
              mock.patch("ctypes.WinDLL", create=True) as load_api:
             ordinary_job = run_windows_job(
                 [r"C:\Windows\System32\whoami.exe"], cwd=workspace,
-                timeout_seconds=2, _diagnostic_localappdata=r"C:\sandbox\profile",
+                timeout_seconds=2, _appcontainer_localappdata=r"C:\sandbox\profile",
             )
-            other_executable = run_windows_job(
+            relative_profile = run_windows_job(
                 [r"C:\Python\python.exe"], cwd=workspace,
                 timeout_seconds=2, _appcontainer_sid=123,
-                _diagnostic_localappdata=r"C:\sandbox\profile",
+                _appcontainer_localappdata="relative-profile",
             )
-        for result in (ordinary_job, other_executable):
+        for result in (ordinary_job, relative_profile):
             self.assertFalse(result.executed)
             self.assertEqual(result.error, "invalid_diagnostic_probe")
         load_api.assert_not_called()
-
-    def test_LOCALAPPDATA撤权例外仅接受固定内部标记写探针(self) -> None:
-        system_root = r"C:\Windows"
-        workspace = r"C:\tickets\task-1"
-        marker = workspace + r"\.icode-appcontainer-revocation-0123456789abcdef0123456789abcdef"
-        allowed = [
-            r"C:\Windows\System32\cmd.exe", "/d", "/c",
-            f'echo denied> "{marker}"',
-        ]
-        self.assertTrue(_is_fixed_workspace_revocation_probe(allowed, workspace, system_root))
-        self.assertFalse(_is_fixed_workspace_revocation_probe(
-            [*allowed[:3], f'echo denied> "{workspace}\\outside.txt"'],
-            workspace, system_root,
-        ))
-        self.assertFalse(_is_fixed_workspace_revocation_probe(
-            [*allowed[:3], f'echo allowed> "{marker}"'], workspace, system_root,
-        ))
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows Job Object 实测")
     def test_空环境块下普通Job可启动系统程序(self) -> None:

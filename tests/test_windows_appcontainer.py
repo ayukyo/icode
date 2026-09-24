@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import http.client
 import http.server
@@ -18,12 +19,14 @@ from urllib.parse import urlsplit
 
 from icode.windows_appcontainer import (
     _AppContainerSetupError,
+    _delete_appcontainer_profile,
     _get_appcontainer_localappdata_path,
 )
 from icode.windows_appcontainer import _walk_workspace, run_windows_appcontainer
 from icode.windows_job import (
     _append_windows_environment_value,
     _build_windows_environment_block,
+    WindowsJobResult,
     run_windows_job,
 )
 
@@ -35,6 +38,22 @@ class TestWindowsAppContainer(unittest.TestCase):
             return
         safe_detail = detail[:500].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         print(f"::notice title=R2.3 {name}::{safe_detail}", flush=True)
+
+    def _mock_profile_apis(self) -> dict[str, mock.Mock]:
+        import ctypes
+
+        apis = {name: mock.Mock() for name in ("userenv", "kernel32", "advapi32", "ole32")}
+
+        def create_profile(*args: object) -> int:
+            sid_output = args[-1]
+            ctypes.cast(sid_output, ctypes.POINTER(ctypes.c_void_p)).contents.value = 123
+            return 0
+
+        apis["userenv"].CreateAppContainerProfile.side_effect = create_profile
+        apis["userenv"].DeleteAppContainerProfile.return_value = 0
+        apis["advapi32"].IsValidSid.return_value = True
+        apis["advapi32"].GetLengthSid.return_value = 12
+        return apis
 
     def test_workspace目录拒绝链接与硬链接(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-paths-") as raw:
@@ -154,6 +173,121 @@ class TestWindowsAppContainer(unittest.TestCase):
         kernel.LocalFree.assert_called_once()
         ole32.CoTaskMemFree.assert_not_called()
 
+    def test_profile删除按官方约定重试并确认profile数据目录消失(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-profile-delete-") as raw:
+            profile_path = Path(raw) / "AC"
+            profile_path.mkdir()
+            userenv = mock.Mock()
+
+            def delete_profile(_profile: str) -> int:
+                if userenv.DeleteAppContainerProfile.call_count == 2:
+                    profile_path.rmdir()
+                return 0
+
+            userenv.DeleteAppContainerProfile.side_effect = delete_profile
+            deleted, detail = _delete_appcontainer_profile(
+                "icode-test", userenv, str(profile_path),
+            )
+
+        self.assertTrue(deleted, detail)
+        self.assertEqual(detail, "")
+        self.assertEqual(userenv.DeleteAppContainerProfile.call_count, 2)
+
+    def test_profile数据目录残留时删除验证失败(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-profile-residue-") as raw:
+            profile_path = Path(raw) / "AC"
+            profile_path.mkdir()
+            userenv = mock.Mock()
+            userenv.DeleteAppContainerProfile.return_value = 0
+
+            deleted, detail = _delete_appcontainer_profile(
+                "icode-test", userenv, str(profile_path),
+            )
+
+        self.assertFalse(deleted)
+        self.assertEqual(detail, "profile_storage_residual")
+        self.assertEqual(userenv.DeleteAppContainerProfile.call_count, 2)
+
+    def test_profile删除API连续失败时即使数据目录缺失也不报成功(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-profile-delete-error-") as raw:
+            absent_path = Path(raw) / "already-missing"
+            userenv = mock.Mock()
+            userenv.DeleteAppContainerProfile.return_value = 0x80004005
+
+            deleted, detail = _delete_appcontainer_profile(
+                "icode-test", userenv, str(absent_path),
+            )
+
+        self.assertFalse(deleted)
+        self.assertEqual(detail, "profile_delete_failed:0x80004005")
+        self.assertEqual(userenv.DeleteAppContainerProfile.call_count, 2)
+
+    def test_容器路径查询失败时不启动命令且保留准确清理结果(self) -> None:
+        apis = self._mock_profile_apis()
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-path-failure-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch(
+                 "icode.windows_appcontainer.ctypes.WinDLL",
+                 create=True,
+                 side_effect=lambda name, **_kwargs: apis[name],
+             ), \
+             mock.patch(
+                 "icode.windows_appcontainer._grant_workspace_acl",
+                 return_value=(b"original-dacl", apis["advapi32"], apis["kernel32"]),
+             ), \
+             mock.patch(
+                 "icode.windows_appcontainer._get_appcontainer_localappdata_path",
+                 side_effect=_AppContainerSetupError(
+                     "appcontainer_profile_path_failed", "profile path unavailable",
+                 ),
+             ), \
+             mock.patch("icode.windows_appcontainer._restore_workspace_acl", return_value=True), \
+             mock.patch("icode.windows_appcontainer.run_windows_job") as run_job:
+            result = run_windows_appcontainer(
+                [sys.executable, "-c", "pass"], cwd=raw, timeout_seconds=2,
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "appcontainer_profile_path_failed")
+        self.assertTrue(result.cleanup_ok)
+        run_job.assert_not_called()
+        apis["userenv"].DeleteAppContainerProfile.assert_called_once()
+        apis["advapi32"].FreeSid.assert_called_once()
+
+    def test_容器正常启动和撤权探针都只收到当前profile路径(self) -> None:
+        profile_path = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
+        apis = self._mock_profile_apis()
+        job_result = WindowsJobResult(True, 0, None, True, "")
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-profile-path-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch(
+                 "icode.windows_appcontainer.ctypes.WinDLL",
+                 create=True,
+                 side_effect=lambda name, **_kwargs: apis[name],
+             ), \
+             mock.patch(
+                 "icode.windows_appcontainer._grant_workspace_acl",
+                 return_value=(b"original-dacl", apis["advapi32"], apis["kernel32"]),
+             ), \
+             mock.patch(
+                 "icode.windows_appcontainer._get_appcontainer_localappdata_path",
+                 return_value=profile_path,
+             ), \
+             mock.patch("icode.windows_appcontainer._restore_workspace_acl", return_value=True), \
+             mock.patch(
+                 "icode.windows_appcontainer.run_windows_job", return_value=job_result,
+             ) as run_job:
+            result = run_windows_appcontainer(
+                [sys.executable, "-c", "pass"], cwd=raw, timeout_seconds=2,
+            )
+
+        self.assertTrue(result.executed)
+        self.assertTrue(result.cleanup_ok)
+        self.assertEqual(run_job.call_count, 2, "主命令和 ACL 撤权探针都应在同一容器中运行")
+        for call in run_job.call_args_list:
+            self.assertEqual(call.kwargs["_appcontainer_sid"], 123)
+            self.assertEqual(call.kwargs["_appcontainer_localappdata"], profile_path)
+
     def test_LOCALAPPDATA诊断在AppContainer外层拒绝用户命令(self) -> None:
         executable = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "whoami.exe"
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-invalid-localappdata-") as raw, \
@@ -163,13 +297,13 @@ class TestWindowsAppContainer(unittest.TestCase):
              mock.patch("icode.windows_appcontainer.ctypes.WinDLL", create=True) as load_api:
             result = run_windows_appcontainer(
                 [str(executable), "/all"], cwd=raw, timeout_seconds=2,
-                _diagnostic_localappdata=True,
+                _diagnostic_omit_localappdata=True,
             )
         self.assertFalse(result.executed)
         self.assertEqual(result.error, "invalid_diagnostic_probe")
         load_api.assert_not_called()
 
-    def test_LOCALAPPDATA差分不能与app_name差分叠加(self) -> None:
+    def test_省略LOCALAPPDATA差分不能与app_name差分叠加(self) -> None:
         executable = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "whoami.exe"
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-overlapping-diagnostics-") as raw, \
              mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
@@ -178,7 +312,7 @@ class TestWindowsAppContainer(unittest.TestCase):
              mock.patch("icode.windows_appcontainer.ctypes.WinDLL", create=True) as load_api:
             result = run_windows_appcontainer(
                 [str(executable)], cwd=raw, timeout_seconds=2,
-                _diagnostic_localappdata=True,
+                _diagnostic_omit_localappdata=True,
                 _diagnostic_null_application_name=True,
             )
         self.assertFalse(result.executed)
@@ -186,8 +320,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         load_api.assert_not_called()
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
-    def test_诊断空环境块下的系统程序启动(self) -> None:
-        """区分 AppContainer 创建限制与最小自定义环境块问题，且不继承宿主变量。"""
+    def test_诊断仅LOCALAPPDATA最小环境块下的系统程序启动(self) -> None:
+        """The wrapper adds only its profile path to this intentionally empty base block."""
         system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
         executable = system_root / "System32" / "whoami.exe"
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-empty-env-") as raw:
@@ -196,8 +330,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             safe_environment = _build_windows_environment_block(
                 executable, workspace, system_root,
             )
-            # The empty block is an intentional diagnostic. Never pass lpEnvironment=None,
-            # which would copy arbitrary runner variables (and possible credentials).
+            # The base block is intentionally empty; the wrapper adds only its profile path.
+            # Never pass lpEnvironment=None, which would copy arbitrary runner variables.
             with mock.patch(
                 "icode.windows_job._build_windows_environment_block",
                 side_effect=("\0\0", safe_environment),
@@ -206,7 +340,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     [str(executable)], cwd=workspace, timeout_seconds=10, process_limit=2,
                 )
             self._workflow_notice(
-                "empty environment AppContainer launch",
+                "minimal base environment plus profile LOCALAPPDATA",
                 f"executed={result.executed} exit={result.exit_code} error={result.error} "
                 f"cleanup={result.cleanup_ok} detail={result.detail}",
             )
@@ -215,8 +349,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             self.assertTrue(result.cleanup_ok, result)
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
-    def test_普通Job与AppContainer使用相同最小Unicode环境块(self) -> None:
-        """Use a matching safe environment block to isolate the AppContainer launch path."""
+    def test_AppContainer环境块仅比普通Job多容器LOCALAPPDATA(self) -> None:
+        """AppContainer receives its own profile path, never the host profile variable."""
         system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
         executable = system_root / "System32" / "whoami.exe"
         target_executable = os.path.normcase(str(executable))
@@ -262,7 +396,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
 
         self._workflow_notice(
-            "matched minimal Unicode environment control",
+            "AppContainer profile LOCALAPPDATA environment control",
             f"ordinary=executed:{ordinary.executed},exit:{ordinary.exit_code},"
             f"error:{ordinary.error},cleanup:{ordinary.cleanup_ok}; "
             f"appcontainer=executed:{appcontainer.executed},exit:{appcontainer.exit_code},"
@@ -275,7 +409,23 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(ordinary.exit_code, 0, ordinary)
         self.assertTrue(ordinary.cleanup_ok, ordinary)
         self.assertGreaterEqual(len(observed_blocks), 2, "both primary launches must build an environment")
-        self.assertEqual(observed_blocks[0], observed_blocks[1])
+        def parse(block: str) -> dict[str, str]:
+            entries: dict[str, str] = {}
+            for entry in block.split("\0"):
+                if not entry:
+                    continue
+                separator = entry.index("=", 1) if entry.startswith("=") else entry.index("=")
+                entries[entry[:separator]] = entry[separator + 1:]
+            return entries
+
+        ordinary_entries, appcontainer_entries = map(parse, observed_blocks[:2])
+        self.assertNotIn("LOCALAPPDATA", ordinary_entries)
+        self.assertIn("LOCALAPPDATA", appcontainer_entries)
+        self.assertTrue(Path(appcontainer_entries["LOCALAPPDATA"]).is_absolute())
+        self.assertEqual(
+            {key: value for key, value in appcontainer_entries.items() if key != "LOCALAPPDATA"},
+            ordinary_entries,
+        )
         self.assertTrue(appcontainer.executed, appcontainer)
         self.assertEqual(appcontainer.exit_code, 0, appcontainer)
         self.assertTrue(appcontainer.cleanup_ok, appcontainer)
@@ -307,10 +457,6 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "icode.windows_job._build_windows_environment_block",
                 side_effect=build_and_observe,
             ):
-                baseline = run_windows_appcontainer(
-                    [str(executable)], cwd=workspace, timeout_seconds=10,
-                    process_limit=2,
-                )
                 null_application_name = run_windows_appcontainer(
                     [str(executable)], cwd=workspace, timeout_seconds=10,
                     process_limit=2, _diagnostic_null_application_name=True,
@@ -319,21 +465,20 @@ class TestWindowsAppContainer(unittest.TestCase):
         env_equal = len(observed_blocks) == 2 and observed_blocks[0] == observed_blocks[1]
         self._workflow_notice(
             "lpApplicationName A/B diagnostic",
-            f"baseline=executed:{baseline.executed},exit:{baseline.exit_code},"
-            f"error:{baseline.error},cleanup:{baseline.cleanup_ok}; "
-            f"null=executed:{null_application_name.executed},"
+            f"candidate=executed:{null_application_name.executed},"
             f"exit:{null_application_name.exit_code},error:{null_application_name.error},"
             f"cleanup:{null_application_name.cleanup_ok}; environment_blocks="
             f"{len(observed_blocks)},equal:{env_equal}; "
-            f"baseline_detail:{baseline.detail[:100]}; "
-            f"null_detail:{null_application_name.detail[:100]}",
+            f"ab:{null_application_name.detail.partition('application_name_ab=')[2]}",
         )
         self.assertGreaterEqual(len(observed_blocks), 2, "both launches must reach environment setup")
         self.assertEqual(observed_blocks[0], observed_blocks[1])
-        for result in (baseline, null_application_name):
-            if result.executed:
-                self.assertEqual(result.exit_code, 0, result)
-                self.assertTrue(result.cleanup_ok, result)
+        self.assertTrue(null_application_name.executed, null_application_name)
+        self.assertEqual(null_application_name.exit_code, 0, null_application_name)
+        self.assertTrue(null_application_name.cleanup_ok, null_application_name)
+        app_name_ab = null_application_name.detail.partition("application_name_ab=")[2]
+        self.assertIn("baseline:executed:True,exit:0", app_name_ab)
+        self.assertIn("candidate:executed:True,exit:0", app_name_ab)
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
     def test_诊断同一profile仅追加LOCALAPPDATA差分(self) -> None:
@@ -364,7 +509,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             ):
                 candidate = run_windows_appcontainer(
                     [str(executable)], cwd=workspace, timeout_seconds=10,
-                    process_limit=2, _diagnostic_localappdata=True,
+                    process_limit=2, _diagnostic_omit_localappdata=True,
                 )
 
         ab_summary = candidate.detail.partition("localappdata_ab=")[2]
@@ -375,6 +520,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             f"ab={ab_summary}; captured_blocks={len(observed_blocks)}",
         )
         self.assertEqual(len(observed_blocks), 2, "baseline and candidate must both launch")
+        self.assertIn("baseline:executed:False", ab_summary)
+        self.assertIn("baseline_win32_error:203", ab_summary)
+        self.assertIn("candidate:executed:True,exit:0", ab_summary)
 
         def parse(block: str) -> dict[str, str]:
             entries: dict[str, str] = {}
@@ -404,22 +552,44 @@ class TestWindowsAppContainer(unittest.TestCase):
             workspace = root / "task"
             workspace.mkdir()
             marker = workspace / "python-probe.json"
+            profile_paths: list[str] = []
+
+            def get_profile_path(
+                sid: ctypes.c_void_p,
+                userenv: ctypes.WinDLL,
+                advapi: ctypes.WinDLL,
+                kernel: ctypes.WinDLL,
+                ole32: ctypes.WinDLL,
+            ) -> str:
+                path = _get_appcontainer_localappdata_path(
+                    sid, userenv, advapi, kernel, ole32,
+                )
+                profile_paths.append(path)
+                return path
+
             probe = (
                 "import json\n"
                 "from pathlib import Path\n"
                 "import sys\n"
+                "import os\n"
                 "result = {}\n"
                 "for label, value in [('cwd', Path.cwd()), ('executable', Path(sys.executable))]:\n"
                 "    try:\n"
                 "        result[label] = str(value.resolve(strict=True))\n"
                 "    except Exception as exc:\n"
                 "        result[label] = f'{type(exc).__name__}: {exc}'\n"
+                "profile_marker = Path(os.environ['LOCALAPPDATA']) / 'icode-profile-lifecycle-probe'\n"
+                "profile_marker.write_text('temporary', encoding='utf-8')\n"
                 f"Path({str(marker)!r}).write_text(json.dumps(result), encoding='utf-8')\n"
             )
-            result = run_windows_appcontainer(
-                [sys.executable, "-S", "-c", probe],
-                cwd=workspace, timeout_seconds=15, process_limit=4,
-            )
+            with mock.patch(
+                "icode.windows_appcontainer._get_appcontainer_localappdata_path",
+                side_effect=get_profile_path,
+            ):
+                result = run_windows_appcontainer(
+                    [sys.executable, "-S", "-c", probe],
+                    cwd=workspace, timeout_seconds=15, process_limit=4,
+                )
             self._workflow_notice(
                 "Python runtime",
                 f"executed={result.executed} exit={result.exit_code} error={result.error} "
@@ -433,6 +603,11 @@ class TestWindowsAppContainer(unittest.TestCase):
             self._workflow_notice("Python path resolution", path_result)
             resolved = json.loads(path_result)
             self.assertEqual(set(resolved), {"cwd", "executable"})
+            self.assertEqual(len(profile_paths), 1)
+            self.assertFalse(
+                Path(profile_paths[0]).exists(),
+                "容器退出后 profile 私有数据目录必须已删除",
+            )
             for label, value in resolved.items():
                 self.assertTrue(
                     Path(value).is_absolute(),
@@ -440,7 +615,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
-    def test_仅开放工单目录且默认拒绝网络(self) -> None:
+    def test_工作区ACL与容器profile隔离且默认拒绝网络(self) -> None:
         requests: list[str] = []
 
         class Handler(http.server.BaseHTTPRequestHandler):

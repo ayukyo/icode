@@ -129,46 +129,6 @@ def _is_fixed_system_whoami_probe(
         return False
 
 
-def _is_fixed_workspace_revocation_probe(
-    argv: Sequence[str], cwd: str | os.PathLike[str],
-    system_root: str | os.PathLike[str],
-) -> bool:
-    """Permit only the internal cmd.exe marker write used to verify ACL revocation."""
-    if len(argv) != 4 or argv[1:3] != ["/d", "/c"]:
-        return False
-    try:
-        executable = os.fspath(argv[0])
-        workspace = os.fspath(cwd)
-        root = os.fspath(system_root)
-        if not all(isinstance(value, str) for value in (executable, workspace, root)):
-            return False
-        expected_executable = ntpath.join(root, "System32", "cmd.exe")
-        if ntpath.normcase(ntpath.normpath(executable)) != ntpath.normcase(
-            ntpath.normpath(expected_executable),
-        ):
-            return False
-        command = argv[3]
-        if not isinstance(command, str):
-            return False
-        prefix = 'echo denied> "'
-        if not command.startswith(prefix) or not command.endswith('"'):
-            return False
-        marker = ntpath.normpath(command[len(prefix):-1])
-        if ntpath.normcase(ntpath.dirname(marker)) != ntpath.normcase(
-            ntpath.normpath(workspace),
-        ):
-            return False
-        marker_name = ntpath.basename(marker)
-        marker_prefix = ".icode-appcontainer-revocation-"
-        suffix = marker_name.removeprefix(marker_prefix)
-        return (
-            marker_name.startswith(marker_prefix) and len(suffix) == 32
-            and all(character in "0123456789abcdef" for character in suffix.casefold())
-        )
-    except (TypeError, ValueError):
-        return False
-
-
 def probe_windows_job_cleanup() -> WindowsJobProbeResult:
     """真实测试正常退出/超时后的 Job 后代回收，绝不计作文件或网络隔离。"""
     if sys.platform != "win32":
@@ -224,13 +184,14 @@ def run_windows_job(
     process_limit: int = 8,
     _appcontainer_sid: int | None = None,
     _diagnostic_null_application_name: bool = False,
-    _diagnostic_localappdata: str | None = None,
+    _appcontainer_localappdata: str | None = None,
 ) -> WindowsJobResult:
     """挂起启动、入独立 Job、再恢复；所有失败都禁止当成沙箱成功。
 
     这是清理能力的局部试验，不接自动工单。主进程退出或超时后都终止
     Job 中剩余后代；最后一个 Job 句柄因宿主崩溃关闭时也由内核回收。
-    私有诊断模式只允许 AppContainer 启动固定的无参数 whoami 探针。
+    私有 app-name 诊断只允许 AppContainer 启动固定的无参数 whoami 探针；容器 profile
+    路径只由上层 AppContainer 包装器通过 Win32 API 获取并传入。
     """
     if sys.platform != "win32":
         return WindowsJobResult(False, None, "unsupported_platform", False, "仅适用于 Windows")
@@ -238,24 +199,15 @@ def run_windows_job(
         return WindowsJobResult(False, None, "invalid_command", False, "命令入口必须是存在的绝对路径")
     if not isinstance(_diagnostic_null_application_name, bool):
         return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断启动模式无效")
-    if _diagnostic_localappdata is not None and (
-        not isinstance(_diagnostic_localappdata, str)
-        or "\0" in _diagnostic_localappdata
-        or not ntpath.isabs(_diagnostic_localappdata)
+    if _appcontainer_localappdata is not None and (
+        not isinstance(_appcontainer_localappdata, str)
+        or "\0" in _appcontainer_localappdata
+        or not ntpath.isabs(_appcontainer_localappdata)
         or _appcontainer_sid is None
-        or not (
-            _is_fixed_system_whoami_probe(
-                argv, os.environ.get("SystemRoot", r"C:\Windows"),
-            )
-            or _is_fixed_workspace_revocation_probe(
-                argv, cwd, os.environ.get("SystemRoot", r"C:\Windows"),
-            )
-        )
-        or _diagnostic_null_application_name
     ):
         return WindowsJobResult(
             False, None, "invalid_diagnostic_probe", False,
-            "LOCALAPPDATA 差分仅允许固定 whoami 与内部 ACL 撤权探针",
+            "LOCALAPPDATA 只允许与 AppContainer SID 一起使用且必须是绝对路径",
         )
     system_root = os.environ.get("SystemRoot", r"C:\Windows")
     if _diagnostic_null_application_name and (
@@ -423,9 +375,9 @@ def run_windows_job(
 
         # 不继承宿主凭据或文件句柄；Job 自身也不会被子进程持有。
         environment_block = _build_windows_environment_block(argv[0], root, system_root)
-        if _diagnostic_localappdata is not None:
+        if _appcontainer_localappdata is not None:
             environment_block = _append_windows_environment_value(
-                environment_block, "LOCALAPPDATA", _diagnostic_localappdata,
+                environment_block, "LOCALAPPDATA", _appcontainer_localappdata,
             )
         env_block = ctypes.create_unicode_buffer(environment_block)
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline(list(argv)))
