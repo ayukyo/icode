@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from pathlib import Path
 from unittest import mock
 
@@ -449,6 +450,61 @@ class TestWslAndJobLimits(unittest.TestCase):
 
 
 class TestSandboxWrapping(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "需 macOS launchd 真实作业")
+    def test_launchd_独立作业回收脱组后代_可行性(self) -> None:
+        # 仅验证系统自带 launchd 能否补进程组的缺口；不接入生产后端。
+        with temp_workspace() as root:
+            label = f"org.icode.test.cleanup.{uuid.uuid4().hex}"
+            started = root / "launchd-child-started"
+            survived = root / "launchd-child-survived"
+            grandchild_code = (
+                "import os, time\nfrom pathlib import Path\n"
+                "os.setsid()\n"
+                f"Path({str(started)!r}).write_text('ready')\n"
+                "time.sleep(1.4)\n"
+                f"Path({str(survived)!r}).write_text('escaped')\n"
+            )
+            parent_code = (
+                "import subprocess, sys, time\nfrom pathlib import Path\n"
+                f"subprocess.Popen([sys.executable, '-c', {grandchild_code!r}], "
+                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                "stderr=subprocess.DEVNULL)\n"
+                f"for _ in range(200):\n    if Path({str(started)!r}).exists(): break\n"
+                "    time.sleep(0.01)\n"
+                "else: raise RuntimeError('detached child did not start')\n"
+                "print('job-ready', flush=True)\n"
+                "time.sleep(5)\n"
+            )
+            try:
+                submitted = subprocess.run(
+                    ["launchctl", "submit", "-l", label,
+                     "-o", str(root / "launchd-stdout"),
+                     "-e", str(root / "launchd-stderr"),
+                     "--", sys.executable, "-c", parent_code],
+                    capture_output=True, text=True, timeout=5, check=False,
+                )
+                self.assertEqual(submitted.returncode, 0, submitted.stderr)
+                for _ in range(200):
+                    if started.exists():
+                        break
+                    time.sleep(0.01)
+                stderr_path = root / "launchd-stderr"
+                self.assertTrue(started.exists(),
+                                stderr_path.read_text(encoding="utf-8", errors="replace")
+                                if stderr_path.exists() else submitted.stderr)
+                removed = subprocess.run(
+                    ["launchctl", "remove", label],
+                    capture_output=True, text=True, timeout=5, check=False,
+                )
+                self.assertEqual(removed.returncode, 0, removed.stderr)
+                time.sleep(1.6)
+                self.assertFalse(survived.exists(), "launchd 作业移除后脱组孙进程仍存活")
+            finally:
+                subprocess.run(
+                    ["launchctl", "remove", label],
+                    capture_output=True, text=True, timeout=5, check=False,
+                )
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux 策略助手完整性验证")
     def test_landlock_策略路径逐次校验助手摘要(self) -> None:
         with temp_workspace() as root:
