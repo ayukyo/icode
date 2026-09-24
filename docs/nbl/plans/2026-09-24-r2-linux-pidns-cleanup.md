@@ -1,7 +1,7 @@
 # R2.2 Linux 异常退出后代清理：验证计划
 
 - 日期：2026-09-24
-- 状态：已加入严格核验的无映射回退，本机与 wheel 测试通过；GitHub 24.04 Linux x64/ARM64 尚待真实复测，R2.2 未验收
+- 状态：严格核验的无映射回退已在 GitHub 22.04/24.04 x64/ARM64 原生与 wheel 作业通过；只验收 Linux 清理子项，R2.2 未验收
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.1、§14
 
 ## 三问与调用链
@@ -26,6 +26,8 @@
 - 任何实现都需检查中断、管道 EOF、等待与资源回收，且不得因单项清理实验通过把 Linux R2 完整合同标为 ready。
 
 ## 已有证据与尚未证明
+
+[第五轮线上 CI #85](https://github.com/ayukyo/icode/actions/runs/36001610973) 对提交 `5702d8514a1b1068fdfecd7185c7e77774672730` 已完成且 14 个作业全部成功，包括 Ubuntu 22.04/24.04 的 x64/ARM64 原生负例与独立 wheel 测试、macOS 双架构、Windows Job 双架构、Python 3.11/3.12 全套测试。它验证了这四种 Linux runner 的生产助手在受限 UID 映射环境中仍执行文件/网络隔离、活动能力归零、宿主强杀后已脱组后代清理；不证明 Linux `process_limit`、Git/网络代理、十项合同，也不代表 R2.2 或完整 R2 通过。以下各轮记录保留当时的失败与推理，勿把其“待 CI”表述当作当前状态。
 
 [第三轮线上 CI](https://github.com/ayukyo/icode/actions/runs/35999349870) 的 Ubuntu 22.04 x64/ARM64 原生探测均通过，24.04 x64/ARM64 仍卡在 `uid_map`；这把差异收窄到宿主配置/发行环境，但尚未证明具体机制。[Ubuntu 24.04 官方发行说明](https://documentation.ubuntu.com/release-notes/24.04/)描述了“可创建 user namespace，但内部 capability 受 AppArmor 限制”的默认行为；[user namespace](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)与[PID namespace](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)手册未要求先写 UID/GID map 才能 fork/exec 或让 PID 1 清理后代。本机无映射 `unshare --user --pid --fork` 可启动，进程视角 uid/gid 为 65534，但本机 AppArmor 限制关闭，**当时不能外推至 CI**；因此先做了第四轮诊断，没有直接放宽生产助手。
 

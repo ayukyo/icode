@@ -37,6 +37,8 @@
 
 ## 验证与风险
 
+- **2026-09-24 最新线上回执：**[CI #85](https://github.com/ayukyo/icode/actions/runs/36001610973) 对 `5702d8514a1b1068fdfecd7185c7e77774672730` 的 14 个作业全部成功；Ubuntu 22.04/24.04 x64/ARM64 原生与 wheel 路径均覆盖 Linux 可信 PID 1、严格无映射回退及关键负例。下文较早的“线上结果未出/待 CI”是当时记录，不再代表当前状态。Linux 清理子项获得跨 runner 证据；macOS 完整策略、进程数、Git/网络代理与十项合同仍未验收，R2.2 和自动模式保持阻断。详见[Linux 清理专项计划](2026-09-24-r2-linux-pidns-cleanup.md)。
+
 - [开发分支首次三平台 CI](https://github.com/ayukyo/icode/actions/runs/35882823179) 暴露两项真实环境差异：Ubuntu runner 上 `bwrap` 的 loopback 设置被权限策略拒绝，macOS 初版探测脚本误用了 Linux 的 `cat` 路径。前者转向 Landlock/seccomp 路径，后者已修正并通过后续复测。
 - [四架构 CI](https://github.com/ayukyo/icode/actions/runs/35888941694) 已通过 Linux x86_64/ARM64、macOS Apple Silicon/Intel 的真实负向探测；Linux 两架构也通过 wheel 构建、独立安装和安装后探测。开发期 Landlock/seccomp 助手已随对应 Linux wheel 发布并做哈希校验，**但未接入自动执行，也未覆盖受保护路径、完整策略和进程树清理**。
 - 执行链检查发现 `run_contract_step` 接收 `sandbox` 后没有传给模型主回合与补救回合；已以先红后绿的离线测试修复。`run_command` 原先允许 `cwd` 逃出工作区（包含 `..`/符号链接），现由工具本身再次解析并拒绝，避免只依赖上层 guard。两项修正不代表 `SandboxPolicy` 已完整执行。
