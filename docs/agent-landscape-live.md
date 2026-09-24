@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- 最近观察：2026-09-24；下次全量复核：不晚于 2026-10-24
-- 注：观察日期统一按 UTC 记录；本轮定向更新 R2.3 Windows AppContainer Python 运行时兼容性；20 项观察名单最近全量复核为 2026-09-24。
+- 最近观察：2026-09-25；下次全量复核：不晚于 2026-10-24
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.3 Windows AppContainer 与 Job 清理验收；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -61,6 +61,13 @@
 | Cline | `b51c27b` | [仓库 README](https://github.com/cline/cline/blob/main/README.md) | 人能理解的计划/执行和审批呈现 |
 | OpenHands | `e069808` | [仓库 README](https://github.com/OpenHands/OpenHands/blob/main/README.md) | UI/运行服务分离可借鉴；容器依赖不符合 pip-only 目标 |
 | LangGraph | `7daa3ab` | [持久执行文档](https://github.com/langchain-ai/docs/blob/main/src/oss/langgraph/durable-execution.mdx) | 恢复须处理副作用幂等；文档仓库另行核对 |
+
+### 2026-09-25 UTC R2.3 Windows Job 与运行时复核
+
+- **证据修正（ICODE #108）**：只读检查基线 `eabc4df` 的 `tests/test_windows_appcontainer.py`，后代延迟约 3 秒、清理后只等待 3.2 秒，无同 payload 无 Job 正向对照；公开 CI 注释只显示部分阶段，x64 没有 timeout notice，ARM64 notice 没有 timeout 状态/迟到哨兵断言，日志 API 返回 403。因此不再从 #108 公共日志推断具体失败断言或根因。
+- **深读补充：**`io-harness` v0.86.0，commit `8c03ca273246937975bf63da8413c927ba264916`，许可证 Apache-2.0。[Job Object 测试](https://github.com/initorigin/io-harness/blob/8c03ca273246937975bf63da8413c927ba264916/tests/sandbox_job_object.rs)用三代进程、较长等待及同 payload 的无 Job 正向控制；进程上限测试也对比同脚本有/无上限。[AppContainer 实现](https://github.com/initorigin/io-harness/blob/8c03ca273246937975bf63da8413c927ba264916/src/sandbox/appcontainer.rs)将访问授权区分为目录遍历、只读执行和工作区完全访问。ICODE 只选择采纳验证结构与权限分级概念；不复制代码、不增加 Rust 依赖，运行时目录授权仍要另行审计。
+- **兼容性边界：**OpenAI 官方 Windows 沙箱说明（2026-05-13）指出 AppContainer 适合预先知道访问集的窄应用，对开放式 shell/Python/Git/构建链路形状不合；其最终方案需要额外安装/管理员初始化、专用受限用户及防火墙。[官方设计](https://openai.com/index/building-codex-windows-sandbox/)。ICODE 当前要求 pip-only 和普通用户易用，因此不照搬提权部署；把实际 Python/toolchain 能运行作为 Windows R2.3 硬门禁。
+- **ICODE 取舍：采纳**：正反向同载荷对照和充分的迟到哨兵观察窗；**暂缓**给宿主 Python 安装树扩展 ACL；逐文件读取仅记录错误类别。CI #109 的 workspace/network/job 子项有通过 notice，但 Python 仍退出 `0xC0000135`；进程回收和 `process_limit=1` 子项因缺正对照/观察窗还要 #110 双架构重验。
 
 ## 当前开发决策
 
@@ -130,5 +137,7 @@
 - ICODE 取舍：**暂缓**递归授权完整 Python 安装树或放开用户目录/系统盘；先在双架构验证精准运行时依赖、`Path.resolve()`、只读 ACL 撤权/恢复与增量耗时。若无法同时满足最小权限、可靠清理和可接受启动开销，则 AppContainer 不进入 Windows 自动模式，继续比较隔离方案。
 - ICODE CI [#107 x64](https://github.com/ayukyo/icode/actions/runs/36066941127) 的 profile A/B 通过，但任务内 CMD 批处理脚本没有到达任何 workspace marker；运行时拷贝探针依赖同一绝对脚本入口，故本轮不能判断其源文件 DACL。为继续区分路径解析与 AppContainer 文件 ACL，下一轮只将任务内部入口切换到 cwd-relative 路径并加入 inline write positive control；该结论仍是待验证，不是 Codex issue #45871 路径问题已复现。
 - CI [#108](https://github.com/ayukyo/icode/actions/runs/36067827628) 在两架构验证 cwd-relative workspace 写/读及 loopback 拒绝，但子进程/超时仍有 x64/ARM64 差异。ARM64 的同一复制 harness 可读 System32 样本而未复制 Python 运行时样本；因尚缺每轮脚本启动哨兵，暂记为线索，不扩展 ACL。ICODE 仍采用 AppContainer 最小权限路线作候选，Codex 路径解析 issue 仍未在 ICODE 中复现。
+- CI [#109](https://github.com/ayukyo/icode/actions/runs/36069030309) 已让两架构的后代清理、timeout、活动进程上限和工作区/loopback 探针通过；Python executable/DLL/stdlib 读探针失败，且 CMD copy 错误类型尚未捕获。暂缓授权 Python 整树；先验证错误类别与最小只读运行时范围。AppContainer 路线未完成，不把组件级通过写成 R2.3 通过。
+- 下一轮在不依赖 Python 的 CMD 容器中单独验 profile marker 写入/删除，并将外部运行时复制失败压缩为错误类别；研究/实现都不建议用扩大用户目录 ACL 换启动成功。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。

@@ -94,9 +94,23 @@
 
 - CI [#108 x64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/107861602120) 与 [#108 ARM64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/107861602149) 中，环境块最终回归及 profile `LOCALAPPDATA` 单变量 A/B 均通过；Python 仍退出 `0xC0000135`，尚未由 Agent 完成实际任务。
 - 两架构均报告 inline cwd 写入、相对批处理入口、工作区写入与嵌套读取成功；相邻目录写入未发生，宿主 loopback 正对照可达而 AppContainer 未触达。此结果只覆盖当前 loopback/文件 canary，不等于 IPv4/IPv6、UDP、DNS、外网和 Git 凭据门禁通过。
-- 后代/超时存在平台差异：x64 未落 child-started marker；ARM64 首个子进程启动且主进程退出后正常清理检查通过，但 timeout 子用例得到正常 exit 1 而不是 runner timeout。旧用例依赖 `timeout.exe`，现改为子进程 release-handshake 加 CMD 循环等待，以 runner 的 Job timeout 触发并观察活跃进程清零；本地不能验证 Win32，仍等 CI。
+- 对 #108 的历史解释收窄：公开 Actions 注释无法还原精确失败断言（x64 无 timeout notice；ARM64 notice 只有 cleanup 状态，公开日志 API 返回 403），所以不从日志推断具体根因。只读检查 `eabc4df` 源码确认旧子进程测试让后代等待 3 秒、runner 返回后仅观察 3.2 秒，且没有同载荷无 Job 正向对照；该测试设计存在约 0.2 秒裕量，不能作为稳健的清理验收。旧用例依赖 `timeout.exe`，后续改成 release-handshake 与 runner timeout；本地不能验证 Win32。
 - ARM64 运行时文件 notice 显示同一路径副本中 System32 `whoami.exe` 可读，而 Python executable、共享 DLL、`pathlib.py` 和 `encodings` 样本没有复制结果；当前还未记录每个 copy 脚本是否启动，故此差异仍需下轮启动标记确认。没有证据支持递归放宽 ACL。
 - 因此 CI #108 **不是** R2.3 Windows 通过证据，自动模式继续关闭。
+
+## 2026-09-24 UTC CI #109：Windows 子项有通过 notice，Python runtime 仍失败
+
+- CI [#109 x64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391485) 与 [#109 ARM64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391466) notice 报告 workspace 读写/外部写拒绝/loopback 拒绝、正常后代回收、runner timeout 后代回收、`process_limit=1`、环境块及 profile A/B 子项通过。研究复核发现进程探针在 release handshake 后仍只观察 0.2 秒，没有相同 payload 正向对照；这比 #108 清晰，但不足以排除调度延迟造成的假阴性。R2.3 仍不能验收，因为 Windows Agent 尚不能启动 Python 执行器。
+- 新增 copy script 自身的启动标记，两架构均确认它已启动；Python executable、共享 DLL、`pathlib.py`、`encodings` 样本均无副本。ARM64 的 System32 `whoami.exe` 对照可复制；x64 的相同 System32 对照也未复制。CMD 原始 copy 错误文本没有保存，不能把退出码 1 直接定性为 `ACCESS_DENIED`；下轮只记录错误类别（不暴露路径），区分访问控制与路径错误。
+- 为避免 Python loader 失败遮住 profile 存储本身的状态，下轮另用受限 CMD 写入 profile 专属 marker，并在删除 profile 前观测 marker、删除后确认路径消失；同时保留原始 copy 文本于任务工作区，仅将安全错误类别写入 Actions notice。
+- 不放宽到整用户目录、整 Python 安装、`site-packages` 或系统盘。只在错误分类确认必要范围后，设计可审计的最小只读运行时访问或暂存；并单独验收 ACL 恢复、Profile 清理、性能和工作区 venv 兼容。
+- 故 CI #109 证明 Windows 工作区、断网及进程回收子项通过，但 Windows R2.3 / 完整 R2 / 自动模式未通过。
+
+### 2026-09-25 UTC 上游 Windows Job 测试设计复核
+
+- 独立只读核对 `io-harness` v0.86.0、commit `8c03ca273246937975bf63da8413c927ba264916`（Apache-2.0）：其 Job 清理测试用相同三代后代载荷，先验证 Job 模式等待后无 sentinel，再以无 Job 模式等待相同时间并要求 sentinel 出现；进程数测试也对同一脚本对比上限开启/关闭。参考[树清理与正对照](https://github.com/initorigin/io-harness/blob/8c03ca273246937975bf63da8413c927ba264916/tests/sandbox_job_object.rs)及[许可证](https://github.com/initorigin/io-harness/blob/8c03ca273246937975bf63da8413c927ba264916/LICENSE)。ICODE 只采纳测试结构，不复制实现或引入依赖。
+- OpenAI 官方 Windows 沙箱工程文章（2026-05-13）记录 AppContainer 对开放式 shell/Python/Git/build 工具链的适配限制；Codex 后续改为需安装的受限用户/Token 与防火墙组合。[官方说明](https://openai.com/index/building-codex-windows-sandbox/)。这强化 ICODE 需验证实际 Python/toolchain，而不能据系统 `cmd.exe` 子项通过就判断可产品化；Codex 的提权安装架构不符合当前 pip-only 普通用户边界，暂不照搬。
+- ICODE 取舍：采纳“负例 + 同负载正对照 + 足够观察窗”的验证方法；暂缓授予 Python 安装树 ACL。优先由 #110 分类逐文件读取错误与 profile 独立写入/清理，再决定最小运行时 staging 或淘汰 AppContainer。
 
 ## 当前实现与验收
 

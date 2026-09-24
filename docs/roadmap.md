@@ -311,7 +311,11 @@ CI [#107 x64](https://github.com/ayukyo/icode/actions/runs/36066941127) 的最�
 
 ### 2026-09-24 UTC CI #108：工作区访问与子进程验收仍未闭环
 
-CI [#108 x64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/107861602120) 与 [#108 ARM64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/107861602149) 的 profile 环境差分均通过，Python 两架构仍退出 `0xC0000135`。cwd-relative inline 写入、批处理 completion、工作区嵌套读取/写入、相邻目录写入拒绝及 loopback 网络拒绝在两架构都通过。进程门槛仍失败：x64 未观察到后代启动标记；ARM64 首个后代成功启动且正常退出清理，但专用超时探针在 CMD `timeout` 退出码 1 后没有触发 runner 超时。ARM64 文件诊断中 System32 对照可复制，Python 可执行文件/DLL/标准库样本未复制；下一轮增加脚本启动标记再确认该差异。R2.3 与自动模式继续关闭。
+CI [#108 x64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/107861602120) 与 [#108 ARM64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/107861602149) 的公开 notice 支持 profile 环境、cwd-relative workspace 及 loopback 子项通过，Python 两架构仍退出 `0xC0000135`。独立只读复核发现公开 Actions 注释不足以恢复精确失败断言：x64 没有 timeout notice，ARM64 只报告清理状态，日志 API 无法读取，因此不再把旧 notice 解读为具体失败根因。该提交 `eabc4df` 的源测试对 3 秒子进程仅留 3.2 秒观察窗，且没有同一 payload 的无 Job 正向对照；故 #108 不作为可靠的进程清理通过证据。#109 加入 release handshake 并有两架构子项通过 notice，但仍缺同 payload 正向对照和充分观察窗，当前再补强这两处。Windows R2.3 与自动模式继续关闭。
+
+### 2026-09-24 UTC CI #109：Windows 进程/工作区门禁通过，Python runtime 仍阻断
+
+CI [#109 x64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391485) 与 [#109 ARM64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391466) 的 Windows 测试均只剩 Python `0xC0000135` 失败；cwd 工作区、loopback 拒绝、后代回收、timeout 回收与 `process_limit=1` 都有通过 notice。研究复核指出这版进程探针仍只有 0.2 秒宽限，#110 将以同 payload 的无沙箱正对照和 5 秒后代观察窗重验，故不把 #109 单独视为稳健的进程清理证据。诊断确认 copy batch 已启动但 Python exe/DLL/标准库目标均未复制；ARM64 System32 对照可复制，x64 同一对照不可复制。当前增加 copy 错误分类，并单独验证 profile 写入/清理；自动模式和 R2.3 不开放。
 
 ## 4. 为什么是这个顺序
 

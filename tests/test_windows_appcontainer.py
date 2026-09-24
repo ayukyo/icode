@@ -9,6 +9,7 @@ import http.server
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import sysconfig
 import tempfile
@@ -288,6 +289,72 @@ class TestWindowsAppContainer(unittest.TestCase):
         for call in run_job.call_args_list:
             self.assertEqual(call.kwargs["_appcontainer_sid"], 123)
             self.assertEqual(call.kwargs["_appcontainer_localappdata"], profile_path)
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
+    def test_profile专属目录可写且进程退出后删除(self) -> None:
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        command = system_root / "System32" / "cmd.exe"
+        profile_paths: list[str] = []
+        marker_present_before_delete: list[bool] = []
+        marker_name = "icode-profile-lifecycle-probe.txt"
+        delete_profile = _delete_appcontainer_profile
+
+        def get_profile_path(
+            sid: ctypes.c_void_p,
+            userenv: ctypes.WinDLL,
+            advapi: ctypes.WinDLL,
+            kernel: ctypes.WinDLL,
+            ole32: ctypes.WinDLL,
+        ) -> str:
+            path = _get_appcontainer_localappdata_path(
+                sid, userenv, advapi, kernel, ole32,
+            )
+            profile_paths.append(path)
+            return path
+
+        def observe_profile_delete(
+            profile: str, userenv: ctypes.WinDLL, localappdata: str | None,
+        ) -> tuple[bool, str]:
+            marker_path = Path(localappdata or "") / marker_name
+            marker_present_before_delete.append(marker_path.is_file())
+            return delete_profile(profile, userenv, localappdata)
+
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-profile-lifecycle-") as raw:
+            workspace = Path(raw) / "task"
+            workspace.mkdir()
+            script = workspace / "profile-write.cmd"
+            script.write_text(
+                "@echo off\r\n"
+                f'echo profile-write-ok> "%LOCALAPPDATA%\\{marker_name}"\r\n',
+                encoding="utf-8",
+            )
+            with mock.patch(
+                "icode.windows_appcontainer._get_appcontainer_localappdata_path",
+                side_effect=get_profile_path,
+            ), mock.patch(
+                "icode.windows_appcontainer._delete_appcontainer_profile",
+                side_effect=observe_profile_delete,
+            ):
+                result = run_windows_appcontainer(
+                    [str(command), "/d", "/c", f".\\{script.name}"],
+                    cwd=workspace, timeout_seconds=8, process_limit=2,
+                )
+
+        self._workflow_notice(
+            "profile storage lifecycle",
+            f"executed={result.executed} exit={result.exit_code} error={result.error} "
+            f"cleanup={result.cleanup_ok} marker_before_delete="
+            f"{marker_present_before_delete}",
+        )
+        self.assertTrue(result.executed, result)
+        self.assertEqual(result.exit_code, 0, result)
+        self.assertTrue(result.cleanup_ok, result)
+        self.assertEqual(len(profile_paths), 1)
+        self.assertEqual(marker_present_before_delete, [True])
+        self.assertFalse(
+            Path(profile_paths[0]).exists(),
+            "profile storage must be removed when the AppContainer job ends",
+        )
 
     def test_LOCALAPPDATA诊断在AppContainer外层拒绝用户命令(self) -> None:
         executable = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "whoami.exe"
@@ -650,10 +717,13 @@ class TestWindowsAppContainer(unittest.TestCase):
             for index, (label, source) in enumerate(runtime_files):
                 destination_name = f"runtime-copy-{index}.bin"
                 destination = workspace / destination_name
+                copy_message = workspace / f"runtime-copy-{index}.message.txt"
                 copy_started.unlink(missing_ok=True)
+                copy_message.unlink(missing_ok=True)
                 copy_script.write_text(
                     f'@echo off\r\necho started> "{copy_started.name}"\r\n'
-                    f'copy /b "{source}" "{destination_name}" >nul\r\n',
+                    f'copy /b "{source}" "{destination_name}" '
+                    f'> "{copy_message.name}" 2>&1\r\n',
                     encoding="utf-8",
                 )
                 # The Package SID is granted the task directory, not its temp parents.
@@ -664,11 +734,30 @@ class TestWindowsAppContainer(unittest.TestCase):
                 copy_script_started = copy_started.is_file()
                 source_size = source.stat().st_size
                 copied_size = destination.stat().st_size if destination.is_file() else None
+                try:
+                    copy_output = copy_message.read_text(
+                        encoding="utf-8", errors="replace",
+                    ).casefold()
+                except OSError:
+                    copy_output = ""
+                if copied_size == source_size:
+                    copy_error_class = "read_ok"
+                elif "access is denied" in copy_output or "access denied" in copy_output:
+                    copy_error_class = "access_denied"
+                elif "cannot find the path" in copy_output or "path not found" in copy_output:
+                    copy_error_class = "path_not_found"
+                elif "cannot find the file" in copy_output or "file not found" in copy_output:
+                    copy_error_class = "file_not_found"
+                elif copy_output:
+                    copy_error_class = "other_copy_error"
+                else:
+                    copy_error_class = "no_copy_diagnostic"
                 results.append({
                     "label": label,
                     "copy_script_started": copy_script_started,
                     "source_size": source_size,
                     "source_read_match": copied_size == source_size,
+                    "copy_error_class": copy_error_class,
                     "executed": result.executed,
                     "exit_code": result.exit_code,
                     "error": result.error,
@@ -840,6 +929,53 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f'echo late> "{child_late.name}"\r\n',
                     encoding="utf-8",
                 )
+                # Prove the exact child payload can observe release and write its
+                # late marker when it is not under the AppContainer Job.
+                host_control = subprocess.Popen(
+                    [str(command), "/d", "/c", f".\\{child_script.name}"],
+                    cwd=workspace,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                try:
+                    deadline = time.monotonic() + 10
+                    while (
+                        not child_started.is_file()
+                        and host_control.poll() is None
+                        and time.monotonic() < deadline
+                    ):
+                        time.sleep(0.05)
+                    self.assertTrue(
+                        child_started.is_file(),
+                        "host positive control did not start the descendant",
+                    )
+                    child_release.write_text("release", encoding="utf-8")
+                    deadline = time.monotonic() + 5
+                    while not child_late.is_file() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(
+                        child_late.is_file(),
+                        "host positive control did not write the late marker",
+                    )
+                    host_control.wait(timeout=5)
+                    self.assertEqual(host_control.returncode, 0)
+                finally:
+                    if not child_release.exists():
+                        child_release.write_text("release", encoding="utf-8")
+                    try:
+                        host_control.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        host_control.kill()
+                        host_control.wait(timeout=5)
+                self._workflow_notice(
+                    "descendant payload positive control",
+                    f"started={child_started.is_file()} late_marker={child_late.is_file()} "
+                    f"exit={host_control.returncode}",
+                )
+                child_started.unlink(missing_ok=True)
+                child_late.unlink(missing_ok=True)
+                child_release.unlink(missing_ok=True)
                 script = workspace / "probe.cmd"
                 script.write_text(
                     "@echo off\r\n"
@@ -913,7 +1049,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "AppContainer descendant did not start; check the bounded launch diagnostic",
                 )
                 child_release.write_text("release", encoding="utf-8")
-                time.sleep(0.2)
+                deadline = time.monotonic() + 5
+                while not child_late.is_file() and time.monotonic() < deadline:
+                    time.sleep(0.05)
                 self.assertFalse(child_late.exists(), "AppContainer Job left a descendant alive")
 
                 child_started.unlink()
@@ -941,7 +1079,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.assertTrue(timed_out.cleanup_ok, timed_out)
                 self.assertTrue(child_started.is_file(), "timeout descendant did not start")
                 child_release.write_text("release", encoding="utf-8")
-                time.sleep(0.2)
+                deadline = time.monotonic() + 5
+                while not child_late.is_file() and time.monotonic() < deadline:
+                    time.sleep(0.05)
                 self.assertFalse(child_late.exists(), "timeout left an AppContainer descendant alive")
 
                 limited_marker = workspace / "process-limit-child.txt"
@@ -956,6 +1096,25 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "timeout /t 1 /nobreak >nul\r\n",
                     encoding="utf-8",
                 )
+                limit_control = run_windows_appcontainer(
+                    [str(command), "/d", "/c", f".\\{limited_parent.name}"],
+                    cwd=workspace, timeout_seconds=5, process_limit=8,
+                )
+                deadline = time.monotonic() + 5
+                while not limited_marker.is_file() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self._workflow_notice(
+                    "process limit positive control",
+                    f"executed={limit_control.executed} exit={limit_control.exit_code} "
+                    f"cleanup={limit_control.cleanup_ok} child_marker={limited_marker.is_file()}",
+                )
+                self.assertTrue(limit_control.executed, limit_control)
+                self.assertTrue(limit_control.cleanup_ok, limit_control)
+                self.assertTrue(
+                    limited_marker.is_file(),
+                    "the process-limit payload must start without the one-process cap",
+                )
+                limited_marker.unlink()
                 limited = run_windows_appcontainer(
                     [str(command), "/d", "/c", f".\\{limited_parent.name}"],
                     cwd=workspace, timeout_seconds=5, process_limit=1,
