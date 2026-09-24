@@ -288,6 +288,7 @@ def run_windows_job(
     exit_code: int | None = None
     error: str | None = None
     detail = ""
+    diagnostics: list[str] = []
     cleanup_ok = False
     attribute_storage: ctypes.Array | None = None
     attribute_list: ctypes.c_void_p | None = None
@@ -313,27 +314,49 @@ def run_windows_job(
         else:
             attribute_size = ctypes.c_size_t()
             ctypes.set_last_error(0)
-            kernel.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(attribute_size))
-            size_error = ctypes.get_last_error()
+            size_query_ok = bool(kernel.InitializeProcThreadAttributeList(
+                None, 1, 0, ctypes.byref(attribute_size),
+            ))
+            size_error = 0 if size_query_ok else ctypes.get_last_error()
+            diagnostics.append(
+                f"attr_size_query_ok={size_query_ok} attr_size_query_error={size_error} "
+                f"attr_bytes={attribute_size.value}"
+            )
             if size_error != 122 or attribute_size.value <= 0:
-                raise OSError(ctypes.get_last_error(), "InitializeProcThreadAttributeList(size)")
+                raise OSError(size_error, "InitializeProcThreadAttributeList(size)")
             attribute_storage, attribute_list = _allocate_attribute_list_buffer(
                 attribute_size.value,
             )
-            if not kernel.InitializeProcThreadAttributeList(
+            attr_init_ok = bool(kernel.InitializeProcThreadAttributeList(
                 attribute_list, 1, 0, ctypes.byref(attribute_size),
-            ):
-                raise OSError(ctypes.get_last_error(), "InitializeProcThreadAttributeList")
+            ))
+            attr_init_error = 0 if attr_init_ok else ctypes.get_last_error()
+            diagnostics.append(
+                f"attr_init_ok={attr_init_ok} attr_init_error={attr_init_error}"
+            )
+            if not attr_init_ok:
+                raise OSError(attr_init_error, "InitializeProcThreadAttributeList")
             attributes_initialized = True
             security = SECURITY_CAPABILITIES(
                 ctypes.c_void_p(_appcontainer_sid), None, 0, 0,
             )
+            diagnostics.append(
+                "security_attribute=0x00020009 "
+                f"payload_bytes={ctypes.sizeof(security)} "
+                f"sid_present={bool(security.AppContainerSid)} "
+                f"capability_count={security.CapabilityCount} reserved={security.Reserved}"
+            )
             # PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES; no network capabilities
-            if not kernel.UpdateProcThreadAttribute(
+            attr_update_ok = bool(kernel.UpdateProcThreadAttribute(
                 attribute_list, 0, 0x00020009, ctypes.byref(security),
                 ctypes.sizeof(security), None, None,
-            ):
-                raise OSError(ctypes.get_last_error(), "UpdateProcThreadAttribute(security)")
+            ))
+            attr_update_error = 0 if attr_update_ok else ctypes.get_last_error()
+            diagnostics.append(
+                f"attr_update_ok={attr_update_ok} attr_update_error={attr_update_error}"
+            )
+            if not attr_update_ok:
+                raise OSError(attr_update_error, "UpdateProcThreadAttribute(security)")
             startup_ex = STARTUPINFOEX()
             startup_ex.StartupInfo.cb = ctypes.sizeof(startup_ex)
             startup_ex.lpAttributeList = attribute_list
@@ -341,6 +364,10 @@ def run_windows_job(
             creation_flags = (
                 0x00000004 | 0x00000400 | 0x00080000
             )  # SUSPENDED | UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT
+            diagnostics.append(
+                f"flags=0x{creation_flags:08x} unicode_environment=1 "
+                "extended_startup_info=1 suspended=1"
+            )
         if not kernel.CreateProcessW(
             str(argv[0]), command, None, None, False, creation_flags,
             env_block, str(root), startup_ptr, ctypes.byref(process),
@@ -399,4 +426,6 @@ def run_windows_job(
             kernel.CloseHandle(process.hThread)
             kernel.CloseHandle(process.hProcess)
         kernel.CloseHandle(job)
+    if diagnostics:
+        detail = "; ".join(part for part in (detail, *diagnostics) if part)
     return WindowsJobResult(created, exit_code, error, cleanup_ok, detail)

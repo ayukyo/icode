@@ -359,6 +359,10 @@ def run_windows_appcontainer(
     userenv.DeleteAppContainerProfile.restype = ctypes.c_long
     advapi.FreeSid.argtypes = [ctypes.c_void_p]
     advapi.FreeSid.restype = ctypes.c_void_p
+    advapi.IsValidSid.argtypes = [ctypes.c_void_p]
+    advapi.IsValidSid.restype = wintypes.BOOL
+    advapi.GetLengthSid.argtypes = [ctypes.c_void_p]
+    advapi.GetLengthSid.restype = wintypes.DWORD
 
     profile = f"icode-{uuid.uuid4().hex}"
     sid = ctypes.c_void_p()
@@ -367,15 +371,26 @@ def run_windows_appcontainer(
     acl_api: tuple[ctypes.WinDLL, ctypes.WinDLL] | None = None
     main = WindowsJobResult(False, None, "appcontainer_setup_failed", False, "AppContainer 未启动")
     details: list[str] = []
+    diagnostics: list[str] = []
     cleanup_ok = True
     try:
         hr = int(userenv.CreateAppContainerProfile(
             profile, "ICODE task", "Temporary task isolation", None, 0, ctypes.byref(sid),
         ))
         profile_created = hr == 0
+        sid_valid = bool(sid.value and advapi.IsValidSid(sid))
+        sid_length = int(advapi.GetLengthSid(sid)) if sid_valid else 0
+        diagnostics.append(
+            f"profile_create_hr=0x{hr & 0xFFFFFFFF:08x} "
+            f"sid_present={bool(sid.value)} sid_valid={sid_valid} sid_bytes={sid_length}"
+        )
         if hr != 0 or not sid.value:
             raise _AppContainerSetupError(
                 "appcontainer_creation_failed", f"CreateAppContainerProfile hr=0x{hr & 0xFFFFFFFF:08x}",
+            )
+        if not sid_valid or sid_length <= 0:
+            raise _AppContainerSetupError(
+                "appcontainer_sid_invalid", "CreateAppContainerProfile returned an invalid SID",
             )
         original_dacl, advapi, kernel_for_acl = _grant_workspace_acl(root, sid)
         acl_api = (advapi, kernel_for_acl)
@@ -445,7 +460,7 @@ def run_windows_appcontainer(
     error = main.error
     if not final_cleanup_ok:
         error = "cleanup_failed"
-    detail = "; ".join(part for part in (main.detail, *details) if part)
+    detail = "; ".join(part for part in (main.detail, *diagnostics, *details) if part)
     return WindowsJobResult(
         main.executed, main.exit_code, error, final_cleanup_ok, detail,
     )

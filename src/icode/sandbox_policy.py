@@ -126,6 +126,12 @@ def _is_exact_dns_hostname(domain: str) -> bool:
     )
 
 
+def is_exact_dns_hostname(domain: str) -> bool:
+    """Return whether *domain* is a canonicalizable exact ASCII DNS hostname."""
+
+    return _is_exact_dns_hostname(domain)
+
+
 @dataclass(frozen=True)
 class SandboxPolicy:
     schema_version: int

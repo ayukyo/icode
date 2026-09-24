@@ -157,6 +157,12 @@ class TestWindowsJob(unittest.TestCase):
         self.assertEqual(
             attribute_addresses[0] % ctypes.sizeof(ctypes.c_void_p), 0,
         )
+        self.assertIn("attr_size_query_ok=False", result.detail)
+        self.assertIn("attr_size_query_error=122", result.detail)
+        self.assertIn("attr_init_ok=True", result.detail)
+        self.assertIn("security_attribute=0x00020009", result.detail)
+        self.assertIn("attr_update_ok=True", result.detail)
+        self.assertIn("flags=0x00080404", result.detail)
         entries = [entry for entry in environment["block"].split("\0") if entry]
         self.assertIn(r"=C:=C:\task", entries)
         system_root = os.environ.get("SystemRoot", "C:\\Windows")
