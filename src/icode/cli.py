@@ -601,6 +601,7 @@ def cmd_workbench(args: argparse.Namespace) -> int:
         )
         isolation_level = (
             "enforced" if sandbox.is_real_isolation
+            and bool(getattr(sandbox, "policy_contract_ready", False))
             and callable(getattr(sandbox, "wrap_policy", None))
             else "policy_unavailable"
         )

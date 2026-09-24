@@ -387,6 +387,20 @@ class TestNativeChainExecutor(unittest.TestCase):
                 ),
             ):
                 result = executor.execute(context, control)
+            self.assertEqual(result, ExecutionResult(
+                state="blocked", last_step="plan", error_code="isolation_unavailable",
+            ))
+            self.assertEqual(prepared, [])
+            self.assertEqual(calls, [])
+
+            policy_backend.policy_contract_ready = True
+            with patch("icode.autonomy.chain_steps", return_value=("plan",)), patch(
+                "icode.autonomy.ControlPlane.trace", return_value=SimpleNamespace(
+                    returncode=0, data={"ok": True, "ticket_id": policy.ticket_id,
+                                        "status": "init_in_progress"},
+                ),
+            ):
+                result = executor.execute(context, control)
             self.assertEqual(result.state, "succeeded")
             self.assertEqual(prepared, [policy])
             self.assertIs(calls[0]["policy"], policy)

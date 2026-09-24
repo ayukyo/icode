@@ -183,6 +183,7 @@ class NativeChainExecutor:
                     or policy.ticket_id != context.ticket_id
                     or policy.step != step
                     or not bool(getattr(self.sandbox, "is_real_isolation", False))
+                    or not bool(getattr(self.sandbox, "policy_contract_ready", False))
                     or not callable(getattr(self.sandbox, "wrap_policy", None))
                     or not callable(getattr(self.sandbox, "prepare_policy", None))
                 ):

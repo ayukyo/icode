@@ -422,6 +422,7 @@ class TestSandboxWrapping(unittest.TestCase):
                 LandlockSandbox(helper=str(helper)).prepare_policy(policy)
             sandbox = LandlockSandbox(helper=str(helper), manifest=str(manifest))
             sandbox.prepare_policy(policy)
+            self.assertFalse(sandbox.policy_contract_ready)
             self.assertEqual(sandbox.wrap_policy(["true"], policy=policy)[0], str(helper))
             helper.write_bytes(b"#!/bin/sh\nexit 1\n")
             with self.assertRaises(RuntimeError):

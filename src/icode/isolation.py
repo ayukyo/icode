@@ -247,6 +247,11 @@ class LandlockSandbox:
     def is_real_isolation(self) -> bool:
         return True
 
+    @property
+    def policy_contract_ready(self) -> bool:
+        """实验后端尚未落实进程数等完整策略，不能启动自动工单。"""
+        return False
+
     @classmethod
     def from_bundle(cls) -> LandlockSandbox | None:
         """只从摘要已核对的随包文件构造策略候选，仍不自动启用。"""
