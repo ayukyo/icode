@@ -94,6 +94,9 @@ jobs:
       - name: Verify protected-path Seatbelt policy
         if: runner.os == 'macOS'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_策略profile真实阻断受保护文件与外部路径 -v
+      - name: Verify minimal Seatbelt denies external private tmp reads
+        if: runner.os == 'macOS'
+        run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_最小profile不读取private_tmp外部秘密 -v
       - name: Verify experimental Seatbelt policy through broker
         if: runner.os == 'macOS'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_实验策略经命令broker执行 -v

@@ -59,7 +59,8 @@
 - macOS 将 `_policy_profile` 接到显式 `experimental_wrap_policy`，并增加 Seatbelt + 统一命令 broker 的真实联测：工作区写入允许、受保护 `.git` 写入拒绝、默认网络拒绝。该接口刻意不命名为 `wrap_policy`，因此工作台默认选中的 Seatbelt 仍不能通过自主执行预检；待远端双架构结果确认。进程数及主动脱离进程组的后代尚无可靠收束方案，不能以这些负例代替完整 R2.2 验收。
 - [实验联测首轮 macOS 双架构 CI](https://github.com/ayukyo/icode/actions/runs/35955077742) 在网络断言失败：测试仅创建 socket，没有对本机端口发起连接；这是测试设计不足，不能据此推断 Seatbelt 网络放行。已改为先做宿主连接阳性对照，再由沙箱尝试连接同一监听端口。工作区写入及 `.git` 拒写在该轮已通过。
 - [修正后 macOS 双架构 CI](https://github.com/ayukyo/icode/actions/runs/35955604841) 的实验 Seatbelt + broker 联测已通过：Python 启动与工作区写入、`.git` 拒写、真实 loopback 连接拒绝均在实际 runner 通过；这仍不证明进程数或脱组后代回收。
-- 复查 Seatbelt profile 发现 `(allow process*)` 过宽；参照 [Codex 的开源基础策略](https://github.com/openai/codex/blob/main/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl)，改为仅允许进程执行/派生，并将信号与进程信息限定同沙箱目标。两个 profile 使用相同规则并由测试锁定；策略联测增加“子进程能启动”阳性及“子进程不能写受保护 `.git`”负例。新的 macOS 真实运行结果尚待验证，不能据此宣称整树清理完成。
+- 复查 Seatbelt profile 发现 `(allow process*)` 过宽；参照 [Codex 的开源基础策略](https://github.com/openai/codex/blob/main/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl)，改为仅允许进程执行/派生，并将信号与进程信息限定同沙箱目标。两个 profile 使用相同规则并由测试锁定；策略联测增加“子进程能启动”阳性及“子进程不能写受保护 `.git`”负例。[收紧后 macOS 双架构 CI](https://github.com/ayukyo/icode/actions/runs/35956007739) 已通过，仍不能据此宣称整树清理完成。
+- 最小 Seatbelt profile 曾将整个 `/private/tmp` 列为可读，通用临时目录探测未覆盖该精确位置，可能出现探针通过却能读取另一临时目录秘密的缺口。现删除此广域读例外，并在 macOS 双架构 CI 增加真实 `/private/tmp` 外部秘密拒读测试；若工具确实需要某个运行时文件，应定位后加精确例外，不恢复整个目录。
 - 自动链的后端预检从“若有 `prepare_policy` 才调用”收紧为**必须**实现并成功返回：仅自称真实隔离、提供 `wrap_policy` 的不完整后端现在会在模型调用前以稳定 `isolation_unavailable` 阻断，不再先消耗模型调用后才失败。离线测试覆盖缺失接口和准备异常两条路径。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。

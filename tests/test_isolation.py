@@ -14,6 +14,7 @@ import unittest
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from unittest import mock
@@ -495,6 +496,7 @@ class TestSandboxWrapping(unittest.TestCase):
         self.assertIn('(path-ancestors "', profile)
         self.assertIn('(literal "/")', profile)
         self.assertIn('(subpath "/private/etc/ssl")', profile)
+        self.assertNotIn('(subpath "/private/tmp")', profile)
         self.assertNotIn("(allow network*)", profile)
         self.assertNotIn("(allow process*)", profile)
         self.assertIn("(allow process-exec)", profile)
@@ -677,6 +679,25 @@ class TestSandboxWrapping(unittest.TestCase):
             self.assertNotEqual(run([touch, str(outside / "blocked")]).returncode, 0)
             self.assertFalse((outside / "blocked").exists())
             self.assertNotEqual(run([cat, str(secret)]).returncode, 0)
+
+    @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt 实测")
+    def test_seatbelt_最小profile不读取private_tmp外部秘密(self) -> None:
+        with temp_workspace() as workspace, tempfile.TemporaryDirectory(
+            prefix="icode-seatbelt-secret-", dir="/private/tmp",
+        ) as raw_secret:
+            secret = Path(raw_secret) / "secret"
+            secret.write_text("outside-private-tmp-secret", encoding="utf-8")
+            sandbox = MacSeatbeltSandbox(
+                sandbox_exec=shutil.which("sandbox-exec") or "sandbox-exec"
+            )
+            result = subprocess.run(
+                sandbox.wrap([shutil.which("cat") or "/bin/cat", str(secret)],
+                             workspace=workspace),
+                cwd=workspace, capture_output=True, text=True,
+                timeout=5, check=False,
+            )
+            self.assertNotEqual(result.returncode, 0, result)
+            self.assertNotIn("outside-private-tmp-secret", result.stdout)
 
     def test_容器_包装默认断网且只挂工作区(self) -> None:
         argv = ContainerSandbox(runtime="podman").wrap(["python", "-V"], workspace=Path("/tmp/ws"))

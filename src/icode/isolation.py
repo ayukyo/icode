@@ -432,7 +432,7 @@ class MacSeatbeltSandbox:
             '(allow file-read* file-test-existence (literal "/"))'
             f'(allow file-read* file-write* (subpath "{escaped_ws}"))'
             "(allow file-read* (subpath \"/usr\") (subpath \"/System\") (subpath \"/Library\")"
-            ' (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/private/tmp\")'
+            ' (subpath \"/bin\") (subpath \"/sbin\")'
             ' (subpath \"/private/etc/ssl\"))'
             f"{net}"
         )
