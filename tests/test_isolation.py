@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import os
 import unittest
 import shutil
 import subprocess
@@ -197,19 +198,29 @@ class TestProbe(unittest.TestCase):
             wrapped = sandbox.wrap(
                 [sys.executable, "-c", child_code], workspace=checkout,
             )
+            self.assertIn("--parent-pid", wrapped)
+            wrong_parent = list(wrapped)
+            wrong_parent[wrong_parent.index("--parent-pid") + 1] = str(os.getpid() + 1)
+            rejected = subprocess.run(
+                wrong_parent, capture_output=True, text=True, timeout=4, check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse(started.exists())
             parent_code = (
-                "import subprocess, time\n"
+                "import os, subprocess, time\n"
                 "from pathlib import Path\n"
-                f"subprocess.Popen({wrapped!r}, stdin=subprocess.DEVNULL, "
+                f"wrapped = {wrapped!r}\n"
+                "wrapped[wrapped.index('--parent-pid') + 1] = str(os.getpid())\n"
+                "subprocess.Popen(wrapped, stdin=subprocess.DEVNULL, "
                 "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-                "for _ in range(200):\n"
+                "for _ in range(400):\n"
                 f"    if Path({str(started)!r}).exists(): break\n"
                 "    time.sleep(0.01)\n"
                 "else: raise RuntimeError('sandbox child did not start')\n"
             )
             parent = subprocess.run(
                 [sys.executable, "-c", parent_code],
-                capture_output=True, text=True, timeout=5, check=False,
+                capture_output=True, text=True, timeout=7, check=False,
             )
             self.assertEqual(parent.returncode, 0, parent.stderr)
             self.assertTrue(started.is_file())

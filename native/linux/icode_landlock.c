@@ -10,6 +10,7 @@
 #include <linux/filter.h>
 #include <linux/landlock.h>
 #include <linux/seccomp.h>
+#include <limits.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -143,10 +144,10 @@ static int install_network_deny(void) {
     return 0;
 }
 
-static int install_parent_death_signal(void) {
+static int install_parent_death_signal(pid_t expected_parent) {
     pid_t parent = getppid();
-    if (parent <= 1) {
-        fprintf(stderr, "sandbox parent is already gone\n");
+    if (parent <= 1 || parent != expected_parent) {
+        fprintf(stderr, "sandbox parent identity changed before setup\n");
         return -1;
     }
     if (prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0) {
@@ -162,8 +163,17 @@ static int install_parent_death_signal(void) {
 }
 
 int main(int argc, char **argv) {
-    if (argc < 5 || strcmp(argv[1], "--workspace") != 0) {
-        fprintf(stderr, "usage: icode-landlock --workspace PATH [--runtime-read PATH]... -- COMMAND [ARG...]\n");
+    if (argc < 7 || strcmp(argv[1], "--workspace") != 0 ||
+        strcmp(argv[3], "--parent-pid") != 0) {
+        fprintf(stderr, "usage: icode-landlock --workspace PATH --parent-pid PID [--runtime-read PATH]... -- COMMAND [ARG...]\n");
+        return 2;
+    }
+    char *pid_end = NULL;
+    errno = 0;
+    long parent_value = strtol(argv[4], &pid_end, 10);
+    if (errno != 0 || !pid_end || *pid_end != '\0' ||
+        parent_value <= 1 || parent_value > INT_MAX) {
+        fprintf(stderr, "invalid parent PID\n");
         return 2;
     }
     const char **runtime_roots = calloc((size_t)argc, sizeof(*runtime_roots));
@@ -172,7 +182,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     size_t runtime_root_count = 0;
-    int command_index = 3;
+    int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
         if (strcmp(argv[command_index], "--runtime-read") != 0 ||
             command_index + 1 >= argc || argv[command_index + 1][0] != '/') {
@@ -189,7 +199,7 @@ int main(int argc, char **argv) {
         return 2;
     }
     ++command_index;
-    if (install_parent_death_signal() != 0) {
+    if (install_parent_death_signal((pid_t)parent_value) != 0) {
         free(runtime_roots);
         return 1;
     }

@@ -301,7 +301,10 @@ class LandlockSandbox:
         helper = Path(self.helper).resolve()
         if not helper.is_file():
             raise RuntimeError("Landlock helper is unavailable")
-        wrapped = [str(helper), "--workspace", str(Path(workspace).resolve())]
+        wrapped = [
+            str(helper), "--workspace", str(Path(workspace).resolve()),
+            "--parent-pid", str(os.getpid()),
+        ]
         for root in self._runtime_read_roots():
             wrapped.extend(("--runtime-read", str(root)))
         return [*wrapped, "--", *argv]
