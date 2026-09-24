@@ -363,7 +363,8 @@ class TestProbe(unittest.TestCase):
                 '        int result = ensure_setgroups_denied(argc > 1 ? argv[1] : "/proc/self/setgroups");\n'
                 '        return argc > 1 ? (result == 1 ? 0 : 1) : result;\n'
                 '    }\n'
-                '    return run_helper(argc, argv, getenv("ICODE_TEST_SETGROUPS_PATH"));\n'
+                '    return run_helper(argc, argv, getenv("ICODE_TEST_SETGROUPS_PATH"),\n'
+                '                      "/proc/self/uid_map");\n'
                 '}\n',
                 encoding="ascii",
             )

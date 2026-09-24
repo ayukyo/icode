@@ -233,10 +233,10 @@ static int ensure_setgroups_denied(const char *path) {
     return -1;
 }
 
-static int verify_uid_only_mapping(void) {
-    int fd = open("/proc/self/gid_map", O_RDONLY | O_CLOEXEC);
+static int verify_empty_mapping(const char *path) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        perror("/proc/self/gid_map");
+        perror(path);
         return -1;
     }
     char value;
@@ -248,17 +248,25 @@ static int verify_uid_only_mapping(void) {
         int saved_errno = errno;
         close(fd);
         errno = saved_errno;
-        perror("/proc/self/gid_map");
+        perror(path);
         return -1;
     }
     if (close(fd) != 0) {
-        perror("/proc/self/gid_map");
+        perror(path);
         return -1;
     }
     if (length != 0) {
-        fprintf(stderr, "UID-only sandbox requires an empty gid_map\n");
+        if (strcmp(path, "/proc/self/gid_map") == 0)
+            fprintf(stderr, "UID-only sandbox requires an empty gid_map\n");
+        else
+            fprintf(stderr, "sandbox requires an empty mapping: %s\n", path);
         return -1;
     }
+    return 0;
+}
+
+static int verify_uid_only_mapping(void) {
+    if (verify_empty_mapping("/proc/self/gid_map") != 0) return -1;
     errno = 0;
     if (setgroups(0, NULL) != -1 || errno != EPERM) {
         fprintf(stderr, "UID-only sandbox did not deny setgroups\n");
@@ -267,7 +275,9 @@ static int verify_uid_only_mapping(void) {
     return 0;
 }
 
-static int enter_task_namespaces(pid_t host_parent, const char *setgroups_path) {
+/* Return 0 for mapped credentials, 1 for verified mapless PID namespace. */
+static int enter_task_namespaces(pid_t host_parent, const char *setgroups_path,
+                                 const char *uid_map_path) {
     uid_t outer_uid = geteuid();
     gid_t outer_gid = getegid();
     if (unshare(CLONE_NEWUSER | CLONE_NEWPID) != 0) {
@@ -278,8 +288,18 @@ static int enter_task_namespaces(pid_t host_parent, const char *setgroups_path) 
     int setgroups_state = ensure_setgroups_denied(setgroups_path);
     if (setgroups_state < 0) return -1;
     int size = snprintf(mapping, sizeof(mapping), "0 %u 1\n", (unsigned)outer_uid);
-    if (size < 0 || (size_t)size >= sizeof(mapping) ||
-        write_mapping("/proc/self/uid_map", mapping, 0) != 0) return -1;
+    if (size < 0 || (size_t)size >= sizeof(mapping)) return -1;
+    int uid_mapping = write_mapping(uid_map_path, mapping, 1);
+    if (uid_mapping < 0) return -1;
+    if (uid_mapping == 1) {
+        /* Some Ubuntu AppArmor profiles permit PID namespaces but reject UID
+         * mapping. No map is acceptable only for cleanup, never for file
+         * confinement; Landlock and no-new-privileges still apply below. */
+        if (verify_empty_mapping("/proc/self/uid_map") != 0 ||
+            verify_uid_only_mapping() != 0 ||
+            install_parent_death_signal(host_parent) != 0) return -1;
+        return 1;
+    }
     if (setgroups_state == 1) {
         if (verify_uid_only_mapping() != 0) return -1;
     } else {
@@ -288,23 +308,31 @@ static int enter_task_namespaces(pid_t host_parent, const char *setgroups_path) 
             write_mapping("/proc/self/gid_map", mapping, 0) != 0) return -1;
     }
     /* Moving to a user namespace can change credentials and clear PDEATHSIG. */
-    return install_parent_death_signal(host_parent);
+    return install_parent_death_signal(host_parent) == 0 ? 0 : -1;
 }
 
-static int drop_payload_capabilities(void) {
-    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
-        prctl(PR_SET_SECUREBITS, SECBIT_KEEP_CAPS_LOCKED |
+static int drop_payload_capabilities(int mapless) {
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        perror("PR_SET_NO_NEW_PRIVS");
+        return -1;
+    }
+    if (!mapless && prctl(PR_SET_SECUREBITS, SECBIT_KEEP_CAPS_LOCKED |
               SECBIT_NO_SETUID_FIXUP | SECBIT_NO_SETUID_FIXUP_LOCKED |
-              SECBIT_NOROOT | SECBIT_NOROOT_LOCKED, 0, 0, 0) != 0 ||
-        prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0) {
+              SECBIT_NOROOT | SECBIT_NOROOT_LOCKED, 0, 0, 0) != 0) {
         perror("drop payload privileges");
         return -1;
     }
-    /* The kernel capability ABI supports at most 64 bits; stop on EINVAL. */
+    if (prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0) {
+        perror("PR_CAP_AMBIENT_CLEAR_ALL");
+        return -1;
+    }
+    /* Mapless AppArmor may deny CAP_SETPCAP. No-new-privileges plus empty
+     * active capability sets prevent later exec from gaining bounding caps. */
     for (unsigned cap = 0; cap < 64; ++cap) {
         int present = prctl(PR_CAPBSET_READ, cap, 0, 0, 0);
         if (present < 0 && errno == EINVAL) break;
-        if (present < 0 || prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) != 0) {
+        if (present < 0 || (!mapless &&
+            prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) != 0)) {
             perror("PR_CAPBSET_DROP");
             return -1;
         }
@@ -322,6 +350,26 @@ static int drop_payload_capabilities(void) {
         perror("capset");
         return -1;
     }
+    struct __user_cap_data_struct actual[2] = {{0}, {0}};
+    if (syscall(SYS_capget, &header, actual) != 0 ||
+        prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1) {
+        perror("verify payload privileges");
+        return -1;
+    }
+    for (size_t i = 0; i < 2; ++i) {
+        if (actual[i].effective || actual[i].permitted || actual[i].inheritable) {
+            fprintf(stderr, "payload retains capabilities\n");
+            return -1;
+        }
+    }
+    for (unsigned cap = 0; cap < 64; ++cap) {
+        int ambient = prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_IS_SET, cap, 0, 0);
+        if (ambient < 0 && errno == EINVAL) break;
+        if (ambient != 0) {
+            fprintf(stderr, "payload retains ambient capabilities\n");
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -333,7 +381,8 @@ static int child_status(int status) {
 
 static int run_namespace_init(int parent_pipe, const char *workspace,
                               const char *const *runtime_roots,
-                              size_t runtime_root_count, char **command) {
+                              size_t runtime_root_count, char **command,
+                              int mapless) {
     /* Namespace PID 1 sees its parent as PID 0, so getppid cannot validate it. */
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
         prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0) {
@@ -352,7 +401,7 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
     }
     if (payload == 0) {
         close(parent_pipe);
-        if (drop_payload_capabilities() != 0 ||
+        if (drop_payload_capabilities(mapless) != 0 ||
             install_filesystem(workspace, runtime_roots, runtime_root_count) != 0 ||
             install_network_deny() != 0) _exit(1);
         execvp(command[0], command);
@@ -379,8 +428,10 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
 static int supervise_task(pid_t host_parent, const char *workspace,
                           const char *const *runtime_roots,
                           size_t runtime_root_count, char **command,
-                          const char *setgroups_path) {
-    if (enter_task_namespaces(host_parent, setgroups_path) != 0) return 1;
+                          const char *setgroups_path,
+                          const char *uid_map_path) {
+    int mapless = enter_task_namespaces(host_parent, setgroups_path, uid_map_path);
+    if (mapless < 0) return 1;
     int control[2];
     if (pipe2(control, O_CLOEXEC) != 0) {
         perror("pipe2 sandbox parent");
@@ -396,7 +447,7 @@ static int supervise_task(pid_t host_parent, const char *workspace,
     if (init == 0) {
         close(control[1]);
         int result = run_namespace_init(control[0], workspace, runtime_roots,
-                                        runtime_root_count, command);
+                                        runtime_root_count, command, mapless);
         close(control[0]);
         _exit(result);
     }
@@ -414,7 +465,8 @@ static int supervise_task(pid_t host_parent, const char *workspace,
     return child_status(status);
 }
 
-static int run_helper(int argc, char **argv, const char *setgroups_path) {
+static int run_helper(int argc, char **argv, const char *setgroups_path,
+                      const char *uid_map_path) {
     /* Landlock cannot revoke a writable file already open in the host. */
     if (syscall(SYS_close_range, 3U, UINT_MAX, 0U) != 0) {
         perror("close_range inherited descriptors");
@@ -475,12 +527,12 @@ static int run_helper(int argc, char **argv, const char *setgroups_path) {
     }
     int result = supervise_task((pid_t)parent_value, workspace, runtime_roots,
                                 runtime_root_count, argv + command_index,
-                                setgroups_path);
+                                setgroups_path, uid_map_path);
     free(workspace);
     free(runtime_roots);
     return result;
 }
 
 int main(int argc, char **argv) {
-    return run_helper(argc, argv, "/proc/self/setgroups");
+    return run_helper(argc, argv, "/proc/self/setgroups", "/proc/self/uid_map");
 }

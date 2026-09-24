@@ -1,7 +1,7 @@
 # R2.2 Linux 异常退出后代清理：验证计划
 
 - 日期：2026-09-24
-- 状态：生产助手与本机 wheel 实测通过；GitHub 24.04 Linux x64/ARM64 因 `uid_map` 权限阻断，R2.2 尚未验收
+- 状态：已加入严格核验的无映射回退，本机与 wheel 测试通过；GitHub 24.04 Linux x64/ARM64 尚待真实复测，R2.2 未验收
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.1、§14
 
 ## 三问与调用链
@@ -27,9 +27,11 @@
 
 ## 已有证据与尚未证明
 
-[第三轮线上 CI](https://github.com/ayukyo/icode/actions/runs/35999349870) 的 Ubuntu 22.04 x64/ARM64 原生探测均通过，24.04 x64/ARM64 仍卡在 `uid_map`；这把差异收窄到宿主配置/发行环境，但尚未证明具体机制。[Ubuntu 24.04 官方发行说明](https://documentation.ubuntu.com/release-notes/24.04/)描述了“可创建 user namespace，但内部 capability 受 AppArmor 限制”的默认行为；[user namespace](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)与[PID namespace](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)手册未要求先写 UID/GID map 才能 fork/exec 或让 PID 1 清理后代。本机无映射 `unshare --user --pid --fork` 可启动，进程视角 uid/gid 为 65534，但本机 AppArmor 限制关闭，**不得外推至 CI**。下一轮仅诊断 GitHub 24.04 能否无映射创建 PID namespace，不修改生产助手的 fail-closed 行为；即使能启动，仍须验证 capability 清除、Landlock/seccomp、工作区正反向文件/网络边界及异常退出后代清理。
+[第三轮线上 CI](https://github.com/ayukyo/icode/actions/runs/35999349870) 的 Ubuntu 22.04 x64/ARM64 原生探测均通过，24.04 x64/ARM64 仍卡在 `uid_map`；这把差异收窄到宿主配置/发行环境，但尚未证明具体机制。[Ubuntu 24.04 官方发行说明](https://documentation.ubuntu.com/release-notes/24.04/)描述了“可创建 user namespace，但内部 capability 受 AppArmor 限制”的默认行为；[user namespace](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)与[PID namespace](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)手册未要求先写 UID/GID map 才能 fork/exec 或让 PID 1 清理后代。本机无映射 `unshare --user --pid --fork` 可启动，进程视角 uid/gid 为 65534，但本机 AppArmor 限制关闭，**当时不能外推至 CI**；因此先做了第四轮诊断，没有直接放宽生产助手。
 
-[第二轮线上 CI](https://github.com/ayukyo/icode/actions/runs/35997854549) 已运行：Linux x64/ARM64 原生负例均在 `/proc/self/uid_map: Operation not permitted` 失败，Python 3.11/3.12 全套测试也未通过。当前只能确认 GitHub 24.04 宿主拒绝此映射，不能仅凭 `EPERM` 断言具体是 AppArmor、capability 还是 namespace 叠加限制。[Linux user namespace 手册](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)列出映射的能力/身份约束。下一轮 CI 增加 22.04 x64/ARM64 对照与只读宿主策略诊断，保留 24.04 原样失败门禁；22.04 通过也不能把 24.04 或完整 R2 标记为通过。
+[第四轮线上 CI](https://github.com/ayukyo/icode/actions/runs/36000082985) 在 Ubuntu 24.04 x64/ARM64 均证明无映射 user+PID namespace 可创建（进程 PID 1，命名空间内 UID/GID 65534，宿主 AppArmor 限制为 1）。据此增加生产助手的**仅权限错误**回退：真实 UID/GID map 必须为空，`setgroups` 必须不可用；payload 的 inheritable/permitted/effective/ambient capability 均归零并检查 `no_new_privs=1`，文件与网络仍安装 Landlock/seccomp。对非权限映射错误仍拒绝执行。测试专用驱动注入 `uid_map` 拒绝，本机文件/网络负例、PID 2 身份、宿主 `SIGKILL` 后已 `setsid` 后代的 pidfd 退出与无延迟写、旧映射路径以及干净 wheel 均通过。**这不是 GitHub 24.04 产品路径通过证据**；下一轮 x64/ARM64 原生/wheel 测试与全量 CI 必须实测。
+
+[第二轮线上 CI](https://github.com/ayukyo/icode/actions/runs/35997854549) 已运行：Linux x64/ARM64 原生负例均在 `/proc/self/uid_map: Operation not permitted` 失败，Python 3.11/3.12 全套测试也未通过。当时只能确认 GitHub 24.04 宿主拒绝此映射，不能仅凭 `EPERM` 断言具体是 AppArmor、capability 还是 namespace 叠加限制。[Linux user namespace 手册](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)列出映射的能力/身份约束。随后增加 22.04 x64/ARM64 对照与只读宿主策略诊断，保留 24.04 原样失败门禁；22.04 通过也不能把 24.04 或完整 R2 标记为通过。
 
 本机 Ubuntu x64 的独立临时目录实验：`unshare --user --map-root-user --pid --fork --mount-proc` 可用，namespace PID 1 的 `getppid()` 为 0；可信 PID 1 绑定父死信号后，宿主杀死外层进程，已 `setsid` 的后代在 1.9 秒后没有写出延迟标记，宿主视角 PID 已消失。Linux 的 `PDEATHSIG` 在 fork 及凭据变化时有清除条件；生产助手在凭据变化后重新设置，并用控制管道处理父死亡竞态。[内核接口说明](https://man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html)与[PID namespace 文档](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)提供机制依据。
 

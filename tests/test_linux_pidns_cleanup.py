@@ -323,7 +323,15 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                 "assert os.getpid() == 2 and os.getppid() == 1, "
                 "(os.getpid(), os.getppid())\n"
                 "libc = ctypes.CDLL(None, use_errno=True)\n"
-                "assert libc.prctl(23, 19, 0, 0, 0) == 0\n"  # CAP_SYS_PTRACE 不在 bounding set
+                "class H(ctypes.Structure):\n"
+                "    _fields_ = [('version', ctypes.c_uint32), ('pid', ctypes.c_int)]\n"
+                "class D(ctypes.Structure):\n"
+                "    _fields_ = [('effective', ctypes.c_uint32), "
+                "('permitted', ctypes.c_uint32), ('inheritable', ctypes.c_uint32)]\n"
+                "caps = (D * 2)()\n"
+                "assert libc.capget(ctypes.byref(H(0x20080522, 0)), ctypes.byref(caps)) == 0\n"
+                "assert all(not (c.effective or c.permitted or c.inheritable) for c in caps)\n"
+                "assert libc.prctl(39, 0, 0, 0, 0) == 1\n"  # PR_GET_NO_NEW_PRIVS
                 "assert libc.ptrace(16, 1, 0, 0) == -1\n"  # PTRACE_ATTACH
                 "assert ctypes.get_errno() == 1\n"
                 "class IOVec(ctypes.Structure):\n"
