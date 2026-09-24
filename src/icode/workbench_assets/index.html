@@ -70,6 +70,14 @@
             <button id="intent-takeover" type="button" data-intent="takeover" data-i18n="takeoverAutonomy">接管为会话模式</button>
           </div>
         </section>
+        <section id="protection-panel" class="protection-panel" aria-labelledby="protection-heading">
+          <div class="autonomy-heading"><h3 id="protection-heading" data-i18n="protectionTitle">运行保护</h3><span id="protection-status" class="runtime-badge"></span></div>
+          <dl class="runtime-facts">
+            <div><dt data-i18n="protectionScope">可访问范围</dt><dd id="protection-scope"></dd></div>
+            <div><dt data-i18n="protectionNetwork">网络</dt><dd id="protection-network"></dd></div>
+            <div><dt data-i18n="protectionLastBlock">最近阻止的动作</dt><dd id="protection-last-block"></dd></div>
+          </dl>
+        </section>
         <details id="technical-details" class="technical-details">
           <summary data-i18n="technicalDetails">技术详情</summary>
           <dl>

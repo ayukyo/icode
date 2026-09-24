@@ -611,6 +611,26 @@ class TestWorkbenchAssets(unittest.TestCase):
         for forbidden in ("path:", "key_file", "api_key", "base_url", "backend", "model:"):
             self.assertNotIn(forbidden, intent_source)
 
+    def test_运行保护卡片不把后端配置误报为已验证(self) -> None:
+        html = (ASSETS_DIR / "index.html").read_text(encoding="utf-8")
+        js = (ASSETS_DIR / "app.js").read_text(encoding="utf-8")
+        for element_id in (
+            "protection-panel", "protection-status", "protection-scope",
+            "protection-network", "protection-last-block",
+        ):
+            self.assertIn(f'id="{element_id}"', html)
+        for phrase in (
+            "运行保护", "Run protection", "尚未完成保护检查",
+            "Protection check not complete", "自动处理尚未启用",
+            "Automatic work is not enabled",
+        ):
+            self.assertIn(phrase, js)
+        self.assertIn('enforced: "protectionCheckPending"', js)
+        self.assertNotIn('enforced: "protectionOn"', js)
+        self.assertIn('isolationEnforced: "后端已配置，待自检"', js)
+        self.assertIn('isolationEnforced: "backend configured, check pending"', js)
+        self.assertIn('renderProtection(ticket);', js)
+
     def test_失败阻断与中断状态均允许显式恢复(self) -> None:
         js = (ASSETS_DIR / "app.js").read_text(encoding="utf-8")
         self.assertIn(
