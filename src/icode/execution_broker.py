@@ -57,6 +57,9 @@ def _stop_group(process: subprocess.Popen[bytes]) -> tuple[bool, int | None]:
     """即便主进程已退出，也清除其仍留在同一会话的后台子进程。"""
     ok = True
     cleanup_errno: int | None = None
+    # macOS 上对仅剩僵尸主进程的组发信号会返回 EPERM；先 reap 主进程，
+    # 若还有同组子进程，组仍存在，下面的 killpg 仍能清理它们。
+    process.poll()
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
