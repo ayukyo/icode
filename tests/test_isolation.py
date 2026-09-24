@@ -11,6 +11,7 @@ import unittest
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -34,6 +35,7 @@ from icode.isolation import (
 from icode.tools import IsolationUnavailable, ToolContext, default_registry
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.workspace import WorkspaceManager
+from icode.execution_broker import execute_policy_command
 
 
 class TestProbe(unittest.TestCase):
@@ -164,6 +166,26 @@ class TestProbe(unittest.TestCase):
                 self.assertEqual(
                     (code_root / "new.txt").read_text(encoding="utf-8"), "ok",
                 )
+                child_code = (
+                    "import time, pathlib; time.sleep(1.4); "
+                    "pathlib.Path('late-child').write_text('escaped')"
+                )
+                parent_code = (
+                    "import subprocess, sys, time; "
+                    f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+                    "print('spawned', flush=True); time.sleep(5)"
+                )
+                outcome = execute_policy_command(
+                    sandbox.wrap(
+                        [sys.executable, "-c", parent_code], workspace=code_root,
+                    ),
+                    cwd=code_root, policy=policy, timeout=1,
+                )
+                self.assertEqual(outcome.error, "timeout")
+                self.assertTrue(outcome.cleanup_ok)
+                self.assertIn("spawned", outcome.output)
+                time.sleep(1.5)
+                self.assertFalse((code_root / "late-child").exists())
 
     def test_恒等包装不能通过原生负向探测(self) -> None:
         result = probe_native_sandbox(NoIsolation())

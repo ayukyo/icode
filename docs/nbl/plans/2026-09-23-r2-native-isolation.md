@@ -49,6 +49,7 @@
 - Linux worktree 的**未启用实验选项** `isolate_git_metadata` 改为分层布局：Git 注册根 `checkout/` 保留真实 `.git` 管理文件，可写源码位于其下独立的 `checkout/code/`；策略仅允许后者写入。复用严格校验布局、Git 身份与模式，旧工作区和新布局不能静默互用；源码原本是子目录时继续映射到 `code/` 下相同相对路径。真实 Landlock 负向测试证明从代码目录经 `..` 或符号链接均不能改写上层 `.git`，而 Git worktree 注册和宿主显式 `--git-dir`/`--work-tree` 操作仍可用。探索中也确认直接搬走 `.git` 指针会导致 Git 将注册路径误判到 runtime，或把工作树标为 `prunable`，因此未采用。**限制：**在 `code/` 直接运行普通 `git status` 会按上层 worktree 根解释路径；受控 Git broker 尚未实现，原生策略映射和完整进程树保证也未验收，故仍不能开启自动模式。Linux 助手目前拒绝沙箱内 `setsid`/`setpgid` 脱离 broker 进程组，并拒绝 x86_64 的 x32 syscall 编号。
 - Linux 增加内部 `_checked_policy_workspace` 静态检查，将分层会话的文件/默认断网合同与助手当前表达能力对齐；扩大读写根、在可写根内设置拒绝子路径、与固定系统运行时白名单冲突、网络临时授权均明确拒绝。该检查**不覆盖**进程数、完整清理或 Git broker，也不暴露 `wrap_policy`，不得据此启动自动模式。
 - pip/venv 安装实测发现原助手只读 `/usr` 等系统路径，导致虚拟环境 Python `execvp` 被拒。现由宿主仅传当前 `sys.prefix`/`sys.base_prefix` 的规范化只读根，拒绝主目录及 `/tmp` 等过宽根；Linux 助手仍只对工作区授权写入。wheel CI 在独立 venv 安装后增加“沙箱内启动该 venv 的 Python 并导入 `icode`”真实测试，原有外部秘密拒读、默认断网及工作区外拒写探测保留。该运行时白名单是执行所需的显式例外，不等于任意外部读取授权。
+- Linux 真实集成测试将分层工作区、Landlock/seccomp 助手与策略命令 broker 连在一起：代码目录写入成功、上层 `.git` 写入被内核拒绝、沙箱内子进程不能调用 `setsid`/`setpgid` 脱组，超时后同组子进程不会在延迟后写出标记。该证据只覆盖同进程组的回收；尚未验证恶意进程的所有逃逸方式和 `process_limit`，因此仍不作为 R2.2 退出证明。
 - [分层工作区四架构 CI](https://github.com/ayukyo/icode/actions/runs/35950707673) 首轮仅 Windows 的既有 `shutdown(timeout=0.05)` 耗时断言失败（2.015 秒，阈值 0.5 秒）；同一提交仅重跑该作业通过。该现象暂按不稳定时序用例跟踪，不把首次失败抹去，也不归因为 Git 分层布局。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
