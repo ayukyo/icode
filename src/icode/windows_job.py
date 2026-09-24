@@ -318,11 +318,15 @@ def run_windows_job(
                 None, 1, 0, ctypes.byref(attribute_size),
             ))
             size_error = 0 if size_query_ok else ctypes.get_last_error()
+            size_query_expected = (
+                not size_query_ok and size_error == 122 and attribute_size.value > 0
+            )
             diagnostics.append(
+                f"attr_size_query_expected={size_query_expected} "
                 f"attr_size_query_ok={size_query_ok} attr_size_query_error={size_error} "
                 f"attr_bytes={attribute_size.value}"
             )
-            if size_error != 122 or attribute_size.value <= 0:
+            if not size_query_expected:
                 raise OSError(size_error, "InitializeProcThreadAttributeList(size)")
             attribute_storage, attribute_list = _allocate_attribute_list_buffer(
                 attribute_size.value,

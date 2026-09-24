@@ -1,7 +1,7 @@
 # R2.4 临时网络授权与代理门禁
 
 - 日期：2026-09-24
-- 状态：设计边界与负例已确认；已新增不接执行链的 `NetworkLease` 范围校验模型；可信签发、撤销状态、代理和 OS 网络边界仍未实现，自动模式保持默认断网
+- 状态：已新增 lease 范围模型与本机审批/HMAC/撤销 authority 契约；代理和 OS 强制路由仍未实现，自动模式保持默认断网
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §8、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与现状
@@ -27,15 +27,21 @@
 
 - 快照：ICODE `f6d95ea5680d3f4a78593b5a60ab699f2eb2fcba`；Codex `3e27195f2de00dc975b1db03440ade31b889d9b7`；Gemini CLI `87de0b6369f0466da37d9b3c0c9b77374bb59992`。Codex Linux 文档描述隔离 netns、TCP→UDS→TCP 代理桥、HTTP/SOCKS5 与域名/私网策略；它明确提示 DNS 重绑定不能仅靠初次解析时检查解决。[Codex netns/桥接](https://github.com/openai/codex/blob/3e27195f2de00dc975b1db03440ade31b889d9b7/codex-rs/linux-sandbox/README.md) · [Codex 代理](https://github.com/openai/codex/blob/3e27195f2de00dc975b1db03440ade31b889d9b7/codex-rs/network-proxy/README.md)
 - Gemini CLI 同一观察版本的 [macOS strict-proxied profile](https://github.com/google-gemini/gemini-cli/blob/87de0b6369f0466da37d9b3c0c9b77374bb59992/packages/cli/src/utils/sandbox-macos-strict-proxied.sb) 默认拒绝出站，只允许连接本机代理端口；环境变量负责合作式路由，但 Seatbelt 才是“只能连代理”的 OS 门。[启动代码](https://github.com/google-gemini/gemini-cli/blob/87de0b6369f0466da37d9b3c0c9b77374bb59992/packages/cli/src/utils/sandbox.ts)
-- ICODE 源码核对结论：`PROXY_ALLOWLIST`/域名列表此前没有 lease、审批或代理服务；本轮新增的 lease 仅是不可变范围校验模型，仍无签发 authority、签名、撤销状态或执行接线。Linux seccomp 禁止 socket，不能由 syscall 层按 hostname 放行；macOS 新实验只实现 DENY，旧 `network=True` 是宽泛联网；Windows Job 无网络过滤，AppContainer 尚未通过创建进程门槛。因此静态策略、lease 数据和 `HTTP_PROXY` 均不能标为网络授权已完成。Windows 未来的 WFP 路线需单独验证 [ALE 连接层](https://learn.microsoft.com/en-us/windows/win32/fwp/ale-layers)，而非假设 Job Object 管网。
+- ICODE 源码核对结论：`PROXY_ALLOWLIST`/域名列表此前没有 lease、审批或代理服务。现有 `NetworkLeaseAuthority` 会调用通用 `Approver`，以宿主进程随机 HMAC key 签发 lease，并按策略代次撤销；但没有执行接线、代理服务或 OS 路由。Linux seccomp 禁止 socket，不能由 syscall 层按 hostname 放行；macOS 新实验只实现 DENY，旧 `network=True` 是宽泛联网；Windows Job 无网络过滤，AppContainer 尚未通过创建进程门槛。因此静态策略、lease、authority 和 `HTTP_PROXY` 均不能标为联网能力已完成。Windows 未来的 WFP 路线需单独验证 [ALE 连接层](https://learn.microsoft.com/en-us/windows/win32/fwp/ale-layers)，而非假设 Job Object 管网。
 - **阶段取舍：**先实现 Linux 单平台最小纵向切片：可信宿主签发短时、绑定 run/步骤/用途/精确域名/端口/单调期限与代次的 lease；工具网络命名空间仅可连接可信代理；代理按请求核对目标域名并绑定最终解析 IP；撤销/到期关闭既有隧道。仅支持 HTTP(S) 精确域名，不做通配符、SOCKS、UDP 或 raw IP。macOS/Windows 先继续 DENY，后续只有 seatbelt/WFP 等 OS 级“仅达代理”及失效关闭负例双架构通过后再开放。此为研发顺序而非缩减 R2 最终跨平台合同。
 - **明确不可推断：**允许 Git HTTPS 域名不等于限制为只读 fetch；CONNECT 隧道内的 Git 方法不可见且凭据可能赋予写权限。未另行证明凭据隔离和协议层限制前，Git push 始终拒绝。
 
 ## 2026-09-25 NetworkLease 范围校验切片
 
 - 新增 `src/icode/network_lease.py`：lease 是冻结的数据合同，匹配 run、工单、step 与 `SandboxPolicy.policy_hash`；只接受精确 ASCII DNS 名、当前仅开放 HTTPS 443；期限使用 monotonic ns，最长 15 分钟，并通过 generation 匹配支持撤销/替代代次检查。
-- `validate_request()` 只校验一个请求是否落入合同，不创建 socket、不运行代理、不签发用户批准，也不修改 `SandboxPolicy`。尤其该模型本身可由任意 Python 调用方构造，不能作为真实性凭证；代理接入前必须由控制面 authority 签名或持有不可伪造的本机 capability，并在可信宿主维护撤销代次。
-- 单测覆盖同上下文 HTTPS 命中、跨 run/ticket/step/hash、DENY/过期/代次、错误用途/端口/域名、DNS/raw IP/通配符、非法时钟及 TTL 上限。执行后端仍 fail-closed；后续必须补用户确认链、可信签发与撤销注册表、netns/桥接代理，以及真实内核负例。
+- `NetworkLeaseAuthority` 调用通用 `Approver` 明示批准后，以本机进程随机 HMAC key 签名 lease；请求和签名均绑定完整 lease 字段。拒绝、审批错误、越权域名、待审批期间撤销、篡改、过期、重启和代次撤销均有标准库单测。key 不序列化且不传给 worker，但 Python 私有成员不防同进程恶意代码。
+- `verify_request()` 是点时验证，不创建 socket、不运行代理、不修改 `SandboxPolicy`；它不能和未来连接建立形成原子事务，代理不得把这一方法单独当作连接许可。代理接入前仍须设计原子连接登记/撤销竞态，关闭到期与撤销时的活跃隧道，并完成 netns/桥接代理和真实内核负例。执行后端当前仍 fail-closed。
+
+### 2026-09-25 NetworkLease authority 切片
+
+- 本机 authority 只签发最长 15 分钟、最多 32 个精确域名、HTTPS 443 的范围租约；调用通用 `Approver` 前验证请求域名属于当前 policy，且只接受严格布尔 `True`。
+- 撤销使用进程内策略代次；若审批等待期间发生撤销则拒绝签发。新建 authority 会有新 HMAC key，因此重启后不能验证旧租约。该实现是授权数据合同，不持久化审批、不创建 socket、不开放执行器网络。
+- 同一进程内的 Python 代码访问边界不由 HMAC 私有成员保护；点时校验和真实连接也存在 TOCTOU 间隙。未来代理必须重新设计并测试连接登记与撤销的并发原子性，不能把本切片宣传为网络安全边界。
 
 这些是固定版本源码/官方文档观察，不是上游运行时实测；`HTTP_PROXY` 仅为合作式客户端提供路由信息，不构成安全边界。
 

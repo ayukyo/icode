@@ -157,7 +157,7 @@ class TestWindowsJob(unittest.TestCase):
         self.assertEqual(
             attribute_addresses[0] % ctypes.sizeof(ctypes.c_void_p), 0,
         )
-        self.assertIn("attr_size_query_ok=False", result.detail)
+        self.assertIn("attr_size_query_expected=True", result.detail)
         self.assertIn("attr_size_query_error=122", result.detail)
         self.assertIn("attr_init_ok=True", result.detail)
         self.assertIn("security_attribute=0x00020009", result.detail)

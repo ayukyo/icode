@@ -9,9 +9,12 @@ from tempfile import TemporaryDirectory
 
 from tests import _support  # noqa: F401  # Add the repository's src/ to sys.path.
 
+from icode.approvals import DenyAllApprover, ScriptedApprover
 from icode.network_lease import (
     MAX_NETWORK_LEASE_TTL_NS,
     NetworkLease,
+    NetworkLeaseApprovalDenied,
+    NetworkLeaseAuthority,
     NetworkLeaseValidationError,
     NetworkPurpose,
 )
@@ -172,6 +175,156 @@ class NetworkLeaseTestCase(unittest.TestCase):
                         now_monotonic_ns=now,
                         current_generation=generation,
                     )
+
+    def test_authority_requires_explicit_approval_and_binds_the_request(self) -> None:
+        policy = self.make_policy()
+        approver = ScriptedApprover([True])
+        authority = NetworkLeaseAuthority()
+
+        grant = authority.request_lease(
+            policy,
+            approver=approver,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("PYPI.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+
+        self.assertEqual(len(approver.seen), 1)
+        request = approver.seen[0]
+        self.assertEqual(request.tool, "temporary_network_access")
+        self.assertEqual(request.opclass, "network_authorization")
+        self.assertEqual(request.arguments["lease_request_id"], grant.lease.approval_id)
+        self.assertEqual(request.arguments["domains"], ["pypi.org"])
+        self.assertEqual(grant.lease.expires_at_monotonic_ns, 62_000_000_000)
+        authority.verify_request(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=2_000_000_001,
+        )
+
+    def test_deny_all_approval_never_issues_a_lease(self) -> None:
+        with self.assertRaises(NetworkLeaseApprovalDenied):
+            NetworkLeaseAuthority().request_lease(
+                self.make_policy(),
+                approver=DenyAllApprover(),
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("pypi.org",),
+                ttl_seconds=60,
+                now_monotonic_ns=2_000_000_000,
+            )
+
+    def test_approval_failure_and_out_of_policy_domains_fail_closed(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+
+        class BrokenApprover:
+            def ask(inner_self: object, request: object) -> bool:
+                raise RuntimeError("approval UI unavailable")
+
+        with self.assertRaises(NetworkLeaseApprovalDenied):
+            authority.request_lease(
+                policy,
+                approver=BrokenApprover(),  # type: ignore[arg-type]
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("pypi.org",),
+                ttl_seconds=60,
+                now_monotonic_ns=2_000_000_000,
+            )
+
+        approver = ScriptedApprover([True])
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.request_lease(
+                policy,
+                approver=approver,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("attacker.example",),
+                ttl_seconds=60,
+                now_monotonic_ns=2_000_000_000,
+            )
+        self.assertEqual(approver.seen, [])
+
+    def test_authority_rejects_tampering_restart_replay_expiry_and_revocation(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.verify_request(
+                replace(grant, signature="0" * 64), policy,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="pypi.org", port=443, now_monotonic_ns=3_000_000_000,
+            )
+        changed_scope = replace(
+            grant,
+            lease=replace(grant.lease, allowed_domains=("files.pythonhosted.org",)),
+        )
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.verify_request(
+                changed_scope, policy, purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="files.pythonhosted.org", port=443,
+                now_monotonic_ns=3_000_000_000,
+            )
+        with self.assertRaises(NetworkLeaseValidationError):
+            NetworkLeaseAuthority().verify_request(
+                grant, policy, purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="pypi.org", port=443, now_monotonic_ns=3_000_000_000,
+            )
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.verify_request(
+                grant, policy, purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="pypi.org", port=443, now_monotonic_ns=62_000_000_000,
+            )
+
+        authority.revoke(policy)
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.verify_request(
+                grant, policy, purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="pypi.org", port=443, now_monotonic_ns=3_000_000_000,
+            )
+
+        renewed = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=3_000_000_000,
+        )
+        self.assertEqual(renewed.lease.generation, 2)
+        authority.verify_request(
+            renewed, policy, purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org", port=443, now_monotonic_ns=3_000_000_001,
+        )
+
+    def test_revoke_during_pending_approval_prevents_lease_issue(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+
+        class RevokeWhileWaiting:
+            def ask(inner_self: object, request: object) -> bool:
+                authority.revoke(policy)
+                return True
+
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.request_lease(
+                policy,
+                approver=RevokeWhileWaiting(),  # type: ignore[arg-type]
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("pypi.org",),
+                ttl_seconds=60,
+                now_monotonic_ns=2_000_000_000,
+            )
 
     def test_lease_is_immutable_and_caps_lifetime(self) -> None:
         policy = self.make_policy()
