@@ -47,6 +47,17 @@ class TestWindowsJob(unittest.TestCase):
             "icode.windows_job._build_windows_environment_block", return_value="\0\0",
         ):
             result = run_windows_job([str(executable)], cwd=workspace, timeout_seconds=10)
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            detail = (
+                result.detail[:300].replace("%", "%25")
+                .replace("\r", "%0D").replace("\n", "%0A")
+            )
+            print(
+                "::notice title=R2.3 ordinary Job empty-environment control::"
+                f"executed={result.executed} exit={result.exit_code} error={result.error} "
+                f"cleanup={result.cleanup_ok} detail={detail}",
+                flush=True,
+            )
         self.assertTrue(result.executed, result)
         self.assertEqual(result.exit_code, 0, result)
         self.assertTrue(result.cleanup_ok, result)
