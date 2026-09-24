@@ -80,6 +80,7 @@
 - 分层工作区的只读 Git 状态代理仍待实现。[Git 官方 `status` 文档](https://git-scm.com/docs/git-status)确认普通 `status` 默认可能回写索引，需使用 `--no-optional-locks`；仓库配置还可能开启 fsmonitor 等额外行为。只把命令行固定为 `git status` 不足以证明宿主代理安全；当前仍拒绝模型直接运行 Git，并提供不调用 Git 的 `workspace_changes`，待可信会话身份、配置屏蔽与执行边界一起设计验证后再开放。
 - 模型可提交与 schema 不符的工具参数；原 `Guard.check_command` 对字典、数字、混合列表会抛异常，直接调用 `run_command` 甚至会把字典键转成命令参数。现在权限层先拒绝非字符串参数，工具入口再独立复核并返回稳定 `invalid_argv`，异常输入不会触发进程启动；`AgentLoop` 负例确认回合可继续。此修正仅解决命令参数形态，不替代原生隔离。
 - 2026-09-24 用户确认按 Codex 式本机边界调整 macOS 验收：保留真实 Seatbelt 文件/网络限制、子进程继承与同组清理；主动脱组后代不承诺零残留。原始 `process_tree_cleanup` 继续报 false，不能由 `cleanup_ok` 推断整树清理。平台评分仅在其余九项全通过且 macOS 组级负向自检通过时允许 9/10 ready；这一例外不改变 Linux/Windows 的八项关键门槛。当前只有组级联测，没有完整十项真实回执，macOS 自动模式仍关闭。[Codex macOS 清理实现](https://github.com/openai/codex/blob/main/codex-rs/utils/pty/src/process_group.rs)和[Claude Code 沙箱说明](https://code.claude.com/docs/en/sandboxing)用于对齐公开本机边界，不作为 ICODE 自检通过的替代证据。
+- macOS `doctor` 新增仅供诊断的同组清理局部探测：在 Seatbelt 策略下分别模拟主进程正常退出和命令超时，要求子进程先写出启动标记、broker 组级清理成功、延迟残留标记未出现；异常或缺少 `sandbox-exec` 按失败报告。双架构 CI 对这条探测设置独立测试入口。它不改变 10 项合同 `executed=false` 或自动模式门禁；待 CI 实测结果确认后再填写平台证据。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。

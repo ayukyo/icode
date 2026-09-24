@@ -97,6 +97,9 @@ class TestRuntimeOffline(unittest.TestCase):
         if sys.platform.startswith("linux"):
             self.assertIn("随包 Linux 助手", output)
             self.assertIn("策略级隔离未就绪", output)
+        if sys.platform == "darwin":
+            self.assertIn("macOS 同组清理局部探测", output)
+            self.assertIn("不代表整树清理", output)
 
     def test_socket_被禁用时握手仍通过(self) -> None:
         settings = require_skill()

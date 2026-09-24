@@ -35,6 +35,7 @@ from icode.isolation import (
     WslSandbox,
     capability_report,
     probe_capabilities,
+    probe_macos_process_group_cleanup,
     probe_native_sandbox,
     select_sandbox,
 )
@@ -45,6 +46,36 @@ from icode.execution_broker import execute_policy_command
 
 
 class TestProbe(unittest.TestCase):
+    def test_报告区分mac同组清理与完整一致性(self) -> None:
+        report = capability_report()
+        group = report["macos_group_cleanup"]
+        self.assertIsInstance(group["passed"], bool)
+        self.assertEqual(set(group["checks"]), {"normal_exit", "timeout"}
+                         if sys.platform == "darwin" else set())
+        self.assertFalse(report["conformance_contract"]["executed"])
+        if sys.platform != "darwin":
+            self.assertFalse(group["executed"])
+            self.assertFalse(group["passed"])
+
+    def test_macos_同组清理启动异常按失败报告(self) -> None:
+        with mock.patch("icode.isolation.sys.platform", "darwin"), \
+             mock.patch("icode.isolation.shutil.which", return_value="/fake/sandbox-exec"), \
+             mock.patch("icode.execution_broker.execute_policy_command",
+                        side_effect=RuntimeError("probe failed")):
+            result = probe_macos_process_group_cleanup(MacSeatbeltSandbox())
+        self.assertTrue(result.executed)
+        self.assertFalse(result.passed)
+        self.assertEqual(result.checks, {"normal_exit": False, "timeout": False})
+        self.assertNotIn("probe failed", result.detail)
+
+    @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt 与真实进程组")
+    def test_macos_同组清理真实自检不冒充整树(self) -> None:
+        result = probe_macos_process_group_cleanup(MacSeatbeltSandbox())
+        self.assertTrue(result.executed)
+        self.assertEqual(result.checks, {"normal_exit": True, "timeout": True})
+        self.assertTrue(result.passed, result.detail)
+        self.assertFalse(MacSeatbeltSandbox().policy_contract_ready)
+
     @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc"),
                          "需要 Linux C 编译器验证原生助手")
     def test_landlock_助手真实阻断文件与网络越权(self) -> None:
@@ -669,6 +700,7 @@ class TestSandboxWrapping(unittest.TestCase):
             )
             sandbox = MacSeatbeltSandbox()
             self.assertFalse(hasattr(sandbox, "wrap_policy"))
+            self.assertFalse(sandbox.policy_contract_ready)
             wrapped = sandbox.experimental_wrap_policy(["true"], policy=policy)
             self.assertEqual(wrapped[0], "sandbox-exec")
             self.assertIn("(deny default)", wrapped[wrapped.index("-p") + 1])

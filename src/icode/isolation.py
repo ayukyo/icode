@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 from typing import Protocol, Sequence, runtime_checkable
@@ -68,6 +69,16 @@ class NativeProbeResult:
     """原生后端的实际启动和最小负向探测结果。"""
 
     ready: bool
+    checks: dict[str, bool]
+    detail: str
+
+
+@dataclass(frozen=True)
+class ProcessGroupProbeResult:
+    """macOS 组级清理局部实测；不代表完整后代树回收或 R2 ready。"""
+
+    executed: bool
+    passed: bool
     checks: dict[str, bool]
     detail: str
 
@@ -158,6 +169,78 @@ def probe_native_sandbox(sandbox: Sandbox) -> NativeProbeResult:
         not failed, checks,
         "通过最小负向探测" if not failed else "未通过：" + ", ".join(failed)
         + ("；诊断：" + " | ".join(diagnostics) if diagnostics else ""),
+    )
+
+
+def probe_macos_process_group_cleanup(
+    sandbox: MacSeatbeltSandbox,
+) -> ProcessGroupProbeResult:
+    """在 Seatbelt 策略下实测正常退出和超时后的同组孙进程清理。"""
+    checks = {"normal_exit": False, "timeout": False}
+    if sys.platform != "darwin":
+        return ProcessGroupProbeResult(False, False, {}, "仅适用于 macOS")
+    if shutil.which(sandbox.sandbox_exec) is None:
+        return ProcessGroupProbeResult(False, False, checks, "sandbox-exec 不可用")
+
+    from .execution_broker import execute_policy_command
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="icode-mac-cleanup-probe-") as raw:
+            workspace = Path(raw).resolve()
+            policy = SandboxPolicy(
+                schema_version=1, run_id="mac-cleanup-probe",
+                ticket_id="mac-cleanup-probe", step="code",
+                workspace_root=workspace, read_roots=(workspace,),
+                write_roots=(workspace,), deny_read_roots=(),
+                deny_write_roots=(), network_mode=NetworkMode.DENY,
+                allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=5, output_limit_bytes=1024,
+                protected_paths=(),
+            )
+            for mode, timeout, child_delay in (
+                ("normal_exit", 5, 1.3),
+                ("timeout", 2, 3.0),
+            ):
+                started = workspace / f"{mode}-started"
+                residue = workspace / f"{mode}-residue"
+                child_code = (
+                    "import time\nfrom pathlib import Path\n"
+                    f"Path({str(started)!r}).write_text('ready')\n"
+                    f"time.sleep({child_delay!r})\n"
+                    f"Path({str(residue)!r}).write_text('late')\n"
+                )
+                parent_code = (
+                    "import subprocess, sys, time\nfrom pathlib import Path\n"
+                    f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                    "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                    "stderr=subprocess.DEVNULL)\n"
+                    f"for _ in range(200):\n    if Path({str(started)!r}).exists(): break\n"
+                    "    time.sleep(0.01)\n"
+                    "else: raise RuntimeError('child did not start')\n"
+                    "print('started', flush=True)\n"
+                    + ("time.sleep(8)\n" if mode == "timeout" else "")
+                )
+                result = execute_policy_command(
+                    sandbox.experimental_wrap_policy(
+                        [sys.executable, "-c", parent_code], policy=policy,
+                    ),
+                    cwd=workspace, policy=policy, timeout=timeout,
+                )
+                if started.is_file():
+                    time.sleep(child_delay + 0.2)
+                checks[mode] = (
+                    started.is_file() and not residue.exists()
+                    and result.cleanup_ok
+                    and (result.error == "timeout" if mode == "timeout"
+                         else result.error is None and result.exit_code == 0)
+                )
+    except Exception:  # noqa: BLE001 - 自检意外失败必须按未通过处理
+        return ProcessGroupProbeResult(True, False, checks, "组级清理探测异常")
+    failed = [mode for mode, passed in checks.items() if not passed]
+    return ProcessGroupProbeResult(
+        True, not failed, checks,
+        "同组清理局部探测通过；不覆盖主动脱组后代" if not failed
+        else "同组清理未通过：" + ", ".join(failed),
     )
 
 
@@ -421,6 +504,11 @@ class MacSeatbeltSandbox:
     @property
     def is_real_isolation(self) -> bool:
         return True
+
+    @property
+    def policy_contract_ready(self) -> bool:
+        """组级清理探测不代表完整 R2 策略已可用于自动工单。"""
+        return False
 
     def _profile(self, workspace: Path, network: bool) -> str:
         ws = str(Path(workspace).resolve())
@@ -782,6 +870,17 @@ def capability_report() -> dict:
                 })
         except Exception:  # noqa: BLE001 - doctor 诊断失败不得误报可用
             bundled["detail"] = "随包助手诊断异常"
+    macos_group: dict[str, object] = {
+        "executed": False, "passed": False, "checks": {}, "detail": "当前平台不适用",
+    }
+    if sys.platform == "darwin":
+        group_result = probe_macos_process_group_cleanup(MacSeatbeltSandbox())
+        macos_group = {
+            "executed": group_result.executed,
+            "passed": group_result.passed,
+            "checks": group_result.checks,
+            "detail": group_result.detail,
+        }
     return {
         "probes": [
             {"name": c.name, "available": c.available, "kind": c.kind, "detail": c.detail}
@@ -792,6 +891,7 @@ def capability_report() -> dict:
             sandbox.describe()["claim"] if sandbox.is_real_isolation else BASELINE_CLAIM
         ),
         "bundled_linux_helper": bundled,
+        "macos_group_cleanup": macos_group,
         "policy_schema_version": POLICY_SCHEMA_VERSION,
         "conformance_contract": {
             "id": contract["contract_id"],

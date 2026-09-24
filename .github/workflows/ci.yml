@@ -100,6 +100,9 @@ jobs:
       - name: Verify experimental Seatbelt policy through broker
         if: runner.os == 'macOS'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_实验策略经命令broker执行 -v
+      - name: Verify scoped macOS process-group cleanup probe
+        if: runner.os == 'macOS'
+        run: python -m unittest tests.test_isolation.TestProbe.test_macos_同组清理真实自检不冒充整树 -v
       - name: Verify launchd bootout known cleanup gap
         if: runner.os == 'macOS'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_launchd_独立作业仍未回收脱组后代 -v

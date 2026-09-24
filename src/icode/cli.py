@@ -234,6 +234,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         bundled = report["bundled_linux_helper"]
         state = "最小负向探测通过" if bundled["minimal_probe_passed"] else bundled["detail"]
         print(f"  [INFO] 随包 Linux 助手：{state}")
+    if sys.platform == "darwin":
+        group = report["macos_group_cleanup"]
+        print(f"  [INFO] macOS 同组清理局部探测：{group['detail']}")
+        print("         不代表整树清理；主动脱组后代不在回收保证内")
     print("  [WARN] 策略级隔离未就绪：自动模式仍拒绝外部命令")
     if not selected.get("is_real_isolation"):
         print("         ⚠ 无内核/容器级隔离：模型若绕过运行时直接执行 shell，应用层规则不构成保障")
