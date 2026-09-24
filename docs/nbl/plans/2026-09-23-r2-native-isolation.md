@@ -45,7 +45,7 @@
 - 已增量实现 `submit_artifact` / `read_artifact`：仅策略会话注册，按当前步骤 `ticket_file` / 单层 `ticket_glob` 端口校验，禁止隐藏/越界/机器装配产物、符号链接、超限和非法 JSON；宿主原子代写，现有控制面仍负责最终登记。模型主回合与补救提示改用产物名，文本补落盘也复用端口；操作回执与公开工具启动事件只记录参数摘要。离线链路证明直接伪写账本被拒而合法计划产物可以提交。**尚未做真实模型 E2E，且原生策略后端仍未就绪；不能把该接口单测等同于 R2.2 完成。**
 - 策略会话的 `run_command` 现经独立 POSIX 执行 broker：显式环境只带必要的 PATH/HOME/TMPDIR 等变量，不继承模型密钥；无 shell，用户超时受策略上限约束，合并输出在策略字节限额处终止，正常退出和超时均回收同一进程组；回执保留策略/参数哈希、退出码、输出截断及清理状态，不回显原始参数。先红后绿测试覆盖环境泄漏、输出超限和子进程超时清理；非策略会话保持原执行路径。进程组不能约束主动 `setsid` 脱离的后代，`process_limit` 尚未由原生助手落实；本项只是宿主执行边界，不是 R2.2 的完整进程树保证。
 - broker 的四架构首轮 CI 在 macOS 双架构发现：主进程输出/退出码正常，若在其退出后先向僵尸进程组发 `SIGKILL`，macOS 返回 `EPERM`；补充错误码回执后改为先 `poll()` 回收已退出主进程，再清理仍存在的同组子进程。后续 [四架构 CI](https://github.com/ayukyo/icode/actions/runs/35947638254) 中 Linux x64/ARM64 和 macOS Intel/Apple Silicon 的 broker 项均通过，且失败时仍保留 `cleanup_failed` 而不吞掉真正的清理错误。
-- macOS 增加从 `SandboxPolicy` 生成的实验性 Seatbelt profile：可写根的 `allow` 条件排除精确受保护路径及其子树，限制可移动的受保护祖先，读取根同理排除拒读路径，默认断网。已加真实 macOS 受保护文件、工作区外写入和拒读负例；该 profile **尚未提供 `wrap_policy`、尚未接通自动模式**，需等 CI 的真实负例和进程/输出/工具链等完整合同通过后才可激活。Linux 的 Landlock 不能在授权整个可写父目录后撤销 `.git` 子路径权限，需另行完成可用的子路径隔离方案，不能直接复用当前最小助手声明完成。
+- macOS 增加从 `SandboxPolicy` 生成的实验性 Seatbelt profile：可写根的 `allow` 条件排除精确受保护路径及其子树，限制可移动的受保护祖先，读取根同理排除拒读路径，默认断网。[双架构真实 CI](https://github.com/ayukyo/icode/actions/runs/35948062141) 已通过受保护 `.git` 文件、工作区外写入、拒读文件及当前 Python 启动负例。该 profile **尚未提供 `wrap_policy`、尚未接通自动模式**，进程数限制与完整合同仍待落实。Linux 的 Landlock 不能在授权整个可写父目录后撤销 `.git` 子路径权限，需另行完成可用的子路径隔离方案，不能直接复用当前最小助手声明完成。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。
