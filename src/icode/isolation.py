@@ -697,11 +697,32 @@ def select_sandbox(preference: str | None = None) -> Sandbox:
 def capability_report() -> dict:
     """给 `icode doctor` 用的隔离能力报告（措辞必须能追溯到实测）。"""
     from .conformance import load_conformance_contract
+    from .native_helper import bundled_linux_helper
     from .sandbox_policy import POLICY_SCHEMA_VERSION
 
     caps = probe_capabilities()
     sandbox = select_sandbox()
     contract = load_conformance_contract()
+    bundled: dict[str, object] = {
+        "installed": False,
+        "minimal_probe_passed": False,
+        "policy_ready": False,
+        "detail": "当前平台不适用",
+    }
+    if sys.platform.startswith("linux"):
+        try:
+            helper = bundled_linux_helper()
+            if helper is None:
+                bundled["detail"] = "随包助手缺失或完整性校验失败"
+            else:
+                result = probe_native_sandbox(LandlockSandbox(helper=str(helper)))
+                bundled.update({
+                    "installed": True,
+                    "minimal_probe_passed": result.ready,
+                    "detail": result.detail,
+                })
+        except Exception:  # noqa: BLE001 - doctor 诊断失败不得误报可用
+            bundled["detail"] = "随包助手诊断异常"
     return {
         "probes": [
             {"name": c.name, "available": c.available, "kind": c.kind, "detail": c.detail}
@@ -711,6 +732,7 @@ def capability_report() -> dict:
         "honest_label": (
             sandbox.describe()["claim"] if sandbox.is_real_isolation else BASELINE_CLAIM
         ),
+        "bundled_linux_helper": bundled,
         "policy_schema_version": POLICY_SCHEMA_VERSION,
         "conformance_contract": {
             "id": contract["contract_id"],

@@ -257,6 +257,12 @@ class TestHonesty(unittest.TestCase):
     def test_能力报告口径与所选后端一致(self) -> None:
         report = capability_report()
         selected = report["selected"]
+        bundled = report["bundled_linux_helper"]
+        self.assertFalse(bundled["policy_ready"])
+        self.assertIsInstance(bundled["minimal_probe_passed"], bool)
+        self.assertIsInstance(bundled["detail"], str)
+        if not sys.platform.startswith("linux"):
+            self.assertFalse(bundled["installed"])
         self.assertEqual(report["policy_schema_version"], 1)
         self.assertEqual(report["conformance_contract"]["id"], "icode-sandbox-v1")
         self.assertEqual(report["conformance_contract"]["total"], 10)

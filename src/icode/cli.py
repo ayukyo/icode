@@ -228,9 +228,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
           + (f"；已强制={selected.get('enforced')}" if selected.get("enforced") else ""))
     print(f"  [INFO] R2 策略合同：v{report['policy_schema_version']}")
     print("         一致性测试：尚未执行（下一阶段原生后端自测后才会产生结果）")
+    if sys.platform.startswith("linux"):
+        bundled = report["bundled_linux_helper"]
+        state = "最小负向探测通过" if bundled["minimal_probe_passed"] else bundled["detail"]
+        print(f"  [INFO] 随包 Linux 助手：{state}")
+    print("  [WARN] 策略级隔离未就绪：自动模式仍拒绝外部命令")
     if not selected.get("is_real_isolation"):
         print("         ⚠ 无内核/容器级隔离：模型若绕过运行时直接执行 shell，应用层规则不构成保障")
-        print("           可安装 bubblewrap（Linux）/ 容器运行时后重试，或用 --isolation 显式指定")
+        print("           Linux 随包助手正在完整策略验收；无需为自动模式额外安装 bubblewrap")
     if avail:
         names = "、".join(p["name"] for p in avail)
         print(f"         探测到可执行文件：{names}")

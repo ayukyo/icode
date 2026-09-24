@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import socket
+import sys
 import unittest
 from argparse import Namespace
 from contextlib import redirect_stdout
@@ -91,6 +92,9 @@ class TestRuntimeOffline(unittest.TestCase):
         self.assertIn("隔离后端：", output)
         self.assertIn("R2 策略合同：v1", output)
         self.assertIn("一致性测试：尚未执行", output)
+        if sys.platform.startswith("linux"):
+            self.assertIn("随包 Linux 助手", output)
+            self.assertIn("策略级隔离未就绪", output)
 
     def test_socket_被禁用时握手仍通过(self) -> None:
         settings = require_skill()
