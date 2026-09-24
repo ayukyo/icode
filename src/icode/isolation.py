@@ -40,6 +40,14 @@ KIND_NONE = "none"
 BASELINE_CLAIM = "应用层限制，非内核级沙箱"
 BASELINE_NOTE = "工作区限制 + 危险命令拦截由 guard 在应用层完成；模型若绕过运行时直接执行 shell，这些规则不构成保障"
 
+# 进程执行/派生所需最小集合；信号与进程信息只针对同沙箱目标。
+_MAC_PROCESS_RULES = (
+    "(allow process-exec)",
+    "(allow process-fork)",
+    "(allow signal (target same-sandbox))",
+    "(allow process-info* (target same-sandbox))",
+)
+
 
 @dataclass(frozen=True)
 class Capability:
@@ -418,8 +426,8 @@ class MacSeatbeltSandbox:
         return (
             "(version 1)"
             "(deny default)"
-            "(allow process*)"
-            "(allow sysctl-read)"
+            + "".join(_MAC_PROCESS_RULES)
+            + "(allow sysctl-read)"
             f'(allow file-read-metadata file-test-existence (path-ancestors "{escaped_ws}"))'
             '(allow file-read* file-test-existence (literal "/"))'
             f'(allow file-read* file-write* (subpath "{escaped_ws}"))'
@@ -463,7 +471,7 @@ class MacSeatbeltSandbox:
         rules = [
             "(version 1)",
             "(deny default)",
-            "(allow process*)",
+            *_MAC_PROCESS_RULES,
             "(allow sysctl-read)",
             f"(allow file-read-metadata file-test-existence (path-ancestors {quoted(policy.workspace_root)}))",
             '(allow file-read* file-test-existence (literal "/"))',

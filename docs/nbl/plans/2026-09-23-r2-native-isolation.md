@@ -57,7 +57,9 @@
 - 分层会话现在对模型经 `run_command` 发起的普通 Git 命令返回稳定的 `git_broker_unavailable`，不再让错误工作树的状态混入判断；策略会话新增只读 `workspace_changes`，复用无跟随快照列出本次链路开始后的增删改，补救回合沿用同一基线。它不调用 Git、不执行仓库配置，也不冒充暂存/提交状态；真正受限的 Git broker 仍未完成。宿主直接执行不可信仓库的 `git status` 并不等于无副作用查询，[Git 官方文档](https://git-scm.com/docs/git-fsmonitor--daemon)说明 fsmonitor 配置可启动外部程序，需先确定隔离/配置屏蔽方案。
 - Linux 策略入口现在要求 `LandlockSandbox` 携带 manifest，并在模型调用前 `prepare_policy` 及每次 `wrap_policy` 时验证助手文件类型、权限和 SHA-256；缺失或篡改均拒绝，最小 doctor 探测也由带 manifest 的随包实例执行。干净 wheel 安装测试增加真实策略包装、broker 执行和 venv Python 导入的联测。该强化不解决哈希检查到进程启动之间的同用户篡改竞态，也不补全 Git、进程数及网络临时授权合同，故仍不自动选择。
 - macOS 将 `_policy_profile` 接到显式 `experimental_wrap_policy`，并增加 Seatbelt + 统一命令 broker 的真实联测：工作区写入允许、受保护 `.git` 写入拒绝、默认网络拒绝。该接口刻意不命名为 `wrap_policy`，因此工作台默认选中的 Seatbelt 仍不能通过自主执行预检；待远端双架构结果确认。进程数及主动脱离进程组的后代尚无可靠收束方案，不能以这些负例代替完整 R2.2 验收。
-- [实验联测首轮 macOS 双架构 CI](https://github.com/ayukyo/icode/actions/runs/35955077742) 在网络断言失败：测试仅创建 socket，没有对本机端口发起连接；这是测试设计不足，不能据此推断 Seatbelt 网络放行。已改为先做宿主连接阳性对照，再由沙箱尝试连接同一监听端口，待新 CI 验证。工作区写入及 `.git` 拒写在该轮已通过。
+- [实验联测首轮 macOS 双架构 CI](https://github.com/ayukyo/icode/actions/runs/35955077742) 在网络断言失败：测试仅创建 socket，没有对本机端口发起连接；这是测试设计不足，不能据此推断 Seatbelt 网络放行。已改为先做宿主连接阳性对照，再由沙箱尝试连接同一监听端口。工作区写入及 `.git` 拒写在该轮已通过。
+- [修正后 macOS 双架构 CI](https://github.com/ayukyo/icode/actions/runs/35955604841) 的实验 Seatbelt + broker 联测已通过：Python 启动与工作区写入、`.git` 拒写、真实 loopback 连接拒绝均在实际 runner 通过；这仍不证明进程数或脱组后代回收。
+- 复查 Seatbelt profile 发现 `(allow process*)` 过宽；参照 [Codex 的开源基础策略](https://github.com/openai/codex/blob/main/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl)，改为仅允许进程执行/派生，并将信号与进程信息限定同沙箱目标。两个 profile 使用相同规则并由测试锁定；策略联测增加“子进程能启动”阳性及“子进程不能写受保护 `.git`”负例。新的 macOS 真实运行结果尚待验证，不能据此宣称整树清理完成。
 - 自动链的后端预检从“若有 `prepare_policy` 才调用”收紧为**必须**实现并成功返回：仅自称真实隔离、提供 `wrap_policy` 的不完整后端现在会在模型调用前以稳定 `isolation_unavailable` 阻断，不再先消耗模型调用后才失败。离线测试覆盖缺失接口和准备异常两条路径。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。

@@ -496,6 +496,10 @@ class TestSandboxWrapping(unittest.TestCase):
         self.assertIn('(literal "/")', profile)
         self.assertIn('(subpath "/private/etc/ssl")', profile)
         self.assertNotIn("(allow network*)", profile)
+        self.assertNotIn("(allow process*)", profile)
+        self.assertIn("(allow process-exec)", profile)
+        self.assertIn("(allow process-fork)", profile)
+        self.assertIn("(allow signal (target same-sandbox))", profile)
 
     def test_seatbelt_工作区路径不能注入_profile(self) -> None:
         sb = MacSeatbeltSandbox()
@@ -524,6 +528,10 @@ class TestSandboxWrapping(unittest.TestCase):
             self.assertIn(f'(require-not (subpath "{protected}"))', profile)
             self.assertIn(f'(require-not (literal "{secret}"))', profile)
             self.assertNotIn("(allow network*)", profile)
+            self.assertNotIn("(allow process*)", profile)
+            self.assertIn("(allow process-exec)", profile)
+            self.assertIn("(allow process-fork)", profile)
+            self.assertIn("(allow signal (target same-sandbox))", profile)
 
     def test_seatbelt_实验策略包装不开放完整_policy_接口(self) -> None:
         with temp_workspace() as root:
@@ -580,6 +588,29 @@ class TestSandboxWrapping(unittest.TestCase):
                 cwd=workspace, policy=policy, timeout=5,
             )
             self.assertNotEqual(denied.exit_code, 0, denied)
+            self.assertEqual(protected.read_text(encoding="utf-8"), "protected")
+            child_ready = execute_policy_command(
+                sandbox.experimental_wrap_policy(
+                    [sys.executable, "-c", "import subprocess, sys; "
+                     "subprocess.run([sys.executable, '-c', \"print('child-ready')\"], "
+                     "check=True)"],
+                    policy=policy,
+                ),
+                cwd=workspace, policy=policy, timeout=5,
+            )
+            self.assertEqual(child_ready.exit_code, 0, child_ready)
+            self.assertIn("child-ready", child_ready.output)
+            child = execute_policy_command(
+                sandbox.experimental_wrap_policy(
+                    [sys.executable, "-c", "import subprocess, sys; "
+                     "subprocess.run([sys.executable, '-c', "
+                     "\"from pathlib import Path; Path('.git').write_text('child-change')\"], "
+                     "check=True)"],
+                    policy=policy,
+                ),
+                cwd=workspace, policy=policy, timeout=5,
+            )
+            self.assertNotEqual(child.exit_code, 0, child)
             self.assertEqual(protected.read_text(encoding="utf-8"), "protected")
             socket_ready = execute_policy_command(
                 sandbox.experimental_wrap_policy(
