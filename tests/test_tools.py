@@ -46,6 +46,40 @@ class TestFileTools(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertEqual(r.meta["error"], "not_found")
 
+    @unittest.skipUnless(os.name == "posix", "需要 POSIX 符号链接语义")
+    def test_策略读文件不跟随工作区外链接(self) -> None:
+        from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+        with temp_workspace() as outside:
+            secret = outside / "secret.txt"
+            secret.write_text("PRIVATE_MARKER\n", encoding="utf-8")
+            (self.root / "linked-secret.txt").symlink_to(secret)
+            policy = SandboxPolicy(
+                schema_version=1, run_id="run", ticket_id="ticket", step="code",
+                workspace_root=self.root, read_roots=(self.root,), write_roots=(self.root,),
+                deny_read_roots=(), deny_write_roots=(),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+            )
+            result = self.reg.invoke("read_file", ToolContext(root=self.root, policy=policy),
+                                     {"path": "linked-secret.txt"})
+            self.assertFalse(result.ok)
+            self.assertEqual(result.meta["error"], "read_denied")
+            self.assertNotIn("PRIVATE_MARKER", result.content)
+            (self.root / "linked-internal.py").symlink_to(self.root / "pkg" / "m.py")
+            internal = self.reg.invoke("read_file", ToolContext(root=self.root, policy=policy),
+                                       {"path": "linked-internal.py"})
+            self.assertTrue(internal.ok)
+            self.assertIn("def add", internal.content)
+
+    def test_显式外部读文件工具兼容(self) -> None:
+        with temp_workspace() as outside:
+            source = outside / "note.txt"
+            source.write_text("approved text\n", encoding="utf-8")
+            result = self.reg.invoke("read_file", self.ctx, {"path": str(source)})
+            self.assertTrue(result.ok)
+            self.assertIn("approved text", result.content)
+
     def test_glob(self) -> None:
         r = self.reg.invoke("glob", self.ctx, {"pattern": "**/*.py"})
         self.assertTrue(r.ok)

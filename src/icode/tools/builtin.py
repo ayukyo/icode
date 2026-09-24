@@ -46,10 +46,24 @@ SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", ".pytest_ca
 
 
 def read_file(ctx: ToolContext, path: str, offset: int = 1, limit: int = 400) -> ToolResult:
-    target = ctx.resolve(path)
+    requested = ctx.resolve(path)
+    try:
+        target = requested.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return ToolResult(False, f"文件不存在：{requested}", {"error": "not_found"})
+    if not _policy_allows_read(ctx, target):
+        return ToolResult(False, "策略禁止读取该文件", {"error": "read_denied"})
     if not target.is_file():
-        return ToolResult(False, f"文件不存在：{target}", {"error": "not_found"})
-    lines = target.read_text(encoding="utf-8", errors="replace").splitlines()
+        return ToolResult(False, f"文件不存在：{requested}", {"error": "not_found"})
+
+    try:
+        anchor = _anchored_read_root(ctx, target)
+        content = _read_anchored_text(anchor, target.relative_to(anchor), errors="replace")
+    except (OSError, RuntimeError):
+        content = None
+    if content is None:
+        return ToolResult(False, "文件读取失败或类型已变化", {"error": "read_unavailable"})
+    lines = content.splitlines()
     start = max(1, int(offset))
     end = min(len(lines), start - 1 + max(1, int(limit)))
     body = "\n".join(f"{i:>5}| {lines[i - 1]}" for i in range(start, end + 1))
@@ -172,13 +186,27 @@ def _policy_allows_read(ctx: ToolContext, target: Path) -> bool:
     )
 
 
-def _read_anchored_text(root: Path, relative: Path) -> str | None:
-    """递归扫描只读真实普通文件；祖先与终点均不跟随链接。"""
+def _anchored_read_root(ctx: ToolContext, target: Path) -> Path:
+    if ctx.policy is not None:
+        read_root = max(
+            (root for root in ctx.policy.read_roots if target.is_relative_to(root)),
+            key=lambda root: len(root.parts),
+        )
+        return read_root if read_root.is_dir() else read_root.parent
+    workspace = ctx.root.resolve(strict=True)
+    return workspace if target.is_relative_to(workspace) else target.parent
+
+
+def _read_anchored_text(root: Path, relative: Path, *, errors: str = "ignore") -> str | None:
+    """从可信目录读取真实普通文件；祖先与终点均不跟随链接。"""
     if not relative.parts:
         return None
     if os.name == "posix":
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-        directory_fd = os.open(root, directory_flags)
+        try:
+            directory_fd = os.open(root, directory_flags)
+        except OSError:
+            return None
         try:
             for component in relative.parts[:-1]:
                 next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
@@ -191,7 +219,7 @@ def _read_anchored_text(root: Path, relative: Path) -> str | None:
             with os.fdopen(file_fd, "rb") as stream:
                 if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                     return None
-                return stream.read().decode("utf-8", errors="ignore")
+                return stream.read().decode("utf-8", errors=errors)
         except OSError:
             return None
         finally:
@@ -205,8 +233,8 @@ def _read_anchored_text(root: Path, relative: Path) -> str | None:
             return None
     try:
         if target.resolve(strict=True).is_relative_to(root) and target.is_file():
-            return target.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
+            return target.read_text(encoding="utf-8", errors=errors)
+    except (OSError, RuntimeError):
         pass
     return None
 
@@ -225,13 +253,21 @@ def grep_files(
     hits: list[str] = []
     base = ctx.resolve(path)
     if base.is_file():
-        target = base.resolve(strict=False)
-        if not _policy_allows_read(ctx, target):
-            return ToolResult(False, "策略禁止读取该文件", {"error": "read_denied"})
         try:
-            targets = [(base, base.read_text(encoding="utf-8", errors="ignore"))]
-        except OSError:
+            target = base.resolve(strict=True)
+        except (OSError, RuntimeError):
+            target = None
+        if target is None:
             targets = []
+        elif not _policy_allows_read(ctx, target):
+            return ToolResult(False, "策略禁止读取该文件", {"error": "read_denied"})
+        else:
+            try:
+                anchor = _anchored_read_root(ctx, target)
+                text = _read_anchored_text(anchor, target.relative_to(anchor))
+            except (OSError, RuntimeError):
+                text = None
+            targets = [(base, text)]
     elif base.is_dir():
         root = base.resolve(strict=True)
         if not _policy_allows_read(ctx, root):
