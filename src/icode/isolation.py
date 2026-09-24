@@ -184,6 +184,8 @@ def probe_macos_process_group_cleanup(
 
     from .execution_broker import execute_policy_command
 
+    stage = "setup"
+    diagnostics: list[str] = []
     try:
         with tempfile.TemporaryDirectory(prefix="icode-mac-cleanup-probe-") as raw:
             workspace = Path(raw).resolve()
@@ -201,8 +203,10 @@ def probe_macos_process_group_cleanup(
                 ("normal_exit", 5, 1.3),
                 ("timeout", 2, 3.0),
             ):
+                stage = mode
                 started = workspace / f"{mode}-started"
                 residue = workspace / f"{mode}-residue"
+                output = workspace / f"{mode}-child-output"
                 child_code = (
                     "import time\nfrom pathlib import Path\n"
                     f"Path({str(started)!r}).write_text('ready')\n"
@@ -211,9 +215,9 @@ def probe_macos_process_group_cleanup(
                 )
                 parent_code = (
                     "import subprocess, sys, time\nfrom pathlib import Path\n"
-                    f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
-                    "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
-                    "stderr=subprocess.DEVNULL)\n"
+                    f"with open({str(output)!r}, 'wb') as sink:\n"
+                    f"    subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                    "stdout=sink, stderr=subprocess.STDOUT)\n"
                     f"for _ in range(200):\n    if Path({str(started)!r}).exists(): break\n"
                     "    time.sleep(0.01)\n"
                     "else: raise RuntimeError('child did not start')\n"
@@ -228,19 +232,27 @@ def probe_macos_process_group_cleanup(
                 )
                 if started.is_file():
                     time.sleep(child_delay + 0.2)
+                started_ok = started.is_file()
+                residue_present = residue.exists()
                 checks[mode] = (
-                    started.is_file() and not residue.exists()
+                    started_ok and not residue_present
                     and result.cleanup_ok
                     and (result.error == "timeout" if mode == "timeout"
                          else result.error is None and result.exit_code == 0)
                 )
+                if not checks[mode]:
+                    diagnostics.append(
+                        f"{mode}: started={int(started_ok)}, "
+                        f"residue={int(residue_present)}, exit={result.exit_code}, "
+                        f"error={result.error or 'none'}, cleanup={int(result.cleanup_ok)}"
+                    )
     except Exception:  # noqa: BLE001 - 自检意外失败必须按未通过处理
-        return ProcessGroupProbeResult(True, False, checks, "组级清理探测异常")
+        return ProcessGroupProbeResult(True, False, checks, f"组级清理探测异常：{stage}")
     failed = [mode for mode, passed in checks.items() if not passed]
     return ProcessGroupProbeResult(
         True, not failed, checks,
         "同组清理局部探测通过；不覆盖主动脱组后代" if not failed
-        else "同组清理未通过：" + ", ".join(failed),
+        else "同组清理未通过：" + " | ".join(diagnostics),
     )
 
 

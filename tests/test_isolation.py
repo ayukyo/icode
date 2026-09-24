@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import ast
 from dataclasses import replace
 import hashlib
 import os
@@ -61,12 +62,28 @@ class TestProbe(unittest.TestCase):
         with mock.patch("icode.isolation.sys.platform", "darwin"), \
              mock.patch("icode.isolation.shutil.which", return_value="/fake/sandbox-exec"), \
              mock.patch("icode.execution_broker.execute_policy_command",
-                        side_effect=RuntimeError("probe failed")):
+                        side_effect=RuntimeError("probe failed")) as broker:
             result = probe_macos_process_group_cleanup(MacSeatbeltSandbox())
+        ast.parse(broker.call_args.args[0][-1])
+        self.assertNotIn("subprocess.DEVNULL", broker.call_args.args[0][-1])
         self.assertTrue(result.executed)
         self.assertFalse(result.passed)
         self.assertEqual(result.checks, {"normal_exit": False, "timeout": False})
+        self.assertIn("normal_exit", result.detail)
         self.assertNotIn("probe failed", result.detail)
+
+    @unittest.skipUnless(os.name == "posix", "需 POSIX 进程组验证探针编排")
+    def test_macos_同组探针编排在无沙箱假后端可运行(self) -> None:
+        class NoopWrapper:
+            sandbox_exec = "/bin/true"
+
+            def experimental_wrap_policy(self, argv, *, policy):
+                return list(argv)
+
+        with mock.patch("icode.isolation.sys.platform", "darwin"):
+            result = probe_macos_process_group_cleanup(NoopWrapper())
+        self.assertEqual(result.checks, {"normal_exit": True, "timeout": True},
+                         result.detail)
 
     @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt 与真实进程组")
     def test_macos_同组清理真实自检不冒充整树(self) -> None:
