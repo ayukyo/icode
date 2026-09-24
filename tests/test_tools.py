@@ -109,6 +109,50 @@ class TestFileTools(unittest.TestCase):
         self.assertTrue(r.ok)
         self.assertIn("pkg/m.py:1:", r.content)
 
+    @unittest.skipUnless(os.name == "posix", "需要 POSIX 符号链接语义")
+    def test_grep_递归扫描不读取外部链接文件(self) -> None:
+        with temp_workspace() as outside:
+            secret = outside / "secret.txt"
+            secret.write_text("LEAK_MARKER\n", encoding="utf-8")
+            (self.root / "linked-secret.txt").symlink_to(secret)
+            (self.root / "linked-dir").symlink_to(outside, target_is_directory=True)
+            result = self.reg.invoke("grep", self.ctx, {"pattern": "LEAK_MARKER"})
+            self.assertTrue(result.ok)
+            self.assertEqual(result.meta["hits"], 0)
+            self.assertNotIn("linked-secret.txt:", result.content)
+
+    def test_grep_策略拒读目录不读取正文(self) -> None:
+        from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+        denied = self.root / "private"
+        denied.mkdir()
+        (denied / "secret.txt").write_text("PRIVATE_MARKER\n", encoding="utf-8")
+        policy = SandboxPolicy(
+            schema_version=1, run_id="run", ticket_id="ticket", step="code",
+            workspace_root=self.root, read_roots=(self.root,), write_roots=(self.root,),
+            deny_read_roots=(denied,), deny_write_roots=(),
+            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+            wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+        )
+        result = self.reg.invoke("grep", ToolContext(root=self.root, policy=policy),
+                                 {"pattern": "PRIVATE_MARKER"})
+        self.assertTrue(result.ok)
+        self.assertEqual(result.meta["hits"], 0)
+        explicit = self.reg.invoke("grep", ToolContext(root=self.root, policy=policy),
+                                   {"pattern": "PRIVATE_MARKER", "path": "private"})
+        self.assertFalse(explicit.ok)
+        self.assertEqual(explicit.meta["error"], "read_denied")
+
+    def test_grep_显式外部目录仍可扫描(self) -> None:
+        with temp_workspace() as outside:
+            (outside / "note.txt").write_text("APPROVED_MARKER\n", encoding="utf-8")
+            result = self.reg.invoke("grep", self.ctx, {
+                "pattern": "APPROVED_MARKER", "path": str(outside),
+            })
+            self.assertTrue(result.ok)
+            self.assertEqual(result.meta["hits"], 1)
+            self.assertIn("note.txt:1:", result.content)
+
     def test_grep_非法正则不炸(self) -> None:
         r = self.reg.invoke("grep", self.ctx, {"pattern": "([unclosed"})
         self.assertFalse(r.ok)

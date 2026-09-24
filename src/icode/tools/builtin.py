@@ -9,10 +9,10 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import fnmatch
+import hashlib
 import heapq
+import json
 import os
 import re
 import stat
@@ -117,12 +117,7 @@ def _safe_workspace_entries(ctx: ToolContext) -> Iterator[Path]:
         target = (root / relative).resolve(strict=False)
         if not target.is_relative_to(root):
             return False
-        if ctx.policy is None:
-            return True
-        return (
-            any(target.is_relative_to(read_root) for read_root in ctx.policy.read_roots)
-            and not any(target.is_relative_to(denied) for denied in ctx.policy.deny_read_roots)
-        )
+        return _policy_allows_read(ctx, target)
 
     if os.name == "posix":
         root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -168,6 +163,54 @@ def _safe_workspace_entries(ctx: ToolContext) -> Iterator[Path]:
                     yield relative
 
 
+def _policy_allows_read(ctx: ToolContext, target: Path) -> bool:
+    if ctx.policy is None:
+        return True
+    return (
+        any(target.is_relative_to(root) for root in ctx.policy.read_roots)
+        and not any(target.is_relative_to(root) for root in ctx.policy.deny_read_roots)
+    )
+
+
+def _read_anchored_text(root: Path, relative: Path) -> str | None:
+    """递归扫描只读真实普通文件；祖先与终点均不跟随链接。"""
+    if not relative.parts:
+        return None
+    if os.name == "posix":
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_fd = os.open(root, directory_flags)
+        try:
+            for component in relative.parts[:-1]:
+                next_fd = os.open(component, directory_flags, dir_fd=directory_fd)
+                os.close(directory_fd)
+                directory_fd = next_fd
+            file_fd = os.open(
+                relative.parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=directory_fd,
+            )
+            with os.fdopen(file_fd, "rb") as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    return None
+                return stream.read().decode("utf-8", errors="ignore")
+        except OSError:
+            return None
+        finally:
+            os.close(directory_fd)
+
+    # Windows 自动模式仍阻断；会话扫描至少拒绝链接/接合点和越界解析。
+    target = root
+    for component in relative.parts:
+        target = target / component
+        if target.is_symlink() or getattr(target, "is_junction", lambda: False)():
+            return None
+    try:
+        if target.resolve(strict=True).is_relative_to(root) and target.is_file():
+            return target.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        pass
+    return None
+
+
 def grep_files(
     ctx: ToolContext,
     pattern: str,
@@ -179,18 +222,37 @@ def grep_files(
     except re.error as exc:
         return ToolResult(False, f"正则非法：{exc}", {"error": "bad_regex"})
 
+    hits: list[str] = []
     base = ctx.resolve(path)
     if base.is_file():
-        targets = [base]
-    else:
-        targets = [p for p in sorted(base.rglob("*")) if p.is_file()
-                   and not any(part in SKIP_DIRS for part in p.parts)]
-
-    hits: list[str] = []
-    for f in targets:
+        target = base.resolve(strict=False)
+        if not _policy_allows_read(ctx, target):
+            return ToolResult(False, "策略禁止读取该文件", {"error": "read_denied"})
         try:
-            text = f.read_text(encoding="utf-8", errors="ignore")
+            targets = [(base, base.read_text(encoding="utf-8", errors="ignore"))]
         except OSError:
+            targets = []
+    elif base.is_dir():
+        root = base.resolve(strict=True)
+        if not _policy_allows_read(ctx, root):
+            return ToolResult(False, "策略禁止读取该目录", {"error": "read_denied"})
+        scan_ctx = ToolContext(root=root, policy=ctx.policy)
+        try:
+            entries = _safe_workspace_entries(scan_ctx)
+            try:
+                relatives = sorted(entries)
+            finally:
+                entries.close()
+        except (OSError, RuntimeError):
+            return ToolResult(False, "目录扫描失败，已停止 grep 查询",
+                              {"error": "grep_unavailable"})
+        targets = ((root / relative, _read_anchored_text(root, relative))
+                   for relative in relatives)
+    else:
+        targets = []
+
+    for f, text in targets:
+        if text is None:
             continue
         for no, line in enumerate(text.splitlines(), start=1):
             if rx.search(line):
