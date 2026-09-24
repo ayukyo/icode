@@ -91,6 +91,47 @@ class TestWindowsJob(unittest.TestCase):
         self.assertTrue(result.cleanup_ok)
         self.assertIn("err=203", result.detail)
 
+    def test_AppContainer启动环境不带盘符伪变量(self) -> None:
+        import ctypes
+
+        api = mock.Mock()
+        api.CreateJobObjectW.return_value = 1
+        api.SetInformationJobObject.return_value = 1
+        api.InitializeProcThreadAttributeList.side_effect = (
+            lambda attribute_list, count, flags, size: (
+                setattr(size._obj, "value", 64) or 0
+                if attribute_list is None else 1
+            )
+        )
+        api.UpdateProcThreadAttribute.return_value = 1
+        environment: dict[str, str] = {}
+
+        def fail_create_process(*args: object) -> int:
+            block = args[6]
+            environment["block"] = ctypes.wstring_at(
+                ctypes.addressof(block), len(block),
+            )
+            return 0
+
+        api.CreateProcessW.side_effect = fail_create_process
+        api.CloseHandle.return_value = 1
+        with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch("ctypes.WinDLL", return_value=api, create=True), \
+             mock.patch("ctypes.set_last_error", create=True), \
+             mock.patch("ctypes.get_last_error", side_effect=(122, 203), create=True), \
+             mock.patch("ctypes.FormatError", return_value="environment missing", create=True):
+            result = run_windows_job(
+                [sys.executable], cwd=workspace, timeout_seconds=2,
+                _appcontainer_sid=123,
+            )
+        self.assertEqual(result.error, "native_api_failed")
+        entries = [entry for entry in environment["block"].split("\0") if entry]
+        self.assertFalse(any(entry.startswith("=") for entry in entries), entries)
+        system_root = os.environ.get("SystemRoot", "C:\\Windows")
+        self.assertIn(f"SystemRoot={system_root}", entries)
+        self.assertTrue(any(entry.startswith("PATH=") for entry in entries))
+
     def test_局部自检启动失败不能误报通过(self) -> None:
         failed = WindowsJobResult(False, None, "job_creation_failed", False, "failed")
         with mock.patch("icode.windows_job.sys.platform", "win32"), \

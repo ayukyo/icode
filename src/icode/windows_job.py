@@ -33,8 +33,9 @@ class WindowsJobProbeResult:
 def _build_windows_environment_block(
     executable: str | os.PathLike[str], cwd: str | os.PathLike[str],
     system_root: str | os.PathLike[str],
+    *, include_drive_current_directory: bool = True,
 ) -> str:
-    """Build a minimal Unicode block, including Windows drive-current-dir entries."""
+    """Build a minimal Unicode block, optionally preserving drive pseudo-vars."""
     executable_path = os.fspath(executable)
     workspace_path = os.fspath(cwd)
     system_path = os.fspath(system_root)
@@ -62,7 +63,10 @@ def _build_windows_environment_block(
         "PYTHONNOUSERSITE": "1",
         "PYTHONUTF8": "1",
     }
-    entries = [(f"={drive}", directory) for drive, directory in drive_directories.items()]
+    entries = (
+        [(f"={drive}", directory) for drive, directory in drive_directories.items()]
+        if include_drive_current_directory else []
+    )
     entries.extend(environment.items())
     entries.sort(key=lambda entry: entry[0].casefold())
     return "\0".join(f"{name}={value}" for name, value in entries) + "\0\0"
@@ -289,7 +293,12 @@ def run_windows_job(
         # 不继承宿主凭据或文件句柄；Job 自身也不会被子进程持有。
         system_root = os.environ.get("SystemRoot", r"C:\Windows")
         env_block = ctypes.create_unicode_buffer(
-            _build_windows_environment_block(argv[0], root, system_root)
+            _build_windows_environment_block(
+                argv[0], root, system_root,
+                # Probe whether AppContainer handles shell-only =X: entries
+                # differently; ordinary Job behavior keeps them unchanged.
+                include_drive_current_directory=_appcontainer_sid is None,
+            )
         )
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline(list(argv)))
         if _appcontainer_sid is None:
