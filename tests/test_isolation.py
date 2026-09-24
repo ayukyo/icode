@@ -692,9 +692,13 @@ class TestSandboxWrapping(unittest.TestCase):
             self.assertEqual(descendants.exit_code, 0, descendants)
             self.assertIsNone(descendants.error, descendants)
             self.assertIn("grandchild-started", descendants.output)
-            self.assertTrue((workspace / "seatbelt-setsid-denied").exists(), descendants)
+            # 现有 Seatbelt profile 不拦截 setsid；cleanup_ok 仅覆盖原进程组。
+            # 把真实残留锁成已知负例，并要求自动策略入口继续不可用。
+            self.assertFalse((workspace / "seatbelt-setsid-denied").exists(), descendants)
             time.sleep(1.5)
-            self.assertFalse((workspace / "seatbelt-grandchild-survived").exists())
+            self.assertTrue((workspace / "seatbelt-grandchild-survived").exists())
+            self.assertFalse(hasattr(sandbox, "wrap_policy"))
+            self.assertIn("进程树清理", sandbox.describe()["not_enforced"])
             socket_ready = execute_policy_command(
                 sandbox.experimental_wrap_policy(
                     [sys.executable, "-c", "import socket; print('socket-ready')"],
