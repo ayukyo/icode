@@ -32,6 +32,7 @@ from icode.isolation import (
 )
 from icode.tools import IsolationUnavailable, ToolContext, default_registry
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
+from icode.workspace import WorkspaceManager
 
 
 class TestProbe(unittest.TestCase):
@@ -83,6 +84,75 @@ class TestProbe(unittest.TestCase):
                 )
                 self.assertNotEqual(escaped_group.returncode, 0, syscall)
                 self.assertIn("PermissionError", escaped_group.stderr, syscall)
+
+            # Git 管理文件位于可写代码目录的兄弟位置时，Landlock 的路径
+            # 白名单可直接拒绝写入；通过代码目录内的符号链接也不能绕过。
+            checkout = root / "layered-checkout"
+            checkout.mkdir()
+            code = checkout / "code"
+            code.mkdir()
+            git_file = checkout / ".git"
+            git_file.write_text("gitdir: protected\n", encoding="utf-8")
+            (code / "git-alias").symlink_to(git_file)
+            for target in ("../.git", "git-alias"):
+                denied = subprocess.run(
+                    sandbox.wrap(
+                        [
+                            str(system_python), "-c",
+                            "from pathlib import Path; import sys; "
+                            "Path(sys.argv[1]).write_text('changed')",
+                            target,
+                        ],
+                        workspace=code,
+                    ),
+                    capture_output=True, text=True, timeout=4, check=False,
+                )
+                self.assertNotEqual(denied.returncode, 0, target)
+                self.assertIn("PermissionError", denied.stderr, target)
+            self.assertEqual(git_file.read_text(encoding="utf-8"), "gitdir: protected\n")
+
+            repository = root / "source-repository"
+            repository.mkdir()
+            subprocess.run(["git", "-C", str(repository), "init", "-q"], check=True)
+            (repository / "tracked.txt").write_text("source\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+            subprocess.run(
+                ["git", "-C", str(repository), "-c", "user.name=ICODE Test",
+                 "-c", "user.email=icode@example.invalid", "commit", "-qm", "initial"],
+                check=True,
+            )
+            manager = WorkspaceManager(
+                repository, root / "managed", "project-1", isolate_git_metadata=True,
+            )
+            with manager.open("real-layered", "run-1") as session:
+                code_root = session.workspace_root
+                self.assertEqual(session.policy("plan").write_roots, (code_root,))
+                allowed = subprocess.run(
+                    sandbox.wrap(
+                        [
+                            str(system_python), "-c",
+                            "from pathlib import Path; Path('new.txt').write_text('ok')",
+                        ],
+                        workspace=code_root,
+                    ),
+                    capture_output=True, text=True, timeout=4, check=False,
+                )
+                self.assertEqual(allowed.returncode, 0, allowed.stderr)
+                denied = subprocess.run(
+                    sandbox.wrap(
+                        [
+                            str(system_python), "-c",
+                            "from pathlib import Path; Path('../.git').write_text('bad')",
+                        ],
+                        workspace=code_root,
+                    ),
+                    capture_output=True, text=True, timeout=4, check=False,
+                )
+                self.assertNotEqual(denied.returncode, 0)
+                self.assertIn("PermissionError", denied.stderr)
+                self.assertEqual(
+                    (code_root / "new.txt").read_text(encoding="utf-8"), "ok",
+                )
 
     def test_恒等包装不能通过原生负向探测(self) -> None:
         result = probe_native_sandbox(NoIsolation())

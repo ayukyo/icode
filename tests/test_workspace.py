@@ -529,21 +529,31 @@ class TestWorkspaceManager(unittest.TestCase):
                 "changed in checkout\n",
             )
 
-    @unittest.skipUnless(os.name == "posix", "元数据分离使用 POSIX 符号链接")
+    @unittest.skipUnless(os.name == "posix", "分层工作区当前仅用于 POSIX")
     def test_可选Git元数据分离仍保持worktree可用和可恢复(self) -> None:
         repository = _create_git_repository(self.root)
         manager = WorkspaceManager(
             repository, self.data_root, "project-1", isolate_git_metadata=True,
         )
         with manager.open("split-git", "run-1") as session:
-            git_link = session.workspace_root / ".git"
-            pointer = session.runtime_root / "git-pointer"
-            self.assertTrue(git_link.is_symlink())
-            self.assertEqual(git_link.resolve(), pointer)
-            self.assertTrue(pointer.is_file())
-            self.assertIn(pointer, session.protected_paths)
+            checkout = session.manifest_path.parent / "checkout"
+            git_file = checkout / ".git"
+            self.assertEqual(session.workspace_root, checkout / "code")
+            self.assertFalse(git_file.is_symlink())
+            self.assertTrue(git_file.is_file())
+            self.assertFalse((session.workspace_root / ".git").exists())
+            self.assertIn(git_file, session.protected_paths)
+            self.assertFalse(git_file.is_relative_to(session.workspace_root))
+            policy = session.policy("plan")
+            self.assertEqual(policy.write_roots, (session.workspace_root,))
+            self.assertIn(git_file, policy.deny_write_roots)
+            metadata = json.loads(session.manifest_path.read_text(encoding="utf-8"))
+            git_dir = metadata["git_worktree_git_dir"]
             self.assertEqual(
-                _run_git(session.workspace_root, "rev-parse", "HEAD"),
+                _run_git(
+                    session.workspace_root, "--git-dir", git_dir,
+                    "--work-tree", str(session.workspace_root), "rev-parse", "HEAD",
+                ),
                 _run_git(repository, "rev-parse", "HEAD"),
             )
             (session.workspace_root / "new-file.txt").write_text("work\n", encoding="utf-8")
@@ -553,9 +563,9 @@ class TestWorkspaceManager(unittest.TestCase):
                 (reused.workspace_root / "new-file.txt").read_text(encoding="utf-8"),
                 "work\n",
             )
-            self.assertEqual((reused.workspace_root / ".git").resolve(), pointer)
+            self.assertEqual(reused.workspace_root, checkout / "code")
 
-    @unittest.skipUnless(os.name == "posix", "元数据分离使用 POSIX 符号链接")
+    @unittest.skipUnless(os.name == "posix", "分层工作区当前仅用于 POSIX")
     def test_启用Git元数据分离不得静默复用旧工作区(self) -> None:
         repository = _create_git_repository(self.root)
         legacy = WorkspaceManager(repository, self.data_root, "project-1")
@@ -569,26 +579,73 @@ class TestWorkspaceManager(unittest.TestCase):
             isolated.open("legacy", "run-2")
         self.assert_lease_released("project-1", "legacy")
 
-    @unittest.skipUnless(os.name == "posix", "元数据分离使用 POSIX 符号链接")
-    def test_分离Git指针或链接漂移时拒绝复用(self) -> None:
+        with isolated.open("layered", "run-1") as session:
+            self.assertEqual(session.workspace_root.name, "code")
+        with self.assertRaisesRegex(WorkspaceError, "Git 元数据分离"):
+            legacy.open("layered", "run-2")
+        self.assert_lease_released("project-1", "layered")
+
+    @unittest.skipUnless(os.name == "posix", "Git 管理入口外置使用 POSIX 路径")
+    def test_分层Git仍映射源码子目录(self) -> None:
+        repository = _create_git_repository(self.root)
+        manager = WorkspaceManager(
+            repository / "nested", self.data_root, "project-1",
+            isolate_git_metadata=True,
+        )
+        with manager.open("nested-layered", "run-1") as session:
+            self.assertEqual(session.workspace_root.name, "nested")
+            self.assertEqual(session.workspace_root.parent.name, "code")
+            self.assertEqual(
+                (session.workspace_root / "tracked.txt").read_text(encoding="utf-8"),
+                "source\n",
+            )
+            self.assertTrue((session.workspace_root.parent.parent / ".git").is_file())
+
+    @unittest.skipUnless(os.name == "posix", "分层工作区当前仅用于 POSIX")
+    def test_分层Git代码目录漂移时拒绝复用(self) -> None:
         repository = _create_git_repository(self.root)
         manager = WorkspaceManager(
             repository, self.data_root, "project-1", isolate_git_metadata=True,
         )
-        with manager.open("pointer-drift", "run-1") as session:
-            pointer = session.runtime_root / "git-pointer"
-        pointer.write_text("gitdir: /unexpected\n", encoding="utf-8")
-        with self.assertRaisesRegex(WorkspaceError, "指针漂移"):
-            manager.open("pointer-drift", "run-2")
-        self.assert_lease_released("project-1", "pointer-drift")
+        with manager.open("code-drift", "run-1") as session:
+            code = session.workspace_root
+        relocated = code.parent / "relocated"
+        code.rename(relocated)
+        code.symlink_to(relocated, target_is_directory=True)
+        with self.assertRaisesRegex(WorkspaceError, "代码目录无效"):
+            manager.open("code-drift", "run-2")
+        self.assert_lease_released("project-1", "code-drift")
 
-        with manager.open("link-drift", "run-1") as session:
-            git_link = session.workspace_root / ".git"
-        git_link.unlink()
-        git_link.symlink_to(repository / ".git")
-        with self.assertRaisesRegex(WorkspaceError, "分离指针无效"):
-            manager.open("link-drift", "run-2")
-        self.assert_lease_released("project-1", "link-drift")
+    @unittest.skipUnless(os.name == "posix", "Git 管理入口外置使用 POSIX 路径")
+    def test_分层Git仍可注册和安全移除worktree(self) -> None:
+        repository = _create_git_repository(self.root)
+        manager = WorkspaceManager(
+            repository, self.data_root, "project-1", isolate_git_metadata=True,
+        )
+        with manager.open("layered-git", "run-1") as session:
+            metadata = json.loads(session.manifest_path.read_text(encoding="utf-8"))
+            checkout = session.manifest_path.parent / "checkout"
+            code = session.workspace_root
+            git_dir = Path(metadata["git_worktree_git_dir"])
+            self.assertEqual(
+                _run_git(
+                    code, "--git-dir", str(git_dir),
+                    "--work-tree", str(code), "rev-parse", "HEAD",
+                ),
+                _run_git(repository, "rev-parse", "HEAD"),
+            )
+            self.assertEqual(
+                _run_git(
+                    code, "--git-dir", str(git_dir),
+                    "--work-tree", str(code), "status", "--porcelain=v1",
+                ),
+                "",
+            )
+            listing = _run_git(repository, "worktree", "list", "--porcelain")
+            self.assertIn(f"worktree {checkout}", listing)
+            self.assertNotIn("prunable", listing)
+            _run_git(repository, "worktree", "remove", "--force", str(checkout))
+            self.assertFalse(checkout.exists())
 
     def test_git创建不执行post_checkout_hook且不等待sleep(self) -> None:
         repository = _create_git_repository(self.root)
