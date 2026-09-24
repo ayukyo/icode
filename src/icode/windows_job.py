@@ -81,6 +81,33 @@ def _build_windows_environment_block(
     return "\0".join(f"{name}={value}" for name, value in entries) + "\0\0"
 
 
+def _append_windows_environment_value(
+    block: str, name: str, value: str,
+) -> str:
+    """Append one non-drive variable to a validated double-NUL environment block."""
+    if (
+        not isinstance(block, str) or not block.endswith("\0\0")
+        or not isinstance(name, str) or not name
+        or "=" in name or "\0" in name
+        or not isinstance(value, str) or "\0" in value
+    ):
+        raise ValueError("invalid Unicode environment block entry")
+    entries = [entry for entry in block.split("\0") if entry]
+    existing_names = [
+        entry[:entry.index("=", 1)] if entry.startswith("=")
+        else entry.split("=", 1)[0]
+        for entry in entries
+    ]
+    if any(existing.casefold() == name.casefold() for existing in existing_names):
+        raise ValueError("environment variable already exists")
+    entries.append(f"{name}={value}")
+    entries.sort(key=lambda entry: (
+        entry[:entry.index("=", 1)] if entry.startswith("=")
+        else entry.split("=", 1)[0]
+    ).casefold())
+    return "\0".join(entries) + "\0\0"
+
+
 def _is_fixed_system_whoami_probe(
     argv: Sequence[str], system_root: str | os.PathLike[str],
 ) -> bool:
@@ -97,6 +124,46 @@ def _is_fixed_system_whoami_probe(
             ntpath.isabs(executable)
             and ntpath.normcase(ntpath.normpath(executable))
             == ntpath.normcase(ntpath.normpath(expected))
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_fixed_workspace_revocation_probe(
+    argv: Sequence[str], cwd: str | os.PathLike[str],
+    system_root: str | os.PathLike[str],
+) -> bool:
+    """Permit only the internal cmd.exe marker write used to verify ACL revocation."""
+    if len(argv) != 4 or argv[1:3] != ["/d", "/c"]:
+        return False
+    try:
+        executable = os.fspath(argv[0])
+        workspace = os.fspath(cwd)
+        root = os.fspath(system_root)
+        if not all(isinstance(value, str) for value in (executable, workspace, root)):
+            return False
+        expected_executable = ntpath.join(root, "System32", "cmd.exe")
+        if ntpath.normcase(ntpath.normpath(executable)) != ntpath.normcase(
+            ntpath.normpath(expected_executable),
+        ):
+            return False
+        command = argv[3]
+        if not isinstance(command, str):
+            return False
+        prefix = 'echo denied> "'
+        if not command.startswith(prefix) or not command.endswith('"'):
+            return False
+        marker = ntpath.normpath(command[len(prefix):-1])
+        if ntpath.normcase(ntpath.dirname(marker)) != ntpath.normcase(
+            ntpath.normpath(workspace),
+        ):
+            return False
+        marker_name = ntpath.basename(marker)
+        marker_prefix = ".icode-appcontainer-revocation-"
+        suffix = marker_name.removeprefix(marker_prefix)
+        return (
+            marker_name.startswith(marker_prefix) and len(suffix) == 32
+            and all(character in "0123456789abcdef" for character in suffix.casefold())
         )
     except (TypeError, ValueError):
         return False
@@ -157,6 +224,7 @@ def run_windows_job(
     process_limit: int = 8,
     _appcontainer_sid: int | None = None,
     _diagnostic_null_application_name: bool = False,
+    _diagnostic_localappdata: str | None = None,
 ) -> WindowsJobResult:
     """挂起启动、入独立 Job、再恢复；所有失败都禁止当成沙箱成功。
 
@@ -170,6 +238,25 @@ def run_windows_job(
         return WindowsJobResult(False, None, "invalid_command", False, "命令入口必须是存在的绝对路径")
     if not isinstance(_diagnostic_null_application_name, bool):
         return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断启动模式无效")
+    if _diagnostic_localappdata is not None and (
+        not isinstance(_diagnostic_localappdata, str)
+        or "\0" in _diagnostic_localappdata
+        or not ntpath.isabs(_diagnostic_localappdata)
+        or _appcontainer_sid is None
+        or not (
+            _is_fixed_system_whoami_probe(
+                argv, os.environ.get("SystemRoot", r"C:\Windows"),
+            )
+            or _is_fixed_workspace_revocation_probe(
+                argv, cwd, os.environ.get("SystemRoot", r"C:\Windows"),
+            )
+        )
+        or _diagnostic_null_application_name
+    ):
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", False,
+            "LOCALAPPDATA 差分仅允许固定 whoami 与内部 ACL 撤权探针",
+        )
     system_root = os.environ.get("SystemRoot", r"C:\Windows")
     if _diagnostic_null_application_name and (
         _appcontainer_sid is None
@@ -335,9 +422,12 @@ def run_windows_job(
             raise OSError(ctypes.get_last_error(), "SetInformationJobObject")
 
         # 不继承宿主凭据或文件句柄；Job 自身也不会被子进程持有。
-        env_block = ctypes.create_unicode_buffer(
-            _build_windows_environment_block(argv[0], root, system_root)
-        )
+        environment_block = _build_windows_environment_block(argv[0], root, system_root)
+        if _diagnostic_localappdata is not None:
+            environment_block = _append_windows_environment_value(
+                environment_block, "LOCALAPPDATA", _diagnostic_localappdata,
+            )
+        env_block = ctypes.create_unicode_buffer(environment_block)
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline(list(argv)))
         if _appcontainer_sid is None:
             startup = STARTUPINFO()

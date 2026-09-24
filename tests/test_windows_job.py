@@ -15,8 +15,10 @@ from tests._support import temp_workspace
 from icode.windows_job import (
     WindowsJobResult,
     _allocate_attribute_list_buffer,
+    _append_windows_environment_value,
     _build_windows_environment_block,
     _is_fixed_system_whoami_probe,
+    _is_fixed_workspace_revocation_probe,
     probe_windows_job_cleanup,
     run_windows_job,
 )
@@ -140,6 +142,72 @@ class TestWindowsJob(unittest.TestCase):
         self.assertIn(r"D:\Python;D:\Windows\System32", block)
         self.assertNotIn("OPENAI_API_KEY", block)
         self.assertNotIn("GIT_DIR", block)
+
+    def test_只追加LOCALAPPDATA时其它环境项保持不变(self) -> None:
+        baseline = _build_windows_environment_block(
+            r"C:\Windows\System32\whoami.exe", r"C:\tickets\task-1", r"C:\Windows",
+        )
+        candidate = _append_windows_environment_value(
+            baseline, "LOCALAPPDATA", r"C:\Users\runner\AppData\Local\Packages\icode\AC",
+        )
+
+        def parse(block: str) -> dict[str, str]:
+            entries: dict[str, str] = {}
+            for entry in block.split("\0"):
+                if not entry:
+                    continue
+                separator = entry.index("=", 1) if entry.startswith("=") else entry.index("=")
+                entries[entry[:separator]] = entry[separator + 1:]
+            return entries
+
+        baseline_entries = parse(baseline)
+        candidate_entries = parse(candidate)
+        self.assertNotIn("LOCALAPPDATA", baseline_entries)
+        self.assertEqual(
+            {key: value for key, value in candidate_entries.items() if key != "LOCALAPPDATA"},
+            baseline_entries,
+        )
+        self.assertEqual(
+            candidate_entries["LOCALAPPDATA"],
+            r"C:\Users\runner\AppData\Local\Packages\icode\AC",
+        )
+
+    def test_LOCALAPPDATA差分拒绝宿主Job和非固定探针(self) -> None:
+        with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch("icode.windows_job.Path.is_absolute", return_value=True), \
+             mock.patch("icode.windows_job.Path.is_file", return_value=True), \
+             mock.patch("ctypes.WinDLL", create=True) as load_api:
+            ordinary_job = run_windows_job(
+                [r"C:\Windows\System32\whoami.exe"], cwd=workspace,
+                timeout_seconds=2, _diagnostic_localappdata=r"C:\sandbox\profile",
+            )
+            other_executable = run_windows_job(
+                [r"C:\Python\python.exe"], cwd=workspace,
+                timeout_seconds=2, _appcontainer_sid=123,
+                _diagnostic_localappdata=r"C:\sandbox\profile",
+            )
+        for result in (ordinary_job, other_executable):
+            self.assertFalse(result.executed)
+            self.assertEqual(result.error, "invalid_diagnostic_probe")
+        load_api.assert_not_called()
+
+    def test_LOCALAPPDATA撤权例外仅接受固定内部标记写探针(self) -> None:
+        system_root = r"C:\Windows"
+        workspace = r"C:\tickets\task-1"
+        marker = workspace + r"\.icode-appcontainer-revocation-0123456789abcdef0123456789abcdef"
+        allowed = [
+            r"C:\Windows\System32\cmd.exe", "/d", "/c",
+            f'echo denied> "{marker}"',
+        ]
+        self.assertTrue(_is_fixed_workspace_revocation_probe(allowed, workspace, system_root))
+        self.assertFalse(_is_fixed_workspace_revocation_probe(
+            [*allowed[:3], f'echo denied> "{workspace}\\outside.txt"'],
+            workspace, system_root,
+        ))
+        self.assertFalse(_is_fixed_workspace_revocation_probe(
+            [*allowed[:3], f'echo allowed> "{marker}"'], workspace, system_root,
+        ))
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows Job Object 实测")
     def test_空环境块下普通Job可启动系统程序(self) -> None:

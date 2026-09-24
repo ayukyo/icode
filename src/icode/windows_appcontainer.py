@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ctypes
+import ntpath
 import os
 from pathlib import Path
 import stat
@@ -45,6 +46,72 @@ class _AppContainerSetupError(RuntimeError):
         super().__init__(detail)
         self.error = error
         self.detail = detail
+
+
+def _get_appcontainer_localappdata_path(
+    sid: ctypes.c_void_p,
+    userenv: ctypes.WinDLL,
+    advapi: ctypes.WinDLL,
+    kernel: ctypes.WinDLL,
+    ole32: ctypes.WinDLL,
+) -> str:
+    """Resolve LOCALAPPDATA from this profile SID, never from the host environment."""
+    advapi.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    userenv.GetAppContainerFolderPath.argtypes = [
+        wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    userenv.GetAppContainerFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoTaskMemFree.restype = None
+
+    sid_string = ctypes.c_void_p()
+    profile_path = ctypes.c_void_p()
+    cleanup_errors: list[str] = []
+    try:
+        if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(sid_string)):
+            raise _AppContainerSetupError(
+                "appcontainer_profile_path_failed",
+                f"ConvertSidToStringSidW err={ctypes.get_last_error()}",
+            )
+        if not sid_string.value:
+            raise _AppContainerSetupError(
+                "appcontainer_profile_path_failed", "SID 字符串为空",
+            )
+        hr = int(userenv.GetAppContainerFolderPath(
+            ctypes.wstring_at(sid_string), ctypes.byref(profile_path),
+        ))
+        if hr != 0 or not profile_path.value:
+            raise _AppContainerSetupError(
+                "appcontainer_profile_path_failed",
+                f"GetAppContainerFolderPath hr=0x{hr & 0xFFFFFFFF:08x}",
+            )
+        path = ctypes.wstring_at(profile_path)
+        if not path or "\0" in path or not ntpath.isabs(path):
+            raise _AppContainerSetupError(
+                "appcontainer_profile_path_failed", "profile 路径不是绝对 Windows 路径",
+            )
+        return path
+    finally:
+        if profile_path.value:
+            try:
+                ole32.CoTaskMemFree(profile_path)
+            except Exception:  # noqa: BLE001 - 必须仍释放另一个原生输出
+                cleanup_errors.append("CoTaskMemFree failed")
+        if sid_string:
+            try:
+                if kernel.LocalFree(sid_string):
+                    cleanup_errors.append("LocalFree did not release SID string")
+            except Exception:  # noqa: BLE001 - 资源释放错误必须 fail closed
+                cleanup_errors.append("LocalFree failed")
+        if cleanup_errors:
+            raise _AppContainerSetupError(
+                "appcontainer_profile_path_cleanup_failed", "; ".join(cleanup_errors),
+            )
 
 
 def _walk_workspace(root: Path) -> list[Path]:
@@ -307,12 +374,13 @@ def run_windows_appcontainer(
     argv: Sequence[str], *, cwd: str | Path, timeout_seconds: int,
     process_limit: int = 8,
     _diagnostic_null_application_name: bool = False,
+    _diagnostic_localappdata: bool = False,
 ) -> WindowsJobResult:
     """在无网络能力的 AppContainer + 独立 Job 中运行单条命令。
 
     此为 R2.3 开发期原生实验，不接自动工单。它临时给 ``cwd`` 的 AppContainer
     Package SID 授权，并在进程退出后恢复 ACL；cwd 必须是独立任务工作区，不能是原始仓库。
-    私有 app-name 差分仅允许无参数的系统 whoami 探针，不用于任何工单命令。
+    私有启动差分仅允许无参数的系统 whoami 探针，不用于任何工单命令。
     """
     if sys.platform != "win32":
         return WindowsJobResult(False, None, "unsupported_platform", False, "仅适用于 Windows")
@@ -320,6 +388,18 @@ def run_windows_appcontainer(
         return WindowsJobResult(False, None, "invalid_command", False, "命令入口必须是存在的绝对路径")
     if not isinstance(_diagnostic_null_application_name, bool):
         return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断启动模式无效")
+    if not isinstance(_diagnostic_localappdata, bool):
+        return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断启动模式无效")
+    if _diagnostic_localappdata and (
+        _diagnostic_null_application_name
+        or not _is_fixed_system_whoami_probe(
+            argv, os.environ.get("SystemRoot", r"C:\Windows"),
+        )
+    ):
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", False,
+            "LOCALAPPDATA 差分仅允许固定 whoami 探针",
+        )
     if _diagnostic_null_application_name and not _is_fixed_system_whoami_probe(
         argv, os.environ.get("SystemRoot", r"C:\Windows"),
     ):
@@ -360,6 +440,10 @@ def run_windows_appcontainer(
         userenv = ctypes.WinDLL("userenv", use_last_error=True)
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        ole32 = (
+            ctypes.WinDLL("ole32", use_last_error=True)
+            if _diagnostic_localappdata else None
+        )
     except OSError as exc:
         return WindowsJobResult(
             False, None, "appcontainer_api_unavailable", False,
@@ -388,6 +472,8 @@ def run_windows_appcontainer(
     details: list[str] = []
     diagnostics: list[str] = []
     cleanup_ok = True
+    diagnostic_process_executed = False
+    profile_local_app_data: str | None = None
     try:
         hr = int(userenv.CreateAppContainerProfile(
             profile, "ICODE task", "Temporary task isolation", None, 0, ctypes.byref(sid),
@@ -409,11 +495,46 @@ def run_windows_appcontainer(
             )
         original_dacl, advapi, kernel_for_acl = _grant_workspace_acl(root, sid)
         acl_api = (advapi, kernel_for_acl)
-        main = run_windows_job(
-            argv, cwd=root, timeout_seconds=timeout_seconds,
-            process_limit=process_limit, _appcontainer_sid=int(sid.value),
-            _diagnostic_null_application_name=_diagnostic_null_application_name,
-        )
+        if _diagnostic_localappdata:
+            if ole32 is None:  # Defensive: this branch requires CoTaskMemFree.
+                raise _AppContainerSetupError(
+                    "appcontainer_api_unavailable", "LOCALAPPDATA 诊断需要 ole32",
+                )
+            profile_local_app_data = _get_appcontainer_localappdata_path(
+                sid, userenv, advapi, kernel, ole32,
+            )
+            baseline = run_windows_job(
+                argv, cwd=root, timeout_seconds=timeout_seconds,
+                process_limit=process_limit, _appcontainer_sid=int(sid.value),
+            )
+            diagnostic_process_executed = baseline.executed
+            if not baseline.cleanup_ok:
+                main = baseline
+                cleanup_ok = False
+                raise _AppContainerSetupError(
+                    "appcontainer_diagnostic_cleanup_failed",
+                    "LOCALAPPDATA 基线启动后的 Job 清理未验证",
+                )
+            candidate = run_windows_job(
+                argv, cwd=root, timeout_seconds=timeout_seconds,
+                process_limit=process_limit, _appcontainer_sid=int(sid.value),
+                _diagnostic_localappdata=profile_local_app_data,
+            )
+            diagnostic_process_executed = diagnostic_process_executed or candidate.executed
+            details.append(
+                "localappdata_ab="
+                f"baseline:executed:{baseline.executed},error:{baseline.error},cleanup:{baseline.cleanup_ok};"
+                f"candidate:executed:{candidate.executed},error:{candidate.error},cleanup:{candidate.cleanup_ok}"
+            )
+            if not candidate.cleanup_ok:
+                cleanup_ok = False
+            main = candidate
+        else:
+            main = run_windows_job(
+                argv, cwd=root, timeout_seconds=timeout_seconds,
+                process_limit=process_limit, _appcontainer_sid=int(sid.value),
+                _diagnostic_null_application_name=_diagnostic_null_application_name,
+            )
     except _AppContainerSetupError as exc:
         main = WindowsJobResult(False, None, exc.error, False, exc.detail)
     except OSError as exc:
@@ -435,7 +556,10 @@ def run_windows_appcontainer(
             if not acl_restored:
                 cleanup_ok = False
                 details.append("workspace_acl_restore_failed")
-            elif main.executed:
+            elif (
+                (main.executed or diagnostic_process_executed)
+                and main.cleanup_ok and cleanup_ok
+            ):
                 # Prove the just-used identity no longer has write access to the task directory.
                 marker = root / f".icode-appcontainer-revocation-{uuid.uuid4().hex}"
                 command = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe"
@@ -444,6 +568,9 @@ def run_windows_appcontainer(
                         [str(command), "/d", "/c", f'echo denied> "{marker}"'],
                         cwd=root, timeout_seconds=5, process_limit=2,
                         _appcontainer_sid=int(sid.value),
+                        _diagnostic_localappdata=(
+                            profile_local_app_data if _diagnostic_localappdata else None
+                        ),
                     )
                 except Exception:  # noqa: BLE001 - 未验证撤权就不能报告 clean
                     revoke = WindowsJobResult(False, None, "native_api_failed", False, "撤权自检异常")

@@ -16,9 +16,13 @@ import unittest
 from unittest import mock
 from urllib.parse import urlsplit
 
-from icode.windows_appcontainer import _AppContainerSetupError
+from icode.windows_appcontainer import (
+    _AppContainerSetupError,
+    _get_appcontainer_localappdata_path,
+)
 from icode.windows_appcontainer import _walk_workspace, run_windows_appcontainer
 from icode.windows_job import (
+    _append_windows_environment_value,
     _build_windows_environment_block,
     run_windows_job,
 )
@@ -80,6 +84,101 @@ class TestWindowsAppContainer(unittest.TestCase):
              mock.patch("icode.windows_appcontainer.ctypes.WinDLL", create=True) as load_api:
             result = run_windows_appcontainer(
                 [str(executable), "/all"], cwd=raw, timeout_seconds=2,
+                _diagnostic_null_application_name=True,
+            )
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+        load_api.assert_not_called()
+
+    def test_容器LOCALAPPDATA通过SID字符串查询并释放Win32内存(self) -> None:
+        import ctypes
+
+        sid_text = ctypes.create_unicode_buffer("S-1-15-2-123")
+        profile_path = ctypes.create_unicode_buffer(
+            r"C:\Users\runner\AppData\Local\Packages\icode\AC",
+        )
+        advapi = mock.Mock()
+        userenv = mock.Mock()
+        kernel = mock.Mock()
+        ole32 = mock.Mock()
+
+        def convert_sid(sid: object, output: object) -> int:
+            self.assertEqual(getattr(sid, "value", sid), 123)
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = (
+                ctypes.addressof(sid_text)
+            )
+            return 1
+
+        def get_appcontainer_path(sid_string: str, output: object) -> int:
+            self.assertEqual(sid_string, "S-1-15-2-123")
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = (
+                ctypes.addressof(profile_path)
+            )
+            return 0
+
+        advapi.ConvertSidToStringSidW.side_effect = convert_sid
+        userenv.GetAppContainerFolderPath.side_effect = get_appcontainer_path
+        kernel.LocalFree.return_value = None
+        with mock.patch("icode.windows_appcontainer.sys.platform", "win32"):
+            path = _get_appcontainer_localappdata_path(
+                ctypes.c_void_p(123), userenv, advapi, kernel, ole32,
+            )
+
+        self.assertEqual(path, r"C:\Users\runner\AppData\Local\Packages\icode\AC")
+        kernel.LocalFree.assert_called_once()
+        ole32.CoTaskMemFree.assert_called_once()
+
+    def test_容器LOCALAPPDATA查询失败时释放SID且不猜路径(self) -> None:
+        import ctypes
+
+        sid_text = ctypes.create_unicode_buffer("S-1-15-2-123")
+        advapi = mock.Mock()
+        userenv = mock.Mock()
+        kernel = mock.Mock()
+        ole32 = mock.Mock()
+
+        def convert_sid(sid: object, output: object) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = (
+                ctypes.addressof(sid_text)
+            )
+            return 1
+
+        advapi.ConvertSidToStringSidW.side_effect = convert_sid
+        userenv.GetAppContainerFolderPath.return_value = 0x80004005
+        kernel.LocalFree.return_value = None
+        with self.assertRaises(_AppContainerSetupError), \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"):
+            _get_appcontainer_localappdata_path(
+                ctypes.c_void_p(123), userenv, advapi, kernel, ole32,
+            )
+        kernel.LocalFree.assert_called_once()
+        ole32.CoTaskMemFree.assert_not_called()
+
+    def test_LOCALAPPDATA诊断在AppContainer外层拒绝用户命令(self) -> None:
+        executable = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "whoami.exe"
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-invalid-localappdata-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch("icode.windows_appcontainer.Path.is_absolute", return_value=True), \
+             mock.patch("icode.windows_appcontainer.Path.is_file", return_value=True), \
+             mock.patch("icode.windows_appcontainer.ctypes.WinDLL", create=True) as load_api:
+            result = run_windows_appcontainer(
+                [str(executable), "/all"], cwd=raw, timeout_seconds=2,
+                _diagnostic_localappdata=True,
+            )
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+        load_api.assert_not_called()
+
+    def test_LOCALAPPDATA差分不能与app_name差分叠加(self) -> None:
+        executable = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "whoami.exe"
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-overlapping-diagnostics-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch("icode.windows_appcontainer.Path.is_absolute", return_value=True), \
+             mock.patch("icode.windows_appcontainer.Path.is_file", return_value=True), \
+             mock.patch("icode.windows_appcontainer.ctypes.WinDLL", create=True) as load_api:
+            result = run_windows_appcontainer(
+                [str(executable)], cwd=raw, timeout_seconds=2,
+                _diagnostic_localappdata=True,
                 _diagnostic_null_application_name=True,
             )
         self.assertFalse(result.executed)
@@ -235,6 +334,67 @@ class TestWindowsAppContainer(unittest.TestCase):
             if result.executed:
                 self.assertEqual(result.exit_code, 0, result)
                 self.assertTrue(result.cleanup_ok, result)
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
+    def test_诊断同一profile仅追加LOCALAPPDATA差分(self) -> None:
+        """Keep profile SID and launch inputs fixed while adding its official local-data path."""
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        executable = system_root / "System32" / "whoami.exe"
+        target_executable = os.path.normcase(str(executable))
+        observed_blocks: list[str] = []
+
+        def build_and_observe(
+            executable_path: str | os.PathLike[str],
+            cwd: str | os.PathLike[str],
+            system_root_path: str | os.PathLike[str],
+        ) -> str:
+            block = _build_windows_environment_block(
+                executable_path, cwd, system_root_path,
+            )
+            if os.path.normcase(os.fspath(executable_path)) == target_executable:
+                observed_blocks.append(block)
+            return block
+
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-localappdata-") as raw:
+            workspace = Path(raw) / "task"
+            workspace.mkdir()
+            with mock.patch(
+                "icode.windows_job._build_windows_environment_block",
+                side_effect=build_and_observe,
+            ):
+                candidate = run_windows_appcontainer(
+                    [str(executable)], cwd=workspace, timeout_seconds=10,
+                    process_limit=2, _diagnostic_localappdata=True,
+                )
+
+        ab_summary = candidate.detail.partition("localappdata_ab=")[2]
+        self._workflow_notice(
+            "same-profile LOCALAPPDATA A/B diagnostic",
+            f"candidate=executed:{candidate.executed},exit:{candidate.exit_code},"
+            f"error:{candidate.error},cleanup:{candidate.cleanup_ok}; "
+            f"ab={ab_summary}; captured_blocks={len(observed_blocks)}",
+        )
+        self.assertEqual(len(observed_blocks), 2, "baseline and candidate must both launch")
+
+        def parse(block: str) -> dict[str, str]:
+            entries: dict[str, str] = {}
+            for entry in block.split("\0"):
+                if not entry:
+                    continue
+                separator = entry.index("=", 1) if entry.startswith("=") else entry.index("=")
+                entries[entry[:separator]] = entry[separator + 1:]
+            return entries
+
+        baseline_entries, candidate_entries = map(parse, observed_blocks)
+        self.assertNotIn("LOCALAPPDATA", baseline_entries)
+        self.assertIn("LOCALAPPDATA", candidate_entries)
+        self.assertEqual(
+            {key: value for key, value in candidate_entries.items() if key != "LOCALAPPDATA"},
+            baseline_entries,
+        )
+        self.assertTrue(candidate.executed, candidate)
+        self.assertEqual(candidate.exit_code, 0, candidate)
+        self.assertTrue(candidate.cleanup_ok, candidate)
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
     def test_在AppContainer中运行Python并解析工作路径(self) -> None:
