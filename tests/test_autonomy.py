@@ -365,9 +365,11 @@ class TestNativeChainExecutor(unittest.TestCase):
             ))
 
             calls: list[dict] = []
+            prepared: list[SandboxPolicy] = []
             policy_backend = SimpleNamespace(
                 is_real_isolation=True,
                 wrap_policy=lambda *args, **kwargs: [],
+                prepare_policy=lambda candidate: prepared.append(candidate),
             )
 
             def step_runner(*args, **kwargs):
@@ -386,6 +388,7 @@ class TestNativeChainExecutor(unittest.TestCase):
             ):
                 result = executor.execute(context, control)
             self.assertEqual(result.state, "succeeded")
+            self.assertEqual(prepared, [policy])
             self.assertIs(calls[0]["policy"], policy)
             self.assertIs(calls[0]["sandbox"], policy_backend)
 
@@ -930,6 +933,34 @@ class TestAutonomyManager(unittest.TestCase):
             )
             with workspace_manager.open(ticket_id, "reacquired-run"):
                 pass
+
+    def test_缺少策略准备接口时不启动模型(self) -> None:
+        ticket_id = self._ticket("native-missing-preflight-ticket")
+        with tempfile.TemporaryDirectory(prefix="icode_policy_data_") as raw_data_root:
+            workspace_manager = WorkspaceManager(
+                self.workspace, Path(raw_data_root), self.service.project_id,
+            )
+
+            class UnpreparedPolicyBackend:
+                is_real_isolation = True
+
+                def wrap_policy(self, argv, *, policy, network=False):
+                    return list(argv)
+
+            executor = NativeChainExecutor(
+                self.settings, backend=FakeBackend(["完成"]),
+                sandbox=UnpreparedPolicyBackend(),
+                step_runner=lambda *args, **kwargs: self.fail("模型不得启动"),
+            )
+            manager = self._manager(executor, workspace_manager=workspace_manager)
+            manager.handle_intent(ticket_id, {
+                "intent": "start", "request_id": "native-missing-preflight-start",
+            })
+            blocked = _wait_state(self.service, ticket_id, "blocked")
+            _wait_worker_release(manager, ticket_id)
+            self.assertEqual(
+                blocked["autonomous_run"]["error_code"], "isolation_unavailable",
+            )
 
     def test_workspace_busy在持久化和worker前稳定拒绝(self) -> None:
         ticket_id = self._ticket("workspace-busy-ticket")

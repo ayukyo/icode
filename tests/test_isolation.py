@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import os
+import socket
 import unittest
 import shutil
 import subprocess
@@ -580,14 +581,30 @@ class TestSandboxWrapping(unittest.TestCase):
             )
             self.assertNotEqual(denied.exit_code, 0, denied)
             self.assertEqual(protected.read_text(encoding="utf-8"), "protected")
-            network = execute_policy_command(
+            socket_ready = execute_policy_command(
                 sandbox.experimental_wrap_policy(
-                    [sys.executable, "-c", "import socket; socket.socket()"],
+                    [sys.executable, "-c", "import socket; print('socket-ready')"],
                     policy=policy,
                 ),
                 cwd=workspace, policy=policy, timeout=5,
             )
-            self.assertNotEqual(network.exit_code, 0, network)
+            self.assertEqual(socket_ready.exit_code, 0, socket_ready)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(2)
+                with socket.create_connection(listener.getsockname(), timeout=1):
+                    accepted, _ = listener.accept()
+                    accepted.close()  # 阳性对照后清空队列，避免连接积压造成假拒绝。
+                network = execute_policy_command(
+                    sandbox.experimental_wrap_policy(
+                        [sys.executable, "-c", "import socket, sys; "
+                         "socket.create_connection(('127.0.0.1', int(sys.argv[1])), timeout=1)",
+                         str(listener.getsockname()[1])],
+                        policy=policy,
+                    ),
+                    cwd=workspace, policy=policy, timeout=5,
+                )
+                self.assertNotEqual(network.exit_code, 0, network)
 
     @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt 实测")
     def test_seatbelt_策略profile真实阻断受保护文件与外部路径(self) -> None:
