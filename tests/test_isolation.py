@@ -143,15 +143,14 @@ class TestProbe(unittest.TestCase):
                     "import os; os.setpgid(0, 0)"
                     if syscall == "setpgid" else "import os; os.setsid()"
                 )
-                escaped_group = subprocess.run(
+                changed_group = subprocess.run(
                     sandbox.wrap(
                         [str(system_python), "-c", operation],
                         workspace=checkout,
                     ),
                     capture_output=True, text=True, timeout=4, check=False,
                 )
-                self.assertNotEqual(escaped_group.returncode, 0, syscall)
-                self.assertIn("PermissionError", escaped_group.stderr, syscall)
+                self.assertEqual(changed_group.returncode, 0, changed_group.stderr)
 
             # Git 管理文件位于可写代码目录的兄弟位置时，Landlock 的路径
             # 白名单可直接拒绝写入；通过代码目录内的符号链接也不能绕过。

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import textwrap
 from pathlib import Path
 
 
@@ -42,34 +43,77 @@ def main() -> int:
             _run("install wheel", [str(python), "-m", "pip", "install", "--no-deps", str(wheels[0])], cwd=root)
             clean_env = os.environ.copy()
             clean_env.pop("PYTHONPATH", None)
-            code = (
-                "import sys, tempfile; from pathlib import Path; "
-                "from icode.execution_broker import execute_policy_command; "
-                "from icode.native_helper import bundled_linux_helper; "
-                "from icode.isolation import LandlockSandbox, capability_report, probe_native_sandbox; "
-                "from icode.sandbox_policy import NetworkMode, SandboxPolicy; "
-                "p = bundled_linux_helper(); assert p is not None, 'helper missing'; "
-                "s = LandlockSandbox.from_bundle(); assert s is not None; "
-                "assert s.helper == str(p) and s.manifest is not None; "
-                "r = probe_native_sandbox(s); assert r.ready, r.detail; "
-                "cap = capability_report()['bundled_linux_helper']; "
-                "assert cap['installed'] and cap['minimal_probe_passed']; "
-                "assert not cap['policy_ready']; "
-                "t = tempfile.TemporaryDirectory(); "
-                "w = Path(t.name).resolve(); "
-                "policy = SandboxPolicy(schema_version=1, run_id='wheel', ticket_id='wheel', "
-                "step='code', workspace_root=w, read_roots=(w,), write_roots=(w,), "
-                "deny_read_roots=(), deny_write_roots=(), network_mode=NetworkMode.DENY, "
-                "allowed_domains=(), process_limit=8, wall_timeout_seconds=10, "
-                "output_limit_bytes=1024, protected_paths=()); "
-                "s.prepare_policy(policy); "
-                "child = execute_policy_command(s.wrap_policy([sys.executable, '-c', "
-                "'import icode; print(icode.__name__)'], policy=policy), "
-                "cwd=w, policy=policy, timeout=5); "
-                "assert child.error is None and child.exit_code == 0, child; "
-                "assert child.output.strip() == 'icode', child.output; "
-                "t.cleanup(); print('native helper and installed Python: ready')"
-            )
+            code = textwrap.dedent("""\
+                import os
+                import subprocess
+                import sys
+                import tempfile
+                import time
+                from pathlib import Path
+
+                from icode.execution_broker import execute_policy_command
+                from icode.native_helper import bundled_linux_helper
+                from icode.isolation import LandlockSandbox, capability_report, probe_native_sandbox
+                from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+                helper = bundled_linux_helper()
+                assert helper is not None, 'wheel helper missing'
+                sandbox = LandlockSandbox.from_bundle()
+                assert sandbox is not None and sandbox.helper == str(helper)
+                assert sandbox.manifest is not None
+                probe = probe_native_sandbox(sandbox)
+                assert probe.ready, probe.detail
+                cap = capability_report()['bundled_linux_helper']
+                assert cap['installed'] and cap['minimal_probe_passed']
+                assert not cap['policy_ready']
+                with tempfile.TemporaryDirectory() as raw:
+                    workspace = Path(raw).resolve()
+                    policy = SandboxPolicy(
+                        schema_version=1, run_id='wheel', ticket_id='wheel', step='code',
+                        workspace_root=workspace, read_roots=(workspace,),
+                        write_roots=(workspace,), deny_read_roots=(), deny_write_roots=(),
+                        network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                        wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+                    )
+                    sandbox.prepare_policy(policy)
+                    smoke = execute_policy_command(
+                        sandbox.wrap_policy([
+                            sys.executable, '-c',
+                            'import icode, os; assert os.getpid() == 2 and os.getppid() == 1; '
+                            'print(icode.__name__)',
+                        ], policy=policy), cwd=workspace, policy=policy, timeout=5,
+                    )
+                    assert smoke.error is None and smoke.exit_code == 0, smoke
+                    assert smoke.output.strip() == 'icode', smoke.output
+                    started = workspace / 'wheel-detached-started'
+                    late = workspace / 'wheel-detached-survived'
+                    grandchild = (
+                        'import os, time; from pathlib import Path; '
+                        f'os.setsid(); Path({str(started)!r}).write_text("detached"); '
+                        'time.sleep(1.2); '
+                        f'Path({str(late)!r}).write_text("escaped")'
+                    )
+                    parent = (
+                        'import subprocess, sys, time\\nfrom pathlib import Path\\n'
+                        f'subprocess.Popen([sys.executable, "-c", {grandchild!r}], '
+                        'stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, '
+                        'stderr=subprocess.DEVNULL)\\n'
+                        f'for _ in range(200):\\n    if Path({str(started)!r}).exists(): break\\n'
+                        '    time.sleep(0.01)\\n'
+                        'else: raise RuntimeError("detached grandchild did not start")\\n'
+                        'print("spawned-detached", flush=True)\\n'
+                    )
+                    cleanup = execute_policy_command(
+                        sandbox.wrap_policy([sys.executable, '-c', parent], policy=policy),
+                        cwd=workspace, policy=policy, timeout=5,
+                    )
+                    assert cleanup.error is None and cleanup.exit_code == 0, cleanup
+                    assert 'spawned-detached' in cleanup.output, cleanup.output
+                    assert started.read_text(encoding='ascii') == 'detached'
+                    time.sleep(1.4)
+                    assert not late.exists(), 'installed wheel left a detached descendant'
+                print('installed wheel helper: namespace, Python and cleanup PASS')
+            """)
             _run("probe installed wheel", [str(python), "-c", code], cwd=root, env=clean_env)
     except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
         print(f"::error::{exc}")

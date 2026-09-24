@@ -86,7 +86,10 @@ jobs:
           python-version: "3.11"
       - name: Run actual native negative probes
         run: python scripts/run_native_probe_ci.py
-      - name: Verify Linux helper denies process-group escape
+      - name: Verify Linux PID namespace host-crash cleanup
+        if: runner.os == 'Linux'
+        run: python -m unittest tests.test_linux_pidns_cleanup -v
+      - name: Verify Linux helper filesystem, network and group-independent cleanup
         if: runner.os == 'Linux'
         run: python -m unittest tests.test_isolation.TestProbe.test_landlock_助手真实阻断文件与网络越权 -v
       - name: Verify policy command broker

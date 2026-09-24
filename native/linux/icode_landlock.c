@@ -7,10 +7,14 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/audit.h>
+#include <linux/capability.h>
 #include <linux/filter.h>
 #include <linux/landlock.h>
 #include <linux/seccomp.h>
+#include <linux/securebits.h>
 #include <limits.h>
+#include <poll.h>
+#include <sched.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -19,6 +23,7 @@
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef LANDLOCK_ACCESS_FS_REFER
@@ -126,11 +131,7 @@ static int install_network_deny(void) {
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_io_uring_setup, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
-        /* Broker cleanup owns one process group; children may not escape it. */
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_setsid, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
-        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_setpgid, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        /* PID namespace lifetime, not process-group membership, owns cleanup. */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
     struct sock_fprog program = {
@@ -162,7 +163,185 @@ static int install_parent_death_signal(pid_t expected_parent) {
     return 0;
 }
 
+static int restore_child_reaping(void) {
+    /* SIG_IGN survives execve and makes both trusted waitpid calls return ECHILD. */
+    struct sigaction disposition = {.sa_handler = SIG_DFL};
+    if (sigemptyset(&disposition.sa_mask) != 0 ||
+        sigaction(SIGCHLD, &disposition, NULL) != 0) {
+        perror("restore SIGCHLD disposition");
+        return -1;
+    }
+    return 0;
+}
+
+static int write_mapping(const char *path, const char *value) {
+    int fd = open(path, O_WRONLY | O_CLOEXEC);
+    if (fd < 0) {
+        perror(path);
+        return -1;
+    }
+    size_t length = strlen(value);
+    ssize_t written;
+    do {
+        written = write(fd, value, length);
+    } while (written < 0 && errno == EINTR);
+    int saved_errno = errno;
+    close(fd);
+    if (written != (ssize_t)length) {
+        errno = written < 0 ? saved_errno : EIO;
+        perror(path);
+        return -1;
+    }
+    return 0;
+}
+
+static int enter_task_namespaces(pid_t host_parent) {
+    uid_t outer_uid = geteuid();
+    gid_t outer_gid = getegid();
+    if (unshare(CLONE_NEWUSER | CLONE_NEWPID) != 0) {
+        perror("unshare user/pid namespace");
+        return -1;
+    }
+    char mapping[64];
+    if (write_mapping("/proc/self/setgroups", "deny\n") != 0) return -1;
+    int size = snprintf(mapping, sizeof(mapping), "0 %u 1\n", (unsigned)outer_uid);
+    if (size < 0 || (size_t)size >= sizeof(mapping) ||
+        write_mapping("/proc/self/uid_map", mapping) != 0) return -1;
+    size = snprintf(mapping, sizeof(mapping), "0 %u 1\n", (unsigned)outer_gid);
+    if (size < 0 || (size_t)size >= sizeof(mapping) ||
+        write_mapping("/proc/self/gid_map", mapping) != 0) return -1;
+    /* Moving to a user namespace can change credentials and clear PDEATHSIG. */
+    return install_parent_death_signal(host_parent);
+}
+
+static int drop_payload_capabilities(void) {
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
+        prctl(PR_SET_SECUREBITS, SECBIT_KEEP_CAPS_LOCKED |
+              SECBIT_NO_SETUID_FIXUP | SECBIT_NO_SETUID_FIXUP_LOCKED |
+              SECBIT_NOROOT | SECBIT_NOROOT_LOCKED, 0, 0, 0) != 0 ||
+        prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL, 0, 0, 0) != 0) {
+        perror("drop payload privileges");
+        return -1;
+    }
+    /* The kernel capability ABI supports at most 64 bits; stop on EINVAL. */
+    for (unsigned cap = 0; cap < 64; ++cap) {
+        int present = prctl(PR_CAPBSET_READ, cap, 0, 0, 0);
+        if (present < 0 && errno == EINVAL) break;
+        if (present < 0 || prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) != 0) {
+            perror("PR_CAPBSET_DROP");
+            return -1;
+        }
+    }
+    errno = 0;
+    if (prctl(PR_CAPBSET_READ, 64, 0, 0, 0) >= 0 || errno != EINVAL) {
+        fprintf(stderr, "kernel capability set exceeds supported 64-bit sandbox ABI\n");
+        return -1;
+    }
+    struct __user_cap_header_struct header = {
+        .version = _LINUX_CAPABILITY_VERSION_3, .pid = 0,
+    };
+    struct __user_cap_data_struct empty[2] = {{0}, {0}};
+    if (syscall(SYS_capset, &header, empty) != 0) {
+        perror("capset");
+        return -1;
+    }
+    return 0;
+}
+
+static int child_status(int status) {
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return 1;
+}
+
+static int run_namespace_init(int parent_pipe, const char *workspace,
+                              const char *const *runtime_roots,
+                              size_t runtime_root_count, char **command) {
+    /* Namespace PID 1 sees its parent as PID 0, so getppid cannot validate it. */
+    if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
+        prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0) {
+        perror("namespace supervisor setup");
+        return 1;
+    }
+    struct pollfd parent = {.fd = parent_pipe, .events = POLLIN | POLLHUP};
+    if (poll(&parent, 1, 0) < 0 || parent.revents != 0) {
+        fprintf(stderr, "sandbox parent exited before namespace setup\n");
+        return 1;
+    }
+    pid_t payload = fork();
+    if (payload < 0) {
+        perror("fork sandbox payload");
+        return 1;
+    }
+    if (payload == 0) {
+        close(parent_pipe);
+        if (drop_payload_capabilities() != 0 ||
+            install_filesystem(workspace, runtime_roots, runtime_root_count) != 0 ||
+            install_network_deny() != 0) _exit(1);
+        execvp(command[0], command);
+        perror("execvp");
+        _exit(127);
+    }
+    for (;;) {
+        int status;
+        pid_t waited = waitpid(payload, &status, WNOHANG);
+        if (waited == payload) return child_status(status);
+        if (waited < 0 && errno != EINTR) {
+            perror("waitpid sandbox payload");
+            return 1;
+        }
+        int ready = poll(&parent, 1, 50);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0 || (ready > 0 && parent.revents != 0)) {
+            /* Exiting PID 1 makes the kernel kill all namespace descendants. */
+            return 1;
+        }
+    }
+}
+
+static int supervise_task(pid_t host_parent, const char *workspace,
+                          const char *const *runtime_roots,
+                          size_t runtime_root_count, char **command) {
+    if (enter_task_namespaces(host_parent) != 0) return 1;
+    int control[2];
+    if (pipe2(control, O_CLOEXEC) != 0) {
+        perror("pipe2 sandbox parent");
+        return 1;
+    }
+    pid_t init = fork();
+    if (init < 0) {
+        perror("fork namespace supervisor");
+        close(control[0]);
+        close(control[1]);
+        return 1;
+    }
+    if (init == 0) {
+        close(control[1]);
+        int result = run_namespace_init(control[0], workspace, runtime_roots,
+                                        runtime_root_count, command);
+        close(control[0]);
+        _exit(result);
+    }
+    close(control[0]);
+    int status;
+    pid_t waited;
+    do {
+        waited = waitpid(init, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    close(control[1]);
+    if (waited != init) {
+        perror("waitpid namespace supervisor");
+        return 1;
+    }
+    return child_status(status);
+}
+
 int main(int argc, char **argv) {
+    /* Landlock cannot revoke a writable file already open in the host. */
+    if (syscall(SYS_close_range, 3U, UINT_MAX, 0U) != 0) {
+        perror("close_range inherited descriptors");
+        return 1;
+    }
     if (argc < 7 || strcmp(argv[1], "--workspace") != 0 ||
         strcmp(argv[3], "--parent-pid") != 0) {
         fprintf(stderr, "usage: icode-landlock --workspace PATH --parent-pid PID [--runtime-read PATH]... -- COMMAND [ARG...]\n");
@@ -199,7 +378,8 @@ int main(int argc, char **argv) {
         return 2;
     }
     ++command_index;
-    if (install_parent_death_signal((pid_t)parent_value) != 0) {
+    if (install_parent_death_signal((pid_t)parent_value) != 0 ||
+        restore_child_reaping() != 0) {
         free(runtime_roots);
         return 1;
     }
@@ -209,16 +389,15 @@ int main(int argc, char **argv) {
         free(runtime_roots);
         return 2;
     }
-    if (chdir(workspace) != 0 ||
-        install_filesystem(workspace, runtime_roots, runtime_root_count) != 0 ||
-        install_network_deny() != 0) {
+    if (chdir(workspace) != 0) {
+        perror("chdir workspace");
         free(workspace);
         free(runtime_roots);
         return 1;
     }
+    int result = supervise_task((pid_t)parent_value, workspace, runtime_roots,
+                                runtime_root_count, argv + command_index);
     free(workspace);
     free(runtime_roots);
-    execvp(argv[command_index], argv + command_index);
-    perror("execvp");
-    return 127;
+    return result;
 }
