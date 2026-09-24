@@ -202,6 +202,44 @@ class TestProbe(unittest.TestCase):
                 time.sleep(1.5)
                 self.assertFalse((code_root / "late-child").exists())
 
+                # 主进程正常结束时也必须清掉仍存活的孙进程；否则单靠
+                # 主进程 returncode 会把后台残留误判为已完成。
+                grandchild_code = (
+                    "import os, time\nfrom pathlib import Path\n"
+                    "try:\n    os.setsid()\nexcept PermissionError:\n    pass\n"
+                    "Path('deep-started').write_text('ready')\n"
+                    "time.sleep(1.4)\n"
+                    "Path('deep-survived').write_text('escaped')\n"
+                )
+                child_code = (
+                    "import subprocess, sys, time\nfrom pathlib import Path\n"
+                    f"subprocess.Popen([sys.executable, '-c', {grandchild_code!r}], "
+                    "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                    "stderr=subprocess.DEVNULL)\n"
+                    "for _ in range(200):\n"
+                    "    if Path('deep-started').exists(): break\n"
+                    "    time.sleep(0.01)\n"
+                    "else: raise RuntimeError('grandchild did not start')\n"
+                )
+                parent_code = (
+                    "import subprocess, sys\n"
+                    f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                    "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                    "stderr=subprocess.DEVNULL)\n"
+                    "assert child.wait(timeout=4) == 0\n"
+                    "print('deep-started', flush=True)\n"
+                )
+                finished = execute_policy_command(
+                    sandbox.wrap([sys.executable, "-c", parent_code], workspace=code_root),
+                    cwd=code_root, policy=policy, timeout=5,
+                )
+                self.assertEqual(finished.exit_code, 0, finished.output)
+                self.assertIsNone(finished.error, finished.output)
+                self.assertTrue(finished.cleanup_ok)
+                self.assertTrue((code_root / "deep-started").exists())
+                time.sleep(1.5)
+                self.assertFalse((code_root / "deep-survived").exists())
+
             started = checkout / "parent-exit-started"
             survived = checkout / "parent-exit-survived"
             child_code = (
