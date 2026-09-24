@@ -664,6 +664,37 @@ class TestSandboxWrapping(unittest.TestCase):
             )
             self.assertNotEqual(child.exit_code, 0, child)
             self.assertEqual(protected.read_text(encoding="utf-8"), "protected")
+            grandchild_code = (
+                "import os, time\nfrom pathlib import Path\n"
+                "try:\n    os.setsid()\n"
+                "except PermissionError:\n    Path('seatbelt-setsid-denied').write_text('yes')\n"
+                "Path('seatbelt-grandchild-started').write_text('yes')\n"
+                "time.sleep(1.4)\n"
+                "Path('seatbelt-grandchild-survived').write_text('escaped')\n"
+            )
+            parent_code = (
+                "import subprocess, sys, time\nfrom pathlib import Path\n"
+                f"subprocess.Popen([sys.executable, '-c', {grandchild_code!r}], "
+                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                "stderr=subprocess.DEVNULL)\n"
+                "for _ in range(200):\n"
+                "    if Path('seatbelt-grandchild-started').exists(): break\n"
+                "    time.sleep(0.01)\n"
+                "else: raise RuntimeError('grandchild did not start')\n"
+                "print('grandchild-started', flush=True)\n"
+            )
+            descendants = execute_policy_command(
+                sandbox.experimental_wrap_policy(
+                    [sys.executable, "-c", parent_code], policy=policy,
+                ),
+                cwd=workspace, policy=policy, timeout=5,
+            )
+            self.assertEqual(descendants.exit_code, 0, descendants)
+            self.assertIsNone(descendants.error, descendants)
+            self.assertIn("grandchild-started", descendants.output)
+            self.assertTrue((workspace / "seatbelt-setsid-denied").exists(), descendants)
+            time.sleep(1.5)
+            self.assertFalse((workspace / "seatbelt-grandchild-survived").exists())
             socket_ready = execute_policy_command(
                 sandbox.experimental_wrap_policy(
                     [sys.executable, "-c", "import socket; print('socket-ready')"],
