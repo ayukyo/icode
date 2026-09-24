@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import os
 import unittest
 import shutil
@@ -53,13 +54,16 @@ class TestProbe(unittest.TestCase):
                  str(source), "-o", str(helper)],
                 check=True, capture_output=True, text=True,
             )
+            manifest = root / "icode-landlock.sha256"
+            manifest.write_text(hashlib.sha256(helper.read_bytes()).hexdigest() + "\n",
+                                encoding="ascii")
             result = probe_native_sandbox(LandlockSandbox(helper=str(helper)))
             self.assertTrue(result.ready, result.detail)
             system_python = Path("/usr/bin/python3")
             self.assertTrue(system_python.is_file(), "Linux CI must have a system Python")
             checkout = root / "checkout"
             checkout.mkdir()
-            sandbox = LandlockSandbox(helper=str(helper))
+            sandbox = LandlockSandbox(helper=str(helper), manifest=str(manifest))
             positive = subprocess.run(
                 sandbox.wrap([str(system_python), "-c", "print('ready')"], workspace=checkout),
                 capture_output=True, text=True, timeout=4, check=False,
@@ -394,6 +398,35 @@ class TestWslAndJobLimits(unittest.TestCase):
 
 
 class TestSandboxWrapping(unittest.TestCase):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux 策略助手完整性验证")
+    def test_landlock_策略路径逐次校验助手摘要(self) -> None:
+        with temp_workspace() as root:
+            workspace = (root / "code").resolve()
+            workspace.mkdir()
+            helper = root / "icode-landlock"
+            helper.write_bytes(b"#!/bin/sh\nexit 0\n")
+            helper.chmod(0o755)
+            manifest = root / "icode-landlock.sha256"
+            manifest.write_text(hashlib.sha256(helper.read_bytes()).hexdigest() + "\n",
+                                encoding="ascii")
+            policy = SandboxPolicy(
+                schema_version=1, run_id="hash-test", ticket_id="hash-test", step="code",
+                workspace_root=workspace, read_roots=(workspace,), write_roots=(workspace,),
+                deny_read_roots=(), deny_write_roots=(),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+            )
+            with self.assertRaises(RuntimeError):
+                LandlockSandbox(helper=str(helper)).prepare_policy(policy)
+            sandbox = LandlockSandbox(helper=str(helper), manifest=str(manifest))
+            sandbox.prepare_policy(policy)
+            self.assertEqual(sandbox.wrap_policy(["true"], policy=policy)[0], str(helper))
+            helper.write_bytes(b"#!/bin/sh\nexit 1\n")
+            with self.assertRaises(RuntimeError):
+                sandbox.prepare_policy(policy)
+            with self.assertRaises(RuntimeError):
+                sandbox.wrap_policy(["true"], policy=policy)
+
     def test_landlock_实验性策略路径映射拒绝不可表达合同(self) -> None:
         with temp_workspace() as root:
             workspace = (root / "code").resolve()

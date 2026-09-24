@@ -233,10 +233,21 @@ class LandlockSandbox:
 
     helper: str
     name: str = "landlock"
+    manifest: str | None = None
 
     @property
     def is_real_isolation(self) -> bool:
         return True
+
+    @classmethod
+    def from_bundle(cls) -> LandlockSandbox | None:
+        """只从摘要已核对的随包文件构造策略候选，仍不自动启用。"""
+        from .native_helper import bundled_linux_helper
+
+        helper = bundled_linux_helper()
+        if helper is None:
+            return None
+        return cls(helper=str(helper), manifest=str(helper.parent / "icode-landlock.sha256"))
 
     @staticmethod
     def _validated_runtime_roots(prefixes: Sequence[Path]) -> tuple[Path, ...]:
@@ -298,8 +309,12 @@ class LandlockSandbox:
     def prepare_policy(self, policy: SandboxPolicy) -> None:
         """模型调用前的静态阻断；仅覆盖当前助手已实现的策略子集。"""
         self._checked_policy_workspace(policy)
-        if not Path(self.helper).resolve().is_file():
-            raise RuntimeError("Landlock helper is unavailable")
+        from .native_helper import verify_native_helper
+
+        if self.manifest is None or not verify_native_helper(
+            Path(self.helper), Path(self.manifest)
+        ):
+            raise RuntimeError("Landlock helper integrity check failed")
 
     def wrap_policy(
         self, argv: Sequence[str], *, policy: SandboxPolicy, network: bool = False,
@@ -312,9 +327,14 @@ class LandlockSandbox:
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         if network:
             raise RuntimeError("Landlock helper does not support network grants")
-        helper = Path(self.helper).resolve()
+        helper = Path(self.helper)
         if not helper.is_file():
             raise RuntimeError("Landlock helper is unavailable")
+        if self.manifest is not None:
+            from .native_helper import verify_native_helper
+
+            if not verify_native_helper(helper, Path(self.manifest)):
+                raise RuntimeError("Landlock helper integrity check failed")
         wrapped = [
             str(helper), "--workspace", str(Path(workspace).resolve()),
             "--parent-pid", str(os.getpid()),
@@ -714,7 +734,6 @@ def select_sandbox(preference: str | None = None) -> Sandbox:
 def capability_report() -> dict:
     """给 `icode doctor` 用的隔离能力报告（措辞必须能追溯到实测）。"""
     from .conformance import load_conformance_contract
-    from .native_helper import bundled_linux_helper
     from .sandbox_policy import POLICY_SCHEMA_VERSION
 
     caps = probe_capabilities()
@@ -728,11 +747,11 @@ def capability_report() -> dict:
     }
     if sys.platform.startswith("linux"):
         try:
-            helper = bundled_linux_helper()
-            if helper is None:
+            bundled_sandbox = LandlockSandbox.from_bundle()
+            if bundled_sandbox is None:
                 bundled["detail"] = "随包助手缺失或完整性校验失败"
             else:
-                result = probe_native_sandbox(LandlockSandbox(helper=str(helper)))
+                result = probe_native_sandbox(bundled_sandbox)
                 bundled.update({
                     "installed": True,
                     "minimal_probe_passed": result.ready,

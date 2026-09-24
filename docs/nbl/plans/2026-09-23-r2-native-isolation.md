@@ -55,6 +55,7 @@
 - 宿主异常退出的真实负向测试先证明旧助手主命令可继续写出文件；Linux 助手现要求宿主传入预期父 PID，在策略安装前校验父身份、设置 `PR_SET_PDEATHSIG(SIGKILL)` 并复查父 PID。错误父 PID 被拒，正确父进程退出后主命令不再延迟写出。[Linux 手册](https://www.man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html)说明该信号在 `fork` 子进程中清空、普通 `execve` 保留，因此这里只证明**主进程**的父死联动，不能替代整树回收、资源上限或 macOS/Windows 对等能力。
 - 复查宿主侧改动快照发现旧 `_snapshot` 会跟随工作区文件符号链接并读取外部目标；这条路径发生在沙箱外，必须独立修复。现于 POSIX 以已打开的目录 fd 为锚逐层无跟随扫描，链接只散列目标文本，普通文件按流散列；目标文件变化不再改变链接快照，外部目录不递归，根链接被拒。Windows 暂以链接/接合点排除和解析路径校验降险，尚不宣称能抵御并发重解析竞争，自动模式仍阻断。分层工作区的普通 Git 查询仍可能误报，受限 Git 查询入口待实现。
 - 分层会话现在对模型经 `run_command` 发起的普通 Git 命令返回稳定的 `git_broker_unavailable`，不再让错误工作树的状态混入判断；策略会话新增只读 `workspace_changes`，复用无跟随快照列出本次链路开始后的增删改，补救回合沿用同一基线。它不调用 Git、不执行仓库配置，也不冒充暂存/提交状态；真正受限的 Git broker 仍未完成。宿主直接执行不可信仓库的 `git status` 并不等于无副作用查询，[Git 官方文档](https://git-scm.com/docs/git-fsmonitor--daemon)说明 fsmonitor 配置可启动外部程序，需先确定隔离/配置屏蔽方案。
+- Linux 策略入口现在要求 `LandlockSandbox` 携带 manifest，并在模型调用前 `prepare_policy` 及每次 `wrap_policy` 时验证助手文件类型、权限和 SHA-256；缺失或篡改均拒绝，最小 doctor 探测也由带 manifest 的随包实例执行。干净 wheel 安装测试增加真实策略包装、broker 执行和 venv Python 导入的联测。该强化不解决哈希检查到进程启动之间的同用户篡改竞态，也不补全 Git、进程数及网络临时授权合同，故仍不自动选择。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。
