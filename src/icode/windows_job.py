@@ -82,6 +82,7 @@ def probe_windows_job_cleanup() -> WindowsJobProbeResult:
 def run_windows_job(
     argv: Sequence[str], *, cwd: str | Path, timeout_seconds: int,
     process_limit: int = 8,
+    _appcontainer_sid: int | None = None,
 ) -> WindowsJobResult:
     """挂起启动、入独立 Job、再恢复；所有失败都禁止当成沙箱成功。
 
@@ -160,6 +161,23 @@ def run_windows_job(
             ("hStdError", wintypes.HANDLE),
         ]
 
+    class STARTUPINFOEX(ctypes.Structure):
+        _fields_ = [
+            ("StartupInfo", STARTUPINFO),
+            ("lpAttributeList", ctypes.c_void_p),
+        ]
+
+    class SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+    class SECURITY_CAPABILITIES(ctypes.Structure):
+        _fields_ = [
+            ("AppContainerSid", ctypes.c_void_p),
+            ("Capabilities", ctypes.POINTER(SID_AND_ATTRIBUTES)),
+            ("CapabilityCount", wintypes.DWORD),
+            ("Reserved", wintypes.DWORD),
+        ]
+
     class PROCESS_INFORMATION(ctypes.Structure):
         _fields_ = [
             ("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
@@ -174,7 +192,7 @@ def run_windows_job(
     kernel.CreateProcessW.argtypes = [
         wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
         wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
-        ctypes.POINTER(STARTUPINFO), ctypes.POINTER(PROCESS_INFORMATION),
+        ctypes.c_void_p, ctypes.POINTER(PROCESS_INFORMATION),
     ]
     kernel.CreateProcessW.restype = wintypes.BOOL
     kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
@@ -196,6 +214,18 @@ def run_windows_job(
     kernel.QueryInformationJobObject.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
+    kernel.InitializeProcThreadAttributeList.argtypes = [
+        ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(ctypes.c_size_t),
+    ]
+    kernel.InitializeProcThreadAttributeList.restype = wintypes.BOOL
+    kernel.UpdateProcThreadAttribute.argtypes = [
+        ctypes.c_void_p, wintypes.DWORD, ctypes.c_size_t, ctypes.c_void_p,
+        ctypes.c_size_t, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+    ]
+    kernel.UpdateProcThreadAttribute.restype = wintypes.BOOL
+    kernel.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
+    kernel.DeleteProcThreadAttributeList.restype = None
 
     job = kernel.CreateJobObjectW(None, None)
     if not job:
@@ -207,6 +237,9 @@ def run_windows_job(
     error: str | None = None
     detail = ""
     cleanup_ok = False
+    attribute_storage: ctypes.Array[ctypes.c_char] | None = None
+    attribute_list: ctypes.c_void_p | None = None
+    attributes_initialized = False
     try:
         limits = EXTENDED_LIMITS()
         limits.BasicLimitInformation.LimitFlags = 0x2000 | 0x0008  # KILL_ON_JOB_CLOSE | ACTIVE_PROCESS
@@ -227,18 +260,52 @@ def run_windows_job(
             "\0".join(f"{key}={value}" for key, value in sorted(environment.items())) + "\0\0"
         )
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline(list(argv)))
-        startup = STARTUPINFO()
-        startup.cb = ctypes.sizeof(startup)
+        if _appcontainer_sid is None:
+            startup = STARTUPINFO()
+            startup.cb = ctypes.sizeof(startup)
+            startup_ptr = ctypes.cast(ctypes.byref(startup), ctypes.c_void_p)
+            creation_flags = 0x00000004 | 0x00000400  # CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
+        else:
+            attribute_size = ctypes.c_size_t()
+            ctypes.set_last_error(0)
+            kernel.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(attribute_size))
+            size_error = ctypes.get_last_error()
+            if size_error != 122 or attribute_size.value <= 0:
+                raise OSError(ctypes.get_last_error(), "InitializeProcThreadAttributeList(size)")
+            attribute_storage = ctypes.create_string_buffer(attribute_size.value)
+            attribute_list = ctypes.cast(attribute_storage, ctypes.c_void_p)
+            if not kernel.InitializeProcThreadAttributeList(
+                attribute_list, 1, 0, ctypes.byref(attribute_size),
+            ):
+                raise OSError(ctypes.get_last_error(), "InitializeProcThreadAttributeList")
+            attributes_initialized = True
+            security = SECURITY_CAPABILITIES(
+                ctypes.c_void_p(_appcontainer_sid), None, 0, 0,
+            )
+            # PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES; no network capabilities
+            if not kernel.UpdateProcThreadAttribute(
+                attribute_list, 0, 0x00020009, ctypes.byref(security),
+                ctypes.sizeof(security), None, None,
+            ):
+                raise OSError(ctypes.get_last_error(), "UpdateProcThreadAttribute(security)")
+            startup_ex = STARTUPINFOEX()
+            startup_ex.StartupInfo.cb = ctypes.sizeof(startup_ex)
+            startup_ex.lpAttributeList = attribute_list
+            startup_ptr = ctypes.cast(ctypes.byref(startup_ex), ctypes.c_void_p)
+            creation_flags = (
+                0x00000004 | 0x00000400 | 0x00080000
+            )  # SUSPENDED | UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT
         if not kernel.CreateProcessW(
-            str(argv[0]), command, None, None, False, 0x00000004 | 0x00000400,
-            env_block, str(root), ctypes.byref(startup), ctypes.byref(process),
+            str(argv[0]), command, None, None, False, creation_flags,
+            env_block, str(root), startup_ptr, ctypes.byref(process),
         ):
             raise OSError(ctypes.get_last_error(), "CreateProcessW")
         created = True
         if not kernel.AssignProcessToJobObject(job, process.hProcess):
             raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject")
         assigned = True
-        if kernel.ResumeThread(process.hThread) == 0xFFFFFFFF:
+        resume_count = kernel.ResumeThread(process.hThread)
+        if resume_count in (0, 0xFFFFFFFF):
             raise OSError(ctypes.get_last_error(), "ResumeThread")
         wait = kernel.WaitForSingleObject(process.hProcess, timeout_seconds * 1000)
         if wait == 0x00000102:
@@ -254,6 +321,8 @@ def run_windows_job(
         error = "native_api_failed"
         detail = f"{exc.strerror or type(exc).__name__} (err={exc.errno})"
     finally:
+        if attributes_initialized and attribute_list is not None:
+            kernel.DeleteProcThreadAttributeList(attribute_list)
         if assigned:
             if not kernel.TerminateJobObject(job, 1):
                 error = "cleanup_failed"

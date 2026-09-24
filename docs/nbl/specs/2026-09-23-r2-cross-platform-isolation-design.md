@@ -268,6 +268,8 @@ class SandboxPolicy:
 
 最低完整支持基线为 Windows 10 22H2、Windows 11，覆盖 x64/arm64。UAC 被拒绝时，自动模式不运行命令，并在工作台提供“重新启用保护”操作。
 
+**实现候选更新（2026-09-25，尚未验收）：**先验证 AppContainer + 每工单 Package SID ACL + Job Object，作为 Python-only 安装下的默认断网和文件隔离路径；它可能减少默认断网场景的首次 UAC/专用账户前置。此候选不改变“任务目录之外不可访问”“失败不裸跑”和 Job 清理要求，也不提供域名 allowlist。临时联网仍须有可按 sandbox identity 强制到代理的 WFP/防火墙策略，通常需要可信提升组件。候选须先通过 Windows x64/ARM64 的目录权限、外部 canary、网络负例、ACL 撤销与 Job 继承测试；通过前，R2.3 与自动模式均保持未完成。详见[Windows AppContainer 实验计划](../plans/2026-09-25-r2-windows-appcontainer.md)。
+
 ## 7. 工作区与受保护目录
 
 ### 7.1 Git 工程
