@@ -15,6 +15,7 @@ import heapq
 import json
 import os
 import re
+import secrets
 import stat
 from contextlib import closing
 from functools import lru_cache
@@ -309,35 +310,184 @@ def grep_files(
 # ---------------------------------------------------------------------------
 
 
+def _write_target(ctx: ToolContext, path: str) -> tuple[Path, Path, Path]:
+    workspace = ctx.root.resolve(strict=True)
+    target = ctx.resolve(path).resolve(strict=False)
+    if not target.is_relative_to(workspace):
+        raise PermissionError("写入目标不在工作区")
+    if ctx.policy is not None:
+        if any(target.is_relative_to(root) for root in ctx.policy.deny_write_roots):
+            raise PermissionError("写入目标受策略保护")
+        roots = [root for root in ctx.policy.write_roots if target.is_relative_to(root)]
+        if not roots:
+            raise PermissionError("写入目标不在策略写根")
+        anchor = max(roots, key=lambda root: len(root.parts))
+    else:
+        anchor = workspace
+    relative = target.relative_to(anchor)
+    if not relative.parts:
+        raise PermissionError("不能将写根本身当作文件")
+    return target, anchor, relative
+
+
+def _open_parent_at(anchor: Path, relative: Path, *, create: bool) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    parent_fd = os.open(anchor, flags)
+    try:
+        for component in relative.parts[:-1]:
+            try:
+                child_fd = os.open(component, flags, dir_fd=parent_fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                try:
+                    os.mkdir(component, dir_fd=parent_fd)
+                except FileExistsError:
+                    pass
+                child_fd = os.open(component, flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = child_fd
+        return parent_fd
+    except BaseException:
+        os.close(parent_fd)
+        raise
+
+
+def _regular_at(parent_fd: int, name: str) -> os.stat_result | None:
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(current.st_mode):
+        raise PermissionError("写入目标不是普通文件")
+    return current
+
+
+def _atomic_write_at(parent_fd: int, name: str, body: bytes,
+                     prior: os.stat_result | None) -> None:
+    temporary = f".icode-write-{secrets.token_hex(12)}"
+    temporary_fd = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+        0o666, dir_fd=parent_fd,
+    )
+    try:
+        with os.fdopen(temporary_fd, "wb") as stream:
+            stream.write(body)
+            stream.flush()
+            if prior is not None:
+                # 保留可执行位，但不把旧文件的 setuid/setgid 权限带到新内容。
+                mode = stat.S_IMODE(prior.st_mode) & ~(stat.S_ISUID | stat.S_ISGID)
+                os.fchmod(stream.fileno(), mode)
+            os.fsync(stream.fileno())
+        current = _regular_at(parent_fd, name)
+        if (prior is None) != (current is None):
+            raise OSError("写入目标在操作中发生变化")
+        if prior is not None and current is not None and (
+            prior.st_dev, prior.st_ino, prior.st_mtime_ns, prior.st_size
+        ) != (
+            current.st_dev, current.st_ino, current.st_mtime_ns, current.st_size
+        ):
+            raise OSError("写入目标在操作中发生变化")
+        os.replace(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+
+
 def write_file(ctx: ToolContext, path: str, content: str) -> ToolResult:
-    target = ctx.resolve(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    existed = target.is_file()
-    # 用 write_bytes 避免 Windows 下 os.linesep 把 LF 写成 CRLF（跨平台一致性）
-    target.write_bytes(content.encode("utf-8"))
+    try:
+        target, anchor, relative = _write_target(ctx, path)
+        body = content.encode("utf-8")
+        if os.name == "posix":
+            parent_fd = _open_parent_at(anchor, relative, create=True)
+            try:
+                prior = _regular_at(parent_fd, relative.name)
+                _atomic_write_at(parent_fd, relative.name, body, prior)
+                existed = prior is not None
+            finally:
+                os.close(parent_fd)
+        else:
+            if ctx.policy is not None:
+                raise PermissionError("Windows 策略写入尚未验证")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.is_symlink() or (target.exists() and not target.is_file()):
+                raise PermissionError("写入目标不是普通文件")
+            existed = target.is_file()
+            target.write_bytes(body)
+    except PermissionError:
+        return ToolResult(False, "写入路径未获授权", {"error": "write_denied"},
+                          opclass=OPCLASS_MANAGED_WRITE)
+    except (OSError, RuntimeError, UnicodeError):
+        return ToolResult(False, "写入失败或目标在操作中变化", {"error": "write_unavailable"},
+                          opclass=OPCLASS_MANAGED_WRITE)
     return ToolResult(
         True,
         f"{'覆盖' if existed else '新建'} {target}（{len(content)} 字符）",
-        {"path": str(target), "created": not existed, "bytes": len(content.encode('utf-8'))},
+        {"path": str(target), "created": not existed, "bytes": len(body)},
         opclass=OPCLASS_MANAGED_WRITE,
     )
 
 
 def edit_file(ctx: ToolContext, path: str, old: str, new: str) -> ToolResult:
-    target = ctx.resolve(path)
-    if not target.is_file():
-        return ToolResult(False, f"文件不存在：{target}", {"error": "not_found"},
+    try:
+        target, anchor, relative = _write_target(ctx, path)
+        if not _policy_allows_read(ctx, target):
+            return ToolResult(False, "策略禁止读取编辑目标", {"error": "read_denied"},
+                              opclass=OPCLASS_MANAGED_WRITE)
+        if os.name == "posix":
+            parent_fd = _open_parent_at(anchor, relative, create=False)
+            try:
+                prior = _regular_at(parent_fd, relative.name)
+                if prior is None:
+                    return ToolResult(False, f"文件不存在：{target}", {"error": "not_found"},
+                                      opclass=OPCLASS_MANAGED_WRITE)
+                file_fd = os.open(
+                    relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=parent_fd,
+                )
+                with os.fdopen(file_fd, "rb") as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        raise PermissionError("编辑目标不是普通文件")
+                    text = stream.read().decode("utf-8")
+                count = text.count(old)
+                if count == 0:
+                    return ToolResult(False, "未找到待替换内容（old 必须逐字匹配，含缩进）",
+                                      {"error": "no_match"}, opclass=OPCLASS_MANAGED_WRITE)
+                if count > 1:
+                    return ToolResult(False, f"待替换内容出现 {count} 次，不唯一；请提供更长上下文",
+                                      {"error": "not_unique", "count": count},
+                                      opclass=OPCLASS_MANAGED_WRITE)
+                _atomic_write_at(parent_fd, relative.name,
+                                 text.replace(old, new, 1).encode("utf-8"), prior)
+            finally:
+                os.close(parent_fd)
+        else:
+            if ctx.policy is not None:
+                raise PermissionError("Windows 策略写入尚未验证")
+            if not target.is_file():
+                return ToolResult(False, f"文件不存在：{target}", {"error": "not_found"},
+                                  opclass=OPCLASS_MANAGED_WRITE)
+            text = target.read_text(encoding="utf-8")
+            count = text.count(old)
+            if count == 0:
+                return ToolResult(False, "未找到待替换内容（old 必须逐字匹配，含缩进）",
+                                  {"error": "no_match"}, opclass=OPCLASS_MANAGED_WRITE)
+            if count > 1:
+                return ToolResult(False, f"待替换内容出现 {count} 次，不唯一；请提供更长上下文",
+                                  {"error": "not_unique", "count": count},
+                                  opclass=OPCLASS_MANAGED_WRITE)
+            target.write_bytes(text.replace(old, new, 1).encode("utf-8"))
+    except FileNotFoundError:
+        return ToolResult(False, f"文件不存在：{path}", {"error": "not_found"},
                           opclass=OPCLASS_MANAGED_WRITE)
-    text = target.read_text(encoding="utf-8")
-    count = text.count(old)
-    if count == 0:
-        return ToolResult(False, "未找到待替换内容（old 必须逐字匹配，含缩进）",
-                          {"error": "no_match"}, opclass=OPCLASS_MANAGED_WRITE)
-    if count > 1:
-        return ToolResult(False, f"待替换内容出现 {count} 次，不唯一；请提供更长上下文",
-                          {"error": "not_unique", "count": count},
+    except PermissionError:
+        return ToolResult(False, "编辑路径未获授权", {"error": "write_denied"},
                           opclass=OPCLASS_MANAGED_WRITE)
-    target.write_bytes(text.replace(old, new, 1).encode("utf-8"))
+    except (OSError, RuntimeError, UnicodeError):
+        return ToolResult(False, "编辑失败或目标在操作中变化", {"error": "write_unavailable"},
+                          opclass=OPCLASS_MANAGED_WRITE)
     return ToolResult(True, f"已编辑 {target}（替换 {len(old)} -> {len(new)} 字符）",
                       {"path": str(target)}, opclass=OPCLASS_MANAGED_WRITE)
 

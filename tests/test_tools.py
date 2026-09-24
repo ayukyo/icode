@@ -198,6 +198,100 @@ class TestFileTools(unittest.TestCase):
         self.assertEqual(r.opclass, OPCLASS_MANAGED_WRITE)
         self.assertNotIn(b"\r\n", (self.root / "new" / "a.py").read_bytes())
 
+    @unittest.skipUnless(os.name == "posix", "需要 POSIX 符号链接语义")
+    def test_写工具不改工作区外链接目标(self) -> None:
+        with temp_workspace() as outside:
+            secret = outside / "secret.txt"
+            secret.write_text("before\n", encoding="utf-8")
+            (self.root / "linked-secret.txt").symlink_to(secret)
+            (self.root / "linked-dir").symlink_to(outside, target_is_directory=True)
+            for tool, arguments in (
+                ("write_file", {"path": "linked-secret.txt", "content": "after\n"}),
+                ("write_file", {"path": "linked-dir/new.txt", "content": "after\n"}),
+                ("edit_file", {"path": "linked-secret.txt", "old": "before", "new": "after"}),
+            ):
+                with self.subTest(tool=tool, path=arguments["path"]):
+                    result = self.reg.invoke(tool, self.ctx, arguments)
+                    self.assertFalse(result.ok)
+                    self.assertEqual(result.meta["error"], "write_denied")
+            self.assertEqual(secret.read_text(encoding="utf-8"), "before\n")
+            self.assertFalse((outside / "new.txt").exists())
+
+    def test_策略写工具拒绝受保护目录(self) -> None:
+        from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+        protected = self.root / ".git"
+        protected.mkdir()
+        config = protected / "config"
+        config.write_text("before\n", encoding="utf-8")
+        policy = SandboxPolicy(
+            schema_version=1, run_id="run", ticket_id="ticket", step="code",
+            workspace_root=self.root, read_roots=(self.root,), write_roots=(self.root,),
+            deny_read_roots=(), deny_write_roots=(protected,),
+            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+            wall_timeout_seconds=10, output_limit_bytes=1024,
+            protected_paths=(protected,),
+        )
+        context = ToolContext(root=self.root, policy=policy)
+        for tool, arguments in (
+            ("write_file", {"path": ".git/config", "content": "after\n"}),
+            ("edit_file", {"path": ".git/config", "old": "before", "new": "after"}),
+        ):
+            with self.subTest(tool=tool):
+                result = self.reg.invoke(tool, context, arguments)
+                self.assertFalse(result.ok)
+                self.assertEqual(result.meta["error"], "write_denied")
+        self.assertEqual(config.read_text(encoding="utf-8"), "before\n")
+
+    def test_策略编辑必须同时有读取权限(self) -> None:
+        from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+        private = self.root / "private"
+        private.mkdir()
+        target = private / "note.txt"
+        target.write_text("before\n", encoding="utf-8")
+        policy = SandboxPolicy(
+            schema_version=1, run_id="run", ticket_id="ticket", step="code",
+            workspace_root=self.root, read_roots=(self.root,), write_roots=(self.root,),
+            deny_read_roots=(private,), deny_write_roots=(),
+            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+            wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+        )
+        result = self.reg.invoke("edit_file", ToolContext(root=self.root, policy=policy), {
+            "path": "private/note.txt", "old": "before", "new": "after",
+        })
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta["error"], "read_denied")
+        self.assertEqual(target.read_text(encoding="utf-8"), "before\n")
+
+    @unittest.skipUnless(os.name == "posix", "需要 POSIX 文件模式和硬链接语义")
+    def test_安全覆盖保留模式且不修改外部硬链接目标(self) -> None:
+        target = self.root / "executable.sh"
+        target.write_text("old\n", encoding="utf-8")
+        target.chmod(0o755)
+        result = self.reg.invoke("write_file", self.ctx, {
+            "path": "executable.sh", "content": "new\n",
+        })
+        self.assertTrue(result.ok)
+        self.assertEqual(target.stat().st_mode & 0o777, 0o755)
+        target.chmod(0o4755)
+        replaced_mode = self.reg.invoke("write_file", self.ctx, {
+            "path": "executable.sh", "content": "again\n",
+        })
+        self.assertTrue(replaced_mode.ok)
+        self.assertEqual(target.stat().st_mode & 0o7777, 0o755)
+        with temp_workspace() as outside:
+            secret = outside / "secret.txt"
+            secret.write_text("outside\n", encoding="utf-8")
+            os.link(secret, self.root / "hardlink.txt")
+            replaced = self.reg.invoke("write_file", self.ctx, {
+                "path": "hardlink.txt", "content": "inside\n",
+            })
+            self.assertTrue(replaced.ok)
+            self.assertEqual(secret.read_text(encoding="utf-8"), "outside\n")
+            self.assertEqual((self.root / "hardlink.txt").read_text(encoding="utf-8"),
+                             "inside\n")
+
     def test_edit_要求唯一匹配(self) -> None:
         ok = self.reg.invoke("edit_file", self.ctx, {
             "path": "pkg/m.py", "old": "return a + b", "new": "return a + b  # noqa"})
