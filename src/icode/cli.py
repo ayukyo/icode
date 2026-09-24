@@ -226,8 +226,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"  [{'OK  ' if selected['is_real_isolation'] else 'WARN'}] 隔离后端：{report['honest_label']}")
     print(f"         后端={selected['backend']}"
           + (f"；已强制={selected.get('enforced')}" if selected.get("enforced") else ""))
+    if selected.get("not_enforced"):
+        print(f"         未覆盖能力：{'、'.join(selected['not_enforced'])}")
     print(f"  [INFO] R2 策略合同：v{report['policy_schema_version']}")
-    print("         一致性测试：尚未执行（下一阶段原生后端自测后才会产生结果）")
+    print("         一致性测试：尚未执行（局部原生负向测试不计入 10 项评分）")
     if sys.platform.startswith("linux"):
         bundled = report["bundled_linux_helper"]
         state = "最小负向探测通过" if bundled["minimal_probe_passed"] else bundled["detail"]

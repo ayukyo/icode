@@ -92,6 +92,8 @@ class TestRuntimeOffline(unittest.TestCase):
         self.assertIn("隔离后端：", output)
         self.assertIn("R2 策略合同：v1", output)
         self.assertIn("一致性测试：尚未执行", output)
+        self.assertIn("局部原生负向测试不计入 10 项评分", output)
+        self.assertIn("未覆盖能力：", output)
         if sys.platform.startswith("linux"):
             self.assertIn("随包 Linux 助手", output)
             self.assertIn("策略级隔离未就绪", output)
