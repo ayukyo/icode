@@ -47,9 +47,9 @@
 
 | 项目 | 本次上游提交 | 核对入口 | 目前可借鉴的边界 |
 |---|---|---|---|
-| Codex | `b19cebe` | [仓库](https://github.com/openai/codex) · [授权与安全](https://learn.chatgpt.com/docs/agent-approvals-security) · [Windows 沙箱](https://learn.chatgpt.com/docs/windows/windows-sandbox) | 批准不等于 OS 隔离；Windows 安全级别需分层表述 |
-| Gemini CLI | `87de0b6` | [沙箱文档](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md) | 以工具为边界，对未覆盖路径显式处理 |
-| Qwen Code | `06192c7` | [沙箱文档](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sandbox.md) | 未适配的 MCP/扩展/宿主 Git 不应静默放行 |
+| Codex | `4083a68`（R2 Git/网络复核） | [Linux 沙箱源码说明](https://github.com/openai/codex/blob/4083a68f88375bb0bc90a41b8c454d9e2d7c5281/codex-rs/linux-sandbox/README.md) · [应用网络策略](https://github.com/openai/codex/blob/4083a68f88375bb0bc90a41b8c454d9e2d7c5281/codex-rs/app-server/README.md#application-network-policy) · [Windows 沙箱](https://learn.chatgpt.com/docs/windows/windows-sandbox) | 批准不等于 OS 隔离；应用、沙箱命令、Git/SSH 子进程的网络边界不同 |
+| Gemini CLI | `87de0b6` | [沙箱文档](https://github.com/google-gemini/gemini-cli/blob/87de0b6369f0466da37d9b3c0c9b77374bb59992/docs/cli/sandbox.md) | 工具级隔离与单次扩权批准分开，自动模式不隐式批准 |
+| Qwen Code | `06192c7` | [沙箱文档](https://github.com/QwenLM/qwen-code/blob/06192c71bda90d46acc64ffbb13e278ed85012cb/docs/users/features/sandbox.md) | 未适配的 MCP/扩展/宿主 Git 不应静默放行 |
 | OpenCode | `0f54984`（`dev`） | [V2 会话设计](https://github.com/anomalyco/opencode/blob/dev/specs/v2/session.md) | 仅参考持久化设计，采纳前检查落地代码 |
 | Aider | `5dc9490` | [Repo Map 文档](https://github.com/Aider-AI/aider/blob/main/aider/website/docs/repomap.md) | 相关上下文裁剪可借鉴，不照搬索引实现 |
 | Cline | `b51c27b` | [仓库 README](https://github.com/cline/cline/blob/main/README.md) | 人能理解的计划/执行和审批呈现 |
@@ -61,7 +61,7 @@
 | 阶段/需求 | 上游启发与证据 | ICODE 取舍 | 验收边界 |
 |---|---|---|---|
 | R2 跨平台隔离 | [Codex 授权/安全](https://learn.chatgpt.com/docs/agent-approvals-security)、[Gemini 沙箱](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/sandbox.md) | **采纳机制**：审批、OS 强制隔离、进程清理分开报告；不把应用层限制叫安全沙箱。macOS 按已确认的 Codex 式边界：文件/网络强制继承，同组清理，主动脱组后代不承诺零残留。 | Linux/macOS/Windows 各自的真实宿主测试和 policy critical 项；当前 R2 **未完成**，自动模式不得因此放行。 |
-| R2 Git/网络 broker | [Qwen 沙箱](https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/sandbox.md)、[Codex Windows 沙箱](https://learn.chatgpt.com/docs/windows/windows-sandbox) | **采纳原则，实施待验收**：未覆盖的扩展和 Git/网络路径 fail-closed；仅靠 Python 包安装的取舍须按平台能力声明。 | 宿主 Git 不得绕开工作区/网络策略；无权限时拒绝而非降级宣称成功。 |
+| R2 Git/网络 broker | [Codex Linux 沙箱](https://github.com/openai/codex/blob/4083a68f88375bb0bc90a41b8c454d9e2d7c5281/codex-rs/linux-sandbox/README.md)、[应用网络策略](https://github.com/openai/codex/blob/4083a68f88375bb0bc90a41b8c454d9e2d7c5281/codex-rs/app-server/README.md#application-network-policy)、[Qwen 沙箱](https://github.com/QwenLM/qwen-code/blob/06192c71bda90d46acc64ffbb13e278ed85012cb/docs/users/features/sandbox.md) | **采纳原则，实施待验收**：应用模型 API、沙箱命令、宿主 Git/SSH 使用不同出网策略；未覆盖的扩展和 Git 路径 fail-closed；仅靠 Python 包安装的取舍须按平台能力声明。 | `git_broker_unavailable` 保留至恶意仓库扩展、原仓无写、路径注入、raw IP/重定向/UDS/代理失效及凭据隔离负例通过；三平台 wheel 实测前不升级能力。 |
 | 后续会话恢复 | [LangGraph 持久执行](https://github.com/langchain-ai/docs/blob/main/src/oss/langgraph/durable-execution.mdx)、[OpenCode V2 设计](https://github.com/anomalyco/opencode/blob/dev/specs/v2/session.md) | **暂缓到恢复阶段**：先定义写前意图、幂等键和不确定副作用的人工确认，不承诺任意副作用自动重放。 | 断电/崩溃恢复与重复写副作用的故障注入测试。 |
 | 后续上下文选择 | [Aider Repo Map](https://github.com/Aider-AI/aider/blob/main/aider/website/docs/repomap.md) | **采纳方向**：按任务检索相关结构，保留 ICODE-SKILL 必须输入与证据门禁；不复制其代码。 | 大仓库命中率、token 成本、必需上下文不遗漏。 |
 | 后续办公工单 UI | [Cline](https://github.com/cline/cline/blob/main/README.md)、[OpenHands](https://github.com/OpenHands/OpenHands/blob/main/README.md) | **选择性采纳**：计划/执行切换、可读审批、工单状态与执行服务分层；不把 Langflow 式节点画布作为小白首页。 | 中英双语、普通白领可新建/查找工单并理解状态；会话/自动模式清晰标识安全边界。 |

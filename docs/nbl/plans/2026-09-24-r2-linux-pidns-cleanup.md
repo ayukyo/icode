@@ -1,7 +1,7 @@
 # R2.2 Linux 异常退出后代清理：验证计划
 
 - 日期：2026-09-24
-- 状态：生产助手与本机 wheel 实测通过；GitHub Linux x64/ARM64 CI 尚待验证
+- 状态：生产助手与本机 wheel 实测通过；GitHub 24.04 Linux x64/ARM64 因 `uid_map` 权限阻断，R2.2 尚未验收
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.1、§14
 
 ## 三问与调用链
@@ -27,8 +27,10 @@
 
 ## 已有证据与尚未证明
 
+[第二轮线上 CI](https://github.com/ayukyo/icode/actions/runs/35997854549) 已运行：Linux x64/ARM64 原生负例均在 `/proc/self/uid_map: Operation not permitted` 失败，Python 3.11/3.12 全套测试也未通过。当前只能确认 GitHub 24.04 宿主拒绝此映射，不能仅凭 `EPERM` 断言具体是 AppArmor、capability 还是 namespace 叠加限制。[Linux user namespace 手册](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)列出映射的能力/身份约束。下一轮 CI 增加 22.04 x64/ARM64 对照与只读宿主策略诊断，保留 24.04 原样失败门禁；22.04 通过也不能把 24.04 或完整 R2 标记为通过。
+
 本机 Ubuntu x64 的独立临时目录实验：`unshare --user --map-root-user --pid --fork --mount-proc` 可用，namespace PID 1 的 `getppid()` 为 0；可信 PID 1 绑定父死信号后，宿主杀死外层进程，已 `setsid` 的后代在 1.9 秒后没有写出延迟标记，宿主视角 PID 已消失。Linux 的 `PDEATHSIG` 在 fork 及凭据变化时有清除条件；生产助手在凭据变化后重新设置，并用控制管道处理父死亡竞态。[内核接口说明](https://man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html)与[PID namespace 文档](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)提供机制依据。
 
 生产助手本机先红后绿已覆盖：宿主 `SIGKILL` 后已脱组孙进程的 `pidfd` 退出与无延迟写；正常退出、超时、输出超限；`unshare` 被 seccomp 拒绝时不执行负载；负载尝试 ptrace、`process_vm_readv`/`writev` 与对 PID 1 发送 `SIGKILL`。独立代码审查另发现并复现两项继承状态缺口：`SIGCHLD=SIG_IGN` 使可信 `waitpid` 失败，预开工作区外文件描述符可绕过 Landlock；分别通过恢复默认 `SIGCHLD` 与入口 `close_range` 修复，失败时均 fail-closed。新增测试共 9 项，本机实际 wheel 构建、隔离 venv 安装及后代清理探测通过；完整 `preflight.py` 三道门禁通过。**这些本机证据不等于 GitHub x64/ARM64 通过，也不证明进程数上限或完整 R2 合同；`policy_contract_ready` 继续为 false。**
 
-[首轮线上 CI](https://github.com/ayukyo/icode/actions/runs/35995535030) 在 Linux x64/ARM64 同时因 `/proc/self/setgroups: Permission denied` 阻断，macOS 双架构与 Windows Job 双架构作业通过。根据 [Linux user namespace 接口](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)，新增两条受核验的映射路径：已是 `deny` 时不重复写；`allow` 状态写 `deny` 仅在 `EACCES/EPERM` 时尝试 UID-only 映射，要求真实 `gid_map` 为空且 `setgroups(0,NULL)` 返回 `EPERM`，其余情况失败关闭。本机以测试专用驱动复现权限拒绝，重跑文件/网络/已脱组后代负例、干净 wheel 与前置门禁通过；生产入口固定读取真实 proc 文件，测试路径不进入 wheel。**这不是线上修复成功证据；第二轮 x64/ARM64 CI 尚待运行。**
+[首轮线上 CI](https://github.com/ayukyo/icode/actions/runs/35995535030) 在 Linux x64/ARM64 同时因 `/proc/self/setgroups: Permission denied` 阻断，macOS 双架构与 Windows Job 双架构作业通过。根据 [Linux user namespace 接口](https://man7.org/linux/man-pages/man7/user_namespaces.7.html)，新增两条受核验的映射路径：已是 `deny` 时不重复写；`allow` 状态写 `deny` 仅在 `EACCES/EPERM` 时尝试 UID-only 映射，要求真实 `gid_map` 为空且 `setgroups(0,NULL)` 返回 `EPERM`，其余情况失败关闭。本机以测试专用驱动复现权限拒绝，重跑文件/网络/已脱组后代负例、干净 wheel 与前置门禁通过；生产入口固定读取真实 proc 文件，测试路径不进入 wheel。**本机通过不等于线上修复成功；第二轮 CI 结果见本节开头。**
