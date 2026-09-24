@@ -52,6 +52,7 @@ class TestPolicyCommandBroker(unittest.TestCase):
             self.assertNotIn(secret, result.content)
             self.assertNotIn(secret, str(result.meta))
             self.assertEqual(result.meta["policy_hash"], ctx.policy.policy_hash)
+            self.assertIn("cleanup_errno", result.meta)
 
     def test_策略命令仍能运行本地_src_布局项目(self) -> None:
         with temp_workspace() as root:

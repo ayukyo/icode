@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import selectors
 import signal
@@ -25,6 +26,7 @@ class ExecutionResult:
     error: str | None
     output_truncated: bool
     cleanup_ok: bool
+    cleanup_errno: int | None
 
 
 def _policy_environment(root: Path) -> dict[str, str]:
@@ -51,15 +53,17 @@ def _policy_environment(root: Path) -> dict[str, str]:
     return environment
 
 
-def _stop_group(process: subprocess.Popen[bytes]) -> bool:
+def _stop_group(process: subprocess.Popen[bytes]) -> tuple[bool, int | None]:
     """即便主进程已退出，也清除其仍留在同一会话的后台子进程。"""
     ok = True
+    cleanup_errno: int | None = None
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
-    except OSError:
+    except OSError as exc:
         ok = False
+        cleanup_errno = exc.errno
         try:
             process.kill()
         except ProcessLookupError:
@@ -70,7 +74,8 @@ def _stop_group(process: subprocess.Popen[bytes]) -> bool:
         process.wait(timeout=_CLEANUP_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         ok = False
-    return ok
+        cleanup_errno = errno.ETIMEDOUT
+    return ok, cleanup_errno
 
 
 def execute_policy_command(
@@ -78,7 +83,7 @@ def execute_policy_command(
 ) -> ExecutionResult:
     """执行已由原生后端包装的命令；超时/超量时终止整组。"""
     if os.name != "posix":
-        return ExecutionResult(None, "", 0, "unsupported_platform", False, False)
+        return ExecutionResult(None, "", 0, "unsupported_platform", False, False, None)
 
     deadline = time.monotonic() + min(max(1, int(timeout)), policy.wall_timeout_seconds)
     try:
@@ -88,7 +93,7 @@ def execute_policy_command(
             shell=False, start_new_session=True,
         )
     except (OSError, ValueError):
-        return ExecutionResult(None, "", 0, "launch_failed", False, True)
+        return ExecutionResult(None, "", 0, "launch_failed", False, True, None)
 
     chunks: list[bytes] = []
     output_bytes = 0
@@ -122,7 +127,7 @@ def execute_policy_command(
         error = "read_failed"
     finally:
         selector.close()
-        cleanup_ok = _stop_group(process)
+        cleanup_ok, cleanup_errno = _stop_group(process)
         if process.stdout is not None:
             process.stdout.close()
 
@@ -133,4 +138,5 @@ def execute_policy_command(
         error if cleanup_ok else "cleanup_failed",
         error == "output_limit",
         cleanup_ok,
+        cleanup_errno,
     )

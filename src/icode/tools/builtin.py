@@ -252,6 +252,7 @@ def run_command(
                 "output_bytes": outcome.output_bytes,
                 "output_truncated": outcome.output_truncated,
                 "cleanup_ok": outcome.cleanup_ok,
+                "cleanup_errno": outcome.cleanup_errno,
                 **({"error": outcome.error} if outcome.error else {}),
             },
             opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
