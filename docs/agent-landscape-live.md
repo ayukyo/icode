@@ -1,6 +1,6 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- 最近观察：2026-09-25；下次全量复核：不晚于 2026-10-24
+- 最近观察：2026-09-24；下次全量复核：不晚于 2026-10-24
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -75,7 +75,7 @@
 | 后续上下文选择 | [Aider Repo Map](https://github.com/Aider-AI/aider/blob/main/aider/website/docs/repomap.md) | **采纳方向**：按任务检索相关结构，保留 ICODE-SKILL 必须输入与证据门禁；不复制其代码。 | 大仓库命中率、token 成本、必需上下文不遗漏。 |
 | 后续办公工单 UI | [Cline](https://github.com/cline/cline/blob/main/README.md)、[OpenHands](https://github.com/OpenHands/OpenHands/blob/main/README.md) | **选择性采纳**：计划/执行切换、可读审批、工单状态与执行服务分层；不把 Langflow 式节点画布作为小白首页。 | 中英双语、普通白领可新建/查找工单并理解状态；会话/自动模式清晰标识安全边界。 |
 
-### 2026-09-25 R2.4 Git 状态代理复核
+### 2026-09-24 UTC R2.4 Git 状态代理复核
 
 - Codex commit `e4b68615f06621c43b365d66823ed01b8f8e8416` 的 `fsmonitor.rs` 检查仓库 `core.fsmonitor` 配置并覆盖可能指定外部 helper 的值；core README 记录 macOS `.git`、解析后的 worktree `gitdir` 与 `.codex` 在 workspace-write 策略中保持只读。Git Doctor 另有从文件系统读取元数据、不启动 Git 的诊断实现。未找到 Codex 专门的只读 Git 状态 broker；这些都是可借鉴组件而不是端到端能力。
 - Qwen Code v0.24.4 的 Linux 工具执行沙箱由系统/用户设置控制，项目设置不能降低策略，配置错误不回退宿主执行；它明确说明 `network: closed` 仍不隐藏宿主文件，也不隔离全部本机服务。官方文档禁用宿主 Git 预览等未移植工具；未发现独立 Git 状态 broker。
@@ -83,7 +83,7 @@
 
 ### 2026-09-24 Windows AppContainer 追查补充
 
-- ICODE CI #92 与 #93 在 Windows x64、ARM64 均于 CreateProcessW 返回错误码 203 后失败；#93 采用盘符环境项和 Windows `PATH` 修正仍未改变结果。[Convira issue #1](https://github.com/Convira/convira-sandbox/issues/1) 报告同一 GitHub hosted runner 现象，但作者没有确认根因，关闭 issue 时选择跳过真实集成测试，不能据此把 ICODE 失败归因于 runner。
-- Microsoft 的 CreateProcessW 文档说明：调用方传入自定义环境块时，系统不会自动转交系统驱动器的当前目录信息；需显式带上例如 `=C:` 的特殊环境条目并按名称排序。ICODE 已按此修正，但双架构实测表明这不是当前 203 错误的充分解释；下一轮增加“不继承宿主变量的空环境块 + System32 程序”诊断，区分环境内容和 AppContainer/runner 启动问题。
+- ICODE CI #92 与 #93 在 Windows x64、ARM64 均于 CreateProcessW 返回错误码 203 后失败；#93 采用盘符环境项和 Windows `PATH` 修正仍未改变结果。CI #94 的两个 Windows 架构再以空自定义环境块启动 System32 `whoami.exe`，仍返回 203。[Convira issue #1](https://github.com/Convira/convira-sandbox/issues/1) 报告同一 GitHub hosted runner 现象，但作者没有确认根因，不能据此断言 runner 是原因。
+- Microsoft 的 CreateProcessW 文档说明：调用方传入自定义环境块时，系统不会自动转交系统驱动器的当前目录信息；需显式带上例如 `=C:` 的特殊环境条目并按名称排序。ICODE 已按此修正，但双架构空环境块试验表明，当前错误不依赖环境块内具体变量。下一轮同时在普通 Job 中启动同一系统程序，确认空环境块本身有效，再判断失败是否 AppContainer/runner 特有。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。

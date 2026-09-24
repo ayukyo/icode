@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25
-- 状态：原生实验入口仍未通过验收；CI #91–#93 的 Windows x64 与 ARM64 均失败，#92/#93 返回 CreateProcessW 错误码 203；不接生产自动工单
+- 状态：原生实验入口仍未通过验收；CI #91–#94 的 Windows x64 与 ARM64 均失败，#92–#94 返回 CreateProcessW 错误码 203；不接生产自动工单
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -23,14 +23,15 @@
 - [Codex issue #45871](https://github.com/openai/codex/issues/45871)（2026-09-16 开放中的用户报告）描述 AppContainer 可能拒绝经 `\\GLOBAL??\\C:` 的 DOS 盘符解析，即使实际目录 ACL 已放行。ICODE 大量使用 `Path.resolve()`，故增加 Windows 原生 Python 运行探针：容器内启动本机 Python、分别 resolve `cwd` 与解释器路径，并将结果作为 Actions notice；此测试尚未通过。
 - CI [#91](https://github.com/ayukyo/icode/actions/runs/36028273699) 中 Windows x64 与 ARM64 的 AppContainer 测试均失败。匿名 REST 只能读到步骤退出码，日志接口要求仓库管理员权限；因此失败点尚未确认，不把任何候选机制写成验证通过。Python 与完整工作区探针已加上分类 notice，以便下轮按平台读取失败阶段。
 - CI [#92](https://github.com/ayukyo/icode/actions/runs/36030432822) 的 Windows x64 与 ARM64 分类 notice 均显示 CreateProcessW 错误码 203（ERROR_ENVVAR_NOT_FOUND）。[Microsoft CreateProcessW 文档](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)说明自定义环境块不会自动带入系统驱动器当前目录，调用方必须显式传入类似 `=C:` 的特殊项；当前环境块已按文档修正，但 CI [#93](https://github.com/ayukyo/icode/actions/runs/36032231436) 在 x64 与 ARM64 仍返回同样的 203，因此原先候选原因未获验证。[Convira issue #1](https://github.com/Convira/convira-sandbox/issues/1) 报告相同 GitHub hosted runner 现象，但作者未确诊并在该项目跳过原生集成测试；不能据此断言是 runner 限制。下一步用空自定义环境块启动 System32 `whoami.exe`，且不继承任何宿主变量，以分离环境块与 AppContainer 进程启动因素。
+- CI [#94](https://github.com/ayukyo/icode/actions/runs/36033714035) 的 x64 与 ARM64 空环境块诊断仍以 CreateProcessW 203 失败：在 AppContainer 下，当前失败不依赖具体环境变量或盘符项。此前 Convira issue 也以 GitHub hosted runner 为复现范围，但未确定根因，故仍不能判定 runner 限制。下一轮在非 AppContainer Job 中用相同空环境块和 System32 `whoami.exe` 做正向对照，随后再选探测方向。
 
 竞品取舍：Codex `3e9d1d29370ee7239585b9d1d576bea8263768ec` 的 Windows 后端采用 restricted token，借鉴“降低令牌权限”，但不能据此等同凭据读取隔离；Qwen `330b92811c07483e30704190c7e135161120481b` 的 Windows 方案需 Docker/Podman，不符合 pip-only；Gemini `87de0b6369f0466da37d9b3c0c9b77374bb59992` 文档提到低完整性 ACL 处理，但不把 ACL 残留风险带入本方案。仅借鉴机制，不复制其实现。
 
 ## 当前实现与验收
 
-Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve 工作路径；工作区已有嵌套文件可读、工作区可写、相邻目录 canary 不可读写、宿主 loopback 正向对照成立而 AppContainer 连接被拒、主进程正常退出与超时后的子进程回收、`process_limit=1` 阻止再启动子进程；ACL 恢复后，同一 Package SID 不能再写工作区。另有跨平台环境块测试验证盘符伪变量存在、排序和宿主变量不继承；新诊断尝试在空自定义环境块中启动系统 `whoami.exe`，不传递宿主环境。现有 `WindowsJob` 原生测试另测正常退出、超时和宿主异常退出回收。CI #91–#93 的原生集成都失败，故这些只能称测试覆盖意图，不能称通过。
+Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve 工作路径；工作区已有嵌套文件可读、工作区可写、相邻目录 canary 不可读写、宿主 loopback 正向对照成立而 AppContainer 连接被拒、主进程正常退出与超时后的子进程回收、`process_limit=1` 阻止再启动子进程；ACL 恢复后，同一 Package SID 不能再写工作区。另有跨平台环境块测试验证盘符伪变量存在、排序和宿主变量不继承；新诊断尝试在空自定义环境块中启动系统 `whoami.exe`，不传递宿主环境，并增加普通 Job 正向对照。现有 `WindowsJob` 原生测试另测正常退出、超时和宿主异常退出回收。CI #91–#94 的 AppContainer 原生集成都失败，故这些只能称测试覆盖意图，不能称通过。
 
-必须在 GitHub Actions 的 Windows x64 与 ARM64 runner 同时通过，并保持纯 wheel / Python 3.11 路径。当前 Linux 本机仅验证了非 Windows 拒绝分支、链接/硬链接防护、环境块结构、语法和既有非 Windows 回归；它**没有**执行任何 Win32 API。CI #91–#93 双架构均失败，AppContainer 不可用；#92/#93 的分类 notice 显示 CreateProcessW 错误码 203，原始步骤日志仍需仓库权限。不能在确认 Python 运行时启动和路径规范化后接自动模式。
+必须在 GitHub Actions 的 Windows x64 与 ARM64 runner 同时通过，并保持纯 wheel / Python 3.11 路径。当前 Linux 本机仅验证了非 Windows 拒绝分支、链接/硬链接防护、环境块结构、语法和既有非 Windows 回归；它**没有**执行任何 Win32 API。CI #91–#94 双架构均失败，AppContainer 不可用；#92–#94 的分类 notice 显示 CreateProcessW 错误码 203，原始步骤日志仍需仓库权限。不能在确认 Python 运行时启动和路径规范化后接自动模式。
 
 目前仍缺少真实 Windows 的 IPv4/IPv6、UDP、DNS、外网直连拒绝、受保护 Git 元数据与凭据 canary、主动脱离/显式换身份尝试、profile/ACL 多轮泄漏以及更完整的失败恢复测试。即便本轮 CI 通过，也只说明这个原生实验子项通过，Windows R2.3、R2.2 和完整 R2 均仍未验收；`policy_contract_ready` 必须继续为 false。
 

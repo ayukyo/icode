@@ -39,6 +39,18 @@ class TestWindowsJob(unittest.TestCase):
         self.assertNotIn("OPENAI_API_KEY", block)
         self.assertNotIn("GIT_DIR", block)
 
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows Job Object 实测")
+    def test_空环境块下普通Job可启动系统程序(self) -> None:
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        executable = system_root / "System32" / "whoami.exe"
+        with temp_workspace() as workspace, mock.patch(
+            "icode.windows_job._build_windows_environment_block", return_value="\0\0",
+        ):
+            result = run_windows_job([str(executable)], cwd=workspace, timeout_seconds=10)
+        self.assertTrue(result.executed, result)
+        self.assertEqual(result.exit_code, 0, result)
+        self.assertTrue(result.cleanup_ok, result)
+
     def test_非_windows_不能运行(self) -> None:
         if sys.platform == "win32":
             self.skipTest("仅校验非 Windows 拒绝")
