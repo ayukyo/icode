@@ -9,10 +9,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 
 from ..artifact_broker import ArtifactAccessError
+from ..execution_broker import execute_policy_command
 from .base import (
     OPCLASS_MANAGED_WRITE,
     OPCLASS_READ_ONLY,
@@ -225,6 +228,33 @@ def run_command(
             f"隔离不可用，已拒绝执行：{exc}",
             {"error": "isolation_unavailable", "sandbox": ctx.isolation_label()},
             opclass=OPCLASS_MANAGED_WRITE,
+        )
+
+    if ctx.policy is not None:
+        outcome = execute_policy_command(
+            exec_argv, cwd=workdir, policy=ctx.policy, timeout=timeout,
+        )
+        # 命令参数可能含密钥：事件与回执只保留摘要，不回显原文。
+        argv_sha256 = hashlib.sha256(
+            json.dumps(args, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        output = outcome.output.strip() or "<无输出>"
+        return ToolResult(
+            outcome.error is None and outcome.exit_code == 0,
+            f"$ [受控命令]\nexit={outcome.exit_code}\n{output}",
+            {
+                "argv_sha256": argv_sha256,
+                "exit_code": outcome.exit_code,
+                "cwd": workdir.relative_to(ctx.root.resolve()).as_posix(),
+                "isolation": ctx.isolation_label(),
+                "real_isolation": ctx.needs_real_isolation(),
+                "policy_hash": ctx.policy.policy_hash,
+                "output_bytes": outcome.output_bytes,
+                "output_truncated": outcome.output_truncated,
+                "cleanup_ok": outcome.cleanup_ok,
+                **({"error": outcome.error} if outcome.error else {}),
+            },
+            opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
         )
 
     proc = subprocess.run(  # noqa: S603 - 参数列表 + shell=False

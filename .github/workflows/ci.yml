@@ -86,6 +86,8 @@ jobs:
           python-version: "3.11"
       - name: Run actual native negative probes
         run: python scripts/run_native_probe_ci.py
+      - name: Verify policy command broker
+        run: python -m unittest tests.test_execution_broker -v
       - name: Build and verify installed Linux wheel
         if: runner.os == 'Linux'
         run: python scripts/run_native_wheel_ci.py
