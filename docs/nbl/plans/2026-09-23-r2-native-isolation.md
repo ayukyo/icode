@@ -84,6 +84,7 @@
 - [首轮 macOS 双架构 CI](https://github.com/ayukyo/icode/actions/runs/35976734089) 的新增探测均在 0.1 秒内报告子进程启动标记缺失，既有 Seatbelt + broker 文件/网络联测仍通过。复查发现探针新脚本误用 `subprocess.DEVNULL`，而实验 profile 未授权打开 `/dev/null`，与启动失败现象一致；已改为将子进程输出写入任务临时工作区，并增加无沙箱编排阳性测试与不泄露路径/命令的分类诊断。修订结果见上一项。
 - R2.3 Windows Job 的第一块为独立、尚未接生产自动链的 `run_windows_job`：以 `CreateProcessW(CREATE_SUSPENDED)` 启动，先加入专属 `KILL_ON_JOB_CLOSE` + 活动进程数上限的 Job，再恢复执行；正常退出与超时均终止 Job 并查询活动进程数。[首轮 CI](https://github.com/ayukyo/icode/actions/runs/35979666708) 在 Windows x64/arm64 实测另建进程组的后代不能延迟写出标记。该原语**没有**受限身份、ACL、WFP、UAC 或输出代理，不得将 Job 清理探测解释为 Windows 沙箱已就绪。首轮整体 CI 的 Python 3.11 作业因旧 `shutdown` 测试仍把控制面 I/O 计入 0.5 秒 wall-time 断言而失败（0.572 秒）；已改与相邻测试一致，直接核对 worker `join` 预算，不修改生产 `shutdown`。
 - `icode doctor` 增加 Windows Job 正常退出/超时后的局部清理探测；结果和 macOS 一样独立于 10 项一致性回执展示，探测异常按失败报告。即使局部探测通过，Windows 自动模式仍显示未就绪。
+- Windows Job 另增宿主崩溃负例：独立 broker 创建 Job 和异组后代后由测试强制结束 broker，确认最后 Job 句柄被关闭后后代无法延迟写入。此项用于验证 `KILL_ON_JOB_CLOSE` 的故障路径，仍不验证受限身份、ACL、WFP 或首次 UAC；双架构 CI 结果待确认。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。

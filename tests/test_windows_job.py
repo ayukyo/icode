@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import subprocess
 import sys
 import time
 import unittest
@@ -76,6 +78,55 @@ class TestWindowsJob(unittest.TestCase):
         self.assertEqual(probe["checks"], {"normal_exit": True, "timeout": True})
         self.assertTrue(probe["passed"], probe["detail"])
         self.assertFalse(report["conformance_contract"]["executed"])
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows Job Object 崩溃实测")
+    def test_宿主崩溃关闭job句柄也回收后代(self) -> None:
+        with temp_workspace() as workspace:
+            started = workspace / "crash-started"
+            residue = workspace / "crash-residue"
+            child_code = (
+                "import time\nfrom pathlib import Path\n"
+                f"Path({str(started)!r}).write_text('ready')\n"
+                "time.sleep(2)\n"
+                f"Path({str(residue)!r}).write_text('late')\n"
+            )
+            task_code = (
+                "import subprocess, sys, time\n"
+                f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                "creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)\n"
+                "time.sleep(8)\n"
+            )
+            source = Path(__file__).resolve().parents[1] / "src"
+            broker_code = (
+                "import sys\n"
+                f"sys.path.insert(0, {str(source)!r})\n"
+                "from icode.windows_job import run_windows_job\n"
+                f"run_windows_job([sys.executable, '-c', {task_code!r}], "
+                f"cwd={str(workspace)!r}, timeout_seconds=15)\n"
+            )
+            broker = subprocess.Popen(
+                [sys.executable, "-c", broker_code], cwd=workspace,
+                env={
+                    "SystemRoot": os.environ.get("SystemRoot", r"C:\Windows"),
+                    "PATH": str(Path(sys.executable).parent),
+                    "PYTHONUTF8": "1",
+                },
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            try:
+                until = time.monotonic() + 5
+                while time.monotonic() < until and not started.is_file():
+                    if broker.poll() is not None:
+                        self.fail("Job broker exited before descendant startup")
+                    time.sleep(0.02)
+                self.assertTrue(started.is_file(), "Job descendant did not start")
+            finally:
+                if broker.poll() is None:
+                    broker.kill()
+                broker.wait(timeout=5)
+            time.sleep(2.2)
+            self.assertFalse(residue.exists(), "Broker crash left a Job descendant alive")
 
 
 if __name__ == "__main__":
