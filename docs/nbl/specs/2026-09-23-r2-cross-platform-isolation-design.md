@@ -1,7 +1,7 @@
 # ICODE Agent R2：跨平台隔离执行环境设计
 
 - 日期：2026-09-23
-- 状态：已批准，待实施
+- 状态：已批准，实施中；2026-09-24 经用户确认调整 macOS 进程清理验收边界
 - 适用版本：R2
 - 目标平台：Linux、macOS、Windows
 - 关联文档：[产品总架构](../../icode-agent-product-architecture.md) · [竞品调研](../../agent-landscape.md) · [设计决策](../../design-decisions.md)
@@ -17,7 +17,7 @@ R2 要解决的不是“少弹几个确认框”，而是把 Agent 的实际活�
 用户已经确认以下约束：
 
 1. Linux、macOS、Windows 都必须支持；
-2. 三个平台的用户可见能力至少 90% 一致；
+2. 三个平台的用户可见能力至少 90% 一致；macOS 的进程清理采用 §14 的明确例外，不把同组清理冒充整树清理；
 3. 安装入口只依赖 Python 包管理，不要求用户另装 Docker、Podman、WSL 或 Node.js；
 4. Windows 为实现强网络隔离，允许首次启动时出现一次 UAC 系统确认；
 5. 官网和工作台使用普通产品语言，不把“门禁、真源、失败关闭”等内部术语作为首屏卖点。
@@ -42,7 +42,7 @@ R2 完成后，用户执行一次 Python 包安装并启动 ICODE，即可获得
 - 工作区外写入、敏感目录读取和默认网络访问的系统级阻断；
 - 对子进程继承生效的限制；
 - 网络、包安装和远端 Git 写入的单次、可解释授权；
-- 任务停止后的进程树回收和工作区保留/清理选择；
+- 任务停止后的清理与工作区保留/清理选择；Linux/Windows 要求完整后代树，macOS 要求实测同进程组清理并披露主动脱组后代风险；
 - 三个平台统一的状态、错误、审批和恢复体验；
 - 可由 `icode doctor` 重复验证的隔离能力回执。
 
@@ -64,7 +64,7 @@ R2 不包含：
 | 产品 | 安装与隔离方式 | 可借鉴点 | 不直接采用的原因 |
 |---|---|---|---|
 | OpenAI Codex | 单一安装入口，底层按平台使用 Seatbelt、Landlock/Bubblewrap、Windows 原生令牌与 ACL | 平台 wheel/二进制携带原生助手；统一策略、分平台强制 | Rust 内核无法直接作为本项目 Python API 使用 |
-| Claude Code / Sandbox Runtime | Seatbelt、Bubblewrap、代理网络；Windows 使用随包助手和一次性管理员初始化 | 文件与网络双边界、代理授权、违规提示 | Linux 仍存在系统依赖和 user namespace 环境差异；Windows 仍为 Alpha |
+| Claude Code / Sandbox Runtime | macOS Seatbelt、Linux/WSL2 Bubblewrap、代理网络；其沙箱文档不支持原生 Windows | 文件与网络双边界、代理授权、违规提示 | Linux 需要系统包；Windows 走 WSL2，不符合本项目原生安装约束 |
 | OpenHands | Docker、远程或云端沙箱 | 独立工作环境、后端可替换 | Docker 是额外前置条件，不符合本项目安装约束 |
 | Cline | 编辑器入口和逐动作审批 | 小白友好的审批交互 | 审批不能形成进程级隔离 |
 | OpenCode | `allow / ask / deny` 规则 | 结构化权限、规则优先级 | shell 仍继承宿主用户权限，不能作为安全边界 |
@@ -114,7 +114,7 @@ R2 采用“统一策略内核 + 三个平台原生执行助手”的架构：
 | checkpoint、证据目录 | Agent 不直接写；由运行时登记 |
 | SSH、云凭据、浏览器资料等用户目录 | 默认不可读 |
 | 网络 | 默认拒绝；通过域名代理临时开放 |
-| 宿主进程和其他工单进程 | 不可控制；进程树按任务隔离和回收 |
+| 宿主进程和其他工单进程 | 不可控制；Linux/Windows 进程树按任务回收，macOS 保证同组清理但主动脱组后代可能残留 |
 
 ### 3.2 对手与故障来源
 
@@ -243,6 +243,8 @@ class SandboxPolicy:
 - 默认禁止外部网络，只允许连接 ICODE 本地代理端口；
 - 禁止 Apple Events、Launch Services 启动外部应用和不必要的 Mach 服务；
 - 原生助手负责 profile 生成、命令启动、进程组回收和违规归一化。
+
+进程清理采用用户确认的 Codex 式本机边界：在启动、正常退出和超时场景实测当前进程组收束；文件与网络沙箱必须对派生后代继续生效。主动 `setsid` 等方式脱离进程组的后代**不保证被清理**，不得把进程组 `cleanup_ok` 记作 `process_tree_cleanup=true`。这类后代仍可能在旧任务工作区延迟写入；复用工作区前须另行设计隔离/恢复策略，R2 的自动模式也不得因仅通过组级测试而提前开放。
 
 最低完整支持基线为当前仍由项目 CI 覆盖的 macOS 版本及 x86_64/arm64。每次 macOS 大版本升级都必须重跑负向测试，不能只检查 `sandbox-exec` 文件存在。
 
@@ -453,7 +455,9 @@ class ExecRequest:
 }
 ```
 
-回执保存在 ICODE 用户数据目录，不放入项目仓库。操作系统版本、助手哈希或策略版本变化后自动失效并重新检查。
+回执保存在 ICODE 用户数据目录，不放入项目仓库。操作系统版本、助手哈希或策略版本变化后自动失效并重新检查。macOS 回执另须分别记录 `process_tree_cleanup=false`、真实自检的 `process_group_cleanup`、`exception=macos_process_group_only` 及原始/平台关键项结果；不得只写一个笼统的 `cleanup_ok` 或“全部通过”。当前评分函数只消费已提供结果，不执行自检，不能单独生成 ready 回执。
+
+macOS 例外的评分示例（仅说明字段，不代表当前机器已通过）：`passed=9/10, critical_passed=false, platform_critical_passed=true, process_group_cleanup=true, exception=macos_process_group_only`。产品界面不得将 `platform_critical_passed` 翻译成“整树清理成功”。
 
 ### 12.2 `ExecutionReceipt`
 
@@ -479,7 +483,7 @@ class ExecRequest:
 | `POLICY_INVALID` | 视为程序错误，不请求用户放宽 | 任务配置有误，已停止运行 |
 | `POLICY_DENIED` | 阻止当前动作，任务可继续 | 此操作超出当前任务范围 |
 | `NETWORK_DENIED` | 生成结构化授权请求 | 该任务需要访问指定网站 |
-| `TIMEOUT` | 终止进程树并登记 | 该操作运行时间过长，已停止 |
+| `TIMEOUT` | 按平台已验证范围终止并登记 | 该操作运行时间过长，已停止；macOS 仅确认同组清理 |
 | `OUTPUT_LIMIT` | 截断输出，可按合同决定继续 | 输出过多，已保留摘要 |
 | `CLEANUP_FAILED` | 工单进入 blocked，不复用环境 | 后台任务未完全结束，需要处理 |
 
@@ -502,7 +506,7 @@ class ExecRequest:
 | 4 | 默认网络访问被阻断 | 是 |
 | 5 | 仅允许经代理访问临时授权域名 | 是 |
 | 6 | 子进程继承相同限制 | 是 |
-| 7 | 停止任务可回收整棵进程树 | 是 |
+| 7 | 停止任务可回收整棵进程树；macOS 如实标为未通过并另测同组清理 | 是，macOS 有 §14.1 例外 |
 | 8 | 超时、进程数和输出量受限 | 否 |
 | 9 | 违规产生统一错误和用户提示 | 否 |
 | 10 | 安装后可由 `icode doctor` 自动验证 | 是 |
@@ -510,9 +514,10 @@ class ExecRequest:
 每个平台必须满足：
 
 - 十项中至少九项通过；
-- 所有关键项全部通过；
-- 任一关键项失败时，不得显示“保护已启用”，自动模式不得执行外部命令；
-- 允许差异只能出现在资源限制精度或违规日志丰富度，不能出现在文件、网络、子进程继承和 fail-closed 行为。
+- Linux/Windows 所有八项关键项全部通过；macOS 除完整进程树清理外其余七项关键项全部通过，且额外的真实同组清理负向测试通过；
+- macOS 仍需十项中至少九项通过，因此若完整进程树清理未通过，资源限制与统一违规回执两项也必须通过；
+- 任一平台的上述必要项失败时，不得显示“保护已启用”，自动模式不得执行外部命令；
+- macOS 回执必须同时展示原始分数、`process_tree_cleanup=false`、同组清理结果和平台例外，不能声称与 Linux/Windows 的整树清理等价；文件、网络、子进程继承及 fail-closed 行为无例外。
 
 ### 14.2 负向测试
 
@@ -524,7 +529,7 @@ class ExecRequest:
 - 读取模拟 SSH key 和凭据文件；
 - 直接 TCP/UDP、DNS、HTTP、Git SSH 和代理绕过；
 - 子进程、孙进程和后台 daemon 越权；
-- 超时后检查残留进程；
+- 超时后检查残留进程；Linux/Windows 检查整树，macOS 检查同组，并保留主动脱组后代残留的已知负例；
 - helper 被替换、版本不匹配或策略哈希错误；
 - 后端启动失败时确认没有裸执行；
 - 网络临时授权过期后确认立即失效。
@@ -554,7 +559,7 @@ class ExecRequest:
 ### 15.3 发布门槛
 
 - 三个平台干净环境安装通过；
-- 每个平台一致性分数不低于 90%，关键项 100%；
+- 每个平台一致性分数不低于 90%；Linux/Windows 八项关键项全通过，macOS 七项全通过并满足组级清理替代门槛，例外必须公开显示；
 - 负向测试全部通过；
 - helper 被移除、损坏或替换时 fail-closed；
 - Windows UAC 初始化可重复执行、可恢复、可卸载；
@@ -604,4 +609,4 @@ icode workbench
 
 用户确认后，只开放该域名和本次 run；任务不能读取 SSH key、不能写原始仓库、不能访问其他网站。任务完成或被取消后，子进程全部回收，临时授权失效，并留下不含密钥的执行回执。
 
-同一场景在 Linux 和 macOS 上的文案、操作步骤和结果相同；只有技术详情中的底层后端名称不同。
+同一场景在 Linux 和 macOS 上的普通操作步骤保持一致；macOS 技术详情必须额外展示组级清理例外与整树清理未通过，不能只换后端名称或承诺取消后所有后代已消失。

@@ -208,3 +208,54 @@ def evaluate_conformance(outcomes: Mapping[str, bool]) -> dict[str, int | bool]:
         "critical_passed": critical_passed,
         "ready": ready,
     }
+
+
+def evaluate_platform_conformance(
+    outcomes: Mapping[str, bool],
+    *,
+    platform: str,
+    process_group_cleanup: bool | None = None,
+) -> dict[str, int | bool | str | None]:
+    """Score supplied evidence with the explicit macOS process-group exception.
+
+    This is a scorer, not a probe. Callers must obtain the group-cleanup result
+    from a real backend self-test; passing ``True`` alone never enables a backend.
+    The strict ten-item result remains visible even when macOS uses its exception.
+    """
+    if type(platform) is not str or platform not in {"linux", "macos", "windows"}:
+        raise ConformanceContractError("platform must be linux, macos or windows")
+    if platform == "macos":
+        if type(process_group_cleanup) is not bool:
+            raise ConformanceContractError("macOS requires boolean process-group evidence")
+    elif process_group_cleanup is not None:
+        raise ConformanceContractError("process-group exception applies only to macOS")
+
+    strict = evaluate_conformance(outcomes)
+    contract = load_conformance_contract()
+    if platform == "macos":
+        other_critical_passed = all(
+            outcomes[capability["id"]]
+            for capability in contract["capabilities"]
+            if capability["critical"] and capability["id"] != "process_tree_cleanup"
+        )
+        platform_critical_passed = bool(process_group_cleanup and other_critical_passed)
+        exception = (
+            "macos_process_group_only"
+            if process_group_cleanup and not outcomes["process_tree_cleanup"]
+            else None
+        )
+    else:
+        platform_critical_passed = bool(strict["critical_passed"])
+        exception = None
+
+    return {
+        "platform": platform,
+        "passed": strict["passed"],
+        "total": strict["total"],
+        "critical_passed": strict["critical_passed"],
+        "platform_critical_passed": platform_critical_passed,
+        "process_group_cleanup": process_group_cleanup,
+        "exception": exception,
+        "ready": strict["passed"] >= contract["minimum_passed"]
+        and platform_critical_passed,
+    }

@@ -10,6 +10,7 @@ from tests import _support  # noqa: F401  # Add the repository's src/ to sys.pat
 from icode.conformance import (
     ConformanceContractError,
     evaluate_conformance,
+    evaluate_platform_conformance,
     load_conformance_contract,
     validate_conformance_contract,
 )
@@ -159,6 +160,72 @@ class ConformanceContractTestCase(unittest.TestCase):
                 "ready": False,
             },
         )
+
+    def test_macos_scoped_cleanup_exception_requires_real_group_evidence(self) -> None:
+        outcomes = self.make_outcomes()
+        outcomes["process_tree_cleanup"] = False
+
+        strict = evaluate_conformance(outcomes)
+        self.assertFalse(strict["ready"])
+        self.assertFalse(strict["critical_passed"])
+        report = evaluate_platform_conformance(
+            outcomes, platform="macos", process_group_cleanup=True,
+        )
+        self.assertEqual(report["passed"], 9)
+        self.assertFalse(report["critical_passed"])
+        self.assertTrue(report["platform_critical_passed"])
+        self.assertEqual(report["exception"], "macos_process_group_only")
+        self.assertTrue(report["ready"])
+
+        without_group = evaluate_platform_conformance(
+            outcomes, platform="macos", process_group_cleanup=False,
+        )
+        self.assertFalse(without_group["platform_critical_passed"])
+        self.assertFalse(without_group["ready"])
+
+        outcomes["process_tree_cleanup"] = True
+        contradictory = evaluate_platform_conformance(
+            outcomes, platform="macos", process_group_cleanup=False,
+        )
+        self.assertFalse(contradictory["ready"])
+        self.assertIsNone(contradictory["exception"])
+
+    def test_macos_exception_does_not_waive_other_critical_or_90_percent(self) -> None:
+        outcomes = self.make_outcomes()
+        outcomes["process_tree_cleanup"] = False
+        outcomes["network_default_deny"] = False
+        self.assertFalse(evaluate_platform_conformance(
+            outcomes, platform="macos", process_group_cleanup=True,
+        )["ready"])
+        outcomes["network_default_deny"] = True
+        outcomes["resource_limits"] = False
+        self.assertFalse(evaluate_platform_conformance(
+            outcomes, platform="macos", process_group_cleanup=True,
+        )["ready"])
+
+    def test_other_platforms_retain_full_tree_requirement(self) -> None:
+        outcomes = self.make_outcomes()
+        outcomes["process_tree_cleanup"] = False
+        for platform in ("linux", "windows"):
+            with self.subTest(platform=platform):
+                report = evaluate_platform_conformance(outcomes, platform=platform)
+                self.assertFalse(report["ready"])
+                self.assertIsNone(report["exception"])
+        with self.assertRaises(ConformanceContractError):
+            evaluate_platform_conformance(
+                outcomes, platform="linux", process_group_cleanup=True,
+            )
+
+    def test_macos_group_evidence_must_be_explicit_boolean(self) -> None:
+        outcomes = self.make_outcomes()
+        for evidence in (None, 1, "true"):
+            with self.subTest(evidence=evidence):
+                with self.assertRaises(ConformanceContractError):
+                    evaluate_platform_conformance(
+                        outcomes, platform="macos", process_group_cleanup=evidence,
+                    )
+        with self.assertRaises(ConformanceContractError):
+            evaluate_platform_conformance(outcomes, platform="unknown")
 
     def test_outcome_keys_must_match_capabilities_exactly(self) -> None:
         missing = self.make_outcomes()

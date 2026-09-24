@@ -31,9 +31,9 @@
 
 ### 4. 唯一执行入口与阶段验收
 
-- `run_command`、运行时测试命令及自动链路统一走带策略的执行 broker，命令无 shell、环境显式、cwd 限于工作区；超时回收进程树，输出有界并留脱敏回执。
+- `run_command`、运行时测试命令及自动链路统一走带策略的执行 broker，命令无 shell、环境显式、cwd 限于工作区；超时按平台已验证的范围清理，输出有界并留脱敏回执。
 - 旧会话模式及可注入测试 executor 保持兼容；自动模式未完成探测不能退回 `NoIsolation` 裸执行。
-- Linux/macOS 在 R2.2 范围内的关键负向测试（文件读写、默认断网、子进程继承、清理、启动失败阻断）全部通过；代理临时授权属于 R2.4，不把它提前计为通过。完整 8 项 critical 与 ≥9/10 一致性是 R2 最终发布门槛。独立安装 wheel 验证，无 Docker/WSL/Node/系统包前置；开发期直接在 main 持续实施，但任一退出项未达到时不把 R2.2 标为完成，也不开放自动模式。
+- Linux/macOS 在 R2.2 范围内的关键负向测试（文件读写、默认断网、子进程继承、各自清理范围、启动失败阻断）全部通过；代理临时授权属于 R2.4，不把它提前计为通过。最终 ≥9/10 合同和 macOS 经批准的组级清理例外以正式设计 §14 为准。独立安装 wheel 验证，无 Docker/WSL/Node/系统包前置；开发期直接在 main 持续实施，但任一退出项未达到时不把 R2.2 标为完成，也不开放自动模式。
 
 ## 验证与风险
 
@@ -79,6 +79,7 @@
 - [CI Python 3.12 作业](https://github.com/ayukyo/icode/actions/runs/35962052295/job/107512529720)在 `shutdown(timeout=0.05)` 测试里报告总耗时 0.552 秒超过旧断言 0.5 秒；该总耗时还包含两个工单的控制面落盘，不能证明 join 阶段失去上界。测试现保留一票落盘失败后仍处理中另一票、状态与 worker 存活断言，并直接记录各 worker `join` 收到的剩余超时。首轮 [Windows 作业](https://github.com/ayukyo/icode/actions/runs/35962564087/job/107514084345) 又暴露浮点截止时间加减可能略高于字面 0.05 秒；单次比较加入 5 毫秒容差，合计 join 预算仍不得超过 0.055 秒。修订后 [三平台完整 CI](https://github.com/ayukyo/icode/actions/runs/35963063154) 全部通过；生产 `shutdown` 未改变。
 - 分层工作区的只读 Git 状态代理仍待实现。[Git 官方 `status` 文档](https://git-scm.com/docs/git-status)确认普通 `status` 默认可能回写索引，需使用 `--no-optional-locks`；仓库配置还可能开启 fsmonitor 等额外行为。只把命令行固定为 `git status` 不足以证明宿主代理安全；当前仍拒绝模型直接运行 Git，并提供不调用 Git 的 `workspace_changes`，待可信会话身份、配置屏蔽与执行边界一起设计验证后再开放。
 - 模型可提交与 schema 不符的工具参数；原 `Guard.check_command` 对字典、数字、混合列表会抛异常，直接调用 `run_command` 甚至会把字典键转成命令参数。现在权限层先拒绝非字符串参数，工具入口再独立复核并返回稳定 `invalid_argv`，异常输入不会触发进程启动；`AgentLoop` 负例确认回合可继续。此修正仅解决命令参数形态，不替代原生隔离。
+- 2026-09-24 用户确认按 Codex 式本机边界调整 macOS 验收：保留真实 Seatbelt 文件/网络限制、子进程继承与同组清理；主动脱组后代不承诺零残留。原始 `process_tree_cleanup` 继续报 false，不能由 `cleanup_ok` 推断整树清理。平台评分仅在其余九项全通过且 macOS 组级负向自检通过时允许 9/10 ready；这一例外不改变 Linux/Windows 的八项关键门槛。当前只有组级联测，没有完整十项真实回执，macOS 自动模式仍关闭。[Codex macOS 清理实现](https://github.com/openai/codex/blob/main/codex-rs/utils/pty/src/process_group.rs)和[Claude Code 沙箱说明](https://code.claude.com/docs/en/sandboxing)用于对齐公开本机边界，不作为 ICODE 自检通过的替代证据。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。
