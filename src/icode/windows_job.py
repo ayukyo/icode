@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import ntpath
 import os
 import subprocess
@@ -30,12 +31,23 @@ class WindowsJobProbeResult:
     detail: str
 
 
+def _allocate_attribute_list_buffer(
+    required_size: int,
+) -> tuple[ctypes.Array, ctypes.c_void_p]:
+    """Allocate enough pointer-aligned storage for a Win32 attribute list."""
+    if required_size <= 0:
+        raise ValueError("attribute-list size must be positive")
+    pointer_size = ctypes.sizeof(ctypes.c_void_p)
+    element_count = (required_size + pointer_size - 1) // pointer_size
+    storage = (ctypes.c_size_t * element_count)()
+    return storage, ctypes.cast(storage, ctypes.c_void_p)
+
+
 def _build_windows_environment_block(
     executable: str | os.PathLike[str], cwd: str | os.PathLike[str],
     system_root: str | os.PathLike[str],
-    *, include_drive_current_directory: bool = True,
 ) -> str:
-    """Build a minimal Unicode block, optionally preserving drive pseudo-vars."""
+    """Build a minimal Unicode block, including drive-current-dir entries."""
     executable_path = os.fspath(executable)
     workspace_path = os.fspath(cwd)
     system_path = os.fspath(system_root)
@@ -63,10 +75,7 @@ def _build_windows_environment_block(
         "PYTHONNOUSERSITE": "1",
         "PYTHONUTF8": "1",
     }
-    entries = (
-        [(f"={drive}", directory) for drive, directory in drive_directories.items()]
-        if include_drive_current_directory else []
-    )
+    entries = [(f"={drive}", directory) for drive, directory in drive_directories.items()]
     entries.extend(environment.items())
     entries.sort(key=lambda entry: entry[0].casefold())
     return "\0".join(f"{name}={value}" for name, value in entries) + "\0\0"
@@ -280,7 +289,7 @@ def run_windows_job(
     error: str | None = None
     detail = ""
     cleanup_ok = False
-    attribute_storage: ctypes.Array[ctypes.c_char] | None = None
+    attribute_storage: ctypes.Array | None = None
     attribute_list: ctypes.c_void_p | None = None
     attributes_initialized = False
     try:
@@ -293,12 +302,7 @@ def run_windows_job(
         # 不继承宿主凭据或文件句柄；Job 自身也不会被子进程持有。
         system_root = os.environ.get("SystemRoot", r"C:\Windows")
         env_block = ctypes.create_unicode_buffer(
-            _build_windows_environment_block(
-                argv[0], root, system_root,
-                # Probe whether AppContainer handles shell-only =X: entries
-                # differently; ordinary Job behavior keeps them unchanged.
-                include_drive_current_directory=_appcontainer_sid is None,
-            )
+            _build_windows_environment_block(argv[0], root, system_root)
         )
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline(list(argv)))
         if _appcontainer_sid is None:
@@ -313,8 +317,9 @@ def run_windows_job(
             size_error = ctypes.get_last_error()
             if size_error != 122 or attribute_size.value <= 0:
                 raise OSError(ctypes.get_last_error(), "InitializeProcThreadAttributeList(size)")
-            attribute_storage = ctypes.create_string_buffer(attribute_size.value)
-            attribute_list = ctypes.cast(attribute_storage, ctypes.c_void_p)
+            attribute_storage, attribute_list = _allocate_attribute_list_buffer(
+                attribute_size.value,
+            )
             if not kernel.InitializeProcThreadAttributeList(
                 attribute_list, 1, 0, ctypes.byref(attribute_size),
             ):

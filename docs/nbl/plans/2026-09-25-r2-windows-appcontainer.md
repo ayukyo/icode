@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25
-- 状态：原生实验入口仍未通过验收；CI #91–#97 的 Windows x64 与 ARM64 AppContainer 均失败，#92–#97 的启动返回 CreateProcessW 错误码 203；普通 Job 空环境对照在 #96/#97 双架构通过；#97 已修正失败分类；不接生产自动工单
+- 状态：原生实验入口仍未通过验收；CI #91–#98 的 Windows x64 与 ARM64 AppContainer 均失败，#92–#98 的启动返回 CreateProcessW 错误码 203；普通 Job 空环境对照在 #96–#98 双架构通过；#97 已修正失败分类，#98 排除了 `=X:` 环境项差异；属性列表缓冲区显式对齐及 macOS 脱组后代握手测试待 CI 复验；不接生产自动工单
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -33,13 +33,17 @@
 - 只读核对 `io-harness` 0.86.0 的 [AppContainer 环境块实现](https://docs.rs/io-harness/0.86.0/src/io_harness/sandbox/appcontainer.rs.html)：其构造器明确跳过 `=X:` 盘符伪变量，源码注释称子进程解析器会把这类项误当环境块结束。这是另一实现里的防御性处理，不证明它就是 ICODE 的 203 根因；微软文档说明启动时会基于属性列表创建容器环境，但没有说明 `=X:` 是本故障原因。
 - 据此形成一个窄差分实验：仅在创建 AppContainer 进程时省略 `=X:` 项，普通 Job 环境块保持兼容，显式绝对 `cwd` 不变。Linux 本地模拟测试只证明参数分支和回执逻辑，未调用 Win32。候选待 CI #98 在 x64、ARM64 原生验证；无论结果如何，Windows 自动工单继续关闭。
 
+- CI [#98](https://github.com/ayukyo/icode/actions/runs/36038951938) 在 x64 与 ARM64 仍以 `CreateProcessW` 错误码 203 失败；同轮普通 Job 空环境对照双架构通过。因此，省略 `=X:` 没有改变失败，撤销该差分并恢复 AppContainer 环境块原有盘符当前目录项；这条候选判为**不采纳**，不是根因修复。#98 的 macOS Intel `setsid` 后代负例测试也未能在 1.5 秒固定等待内观察到 marker，而 macOS ARM 同项通过；等待边界改为最多 8 秒轮询 marker，并保留必须观察到脱组后代真实存活的断言。该测试修订待下一轮 macOS 双架构 CI 验证。
+- 只读核对 `io-harness` 0.86.0 的固定提交 `8c03ca273246937975bf63da8413c927ba264916`：[属性列表源码](https://docs.rs/io-harness/0.86.0/src/io_harness/sandbox/appcontainer.rs.html#L1240-L1277) 用 `Vec<usize>` 对齐分配，注释说明其目的为指针对齐；[Microsoft API 文档](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-initializeprocthreadattributelist)只明确要求有足够分配空间，未写明对齐要求。故“上游显式保证、ICODE 未显式保证”是已证实差异，“ICODE 实际地址未对齐并造成 203”不是已证实根因。当前以 `c_size_t` 数组向上取整分配，作为单变量、低风险 A/B；Linux 单测验证容量与对齐契约，Windows x64/ARM64 CI 仍须验证是否改变 203，若未改变则继续差分诊断。
+- macOS 后代负例改为握手：脱组孙进程在 `setsid()` 后记录 PID/session/process-group 并等待 release；仅在 broker 调用返回后测试才发 release，随后要求存活 marker 出现。等待和孙进程自退均有界，因此测试证明的是清理返回后的真实存活，不再依赖固定睡眠长度；此真实行为需 macOS CI 验证。
+
 ## 当前实现与验收
 
-CI [#95](https://github.com/ayukyo/icode/actions/runs/36034747937) 的 x64 与 ARM64 再次在 AppContainer `CreateProcessW` 返回 203；Python 启动及空环境诊断表现一致。CI [#96](https://github.com/ayukyo/icode/actions/runs/36035908657) 的普通 Job 空环境对照在 x64 与 ARM64 均 `executed=True, exit=0, cleanup=True`，而相同系统程序在 AppContainer 中仍返回 203。这把问题收窄到 AppContainer 启动路径，但不能据此断言是 GitHub runner 限制。#96 注释还暴露回执缺陷：AppContainer 没有创建进程却标记 `cleanup_failed`；#97 修复后保留 `native_api_failed` 且 `cleanup_ok=True`，但原生启动仍失败。
+CI [#95](https://github.com/ayukyo/icode/actions/runs/36034747937) 的 x64 与 ARM64 再次在 AppContainer `CreateProcessW` 返回 203；Python 启动及空环境诊断表现一致。CI [#96](https://github.com/ayukyo/icode/actions/runs/36035908657) 的普通 Job 空环境对照在 x64 与 ARM64 均 `executed=True, exit=0, cleanup=True`，而相同系统程序在 AppContainer 中仍返回 203。这把问题收窄到 AppContainer 启动路径，但不能据此断言是 GitHub runner 限制。#96 注释还暴露回执缺陷：AppContainer 没有创建进程却标记 `cleanup_failed`；#97 修复后保留 `native_api_failed` 且 `cleanup_ok=True`，但原生启动仍失败。#98 进一步确认省略 `=X:` 当前目录伪变量无效，代码已撤销该差分；问题根因仍未确诊。
 
-Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve 工作路径；工作区已有嵌套文件可读、工作区可写、相邻目录 canary 不可读写、宿主 loopback 正向对照成立而 AppContainer 连接被拒、主进程正常退出与超时后的子进程回收、`process_limit=1` 阻止再启动子进程；ACL 恢复后，同一 Package SID 不能再写工作区。另有跨平台环境块测试验证普通 Job 保留盘符伪变量、排序和宿主变量不继承；AppContainer 探针差分省略盘符伪变量；空环境 AppContainer 探针不传递宿主环境，普通 Job 对照验证相同空环境块和系统程序可以正常启动。现有 `WindowsJob` 原生测试另测正常退出、超时和宿主异常退出回收。CI #91–#97 的 AppContainer 原生集成都失败，故这些只能称测试覆盖意图，不能称通过；普通 Job 空环境对照已在双架构实测通过。
+Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve 工作路径；工作区已有嵌套文件可读、工作区可写、相邻目录 canary 不可读写、宿主 loopback 正向对照成立而 AppContainer 连接被拒、主进程正常退出与超时后的子进程回收、`process_limit=1` 阻止再启动子进程；ACL 恢复后，同一 Package SID 不能再写工作区。另有跨平台环境块测试验证普通 Job 与 AppContainer 路径均保留盘符伪变量、排序和宿主变量不继承；空环境 AppContainer 探针不传递宿主环境，普通 Job 对照验证相同空环境块和系统程序可以正常启动。现有 `WindowsJob` 原生测试另测正常退出、超时和宿主异常退出回收。CI #91–#98 的 AppContainer 原生集成都失败，故这些只能称测试覆盖意图，不能称通过；普通 Job 空环境对照已在双架构实测通过。
 
-必须在 GitHub Actions 的 Windows x64 与 ARM64 runner 同时通过，并保持纯 wheel / Python 3.11 路径。当前 Linux 本机仅验证了非 Windows 拒绝分支、链接/硬链接防护、环境块结构、盘符项差分和模拟原生失败路径的回归；它**没有**执行任何 Win32 API。CI #91–#97 双架构的 AppContainer 原生探针均失败，普通 Job 空环境对照双架构通过；#92–#97 的可见分类 notice 显示 AppContainer `CreateProcessW` 错误码 203。不能在确认 Python 运行时启动和路径规范化后接自动模式。
+必须在 GitHub Actions 的 Windows x64 与 ARM64 runner 同时通过，并保持纯 wheel / Python 3.11 路径。当前 Linux 本机仅验证了非 Windows 拒绝分支、链接/硬链接防护、环境块结构、显式属性指针对齐分配和模拟原生失败路径的回归；它**没有**执行任何 Win32 API。CI #91–#98 双架构的 AppContainer 原生探针均失败，普通 Job 空环境对照双架构通过；#92–#98 的可见分类 notice 显示 AppContainer `CreateProcessW` 错误码 203。不能在确认 Python 运行时启动和路径规范化后接自动模式。
 
 目前仍缺少真实 Windows 的 IPv4/IPv6、UDP、DNS、外网直连拒绝、受保护 Git 元数据与凭据 canary、主动脱离/显式换身份尝试、profile/ACL 多轮泄漏以及更完整的失败恢复测试。即便本轮 CI 通过，也只说明这个原生实验子项通过，Windows R2.3、R2.2 和完整 R2 均仍未验收；`policy_contract_ready` 必须继续为 false。
 

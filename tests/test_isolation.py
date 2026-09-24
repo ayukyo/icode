@@ -926,8 +926,15 @@ class TestSandboxWrapping(unittest.TestCase):
                 "import os, time\nfrom pathlib import Path\n"
                 "try:\n    os.setsid()\n"
                 "except PermissionError:\n    Path('seatbelt-setsid-denied').write_text('yes')\n"
+                "identity = f'{os.getpid()}:{os.getsid(0)}:{os.getpgid(0)}'\n"
+                "Path('seatbelt-grandchild-identity').write_text(identity)\n"
                 "Path('seatbelt-grandchild-started').write_text('yes')\n"
-                "time.sleep(1.4)\n"
+                "deadline = time.monotonic() + 15\n"
+                "while time.monotonic() < deadline and not Path('seatbelt-grandchild-release').exists():\n"
+                "    time.sleep(0.02)\n"
+                "if not Path('seatbelt-grandchild-release').exists():\n"
+                "    Path('seatbelt-grandchild-release-missed').write_text('timeout')\n"
+                "    raise SystemExit(2)\n"
                 "Path('seatbelt-grandchild-survived').write_text('escaped')\n"
             )
             parent_code = (
@@ -947,14 +954,31 @@ class TestSandboxWrapping(unittest.TestCase):
                 ),
                 cwd=workspace, policy=policy, timeout=5,
             )
+            (workspace / "seatbelt-grandchild-release").write_text("release", encoding="utf-8")
             self.assertEqual(descendants.exit_code, 0, descendants)
             self.assertIsNone(descendants.error, descendants)
             self.assertIn("grandchild-started", descendants.output)
             # 现有 Seatbelt profile 不拦截 setsid；cleanup_ok 仅覆盖原进程组。
             # 把真实残留锁成已知负例，并要求自动策略入口继续不可用。
             self.assertFalse((workspace / "seatbelt-setsid-denied").exists(), descendants)
-            time.sleep(1.5)
-            self.assertTrue((workspace / "seatbelt-grandchild-survived").exists())
+            identity = tuple(
+                int(part) for part in
+                (workspace / "seatbelt-grandchild-identity").read_text(encoding="utf-8").split(":")
+            )
+            self.assertEqual(len(identity), 3, identity)
+            self.assertEqual(identity[1:], identity[:1] * 2, "孙进程未成为独立 session/process-group leader")
+            self.assertFalse((workspace / "seatbelt-grandchild-release-missed").exists())
+            survived = workspace / "seatbelt-grandchild-survived"
+            deadline = time.monotonic() + 8
+            while time.monotonic() < deadline and not survived.exists():
+                time.sleep(0.05)
+            child_output = (workspace / "seatbelt-grandchild-output").read_text(
+                encoding="utf-8", errors="replace",
+            )
+            self.assertTrue(
+                survived.exists(),
+                f"脱离进程组的孙进程未在有界等待内完成；输出={child_output!r}",
+            )
             self.assertFalse(hasattr(sandbox, "wrap_policy"))
             self.assertIn("进程树清理", sandbox.describe()["not_enforced"])
             socket_ready = execute_policy_command(

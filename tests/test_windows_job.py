@@ -14,6 +14,7 @@ from tests._support import temp_workspace
 
 from icode.windows_job import (
     WindowsJobResult,
+    _allocate_attribute_list_buffer,
     _build_windows_environment_block,
     probe_windows_job_cleanup,
     run_windows_job,
@@ -21,6 +22,23 @@ from icode.windows_job import (
 
 
 class TestWindowsJob(unittest.TestCase):
+    def test_AppContainer属性列表缓冲区有足够大小并按指针对齐(self) -> None:
+        import ctypes
+
+        for required_size in (1, 37, 64):
+            with self.subTest(required_size=required_size):
+                storage, pointer = _allocate_attribute_list_buffer(required_size)
+                self.assertGreaterEqual(ctypes.sizeof(storage), required_size)
+                self.assertEqual(
+                    pointer.value % ctypes.sizeof(ctypes.c_void_p), 0,
+                )
+
+    def test_AppContainer属性列表拒绝非正大小(self) -> None:
+        for required_size in (0, -1):
+            with self.subTest(required_size=required_size):
+                with self.assertRaises(ValueError):
+                    _allocate_attribute_list_buffer(required_size)
+
     def test_自定义环境块保留驱动器目录但不继承宿主变量(self) -> None:
         block = _build_windows_environment_block(
             r"D:\Python\python.exe", r"E:\tickets\task-1", r"D:\Windows",
@@ -91,18 +109,25 @@ class TestWindowsJob(unittest.TestCase):
         self.assertTrue(result.cleanup_ok)
         self.assertIn("err=203", result.detail)
 
-    def test_AppContainer启动环境不带盘符伪变量(self) -> None:
+    def test_AppContainer启动环境保留盘符伪变量(self) -> None:
         import ctypes
 
         api = mock.Mock()
         api.CreateJobObjectW.return_value = 1
         api.SetInformationJobObject.return_value = 1
-        api.InitializeProcThreadAttributeList.side_effect = (
-            lambda attribute_list, count, flags, size: (
-                setattr(size._obj, "value", 64) or 0
-                if attribute_list is None else 1
-            )
-        )
+        attribute_addresses: list[int] = []
+
+        def initialize_attribute_list(
+            attribute_list: object, count: int, flags: int, size: object,
+        ) -> int:
+            if attribute_list is None:
+                ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t)).contents.value = 64
+                return 0
+            address = ctypes.cast(attribute_list, ctypes.c_void_p).value
+            attribute_addresses.append(address or 0)
+            return 1
+
+        api.InitializeProcThreadAttributeList.side_effect = initialize_attribute_list
         api.UpdateProcThreadAttribute.return_value = 1
         environment: dict[str, str] = {}
 
@@ -116,6 +141,8 @@ class TestWindowsJob(unittest.TestCase):
         api.CreateProcessW.side_effect = fail_create_process
         api.CloseHandle.return_value = 1
         with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.Path.resolve", return_value=Path("C:\\task")), \
+             mock.patch("icode.windows_job.Path.is_dir", return_value=True), \
              mock.patch("icode.windows_job.sys.platform", "win32"), \
              mock.patch("ctypes.WinDLL", return_value=api, create=True), \
              mock.patch("ctypes.set_last_error", create=True), \
@@ -126,8 +153,12 @@ class TestWindowsJob(unittest.TestCase):
                 _appcontainer_sid=123,
             )
         self.assertEqual(result.error, "native_api_failed")
+        self.assertEqual(len(attribute_addresses), 1)
+        self.assertEqual(
+            attribute_addresses[0] % ctypes.sizeof(ctypes.c_void_p), 0,
+        )
         entries = [entry for entry in environment["block"].split("\0") if entry]
-        self.assertFalse(any(entry.startswith("=") for entry in entries), entries)
+        self.assertIn(r"=C:=C:\task", entries)
         system_root = os.environ.get("SystemRoot", "C:\\Windows")
         self.assertIn(f"SystemRoot={system_root}", entries)
         self.assertTrue(any(entry.startswith("PATH=") for entry in entries))
