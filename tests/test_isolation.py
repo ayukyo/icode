@@ -69,6 +69,20 @@ class TestProbe(unittest.TestCase):
             )
             self.assertNotEqual(denied.returncode, 0)
             self.assertIn("PermissionError", denied.stderr)
+            for syscall in ("setsid", "setpgid"):
+                operation = (
+                    "import os; os.setpgid(0, 0)"
+                    if syscall == "setpgid" else "import os; os.setsid()"
+                )
+                escaped_group = subprocess.run(
+                    sandbox.wrap(
+                        [str(system_python), "-c", operation],
+                        workspace=checkout,
+                    ),
+                    capture_output=True, text=True, timeout=4, check=False,
+                )
+                self.assertNotEqual(escaped_group.returncode, 0, syscall)
+                self.assertIn("PermissionError", escaped_group.stderr, syscall)
 
     def test_恒等包装不能通过原生负向探测(self) -> None:
         result = probe_native_sandbox(NoIsolation())

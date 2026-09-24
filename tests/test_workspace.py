@@ -529,6 +529,67 @@ class TestWorkspaceManager(unittest.TestCase):
                 "changed in checkout\n",
             )
 
+    @unittest.skipUnless(os.name == "posix", "元数据分离使用 POSIX 符号链接")
+    def test_可选Git元数据分离仍保持worktree可用和可恢复(self) -> None:
+        repository = _create_git_repository(self.root)
+        manager = WorkspaceManager(
+            repository, self.data_root, "project-1", isolate_git_metadata=True,
+        )
+        with manager.open("split-git", "run-1") as session:
+            git_link = session.workspace_root / ".git"
+            pointer = session.runtime_root / "git-pointer"
+            self.assertTrue(git_link.is_symlink())
+            self.assertEqual(git_link.resolve(), pointer)
+            self.assertTrue(pointer.is_file())
+            self.assertIn(pointer, session.protected_paths)
+            self.assertEqual(
+                _run_git(session.workspace_root, "rev-parse", "HEAD"),
+                _run_git(repository, "rev-parse", "HEAD"),
+            )
+            (session.workspace_root / "new-file.txt").write_text("work\n", encoding="utf-8")
+
+        with manager.open("split-git", "run-2") as reused:
+            self.assertEqual(
+                (reused.workspace_root / "new-file.txt").read_text(encoding="utf-8"),
+                "work\n",
+            )
+            self.assertEqual((reused.workspace_root / ".git").resolve(), pointer)
+
+    @unittest.skipUnless(os.name == "posix", "元数据分离使用 POSIX 符号链接")
+    def test_启用Git元数据分离不得静默复用旧工作区(self) -> None:
+        repository = _create_git_repository(self.root)
+        legacy = WorkspaceManager(repository, self.data_root, "project-1")
+        with legacy.open("legacy", "run-1") as session:
+            self.assertFalse((session.workspace_root / ".git").is_symlink())
+
+        isolated = WorkspaceManager(
+            repository, self.data_root, "project-1", isolate_git_metadata=True,
+        )
+        with self.assertRaisesRegex(WorkspaceError, "Git 元数据分离"):
+            isolated.open("legacy", "run-2")
+        self.assert_lease_released("project-1", "legacy")
+
+    @unittest.skipUnless(os.name == "posix", "元数据分离使用 POSIX 符号链接")
+    def test_分离Git指针或链接漂移时拒绝复用(self) -> None:
+        repository = _create_git_repository(self.root)
+        manager = WorkspaceManager(
+            repository, self.data_root, "project-1", isolate_git_metadata=True,
+        )
+        with manager.open("pointer-drift", "run-1") as session:
+            pointer = session.runtime_root / "git-pointer"
+        pointer.write_text("gitdir: /unexpected\n", encoding="utf-8")
+        with self.assertRaisesRegex(WorkspaceError, "指针漂移"):
+            manager.open("pointer-drift", "run-2")
+        self.assert_lease_released("project-1", "pointer-drift")
+
+        with manager.open("link-drift", "run-1") as session:
+            git_link = session.workspace_root / ".git"
+        git_link.unlink()
+        git_link.symlink_to(repository / ".git")
+        with self.assertRaisesRegex(WorkspaceError, "分离指针无效"):
+            manager.open("link-drift", "run-2")
+        self.assert_lease_released("project-1", "link-drift")
+
     def test_git创建不执行post_checkout_hook且不等待sleep(self) -> None:
         repository = _create_git_repository(self.root)
         hooks = repository / ".githooks"

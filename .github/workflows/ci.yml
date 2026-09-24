@@ -86,6 +86,9 @@ jobs:
           python-version: "3.11"
       - name: Run actual native negative probes
         run: python scripts/run_native_probe_ci.py
+      - name: Verify Linux helper denies process-group escape
+        if: runner.os == 'Linux'
+        run: python -m unittest tests.test_isolation.TestProbe.test_landlock_助手真实阻断文件与网络越权 -v
       - name: Verify policy command broker
         run: python -m unittest tests.test_execution_broker -v
       - name: Verify protected-path Seatbelt policy

@@ -468,6 +468,9 @@ _GIT_METADATA_FIELDS = _COMMON_METADATA_FIELDS | frozenset(
         "source_relative_path",
     )
 )
+_SPLIT_GIT_METADATA_FIELDS = _GIT_METADATA_FIELDS | frozenset(
+    ("git_pointer_path", "git_pointer_sha256")
+)
 _SNAPSHOT_METADATA_FIELDS = _COMMON_METADATA_FIELDS | frozenset(
     ("snapshot_manifest_path", "snapshot_manifest_sha256")
 )
@@ -1295,6 +1298,7 @@ class WorkspaceManager:
         project_id: str,
         *,
         extra_protected_paths: Iterable[Path] = (),
+        isolate_git_metadata: bool = False,
     ) -> None:
         _validated_bytes("project_id", project_id)
         self.source_root = _normalize_path(source_root)
@@ -1305,6 +1309,9 @@ class WorkspaceManager:
         self.extra_protected_paths = tuple(
             _normalize_path(path) for path in extra_protected_paths
         )
+        if isolate_git_metadata and os.name != "posix":
+            raise WorkspaceError("当前平台不支持 Git 元数据分离")
+        self.isolate_git_metadata = isolate_git_metadata
 
     def open(self, ticket_id: str, run_id: str) -> WorkspaceSession:
         lease = TicketLease.acquire(self.data_root, self.project_id, ticket_id, run_id)
@@ -1501,6 +1508,23 @@ class WorkspaceManager:
             )
             runtime_root.mkdir()
             owned_directories[runtime_root] = _capture_directory_identity(runtime_root)
+            pointer_path: Path | None = None
+            pointer_digest: str | None = None
+            if self.isolate_git_metadata:
+                git_file = checkout_root / ".git"
+                if git_file.is_symlink() or not git_file.is_file():
+                    raise WorkspaceError("Git worktree 管理文件无效")
+                pointer_payload = git_file.read_bytes()
+                pointer_path = runtime_root / "git-pointer"
+                _write_atomic(pointer_path, pointer_payload)
+                pointer_digest = hashlib.sha256(pointer_payload).hexdigest()
+                temporary_link = checkout_root / f".git.icode-{uuid.uuid4().hex}.tmp"
+                try:
+                    temporary_link.symlink_to(pointer_path)
+                    os.replace(temporary_link, git_file)
+                finally:
+                    if temporary_link.is_symlink():
+                        temporary_link.unlink()
             receipts_root.mkdir()
             owned_directories[receipts_root] = _capture_directory_identity(
                 receipts_root
@@ -1522,6 +1546,13 @@ class WorkspaceManager:
                     "source_relative_path": identity.relative_source.as_posix(),
                 }
             )
+            if pointer_path is not None and pointer_digest is not None:
+                metadata.update(
+                    {
+                        "git_pointer_path": str(pointer_path),
+                        "git_pointer_sha256": pointer_digest,
+                    }
+                )
             return metadata, owned_directories
         except Exception:
             checkout_identity = owned_directories.get(checkout_root)
@@ -1634,10 +1665,12 @@ class WorkspaceManager:
     ) -> WorkspaceSession:
         for directory in (checkout_root, runtime_root, receipts_root):
             _ensure_managed_directory(directory, parent=ticket_root, create=False)
+        split_git = kind == "git_worktree" and set(metadata) == _SPLIT_GIT_METADATA_FIELDS
+        if kind == "git_worktree" and self.isolate_git_metadata and not split_git:
+            raise WorkspaceError("Git 元数据分离工作区不能复用旧格式")
         expected_fields = (
-            _GIT_METADATA_FIELDS
-            if kind == "git_worktree"
-            else _SNAPSHOT_METADATA_FIELDS
+            (_SPLIT_GIT_METADATA_FIELDS if split_git else _GIT_METADATA_FIELDS)
+            if kind == "git_worktree" else _SNAPSHOT_METADATA_FIELDS
         )
         if set(metadata) != expected_fields:
             raise WorkspaceError("工作区元数据字段不匹配")
@@ -1655,7 +1688,21 @@ class WorkspaceManager:
             if git_identity is None:  # pragma: no cover - 由 kind 推导
                 raise WorkspaceError("Git 工作区身份缺失")
             git_file = checkout_root / ".git"
-            if (
+            if split_git:
+                pointer_path = runtime_root / "git-pointer"
+                if (
+                    type(metadata["git_pointer_path"]) is not str
+                    or metadata["git_pointer_path"] != str(pointer_path)
+                    or not git_file.is_symlink()
+                    or git_file.resolve(strict=False) != pointer_path
+                    or pointer_path.is_symlink()
+                    or not pointer_path.is_file()
+                ):
+                    raise WorkspaceError("Git 元数据分离指针无效")
+                pointer_digest = hashlib.sha256(pointer_path.read_bytes()).hexdigest()
+                if pointer_digest != metadata["git_pointer_sha256"]:
+                    raise WorkspaceError("Git 元数据分离指针漂移")
+            elif (
                 git_file.is_symlink()
                 or not git_file.is_file()
                 or _normalize_path(git_file) != git_file
@@ -1698,6 +1745,13 @@ class WorkspaceManager:
                     "source_relative_path": git_identity.relative_source.as_posix(),
                 }
             )
+            if split_git:
+                expected.update(
+                    {
+                        "git_pointer_path": str(pointer_path),
+                        "git_pointer_sha256": pointer_digest,
+                    }
+                )
         else:
             snapshot_manifest_path = runtime_root / "snapshot-manifest.json"
             current_payload, current_hash, _ = _snapshot_manifest(self.source_root)
