@@ -1,7 +1,7 @@
 # 开发路线图与取舍原则
 
-- 日期：2026-09-23
-- 状态：**R2.1 工作区边界已验收；R2.2 开发分支实施中**
+- 日期：2026-09-24
+- 状态：**R2.1 工作区边界已验收；R2.2 在 main 实施中，尚未通过退出条件**
 - 依据：[主流格局调研](./agent-landscape.md) · [方案与决策记录](./design-decisions.md)
 
 ---
@@ -286,7 +286,7 @@ R2.0 已发布版本化 policy schema、冲突规则与 contract vectors/score�
 R2.1 已实现每工单 Git worktree 或非 Git 清单快照、跨进程租约、受保护路径策略，并接入自主运行生命周期。
 Linux 本地回归验证了同工单两进程互斥、worker 退出后释放租约、原始 Git 工作树内容与状态不变、非 Git 快照清单和受保护路径合同。[三平台 CI 验收](https://github.com/ayukyo/icode/actions/runs/35880420396) 的 Linux、macOS、Windows 工作区专项、Python 3.11/3.12 全量测试与仓库展示检查均通过。
 这些工作区边界和策略合同**不等于操作系统强制隔离**：模型执行尚未被原生内核机制限制。
-R2.2 正在开发分支验证 Linux/macOS 原生后端，尚未通过两平台退出测试；R2.3–R2.4 将继续实现 Windows 原生后端、网络控制与 Git broker；R2.5 负责安装引导和发布矩阵。
+R2.2 已合入 main 持续验证 Linux/macOS 原生后端，尚未通过两平台退出测试，自动模式仍阻断；R2.3–R2.4 将继续实现 Windows 原生后端、网络控制与 Git broker；R2.5 负责安装引导和发布矩阵。开发期线上只保留 main，不以合入主线代替阶段验收。
 完整 R2 的验收门槛仍是 Linux、macOS、Windows 每个平台均达到 ≥9/10，且 8 项 critical 全部通过。
 
 设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
