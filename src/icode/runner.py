@@ -20,7 +20,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import shutil
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -169,12 +172,67 @@ def prepare_workspace(fixture: str, target: Path, *, repo_root: Path) -> Path:
 
 
 def _snapshot(root: Path) -> dict[str, str]:
-    import hashlib
-
+    """仅散列工作区实体；链接记录目标文本，绝不由宿主跟随读取。"""
+    root = Path(root)
     out: dict[str, str] = {}
-    for p in sorted(Path(root).rglob("*")):
-        if p.is_file() and ".icode_output" not in p.parts:
-            out[str(p.relative_to(root))] = hashlib.sha256(p.read_bytes()).hexdigest()
+    if os.name == "posix":
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+        def scan(directory_fd: int, parts: tuple[str, ...]) -> None:
+            # 所有子路径相对已经打开的目录 fd，防止检查后把祖先换成链接。
+            with os.scandir(directory_fd) as entries:
+                for entry in sorted(entries, key=lambda item: item.name):
+                    if entry.name == ".icode_output":
+                        continue
+                    child_parts = (*parts, entry.name)
+                    mode = entry.stat(follow_symlinks=False).st_mode
+                    if stat.S_ISDIR(mode):
+                        child_fd = os.open(entry.name, directory_flags, dir_fd=directory_fd)
+                        try:
+                            scan(child_fd, child_parts)
+                        finally:
+                            os.close(child_fd)
+                    elif stat.S_ISLNK(mode):
+                        target = os.readlink(entry.name, dir_fd=directory_fd)
+                        out[Path(*child_parts).as_posix()] = hashlib.sha256(
+                            os.fsencode(target)
+                        ).hexdigest()
+                    elif stat.S_ISREG(mode):
+                        file_fd = os.open(
+                            entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                            dir_fd=directory_fd,
+                        )
+                        with os.fdopen(file_fd, "rb") as stream:
+                            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                                raise OSError("snapshot file type changed during scan")
+                            digest = hashlib.sha256()
+                            for chunk in iter(lambda: stream.read(64 * 1024), b""):
+                                digest.update(chunk)
+                            out[Path(*child_parts).as_posix()] = digest.hexdigest()
+
+        root_fd = os.open(root, directory_flags)
+        try:
+            scan(root_fd, ())
+        finally:
+            os.close(root_fd)
+        return out
+
+    # Windows 暂无目录 fd + O_NOFOLLOW：不跟随链接/接合点，且自动模式
+    # 仍保持阻断。路径离开根或类型在扫描中改变时按错误处理。
+    if root.is_symlink() or getattr(root, "is_junction", lambda: False)():
+        raise OSError("snapshot root must be a real directory")
+    anchor = root.resolve(strict=True)
+    for path in sorted(root.rglob("*")):
+        if ".icode_output" in path.relative_to(root).parts:
+            continue
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            out[relative] = hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest()
+        elif getattr(path, "is_junction", lambda: False)():
+            continue
+        elif path.is_file():
+            path.resolve(strict=True).relative_to(anchor)
+            out[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
     return out
 
 

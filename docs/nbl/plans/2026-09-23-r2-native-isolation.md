@@ -53,6 +53,7 @@
 - [分层工作区四架构 CI](https://github.com/ayukyo/icode/actions/runs/35950707673) 首轮仅 Windows 的既有 `shutdown(timeout=0.05)` 耗时断言失败（2.015 秒，阈值 0.5 秒）；同一提交仅重跑该作业通过。该现象暂按不稳定时序用例跟踪，不把首次失败抹去，也不归因为 Git 分层布局。
 - `icode doctor` 原先只列 PATH 中的 bwrap/容器候选，并在 Linux 无选中后端时建议用户额外安装 bubblewrap，与 pip-only 路线不符。现另列随包 Linux 助手的完整性和最小真实负向探测，始终标明 `policy_ready=false` 与“策略级隔离未就绪，自动模式仍拒绝外部命令”；不改变普通会话的既有后端选择。干净 wheel 安装测试同时验证该诊断口径，避免把“助手存在/最小探测通过”误写成“R2 完成”。
 - 宿主异常退出的真实负向测试先证明旧助手主命令可继续写出文件；Linux 助手现要求宿主传入预期父 PID，在策略安装前校验父身份、设置 `PR_SET_PDEATHSIG(SIGKILL)` 并复查父 PID。错误父 PID 被拒，正确父进程退出后主命令不再延迟写出。[Linux 手册](https://www.man7.org/linux/man-pages/man2/PR_SET_PDEATHSIG.2const.html)说明该信号在 `fork` 子进程中清空、普通 `execve` 保留，因此这里只证明**主进程**的父死联动，不能替代整树回收、资源上限或 macOS/Windows 对等能力。
+- 复查宿主侧改动快照发现旧 `_snapshot` 会跟随工作区文件符号链接并读取外部目标；这条路径发生在沙箱外，必须独立修复。现于 POSIX 以已打开的目录 fd 为锚逐层无跟随扫描，链接只散列目标文本，普通文件按流散列；目标文件变化不再改变链接快照，外部目录不递归，根链接被拒。Windows 暂以链接/接合点排除和解析路径校验降险，尚不宣称能抵御并发重解析竞争，自动模式仍阻断。分层工作区的普通 Git 查询仍可能误报，受限 Git 查询入口待实现。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。

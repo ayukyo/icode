@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import unittest
 
 from tests._support import REPO_ROOT, temp_workspace
@@ -58,6 +60,37 @@ class TestSnapshot(unittest.TestCase):
             (ws / ".icode_output" / "x.md").write_text("x", encoding="utf-8")
             (ws / "a.py").write_text("1\n", encoding="utf-8")
             self.assertEqual(list(_snapshot(ws)), ["a.py"])
+
+    @unittest.skipUnless(os.name == "posix", "需要 POSIX 符号链接语义")
+    def test_快照只记录链接文本不读取外部目标(self) -> None:
+        with temp_workspace() as parent:
+            workspace = parent / "workspace"
+            workspace.mkdir()
+            secret = parent / "secret"
+            secret.write_text("outside-secret", encoding="utf-8")
+            link = workspace / "alias"
+            link.symlink_to(secret)
+            expected = hashlib.sha256(os.fsencode(str(secret))).hexdigest()
+
+            before = _snapshot(workspace)
+            self.assertEqual(before, {"alias": expected})
+            secret.write_text("changed-outside-secret", encoding="utf-8")
+            self.assertEqual(_snapshot(workspace), before)
+
+    @unittest.skipUnless(os.name == "posix", "需要 POSIX 符号链接语义")
+    def test_快照不递归外部目录且拒绝链接根(self) -> None:
+        with temp_workspace() as parent:
+            workspace = parent / "workspace"
+            workspace.mkdir()
+            outside = parent / "outside"
+            outside.mkdir()
+            (outside / "secret").write_text("outside-secret", encoding="utf-8")
+            (workspace / "directory-link").symlink_to(outside, target_is_directory=True)
+            self.assertEqual(list(_snapshot(workspace)), ["directory-link"])
+            root_alias = parent / "root-alias"
+            root_alias.symlink_to(workspace, target_is_directory=True)
+            with self.assertRaises(OSError):
+                _snapshot(root_alias)
 
 
 class TestIndependentVerification(unittest.TestCase):
