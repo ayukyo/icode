@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ntpath
 import os
 import subprocess
 import sys
@@ -27,6 +28,44 @@ class WindowsJobProbeResult:
     passed: bool
     checks: dict[str, bool]
     detail: str
+
+
+def _build_windows_environment_block(
+    executable: str | os.PathLike[str], cwd: str | os.PathLike[str],
+    system_root: str | os.PathLike[str],
+) -> str:
+    """Build a minimal Unicode block, including Windows drive-current-dir entries."""
+    executable_path = os.fspath(executable)
+    workspace_path = os.fspath(cwd)
+    system_path = os.fspath(system_root)
+    workspace_drive = ntpath.splitdrive(workspace_path)[0].upper()
+
+    drive_directories: dict[str, str] = {}
+    for path in (workspace_path, executable_path, system_path):
+        drive = ntpath.splitdrive(path)[0].upper()
+        if len(drive) == 2 and drive[1] == ":":
+            # Relative paths on the task drive stay rooted in the task workspace.
+            # Other drives start at their roots; AppContainer ACLs remain authoritative.
+            drive_directories[drive] = (
+                workspace_path if drive == workspace_drive else f"{drive}\\"
+            )
+
+    environment = {
+        "SystemRoot": system_path,
+        "WINDIR": system_path,
+        "PATH": ";".join(
+            (ntpath.dirname(executable_path), ntpath.join(system_path, "System32"))
+        ),
+        "TEMP": workspace_path,
+        "TMP": workspace_path,
+        "USERPROFILE": workspace_path,
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONUTF8": "1",
+    }
+    entries = [(f"={drive}", directory) for drive, directory in drive_directories.items()]
+    entries.extend(environment.items())
+    entries.sort(key=lambda entry: entry[0].casefold())
+    return "\0".join(f"{name}={value}" for name, value in entries) + "\0\0"
 
 
 def probe_windows_job_cleanup() -> WindowsJobProbeResult:
@@ -249,15 +288,8 @@ def run_windows_job(
 
         # 不继承宿主凭据或文件句柄；Job 自身也不会被子进程持有。
         system_root = os.environ.get("SystemRoot", r"C:\Windows")
-        environment = {
-            "SystemRoot": system_root,
-            "WINDIR": system_root,
-            "PATH": os.pathsep.join((str(Path(argv[0]).parent), str(Path(system_root) / "System32"))),
-            "TEMP": str(root), "TMP": str(root), "USERPROFILE": str(root),
-            "PYTHONNOUSERSITE": "1", "PYTHONUTF8": "1",
-        }
         env_block = ctypes.create_unicode_buffer(
-            "\0".join(f"{key}={value}" for key, value in sorted(environment.items())) + "\0\0"
+            _build_windows_environment_block(argv[0], root, system_root)
         )
         command = ctypes.create_unicode_buffer(subprocess.list2cmdline(list(argv)))
         if _appcontainer_sid is None:
@@ -319,7 +351,8 @@ def run_windows_job(
             exit_code = int(code.value)
     except OSError as exc:
         error = "native_api_failed"
-        detail = f"{exc.strerror or type(exc).__name__} (err={exc.errno})"
+        system_detail = ctypes.FormatError(exc.errno).strip() if exc.errno else ""
+        detail = f"{exc.strerror or type(exc).__name__}: {system_detail} (err={exc.errno})"
     finally:
         if attributes_initialized and attribute_list is not None:
             kernel.DeleteProcThreadAttributeList(attribute_list)

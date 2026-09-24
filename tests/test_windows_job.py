@@ -12,10 +12,33 @@ from unittest import mock
 
 from tests._support import temp_workspace
 
-from icode.windows_job import WindowsJobResult, probe_windows_job_cleanup, run_windows_job
+from icode.windows_job import (
+    WindowsJobResult,
+    _build_windows_environment_block,
+    probe_windows_job_cleanup,
+    run_windows_job,
+)
 
 
 class TestWindowsJob(unittest.TestCase):
+    def test_自定义环境块保留驱动器目录但不继承宿主变量(self) -> None:
+        block = _build_windows_environment_block(
+            r"D:\Python\python.exe", r"E:\tickets\task-1", r"D:\Windows",
+        )
+        entries = [entry for entry in block.split("\0") if entry]
+        names = [
+            entry[:entry.index("=", 1)] if entry.startswith("=")
+            else entry.split("=", 1)[0]
+            for entry in entries
+        ]
+        self.assertTrue(block.endswith("\0\0"))
+        self.assertEqual(names, sorted(names, key=str.casefold))
+        self.assertEqual(entries[0], "=D:=D:\\")
+        self.assertEqual(entries[1], r"=E:=E:\tickets\task-1")
+        self.assertIn(r"D:\Python;D:\Windows\System32", block)
+        self.assertNotIn("OPENAI_API_KEY", block)
+        self.assertNotIn("GIT_DIR", block)
+
     def test_非_windows_不能运行(self) -> None:
         if sys.platform == "win32":
             self.skipTest("仅校验非 Windows 拒绝")
