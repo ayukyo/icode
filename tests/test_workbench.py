@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import threading
@@ -226,18 +227,23 @@ class TestWorkbenchHTTP(unittest.TestCase):
         )
         self.assertEqual(status, 415)
 
-    def test_超大请求体返回_413(self) -> None:
-        status, _, body = _request(
-            self.url + "api/v1/tickets",
-            method="POST",
-            payload=self._payload(
-                request_id="too-large",
-                description="x" * (MAX_BODY_BYTES + 1),
-            ),
-            cookie=self._cookie(),
+    def test_超大声明长度返回_413(self) -> None:
+        connection = http.client.HTTPConnection(
+            *self.server.httpd.server_address,
+            timeout=HTTP_TEST_TIMEOUT_SECONDS,
         )
-        self.assertEqual(status, 413)
-        self.assertEqual(json.loads(body)["code"], "request_too_large")
+        try:
+            connection.putrequest("POST", "/api/v1/tickets")
+            connection.putheader("Content-Type", "application/json")
+            connection.putheader("Content-Length", str(MAX_BODY_BYTES + 1))
+            connection.putheader("Cookie", self._cookie())
+            # 服务端应仅凭长度拒绝；不发送未读大包，避免 Windows 提前断连。
+            connection.endheaders()
+            response = connection.getresponse()
+            self.assertEqual(response.status, 413)
+            self.assertEqual(json.loads(response.read())["code"], "request_too_large")
+        finally:
+            connection.close()
 
     def test_未知路由_404(self) -> None:
         status, _, body = _request(self.url + "api/v1/unknown", cookie=self._cookie())
