@@ -452,8 +452,8 @@ class TestWslAndJobLimits(unittest.TestCase):
 
 class TestSandboxWrapping(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "darwin", "需 macOS launchd 真实作业")
-    def test_launchd_独立作业回收脱组后代_可行性(self) -> None:
-        # 仅验证系统自带 launchd 能否补进程组的缺口；不接入生产后端。
+    def test_launchd_独立作业仍未回收脱组后代(self) -> None:
+        # 锁定双架构实测缺口：bootout 不能证明整树清理，生产入口必须保持关闭。
         with temp_workspace() as root:
             label = f"org.icode.test.cleanup.{uuid.uuid4().hex}"
             domain = f"gui/{os.getuid()}"
@@ -510,7 +510,10 @@ class TestSandboxWrapping(unittest.TestCase):
                 )
                 self.assertEqual(booted_out.returncode, 0, booted_out.stderr)
                 time.sleep(1.6)
-                self.assertFalse(survived.exists(), "launchd bootout 后脱组孙进程仍存活")
+                self.assertTrue(survived.exists(), "当前 launchd bootout 负例发生变化，需复核")
+                sandbox = MacSeatbeltSandbox()
+                self.assertFalse(hasattr(sandbox, "wrap_policy"))
+                self.assertIn("进程树清理", sandbox.describe()["not_enforced"])
             finally:
                 subprocess.run(
                     ["launchctl", "bootout", service_target],
