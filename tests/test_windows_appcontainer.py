@@ -41,6 +41,22 @@ class TestWindowsAppContainer(unittest.TestCase):
         safe_detail = detail[:500].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         print(f"::notice title=R2.3 {name}::{safe_detail}", flush=True)
 
+    @staticmethod
+    def _read_cmd_exit_status(path: Path) -> int | None:
+        try:
+            label, value = path.read_text(encoding="ascii").strip().split("=", 1)
+            return int(value) if label == "exit_code" else None
+        except (OSError, ValueError):
+            return None
+
+    def test_CMD退出码探针要求命名字段避免数字被解析成重定向(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-cmd-status-") as raw:
+            status = Path(raw) / "status.txt"
+            status.write_text("exit_code=7", encoding="ascii")
+            self.assertEqual(self._read_cmd_exit_status(status), 7)
+            status.write_text("7", encoding="ascii")
+            self.assertIsNone(self._read_cmd_exit_status(status))
+
     def _mock_profile_apis(self) -> dict[str, mock.Mock]:
         import ctypes
 
@@ -329,6 +345,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             profile_directory_state = workspace / "profile-directory-state.txt"
             profile_write_status = workspace / "profile-write-status.txt"
             profile_write_stderr = workspace / "profile-write-stderr.txt"
+            # The space before `>` prevents a trailing status digit being parsed as a file descriptor.
             script.write_text(
                 "@echo off\r\n"
                 f'if defined LOCALAPPDATA (echo defined> "{profile_env_state.name}") '
@@ -337,7 +354,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 f'else (echo missing> "{profile_directory_state.name}")\r\n'
                 f'(echo profile-write-ok> "%LOCALAPPDATA%\\{marker_name}") '
                 f'2> "{profile_write_stderr.name}"\r\n'
-                f'echo %errorlevel%> "{profile_write_status.name}"\r\n',
+                f'echo exit_code=%errorlevel% > "{profile_write_status.name}"\r\n',
                 encoding="utf-8",
             )
             with mock.patch(
@@ -351,35 +368,35 @@ class TestWindowsAppContainer(unittest.TestCase):
                     [str(command), "/d", "/c", f".\\{script.name}"],
                     cwd=workspace, timeout_seconds=8, process_limit=2,
                 )
-
-        try:
-            profile_write_error = profile_write_stderr.read_text(
-                encoding="utf-8", errors="replace",
-            ).casefold()
-        except OSError:
-            profile_write_error = ""
-        if "access is denied" in profile_write_error or "access denied" in profile_write_error:
-            profile_write_error_class = "access_denied"
-        elif "path not found" in profile_write_error or "cannot find the path" in profile_write_error:
-            profile_write_error_class = "path_not_found"
-        elif "file not found" in profile_write_error or "cannot find the file" in profile_write_error:
-            profile_write_error_class = "file_not_found"
-        elif profile_write_error:
-            profile_write_error_class = "other_write_error"
-        else:
-            profile_write_error_class = "no_stderr"
-        try:
-            profile_write_status_value = int(profile_write_status.read_text(encoding="ascii").strip())
-        except (OSError, ValueError):
-            profile_write_status_value = None
-        profile_env_defined = (
-            profile_env_state.is_file()
-            and profile_env_state.read_text(encoding="utf-8").strip() == "defined"
-        )
-        profile_directory_visible = (
-            profile_directory_state.is_file()
-            and profile_directory_state.read_text(encoding="utf-8").strip() == "exists"
-        )
+            try:
+                profile_write_error = profile_write_stderr.read_text(
+                    encoding="utf-8", errors="replace",
+                ).casefold()
+            except OSError:
+                profile_write_error = ""
+            if "access is denied" in profile_write_error or "access denied" in profile_write_error:
+                profile_write_error_class = "access_denied"
+            elif "path not found" in profile_write_error or "cannot find the path" in profile_write_error:
+                profile_write_error_class = "path_not_found"
+            elif "file not found" in profile_write_error or "cannot find the file" in profile_write_error:
+                profile_write_error_class = "file_not_found"
+            elif profile_write_error:
+                profile_write_error_class = "other_write_error"
+            else:
+                profile_write_error_class = "no_stderr"
+            profile_write_status_value = self._read_cmd_exit_status(profile_write_status)
+            try:
+                profile_env_defined = (
+                    profile_env_state.read_text(encoding="utf-8").strip() == "defined"
+                )
+            except OSError:
+                profile_env_defined = False
+            try:
+                profile_directory_visible = (
+                    profile_directory_state.read_text(encoding="utf-8").strip() == "exists"
+                )
+            except OSError:
+                profile_directory_visible = False
 
         self._workflow_notice(
             "profile storage lifecycle",
@@ -1140,11 +1157,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                     encoding="utf-8",
                 )
                 limited_parent = workspace / "process-limit-parent.cmd"
+                # Keep whitespace before `>` so CMD does not treat a status digit as an FD.
                 limited_parent.write_text(
                     "@echo off\r\n"
                     f'echo attempted> "{limited_parent_attempted.name}"\r\n'
                     f'cmd.exe /d /c .\\{limited_child.name}\r\n'
-                    f'echo %errorlevel%> "{limited_status.name}"\r\n'
+                    f'echo exit_code=%errorlevel% > "{limited_status.name}"\r\n'
                     "exit /b 0\r\n",
                     encoding="utf-8",
                 )
@@ -1152,10 +1170,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     [str(command), "/d", "/c", f".\\{limited_parent.name}"],
                     cwd=workspace, timeout_seconds=5, process_limit=2,
                 )
-                try:
-                    positive_launch_status = int(limited_status.read_text(encoding="ascii").strip())
-                except (OSError, ValueError):
-                    positive_launch_status = None
+                positive_launch_status = self._read_cmd_exit_status(limited_status)
                 self._workflow_notice(
                     "process limit positive control",
                     f"executed={limit_control.executed} exit={limit_control.exit_code} "
@@ -1180,10 +1195,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     [str(command), "/d", "/c", f".\\{limited_parent.name}"],
                     cwd=workspace, timeout_seconds=5, process_limit=1,
                 )
-                try:
-                    negative_launch_status = int(limited_status.read_text(encoding="ascii").strip())
-                except (OSError, ValueError):
-                    negative_launch_status = None
+                negative_launch_status = self._read_cmd_exit_status(limited_status)
                 self._workflow_notice(
                     "process limit probe",
                     f"executed={limited.executed} exit={limited.exit_code} error={limited.error} "

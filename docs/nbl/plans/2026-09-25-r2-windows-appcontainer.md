@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-24 UTC（上海时间 2026-09-25）
-- 状态：原生实验入口仍未通过验收；CI #91–#104 多轮 x64/ARM64 AppContainer 原生作业显示 CreateProcessW 错误码 203；#105 固定 whoami 同-profile A/B 发现注入 API 返回的 `LOCALAPPDATA` 后可启动，但当时常规路径未注入；#106–#110 常规路径已能启动基础 CMD 探针，Python 仍以 `0xC0000135` 退出。#110 的 profile 写入探针两架构均退出 1、未留下 marker；进程数正对照仍有启动方式/退出状态不确定，未验证 `process_limit=1` 负例。工作区/网络与后代清理仅有组件级通过 notice；下一轮分类 profile 写入失败并重做进程数同载荷正反对照。Windows 自动模式不开放
+- 状态：原生实验入口仍未通过验收；CI #91–#104 多轮 x64/ARM64 AppContainer 原生作业显示 CreateProcessW 错误码 203；#105 固定 whoami 同-profile A/B 发现注入 API 返回的 `LOCALAPPDATA` 后可启动，但当时常规路径未注入；#106–#111 常规路径已能启动基础 CMD 探针，Python 仍以 `0xC0000135` 退出。#110 的 profile 写入探针两架构均退出 1、未留下 marker；#111 进一步发现其错误分类是在临时工作区销毁后读取、状态码又被 CMD 解析为重定向，因此这两批字段不能用于判断写入根因。#111 同载荷进程正对照的 marker 已出现，但状态码文件缺失，测试在 `process_limit=1` 负例前结束。工作区/网络与后代清理仅有组件级通过 notice；当前修正探针时序与状态编码后再做双架构原生复验。Windows 自动模式不开放
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -119,6 +119,12 @@
 - [Microsoft `GetAppContainerFolderPath`](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath) 规定该 API 返回指定 SID 的 LocalAppData 路径，但没有在此 API 说明中保证目录已物化；本轮因此只记录路径在启动前的存在性，不假定缺目录或缺 ACL。失败分类确认前不创建、放宽或改写 profile 目录。
 - 进程上限测试的旧载荷通过 `start` 异步启动后等待一秒。x64 的 `process_limit=8` 正对照未产生子标记；ARM64 虽产生标记但父命令退出 1。ARM64 `process_limit=1` 调用也执行并清理，但公开 notice 未带负例标记；原始 Actions 日志无法匿名读取，无法恢复精确失败断言。退出码 1 本身不足以区分子进程是否成功启动。
 - 依据 [Microsoft Job Objects 文档](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)，`CreateProcess` 后代默认加入同一 Job；[活动进程限制](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_limit_information)说明超限进程关联会失败。当前改为父脚本直接同步调用同一个 `cmd.exe` 子脚本，并记录父尝试标记、子 marker 与子进程状态：正对照 `process_limit=2` 必须全部成功；负对照 `process_limit=1` 必须有父尝试、子状态非零且无子 marker。profile 用例只向 Actions notice 暴露布尔状态、整数状态码及白名单错误类别，不输出绝对路径或原始错误文本。此轮改动仍须 Windows x64/ARM64 CI 验证；AppContainer、R2.3 与自动模式继续 fail-closed。
+
+## 2026-09-24 UTC CI #111：诊断本身无效，尚未进入进程上限负例
+
+- CI [#111 x64](https://github.com/ayukyo/icode/actions/runs/36073278352/job/107878821096) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36073278352/job/107878821121) 都在 Windows AppContainer 集成步骤失败。两架构 profile 生命周期 notice 为 `executed=True, exit=0, cleanup=True`、profile 路径在启动前存在、删除前 marker 不存在；但 `LOCALAPPDATA`/目录状态、写状态和错误类别的读取发生在 `TemporaryDirectory` 退出之后，显示的 `False/None/no_stderr` 全部是探针时序错误，不能据此推断容器环境或目录 ACL。
+- 两架构 `process_limit=2` 的同步正对照中，父尝试 marker 与子 marker 均存在、命令 `exit=0`；状态文件为空。CMD 将 `echo %errorlevel%> file` 展开成以数字紧邻重定向符的语法，数字会被当作文件描述符而不是文本，因此测试在检查正对照状态后失败，没有执行 `process_limit=1` 负例。该轮不构成 process limit 结论。
+- 本轮把 profile 分类读取移到临时目录清理之前，并将退出状态编码为 `exit_code=<整数>` 后解析；新增纯解析器回归测试。现有 Python `0xC0000135` 和其他子项状态不变。CI #111 不作为 Windows 自动模式/R2.3 通过证据；修正后需重新跑双架构原生测试。
 
 ## 当前实现与验收
 
