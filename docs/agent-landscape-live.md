@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- 最近观察：2026-09-25；下次全量复核：不晚于 2026-10-24
-- 注：观察日期统一按 UTC 记录；本轮定向更新 R2.3 Windows AppContainer profile 环境变量候选；20 项观察名单最近全量复核为 2026-09-24。
+- 最近观察：2026-09-24；下次全量复核：不晚于 2026-10-24
+- 注：观察日期统一按 UTC 记录；本轮定向更新 R2.3 Windows AppContainer Python 运行时兼容性；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -114,12 +114,19 @@
 - 属性列表大小查询回执 `error=122, bytes=48` 符合 Microsoft 文档规定的首次空指针查询行为；初始化和安全属性更新随后成功，故不把此现象当作根因。来源：[Microsoft InitializeProcThreadAttributeList](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-initializeprocthreadattributelist)、[Microsoft AppContainer 启动示例](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)。
 - **受限 A/B 已完成，未改变结果：**CI [#104](https://github.com/ayukyo/icode/actions/runs/36056228159) 对固定、无参数 `SystemRoot\\System32\\whoami.exe` 分别显式传路径和传 `NULL`；两边均为 `CreateProcessW` 错误 203，清理状态为 true。原生测试观测到两次实际环境块相等，flags 仍为 `0x00080404`。因此此单一差异不能解释/修复当前失败；它也不足以判定 hosted runner 是根因。AppContainer 启动门槛仍未通过，自动模式继续关闭；下一项差分等待独立研究筛选后实施。[Microsoft CreateProcessW 参数说明](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。
 
-### 2026-09-25 UTC Windows AppContainer profile 路径与清理边界
+### 2026-09-24 UTC Windows AppContainer profile 路径与清理边界
 
 - 微软[启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)为 profile 给出 `LOCALAPPDATA` 目录示例，并指向 `GetAppContainerFolderPath`；其[API 页面](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)定义输出内存必须使用 `CoTaskMemFree`。这是核验某个显式环境变量是否影响 `CreateProcessW 203` 的依据，不代表 API 可以修复该错误。
 - Chromium 固定观察点 [`19e92f6`](https://chromium.googlesource.com/chromium/src/%2B/19e92f6a6088ac35a31d74cbf4d64b32ef54957c/sandbox/win/src/app_container_profile_base.cc#178) 先把 SID 转为字符串再调用该 API。ICODE 采纳 API 所需的 SID 表示与内存所有权处理，不复制 Chromium 代码、不传宿主环境值。
 - 同一个临时 SID 下执行 baseline 与 candidate，candidate 仅增加该 profile 的 `LOCALAPPDATA`；测试对比完整环境块除该键以外相等。CI [#105 x64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836254760) 与 [#105 ARM64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836255639) 两边均观测到 baseline 启动失败 203、candidate 成功且清理通过。该固定探针结果验证了受控变量差异，但不构成完整沙箱通过；同一轮完整容器用例仍失败，因为正常启动路径尚未附加变量。当前改动已将 API 返回的 profile 路径附加到所有常规 AppContainer 命令，并在路径查询失败时保持 fail-closed 与准确清理状态；新代码的 Windows x64/ARM64 原生复验待 CI。
 - profile 目录是本次容器的独立临时数据区，不等同于仅工单目录可写。微软说明 profile 属于 per-user/per-app 存储，并警告句柄未关闭时删除可能不完整；ICODE 现按 API 约定重试删除并要求已知的 `LOCALAPPDATA` 目录消失，否则将清理标记失败。[CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile) · [DeleteAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-deleteappcontainerprofile)。CI 将另验证 Python 在 profile 中创建临时标记、容器退出后目录确实删除。
 - **状态：常规路径及 profile 数据清理门禁已实现，等待 Windows x64/ARM64 CI；**不连接自动工单，安全沙箱与 R2 仍未验收。
+
+### 2026-09-24 UTC AppContainer Python 运行时兼容性
+
+- ICODE CI [#106 x64](https://github.com/ayukyo/icode/actions/runs/36063691161/job/107848355215) 与 [#106 ARM64](https://github.com/ayukyo/icode/actions/runs/36063691161/job/107848355043) 中，固定 whoami 的 profile `LOCALAPPDATA` A/B 成功；完整 Python 探针退出 `0xC0000135`，工作区/网络组合探针仍未达验收。环境变量回归断言捕获层错误已修正，待下一轮双架构复验。
+- [Microsoft AppContainer 启动说明](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)指出资源需由 Package/Capability SID 的 DACL 明确授权；权限仍与宿主用户权限取交集。因此，“宿主 Python 可读”不等于容器 SID 可读。Windows CI 当前只证明宿主解释器启动失败，不能推断具体 DLL、ACL 或搜索路径原因。
+- 上游风险复核：[MXC issue #572](https://github.com/microsoft/mxc/issues/572) 的提交者报告，对含数万文件的 Python `Lib\site-packages` 做每次命令的整树继承 ACE 加/撤，在其环境约 35 秒；这是单个 issue 的测量，不是 ICODE 基准。[Codex issue #45871](https://github.com/openai/codex/issues/45871) 是仍 open 的单一 Windows 用户报告，称 AppContainer 中 `canonicalize()` 的 DOS 路径解析因 `\\GLOBAL??` 访问被拒，而普通文件读写仍成功。二者都是需本机复现实验的风险线索，不是已确认的普遍 Windows 行为。
+- ICODE 取舍：**暂缓**递归授权完整 Python 安装树或放开用户目录/系统盘；先在双架构验证精准运行时依赖、`Path.resolve()`、只读 ACL 撤权/恢复与增量耗时。若无法同时满足最小权限、可靠清理和可接受启动开销，则 AppContainer 不进入 Windows 自动模式，继续比较隔离方案。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -355,6 +356,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         executable = system_root / "System32" / "whoami.exe"
         target_executable = os.path.normcase(str(executable))
         observed_blocks: list[str] = []
+        appcontainer_blocks: list[str] = []
+        append_environment_value = _append_windows_environment_value
         observed_metadata: list[str] = []
 
         def build_and_observe(
@@ -380,12 +383,21 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
             return block
 
+        def append_and_observe(block: str, name: str, value: str) -> str:
+            result = append_environment_value(block, name, value)
+            if name.casefold() == "localappdata":
+                appcontainer_blocks.append(result)
+            return result
+
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-matched-env-") as raw:
             workspace = Path(raw) / "task"
             workspace.mkdir()
             with mock.patch(
                 "icode.windows_job._build_windows_environment_block",
                 side_effect=build_and_observe,
+            ), mock.patch(
+                "icode.windows_job._append_windows_environment_value",
+                side_effect=append_and_observe,
             ):
                 ordinary = run_windows_job(
                     [str(executable)], cwd=workspace, timeout_seconds=10,
@@ -418,10 +430,21 @@ class TestWindowsAppContainer(unittest.TestCase):
                 entries[entry[:separator]] = entry[separator + 1:]
             return entries
 
-        ordinary_entries, appcontainer_entries = map(parse, observed_blocks[:2])
+        ordinary_entries, appcontainer_base_entries = map(parse, observed_blocks[:2])
+        self.assertEqual(observed_blocks[0], observed_blocks[1])
+        self.assertEqual(appcontainer_base_entries, ordinary_entries)
+        self.assertEqual(
+            len(appcontainer_blocks), 2,
+            "the AppContainer main command and ACL-revocation probe both use its profile variable",
+        )
+        appcontainer_entries = parse(appcontainer_blocks[0])
         self.assertNotIn("LOCALAPPDATA", ordinary_entries)
         self.assertIn("LOCALAPPDATA", appcontainer_entries)
         self.assertTrue(Path(appcontainer_entries["LOCALAPPDATA"]).is_absolute())
+        self.assertEqual(
+            [parse(block)["LOCALAPPDATA"] for block in appcontainer_blocks],
+            [appcontainer_entries["LOCALAPPDATA"]] * len(appcontainer_blocks),
+        )
         self.assertEqual(
             {key: value for key, value in appcontainer_entries.items() if key != "LOCALAPPDATA"},
             ordinary_entries,
@@ -437,6 +460,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         executable = system_root / "System32" / "whoami.exe"
         target_executable = os.path.normcase(str(executable))
         observed_blocks: list[str] = []
+        appcontainer_blocks: list[str] = []
+        append_environment_value = _append_windows_environment_value
 
         def build_and_observe(
             executable_path: str | os.PathLike[str],
@@ -450,12 +475,21 @@ class TestWindowsAppContainer(unittest.TestCase):
                 observed_blocks.append(block)
             return block
 
+        def append_and_observe(block: str, name: str, value: str) -> str:
+            result = append_environment_value(block, name, value)
+            if name.casefold() == "localappdata":
+                appcontainer_blocks.append(result)
+            return result
+
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-lpappname-") as raw:
             workspace = Path(raw) / "task"
             workspace.mkdir()
             with mock.patch(
                 "icode.windows_job._build_windows_environment_block",
                 side_effect=build_and_observe,
+            ), mock.patch(
+                "icode.windows_job._append_windows_environment_value",
+                side_effect=append_and_observe,
             ):
                 null_application_name = run_windows_appcontainer(
                     [str(executable)], cwd=workspace, timeout_seconds=10,
@@ -473,6 +507,24 @@ class TestWindowsAppContainer(unittest.TestCase):
         )
         self.assertGreaterEqual(len(observed_blocks), 2, "both launches must reach environment setup")
         self.assertEqual(observed_blocks[0], observed_blocks[1])
+        self.assertEqual(
+            len(appcontainer_blocks), 3,
+            "the A/B launches and ACL-revocation probe each use the same profile variable",
+        )
+        self.assertEqual(appcontainer_blocks[0], appcontainer_blocks[1])
+
+        def profile_localappdata_value(block: str) -> str:
+            entries = [
+                entry for entry in block.split("\0") if entry
+                and entry[:entry.index("=", 1)].casefold() == "localappdata"
+            ]
+            self.assertEqual(len(entries), 1, "final AppContainer block must contain one profile path")
+            return entries[0].split("=", 1)[1]
+
+        localappdata_values = [
+            profile_localappdata_value(block) for block in appcontainer_blocks
+        ]
+        self.assertEqual(localappdata_values[1:], [localappdata_values[0]] * 2)
         self.assertTrue(null_application_name.executed, null_application_name)
         self.assertEqual(null_application_name.exit_code, 0, null_application_name)
         self.assertTrue(null_application_name.cleanup_ok, null_application_name)
@@ -487,6 +539,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         executable = system_root / "System32" / "whoami.exe"
         target_executable = os.path.normcase(str(executable))
         observed_blocks: list[str] = []
+        appcontainer_blocks: list[str] = []
+        append_environment_value = _append_windows_environment_value
 
         def build_and_observe(
             executable_path: str | os.PathLike[str],
@@ -500,12 +554,21 @@ class TestWindowsAppContainer(unittest.TestCase):
                 observed_blocks.append(block)
             return block
 
+        def append_and_observe(block: str, name: str, value: str) -> str:
+            result = append_environment_value(block, name, value)
+            if name.casefold() == "localappdata":
+                appcontainer_blocks.append(result)
+            return result
+
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-localappdata-") as raw:
             workspace = Path(raw) / "task"
             workspace.mkdir()
             with mock.patch(
                 "icode.windows_job._build_windows_environment_block",
                 side_effect=build_and_observe,
+            ), mock.patch(
+                "icode.windows_job._append_windows_environment_value",
+                side_effect=append_and_observe,
             ):
                 candidate = run_windows_appcontainer(
                     [str(executable)], cwd=workspace, timeout_seconds=10,
@@ -533,9 +596,20 @@ class TestWindowsAppContainer(unittest.TestCase):
                 entries[entry[:separator]] = entry[separator + 1:]
             return entries
 
-        baseline_entries, candidate_entries = map(parse, observed_blocks)
+        baseline_entries, candidate_base_entries = map(parse, observed_blocks)
+        self.assertEqual(observed_blocks[0], observed_blocks[1])
+        self.assertEqual(candidate_base_entries, baseline_entries)
+        self.assertEqual(
+            len(appcontainer_blocks), 2,
+            "the A/B candidate and ACL-revocation probe use the profile variable",
+        )
+        candidate_entries = parse(appcontainer_blocks[0])
         self.assertNotIn("LOCALAPPDATA", baseline_entries)
         self.assertIn("LOCALAPPDATA", candidate_entries)
+        self.assertEqual(
+            parse(appcontainer_blocks[1])["LOCALAPPDATA"],
+            candidate_entries["LOCALAPPDATA"],
+        )
         self.assertEqual(
             {key: value for key, value in candidate_entries.items() if key != "LOCALAPPDATA"},
             baseline_entries,
@@ -545,8 +619,69 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertTrue(candidate.cleanup_ok, candidate)
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
+    def test_诊断容器对宿主Python运行时文件的直接读取(self) -> None:
+        """Distinguish runtime DACL access from a missing or misplaced dependency."""
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        command = system_root / "System32" / "cmd.exe"
+        executable = Path(sys.executable)
+        stdlib = Path(sysconfig.get_path("stdlib"))
+        version = f"{sys.version_info.major}{sys.version_info.minor}"
+        dll_name = sysconfig.get_config_var("DLLLIBRARY") or f"python{version}.dll"
+        candidates = [
+            ("system32_control", system_root / "System32" / "whoami.exe"),
+            ("python_executable", executable),
+            ("python_shared_library", executable.parent / dll_name),
+            ("stdlib_pathlib", stdlib / "pathlib.py"),
+            ("stdlib_encodings", stdlib / "encodings" / "__init__.py"),
+            ("stdlib_archive", executable.parent / f"python{version}.zip"),
+        ]
+        runtime_files = [(label, path) for label, path in candidates if path.is_file()]
+        self.assertGreaterEqual(
+            len(runtime_files), 4,
+            "Windows CI runtime layout changed; direct-read diagnostic lacks enough samples",
+        )
+        results: list[dict[str, object]] = []
+
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-runtime-access-") as raw:
+            workspace = Path(raw) / "task"
+            workspace.mkdir()
+            copy_script = workspace / "copy-runtime.cmd"
+            for index, (label, source) in enumerate(runtime_files):
+                destination = workspace / f"runtime-copy-{index}.bin"
+                copy_script.write_text(
+                    "@echo off\r\n"
+                    f'copy /b "{source}" "{destination}" >nul\r\n',
+                    encoding="utf-8",
+                )
+                result = run_windows_appcontainer(
+                    [str(command), "/d", "/c", str(copy_script)],
+                    cwd=workspace, timeout_seconds=8, process_limit=2,
+                )
+                source_size = source.stat().st_size
+                copied_size = destination.stat().st_size if destination.is_file() else None
+                results.append({
+                    "label": label,
+                    "source_size": source_size,
+                    "source_read_match": copied_size == source_size,
+                    "executed": result.executed,
+                    "exit_code": result.exit_code,
+                    "error": result.error,
+                    "cleanup_ok": result.cleanup_ok,
+                    "copied_size": copied_size,
+                })
+                self.assertTrue(result.executed, result)
+                self.assertIsNone(result.error, result)
+                self.assertTrue(result.cleanup_ok, result)
+
+        for result in results:
+            self._workflow_notice(
+                "Python runtime direct-read diagnostic",
+                json.dumps(result, ensure_ascii=True, separators=(",", ":")),
+            )
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
     def test_在AppContainer中运行Python并解析工作路径(self) -> None:
-        """Verify the actual pip-installed runtime shape, not only cmd.exe."""
+        """Verify the host Python runtime and path behavior, not only System32 tools."""
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-python-") as raw:
             root = Path(raw).resolve()
             workspace = root / "task"
@@ -664,6 +799,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 copied_nested = workspace / "nested-copy.txt"
                 child_started = workspace / "child-started.txt"
                 child_late = workspace / "child-late.txt"
+                script_complete = workspace / "probe-script-complete.txt"
                 child_script = workspace / "child.cmd"
                 child_script.write_text(
                     "@echo off\r\n"
@@ -683,6 +819,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f'"{url}" > "{workspace / "network.txt"}" 2>&1\r\n'
                     f'start "" /b "{command}" /d /c "{child_script}"\r\n'
                     "timeout /t 1 /nobreak >nul\r\n"
+                    f'echo reached-end> "{script_complete}"\r\n'
                     "exit /b 0\r\n",
                     encoding="utf-8",
                 )
@@ -693,13 +830,19 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self._workflow_notice(
                     "workspace and network probe",
                     f"executed={result.executed} exit={result.exit_code} error={result.error} "
-                    f"cleanup={result.cleanup_ok} detail={result.detail}",
+                    f"cleanup={result.cleanup_ok} script_complete={script_complete.is_file()} "
+                    f"workspace_write={allowed_write.is_file()} nested_copy={copied_nested.is_file()} "
+                    f"outside_write={outside_write.exists()} detail={result.detail}",
                 )
 
                 self.assertTrue(result.executed, result)
-                self.assertEqual(result.exit_code, 0, result)
                 self.assertIsNone(result.error, result)
                 self.assertTrue(result.cleanup_ok, result)
+                self.assertTrue(
+                    script_complete.is_file(),
+                    "AppContainer workspace probe did not reach its completion marker",
+                )
+                self.assertEqual(result.exit_code, 0, result)
                 self.assertEqual(allowed_write.read_text(encoding="utf-8").strip(), "workspace-write-ok")
                 self.assertEqual(
                     (nested / "input.txt").read_text(encoding="utf-8"),
