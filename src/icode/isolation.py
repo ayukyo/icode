@@ -362,7 +362,7 @@ class LandlockSandbox:
             "is_real_isolation": True,
             "claim": "开发期 Landlock/seccomp 原生边界，尚未达到 R2 完整合同",
             "enforced": ["工作区读写", "默认断网", "子进程继承"],
-            "not_enforced": ["受保护子路径", "R2 完整策略映射", "进程树清理"],
+            "not_enforced": ["受保护子路径", "R2 完整策略映射", "进程树清理", "进程数上限"],
         }
 
 
@@ -514,7 +514,7 @@ class MacSeatbeltSandbox:
             "is_real_isolation": True,
             "claim": "内核级隔离（macOS Seatbelt profile）",
             "enforced": ["文件系统（白名单外拒绝）", "网络（默认拒绝）"],
-            "not_enforced": ["同用户下的内核漏洞逃逸"],
+            "not_enforced": ["R2 完整策略映射", "进程树清理", "进程数上限", "同用户下的内核漏洞逃逸"],
         }
 
 

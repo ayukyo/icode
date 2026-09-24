@@ -293,6 +293,17 @@ class TestProbe(unittest.TestCase):
 class TestHonesty(unittest.TestCase):
     """没有后端时不许宣称沙箱——本文件最重要的两条断言。"""
 
+    def test_landlock_描述明确未强制进程数上限(self) -> None:
+        sandbox = LandlockSandbox(helper="/not-needed-for-description")
+        self.assertFalse(sandbox.policy_contract_ready)
+        self.assertIn("进程数上限", sandbox.describe()["not_enforced"])
+
+    def test_seatbelt_描述不把实验策略当完整合同(self) -> None:
+        sandbox = MacSeatbeltSandbox()
+        self.assertFalse(hasattr(sandbox, "wrap_policy"))
+        self.assertIn("进程树清理", sandbox.describe()["not_enforced"])
+        self.assertIn("进程数上限", sandbox.describe()["not_enforced"])
+
     def test_无可用后端时明确标注为应用层限制(self) -> None:
         sandbox = select_sandbox(preference="none")
         self.assertFalse(sandbox.is_real_isolation)
