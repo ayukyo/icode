@@ -305,6 +305,10 @@ CI [#106 x64](https://github.com/ayukyo/icode/actions/runs/36063691161/job/10784
 
 ---
 
+### 2026-09-24 UTC CI #107：Windows cwd-relative 探针
+
+CI [#107 x64](https://github.com/ayukyo/icode/actions/runs/36066941127) 的最终环境块与 profile `LOCALAPPDATA` A/B 检查通过；Python 仍退出 `0xC0000135`。CMD 批处理脚本未落下任何工作区标记，运行时文件诊断也未复制文件，故不能推断源文件 ACL。当前探针改用任务工作目录相对路径并增加 inline 写入对照；x64 不通过，ARM64 当时仍运行。R2.3 与自动模式继续关闭。
+
 ## 4. 为什么是这个顺序
 
 | 顺序 | 依据 |

@@ -647,14 +647,16 @@ class TestWindowsAppContainer(unittest.TestCase):
             workspace.mkdir()
             copy_script = workspace / "copy-runtime.cmd"
             for index, (label, source) in enumerate(runtime_files):
-                destination = workspace / f"runtime-copy-{index}.bin"
+                destination_name = f"runtime-copy-{index}.bin"
+                destination = workspace / destination_name
                 copy_script.write_text(
                     "@echo off\r\n"
-                    f'copy /b "{source}" "{destination}" >nul\r\n',
+                    f'copy /b "{source}" "{destination_name}" >nul\r\n',
                     encoding="utf-8",
                 )
+                # The Package SID is granted the task directory, not its temp parents.
                 result = run_windows_appcontainer(
-                    [str(command), "/d", "/c", str(copy_script)],
+                    [str(command), "/d", "/c", f".\\{copy_script.name}"],
                     cwd=workspace, timeout_seconds=8, process_limit=2,
                 )
                 source_size = source.stat().st_size
@@ -794,6 +796,25 @@ class TestWindowsAppContainer(unittest.TestCase):
                 curl = system_root / "System32" / "curl.exe"
                 command = system_root / "System32" / "cmd.exe"
                 self.assertTrue(curl.is_file(), "Windows 目标环境需提供系统 curl.exe")
+                inline_marker = workspace / "inline-write.txt"
+                inline_write = run_windows_appcontainer(
+                    [
+                        str(command), "/d", "/c",
+                        "echo inline-write-ok> inline-write.txt",
+                    ],
+                    cwd=workspace, timeout_seconds=8, process_limit=2,
+                )
+                self._workflow_notice(
+                    "AppContainer relative cwd write control",
+                    f"executed={inline_write.executed} exit={inline_write.exit_code} "
+                    f"error={inline_write.error} cleanup={inline_write.cleanup_ok} "
+                    f"marker={inline_marker.is_file()}",
+                )
+                self.assertTrue(inline_write.executed, inline_write)
+                self.assertEqual(inline_write.exit_code, 0, inline_write)
+                self.assertTrue(inline_write.cleanup_ok, inline_write)
+                self.assertEqual(inline_marker.read_text(encoding="utf-8").strip(), "inline-write-ok")
+
                 allowed_write = workspace / "new-output.txt"
                 copied_secret = workspace / "outside-copy.txt"
                 copied_nested = workspace / "nested-copy.txt"
@@ -803,28 +824,31 @@ class TestWindowsAppContainer(unittest.TestCase):
                 child_script = workspace / "child.cmd"
                 child_script.write_text(
                     "@echo off\r\n"
-                    f'echo started> "{child_started}"\r\n'
+                    f'echo started> "{child_started.name}"\r\n'
                     "timeout /t 3 /nobreak >nul\r\n"
-                    f'echo late> "{child_late}"\r\n',
+                    f'echo late> "{child_late.name}"\r\n',
                     encoding="utf-8",
                 )
                 script = workspace / "probe.cmd"
                 script.write_text(
                     "@echo off\r\n"
-                    f'echo workspace-write-ok> "{allowed_write}"\r\n'
-                    f'type "{nested / "input.txt"}" > "{copied_nested}"\r\n'
-                    f'type "{outside_secret}" > "{copied_secret}"\r\n'
-                    f'echo escape> "{outside_write}"\r\n'
+                    f'echo workspace-write-ok> "{allowed_write.name}"\r\n'
+                    f'type "{os.path.relpath(nested / "input.txt", workspace)}" '
+                    f'> "{copied_nested.name}"\r\n'
+                    f'type "{os.path.relpath(outside_secret, workspace)}" '
+                    f'> "{copied_secret.name}"\r\n'
+                    f'echo escape> "{os.path.relpath(outside_write, workspace)}"\r\n'
                     f'"{curl}" --noproxy "*" --connect-timeout 1 --max-time 2 '
-                    f'"{url}" > "{workspace / "network.txt"}" 2>&1\r\n'
-                    f'start "" /b "{command}" /d /c "{child_script}"\r\n'
+                    f'"{url}" > "network.txt" 2>&1\r\n'
+                    f'start "" /b "{command}" /d /c ".\\{child_script.name}"\r\n'
                     "timeout /t 1 /nobreak >nul\r\n"
-                    f'echo reached-end> "{script_complete}"\r\n'
+                    f'echo reached-end> "{script_complete.name}"\r\n'
                     "exit /b 0\r\n",
                     encoding="utf-8",
                 )
+                # Use a cwd-relative entry point so access stays within the task ACL.
                 result = run_windows_appcontainer(
-                    [str(command), "/d", "/c", str(script)],
+                    [str(command), "/d", "/c", f".\\{script.name}"],
                     cwd=workspace, timeout_seconds=12, process_limit=8,
                 )
                 self._workflow_notice(
@@ -863,12 +887,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                 timeout_script = workspace / "timeout-parent.cmd"
                 timeout_script.write_text(
                     "@echo off\r\n"
-                    f'start "" /b "{command}" /d /c "{child_script}"\r\n'
+                    f'start "" /b "{command}" /d /c ".\\{child_script.name}"\r\n'
                     "timeout /t 8 /nobreak >nul\r\n",
                     encoding="utf-8",
                 )
                 timed_out = run_windows_appcontainer(
-                    [str(command), "/d", "/c", str(timeout_script)],
+                    [str(command), "/d", "/c", f".\\{timeout_script.name}"],
                     cwd=workspace, timeout_seconds=2, process_limit=8,
                 )
                 self._workflow_notice(
