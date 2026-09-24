@@ -286,7 +286,7 @@ R2.0 已发布版本化 policy schema、冲突规则与 contract vectors/score�
 R2.1 已实现每工单 Git worktree 或非 Git 清单快照、跨进程租约、受保护路径策略，并接入自主运行生命周期。
 Linux 本地回归验证了同工单两进程互斥、worker 退出后释放租约、原始 Git 工作树内容与状态不变、非 Git 快照清单和受保护路径合同。[三平台 CI 验收](https://github.com/ayukyo/icode/actions/runs/35880420396) 的 Linux、macOS、Windows 工作区专项、Python 3.11/3.12 全量测试与仓库展示检查均通过。
 这些工作区边界和策略合同**不等于操作系统强制隔离**：模型执行尚未被原生内核机制限制。
-R2.2 已合入 main 持续验证 Linux/macOS 原生后端。[CI #85](https://github.com/ayukyo/icode/actions/runs/36001610973) 的 Ubuntu 22.04/24.04 x64/ARM64 原生与 wheel 测试全部通过，只验收 Linux PID 清理子项；两平台完整退出条件尚未通过，自动模式仍阻断。R2.3 当前开发 Windows AppContainer + Job Object 的原生实验；CI #91–#98 的 Windows x64/ARM64 AppContainer 原生测试均失败，#92–#98 的 `CreateProcessW` 返回 203。CI #96–#98 普通 Job 空环境对照双架构通过，问题收窄到 AppContainer 启动路径；不能据此断言 runner 是根因。#97 修复了未创建进程却误报清理失败的分类问题；#98 证明省略 `=X:` 盘符伪变量无效，已撤销以恢复环境兼容。此实验不接自动工单。默认无网络能力的 AppContainer 是候选实现，域名代理仍需独立网络强制机制。R2.4 继续实现网络控制与 Git broker；R2.5 负责安装引导和发布矩阵。开发期线上只保留 main，不以合入主线代替阶段验收。
+R2.2 已合入 main 持续验证 Linux/macOS 原生后端。[CI #85](https://github.com/ayukyo/icode/actions/runs/36001610973) 的 Ubuntu 22.04/24.04 x64/ARM64 原生与 wheel 测试全部通过，只验收 Linux PID 清理子项；两平台完整退出条件尚未通过，自动模式仍阻断。R2.3 当前开发 Windows AppContainer + Job Object 的原生实验；CI #91–#99 的 Windows x64/ARM64 AppContainer 原生测试均失败，#92–#99 的 `CreateProcessW` 返回 203。CI #96–#99 普通 Job 空环境对照双架构通过，问题收窄到 AppContainer 启动路径；不能据此断言 runner 是根因。#97 修复了未创建进程却误报清理失败的分类问题；#98 证明省略 `=X:` 盘符伪变量无效；#99 证明显式对齐属性列表缓冲区未解决启动失败。Windows 实验不接自动工单。macOS Intel/ARM64 的脱组后代握手负例在 #99 通过，按已批准的 Codex 式边界验收。默认无网络能力的 AppContainer 是候选实现，域名代理仍需独立网络强制机制。R2.4 Git 仅完成不执行 Git 的 porcelain v2 字节解析器前置模块；`git_broker_unavailable` 不变，可信会话绑定、元数据只读、helper 禁止、无网络、原仓不变及跨平台恶意仓库负例尚待实现/验收。R2.4 网络代理继续独立开发；R2.5 负责安装引导和发布矩阵。开发期线上只保留 main，不以合入主线代替阶段验收。
 完整 R2 的验收门槛仍是 Linux、macOS、Windows 每个平台均达到 ≥9/10，且 8 项 critical 全部通过。
 
 设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
@@ -297,7 +297,7 @@ R2.2 已合入 main 持续验证 Linux/macOS 原生后端。[CI #85](https://git
 [R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md) ·
 [R2.4 临时网络授权门禁](./nbl/plans/2026-09-24-r2-network-proxy-gate.md)
 
-R2.3 Windows AppContainer 原生探针现已有 CI #91–#98 结果，Windows x64 与 ARM64 均失败；#92–#98 的 AppContainer `CreateProcessW` 可见诊断为错误码 203。CI #96–#98 普通 Job 空环境对照双架构通过，问题收窄到 AppContainer 启动路径；runner 根因尚未证实。#97 修正了创建失败的回执分类。#98 证明 io-harness 中省略 `=X:` 盘符伪变量的实现差异不能解释 ICODE 当前错误，因此已撤销该试验并保留 Windows 环境块兼容性。下一项仅显式保证 `STARTUPINFOEX` 属性列表缓冲区指针对齐，依据 io-harness 0.86.0 的实现差异做 A/B，尚待双架构 CI；不将其写成根因。AppContainer 仍为实验态，不接自动工单。
+R2.3 Windows AppContainer 原生探针现已有 CI #91–#99 结果，Windows x64 与 ARM64 均失败；#92–#99 的 AppContainer `CreateProcessW` 可见诊断为错误码 203。CI #96–#99 普通 Job 空环境对照双架构通过，问题收窄到 AppContainer 启动路径；runner 根因尚未证实。#97 修正了创建失败的回执分类。#98 证明省略 `=X:` 盘符伪变量无效；#99 证明显式对齐属性列表缓冲区仍未改变 203，因此该分配作为稳健性改进保留而非修复结论。macOS Intel/ARM64 的脱组后代握手负例在 #99 通过，按已批准的 Codex 式边界验收。Windows AppContainer 仍为实验态，不接自动工单。
 
 ---
 
