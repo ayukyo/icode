@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 import hashlib
 import os
+import plistlib
 import socket
 import unittest
 import shutil
@@ -455,6 +456,8 @@ class TestSandboxWrapping(unittest.TestCase):
         # 仅验证系统自带 launchd 能否补进程组的缺口；不接入生产后端。
         with temp_workspace() as root:
             label = f"org.icode.test.cleanup.{uuid.uuid4().hex}"
+            domain = f"gui/{os.getuid()}"
+            service_target = f"{domain}/{label}"
             started = root / "launchd-child-started"
             survived = root / "launchd-child-survived"
             grandchild_code = (
@@ -475,15 +478,24 @@ class TestSandboxWrapping(unittest.TestCase):
                 "print('job-ready', flush=True)\n"
                 "time.sleep(5)\n"
             )
+            plist_path = root / f"{label}.plist"
+            with plist_path.open("wb") as stream:
+                plistlib.dump({
+                    "Label": label,
+                    "ProgramArguments": [sys.executable, "-c", parent_code],
+                    "RunAtLoad": True,
+                    "KeepAlive": False,
+                    "AbandonProcessGroup": False,
+                    "WorkingDirectory": str(root),
+                    "StandardOutPath": str(root / "launchd-stdout"),
+                    "StandardErrorPath": str(root / "launchd-stderr"),
+                }, stream)
             try:
-                submitted = subprocess.run(
-                    ["launchctl", "submit", "-l", label,
-                     "-o", str(root / "launchd-stdout"),
-                     "-e", str(root / "launchd-stderr"),
-                     "--", sys.executable, "-c", parent_code],
+                bootstrapped = subprocess.run(
+                    ["launchctl", "bootstrap", domain, str(plist_path)],
                     capture_output=True, text=True, timeout=5, check=False,
                 )
-                self.assertEqual(submitted.returncode, 0, submitted.stderr)
+                self.assertEqual(bootstrapped.returncode, 0, bootstrapped.stderr)
                 for _ in range(200):
                     if started.exists():
                         break
@@ -491,17 +503,17 @@ class TestSandboxWrapping(unittest.TestCase):
                 stderr_path = root / "launchd-stderr"
                 self.assertTrue(started.exists(),
                                 stderr_path.read_text(encoding="utf-8", errors="replace")
-                                if stderr_path.exists() else submitted.stderr)
-                removed = subprocess.run(
-                    ["launchctl", "remove", label],
+                                if stderr_path.exists() else bootstrapped.stderr)
+                booted_out = subprocess.run(
+                    ["launchctl", "bootout", service_target],
                     capture_output=True, text=True, timeout=5, check=False,
                 )
-                self.assertEqual(removed.returncode, 0, removed.stderr)
+                self.assertEqual(booted_out.returncode, 0, booted_out.stderr)
                 time.sleep(1.6)
-                self.assertFalse(survived.exists(), "launchd 作业移除后脱组孙进程仍存活")
+                self.assertFalse(survived.exists(), "launchd bootout 后脱组孙进程仍存活")
             finally:
                 subprocess.run(
-                    ["launchctl", "remove", label],
+                    ["launchctl", "bootout", service_target],
                     capture_output=True, text=True, timeout=5, check=False,
                 )
 
