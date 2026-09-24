@@ -25,6 +25,13 @@
 
 以上是指定提交的源码/官方文档观察，不是这些上游工具的运行时实测；若上游提交变化，按[持续对照约定](../../agent-landscape-live.md)复核。
 
+## 2026-09-25 并行复核与决定
+
+- Codex commit `e4b68615f06621c43b365d66823ed01b8f8e8416` 的 [`fsmonitor.rs`](https://github.com/openai/codex/blob/e4b68615f06621c43b365d66823ed01b8f8e8416/codex-rs/git-utils/src/fsmonitor.rs) 实际检查有效 `core.fsmonitor`，只在确认内置 daemon 且 Git 支持时启用，否则覆盖成 `core.fsmonitor=false`，避免仓库配置选择外部 helper；[core README](https://github.com/openai/codex/blob/e4b68615f06621c43b365d66823ed01b8f8e8416/codex-rs/core/README.md) 描述 macOS `.git`、解析后的 gitdir 与 `.codex` 在 workspace-write 下只读。[Git Doctor](https://github.com/openai/codex/blob/e4b68615f06621c43b365d66823ed01b8f8e8416/codex-rs/cli/src/doctor/git.rs) 是不启动 Git 的文件系统诊断；没有发现 Codex 专用 Git 状态 broker。
+- Qwen Code v0.24.4 的[沙箱文档](https://github.com/QwenLM/qwen-code/blob/v0.24.4/docs/users/features/sandbox.md)和[设置解析实现](https://github.com/QwenLM/qwen-code/blob/v0.24.4/packages/cli/src/config/execution-sandbox-settings.ts)验证系统/用户级执行策略优先、项目设置不可降低边界、配置无效时拒绝启动；文档同时明确 network closed 不等于隐藏宿主文件/本地服务隔离，并拒绝宿主 Git 预览等未移植操作。没有发现独立 Git 状态代理。
+- **采纳：** 固定 Git 可执行文件和参数，结构化 NUL 输出；对外部 helper 禁止优先于提速。OS 沙箱必须让代码与 Git 元数据只读、默认断网，并覆盖链接 worktree 解析后的 gitdir/common-dir。可信会话必须绑定路径身份，失败保持 unavailable。
+- **暂缓接线：** ICODE 尚无可以让 Git 读取元数据但禁止写入的三平台统一执行合同；当前 Linux Landlock helper 仅表达单代码根读写，macOS/Windows 相关策略也未完整验收。因此先完善执行边界与恶意仓库负例，不开放工具入口；仅清理 `GIT_*`、设置 `GIT_OPTIONAL_LOCKS=0` 或过滤命令行均不构成安全证明。
+
 ## 先红后绿验收
 
 - 恶意仓库配置包含 fsmonitor、外部 diff、filter、hook、credential helper；只读状态不得启动它们，不得读取或写入宿主敏感路径。

@@ -1,6 +1,6 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- 最近观察：2026-09-24；下次全量复核：不晚于 2026-10-24
+- 最近观察：2026-09-25；下次全量复核：不晚于 2026-10-24
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -50,7 +50,8 @@
 | 项目 | 本次上游提交 | 核对入口 | 目前可借鉴的边界 |
 |---|---|---|---|
 | Codex | `282cd7b`（R2 网络复核） | [Linux 沙箱源码说明](https://github.com/openai/codex/blob/282cd7b019378746cb87bd91a95d8b4bcae12aa3/codex-rs/linux-sandbox/README.md) · [网络代理](https://github.com/openai/codex/blob/282cd7b019378746cb87bd91a95d8b4bcae12aa3/codex-rs/network-proxy/README.md) · [应用网络策略](https://github.com/openai/codex/blob/282cd7b019378746cb87bd91a95d8b4bcae12aa3/codex-rs/app-server/README.md#application-network-policy) | `.git`/解析后 gitdir 只读；代理模式以 netns/桥接与 seccomp 组合；应用与沙箱命令的网络边界不同。Git 查询细节见下方 R2 Git 行的 `61e23bc` 锚点 |
-| Windows sandbox | Codex `3e9d1d2`；Qwen `330b928`；Gemini CLI `87de0b6` | [Microsoft AppContainer 启动](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer) · [隔离模型](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) · [Codex restricted token](https://github.com/openai/codex/blob/3e9d1d29370ee7239585b9d1d576bea8263768ec/codex-rs/windows-sandbox-rs/src/token.rs) · [Qwen 沙箱文档](https://github.com/QwenLM/qwen-code/blob/330b92811c07483e30704190c7e135161120481b/docs/users/features/sandbox.md) · [Gemini Windows 沙箱](https://github.com/google-gemini/gemini-cli/blob/87de0b6369f0466da37d9b3c0c9b77374bb59992/docs/cli/sandbox.md) | Windows 机制深读；ICODE AppContainer 实验 CI #91/#92 的 x64/ARM64 测试均失败，保持实验态；#92 返回 203，环境块修正等待原生复测 |
+| Codex Git safeguards | `e4b6861` | [fsmonitor 防仓库配置选择任意 helper](https://github.com/openai/codex/blob/e4b68615f06621c43b365d66823ed01b8f8e8416/codex-rs/git-utils/src/fsmonitor.rs) · [core 平台元数据只读边界](https://github.com/openai/codex/blob/e4b68615f06621c43b365d66823ed01b8f8e8416/codex-rs/core/README.md) · [Git Doctor 文件系统诊断](https://github.com/openai/codex/blob/e4b68615f06621c43b365d66823ed01b8f8e8416/codex-rs/cli/src/doctor/git.rs) | 有 Git helper 抑制、元数据只读及不启动 Git 的诊断实现；未发现独立只读 Git 状态 broker，不能将这些局部实现等同完整 broker |
+| Windows sandbox | Codex `3e9d1d2`；Qwen `330b928`；Gemini CLI `87de0b6` | [Microsoft AppContainer 启动](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer) · [隔离模型](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) · [Codex restricted token](https://github.com/openai/codex/blob/3e9d1d29370ee7239585b9d1d576bea8263768ec/codex-rs/windows-sandbox-rs/src/token.rs) · [Qwen 沙箱文档](https://github.com/QwenLM/qwen-code/blob/330b92811c07483e30704190c7e135161120481b/docs/users/features/sandbox.md) · [Gemini Windows 沙箱](https://github.com/google-gemini/gemini-cli/blob/87de0b6369f0466da37d9b3c0c9b77374bb59992/docs/cli/sandbox.md) | Windows 机制深读；ICODE AppContainer CI #91–#93 的 x64/ARM64 原生测试均失败；#92/#93 为 CreateProcessW 203。盘符环境项按 Microsoft 文档修正后无变化，现进一步隔离环境块与 AppContainer 启动问题；仍保持实验态 |
 | Windows Python/AppContainer 运维风险 | Microsoft MXC `021b9b5`；Codex issue `#45871`（2026-09-16 用户报告，仍 open） | [MXC issue #572](https://github.com/microsoft/mxc/issues/572) · [MXC 当前 DACL 实现](https://github.com/microsoft/mxc/blob/021b9b58561cac98a3b34f10dbdf11b5393e776e/src/core/wxc_common/src/filesystem_dacl.rs) · [Codex issue #45871](https://github.com/openai/codex/issues/45871) | MXC issue 报告：低层 AppContainer+DACL 路径对 Python 安装树逐次递归加/撤 ACE 可达约 35 秒；Codex 用户报告 `canonicalize` 的 DOS 盘符解析在 AppContainer 中可能因 `\GLOBAL??` 拒绝。MXC 源码另含“修改前持久化恢复状态、按路径互斥、启动时回收死进程状态”的设计，可作为 ICODE 崩溃恢复候选借鉴。上述是风险线索，不能视为 ICODE 实测 |
 | Gemini CLI | `87de0b6` | [沙箱文档](https://github.com/google-gemini/gemini-cli/blob/87de0b6369f0466da37d9b3c0c9b77374bb59992/docs/cli/sandbox.md) | 工具级隔离与单次扩权批准分开，自动模式不隐式批准 |
 | Qwen Code | `11c87ee` | [沙箱文档](https://github.com/QwenLM/qwen-code/blob/11c87ee7c27dbc98efd0f67bb82f19b027f3e610/docs/users/features/sandbox.md) | 未适配的 MCP/扩展/宿主 Git 预览不静默放行；新 Linux 工具级模式尚不支持 `proxied` |
@@ -74,9 +75,15 @@
 | 后续上下文选择 | [Aider Repo Map](https://github.com/Aider-AI/aider/blob/main/aider/website/docs/repomap.md) | **采纳方向**：按任务检索相关结构，保留 ICODE-SKILL 必须输入与证据门禁；不复制其代码。 | 大仓库命中率、token 成本、必需上下文不遗漏。 |
 | 后续办公工单 UI | [Cline](https://github.com/cline/cline/blob/main/README.md)、[OpenHands](https://github.com/OpenHands/OpenHands/blob/main/README.md) | **选择性采纳**：计划/执行切换、可读审批、工单状态与执行服务分层；不把 Langflow 式节点画布作为小白首页。 | 中英双语、普通白领可新建/查找工单并理解状态；会话/自动模式清晰标识安全边界。 |
 
+### 2026-09-25 R2.4 Git 状态代理复核
+
+- Codex commit `e4b68615f06621c43b365d66823ed01b8f8e8416` 的 `fsmonitor.rs` 检查仓库 `core.fsmonitor` 配置并覆盖可能指定外部 helper 的值；core README 记录 macOS `.git`、解析后的 worktree `gitdir` 与 `.codex` 在 workspace-write 策略中保持只读。Git Doctor 另有从文件系统读取元数据、不启动 Git 的诊断实现。未找到 Codex 专门的只读 Git 状态 broker；这些都是可借鉴组件而不是端到端能力。
+- Qwen Code v0.24.4 的 Linux 工具执行沙箱由系统/用户设置控制，项目设置不能降低策略，配置错误不回退宿主执行；它明确说明 `network: closed` 仍不隐藏宿主文件，也不隔离全部本机服务。官方文档禁用宿主 Git 预览等未移植工具；未发现独立 Git 状态 broker。
+- ICODE 取舍：采纳可信会话绑定、操作系统级只读 Git 元数据/禁网、禁用外部 helper 与失败关闭；暂不开放模型命令入口。先做固定可执行文件与参数、NUL 结构化输出和恶意仓库负例，执行隔离必须可证明且覆盖链接 worktree 的 gitdir/common-dir；不能仅用 `GIT_OPTIONAL_LOCKS=0`、环境清理或正则参数过滤宣称安全。
+
 ### 2026-09-24 Windows AppContainer 追查补充
 
-- ICODE CI #92 在 Windows x64 与 ARM64 runner 上都于 CreateProcessW 返回错误码 203 后失败；Actions notice 让失败阶段可见。Convira 的公开 issue #1 报告同一 GitHub runner 错误码，但其作者没有确认根因，关闭 issue 时选择跳过真实集成测试，不能据此把 ICODE 失败归因于 runner。
-- Microsoft 的 CreateProcessW 文档说明：调用方传入自定义环境块时，系统不会自动转交系统驱动器的当前目录信息；需要显式带上例如 =C: 的特殊环境条目并按名称排序。ICODE 原最小环境块没有这些条目，因此先补了可跨平台单测的生成器；此修复仍等待 Windows 原生 CI 复测，未宣称根因已完全确认。
+- ICODE CI #92 与 #93 在 Windows x64、ARM64 均于 CreateProcessW 返回错误码 203 后失败；#93 采用盘符环境项和 Windows `PATH` 修正仍未改变结果。[Convira issue #1](https://github.com/Convira/convira-sandbox/issues/1) 报告同一 GitHub hosted runner 现象，但作者没有确认根因，关闭 issue 时选择跳过真实集成测试，不能据此把 ICODE 失败归因于 runner。
+- Microsoft 的 CreateProcessW 文档说明：调用方传入自定义环境块时，系统不会自动转交系统驱动器的当前目录信息；需显式带上例如 `=C:` 的特殊环境条目并按名称排序。ICODE 已按此修正，但双架构实测表明这不是当前 203 错误的充分解释；下一轮增加“不继承宿主变量的空环境块 + System32 程序”诊断，区分环境内容和 AppContainer/runner 启动问题。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。

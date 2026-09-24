@@ -12,10 +12,12 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from urllib.parse import urlsplit
 
 from icode.windows_appcontainer import _AppContainerSetupError
 from icode.windows_appcontainer import _walk_workspace, run_windows_appcontainer
+from icode.windows_job import _build_windows_environment_block
 
 
 class TestWindowsAppContainer(unittest.TestCase):
@@ -64,6 +66,35 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertFalse(result.executed)
         self.assertFalse(result.cleanup_ok)
         self.assertEqual(result.error, "unsupported_platform")
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
+    def test_诊断空环境块下的系统程序启动(self) -> None:
+        """区分 AppContainer 创建限制与最小自定义环境块问题，且不继承宿主变量。"""
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        executable = system_root / "System32" / "whoami.exe"
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-empty-env-") as raw:
+            workspace = Path(raw) / "task"
+            workspace.mkdir()
+            safe_environment = _build_windows_environment_block(
+                executable, workspace, system_root,
+            )
+            # The empty block is an intentional diagnostic. Never pass lpEnvironment=None,
+            # which would copy arbitrary runner variables (and possible credentials).
+            with mock.patch(
+                "icode.windows_job._build_windows_environment_block",
+                side_effect=("\0\0", safe_environment),
+            ):
+                result = run_windows_appcontainer(
+                    [str(executable)], cwd=workspace, timeout_seconds=10, process_limit=2,
+                )
+            self._workflow_notice(
+                "empty environment AppContainer launch",
+                f"executed={result.executed} exit={result.exit_code} error={result.error} "
+                f"cleanup={result.cleanup_ok} detail={result.detail}",
+            )
+            self.assertTrue(result.executed, result)
+            self.assertEqual(result.exit_code, 0, result)
+            self.assertTrue(result.cleanup_ok, result)
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
     def test_在AppContainer中运行Python并解析工作路径(self) -> None:
