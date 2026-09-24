@@ -245,6 +245,19 @@ class TestWorkbenchHTTP(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_超大真实请求体返回_413(self) -> None:
+        status, _, body = _request(
+            self.url + "api/v1/tickets",
+            method="POST",
+            payload=self._payload(
+                request_id="too-large-body",
+                description="x" * (MAX_BODY_BYTES + 1),
+            ),
+            cookie=self._cookie(),
+        )
+        self.assertEqual(status, 413)
+        self.assertEqual(json.loads(body)["code"], "request_too_large")
+
     def test_未知路由_404(self) -> None:
         status, _, body = _request(self.url + "api/v1/unknown", cookie=self._cookie())
         self.assertEqual(status, 404)

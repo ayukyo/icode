@@ -10,6 +10,7 @@ import json
 import re
 import secrets
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -26,6 +27,9 @@ LOOPBACK_HOST = "127.0.0.1"
 ALLOWED_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 SESSION_COOKIE = "icode_workbench_session"
 MAX_BODY_BYTES = 64 * 1024
+MAX_REJECTED_BODY_DRAIN_BYTES = MAX_BODY_BYTES * 2
+REJECTED_BODY_DRAIN_TIMEOUT_SECONDS = 0.25
+REJECTED_BODY_DRAIN_CHUNK_BYTES = 8 * 1024
 ASSETS_DIR = Path(__file__).resolve().parent / "workbench_assets"
 CONTENT_SECURITY_POLICY = (
     "default-src 'none'; script-src 'self'; style-src 'self'; "
@@ -125,6 +129,29 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _drain_rejected_body(self, length: int) -> None:
+        """有界丢弃小幅超限请求，避免未读数据导致 Windows 关闭连接时丢失 413。"""
+        if length > MAX_REJECTED_BODY_DRAIN_BYTES:
+            return
+        original_timeout = self.connection.gettimeout()
+        deadline = time.monotonic() + REJECTED_BODY_DRAIN_TIMEOUT_SECONDS
+        try:
+            remaining = length
+            while remaining > 0:
+                timeout = deadline - time.monotonic()
+                if timeout <= 0:
+                    break
+                self.connection.settimeout(timeout)
+                try:
+                    chunk = self.rfile.read1(min(remaining, REJECTED_BODY_DRAIN_CHUNK_BYTES))
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+        finally:
+            self.connection.settimeout(original_timeout)
+
     def _read_json(self) -> object:
         content_type = (self.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
@@ -136,6 +163,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         if length <= 0:
             raise TicketError("请求体不能为空")
         if length > MAX_BODY_BYTES:
+            self._drain_rejected_body(length)
             raise RequestTooLarge(f"请求体不能超过 {MAX_BODY_BYTES} 字节")
         try:
             return json.loads(self.rfile.read(length).decode("utf-8"))
