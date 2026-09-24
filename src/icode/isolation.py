@@ -893,6 +893,19 @@ def capability_report() -> dict:
             "checks": group_result.checks,
             "detail": group_result.detail,
         }
+    windows_job: dict[str, object] = {
+        "executed": False, "passed": False, "checks": {}, "detail": "当前平台不适用",
+    }
+    if sys.platform == "win32":
+        from .windows_job import probe_windows_job_cleanup
+
+        job_result = probe_windows_job_cleanup()
+        windows_job = {
+            "executed": job_result.executed,
+            "passed": job_result.passed,
+            "checks": job_result.checks,
+            "detail": job_result.detail,
+        }
     return {
         "probes": [
             {"name": c.name, "available": c.available, "kind": c.kind, "detail": c.detail}
@@ -904,6 +917,7 @@ def capability_report() -> dict:
         ),
         "bundled_linux_helper": bundled,
         "macos_group_cleanup": macos_group,
+        "windows_job_cleanup": windows_job,
         "policy_schema_version": POLICY_SCHEMA_VERSION,
         "conformance_contract": {
             "id": contract["contract_id"],

@@ -238,6 +238,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         group = report["macos_group_cleanup"]
         print(f"  [INFO] macOS 同组清理局部探测：{group['detail']}")
         print("         不代表整树清理；主动脱组后代不在回收保证内")
+    if sys.platform == "win32":
+        job = report["windows_job_cleanup"]
+        print(f"  [INFO] Windows Job 后代清理局部探测：{job['detail']}")
+        print("         不代表文件或网络隔离；Windows 自动模式仍未就绪")
     print("  [WARN] 策略级隔离未就绪：自动模式仍拒绝外部命令")
     if not selected.get("is_real_isolation"):
         print("         ⚠ 无内核/容器级隔离：模型若绕过运行时直接执行 shell，应用层规则不构成保障")

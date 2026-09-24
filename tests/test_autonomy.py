@@ -1812,11 +1812,14 @@ class TestAutonomyManager(unittest.TestCase):
         manager.handle_intent(ticket_id, {"intent": "start", "request_id": "shutdown-start"})
         self.assertTrue(executor.started.wait(2))
 
-        before = time.monotonic()
-        manager.shutdown(timeout=0.05)
-        elapsed = time.monotonic() - before
-
-        self.assertLess(elapsed, 0.5)
+        # timeout 只限定 worker join；控制面落盘耗时不属于这个预算。
+        worker = next(iter(manager._workers.values()))
+        with patch.object(worker, "join", wraps=worker.join) as join_spy:
+            manager.shutdown(timeout=0.05)
+        join_timeouts = [call.args[0] for call in join_spy.call_args_list]
+        self.assertTrue(join_timeouts)
+        self.assertTrue(all(0 <= value <= 0.055 for value in join_timeouts))
+        self.assertLessEqual(sum(join_timeouts), 0.055)
         ticket = self.service.ticket_detail(ticket_id)
         interrupted = ticket["autonomous_run"]
         self.assertEqual(interrupted["state"], "interrupted")

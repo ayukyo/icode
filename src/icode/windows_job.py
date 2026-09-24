@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,64 @@ class WindowsJobResult:
     error: str | None
     cleanup_ok: bool
     detail: str
+
+
+@dataclass(frozen=True)
+class WindowsJobProbeResult:
+    executed: bool
+    passed: bool
+    checks: dict[str, bool]
+    detail: str
+
+
+def probe_windows_job_cleanup() -> WindowsJobProbeResult:
+    """真实测试正常退出/超时后的 Job 后代回收，绝不计作文件或网络隔离。"""
+    if sys.platform != "win32":
+        return WindowsJobProbeResult(False, False, {}, "当前平台不适用")
+    checks = {"normal_exit": False, "timeout": False}
+    try:
+        with tempfile.TemporaryDirectory(prefix="icode-windows-job-probe-") as raw:
+            root = Path(raw).resolve()
+            for mode, child_delay, timeout in (
+                ("normal_exit", 1.5, 5), ("timeout", 3.0, 1),
+            ):
+                started = root / f"{mode}-started"
+                residue = root / f"{mode}-residue"
+                child_code = (
+                    "import time\nfrom pathlib import Path\n"
+                    f"Path({str(started)!r}).write_text('ready')\n"
+                    f"time.sleep({child_delay!r})\n"
+                    f"Path({str(residue)!r}).write_text('late')\n"
+                )
+                parent_code = (
+                    "import subprocess, sys, time\nfrom pathlib import Path\n"
+                    f"subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                    "creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)\n"
+                    f"for _ in range(200):\n    if Path({str(started)!r}).exists(): break\n"
+                    "    time.sleep(0.01)\n"
+                    "else: raise RuntimeError('child did not start')\n"
+                    + ("time.sleep(8)\n" if mode == "timeout" else "")
+                )
+                result = run_windows_job(
+                    [sys.executable, "-c", parent_code],
+                    cwd=root, timeout_seconds=timeout,
+                )
+                if started.is_file():
+                    time.sleep(child_delay + 0.2)
+                checks[mode] = (
+                    result.executed and result.cleanup_ok
+                    and started.is_file() and not residue.exists()
+                    and (result.error == "timeout" if mode == "timeout"
+                         else result.error is None and result.exit_code == 0)
+                )
+    except Exception:  # noqa: BLE001 - 自检异常只可降为未通过
+        return WindowsJobProbeResult(True, False, checks, "Windows Job 局部探测异常")
+    failed = [name for name, passed in checks.items() if not passed]
+    return WindowsJobProbeResult(
+        True, not failed, checks,
+        "Job 后代清理局部探测通过；不含文件/网络隔离" if not failed
+        else "Job 后代清理未通过：" + ", ".join(failed),
+    )
 
 
 def run_windows_job(

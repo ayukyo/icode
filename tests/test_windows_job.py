@@ -6,10 +6,11 @@ import os
 import sys
 import time
 import unittest
+from unittest import mock
 
 from tests._support import temp_workspace
 
-from icode.windows_job import run_windows_job
+from icode.windows_job import WindowsJobResult, probe_windows_job_cleanup, run_windows_job
 
 
 class TestWindowsJob(unittest.TestCase):
@@ -19,6 +20,19 @@ class TestWindowsJob(unittest.TestCase):
         result = run_windows_job([sys.executable, "-V"], cwd=os.getcwd(), timeout_seconds=2)
         self.assertFalse(result.executed)
         self.assertFalse(result.cleanup_ok)
+        probe = probe_windows_job_cleanup()
+        self.assertFalse(probe.executed)
+        self.assertFalse(probe.passed)
+
+    def test_局部自检启动失败不能误报通过(self) -> None:
+        failed = WindowsJobResult(False, None, "job_creation_failed", False, "failed")
+        with mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch("icode.windows_job.run_windows_job", return_value=failed) as launch:
+            probe = probe_windows_job_cleanup()
+        self.assertEqual(launch.call_count, 2)
+        self.assertTrue(probe.executed)
+        self.assertFalse(probe.passed)
+        self.assertEqual(probe.checks, {"normal_exit": False, "timeout": False})
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows Job Object 实测")
     def test_正常退出与超时均回收后代(self) -> None:
@@ -51,6 +65,17 @@ class TestWindowsJob(unittest.TestCase):
                 self.assertEqual(result.error, "timeout" if mode == "timeout" else None)
                 time.sleep(delay + 0.2)
                 self.assertFalse(residue.exists(), result)
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows Job Object 实测")
+    def test_局部自检不冒充完整沙箱(self) -> None:
+        from icode.isolation import capability_report
+
+        report = capability_report()
+        probe = report["windows_job_cleanup"]
+        self.assertTrue(probe["executed"])
+        self.assertEqual(probe["checks"], {"normal_exit": True, "timeout": True})
+        self.assertTrue(probe["passed"], probe["detail"])
+        self.assertFalse(report["conformance_contract"]["executed"])
 
 
 if __name__ == "__main__":
