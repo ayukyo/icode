@@ -351,6 +351,16 @@ class TestRunCommand(unittest.TestCase):
         self.assertFalse(r.ok)
         self.assertEqual(r.meta["exit_code"], 3)
 
+    def test_执行工具本身拒绝非字符串参数(self) -> None:
+        with patch("subprocess.run") as spawned:
+            for bad in ({"python": "-V"}, ["python", 1], ["python", None],
+                        ["", "python"], ["python", "\x00"], 'python "', 7):
+                with self.subTest(argv=bad):
+                    result = self.reg.invoke("run_command", self.ctx, {"argv": bad})
+                    self.assertFalse(result.ok)
+                    self.assertEqual(result.meta["error"], "invalid_argv")
+            spawned.assert_not_called()
+
     def test_只读命令归类为_read_only(self) -> None:
         r = self.reg.invoke("run_command", self.ctx, {"argv": ["git", "status"]})
         self.assertEqual(r.opclass, OPCLASS_READ_ONLY)

@@ -110,6 +110,14 @@ class TestGuard(unittest.TestCase):
     def test_空命令拒绝(self) -> None:
         self.assertEqual(self.guard.check_command("").decision, Decision.DENY)
 
+    def test_非字符串参数列表被拒绝而不抛异常(self) -> None:
+        for bad in ({"python": "-V"}, ["python", 1], ["python", None],
+                    ["", "python"], ["python", "\x00"], 7):
+            with self.subTest(argv=bad):
+                verdict = self.guard.check_command(bad)
+                self.assertEqual(verdict.decision, Decision.DENY)
+                self.assertIn("参数", verdict.reason)
+
     def test_单参数内拼shell被拒并给出可纠正提示(self) -> None:
         """回归：模型常想传 'ls -la' / 'python && -m unittest' 这类 shell 串。
 

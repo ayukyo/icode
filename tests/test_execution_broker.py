@@ -91,7 +91,8 @@ class TestPolicyCommandBroker(unittest.TestCase):
                 "argv": ["bad\x00command"],
             })
             self.assertFalse(malformed.ok)
-            self.assertEqual(malformed.meta["error"], "launch_failed")
+            # 畸形参数在 broker 启动前即由工具入口拒绝。
+            self.assertEqual(malformed.meta["error"], "invalid_argv")
 
     def test_策略超时回收继承管道的子进程(self) -> None:
         with temp_workspace() as root:

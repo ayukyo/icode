@@ -150,6 +150,17 @@ class Guard:
     # ---- 命令 ----
 
     def check_command(self, argv: list[str] | tuple[str, ...] | str) -> Verdict:
+        # 模型工具参数不是类型可信的；先校验形态，避免权限判断与执行解析分叉。
+        if not isinstance(argv, (str, list, tuple)) or (
+            not isinstance(argv, str)
+            and (not argv or any(not isinstance(part, str) for part in argv))
+        ):
+            return Verdict(Decision.DENY, "命令参数必须是字符串或字符串列表")
+        if not isinstance(argv, str) and not argv[0].strip():
+            return Verdict(Decision.DENY, "命令参数缺少可执行程序")
+        if ("\x00" in argv if isinstance(argv, str)
+                else any("\x00" in part for part in argv)):
+            return Verdict(Decision.DENY, "命令参数含非法字符")
         text = argv if isinstance(argv, str) else " ".join(argv)
         stripped = text.strip()
         if not stripped:

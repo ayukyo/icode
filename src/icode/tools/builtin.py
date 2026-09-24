@@ -572,14 +572,27 @@ def run_command(
     """
     import subprocess
 
+    if not isinstance(argv, (str, list, tuple)) or (
+        not isinstance(argv, str)
+        and any(not isinstance(part, str) for part in argv)
+    ):
+        return ToolResult(False, "命令参数必须是字符串或字符串列表",
+                          {"error": "invalid_argv"}, opclass=OPCLASS_MANAGED_WRITE)
     if isinstance(argv, str):
         import shlex
 
-        args = shlex.split(argv, posix=True)
+        try:
+            args = shlex.split(argv, posix=True)
+        except ValueError:
+            return ToolResult(False, "命令参数解析失败",
+                              {"error": "invalid_argv"}, opclass=OPCLASS_MANAGED_WRITE)
     else:
         args = list(argv)
     if not args:
         return ToolResult(False, "空命令", {"error": "empty_argv"},
+                          opclass=OPCLASS_MANAGED_WRITE)
+    if not args[0].strip() or any("\x00" in part for part in args):
+        return ToolResult(False, "命令参数非法", {"error": "invalid_argv"},
                           opclass=OPCLASS_MANAGED_WRITE)
 
     workdir = ctx.resolve(cwd) if cwd else ctx.root

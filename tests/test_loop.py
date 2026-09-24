@@ -123,6 +123,18 @@ class TestLoopGuards(unittest.TestCase):
         self.assertEqual(inv.decision, "deny")
         self.assertIn("危险模式", inv.note)
 
+    def test_畸形命令参数被拒且回合继续(self) -> None:
+        for bad in ({"python": "-V"}, ["python", 1], 7):
+            with self.subTest(argv=bad):
+                script = [{"content": "", "tool_calls": [
+                    {"id": "c1", "name": "run_command", "arguments": {"argv": bad}}
+                ]}, "完成"]
+                result = _loop(script, self.root).run([{"role": "user", "content": "测试"}])
+                self.assertTrue(result.ok)
+                invocation = result.turns[0].invocations[0]
+                self.assertEqual(invocation.decision, "deny")
+                self.assertFalse(invocation.approved)
+
     def test_需审批的动作默认被拒(self) -> None:
         script = [{"content": "", "tool_calls": [
             {"id": "c1", "name": "run_command", "arguments": {"argv": ["unknown-tool"]}}
