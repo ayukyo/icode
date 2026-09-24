@@ -110,6 +110,30 @@ jobs:
         if: runner.os == 'Linux'
         run: python scripts/run_native_wheel_ci.py
 
+  windows-job-probe:
+    name: R2.3 Windows Job probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    env:
+      PYTHONPATH: src
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Verify normal and timeout descendant cleanup
+        run: python -m unittest tests.test_windows_job -v
+
   presentation:
     name: Repository presentation
     runs-on: ubuntu-latest
