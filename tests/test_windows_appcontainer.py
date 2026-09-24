@@ -18,7 +18,10 @@ from urllib.parse import urlsplit
 
 from icode.windows_appcontainer import _AppContainerSetupError
 from icode.windows_appcontainer import _walk_workspace, run_windows_appcontainer
-from icode.windows_job import _build_windows_environment_block, run_windows_job
+from icode.windows_job import (
+    _build_windows_environment_block,
+    run_windows_job,
+)
 
 
 class TestWindowsAppContainer(unittest.TestCase):
@@ -67,6 +70,21 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertFalse(result.executed)
         self.assertFalse(result.cleanup_ok)
         self.assertEqual(result.error, "unsupported_platform")
+
+    def test_lpApplicationName诊断在AppContainer外层拒绝其它命令(self) -> None:
+        executable = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "whoami.exe"
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-invalid-diagnostic-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch("icode.windows_appcontainer.Path.is_absolute", return_value=True), \
+             mock.patch("icode.windows_appcontainer.Path.is_file", return_value=True), \
+             mock.patch("icode.windows_appcontainer.ctypes.WinDLL", create=True) as load_api:
+            result = run_windows_appcontainer(
+                [str(executable), "/all"], cwd=raw, timeout_seconds=2,
+                _diagnostic_null_application_name=True,
+            )
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+        load_api.assert_not_called()
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
     def test_诊断空环境块下的系统程序启动(self) -> None:
@@ -162,6 +180,61 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertTrue(appcontainer.executed, appcontainer)
         self.assertEqual(appcontainer.exit_code, 0, appcontainer)
         self.assertTrue(appcontainer.cleanup_ok, appcontainer)
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
+    def test_诊断lpApplicationName显式路径与NULL差分(self) -> None:
+        """Compare only lpApplicationName while keeping the suspended Job path intact."""
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        executable = system_root / "System32" / "whoami.exe"
+        target_executable = os.path.normcase(str(executable))
+        observed_blocks: list[str] = []
+
+        def build_and_observe(
+            executable_path: str | os.PathLike[str],
+            cwd: str | os.PathLike[str],
+            system_root_path: str | os.PathLike[str],
+        ) -> str:
+            block = _build_windows_environment_block(
+                executable_path, cwd, system_root_path,
+            )
+            if os.path.normcase(os.fspath(executable_path)) == target_executable:
+                observed_blocks.append(block)
+            return block
+
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-lpappname-") as raw:
+            workspace = Path(raw) / "task"
+            workspace.mkdir()
+            with mock.patch(
+                "icode.windows_job._build_windows_environment_block",
+                side_effect=build_and_observe,
+            ):
+                baseline = run_windows_appcontainer(
+                    [str(executable)], cwd=workspace, timeout_seconds=10,
+                    process_limit=2,
+                )
+                null_application_name = run_windows_appcontainer(
+                    [str(executable)], cwd=workspace, timeout_seconds=10,
+                    process_limit=2, _diagnostic_null_application_name=True,
+                )
+
+        env_equal = len(observed_blocks) == 2 and observed_blocks[0] == observed_blocks[1]
+        self._workflow_notice(
+            "lpApplicationName A/B diagnostic",
+            f"baseline=executed:{baseline.executed},exit:{baseline.exit_code},"
+            f"error:{baseline.error},cleanup:{baseline.cleanup_ok}; "
+            f"null=executed:{null_application_name.executed},"
+            f"exit:{null_application_name.exit_code},error:{null_application_name.error},"
+            f"cleanup:{null_application_name.cleanup_ok}; environment_blocks="
+            f"{len(observed_blocks)},equal:{env_equal}; "
+            f"baseline_detail:{baseline.detail[:100]}; "
+            f"null_detail:{null_application_name.detail[:100]}",
+        )
+        self.assertGreaterEqual(len(observed_blocks), 2, "both launches must reach environment setup")
+        self.assertEqual(observed_blocks[0], observed_blocks[1])
+        for result in (baseline, null_application_name):
+            if result.executed:
+                self.assertEqual(result.exit_code, 0, result)
+                self.assertTrue(result.cleanup_ok, result)
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
     def test_在AppContainer中运行Python并解析工作路径(self) -> None:

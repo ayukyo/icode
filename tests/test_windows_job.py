@@ -16,6 +16,7 @@ from icode.windows_job import (
     WindowsJobResult,
     _allocate_attribute_list_buffer,
     _build_windows_environment_block,
+    _is_fixed_system_whoami_probe,
     probe_windows_job_cleanup,
     run_windows_job,
 )
@@ -38,6 +39,89 @@ class TestWindowsJob(unittest.TestCase):
             with self.subTest(required_size=required_size):
                 with self.assertRaises(ValueError):
                     _allocate_attribute_list_buffer(required_size)
+
+    def test_lpApplicationName诊断仅允许固定whoami绝对路径(self) -> None:
+        system_root = r"C:\Windows"
+        accepted = (
+            [r"C:\Windows\System32\whoami.exe"],
+            [r"c:\windows\SYSTEM32\whoami.exe"],
+        )
+        for argv in accepted:
+            with self.subTest(argv=argv):
+                self.assertTrue(_is_fixed_system_whoami_probe(argv, system_root))
+
+        rejected = (
+            [],
+            [r"C:\Windows\System32\whoami.exe", "/all"],
+            [r"C:\Windows\System32\cmd.exe"],
+            [r"C:\Windows\System32\..\whoami.exe"],
+            [r"System32\whoami.exe"],
+            [r"D:\Windows\System32\whoami.exe"],
+        )
+        for argv in rejected:
+            with self.subTest(argv=argv):
+                self.assertFalse(_is_fixed_system_whoami_probe(argv, system_root))
+
+    def test_lpApplicationName诊断拒绝普通Job和其它可执行文件(self) -> None:
+        with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch("icode.windows_job.Path.is_absolute", return_value=True), \
+             mock.patch("icode.windows_job.Path.is_file", return_value=True), \
+             mock.patch("ctypes.WinDLL", create=True) as load_api:
+            ordinary_job = run_windows_job(
+                [r"C:\Windows\System32\whoami.exe"], cwd=workspace,
+                timeout_seconds=2, _diagnostic_null_application_name=True,
+            )
+            other_executable = run_windows_job(
+                [sys.executable], cwd=workspace, timeout_seconds=2,
+                _appcontainer_sid=123, _diagnostic_null_application_name=True,
+            )
+        for result in (ordinary_job, other_executable):
+            self.assertFalse(result.executed)
+            self.assertEqual(result.error, "invalid_diagnostic_probe")
+        load_api.assert_not_called()
+
+    def test_lpApplicationName诊断仅将NULL传给固定AppContainer探针(self) -> None:
+        import ctypes
+
+        api = mock.Mock()
+        api.CreateJobObjectW.return_value = 1
+        api.SetInformationJobObject.return_value = 1
+        api.UpdateProcThreadAttribute.return_value = 1
+        api.CreateProcessW.return_value = 0
+        api.CloseHandle.return_value = 1
+
+        def initialize_attribute_list(
+            attribute_list: object, count: int, flags: int, size: object,
+        ) -> int:
+            if attribute_list is None:
+                ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t)).contents.value = 64
+                return 0
+            return 1
+
+        api.InitializeProcThreadAttributeList.side_effect = initialize_attribute_list
+        with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch("icode.windows_job.Path.is_absolute", return_value=True), \
+             mock.patch("icode.windows_job.Path.is_file", return_value=True), \
+             mock.patch("icode.windows_job.Path.resolve", return_value=Path(r"C:\task")), \
+             mock.patch("icode.windows_job.Path.is_dir", return_value=True), \
+             mock.patch("ctypes.WinDLL", return_value=api, create=True), \
+             mock.patch("ctypes.set_last_error", create=True), \
+             mock.patch("ctypes.get_last_error", side_effect=(122, 203), create=True), \
+             mock.patch("ctypes.FormatError", return_value="diagnostic failure", create=True):
+            result = run_windows_job(
+                [r"C:\Windows\System32\whoami.exe"], cwd=workspace,
+                timeout_seconds=2, _appcontainer_sid=123,
+                _diagnostic_null_application_name=True,
+            )
+
+        self.assertEqual(result.error, "native_api_failed")
+        self.assertTrue(result.cleanup_ok)
+        create_args = api.CreateProcessW.call_args.args
+        self.assertIsNone(create_args[0])
+        self.assertIn("C:\\Windows\\System32\\whoami.exe", ctypes.wstring_at(create_args[1]))
+        self.assertEqual(create_args[5], 0x00080404)
 
     def test_自定义环境块保留驱动器目录但不继承宿主变量(self) -> None:
         block = _build_windows_environment_block(
@@ -108,6 +192,7 @@ class TestWindowsJob(unittest.TestCase):
         self.assertEqual(result.error, "native_api_failed")
         self.assertTrue(result.cleanup_ok)
         self.assertIn("err=203", result.detail)
+        self.assertEqual(api.CreateProcessW.call_args.args[0], sys.executable)
 
     def test_AppContainer启动环境保留盘符伪变量(self) -> None:
         import ctypes

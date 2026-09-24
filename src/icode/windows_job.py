@@ -81,6 +81,27 @@ def _build_windows_environment_block(
     return "\0".join(f"{name}={value}" for name, value in entries) + "\0\0"
 
 
+def _is_fixed_system_whoami_probe(
+    argv: Sequence[str], system_root: str | os.PathLike[str],
+) -> bool:
+    r"""Permit a launch-only diagnostic for exactly System32\whoami.exe."""
+    if len(argv) != 1:
+        return False
+    try:
+        executable = os.fspath(argv[0])
+        root = os.fspath(system_root)
+        if not isinstance(executable, str) or not isinstance(root, str):
+            return False
+        expected = ntpath.join(root, "System32", "whoami.exe")
+        return (
+            ntpath.isabs(executable)
+            and ntpath.normcase(ntpath.normpath(executable))
+            == ntpath.normcase(ntpath.normpath(expected))
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def probe_windows_job_cleanup() -> WindowsJobProbeResult:
     """真实测试正常退出/超时后的 Job 后代回收，绝不计作文件或网络隔离。"""
     if sys.platform != "win32":
@@ -135,16 +156,29 @@ def run_windows_job(
     argv: Sequence[str], *, cwd: str | Path, timeout_seconds: int,
     process_limit: int = 8,
     _appcontainer_sid: int | None = None,
+    _diagnostic_null_application_name: bool = False,
 ) -> WindowsJobResult:
     """挂起启动、入独立 Job、再恢复；所有失败都禁止当成沙箱成功。
 
     这是清理能力的局部试验，不接自动工单。主进程退出或超时后都终止
     Job 中剩余后代；最后一个 Job 句柄因宿主崩溃关闭时也由内核回收。
+    私有诊断模式只允许 AppContainer 启动固定的无参数 whoami 探针。
     """
     if sys.platform != "win32":
         return WindowsJobResult(False, None, "unsupported_platform", False, "仅适用于 Windows")
     if not argv or not Path(argv[0]).is_absolute() or not Path(argv[0]).is_file():
         return WindowsJobResult(False, None, "invalid_command", False, "命令入口必须是存在的绝对路径")
+    if not isinstance(_diagnostic_null_application_name, bool):
+        return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断启动模式无效")
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+    if _diagnostic_null_application_name and (
+        _appcontainer_sid is None
+        or not _is_fixed_system_whoami_probe(argv, system_root)
+    ):
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", False,
+            "NULL lpApplicationName 仅允许 AppContainer 固定 whoami 探针",
+        )
     if not 1 <= timeout_seconds <= 86400 or not 1 <= process_limit <= 1024:
         return WindowsJobResult(False, None, "invalid_limit", False, "超时或进程上限无效")
     root = Path(cwd).resolve()
@@ -301,7 +335,6 @@ def run_windows_job(
             raise OSError(ctypes.get_last_error(), "SetInformationJobObject")
 
         # 不继承宿主凭据或文件句柄；Job 自身也不会被子进程持有。
-        system_root = os.environ.get("SystemRoot", r"C:\Windows")
         env_block = ctypes.create_unicode_buffer(
             _build_windows_environment_block(argv[0], root, system_root)
         )
@@ -372,8 +405,11 @@ def run_windows_job(
                 f"flags=0x{creation_flags:08x} unicode_environment=1 "
                 "extended_startup_info=1 suspended=1"
             )
+            if _diagnostic_null_application_name:
+                diagnostics.append("application_name_mode=null_cmdline_fixed_whoami")
         if not kernel.CreateProcessW(
-            str(argv[0]), command, None, None, False, creation_flags,
+            None if _diagnostic_null_application_name else str(argv[0]),
+            command, None, None, False, creation_flags,
             env_block, str(root), startup_ptr, ctypes.byref(process),
         ):
             raise OSError(ctypes.get_last_error(), "CreateProcessW")

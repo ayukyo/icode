@@ -14,7 +14,11 @@ import uuid
 from ctypes import wintypes
 from typing import Sequence
 
-from .windows_job import WindowsJobResult, run_windows_job
+from .windows_job import (
+    WindowsJobResult,
+    _is_fixed_system_whoami_probe,
+    run_windows_job,
+)
 
 
 _SE_FILE_OBJECT = 1
@@ -302,16 +306,27 @@ def _restore_workspace_acl(
 def run_windows_appcontainer(
     argv: Sequence[str], *, cwd: str | Path, timeout_seconds: int,
     process_limit: int = 8,
+    _diagnostic_null_application_name: bool = False,
 ) -> WindowsJobResult:
     """在无网络能力的 AppContainer + 独立 Job 中运行单条命令。
 
     此为 R2.3 开发期原生实验，不接自动工单。它临时给 ``cwd`` 的 AppContainer
     Package SID 授权，并在进程退出后恢复 ACL；cwd 必须是独立任务工作区，不能是原始仓库。
+    私有 app-name 差分仅允许无参数的系统 whoami 探针，不用于任何工单命令。
     """
     if sys.platform != "win32":
         return WindowsJobResult(False, None, "unsupported_platform", False, "仅适用于 Windows")
     if not argv or not Path(argv[0]).is_absolute() or not Path(argv[0]).is_file():
         return WindowsJobResult(False, None, "invalid_command", False, "命令入口必须是存在的绝对路径")
+    if not isinstance(_diagnostic_null_application_name, bool):
+        return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断启动模式无效")
+    if _diagnostic_null_application_name and not _is_fixed_system_whoami_probe(
+        argv, os.environ.get("SystemRoot", r"C:\Windows"),
+    ):
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", False,
+            "NULL lpApplicationName 仅允许固定 whoami 探针",
+        )
     if not 1 <= timeout_seconds <= 86400 or not 1 <= process_limit <= 1024:
         return WindowsJobResult(False, None, "invalid_limit", False, "超时或进程上限无效")
     try:
@@ -397,6 +412,7 @@ def run_windows_appcontainer(
         main = run_windows_job(
             argv, cwd=root, timeout_seconds=timeout_seconds,
             process_limit=process_limit, _appcontainer_sid=int(sid.value),
+            _diagnostic_null_application_name=_diagnostic_null_application_name,
         )
     except _AppContainerSetupError as exc:
         main = WindowsJobResult(False, None, exc.error, False, exc.detail)
