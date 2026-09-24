@@ -88,11 +88,16 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          printf 'uid=%s gid=%s apparmor=%s\n' "$(id -u)" "$(id -g)" "$(cat /proc/self/attr/current)"
+          printf '::notice::linux-userns uid=%s gid=%s apparmor=%s\n' "$(id -u)" "$(id -g)" "$(cat /proc/self/attr/current)"
           if test -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns; then
-            printf 'apparmor_restrict_unprivileged_userns=%s\n' "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)"
+            printf '::notice::apparmor_restrict_unprivileged_userns=%s\n' "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)"
           fi
           unshare --user --map-root-user true || true
+          if mapless=$(unshare --user --pid --fork sh -c 'printf "pid=%s uid=%s gid=%s\n" "$$" "$(id -u)" "$(id -g)"' 2>&1); then
+            printf '::notice::mapless user+PID namespace launched: %s\n' "$mapless"
+          else
+            printf '::warning::mapless user+PID namespace unavailable: %s\n' "$mapless"
+          fi
       - name: Run actual native negative probes
         run: python scripts/run_native_probe_ci.py
       - name: Verify Linux PID namespace host-crash cleanup
