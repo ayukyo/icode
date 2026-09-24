@@ -90,6 +90,14 @@
 - **待验证的路径上下文假设：**容器仅获任务目录 ACE，CMD 通过绝对临时目录路径定位批处理文件可能触发入口访问差异。现将批处理入口和任务内读写改用 `cwd` 相对路径，并先加 CMD inline 相对写入正对照；不授予父目录访问。只有对照与 completion marker 均通过，才继续解读运行时源文件读取结果。ARM64 #107 当时尚未完成。
 - 因此 CI #107 x64 **不是** Windows 文件/网络/进程门禁通过证据，R2.3、完整 R2 和自动模式仍未验收。
 
+## 2026-09-24 UTC CI #108：工作区边界通过一部分，进程与 Python 未通过
+
+- CI [#108 x64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/107861602120) 与 [#108 ARM64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/107861602149) 中，环境块最终回归及 profile `LOCALAPPDATA` 单变量 A/B 均通过；Python 仍退出 `0xC0000135`，尚未由 Agent 完成实际任务。
+- 两架构均报告 inline cwd 写入、相对批处理入口、工作区写入与嵌套读取成功；相邻目录写入未发生，宿主 loopback 正对照可达而 AppContainer 未触达。此结果只覆盖当前 loopback/文件 canary，不等于 IPv4/IPv6、UDP、DNS、外网和 Git 凭据门禁通过。
+- 后代/超时存在平台差异：x64 未落 child-started marker；ARM64 首个子进程启动且主进程退出后正常清理检查通过，但 timeout 子用例得到正常 exit 1 而不是 runner timeout。旧用例依赖 `timeout.exe`，现改为子进程 release-handshake 加 CMD 循环等待，以 runner 的 Job timeout 触发并观察活跃进程清零；本地不能验证 Win32，仍等 CI。
+- ARM64 运行时文件 notice 显示同一路径副本中 System32 `whoami.exe` 可读，而 Python executable、共享 DLL、`pathlib.py` 和 `encodings` 样本没有复制结果；当前还未记录每个 copy 脚本是否启动，故此差异仍需下轮启动标记确认。没有证据支持递归放宽 ACL。
+- 因此 CI #108 **不是** R2.3 Windows 通过证据，自动模式继续关闭。
+
 ## 当前实现与验收
 
 CI [#95](https://github.com/ayukyo/icode/actions/runs/36034747937) 的 x64 与 ARM64 再次在 AppContainer `CreateProcessW` 返回 203；Python 启动及空环境诊断表现一致。CI [#96](https://github.com/ayukyo/icode/actions/runs/36035908657)、#99、#100、[#101](https://github.com/ayukyo/icode/actions/runs/36048561915)、[#102](https://github.com/ayukyo/icode/actions/runs/36051234628) 与 [#104](https://github.com/ayukyo/icode/actions/runs/36056228159) 的普通 Job 对照在 x64 与 ARM64 均成功，而 AppContainer 中仍返回 203。这把问题收窄到 AppContainer 启动路径，但不能据此断言是 GitHub runner 限制。#96 注释还暴露回执缺陷：AppContainer 没有创建进程却标记 `cleanup_failed`；#97 修复后保留 `native_api_failed` 且 `cleanup_ok=True`，但原生启动仍失败。#98 进一步确认省略 `=X:` 当前目录伪变量无效；#99 进一步确认显式对齐属性列表缓冲区仍未改变失败。#101/#102 加入相同最小 Unicode 环境块对照；#102 已排除 attribute-size 查询、profile 创建和 attribute 更新为充分解释。#104 的固定 whoami app-name A/B 两边仍为 203、环境块相等；该差异不构成修复。#105 发现同 profile `LOCALAPPDATA` 单变量 A/B 在两架构中改变了固定探针的启动结果；但同轮完整流程尚未在常规路径注入该变量，所以 Windows AppContainer 总体仍未通过。当前实现正在把该路径推广到常规命令并验证 profile 数据区删除；新代码需重新跑 x64/ARM64，不能据固定探针外推全功能。

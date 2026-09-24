@@ -646,11 +646,13 @@ class TestWindowsAppContainer(unittest.TestCase):
             workspace = Path(raw) / "task"
             workspace.mkdir()
             copy_script = workspace / "copy-runtime.cmd"
+            copy_started = workspace / "copy-runtime-started.txt"
             for index, (label, source) in enumerate(runtime_files):
                 destination_name = f"runtime-copy-{index}.bin"
                 destination = workspace / destination_name
+                copy_started.unlink(missing_ok=True)
                 copy_script.write_text(
-                    "@echo off\r\n"
+                    f'@echo off\r\necho started> "{copy_started.name}"\r\n'
                     f'copy /b "{source}" "{destination_name}" >nul\r\n',
                     encoding="utf-8",
                 )
@@ -659,10 +661,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                     [str(command), "/d", "/c", f".\\{copy_script.name}"],
                     cwd=workspace, timeout_seconds=8, process_limit=2,
                 )
+                copy_script_started = copy_started.is_file()
                 source_size = source.stat().st_size
                 copied_size = destination.stat().st_size if destination.is_file() else None
                 results.append({
                     "label": label,
+                    "copy_script_started": copy_script_started,
                     "source_size": source_size,
                     "source_read_match": copied_size == source_size,
                     "executed": result.executed,
@@ -679,6 +683,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             self._workflow_notice(
                 "Python runtime direct-read diagnostic",
                 json.dumps(result, ensure_ascii=True, separators=(",", ":")),
+            )
+            self.assertTrue(
+                result["copy_script_started"],
+                "AppContainer did not start the workspace-relative copy script",
             )
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
@@ -820,12 +828,15 @@ class TestWindowsAppContainer(unittest.TestCase):
                 copied_nested = workspace / "nested-copy.txt"
                 child_started = workspace / "child-started.txt"
                 child_late = workspace / "child-late.txt"
+                child_release = workspace / "child-release.txt"
+                child_launch_log = workspace / "child-launch.log"
                 script_complete = workspace / "probe-script-complete.txt"
                 child_script = workspace / "child.cmd"
                 child_script.write_text(
                     "@echo off\r\n"
                     f'echo started> "{child_started.name}"\r\n'
-                    "timeout /t 3 /nobreak >nul\r\n"
+                    ":wait_for_release\r\n"
+                    f'if not exist "{child_release.name}" goto wait_for_release\r\n'
                     f'echo late> "{child_late.name}"\r\n',
                     encoding="utf-8",
                 )
@@ -840,8 +851,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f'echo escape> "{os.path.relpath(outside_write, workspace)}"\r\n'
                     f'"{curl}" --noproxy "*" --connect-timeout 1 --max-time 2 '
                     f'"{url}" > "network.txt" 2>&1\r\n'
-                    f'start "" /b "{command}" /d /c ".\\{child_script.name}"\r\n'
-                    "timeout /t 1 /nobreak >nul\r\n"
+                    f'start "" /b cmd.exe /d /c .\\{child_script.name} '
+                    f'> "{child_launch_log.name}" 2>&1\r\n'
+                    ":wait_for_child\r\n"
+                    f'if not exist "{child_started.name}" goto wait_for_child\r\n'
                     f'echo reached-end> "{script_complete.name}"\r\n'
                     "exit /b 0\r\n",
                     encoding="utf-8",
@@ -851,12 +864,28 @@ class TestWindowsAppContainer(unittest.TestCase):
                     [str(command), "/d", "/c", f".\\{script.name}"],
                     cwd=workspace, timeout_seconds=12, process_limit=8,
                 )
+                try:
+                    child_launch_output = child_launch_log.read_text(
+                        encoding="utf-8", errors="replace",
+                    ).casefold()
+                except OSError:
+                    child_launch_output = ""
+                if "access is denied" in child_launch_output or "access denied" in child_launch_output:
+                    child_launch_error_class = "access_denied"
+                elif "not recognized" in child_launch_output or "cannot find" in child_launch_output:
+                    child_launch_error_class = "command_or_script_not_found"
+                elif child_launch_output:
+                    child_launch_error_class = "other_output"
+                else:
+                    child_launch_error_class = "no_output"
                 self._workflow_notice(
                     "workspace and network probe",
                     f"executed={result.executed} exit={result.exit_code} error={result.error} "
                     f"cleanup={result.cleanup_ok} script_complete={script_complete.is_file()} "
                     f"workspace_write={allowed_write.is_file()} nested_copy={copied_nested.is_file()} "
-                    f"outside_write={outside_write.exists()} detail={result.detail}",
+                    f"outside_write={outside_write.exists()} child_started={child_started.is_file()} "
+                    f"child_launch_log={child_launch_log.is_file()} "
+                    f"child_launch_error_class={child_launch_error_class} detail={result.detail}",
                 )
 
                 self.assertTrue(result.executed, result)
@@ -879,16 +908,23 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.assertNotIn("must-not-enter-appcontainer", copied_secret.read_text(encoding="utf-8"))
                 self.assertFalse(outside_write.exists())
                 self.assertEqual(requests, [], "AppContainer unexpectedly reached localhost")
-                self.assertTrue(child_started.is_file(), "AppContainer descendant did not start")
-                time.sleep(3.2)
+                self.assertTrue(
+                    child_started.is_file(),
+                    "AppContainer descendant did not start; check the bounded launch diagnostic",
+                )
+                child_release.write_text("release", encoding="utf-8")
+                time.sleep(0.2)
                 self.assertFalse(child_late.exists(), "AppContainer Job left a descendant alive")
 
                 child_started.unlink()
+                child_late.unlink(missing_ok=True)
+                child_release.unlink(missing_ok=True)
                 timeout_script = workspace / "timeout-parent.cmd"
                 timeout_script.write_text(
                     "@echo off\r\n"
-                    f'start "" /b "{command}" /d /c ".\\{child_script.name}"\r\n'
-                    "timeout /t 8 /nobreak >nul\r\n",
+                    f'start "" /b cmd.exe /d /c .\\{child_script.name}\r\n'
+                    ":hold\r\n"
+                    "goto hold\r\n",
                     encoding="utf-8",
                 )
                 timed_out = run_windows_appcontainer(
@@ -904,23 +940,24 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.assertEqual(timed_out.error, "timeout", timed_out)
                 self.assertTrue(timed_out.cleanup_ok, timed_out)
                 self.assertTrue(child_started.is_file(), "timeout descendant did not start")
-                time.sleep(3.2)
+                child_release.write_text("release", encoding="utf-8")
+                time.sleep(0.2)
                 self.assertFalse(child_late.exists(), "timeout left an AppContainer descendant alive")
 
                 limited_marker = workspace / "process-limit-child.txt"
                 limited_child = workspace / "process-limit-child.cmd"
                 limited_child.write_text(
-                    f'echo escaped> "{limited_marker}"\r\n', encoding="utf-8",
+                    f'echo escaped> "{limited_marker.name}"\r\n', encoding="utf-8",
                 )
                 limited_parent = workspace / "process-limit-parent.cmd"
                 limited_parent.write_text(
                     "@echo off\r\n"
-                    f'start "" /b "{command}" /d /c "{limited_child}"\r\n'
+                    f'start "" /b cmd.exe /d /c .\\{limited_child.name}\r\n'
                     "timeout /t 1 /nobreak >nul\r\n",
                     encoding="utf-8",
                 )
                 limited = run_windows_appcontainer(
-                    [str(command), "/d", "/c", str(limited_parent)],
+                    [str(command), "/d", "/c", f".\\{limited_parent.name}"],
                     cwd=workspace, timeout_seconds=5, process_limit=1,
                 )
                 self._workflow_notice(

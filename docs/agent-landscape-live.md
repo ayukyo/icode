@@ -129,5 +129,6 @@
 - 上游风险复核：[MXC issue #572](https://github.com/microsoft/mxc/issues/572) 的提交者报告，对含数万文件的 Python `Lib\site-packages` 做每次命令的整树继承 ACE 加/撤，在其环境约 35 秒；这是单个 issue 的测量，不是 ICODE 基准。[Codex issue #45871](https://github.com/openai/codex/issues/45871) 是仍 open 的单一 Windows 用户报告，称 AppContainer 中 `canonicalize()` 的 DOS 路径解析因 `\\GLOBAL??` 访问被拒，而普通文件读写仍成功。二者都是需本机复现实验的风险线索，不是已确认的普遍 Windows 行为。
 - ICODE 取舍：**暂缓**递归授权完整 Python 安装树或放开用户目录/系统盘；先在双架构验证精准运行时依赖、`Path.resolve()`、只读 ACL 撤权/恢复与增量耗时。若无法同时满足最小权限、可靠清理和可接受启动开销，则 AppContainer 不进入 Windows 自动模式，继续比较隔离方案。
 - ICODE CI [#107 x64](https://github.com/ayukyo/icode/actions/runs/36066941127) 的 profile A/B 通过，但任务内 CMD 批处理脚本没有到达任何 workspace marker；运行时拷贝探针依赖同一绝对脚本入口，故本轮不能判断其源文件 DACL。为继续区分路径解析与 AppContainer 文件 ACL，下一轮只将任务内部入口切换到 cwd-relative 路径并加入 inline write positive control；该结论仍是待验证，不是 Codex issue #45871 路径问题已复现。
+- CI [#108](https://github.com/ayukyo/icode/actions/runs/36067827628) 在两架构验证 cwd-relative workspace 写/读及 loopback 拒绝，但子进程/超时仍有 x64/ARM64 差异。ARM64 的同一复制 harness 可读 System32 样本而未复制 Python 运行时样本；因尚缺每轮脚本启动哨兵，暂记为线索，不扩展 ACL。ICODE 仍采用 AppContainer 最小权限路线作候选，Codex 路径解析 issue 仍未在 ICODE 中复现。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。

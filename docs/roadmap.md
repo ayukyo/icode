@@ -309,6 +309,10 @@ CI [#106 x64](https://github.com/ayukyo/icode/actions/runs/36063691161/job/10784
 
 CI [#107 x64](https://github.com/ayukyo/icode/actions/runs/36066941127) 的最终环境块与 profile `LOCALAPPDATA` A/B 检查通过；Python 仍退出 `0xC0000135`。CMD 批处理脚本未落下任何工作区标记，运行时文件诊断也未复制文件，故不能推断源文件 ACL。当前探针改用任务工作目录相对路径并增加 inline 写入对照；x64 不通过，ARM64 当时仍运行。R2.3 与自动模式继续关闭。
 
+### 2026-09-24 UTC CI #108：工作区访问与子进程验收仍未闭环
+
+CI [#108 x64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/107861602120) 与 [#108 ARM64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/107861602149) 的 profile 环境差分均通过，Python 两架构仍退出 `0xC0000135`。cwd-relative inline 写入、批处理 completion、工作区嵌套读取/写入、相邻目录写入拒绝及 loopback 网络拒绝在两架构都通过。进程门槛仍失败：x64 未观察到后代启动标记；ARM64 首个后代成功启动且正常退出清理，但专用超时探针在 CMD `timeout` 退出码 1 后没有触发 runner 超时。ARM64 文件诊断中 System32 对照可复制，Python 可执行文件/DLL/标准库样本未复制；下一轮增加脚本启动标记再确认该差异。R2.3 与自动模式继续关闭。
+
 ## 4. 为什么是这个顺序
 
 | 顺序 | 依据 |
