@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import unittest
+import hashlib
 from pathlib import Path
+from unittest.mock import patch
 
 from tests._support import temp_workspace
 
@@ -130,6 +132,50 @@ class TestRunCommand(unittest.TestCase):
     def test_git_写操作不算只读(self) -> None:
         r = self.reg.invoke("run_command", self.ctx, {"argv": ["git", "commit", "-m", "x"]})
         self.assertEqual(r.opclass, OPCLASS_MANAGED_WRITE)
+
+    def test_策略工作区改动清单不调用_git(self) -> None:
+        (self.root / "modified.txt").write_text("before", encoding="utf-8")
+        (self.root / "removed.txt").write_text("removed", encoding="utf-8")
+        baseline = {
+            name: hashlib.sha256((self.root / name).read_bytes()).hexdigest()
+            for name in ("modified.txt", "removed.txt")
+        }
+        (self.root / "modified.txt").write_text("after", encoding="utf-8")
+        (self.root / "removed.txt").unlink()
+        (self.root / "added.txt").write_text("added", encoding="utf-8")
+        self.ctx.change_baseline = baseline
+        registry = default_registry(include_changes=True)
+        with patch("subprocess.run", side_effect=AssertionError("Git must not run")):
+            result = registry.invoke("workspace_changes", self.ctx, {})
+        self.assertTrue(result.ok, result.content)
+        self.assertEqual(result.opclass, OPCLASS_READ_ONLY)
+        self.assertIn("A added.txt", result.content)
+        self.assertIn("M modified.txt", result.content)
+        self.assertIn("D removed.txt", result.content)
+
+    def test_分层策略工作区拒绝普通_git_命令(self) -> None:
+        from icode.sandbox_policy import NetworkMode, SandboxPolicy
+        from icode.isolation import NoIsolation
+
+        checkout = self.root / "checkout"
+        code = checkout / "code"
+        code.mkdir(parents=True)
+        protected = checkout / ".git"
+        protected.write_text("gitdir: protected\n", encoding="utf-8")
+        policy = SandboxPolicy(
+            schema_version=1, run_id="run", ticket_id="ticket", step="code",
+            workspace_root=code, read_roots=(code,), write_roots=(code,),
+            deny_read_roots=(), deny_write_roots=(protected,),
+            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+            wall_timeout_seconds=10, output_limit_bytes=1024,
+            protected_paths=(protected,),
+        )
+        context = ToolContext(root=code, sandbox=NoIsolation(), policy=policy)
+        for command in ("status", "diff"):
+            with self.subTest(command=command):
+                result = self.reg.invoke("run_command", context, {"argv": ["git", command]})
+                self.assertFalse(result.ok)
+                self.assertEqual(result.meta.get("error"), "git_broker_unavailable")
 
 
 if __name__ == "__main__":

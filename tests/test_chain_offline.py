@@ -93,6 +93,7 @@ class TestChainOffline(unittest.TestCase):
         with temp_workspace() as workspace:
             from icode.handshake import next_out_dir
 
+            (workspace / "code.py").write_text("before = True\n", encoding="utf-8")
             existing_ticket = next_out_dir(workspace)
             ticket_id = "OFFLINE-EXISTING-1"
             ControlPlane(self.settings).create(
@@ -127,6 +128,10 @@ class TestChainOffline(unittest.TestCase):
             self.assertEqual(invoked.call_args.kwargs["ticket_id"], ticket_id)
             self.assertEqual(invoked.call_args.kwargs["out_dir"], existing_ticket.resolve())
             self.assertIs(invoked.call_args.kwargs["policy"], policy)
+            self.assertEqual(
+                invoked.call_args.kwargs["change_baseline"]["code.py"],
+                hashlib.sha256(b"before = True\n").hexdigest(),
+            )
 
     def test_run_chain拒绝非工单目录与身份不匹配目录(self) -> None:
         with temp_workspace() as workspace:
@@ -233,6 +238,7 @@ class TestChainOffline(unittest.TestCase):
                                    "content": "spoof"}},
                     {"id": "submit-plan", "name": "submit_artifact",
                      "arguments": {"name": "01_plan.md", "content": PLAN_TEXT}},
+                    {"id": "changes", "name": "workspace_changes", "arguments": {}},
                 ],
             }, "完成"])
             with patch("icode.runner._finalize"):
@@ -245,10 +251,13 @@ class TestChainOffline(unittest.TestCase):
                              PLAN_TEXT)
             self.assertEqual(report.loop.turns[0].invocations[0].decision, "deny")
             self.assertTrue(report.loop.turns[0].invocations[1].result.ok)
+            self.assertTrue(report.loop.turns[0].invocations[2].result.ok)
+            self.assertIn("无改动", report.loop.turns[0].invocations[2].result.content)
             self.assertEqual(json.loads((out_dir / ".ico_metadata.json").read_text(
                 encoding="utf-8"))["ticket_id"], ticket_id)
             prompt = backend.calls[0]["messages"][0]["content"]
             self.assertIn("submit_artifact", prompt)
+            self.assertIn("workspace_changes", prompt)
             self.assertNotIn("这些路径位于工单目录内（属于工作区）", prompt)
             self.assertIn("submit_artifact", backend.calls[0]["messages"][1]["content"])
             self.assertNotIn("submit_artifact", default_registry().names())

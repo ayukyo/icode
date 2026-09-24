@@ -38,6 +38,7 @@ class ToolContext:
     sandbox: object | None = None
     policy: SandboxPolicy | None = None
     artifact_broker: ArtifactBroker | None = None
+    change_baseline: dict[str, str] | None = None
 
     def resolve(self, path: str) -> Path:
         p = Path(path)

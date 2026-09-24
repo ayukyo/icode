@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..artifact_broker import ArtifactAccessError
 from ..execution_broker import execute_policy_command
+from ..workspace_snapshot import changed_files, snapshot_workspace
 from .base import (
     OPCLASS_MANAGED_WRITE,
     OPCLASS_READ_ONLY,
@@ -181,6 +182,30 @@ def read_artifact(
     )
 
 
+def workspace_changes(ctx: ToolContext) -> ToolResult:
+    """不调用 Git，只报告相对本链路初始快照的文件增删改。"""
+    if ctx.change_baseline is None:
+        return ToolResult(False, "当前会话没有改动基线", {"error": "changes_unavailable"})
+    try:
+        current = snapshot_workspace(ctx.root)
+    except OSError:
+        return ToolResult(False, "工作区快照失败，已停止改动查询",
+                          {"error": "snapshot_unavailable"})
+    names = changed_files(ctx.change_baseline, current)
+    lines = [
+        f"{'A' if name not in ctx.change_baseline else 'D' if name not in current else 'M'} {name}"
+        for name in names[:300]
+    ]
+    if len(names) > 300:
+        lines.append(f"…另外 {len(names) - 300} 项未展示")
+    return ToolResult(
+        True,
+        "相对本次任务开始时的文件改动（不是 Git 暂存/提交状态）：\n"
+        + ("\n".join(lines) if lines else "无改动"),
+        {"changed": len(names), "shown": min(len(names), 300)},
+    )
+
+
 # ---------------------------------------------------------------------------
 # 执行
 # ---------------------------------------------------------------------------
@@ -219,6 +244,21 @@ def run_command(
         return ToolResult(
             False, "执行目录必须位于工作区内且为已有目录",
             {"error": "invalid_cwd"}, opclass=OPCLASS_MANAGED_WRITE,
+        )
+    if (
+        ctx.policy is not None
+        and Path(args[0]).name.lower().removesuffix(".exe") == "git"
+        and any(
+            protected.name == ".git"
+            and ctx.root.resolve().is_relative_to(protected.parent / "code")
+            for protected in ctx.policy.protected_paths
+        )
+    ):
+        return ToolResult(
+            False,
+            "分层工作区不能直接运行 Git 命令；请用 workspace_changes 查看本次改动",
+            {"error": "git_broker_unavailable"},
+            opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
         )
     try:
         exec_argv = ctx.wrap_command(args)
@@ -304,7 +344,8 @@ def _looks_read_only(args: list[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def default_registry(*, include_artifacts: bool = False) -> ToolRegistry:
+def default_registry(*, include_artifacts: bool = False,
+                     include_changes: bool = False) -> ToolRegistry:
     """Phase 2 最小工具集。
 
     **不含任意 shell 执行**：`run_command` 需经 guard 白名单放行，
@@ -380,6 +421,13 @@ def default_registry(*, include_artifacts: bool = False) -> ToolRegistry:
         handler=run_command,
         opclass=OPCLASS_MANAGED_WRITE,
     ))
+    if include_changes:
+        reg.register(Tool(
+            name="workspace_changes",
+            description="列出相对本次任务开始时的文件增删改；不是 Git 暂存或提交状态。",
+            parameters=_params({}, []),
+            handler=workspace_changes,
+        ))
     if include_artifacts:
         reg.register(Tool(
             name="submit_artifact",

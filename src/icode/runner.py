@@ -20,10 +20,7 @@
 from __future__ import annotations
 
 import json
-import hashlib
-import os
 import shutil
-import stat
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -47,6 +44,8 @@ from .reasoning import ReasoningGate, TraceRow, append_trace, run_deliberation
 from .recovery import Recoverer
 from .sandbox_policy import SandboxPolicy
 from .tools import ToolContext, default_registry
+from .workspace_snapshot import changed_files as _changed
+from .workspace_snapshot import snapshot_workspace as _snapshot
 
 # 靶场默认位置（相对仓库根）
 FIXTURES_ROOT_REL = Path("tests") / "fixtures"
@@ -171,76 +170,6 @@ def prepare_workspace(fixture: str, target: Path, *, repo_root: Path) -> Path:
     return dst
 
 
-def _snapshot(root: Path) -> dict[str, str]:
-    """仅散列工作区实体；链接记录目标文本，绝不由宿主跟随读取。"""
-    root = Path(root)
-    out: dict[str, str] = {}
-    if os.name == "posix":
-        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-
-        def scan(directory_fd: int, parts: tuple[str, ...]) -> None:
-            # 所有子路径相对已经打开的目录 fd，防止检查后把祖先换成链接。
-            with os.scandir(directory_fd) as entries:
-                for entry in sorted(entries, key=lambda item: item.name):
-                    if entry.name == ".icode_output":
-                        continue
-                    child_parts = (*parts, entry.name)
-                    mode = entry.stat(follow_symlinks=False).st_mode
-                    if stat.S_ISDIR(mode):
-                        child_fd = os.open(entry.name, directory_flags, dir_fd=directory_fd)
-                        try:
-                            scan(child_fd, child_parts)
-                        finally:
-                            os.close(child_fd)
-                    elif stat.S_ISLNK(mode):
-                        target = os.readlink(entry.name, dir_fd=directory_fd)
-                        out[Path(*child_parts).as_posix()] = hashlib.sha256(
-                            os.fsencode(target)
-                        ).hexdigest()
-                    elif stat.S_ISREG(mode):
-                        file_fd = os.open(
-                            entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
-                            dir_fd=directory_fd,
-                        )
-                        with os.fdopen(file_fd, "rb") as stream:
-                            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                                raise OSError("snapshot file type changed during scan")
-                            digest = hashlib.sha256()
-                            for chunk in iter(lambda: stream.read(64 * 1024), b""):
-                                digest.update(chunk)
-                            out[Path(*child_parts).as_posix()] = digest.hexdigest()
-
-        root_fd = os.open(root, directory_flags)
-        try:
-            scan(root_fd, ())
-        finally:
-            os.close(root_fd)
-        return out
-
-    # Windows 暂无目录 fd + O_NOFOLLOW：不跟随链接/接合点，且自动模式
-    # 仍保持阻断。路径离开根或类型在扫描中改变时按错误处理。
-    if root.is_symlink() or getattr(root, "is_junction", lambda: False)():
-        raise OSError("snapshot root must be a real directory")
-    anchor = root.resolve(strict=True)
-    for path in sorted(root.rglob("*")):
-        if ".icode_output" in path.relative_to(root).parts:
-            continue
-        relative = path.relative_to(root).as_posix()
-        if path.is_symlink():
-            out[relative] = hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest()
-        elif getattr(path, "is_junction", lambda: False)():
-            continue
-        elif path.is_file():
-            path.resolve(strict=True).relative_to(anchor)
-            out[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    return out
-
-
-def _changed(before: dict[str, str], after: dict[str, str]) -> list[str]:
-    names = set(before) | set(after)
-    return sorted(n for n in names if before.get(n) != after.get(n))
-
-
 def run_unittest(workspace: Path, *, timeout: int = 180) -> tuple[int, str]:
     """**由运行时自己**跑测试取退出码（模型自述不算证据）。"""
     proc = subprocess.run(  # noqa: S603 - 参数列表 + shell=False
@@ -270,6 +199,7 @@ def run_contract_step(
     on_event=None,
     sandbox: Sandbox | None = None,
     policy: SandboxPolicy | None = None,
+    change_baseline: dict[str, str] | None = None,
     out_dir: Path | None = None,
     extra_instructions: str = "",
     post_write: "Callable[[Path, str, str], None] | None" = None,
@@ -297,6 +227,8 @@ def run_contract_step(
             return report
         contract = contracts.step(step)
         report.add(f"契约载入（{step}）", True, f"复检点={list(contract.required_checks)}")
+        if policy is not None and change_baseline is None:
+            change_baseline = _snapshot(workspace)
 
         # 渐进披露：只取门禁强制层，不整篇注入
         reuse = out_dir is not None
@@ -364,6 +296,7 @@ def run_contract_step(
                     loop_config=loop_config, budget=budget, on_event=on_event,
                     checkpointer=ckpt, extra_instructions=extra_instructions,
                     operations=step_ops, sandbox=sandbox, policy=policy,
+                    change_baseline=change_baseline,
                 )
                 report.loop = loop
                 if not loop.ok:
@@ -416,6 +349,7 @@ def run_contract_step(
                         checkpointer=ckpt,
                         sandbox=sandbox,
                         policy=policy,
+                        change_baseline=change_baseline,
                         extra_instructions=repair_instructions,
                         operations=step_ops,
                     )
@@ -525,11 +459,13 @@ def _finish_step(
 def _make_ctx(
     workspace: Path, sandbox: Sandbox | None, policy: SandboxPolicy | None = None,
     artifact_broker: ArtifactBroker | None = None,
+    change_baseline: dict[str, str] | None = None,
 ) -> ToolContext:
     """构造工具上下文；未显式指定时按本机实测能力自动选隔离后端。"""
     return ToolContext(
         root=workspace, sandbox=sandbox if sandbox is not None else select_sandbox(),
         policy=policy, artifact_broker=artifact_broker,
+        change_baseline=change_baseline,
     )
 
 
@@ -661,13 +597,17 @@ def _run_agent(
     approver, loop_config, budget, on_event, checkpointer=None, resume_context: str = "",
     sandbox: Sandbox | None = None, extra_instructions: str = "",
     policy: SandboxPolicy | None = None,
+    change_baseline: dict[str, str] | None = None,
     operations: OperationRecorder | None = None,
 ) -> LoopResult:
     artifact_broker = (
         ArtifactBroker(out_dir, contract, max_bytes=policy.output_limit_bytes)
         if policy is not None else None
     )
-    registry = default_registry(include_artifacts=artifact_broker is not None)
+    registry = default_registry(
+        include_artifacts=artifact_broker is not None,
+        include_changes=change_baseline is not None,
+    )
     scope = Scope(
         workspace_root=workspace,
         allowed_read_roots=policy.read_roots if policy is not None else None,
@@ -676,7 +616,7 @@ def _run_agent(
         deny_write_roots=policy.deny_write_roots if policy is not None else (),
     )
     guard = Guard(scope)
-    ctx = _make_ctx(workspace, sandbox, policy, artifact_broker)
+    ctx = _make_ctx(workspace, sandbox, policy, artifact_broker, change_baseline)
     on_turn = None
     if checkpointer is not None:
         def on_turn(turn_index: int, total_tool_calls: int, history: list[dict]) -> None:
@@ -755,6 +695,8 @@ def _run_agent(
             "匹配模式的具体文件名；由宿主验证后代写并登记。"
             "write_file/edit_file 仅用于隔离工作区内的工程文件，不能写工单账本。"
             "提交后可调用 read_artifact 回读旧输入；本步骤新产物以工具回执为准。\n"
+            "需要查看本次任务修改了哪些文件时，调用 workspace_changes；"
+            "它不是 Git 暂存或提交状态。\n"
         )
     if requirement:
         system += f"\n【本次需求】\n{requirement}\n"

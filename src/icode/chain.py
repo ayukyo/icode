@@ -350,6 +350,7 @@ def run_chain(
             ticket_id=ticket_id, requirement=requirement, approver=approver,
             loop_config=loop_config, budget=budget, on_event=on_event,
             sandbox=sandbox, policy=policy, out_dir=out_dir,
+            change_baseline=before if policy is not None else None,
             extra_instructions=instructions, post_write=post,
         )
         report.steps.append(step_report)
