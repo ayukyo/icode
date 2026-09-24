@@ -377,6 +377,10 @@ def run_windows_job(
                     error = "cleanup_failed"
         elif created:
             kernel.TerminateProcess(process.hProcess, 1)
+        else:
+            # No child was created, so there is no process or descendant to reap.
+            # Preserve the original launch error instead of relabeling it as cleanup.
+            cleanup_ok = True
         if created:
             kernel.CloseHandle(process.hThread)
             kernel.CloseHandle(process.hProcess)

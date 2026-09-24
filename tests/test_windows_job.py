@@ -72,6 +72,25 @@ class TestWindowsJob(unittest.TestCase):
         self.assertFalse(probe.executed)
         self.assertFalse(probe.passed)
 
+    def test_CreateProcess失败时保留原始错误且不误报清理失败(self) -> None:
+        api = mock.Mock()
+        api.CreateJobObjectW.return_value = 1
+        api.SetInformationJobObject.return_value = 1
+        api.CreateProcessW.return_value = 0
+        api.CloseHandle.return_value = 1
+        with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch("ctypes.WinDLL", return_value=api, create=True), \
+             mock.patch("ctypes.get_last_error", return_value=203, create=True), \
+             mock.patch("ctypes.FormatError", return_value="environment missing", create=True):
+            result = run_windows_job(
+                [sys.executable], cwd=workspace, timeout_seconds=2,
+            )
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "native_api_failed")
+        self.assertTrue(result.cleanup_ok)
+        self.assertIn("err=203", result.detail)
+
     def test_局部自检启动失败不能误报通过(self) -> None:
         failed = WindowsJobResult(False, None, "job_creation_failed", False, "failed")
         with mock.patch("icode.windows_job.sys.platform", "win32"), \

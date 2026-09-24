@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25
-- 状态：原生实验入口仍未通过验收；CI #91–#95 的 Windows x64 与 ARM64 均失败，#92–#95 返回 CreateProcessW 错误码 203；不接生产自动工单
+- 状态：原生实验入口仍未通过验收；CI #91–#96 的 Windows x64 与 ARM64 均失败，#92–#96 的 AppContainer 启动返回 CreateProcessW 错误码 203；普通 Job 空环境对照在 #96 双架构通过；不接生产自动工单
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -29,11 +29,11 @@
 
 ## 当前实现与验收
 
-CI [#95](https://github.com/ayukyo/icode/actions/runs/36034747937) 的 x64 与 ARM64 再次在 AppContainer `CreateProcessW` 返回 203；Python 启动及空环境诊断表现一致。该轮公开注释未包含普通 Job 对照的独立结果，故不能判断问题是否仅由 AppContainer 属性触发；测试现已为普通 Job 对照增加独立 Actions notice，下一轮读取确切结果。
+CI [#95](https://github.com/ayukyo/icode/actions/runs/36034747937) 的 x64 与 ARM64 再次在 AppContainer `CreateProcessW` 返回 203；Python 启动及空环境诊断表现一致。CI [#96](https://github.com/ayukyo/icode/actions/runs/36035908657) 的普通 Job 空环境对照在 x64 与 ARM64 均 `executed=True, exit=0, cleanup=True`，而相同系统程序在 AppContainer 中仍返回 203。这把问题收窄到 AppContainer 启动路径，但不能据此断言是 GitHub runner 限制。#96 注释还暴露回执缺陷：AppContainer 没有创建进程却标记 `cleanup_failed`；已加模拟 Win32 CreateProcess 失败的回归测试，修复后应保留 `native_api_failed` 和 `cleanup_ok=True`。
 
-Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve 工作路径；工作区已有嵌套文件可读、工作区可写、相邻目录 canary 不可读写、宿主 loopback 正向对照成立而 AppContainer 连接被拒、主进程正常退出与超时后的子进程回收、`process_limit=1` 阻止再启动子进程；ACL 恢复后，同一 Package SID 不能再写工作区。另有跨平台环境块测试验证盘符伪变量存在、排序和宿主变量不继承；新诊断尝试在空自定义环境块中启动系统 `whoami.exe`，不传递宿主环境，并增加带 Actions notice 的普通 Job 正向对照。现有 `WindowsJob` 原生测试另测正常退出、超时和宿主异常退出回收。CI #91–#95 的 AppContainer 原生集成都失败，故这些只能称测试覆盖意图，不能称通过。
+Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve 工作路径；工作区已有嵌套文件可读、工作区可写、相邻目录 canary 不可读写、宿主 loopback 正向对照成立而 AppContainer 连接被拒、主进程正常退出与超时后的子进程回收、`process_limit=1` 阻止再启动子进程；ACL 恢复后，同一 Package SID 不能再写工作区。另有跨平台环境块测试验证盘符伪变量存在、排序和宿主变量不继承；空环境 AppContainer 探针不传递宿主环境，普通 Job 对照验证相同空环境块和系统程序可以正常启动。现有 `WindowsJob` 原生测试另测正常退出、超时和宿主异常退出回收。CI #91–#96 的 AppContainer 原生集成都失败，故这些只能称测试覆盖意图，不能称通过；普通 Job 空环境对照已在双架构实测通过。
 
-必须在 GitHub Actions 的 Windows x64 与 ARM64 runner 同时通过，并保持纯 wheel / Python 3.11 路径。当前 Linux 本机仅验证了非 Windows 拒绝分支、链接/硬链接防护、环境块结构、语法和既有非 Windows 回归；它**没有**执行任何 Win32 API。CI #91–#95 双架构均失败，AppContainer 不可用；#92–#95 的分类 notice 显示 CreateProcessW 错误码 203，普通 Job 空环境对照的独立结果待下一轮 notice 验证，原始步骤日志仍需仓库权限。不能在确认 Python 运行时启动和路径规范化后接自动模式。
+必须在 GitHub Actions 的 Windows x64 与 ARM64 runner 同时通过，并保持纯 wheel / Python 3.11 路径。当前 Linux 本机仅验证了非 Windows 拒绝分支、链接/硬链接防护、环境块结构及模拟原生失败路径的回归；它**没有**执行任何 Win32 API。CI #91–#96 双架构的 AppContainer 原生探针均失败，普通 Job 空环境对照双架构通过；#92–#96 的可见分类 notice 显示 AppContainer `CreateProcessW` 错误码 203。不能在确认 Python 运行时启动和路径规范化后接自动模式。
 
 目前仍缺少真实 Windows 的 IPv4/IPv6、UDP、DNS、外网直连拒绝、受保护 Git 元数据与凭据 canary、主动脱离/显式换身份尝试、profile/ACL 多轮泄漏以及更完整的失败恢复测试。即便本轮 CI 通过，也只说明这个原生实验子项通过，Windows R2.3、R2.2 和完整 R2 均仍未验收；`policy_contract_ready` 必须继续为 false。
 
