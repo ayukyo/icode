@@ -898,6 +898,39 @@ class TestAutonomyManager(unittest.TestCase):
             with workspace_manager.open(ticket_id, "reacquired-run"):
                 pass
 
+    def test_策略准备失败时不启动模型并释放租约(self) -> None:
+        ticket_id = self._ticket("native-preflight-block-ticket")
+        with tempfile.TemporaryDirectory(prefix="icode_policy_data_") as raw_data_root:
+            workspace_manager = WorkspaceManager(
+                self.workspace, Path(raw_data_root), self.service.project_id,
+            )
+
+            class RejectingPolicyBackend:
+                is_real_isolation = True
+
+                def prepare_policy(self, policy) -> None:
+                    raise ValueError("private helper diagnostics")
+
+                def wrap_policy(self, argv, *, policy, network=False):
+                    return list(argv)
+
+            executor = NativeChainExecutor(
+                self.settings, backend=FakeBackend(["完成"]),
+                sandbox=RejectingPolicyBackend(),
+                step_runner=lambda *args, **kwargs: self.fail("模型不得启动"),
+            )
+            manager = self._manager(executor, workspace_manager=workspace_manager)
+            manager.handle_intent(ticket_id, {
+                "intent": "start", "request_id": "native-preflight-block-start",
+            })
+            blocked = _wait_state(self.service, ticket_id, "blocked")
+            _wait_worker_release(manager, ticket_id)
+            self.assertEqual(
+                blocked["autonomous_run"]["error_code"], "isolation_unavailable",
+            )
+            with workspace_manager.open(ticket_id, "reacquired-run"):
+                pass
+
     def test_workspace_busy在持久化和worker前稳定拒绝(self) -> None:
         ticket_id = self._ticket("workspace-busy-ticket")
         executor = BlockingExecutor()

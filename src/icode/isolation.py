@@ -295,6 +295,20 @@ class LandlockSandbox:
             raise ValueError("Landlock /dev/null 写入例外与拒写路径冲突")
         return workspace
 
+    def prepare_policy(self, policy: SandboxPolicy) -> None:
+        """模型调用前的静态阻断；仅覆盖当前助手已实现的策略子集。"""
+        self._checked_policy_workspace(policy)
+        if not Path(self.helper).resolve().is_file():
+            raise RuntimeError("Landlock helper is unavailable")
+
+    def wrap_policy(
+        self, argv: Sequence[str], *, policy: SandboxPolicy, network: bool = False,
+    ) -> list[str]:
+        if network:
+            raise ValueError("Landlock helper does not support network grants")
+        self.prepare_policy(policy)
+        return self.wrap(argv, workspace=policy.workspace_root)
+
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         if network:
             raise RuntimeError("Landlock helper does not support network grants")

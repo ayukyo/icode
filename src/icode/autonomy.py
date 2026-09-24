@@ -189,6 +189,15 @@ class NativeChainExecutor:
                         state="blocked", last_step=step,
                         error_code="isolation_unavailable",
                     )
+                prepare_policy = getattr(self.sandbox, "prepare_policy", None)
+                if callable(prepare_policy):
+                    try:
+                        prepare_policy(policy)
+                    except Exception:  # noqa: BLE001 - 模型调用前拒绝不可执行策略
+                        return ExecutionResult(
+                            state="blocked", last_step=step,
+                            error_code="isolation_unavailable",
+                        )
             try:
                 report = self._step_runner(
                     self.settings,

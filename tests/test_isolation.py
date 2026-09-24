@@ -141,6 +141,14 @@ class TestProbe(unittest.TestCase):
                 policy = session.policy("plan")
                 self.assertEqual(policy.write_roots, (code_root,))
                 self.assertEqual(sandbox._checked_policy_workspace(policy), code_root)
+                sandbox.prepare_policy(policy)
+                result = default_registry().invoke(
+                    "run_command",
+                    ToolContext(root=code_root, sandbox=sandbox, policy=policy),
+                    {"argv": [sys.executable, "-c", "print('policy-command-ready')"]},
+                )
+                self.assertTrue(result.ok, result.content)
+                self.assertIn("policy-command-ready", result.content)
                 allowed = subprocess.run(
                     sandbox.wrap(
                         [
@@ -403,7 +411,8 @@ class TestSandboxWrapping(unittest.TestCase):
             )
             sandbox = LandlockSandbox(helper="/not-needed-for-static-check")
             self.assertEqual(sandbox._checked_policy_workspace(policy), workspace)
-            self.assertFalse(callable(getattr(sandbox, "wrap_policy", None)))
+            with self.assertRaises(ValueError):
+                sandbox.wrap_policy(["true"], policy=policy, network=True)
             for broad_root in (Path("/"), Path("/tmp"), Path.home()):
                 with self.assertRaises(RuntimeError):
                     sandbox._validated_runtime_roots((broad_root,))
