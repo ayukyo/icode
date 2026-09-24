@@ -295,6 +295,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
         command = system_root / "System32" / "cmd.exe"
         profile_paths: list[str] = []
+        profile_directory_exists_before_launch: list[bool] = []
         marker_present_before_delete: list[bool] = []
         marker_name = "icode-profile-lifecycle-probe.txt"
         delete_profile = _delete_appcontainer_profile
@@ -310,6 +311,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 sid, userenv, advapi, kernel, ole32,
             )
             profile_paths.append(path)
+            profile_directory_exists_before_launch.append(Path(path).is_dir())
             return path
 
         def observe_profile_delete(
@@ -323,9 +325,19 @@ class TestWindowsAppContainer(unittest.TestCase):
             workspace = Path(raw) / "task"
             workspace.mkdir()
             script = workspace / "profile-write.cmd"
+            profile_env_state = workspace / "profile-env-state.txt"
+            profile_directory_state = workspace / "profile-directory-state.txt"
+            profile_write_status = workspace / "profile-write-status.txt"
+            profile_write_stderr = workspace / "profile-write-stderr.txt"
             script.write_text(
                 "@echo off\r\n"
-                f'echo profile-write-ok> "%LOCALAPPDATA%\\{marker_name}"\r\n',
+                f'if defined LOCALAPPDATA (echo defined> "{profile_env_state.name}") '
+                f'else (echo missing> "{profile_env_state.name}")\r\n'
+                f'if exist "%LOCALAPPDATA%\\." (echo exists> "{profile_directory_state.name}") '
+                f'else (echo missing> "{profile_directory_state.name}")\r\n'
+                f'(echo profile-write-ok> "%LOCALAPPDATA%\\{marker_name}") '
+                f'2> "{profile_write_stderr.name}"\r\n'
+                f'echo %errorlevel%> "{profile_write_status.name}"\r\n',
                 encoding="utf-8",
             )
             with mock.patch(
@@ -340,11 +352,44 @@ class TestWindowsAppContainer(unittest.TestCase):
                     cwd=workspace, timeout_seconds=8, process_limit=2,
                 )
 
+        try:
+            profile_write_error = profile_write_stderr.read_text(
+                encoding="utf-8", errors="replace",
+            ).casefold()
+        except OSError:
+            profile_write_error = ""
+        if "access is denied" in profile_write_error or "access denied" in profile_write_error:
+            profile_write_error_class = "access_denied"
+        elif "path not found" in profile_write_error or "cannot find the path" in profile_write_error:
+            profile_write_error_class = "path_not_found"
+        elif "file not found" in profile_write_error or "cannot find the file" in profile_write_error:
+            profile_write_error_class = "file_not_found"
+        elif profile_write_error:
+            profile_write_error_class = "other_write_error"
+        else:
+            profile_write_error_class = "no_stderr"
+        try:
+            profile_write_status_value = int(profile_write_status.read_text(encoding="ascii").strip())
+        except (OSError, ValueError):
+            profile_write_status_value = None
+        profile_env_defined = (
+            profile_env_state.is_file()
+            and profile_env_state.read_text(encoding="utf-8").strip() == "defined"
+        )
+        profile_directory_visible = (
+            profile_directory_state.is_file()
+            and profile_directory_state.read_text(encoding="utf-8").strip() == "exists"
+        )
+
         self._workflow_notice(
             "profile storage lifecycle",
             f"executed={result.executed} exit={result.exit_code} error={result.error} "
-            f"cleanup={result.cleanup_ok} marker_before_delete="
-            f"{marker_present_before_delete}",
+            f"cleanup={result.cleanup_ok} localappdata_defined={profile_env_defined} "
+            f"profile_dir_before_launch={profile_directory_exists_before_launch} "
+            f"profile_dir_visible={profile_directory_visible} "
+            f"write_status={profile_write_status_value} "
+            f"write_error_class={profile_write_error_class} "
+            f"marker_before_delete={marker_present_before_delete}",
         )
         self.assertTrue(result.executed, result)
         self.assertEqual(result.exit_code, 0, result)
@@ -1085,48 +1130,75 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.assertFalse(child_late.exists(), "timeout left an AppContainer descendant alive")
 
                 limited_marker = workspace / "process-limit-child.txt"
+                limited_parent_attempted = workspace / "process-limit-parent-attempted.txt"
+                limited_status = workspace / "process-limit-launch-status.txt"
                 limited_child = workspace / "process-limit-child.cmd"
                 limited_child.write_text(
-                    f'echo escaped> "{limited_marker.name}"\r\n', encoding="utf-8",
+                    "@echo off\r\n"
+                    f'echo escaped> "{limited_marker.name}"\r\n'
+                    "exit /b 0\r\n",
+                    encoding="utf-8",
                 )
                 limited_parent = workspace / "process-limit-parent.cmd"
                 limited_parent.write_text(
                     "@echo off\r\n"
-                    f'start "" /b cmd.exe /d /c .\\{limited_child.name}\r\n'
-                    "timeout /t 1 /nobreak >nul\r\n",
+                    f'echo attempted> "{limited_parent_attempted.name}"\r\n'
+                    f'cmd.exe /d /c .\\{limited_child.name}\r\n'
+                    f'echo %errorlevel%> "{limited_status.name}"\r\n'
+                    "exit /b 0\r\n",
                     encoding="utf-8",
                 )
                 limit_control = run_windows_appcontainer(
                     [str(command), "/d", "/c", f".\\{limited_parent.name}"],
-                    cwd=workspace, timeout_seconds=5, process_limit=8,
+                    cwd=workspace, timeout_seconds=5, process_limit=2,
                 )
-                deadline = time.monotonic() + 5
-                while not limited_marker.is_file() and time.monotonic() < deadline:
-                    time.sleep(0.05)
+                try:
+                    positive_launch_status = int(limited_status.read_text(encoding="ascii").strip())
+                except (OSError, ValueError):
+                    positive_launch_status = None
                 self._workflow_notice(
                     "process limit positive control",
                     f"executed={limit_control.executed} exit={limit_control.exit_code} "
-                    f"cleanup={limit_control.cleanup_ok} child_marker={limited_marker.is_file()}",
+                    f"cleanup={limit_control.cleanup_ok} "
+                    f"parent_attempted={limited_parent_attempted.is_file()} "
+                    f"child_marker={limited_marker.is_file()} "
+                    f"launch_status={positive_launch_status}",
                 )
                 self.assertTrue(limit_control.executed, limit_control)
+                self.assertEqual(limit_control.exit_code, 0, limit_control)
                 self.assertTrue(limit_control.cleanup_ok, limit_control)
+                self.assertTrue(limited_parent_attempted.is_file(), "parent spawn attempt was not recorded")
                 self.assertTrue(
                     limited_marker.is_file(),
                     "the process-limit payload must start without the one-process cap",
                 )
+                self.assertEqual(positive_launch_status, 0, "positive child launch must succeed")
                 limited_marker.unlink()
+                limited_parent_attempted.unlink()
+                limited_status.unlink(missing_ok=True)
                 limited = run_windows_appcontainer(
                     [str(command), "/d", "/c", f".\\{limited_parent.name}"],
                     cwd=workspace, timeout_seconds=5, process_limit=1,
                 )
+                try:
+                    negative_launch_status = int(limited_status.read_text(encoding="ascii").strip())
+                except (OSError, ValueError):
+                    negative_launch_status = None
                 self._workflow_notice(
                     "process limit probe",
                     f"executed={limited.executed} exit={limited.exit_code} error={limited.error} "
-                    f"cleanup={limited.cleanup_ok} detail={limited.detail}",
+                    f"cleanup={limited.cleanup_ok} "
+                    f"parent_attempted={limited_parent_attempted.is_file()} "
+                    f"child_marker={limited_marker.is_file()} "
+                    f"launch_status={negative_launch_status} detail={limited.detail}",
                 )
                 self.assertTrue(limited.executed, limited)
+                self.assertEqual(limited.exit_code, 0, limited)
                 self.assertTrue(limited.cleanup_ok, limited)
+                self.assertTrue(limited_parent_attempted.is_file(), "parent did not reach child creation")
                 self.assertFalse(limited_marker.exists(), "Job active-process limit was not enforced")
+                self.assertIsNotNone(negative_launch_status, "child launch result was not recorded")
+                self.assertNotEqual(negative_launch_status, 0, "one-process cap must reject child creation")
             finally:
                 server.shutdown()
                 server.server_close()
