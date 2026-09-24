@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 import hashlib
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -49,6 +50,59 @@ class TestFileTools(unittest.TestCase):
         r = self.reg.invoke("glob", self.ctx, {"pattern": "**/*.py"})
         self.assertTrue(r.ok)
         self.assertIn("pkg/m.py", r.content)
+
+    def test_glob_拒绝父目录与绝对模式(self) -> None:
+        inner = self.root / "inner"
+        inner.mkdir()
+        context = ToolContext(root=inner)
+        secret = self.root / "outside-secret.py"
+        secret.write_text("outside", encoding="utf-8")
+        for pattern in ("../outside-secret.py", str(secret)):
+            with self.subTest(pattern=pattern):
+                result = self.reg.invoke("glob", context, {"pattern": pattern})
+                self.assertFalse(result.ok)
+                self.assertEqual(result.meta.get("error"), "invalid_pattern")
+                self.assertNotIn("outside-secret.py", result.content)
+
+    @unittest.skipUnless(os.name == "posix", "需要 POSIX 符号链接语义")
+    def test_glob_不枚举链接指向的外部目录(self) -> None:
+        with temp_workspace() as outside:
+            (outside / "outside-secret.py").write_text("outside", encoding="utf-8")
+            (self.root / "external").symlink_to(outside, target_is_directory=True)
+            for pattern in ("external/*.py", "**/*.py"):
+                with self.subTest(pattern=pattern):
+                    result = self.reg.invoke("glob", self.ctx, {"pattern": pattern})
+                    self.assertTrue(result.ok)
+                    self.assertNotIn("outside-secret.py", result.content)
+            self.assertIn("pkg/m.py", self.reg.invoke(
+                "glob", self.ctx, {"pattern": "**/*.py"}
+            ).content)
+
+    def test_glob_保留递归匹配语义(self) -> None:
+        (self.root / "pkg" / "deep").mkdir()
+        (self.root / "pkg" / "deep" / "n.py").write_text("pass\n", encoding="utf-8")
+        deep = self.reg.invoke("glob", self.ctx, {"pattern": "**/*.py"})
+        self.assertEqual(deep.content.splitlines(), ["pkg/deep/n.py", "pkg/m.py"])
+        shallow = self.reg.invoke("glob", self.ctx, {"pattern": "pkg/*.py"})
+        self.assertEqual(shallow.content.splitlines(), ["pkg/m.py"])
+
+    def test_glob_策略拒读目录不会列出(self) -> None:
+        from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+        denied = self.root / "private"
+        denied.mkdir()
+        (denied / "secret.py").write_text("pass\n", encoding="utf-8")
+        policy = SandboxPolicy(
+            schema_version=1, run_id="run", ticket_id="ticket", step="code",
+            workspace_root=self.root, read_roots=(self.root,), write_roots=(self.root,),
+            deny_read_roots=(denied,), deny_write_roots=(),
+            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+            wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+        )
+        result = self.reg.invoke("glob", ToolContext(root=self.root, policy=policy),
+                                 {"pattern": "**/*.py"})
+        self.assertTrue(result.ok)
+        self.assertEqual(result.content.splitlines(), ["pkg/m.py"])
 
     def test_grep_返回_file_line(self) -> None:
         r = self.reg.invoke("grep", self.ctx, {"pattern": r"def \w+"})

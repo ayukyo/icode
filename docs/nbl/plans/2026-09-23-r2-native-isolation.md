@@ -62,6 +62,7 @@
 - 复查 Seatbelt profile 发现 `(allow process*)` 过宽；参照 [Codex 的开源基础策略](https://github.com/openai/codex/blob/main/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl)，改为仅允许进程执行/派生，并将信号与进程信息限定同沙箱目标。两个 profile 使用相同规则并由测试锁定；策略联测增加“子进程能启动”阳性及“子进程不能写受保护 `.git`”负例。[收紧后 macOS 双架构 CI](https://github.com/ayukyo/icode/actions/runs/35956007739) 已通过，仍不能据此宣称整树清理完成。
 - 最小 Seatbelt profile 曾将整个 `/private/tmp` 列为可读，通用临时目录探测未覆盖该精确位置，可能出现探针通过却能读取另一临时目录秘密的缺口。现删除此广域读例外，并在 macOS 双架构 CI 增加真实 `/private/tmp` 外部秘密拒读测试；若工具确实需要某个运行时文件，应定位后加精确例外，不恢复整个目录。
 - 自动链的后端预检从“若有 `prepare_policy` 才调用”收紧为**必须**实现并成功返回：仅自称真实隔离、提供 `wrap_policy` 的不完整后端现在会在模型调用前以稳定 `isolation_unavailable` 阻断，不再先消耗模型调用后才失败。离线测试覆盖缺失接口和准备异常两条路径。
+- `glob` 跨层契约审计：模型提供模式 → `AgentLoop` 原来只检查工作区根 → 工具直接调用 `Path.glob(pattern)`。守卫批准根读取并不等于批准模式中的 `..` 或链接目标；负例实证了父目录模式与外链目录均可能枚举越界。工具现拒绝绝对/父目录模式，以工作区目录 fd 无跟随扫描，按策略读根和拒读根过滤，再在相对路径上匹配模式；测试覆盖越界、外链、拒读目录及 `**` 兼容语义。此修复只覆盖 `glob`，相邻的 `grep` 递归读取及普通会话文件打开竞态仍需单独核查，不能由本项推断所有文件工具均安全。
 - 每个任务先补失败测试再实现；逐项运行单测、`compileall`、`preflight.py`、三平台 CI 和干净 wheel 安装。编译并发不超过 `-j6`。
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。

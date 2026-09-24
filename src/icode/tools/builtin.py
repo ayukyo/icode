@@ -11,8 +11,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import fnmatch
+import heapq
+import os
 import re
+import stat
+from contextlib import closing
+from functools import lru_cache
 from pathlib import Path
+from typing import Iterator
 
 from ..artifact_broker import ArtifactAccessError
 from ..execution_broker import execute_policy_command
@@ -55,17 +62,110 @@ def read_file(ctx: ToolContext, path: str, offset: int = 1, limit: int = 400) ->
 
 
 def glob_files(ctx: ToolContext, pattern: str) -> ToolResult:
-    hits: list[str] = []
-    for p in sorted(ctx.root.glob(pattern)):
-        if any(part in SKIP_DIRS for part in p.parts):
-            continue
-        rel = p.relative_to(ctx.root).as_posix() if p.is_relative_to(ctx.root) else p.as_posix()
-        hits.append(rel)
-        if len(hits) >= MAX_GLOB_HITS:
-            break
+    if not isinstance(pattern, str) or not pattern or Path(pattern).is_absolute():
+        return ToolResult(False, "glob 模式必须是工作区内相对路径",
+                          {"error": "invalid_pattern"})
+    parts = Path(pattern).parts
+    if not parts or ".." in parts:
+        return ToolResult(False, "glob 模式不得离开工作区",
+                          {"error": "invalid_pattern"})
+
+    try:
+        entries = _safe_workspace_entries(ctx)
+        try:
+            hits = heapq.nsmallest(
+                MAX_GLOB_HITS,
+                (relative.as_posix() for relative in entries
+                 if _glob_matches(relative.parts, parts)),
+            )
+        finally:
+            entries.close()
+    except (OSError, RuntimeError):
+        return ToolResult(False, "工作区枚举失败，已停止 glob 查询",
+                          {"error": "glob_unavailable"})
     if not hits:
         return ToolResult(True, f"无匹配：{pattern}", {"hits": 0})
     return ToolResult(True, "\n".join(hits), {"hits": len(hits)})
+
+
+def _glob_matches(path: tuple[str, ...], pattern: tuple[str, ...]) -> bool:
+    @lru_cache(None)
+    def match(path_index: int, pattern_index: int) -> bool:
+        if pattern_index == len(pattern):
+            return path_index == len(path)
+        if pattern[pattern_index] == "**":
+            return match(path_index, pattern_index + 1) or (
+                path_index < len(path) and match(path_index + 1, pattern_index)
+            )
+        return (
+            path_index < len(path)
+            and fnmatch.fnmatch(path[path_index], pattern[pattern_index])
+            and match(path_index + 1, pattern_index + 1)
+        )
+
+    return match(0, 0)
+
+
+def _safe_workspace_entries(ctx: ToolContext) -> Iterator[Path]:
+    """从固定根枚举，不跟随目录链接；POSIX 使用目录 fd 锚定。"""
+    root = ctx.root.resolve(strict=True)
+
+    def fail_walk(error: OSError) -> None:
+        raise error
+
+    def allowed(relative: Path) -> bool:
+        target = (root / relative).resolve(strict=False)
+        if not target.is_relative_to(root):
+            return False
+        if ctx.policy is None:
+            return True
+        return (
+            any(target.is_relative_to(read_root) for read_root in ctx.policy.read_roots)
+            and not any(target.is_relative_to(denied) for denied in ctx.policy.deny_read_roots)
+        )
+
+    if os.name == "posix":
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            with closing(os.fwalk(".", topdown=True, onerror=fail_walk,
+                                  follow_symlinks=False, dir_fd=root_fd)) as walker:
+                for directory, subdirs, files, directory_fd in walker:
+                    parent = Path(directory)
+                    candidates = sorted(set(subdirs) | set(files))
+                    subdirs[:] = [
+                        name for name in sorted(subdirs)
+                        if name not in SKIP_DIRS
+                        and allowed(parent / name)
+                        and stat.S_ISDIR(os.stat(
+                            name, dir_fd=directory_fd, follow_symlinks=False,
+                        ).st_mode)
+                    ]
+                    for name in candidates:
+                        if name not in SKIP_DIRS:
+                            relative = parent / name
+                            if allowed(relative):
+                                yield relative
+        finally:
+            os.close(root_fd)
+        return
+
+    # Windows 自动策略模式仍阻断；普通会话也不跟随链接/接合点目录。
+    for directory, subdirs, files in os.walk(root, topdown=True,
+                                             onerror=fail_walk, followlinks=False):
+        parent = Path(directory).relative_to(root)
+        candidates = sorted(set(subdirs) | set(files))
+        subdirs[:] = [
+            name for name in sorted(subdirs)
+            if name not in SKIP_DIRS
+            and not (Path(directory) / name).is_symlink()
+            and not getattr(Path(directory) / name, "is_junction", lambda: False)()
+            and allowed(parent / name)
+        ]
+        for name in candidates:
+            if name not in SKIP_DIRS:
+                relative = parent / name
+                if allowed(relative):
+                    yield relative
 
 
 def grep_files(
