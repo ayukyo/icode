@@ -37,6 +37,7 @@
 
 ## 验证与风险
 
+- **2026-09-24 macOS 进程数风险复核：**[Apple `setrlimit(2)`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setrlimit.2.html)和[launchd 的 `NumberOfProcesses`](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5)均描述按 UID 而非单工单计数；[Codex 指定版本的 Seatbelt 基础策略](https://github.com/openai/codex/blob/4083a68f88375bb0bc90a41b8c454d9e2d7c5281/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl)允许派生，但不能由此推断有进程数量配额。源码/官方文档研究尚不是 macOS 双架构实测，也未穷尽所有系统机制。现有 9/10 合同只豁免整树清理，`process_limit` 仍未落实，故不能把 macOS 自动模式标为 ready；继续寻找可仅靠包安装运行、并能在双架构真实负例中证明的单工单硬限制。
 - **2026-09-24 最新线上回执：**[CI #85](https://github.com/ayukyo/icode/actions/runs/36001610973) 对 `5702d8514a1b1068fdfecd7185c7e77774672730` 的 14 个作业全部成功；Ubuntu 22.04/24.04 x64/ARM64 原生与 wheel 路径均覆盖 Linux 可信 PID 1、严格无映射回退及关键负例。下文较早的“线上结果未出/待 CI”是当时记录，不再代表当前状态。Linux 清理子项获得跨 runner 证据；macOS 完整策略、进程数、Git/网络代理与十项合同仍未验收，R2.2 和自动模式保持阻断。详见[Linux 清理专项计划](2026-09-24-r2-linux-pidns-cleanup.md)。
 
 - [开发分支首次三平台 CI](https://github.com/ayukyo/icode/actions/runs/35882823179) 暴露两项真实环境差异：Ubuntu runner 上 `bwrap` 的 loopback 设置被权限策略拒绝，macOS 初版探测脚本误用了 Linux 的 `cat` 路径。前者转向 Landlock/seccomp 路径，后者已修正并通过后续复测。
