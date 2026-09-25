@@ -231,3 +231,10 @@
 ### 2026-09-25 UTC R2.3 临时路径与环境块复核
 
 微软 [GetTempPath2W](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppath2w) 按 `TMP`→`TEMP`→`USERPROFILE`→Windows 目录选临时路径且不验证目录存在/可达；ICODE 已将前三项绑定工单工作区。`io-harness 0.86.0` [固定源码](https://docs.rs/io-harness/0.86.0/src/io_harness/sandbox/appcontainer.rs.html#1045-1114)显式构建环境块并将临时目录指向授权的 task temp。**采纳**显式、最小化环境块的调用方机制（ICODE 已有），**暂缓**其 Rust 实现；此观察不构成 `LOCALAPPDATA` 子目录或 Python 加载失败的根因证据。
+
+### 2026-09-25 UTC R2.3 staging 与 R2.4 Git 状态 broker 刷新
+
+- [CI #131 x64](https://github.com/ayukyo/icode/actions/runs/36093962446/job/107942126150) / [ARM64](https://github.com/ayukyo/icode/actions/runs/36093962446/job/107942126118)：Python runtime 6,721 项中有 1 个 symbolic link，目标文本词法归为根内；runtime ACL 仍在预检阶段 fail-closed，未更改源 DACL，Python `0xC0000135` 未解。下一项是 disposable staging 原生探针，不放行真实 toolcache link。
+- 默认 Windows CI 已停止运行“直接对 host runtime 改 DACL”的旧 A/B（#131 两架构均在授权前 fail-closed）；测试现在需显式 `ICODE_DIAGNOSTIC_RUNTIME_ACL=true`。持续 CI 的 ACL 实验只作用于 disposable temp staging 副本。
+- Python 官方资料复核：3.13.15 为当前发布线的 Windows embeddable ZIP 提供 x64 11,010,501 B、ARM64 10,403,665 B；embeddable 包面向嵌入应用，不含 pip/Tk/文档。3.11.16、3.12.14 属仅源码安全更新，embed 旧二进制会冻结安全补丁；改用 3.13 需项目兼容性验证。**暂缓**把二进制 runtime 固定进 ICODE wheel；先证明现有 host runtime 在临时只读 staging 中可完整启动。[3.13.15 官方目录](https://www.python.org/ftp/python/3.13.15/) · [embeddable 文档](https://docs.python.org/3.12/using/windows.html#the-embeddable-package) · [3.11.16](https://www.python.org/downloads/release/python-31116/) · [3.12.14](https://www.python.org/downloads/release/python-31214/)。
+- Git broker 当前无可调用实现；本机只存在 porcelain v2 parser，direct Git 对分层工单仍 fail-closed。固定上游源码复核：Codex `aa380897f67b91e1a47d530d7286d497b6726d3f` 使用 OS 只读保护 `.git`/gitdir 并约束内部 status 参数；Qwen Code `2686cad25fe8ffc24f582d8cb50f49743a884e3b` 明确不在 sandbox 启动失败时退回 host；Gemini CLI `bedef96ef42905bd84a86dbec021c706168e7e2f` 解析 worktree/common gitdir，但不照搬按项目权限扩写 Git 管理目录。**采纳**边界组合与 fail-closed，Linux status 是可独立实施的下一子切片，尚未开放工具入口；详情见 [Git broker 门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。

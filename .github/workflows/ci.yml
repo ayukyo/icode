@@ -161,9 +161,10 @@ jobs:
         env:
           ICODE_DIAGNOSTIC_RUNTIME_REPARSE_INVENTORY: "true"
         continue-on-error: true
-      - name: Diagnose runtime read-only ACL and exact restoration
-        run: python -m unittest tests.test_windows_appcontainer.TestWindowsAppContainer.test_诊断Python运行时只读ACL启动写入拒绝与精确恢复 -v
-        continue-on-error: true
+      - name: Probe disposable staged Python runtime under AppContainer
+        run: python -m unittest tests.test_windows_appcontainer.TestWindowsAppContainer.test_诊断stagedPython运行时可读执行不可写且恢复清理 -v
+        env:
+          ICODE_DIAGNOSTIC_RUNTIME_STAGING: "true"
       - name: Verify AppContainer workspace, network denial, ACL revocation, and Job composition
         run: python -m unittest tests.test_windows_appcontainer -v
 

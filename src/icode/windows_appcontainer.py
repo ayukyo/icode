@@ -12,8 +12,10 @@ from dataclasses import dataclass, field
 import ntpath
 import os
 from pathlib import Path
+import shutil
 import stat
 import sys
+import tempfile
 import time
 import uuid
 from ctypes import wintypes
@@ -400,6 +402,147 @@ def _runtime_reparse_inventory(
     return summary
 
 
+def _copy_runtime_tree_for_diagnostic(
+    source_root: str | os.PathLike[str],
+    destination_root: str | os.PathLike[str],
+) -> dict[str, int]:
+    """Copy a runtime into a disposable tree, materializing only in-root links.
+
+    This is a CI diagnostic primitive, not a production runtime cache. The
+    source remains untouched; reparse points with non-local/unknown targets and
+    all non-symbolic reparse kinds are rejected before copying. The caller must
+    own and remove the disposable parent and separately verify staged DACL
+    restoration before cleanup.
+    """
+    source = Path(source_root)
+    destination = Path(destination_root)
+    if not source.is_absolute() or not destination.is_absolute():
+        raise _AppContainerSetupError(
+            "runtime_staging_copy_failed", "runtime staging paths must be absolute",
+        )
+    source_abs = Path(os.path.abspath(os.fspath(source)))
+    destination_abs = Path(os.path.abspath(os.fspath(destination)))
+    if (
+        source_abs == destination_abs
+        or source_abs in destination_abs.parents
+        or destination_abs in source_abs.parents
+    ):
+        raise _AppContainerSetupError(
+            "runtime_staging_copy_failed", "runtime staging paths overlap",
+        )
+
+    try:
+        parent = destination_abs.parent
+        if not parent.is_dir():
+            raise _AppContainerSetupError(
+                "runtime_staging_copy_failed", "runtime staging parent is invalid",
+            )
+        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        parent_resolved = parent.resolve(strict=True)
+        if (
+            not destination_abs.name.startswith("icode-runtime-staging-")
+            or (parent_resolved != temp_root and temp_root not in parent_resolved.parents)
+        ):
+            raise _AppContainerSetupError(
+                "runtime_staging_copy_failed",
+                "runtime staging destination must be a named child of the temp directory",
+            )
+        current = Path(parent.anchor)
+        for component in parent.parts[1:]:
+            current = current / component
+            info = current.lstat()
+            if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
+                raise _AppContainerSetupError(
+                    "runtime_staging_copy_failed", "runtime staging parent contains a reparse point",
+                )
+        try:
+            destination_abs.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise _AppContainerSetupError(
+                "runtime_staging_copy_failed", "runtime staging destination already exists",
+            )
+    except _AppContainerSetupError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise _AppContainerSetupError(
+            "runtime_staging_copy_failed", "runtime staging destination cannot be inspected",
+        ) from exc
+
+    before = _runtime_reparse_inventory(source_abs)
+    if (
+        before["mount_point"]
+        or before["other_reparse"]
+        or before["symbolic_link"] != before["link_target_inside_root"]
+    ):
+        raise _AppContainerSetupError(
+            "runtime_staging_unsafe_reparse", "runtime tree has unsafe reparse targets",
+        )
+    # copytree(symlinks=False) recursively follows directory symlinks. Even a
+    # lexically in-root directory target can alias a subtree and make copying
+    # unbounded or ambiguous, so only links resolving to regular files are
+    # materialized by this diagnostic.
+    pending = [source_abs]
+    try:
+        while pending:
+            directory = pending.pop()
+            with os.scandir(directory) as children:
+                for child in children:
+                    info = child.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
+                        try:
+                            resolved_target = Path(child.path).resolve(strict=True)
+                            target_info = resolved_target.stat()
+                        except (OSError, RuntimeError, ValueError) as exc:
+                            raise _AppContainerSetupError(
+                                "runtime_staging_unsafe_reparse",
+                                "runtime link target cannot be resolved safely",
+                            ) from exc
+                        if (
+                            resolved_target != source_abs
+                            and source_abs not in resolved_target.parents
+                        ) or not stat.S_ISREG(target_info.st_mode):
+                            raise _AppContainerSetupError(
+                                "runtime_staging_unsafe_reparse",
+                                "runtime staging supports only in-root regular-file links",
+                            )
+                    elif stat.S_ISDIR(info.st_mode):
+                        pending.append(Path(child.path))
+    except _AppContainerSetupError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise _AppContainerSetupError(
+            "runtime_staging_copy_failed", "runtime tree could not be inspected before copy",
+        ) from exc
+    try:
+        # The checked-in CI source has no concurrent mutator. The post-copy
+        # inventory below still verifies that the staged tree is reparse-free.
+        shutil.copytree(source_abs, destination_abs, symlinks=False)
+    except (OSError, shutil.Error, RuntimeError, ValueError) as exc:
+        raise _AppContainerSetupError(
+            "runtime_staging_copy_failed", "runtime tree could not be copied safely",
+        ) from exc
+
+    after = _runtime_reparse_inventory(source_abs)
+    staged = _runtime_reparse_inventory(destination_abs)
+    if after != before or any(
+        staged[name]
+        for name in (
+            "symbolic_link", "mount_point", "other_reparse",
+            "link_target_inside_root", "link_target_outside_root", "link_target_unknown",
+        )
+    ):
+        raise _AppContainerSetupError(
+            "runtime_staging_copy_failed", "runtime tree changed or staging contains reparse points",
+        )
+    return {
+        "source_entries": before["entries"],
+        "materialized_links": before["symbolic_link"],
+        "staged_entries": staged["entries"],
+    }
+
+
 def _is_unc_runtime_root(raw_root: str | os.PathLike[str], *, windows: bool | None = None) -> bool:
     """Recognize Windows UNC roots lexically, before touching the share."""
     if windows is None:
@@ -533,6 +676,41 @@ def _validate_runtime_roots(
     if not result:
         raise _AppContainerSetupError("invalid_runtime_root", "no Python runtime roots were provided")
     return result
+
+
+def _validate_diagnostic_runtime_roots(
+    roots: Sequence[str | os.PathLike[str]], *,
+    executable: str | os.PathLike[str],
+    workspace: Path,
+) -> tuple[Path, ...]:
+    """Accept only one named staging root under the runner's temp directory."""
+    if isinstance(roots, (str, bytes)) or len(roots) != 1:
+        raise _AppContainerSetupError(
+            "invalid_diagnostic_probe", "staging diagnostic requires exactly one runtime root",
+        )
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        validated = _validate_runtime_roots(tuple(Path(root) for root in roots), workspace=workspace)
+        root = validated[0]
+        executable_path = Path(executable).resolve(strict=True)
+    except _AppContainerSetupError:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise _AppContainerSetupError(
+            "invalid_diagnostic_probe", "staging diagnostic paths cannot be verified",
+        ) from exc
+    if (
+        root == temp_root
+        or not root.is_relative_to(temp_root)
+        or not root.name.startswith("icode-runtime-staging-")
+        or executable_path == root
+        or not executable_path.is_relative_to(root)
+        or not executable_path.is_file()
+    ):
+        raise _AppContainerSetupError(
+            "invalid_diagnostic_probe", "staging runtime is outside its dedicated temp root",
+        )
+    return validated
 
 
 def _read_dacl_state(
@@ -973,15 +1151,34 @@ def run_windows_appcontainer(
     _diagnostic_null_application_name: bool = False,
     _diagnostic_omit_localappdata: bool = False,
     _diagnostic_runtime_acl: bool = False,
+    _diagnostic_runtime_roots: Sequence[str | os.PathLike[str]] | None = None,
 ) -> WindowsJobResult:
     """在无网络能力的 AppContainer + 独立 Job 中运行单条命令。
 
     此为 R2.3 开发期原生实验，不接自动工单。它临时给 ``cwd`` 的 AppContainer
     Package SID 授权，并提供当前 profile 专属的 LOCALAPPDATA 临时存储；退出后恢复工作区 ACL，
     删除 profile 并核验其私有数据目录不存在。cwd 必须是独立任务工作区，不能是原始仓库。
-    runtime ACL 差分仅允许 GitHub Windows runner 当前 Python 的只读诊断，不用于工单命令。
+    runtime ACL 差分仅允许 GitHub Windows runner 当前 Python 或专用 temp staging 树的只读诊断，
+    不用于工单命令。
     其它私有启动差分仅允许固定无参数 whoami 探针，不用于任何工单命令。
     """
+    if not isinstance(_diagnostic_runtime_acl, bool):
+        return WindowsJobResult(False, None, "invalid_diagnostic_probe", True, "诊断 ACL 模式无效")
+    diagnostic_acl_opt_in = (
+        "ICODE_DIAGNOSTIC_RUNTIME_STAGING"
+        if _diagnostic_runtime_roots is not None
+        else "ICODE_DIAGNOSTIC_RUNTIME_ACL"
+    )
+    if _diagnostic_runtime_roots is not None and (
+        not _diagnostic_runtime_acl
+        or isinstance(_diagnostic_runtime_roots, (str, bytes))
+        or not isinstance(_diagnostic_runtime_roots, Sequence)
+        or len(_diagnostic_runtime_roots) != 1
+    ):
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", True,
+            "显式 runtime 根仅允许单根 staging ACL 诊断",
+        )
     if sys.platform != "win32":
         return WindowsJobResult(False, None, "unsupported_platform", False, "仅适用于 Windows")
     if not argv or not Path(argv[0]).is_absolute() or not Path(argv[0]).is_file():
@@ -990,9 +1187,12 @@ def run_windows_appcontainer(
         return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断启动模式无效")
     if not isinstance(_diagnostic_omit_localappdata, bool):
         return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断启动模式无效")
-    if not isinstance(_diagnostic_runtime_acl, bool):
-        return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断 ACL 模式无效")
     if _diagnostic_runtime_acl:
+        if os.environ.get(diagnostic_acl_opt_in) != "true":
+            return WindowsJobResult(
+                False, None, "invalid_diagnostic_probe", False,
+                "runtime ACL 差分未显式启用",
+            )
         try:
             requested_executable = os.path.normcase(os.path.realpath(argv[0]))
             current_executable = os.path.normcase(os.path.realpath(sys.executable))
@@ -1002,11 +1202,14 @@ def run_windows_appcontainer(
         if (
             os.environ.get("GITHUB_ACTIONS") != "true"
             or os.environ.get("RUNNER_OS") != "Windows"
-            or requested_executable != current_executable
+            or (
+                _diagnostic_runtime_roots is None
+                and requested_executable != current_executable
+            )
         ):
             return WindowsJobResult(
                 False, None, "invalid_diagnostic_probe", False,
-                "runtime ACL 差分仅允许 GitHub Windows runner 的当前 Python",
+                "runtime ACL 差分仅允许 GitHub Windows runner 的受控诊断 runtime",
             )
     if _diagnostic_omit_localappdata and (
         _diagnostic_null_application_name
@@ -1053,6 +1256,20 @@ def run_windows_appcontainer(
         return WindowsJobResult(False, None, "invalid_workspace", False, "工作目录不存在")
     if not stat.S_ISDIR(root_info.st_mode) or _is_reparse(root_info):
         return WindowsJobResult(False, None, "invalid_workspace", False, "工作目录不存在")
+
+    runtime_acl_roots: tuple[Path, ...] | None = None
+    if _diagnostic_runtime_acl:
+        if _diagnostic_runtime_roots is None:
+            runtime_acl_roots = (Path(sys.prefix), Path(sys.base_prefix))
+        else:
+            try:
+                runtime_acl_roots = _validate_diagnostic_runtime_roots(
+                    _diagnostic_runtime_roots, executable=argv[0], workspace=root,
+                )
+            except _AppContainerSetupError as exc:
+                return WindowsJobResult(
+                    False, None, exc.error, True, exc.detail,
+                )
 
     try:
         userenv = ctypes.WinDLL("userenv", use_last_error=True)
@@ -1116,8 +1333,9 @@ def run_windows_appcontainer(
         original_dacl, advapi, kernel_for_acl = _grant_workspace_acl(root, sid)
         acl_api = (advapi, kernel_for_acl)
         if _diagnostic_runtime_acl:
+            assert runtime_acl_roots is not None
             runtime_acl_transaction = _snapshot_runtime_acl_roots(
-                (Path(sys.prefix), Path(sys.base_prefix)),
+                runtime_acl_roots,
                 workspace=root, advapi=advapi, kernel=kernel_for_acl,
             )
             diagnostics.append(

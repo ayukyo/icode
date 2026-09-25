@@ -38,6 +38,180 @@ from icode.windows_job import (
 
 
 class TestWindowsAppContainer(unittest.TestCase):
+    def test_staging诊断只物化根内链接且保留源运行时不变(self) -> None:
+        stage_runtime = getattr(
+            windows_appcontainer, "_copy_runtime_tree_for_diagnostic", None,
+        )
+        self.assertTrue(callable(stage_runtime), "缺少 runtime staging 诊断入口")
+        if not callable(stage_runtime):
+            return
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-stage-test-") as raw:
+            root = Path(raw)
+            source = root / "runtime"
+            source.mkdir()
+            real = source / "python-real.exe"
+            real.write_bytes(b"known interpreter bytes")
+            link = source / "python.exe"
+            try:
+                link.symlink_to(real.name)
+            except OSError as exc:
+                self.skipTest(f"当前文件系统不支持符号链接测试：{exc}")
+
+            destination = root / "icode-runtime-staging-copy"
+            summary = stage_runtime(source, destination)
+
+            self.assertEqual(summary["materialized_links"], 1)
+            self.assertEqual((destination / "python.exe").read_bytes(), real.read_bytes())
+            self.assertFalse((destination / "python.exe").is_symlink())
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(windows_appcontainer._runtime_reparse_inventory(destination)["symbolic_link"], 0)
+
+    def test_stagingACL诊断只接受runner临时目录中的专用根(self) -> None:
+        validate_roots = getattr(
+            windows_appcontainer, "_validate_diagnostic_runtime_roots", None,
+        )
+        self.assertTrue(callable(validate_roots), "缺少 staging ACL 诊断根验证器")
+        if not callable(validate_roots):
+            return
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-staging-test-") as raw:
+            parent = Path(raw)
+            workspace = parent / "task"
+            workspace.mkdir()
+            staging = parent / "icode-runtime-staging-copy"
+            staging.mkdir()
+            executable = staging / "python.exe"
+            executable.write_bytes(b"native executable placeholder")
+            self.assertEqual(
+                validate_roots(
+                    (staging,), executable=executable, workspace=workspace,
+                ),
+                (staging.resolve(),),
+            )
+
+            ordinary = parent / "runtime"
+            ordinary.mkdir()
+            with self.assertRaises(_AppContainerSetupError):
+                validate_roots(
+                    (ordinary,), executable=ordinary / "python.exe", workspace=workspace,
+                )
+            with self.assertRaises(_AppContainerSetupError):
+                validate_roots(
+                    (staging,), executable=ordinary / "python.exe", workspace=workspace,
+                )
+
+    def test显式staging根不能绕过ACL诊断门(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-staging-gate-") as raw:
+            result = run_windows_appcontainer(
+                [sys.executable], cwd=raw, timeout_seconds=1,
+                _diagnostic_runtime_roots=(Path(raw),),
+            )
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+
+    def test_staging诊断拒绝根外链接且不创建副本(self) -> None:
+        stage_runtime = getattr(
+            windows_appcontainer, "_copy_runtime_tree_for_diagnostic", None,
+        )
+        self.assertTrue(callable(stage_runtime), "缺少 runtime staging 诊断入口")
+        if not callable(stage_runtime):
+            return
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-stage-outside-") as raw:
+            root = Path(raw)
+            source = root / "runtime"
+            source.mkdir()
+            outside = root / "outside.bin"
+            outside.write_bytes(b"private")
+            link = source / "python.exe"
+            try:
+                link.symlink_to(outside)
+            except OSError as exc:
+                self.skipTest(f"当前文件系统不支持符号链接测试：{exc}")
+            destination = root / "icode-runtime-staging-copy"
+
+            with self.assertRaises(_AppContainerSetupError) as raised:
+                stage_runtime(source, destination)
+
+            self.assertEqual(raised.exception.error, "runtime_staging_unsafe_reparse")
+            self.assertFalse(destination.exists())
+            self.assertEqual(outside.read_bytes(), b"private")
+
+    def test_staging诊断拒绝非专用或临时目录外目标(self) -> None:
+        stage_runtime = getattr(
+            windows_appcontainer, "_copy_runtime_tree_for_diagnostic", None,
+        )
+        self.assertTrue(callable(stage_runtime), "缺少 runtime staging 诊断入口")
+        if not callable(stage_runtime):
+            return
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-stage-target-") as raw:
+            root = Path(raw)
+            source = root / "runtime"
+            source.mkdir()
+            (source / "python.exe").write_bytes(b"runtime")
+            destinations = (
+                root / "ordinary-directory-name",
+                Path(tempfile.gettempdir()).resolve().parent
+                / f"icode-runtime-staging-outside-{os.getpid()}",
+            )
+            for destination in destinations:
+                with self.subTest(destination_kind="named" if destination.parent == root else "outside"):
+                    with self.assertRaises(_AppContainerSetupError) as raised:
+                        stage_runtime(source, destination)
+                    self.assertEqual(raised.exception.error, "runtime_staging_copy_failed")
+                    self.assertFalse(destination.exists())
+
+    def test_staging诊断拒绝目录链接避免递归复制(self) -> None:
+        stage_runtime = getattr(
+            windows_appcontainer, "_copy_runtime_tree_for_diagnostic", None,
+        )
+        self.assertTrue(callable(stage_runtime), "缺少 runtime staging 诊断入口")
+        if not callable(stage_runtime):
+            return
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-stage-dirlink-") as raw:
+            root = Path(raw)
+            source = root / "runtime"
+            source.mkdir()
+            target = source / "target"
+            target.mkdir()
+            (target / "sentinel.bin").write_bytes(b"inside")
+            alias = source / "target-alias"
+            try:
+                alias.symlink_to(target, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"当前文件系统不支持目录符号链接测试：{exc}")
+            destination = root / "icode-runtime-staging-copy"
+
+            with self.assertRaises(_AppContainerSetupError) as raised:
+                stage_runtime(source, destination)
+
+            self.assertEqual(raised.exception.error, "runtime_staging_unsafe_reparse")
+            self.assertFalse(destination.exists())
+            self.assertEqual((target / "sentinel.bin").read_bytes(), b"inside")
+
+    def test_staging诊断拒绝词法根内的链接循环(self) -> None:
+        stage_runtime = getattr(
+            windows_appcontainer, "_copy_runtime_tree_for_diagnostic", None,
+        )
+        self.assertTrue(callable(stage_runtime), "缺少 runtime staging 诊断入口")
+        if not callable(stage_runtime):
+            return
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-stage-link-chain-") as raw:
+            root = Path(raw)
+            source = root / "runtime"
+            source.mkdir()
+            first_link = source / "first-link.bin"
+            second_link = source / "second-link.bin"
+            try:
+                first_link.symlink_to(second_link.name)
+                second_link.symlink_to(first_link.name)
+            except OSError as exc:
+                self.skipTest(f"当前文件系统不支持符号链接测试：{exc}")
+            destination = root / "icode-runtime-staging-copy"
+
+            with self.assertRaises(_AppContainerSetupError) as raised:
+                stage_runtime(source, destination)
+
+            self.assertEqual(raised.exception.error, "runtime_staging_unsafe_reparse")
+            self.assertFalse(destination.exists())
+
     def test_reparse点原因映射为固定脱敏类别(self) -> None:
         symlink_mode = mock.Mock(st_mode=stat.S_IFLNK, st_reparse_tag=0)
         junction_tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
@@ -705,7 +879,13 @@ class TestWindowsAppContainer(unittest.TestCase):
     def test_runtime_ACL诊断在GitHubActions以外被拒绝(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-gate-") as raw, \
              mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
-             mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):
+             mock.patch.dict(
+                 os.environ,
+                 {
+                     "GITHUB_ACTIONS": "false", "RUNNER_OS": "Windows",
+                     "ICODE_DIAGNOSTIC_RUNTIME_ACL": "true",
+                 },
+             ):
             result = run_windows_appcontainer(
                 [sys.executable, "-c", "pass"], cwd=raw, timeout_seconds=2,
                 _diagnostic_runtime_acl=True,
@@ -714,6 +894,31 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertFalse(result.executed)
         self.assertEqual(result.error, "invalid_diagnostic_probe")
         self.assertFalse(result.cleanup_ok)
+
+    def test_runtime_ACL差分缺少专用环境开关时拒绝(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-opt-in-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch.dict(
+                 os.environ,
+                 {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows"},
+                 clear=True,
+             ):
+            host_runtime = run_windows_appcontainer(
+                [sys.executable, "-c", "pass"], cwd=raw, timeout_seconds=2,
+                _diagnostic_runtime_acl=True,
+            )
+            staged_runtime = run_windows_appcontainer(
+                [sys.executable, "-c", "pass"], cwd=raw, timeout_seconds=2,
+                _diagnostic_runtime_acl=True,
+                _diagnostic_runtime_roots=(Path(raw),),
+            )
+
+        self.assertEqual(host_runtime.error, "invalid_diagnostic_probe")
+        self.assertEqual(staged_runtime.error, "invalid_diagnostic_probe")
+        self.assertFalse(host_runtime.executed)
+        self.assertFalse(staged_runtime.executed)
+        self.assertFalse(host_runtime.cleanup_ok)
+        self.assertFalse(staged_runtime.cleanup_ok)
 
     def test_runtime_ACL诊断在主进程前授权并在退出后恢复(self) -> None:
         apis = self._mock_profile_apis()
@@ -725,7 +930,13 @@ class TestWindowsAppContainer(unittest.TestCase):
         job_result = WindowsJobResult(True, 0, None, True, "")
         with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-flow-") as raw, \
              mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
-             mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows"}), \
+             mock.patch.dict(
+                 os.environ,
+                 {
+                     "GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows",
+                     "ICODE_DIAGNOSTIC_RUNTIME_ACL": "true",
+                 },
+             ), \
              mock.patch(
                  "icode.windows_appcontainer.ctypes.WinDLL",
                  create=True,
@@ -1601,8 +1812,9 @@ class TestWindowsAppContainer(unittest.TestCase):
     @unittest.skipUnless(
         sys.platform == "win32"
         and os.environ.get("GITHUB_ACTIONS") == "true"
-        and os.environ.get("RUNNER_OS") == "Windows",
-        "runtime ACL A/B 仅在隔离的 GitHub Windows runner 上执行",
+        and os.environ.get("RUNNER_OS") == "Windows"
+        and os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_ACL") == "true",
+        "host runtime ACL A/B 仅在显式启用的隔离诊断环境执行",
     )
     def test_诊断Python运行时只读ACL启动写入拒绝与精确恢复(self) -> None:
         """Mutate only hosted toolcache ACLs, then require byte-exact restoration."""
@@ -1678,6 +1890,201 @@ class TestWindowsAppContainer(unittest.TestCase):
             self.assertTrue(network_denied.is_file(), "runtime ACL altered the default-deny network boundary")
             self.assertTrue(candidate.cleanup_ok, candidate)
             self.assertIn("runtime_acl_restore_verified=true", candidate.detail)
+
+    @unittest.skipUnless(
+        sys.platform == "win32"
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_OS") == "Windows"
+        and os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_STAGING") == "true",
+        "disposable staged Python runtime 只在独立 Windows Actions 诊断步骤执行",
+    )
+    def test_诊断stagedPython运行时可读执行不可写且恢复清理(self) -> None:
+        if Path(sys.prefix).resolve() != Path(sys.base_prefix).resolve():
+            self.skipTest("CI 当前 Python 是 venv；该诊断要求固定 base runtime root")
+        source_root = Path(sys.base_prefix).resolve(strict=True)
+        source_executable = source_root / Path(sys.executable).name
+        source_stdlib = Path(sysconfig.get_path("stdlib")).resolve(strict=True)
+        source_probe = source_stdlib / "pathlib.py"
+        self.assertTrue(source_executable.is_file(), "host Python executable is missing")
+        self.assertTrue(source_probe.is_file(), "host Python stdlib sample is missing")
+
+        temporary = tempfile.TemporaryDirectory(prefix="icode-runtime-stage-run-")
+        temp_root = Path(temporary.name)
+        workspace = temp_root / "task"
+        workspace.mkdir()
+        staged_root = temp_root / "icode-runtime-staging-copy"
+        stage_summary: dict[str, int] = {}
+        dacl_targets: list[Path] = []
+        original_set_dacl = windows_appcontainer._set_dacl
+        runtime_acl_snapshot = mock.Mock()
+
+        def record_dacl_target(
+            path: Path, dacl: ctypes.c_void_p, advapi: ctypes.WinDLL,
+        ) -> None:
+            dacl_targets.append(Path(path).resolve(strict=True))
+            original_set_dacl(path, dacl, advapi)
+
+        try:
+            try:
+                stage_summary = windows_appcontainer._copy_runtime_tree_for_diagnostic(
+                    source_root, staged_root,
+                )
+            except _AppContainerSetupError as exc:
+                self._workflow_notice(
+                    "Python runtime staging copy",
+                    json.dumps({"copy_error": exc.error}, separators=(",", ":")),
+                )
+                self.fail(f"runtime staging failed closed: {exc.error}")
+
+            staged_executable = staged_root / source_executable.name
+            self.assertTrue(staged_executable.is_file(), "staged Python executable is missing")
+            baseline_marker = workspace / "staging-baseline-started"
+            baseline = run_windows_appcontainer(
+                [
+                    str(staged_executable), "-I", "-c",
+                    "from pathlib import Path; Path('staging-baseline-started').write_text('started')",
+                ],
+                cwd=workspace, timeout_seconds=10, process_limit=4,
+            )
+
+            workspace_marker = workspace / "staging-workspace-write"
+            runtime_write_probe = staged_root / "staging-runtime-write-probe"
+            runtime_write_marker = workspace / "staging-runtime-write-denied"
+            child_marker = workspace / "staging-child-started"
+            result_marker = workspace / "staging-result.json"
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                listener.settimeout(1)
+                port = listener.getsockname()[1]
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    accepted, _address = listener.accept()
+                    accepted.close()
+
+                child_script = (
+                    "import _ctypes,_sqlite3,_ssl; from pathlib import Path; "
+                    f"Path({str(child_marker)!r}).write_text('child-ok')"
+                )
+                script = (
+                    "import _ctypes,_sqlite3,_ssl,ctypes,encodings,json,pathlib,"
+                    "socket,sqlite3,ssl,subprocess,sys,sysconfig\n"
+                    "from pathlib import Path\n"
+                    "root=Path(sys.executable).resolve(strict=True).parent\n"
+                    "modules=[pathlib,encodings,ssl,sqlite3,_ctypes,_sqlite3,_ssl]\n"
+                    "module_roots=all(Path(m.__file__).absolute().is_relative_to(root) "
+                    "for m in modules)\n"
+                    "prefix_ok=Path(sys.prefix).resolve(strict=True)==root\n"
+                    "try:\n"
+                    f"    Path({str(runtime_write_probe)!r}).write_bytes(b'x')\n"
+                    "except OSError:\n"
+                    "    runtime_write_denied=True\n"
+                    "else:\n"
+                    "    runtime_write_denied=False\n"
+                    "if runtime_write_denied:\n"
+                    f"    Path({str(runtime_write_marker)!r}).write_text('denied')\n"
+                    "try:\n"
+                    f"    Path({str(source_probe)!r}).read_bytes()\n"
+                    "except PermissionError:\n"
+                    "    source_runtime_denied=True\n"
+                    "except OSError:\n"
+                    "    source_runtime_denied=False\n"
+                    "else:\n"
+                    "    source_runtime_denied=False\n"
+                    "try:\n"
+                    f"    socket.create_connection(('127.0.0.1',{port}),timeout=1)\n"
+                    "except OSError:\n"
+                    "    network_denied=True\n"
+                    "else:\n"
+                    "    network_denied=False\n"
+                    "workspace=Path.cwd()\n"
+                    f"Path({str(workspace_marker)!r}).write_text('write-ok')\n"
+                    f"child_code={child_script!r}\n"
+                    "child=subprocess.run([sys.executable,'-I','-c',child_code],"
+                    "timeout=5,check=False)\n"
+                    "result={'prefix_ok':prefix_ok,'module_roots':module_roots,"
+                    "'runtime_write_denied':runtime_write_denied,"
+                    "'source_runtime_denied':source_runtime_denied,"
+                    "'network_denied':network_denied,'child_exit':child.returncode}\n"
+                    f"Path({str(result_marker)!r}).write_text(json.dumps(result))\n"
+                    "if not all((prefix_ok,module_roots,runtime_write_denied,"
+                    "source_runtime_denied,network_denied,child.returncode==0)):\n"
+                    "    raise SystemExit(78)\n"
+                )
+                try:
+                    compile(script, "<staged-runtime-probe>", "exec")
+                except SyntaxError:
+                    self.fail("staged runtime probe script is syntactically invalid")
+                with mock.patch(
+                    "icode.windows_appcontainer._snapshot_runtime_acl_roots",
+                    wraps=windows_appcontainer._snapshot_runtime_acl_roots,
+                ) as runtime_acl_snapshot, mock.patch(
+                    "icode.windows_appcontainer._set_dacl",
+                    side_effect=record_dacl_target,
+                ):
+                    candidate = run_windows_appcontainer(
+                        [str(staged_executable), "-I", "-c", script],
+                        cwd=workspace, timeout_seconds=20, process_limit=4,
+                        _diagnostic_runtime_acl=True,
+                        _diagnostic_runtime_roots=(staged_root,),
+                    )
+
+            try:
+                staged_result = json.loads(result_marker.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                staged_result = {}
+            runtime_write_probe.unlink(missing_ok=True)
+            summary = {
+                **stage_summary,
+                "baseline_executed": baseline.executed,
+                "baseline_exit": baseline.exit_code,
+                "baseline_cleanup": baseline.cleanup_ok,
+                "baseline_started": baseline_marker.is_file(),
+                "candidate_executed": candidate.executed,
+                "candidate_exit": candidate.exit_code,
+                "candidate_cleanup": candidate.cleanup_ok,
+                "runtime_marker": candidate.executed and candidate.exit_code == 0,
+                "workspace_write": workspace_marker.is_file(),
+                "runtime_write_denied": runtime_write_marker.is_file()
+                or staged_result.get("runtime_write_denied") is True,
+                "source_runtime_denied": staged_result.get("source_runtime_denied") is True,
+                "network_denied": staged_result.get("network_denied") is True,
+                "module_roots": staged_result.get("module_roots") is True,
+                "prefix_ok": staged_result.get("prefix_ok") is True,
+                "child_started": child_marker.is_file(),
+                "acl_restore_verified": "runtime_acl_restore_verified=true" in candidate.detail,
+                "acl_roots_are_staged": runtime_acl_snapshot.call_args is not None
+                and runtime_acl_snapshot.call_args.args[0] == (staged_root.resolve(),),
+                "source_acl_untouched": not any(
+                    path == source_root
+                    or path.is_relative_to(source_root)
+                    or source_root.is_relative_to(path)
+                    for path in dacl_targets
+                ),
+            }
+            self._workflow_notice(
+                "Python disposable staging AppContainer diagnostic",
+                json.dumps(summary, ensure_ascii=True, separators=(",", ":")),
+            )
+        finally:
+            temporary.cleanup()
+
+        stage_deleted = not temp_root.exists()
+        self.assertTrue(baseline.cleanup_ok, "baseline AppContainer cleanup failed")
+        self.assertFalse(summary["baseline_started"], "AppContainer read staged runtime before grant")
+        self.assertTrue(candidate.executed, "staged AppContainer process did not start")
+        self.assertEqual(candidate.exit_code, 0, "staged runtime probe did not complete")
+        self.assertTrue(candidate.cleanup_ok, "staged AppContainer cleanup failed")
+        self.assertTrue(summary["acl_restore_verified"], "staged runtime DACL was not exactly restored")
+        self.assertTrue(summary["acl_roots_are_staged"], "runtime ACL transaction escaped the staging root")
+        self.assertTrue(summary["source_acl_untouched"], "source runtime ACL was modified")
+        self.assertTrue(summary["workspace_write"], "AppContainer could not write its task workspace")
+        self.assertTrue(summary["runtime_write_denied"], "staged runtime accepted a write")
+        self.assertTrue(summary["source_runtime_denied"], "AppContainer read the original runtime")
+        self.assertTrue(summary["network_denied"], "staging changed the default-deny network boundary")
+        self.assertTrue(summary["module_roots"], "Python imported a module outside the staged runtime")
+        self.assertTrue(summary["prefix_ok"], "staged Python resolved its prefix outside the staging root")
+        self.assertTrue(summary["child_started"], "staged Python child process did not start")
+        self.assertTrue(stage_deleted, "staged runtime directory remains after cleanup")
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
     def test_在AppContainer中运行Python并解析工作路径(self) -> None:

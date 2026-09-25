@@ -41,6 +41,12 @@
 
 本计划仅固定后续实施与验收门禁，不改变任何当前能力声明。
 
+## 2026-09-25 独立源码复核：Git 状态 broker 的调用链缺口
+
+- 核对 ICODE `main` SHA `e6fceca8f8ee5b0d9b32fc6c7656c62b8a65bcaf`：`git_status.py` 只有严格 porcelain v2 解析器，尚无生产调用；`run_command` 对分层 workspace 的 Git 调用保持 `git_broker_unavailable`。`WorkspaceSession` 没有可信 Git-dir 字段，manifest 虽记录顶层/common-dir/worktree-dir/identity，`NativeChainExecutor → runner → ToolContext` 尚未传入 session 身份；Landlock 也未提供为 Git 元数据加独立只读根的接口。故不能只把解析器接到宿主 `git status`。
+- 下一实现片应是 Linux-only 内部 broker：可信 grant 由 `WorkspaceSession(kind=git_worktree)` 派生、启动前重核身份；扩展随包 Landlock helper 对 gitdir/common-dir 提供只读授权，继承既有默认断网；固定 Git 和 porcelain v2 参数，屏蔽 `GIT_*`、hooks/fsmonitor/helper；snapshot、错 run/ticket、身份漂移和其他平台继续拒绝。含无法安全解析的子模块/外部 gitdir 时完整拒绝，不给部分状态冒充成功。
+- 上游刷新（2026-09-25）：Codex `aa380897f67b91e1a47d530d7286d497b6726d3f` 把 `.git` 与解析后 `gitdir:` 纳入只读沙箱，内部 Git helper 使用 `GIT_OPTIONAL_LOCKS=0`、禁 hooks、控制 fsmonitor 并设时限；Qwen Code `2686cad25fe8ffc24f582d8cb50f49743a884e3b` 文档要求后端启动失败不回宿主重试；Gemini CLI `bedef96ef42905bd84a86dbec021c706168e7e2f` 跟踪实际 worktree/common gitdir，但其权限转换不宜照搬。采纳“OS 只读边界 + 固定 helper 参数 + 失败关闭”机制，不复制实现。见[持续竞品对照](../../agent-landscape-live.md)。
+
 ## 2026-09-25 porcelain v2 解析器前置模块
 
 - 对照 [Git 官方 `git status` 格式文档](https://git-scm.com/docs/git-status)，实现 `src/icode/git_status.py` 的纯字节解析：要求完整 NUL 终止；保留任意路径字节；重命名/复制记录按格式消费紧随其后的旧路径字段；忽略可扩展的 `#` 头；损坏或未知状态记录整体拒绝，不返回部分结果。
