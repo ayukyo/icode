@@ -50,12 +50,16 @@ class TestWindowsAppContainer(unittest.TestCase):
             return None
 
     @staticmethod
-    def _profile_env_matches_api(env_lines: list[str], profile_paths: list[str]) -> bool:
-        values = [
+    def _profile_env_values(env_lines: list[str]) -> list[str]:
+        return [
             line.split("=", 1)[1]
             for line in env_lines
             if line.partition("=")[0].casefold() == "localappdata" and "=" in line
         ]
+
+    @classmethod
+    def _profile_env_matches_api(cls, env_lines: list[str], profile_paths: list[str]) -> bool:
+        values = cls._profile_env_values(env_lines)
         if len(profile_paths) != 1 or len(values) != 1:
             return False
         actual = values[0].rstrip("\\/").casefold()
@@ -97,8 +101,12 @@ class TestWindowsAppContainer(unittest.TestCase):
             self._decode_cmd_unicode_output(b"\x00")
 
     def test_profile环境路径诊断要求唯一键值并与API路径匹配(self) -> None:
+        profile_line = r"LOCALAPPDATA=C:\Users\runner\AppData\Local\Packages\icode\AC"
+        self.assertEqual(self._profile_env_values([profile_line]), [
+            r"C:\Users\runner\AppData\Local\Packages\icode\AC",
+        ])
         self.assertTrue(self._profile_env_matches_api(
-            [r"LOCALAPPDATA=C:\Users\runner\AppData\Local\Packages\icode\AC"],
+            [profile_line],
             ["c:\\users\\RUNNER\\AppData\\Local\\Packages\\icode\\AC\\"],
         ))
         self.assertFalse(self._profile_env_matches_api(
@@ -376,6 +384,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         profile_paths: list[str] = []
         profile_directory_exists_before_launch: list[bool] = []
         marker_present_before_delete: list[bool] = []
+        profile_actual_dir_exists_before_delete: list[bool] = []
+        profile_actual_samefile_as_api_before_delete: list[bool] = []
         marker_name = "icode-profile-lifecycle-probe.txt"
         delete_profile = _delete_appcontainer_profile
 
@@ -398,6 +408,22 @@ class TestWindowsAppContainer(unittest.TestCase):
         ) -> tuple[bool, str]:
             marker_path = Path(localappdata or "") / marker_name
             marker_present_before_delete.append(marker_path.is_file())
+            actual_dir_exists = False
+            actual_samefile_as_api = False
+            try:
+                unicode_status = self._read_cmd_exit_status(profile_env_unicode_status)
+                unicode_output = self._decode_cmd_unicode_output(
+                    profile_env_unicode_value.read_bytes(),
+                ).splitlines()
+                actual_paths = self._profile_env_values(unicode_output)
+                if unicode_status == 0 and len(actual_paths) == 1:
+                    actual_dir_exists = Path(actual_paths[0]).is_dir()
+                    if localappdata:
+                        actual_samefile_as_api = Path(actual_paths[0]).samefile(localappdata)
+            except (OSError, UnicodeDecodeError, ValueError):
+                pass  # Diagnostic failure must not prevent the real profile cleanup.
+            profile_actual_dir_exists_before_delete.append(actual_dir_exists)
+            profile_actual_samefile_as_api_before_delete.append(actual_samefile_as_api)
             return delete_profile(profile, userenv, localappdata)
 
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-profile-lifecycle-") as raw:
@@ -512,6 +538,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                 profile_unicode_env_matches_api = False
             host_localappdata = os.environ.get("LOCALAPPDATA")
             host_localappdata_defined = bool(host_localappdata)
+            actual_profile_paths = self._profile_env_values(profile_unicode_env_lines)
+            profile_unicode_actual_value_defined = len(actual_profile_paths) == 1
             if profile_unicode_set_status == 0 and profile_unicode_env_lines and host_localappdata:
                 profile_unicode_env_matches_host = self._profile_env_matches_api(
                     profile_unicode_env_lines, [host_localappdata],
@@ -540,6 +568,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             f"profile_unicode_set_output_matches_api={profile_unicode_env_matches_api} "
             f"host_localappdata_defined={host_localappdata_defined} "
             f"profile_unicode_set_matches_host={profile_unicode_env_matches_host} "
+            f"profile_unicode_actual_value_defined={profile_unicode_actual_value_defined} "
+            f"profile_unicode_actual_dir_exists={profile_actual_dir_exists_before_delete} "
+            f"profile_unicode_actual_samefile_as_api={profile_actual_samefile_as_api_before_delete} "
             f"profile_env_equals_api={profile_env_equals_api} "
             f"profile_dir_before_launch={profile_directory_exists_before_launch} "
             f"profile_dir_visible={profile_directory_visible} "

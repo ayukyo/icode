@@ -165,5 +165,6 @@
 
 - CI [#115](https://github.com/ayukyo/icode/actions/runs/36078212333) 的 x64 job [107894086441](https://github.com/ayukyo/icode/actions/runs/36078212333/job/107894086441) 与 ARM64 job [107894086354](https://github.com/ayukyo/icode/actions/runs/36078212333/job/107894086354) 确认 expected alias 已定义、profile 不可见、marker 未写入，Python 仍退出 `0xC0000135`。采集到的 Unicode `set` 内容比较为 false，但当轮没有记录子命令退出码/输出是否非空，故尚不能把它当作实际路径不匹配。
 - CI [#116](https://github.com/ayukyo/icode/actions/runs/36078821652) x64 notice 中 API 路径比较和宿主路径比较均为 false，宿主变量已定义；同样因 Unicode 子命令是否成功及输出文件是否非空未被单独报告，两个 false 仍可能是采集失败。下一轮补上退出码和非空状态，只有 `set` 成功且输出存在时才计算路径相等布尔值；不传入宿主路径、不输出任何路径。
+- CI [#117](https://github.com/ayukyo/icode/actions/runs/36079222456) x64 job [107897174176](https://github.com/ayukyo/icode/actions/runs/36079222456/job/107897174176) 与 ARM64 job [107897174312](https://github.com/ayukyo/icode/actions/runs/36079222456/job/107897174312) 确认 Unicode `set` 子命令 exit 0、输出文件非空；expected alias 已定义，但解析值既不等于 API profile 路径也不等于宿主 `LOCALAPPDATA`。profile 目录仍不可见、marker 缺失、Python `0xC0000135`。新一轮再核对 exact `LOCALAPPDATA` 键是否唯一，并只报告实际路径是否为目录、是否与 API 路径指向同一文件系统对象，不记录路径内容。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。

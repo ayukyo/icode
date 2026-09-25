@@ -325,6 +325,10 @@ CI [#115](https://github.com/ayukyo/icode/actions/runs/36078212333) x64/ARM64 �
 
 CI [#116](https://github.com/ayukyo/icode/actions/runs/36078821652) x64 的 profile 路径比较（API 值和宿主值）都报告 false，但 Unicode `set` 子命令的退出码、输出文件是否非空尚未单独采集，因此这两个结果不足以认定路径与两者都不同。下一版仅补这两个采集状态，并在有效时保留 API/宿主两个内存比较；不记录路径、不将宿主 profile 用于容器。Windows 自动模式与 R2.3 继续关闭。
 
+### 2026-09-25 UTC CI #117：有效 Unicode 输出与 API/宿主值均不匹配
+
+CI [#117](https://github.com/ayukyo/icode/actions/runs/36079222456) x64/ARM64 的 `cmd /u` 子命令均退出 0、输出文件非空，expected alias 已定义；当前解析出的 `LOCALAPPDATA` 不等于 API profile 路径，也不等于宿主变量。该结果将问题进一步收窄到受限子进程观察到的值/解析项，但仍未证明实际字符串含义（下一步核实 exact 键唯一性与文件系统对象身份）。profile 不可写、Python `0xC0000135`，Windows 自动模式与 R2.3 继续关闭；不扩大 ACL。
+
 ### 2026-09-24 UTC CI #107：Windows cwd-relative 探针
 
 CI [#107 x64](https://github.com/ayukyo/icode/actions/runs/36066941127) 的最终环境块与 profile `LOCALAPPDATA` A/B 检查通过；Python 仍退出 `0xC0000135`。CMD 批处理脚本未落下任何工作区标记，运行时文件诊断也未复制文件，故不能推断源文件 ACL。当前探针改用任务工作目录相对路径并增加 inline 写入对照；x64 不通过，ARM64 当时仍运行。R2.3 与自动模式继续关闭。
