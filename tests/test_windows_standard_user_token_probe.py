@@ -6,6 +6,7 @@ import tempfile
 
 from scripts.windows_standard_user_token_probe import (
     _make_environment_buffer,
+    logon_rejection_succeeded,
     runner_probe_succeeded,
     stage_runner_script,
     build_system_tool_environment,
@@ -25,6 +26,42 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             "child_identity=PASS;job_assignment=PASS;exit=PASS",
         ))
         self.assertFalse(runner_probe_succeeded("unsupported_platform"))
+
+    def test_logon_rejection_requires_expected_error_and_no_side_effects(self) -> None:
+        expected = {
+            "expected_error_codes": (1326,),
+            "created": False,
+            "error_code": 1326,
+            "process_started": False,
+            "marker_exists": False,
+            "process_residual": False,
+        }
+        self.assertTrue(logon_rejection_succeeded(**expected))
+
+        failure_cases = (
+            {"created": True},
+            {"error_code": 5},
+            {"process_started": True},
+            {"marker_exists": True},
+            {"process_residual": True},
+        )
+        for override in failure_cases:
+            with self.subTest(override=override):
+                self.assertFalse(
+                    logon_rejection_succeeded(**{**expected, **override}),
+                )
+
+    def test_missing_account_accepts_only_documented_account_failure_codes(self) -> None:
+        expected = {
+            "expected_error_codes": (1317, 1326),
+            "created": False,
+            "error_code": 1317,
+            "process_started": False,
+            "marker_exists": False,
+            "process_residual": False,
+        }
+        self.assertTrue(logon_rejection_succeeded(**expected))
+        self.assertFalse(logon_rejection_succeeded(**{**expected, "error_code": 5}))
 
     def test_runner_environment_contains_only_explicit_non_secret_entries(self) -> None:
         block = build_runner_environment_block(

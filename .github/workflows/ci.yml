@@ -194,6 +194,10 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
           $accountName = "icodeprobe_$suffix"
+          $missingAccountName = "icodemissing_$suffix"
+          if (Get-LocalUser -Name $missingAccountName -ErrorAction SilentlyContinue) {
+            throw 'missing_account_probe_name_collision'
+          }
           $passwordBytes = [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
           $passwordText = [Convert]::ToBase64String($passwordBytes).TrimEnd('=') + 'aA1!'
           Write-Output "::add-mask::$passwordText"
@@ -213,6 +217,7 @@ jobs:
             $env:ICODE_R2_PROBE_USERNAME = $accountName
             $env:ICODE_R2_PROBE_PASSWORD = $passwordText
             $env:ICODE_R2_PROBE_SID = $sid
+            $env:ICODE_R2_PROBE_MISSING_USERNAME = $missingAccountName
             python scripts/windows_standard_user_token_probe.py
             if ($LASTEXITCODE -ne 0) {
               throw "restricted_token_probe_failed exit=$LASTEXITCODE"
@@ -222,6 +227,7 @@ jobs:
             Remove-Item Env:ICODE_R2_PROBE_USERNAME -ErrorAction SilentlyContinue
             Remove-Item Env:ICODE_R2_PROBE_PASSWORD -ErrorAction SilentlyContinue
             Remove-Item Env:ICODE_R2_PROBE_SID -ErrorAction SilentlyContinue
+            Remove-Item Env:ICODE_R2_PROBE_MISSING_USERNAME -ErrorAction SilentlyContinue
             if ($created) {
               Remove-LocalUser -Name $accountName -ErrorAction Stop
               if (Get-LocalUser -Name $accountName -ErrorAction SilentlyContinue) {

@@ -27,6 +27,8 @@ _CREATE_UNICODE_ENVIRONMENT = 0x00000400
 _WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 0x00000102
 _INFINITE = 0xFFFFFFFF
+_ERROR_NO_SUCH_USER = 1317
+_ERROR_LOGON_FAILURE = 1326
 _TOKEN_DUPLICATE = 0x0002
 _TOKEN_QUERY = 0x0008
 _TOKEN_ASSIGN_PRIMARY = 0x0001
@@ -48,6 +50,25 @@ _RUNNER_SUCCESS_RESULT = (
 def runner_probe_succeeded(result: str) -> bool:
     """Accept only the complete, versioned success record emitted by the probe."""
     return result == _RUNNER_SUCCESS_RESULT
+
+
+def logon_rejection_succeeded(
+    *,
+    expected_error_codes: tuple[int, ...],
+    created: bool,
+    error_code: int,
+    process_started: bool,
+    marker_exists: bool,
+    process_residual: bool,
+) -> bool:
+    """Require bad credentials to fail before a child or target marker exists."""
+    return (
+        not created
+        and error_code in expected_error_codes
+        and not process_started
+        and not marker_exists
+        and not process_residual
+    )
 
 
 def stage_runner_script(source_path: Path, scratch_path: Path) -> Path:
@@ -475,6 +496,99 @@ def _write_report(report_path: Path, result: str) -> None:
     report_path.write_text(result + "\n", encoding="ascii", newline="\n")
 
 
+def _attempt_rejected_logon(
+    *,
+    advapi: object,
+    kernel: object,
+    username: str,
+    password: str,
+    python_executable: str,
+    runner_script: Path,
+    report_path: Path,
+    system_root: str,
+) -> tuple[bool, int, bool, bool, bool]:
+    """Try one invalid local logon and clean up any unexpected child immediately."""
+    if os.path.lexists(report_path):
+        raise RuntimeError("negative_logon_report_preexists")
+    command = build_runner_command_line(
+        python_executable, str(runner_script), str(report_path),
+    )
+    environment = build_runner_environment_block(
+        python_executable=python_executable,
+        scratch=str(report_path.parent),
+        system_root=system_root,
+    )
+    environment_buffer = _make_environment_buffer(environment)
+    password_buffer = ctypes.create_unicode_buffer(password)
+    password = ""
+    startup = _STARTUPINFO()
+    startup.cb = ctypes.sizeof(startup)
+    process = _PROCESS_INFORMATION()
+    created = False
+    error_code = 0
+    process_started = False
+    process_residual = False
+    try:
+        try:
+            created = bool(advapi.CreateProcessWithLogonW(
+                username,
+                ".",
+                password_buffer,
+                0,
+                python_executable,
+                ctypes.create_unicode_buffer(command),
+                _CREATE_UNICODE_ENVIRONMENT | _CREATE_NO_WINDOW,
+                ctypes.cast(environment_buffer, ctypes.c_void_p),
+                str(report_path.parent),
+                ctypes.byref(startup),
+                ctypes.byref(process),
+            ))
+            error_code = 0 if created else ctypes.get_last_error()
+        finally:
+            ctypes.memset(password_buffer, 0, ctypes.sizeof(password_buffer))
+
+        process_started = bool(
+            process.hProcess or process.hThread
+            or process.dwProcessId or process.dwThreadId
+        )
+        if process.hProcess:
+            wait = kernel.WaitForSingleObject(
+                process.hProcess, 30_000 if created else 0,
+            )
+            if wait != _WAIT_OBJECT_0:
+                # Any unexpected child is killed before the result is classified.
+                kernel.TerminateProcess(process.hProcess, 1)
+                wait = kernel.WaitForSingleObject(process.hProcess, 5_000)
+            process_residual = wait != _WAIT_OBJECT_0
+        elif process.dwProcessId or process.dwThreadId:
+            # Without a process handle we cannot prove cleanup of a reported child.
+            process_residual = True
+    finally:
+        try:
+            if process.hProcess and kernel.WaitForSingleObject(
+                process.hProcess, 0,
+            ) != _WAIT_OBJECT_0:
+                kernel.TerminateProcess(process.hProcess, 1)
+                process_residual = (
+                    kernel.WaitForSingleObject(process.hProcess, 5_000)
+                    != _WAIT_OBJECT_0
+                )
+        finally:
+            if process.hThread:
+                kernel.CloseHandle(process.hThread)
+            if process.hProcess:
+                kernel.CloseHandle(process.hProcess)
+            ctypes.memset(password_buffer, 0, ctypes.sizeof(password_buffer))
+
+    return (
+        created,
+        error_code,
+        process_started,
+        os.path.lexists(report_path),
+        process_residual,
+    )
+
+
 def _run_as_standard_user() -> int:
     if sys.platform != "win32":
         print("::error::restricted_token_probe_unsupported_platform")
@@ -484,7 +598,14 @@ def _run_as_standard_user() -> int:
     username = os.environ.pop("ICODE_R2_PROBE_USERNAME", "")
     password = os.environ.pop("ICODE_R2_PROBE_PASSWORD", "")
     sid = os.environ.pop("ICODE_R2_PROBE_SID", "")
-    if not _USERNAME_RE.fullmatch(username) or not password or not _SID_RE.fullmatch(sid):
+    missing_username = os.environ.pop("ICODE_R2_PROBE_MISSING_USERNAME", "")
+    if (
+        not _USERNAME_RE.fullmatch(username)
+        or not password
+        or not _SID_RE.fullmatch(sid)
+        or not _USERNAME_RE.fullmatch(missing_username)
+        or missing_username == username
+    ):
         print("::error::restricted_token_probe_credentials_invalid")
         return 2
 
@@ -582,7 +703,75 @@ def _run_as_standard_user() -> int:
                 if re.fullmatch(r"[a-z_]+:winerror=\d+|[a-z_]+", candidate):
                     detail = candidate
             raise RuntimeError(f"standard_user_restricted_child_failed:{detail}")
-        print("standard_user_token_probe=PASS " + result)
+
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        invalid_password = password + "_invalid"
+        missing_root = scratch / "missing_account"
+        missing_root.mkdir()
+        missing_report = missing_root / "result.txt"
+        missing_observation = _attempt_rejected_logon(
+            advapi=advapi,
+            kernel=kernel,
+            username=missing_username,
+            password=password,
+            python_executable=sys.executable,
+            runner_script=runner_script,
+            report_path=missing_report,
+            system_root=system_root,
+        )
+        password = ""
+        if not logon_rejection_succeeded(
+            expected_error_codes=(_ERROR_NO_SUCH_USER, _ERROR_LOGON_FAILURE),
+            created=missing_observation[0],
+            error_code=missing_observation[1],
+            process_started=missing_observation[2],
+            marker_exists=missing_observation[3],
+            process_residual=missing_observation[4],
+        ):
+            raise RuntimeError(
+                f"missing_account_rejection_failed:winerror={missing_observation[1]};"
+                f"created={int(missing_observation[0])};"
+                f"child={int(missing_observation[2])};"
+                f"report={int(missing_observation[3])};"
+                f"residual={int(missing_observation[4])}"
+            )
+
+        bad_password_root = scratch / "bad_password"
+        bad_password_root.mkdir()
+        bad_password_report = bad_password_root / "result.txt"
+        bad_password_observation = _attempt_rejected_logon(
+            advapi=advapi,
+            kernel=kernel,
+            username=username,
+            password=invalid_password,
+            python_executable=sys.executable,
+            runner_script=runner_script,
+            report_path=bad_password_report,
+            system_root=system_root,
+        )
+        invalid_password = ""
+        if not logon_rejection_succeeded(
+            expected_error_codes=(_ERROR_LOGON_FAILURE,),
+            created=bad_password_observation[0],
+            error_code=bad_password_observation[1],
+            process_started=bad_password_observation[2],
+            marker_exists=bad_password_observation[3],
+            process_residual=bad_password_observation[4],
+        ):
+            raise RuntimeError(
+                f"bad_password_rejection_failed:winerror={bad_password_observation[1]};"
+                f"created={int(bad_password_observation[0])};"
+                f"child={int(bad_password_observation[2])};"
+                f"report={int(bad_password_observation[3])};"
+                f"residual={int(bad_password_observation[4])}"
+            )
+
+        print(
+            "standard_user_token_probe=PASS " + result
+            + " negative_logon_probes=PASS;missing_account=FAIL_CLOSED;"
+            "bad_password=FAIL_CLOSED;runner_report=ABSENT;child=ABSENT"
+        )
         result_code = 0
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as exc:
         safe = str(exc)
