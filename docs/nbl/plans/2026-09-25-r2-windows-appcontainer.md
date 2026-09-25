@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #125 x64/ARM64 的独立逐文件直读探针显示 Python EXE/共享库/标准库访问拒绝，完整 AppContainer Python 仍退出 `0xC0000135`；但不能据此确认具体 loader 原因。CI #127 的严格 runtime ACL 预检在 x64/ARM64 都报告运行时树含不支持的文件系统项，且发生在任何 runtime DACL 写入前；具体类别尚未知，生产路径未新增 runtime ACL。只补路径脱敏的拒绝类别回执，不扩大授权范围。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #133/#134 的 disposable staging Python 3.11.9 在宿主正向控制成功；AppContainer 候选退出 1，且 #134 确认全树 runtime ACL 精确恢复失败、结果为 `cleanup_failed`。ACL 仅作用于 staging，源 runtime DACL 未碰；workspace/network/child 组合探针没有有效结果。恢复类别仍待 #135 的无路径诊断；该 ACL 路线未验收、不接入生产、不扩大权限。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -221,3 +221,9 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - 官方 CPython Windows embeddable ZIP 可供应用随包携带，但它是“应用嵌入运行时”而非通用用户 Python：不含 pip、Tcl/Tk 和文档；3.11.16、3.12.14 已是仅源码安全更新，3.11/3.12 的最后 Windows binary installer 分别为 3.11.9/3.12.10。[3.11.16](https://www.python.org/downloads/release/python-31116/) · [3.12.14](https://www.python.org/downloads/release/python-31214/) · [3.12 Windows embeddable 文档](https://docs.python.org/3.12/using/windows.html#the-embeddable-package)。3.13.15 官方 x64/ARM64 embeddable ZIP 分别为 11,010,501 / 10,403,665 bytes，合计约 20.4 MiB；ICODE 元数据 `requires-python >=3.11` 且无核心依赖，不能由此推断用户项目兼容 3.13。[官方文件清单](https://www.python.org/ftp/python/3.13.15/)。因此先不把旧版本 embed ZIP 固定进 wheel，也不以新 minor 替换用户选定的解释器。
 - **本提交新增、待 CI 验证的诊断切片：**在独立 Windows Actions 步骤将当前 runner Python 前缀复制到唯一 temp 子目录；目标名及父路径均受限，复制前逐个检查 symbolic link 的真实解析目标必须仍在源根内且为普通文件（目录链接、链接循环、断链及越界目标一律拒绝），复制后要求 staging 无任何 reparse point。ACL 候选只作用于该 disposable staging 根，原 host runtime/toolcache 不在授权集合；使用现有 Package SID read/execute ACE 与逐对象精确 DACL 回滚门。验证模块/DLL 导入、`sys.prefix`、子进程、workspace 写、stage 写拒绝、原 runtime 直读拒绝、loopback 拒绝和 staging/profile/ACL 清理。该试验用于判断“同版本 host runtime 复制 staging”是否可行；**不是**生产路径，不承诺对并发源 runtime 变更安全，也不解决分发与项目 venv 兼容性。Windows R2.3、自动模式和完整 R2 继续关闭。
 - **默认 CI 安全边界：**移除对原 host runtime 直接改 DACL 的 A/B 步骤；此前探针虽因 reparse 预检而未授权，但完整测试套件也会自动触发该候选。该测试现要求显式 `ICODE_DIAGNOSTIC_RUNTIME_ACL=true`，仅保留给隔离、可丢弃的人工诊断环境；常规双架构 CI 只在临时 staging 副本上测试 ACL。
+
+### 2026-09-25 UTC CI #133/#134：staging 正向对照通过，ACL 精确恢复失败
+
+- CI [#133](https://github.com/ayukyo/icode/actions/runs/36100147033) 和 [#134](https://github.com/ayukyo/icode/actions/runs/36100928044) 的 x64/ARM64 runtime 树均为 6,721 项、1 个根内词法 symbolic link；复制逻辑将该链接物化为普通文件，staging 无 reparse point。临时副本在宿主可加载 `_ctypes/_sqlite3/_ssl`、标准库与 Python 3.11.9。
+- AppContainer 无 runtime ACL 的基线仍退出 `0xC0000135`；候选进程启动后退出 1。#134 的固定类别回执为 `runtime_acl_snapshot`、`runtime_acl_access_granted`、`runtime_acl_restore_failed`，ACL 根确认仅为 staging，源树 DACL 未修改；candidate `cleanup_failed`，不能把未生成的 Python/workspace/network/child markers解释成某个具体边界失败。
+- **恢复规则不变：**不能仅凭 staging 可删除而把失败改报成功；先诊断全树首次 mismatch 属于 path-set、root/descendant DACL、descriptor metadata、SID residual 或 inspection error。无论分类为何，只有精确恢复验证和完整 AppContainer 组合验收都通过才考虑继续；若持续无法恢复即停止继承 ACL 路线并评估替代，不作宽松回退。

@@ -1,6 +1,6 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- 最近观察：2026-09-24；下次全量复核：不晚于 2026-10-24
+- 最近观察：2026-09-25；下次全量复核：不晚于 2026-10-25
 - 注：观察日期统一按 UTC 记录；本轮定向复核 R2.3 Windows AppContainer 与 Job 清理验收；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
@@ -238,3 +238,10 @@
 - 默认 Windows CI 已停止运行“直接对 host runtime 改 DACL”的旧 A/B（#131 两架构均在授权前 fail-closed）；测试现在需显式 `ICODE_DIAGNOSTIC_RUNTIME_ACL=true`。持续 CI 的 ACL 实验只作用于 disposable temp staging 副本。
 - Python 官方资料复核：3.13.15 为当前发布线的 Windows embeddable ZIP 提供 x64 11,010,501 B、ARM64 10,403,665 B；embeddable 包面向嵌入应用，不含 pip/Tk/文档。3.11.16、3.12.14 属仅源码安全更新，embed 旧二进制会冻结安全补丁；改用 3.13 需项目兼容性验证。**暂缓**把二进制 runtime 固定进 ICODE wheel；先证明现有 host runtime 在临时只读 staging 中可完整启动。[3.13.15 官方目录](https://www.python.org/ftp/python/3.13.15/) · [embeddable 文档](https://docs.python.org/3.12/using/windows.html#the-embeddable-package) · [3.11.16](https://www.python.org/downloads/release/python-31116/) · [3.12.14](https://www.python.org/downloads/release/python-31214/)。
 - Git broker 当前无可调用实现；本机只存在 porcelain v2 parser，direct Git 对分层工单仍 fail-closed。固定上游源码复核：Codex `aa380897f67b91e1a47d530d7286d497b6726d3f` 使用 OS 只读保护 `.git`/gitdir 并约束内部 status 参数；Qwen Code `2686cad25fe8ffc24f582d8cb50f49743a884e3b` 明确不在 sandbox 启动失败时退回 host；Gemini CLI `bedef96ef42905bd84a86dbec021c706168e7e2f` 解析 worktree/common gitdir，但不照搬按项目权限扩写 Git 管理目录。**采纳**边界组合与 fail-closed，Linux status 是可独立实施的下一子切片，尚未开放工具入口；详情见 [Git broker 门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。
+
+### 2026-09-25 UTC R2.3 AppContainer staging 与运行时恢复复核
+
+- **上游事实：**CPython 3.11 官方 Windows 文档将 embeddable ZIP 定位为嵌入式发行版，不含 pip、Tcl/Tk、文档或 Microsoft C Runtime；不能直接视作透明替换现有 Python 的 runner。[embeddable package](https://docs.python.org/3.11/using/windows.html#the-embeddable-package) · [module search](https://docs.python.org/3.11/using/windows.html#finding-modules)。Microsoft 分别定义 AppContainer 文件能力/ACL 与 Job Object 生命周期，二者不能互相替代。[AppContainer isolation](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) · [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)。
+- **开源机制参考：**`io-harness` 0.86.0（Apache-2.0，固定提交 `8c03ca273246937975bf63da8413c927ba264916`）区分目录遍历、运行时只读执行、工作区完全访问，并将 AppContainer 置于 Job 中。[固定源码](https://github.com/initorigin/io-harness/blob/8c03ca273246937975bf63da8413c927ba264916/src/sandbox/appcontainer.rs)。仅采纳权限分层与分别验收；不复制代码，也不把 Rust/Cargo 目录经验等同 CPython 原生验证。
+- **ICODE 决定：采纳宿主正向对照；暂缓内置 embeddable CPython；ACL 方案保持关闭。**x64/ARM64 CI 确认同一 staging Python 3.11.9 与标准库/扩展可在宿主完整导入。无 runtime 授权的 AppContainer 对照仍不能启动；这不等于容器内 ACL 候选已通过。
+- CI [#133](https://github.com/ayukyo/icode/actions/runs/36100147033) 与 [#134](https://github.com/ayukyo/icode/actions/runs/36100928044) 两个 Windows 架构均显示候选进程启动但退出 1、`cleanup_failed`；#134 确认只读 ACL 授权到达、ACL 根为 staging、源 DACL 未触碰，但全树精确恢复失败。workspace/network/child 探针因主脚本提前退出而无结论。不能推断具体对象、传播时序或 Python 失败根因；不开放自动模式、不扩大 ACL。下一轮只报告首次还原不匹配的对象层级及 DACL/元数据/SID 类别，路径和原始 ACL 不进入回执。

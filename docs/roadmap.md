@@ -335,7 +335,13 @@ CI [#129 x64](https://github.com/ayukyo/icode/actions/runs/36092603966/job/10793
 [R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md) ·
 [R2.4 临时网络授权门禁](./nbl/plans/2026-09-24-r2-network-proxy-gate.md)
 
-R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#131：#91–#105 的启动差分曾返回 `CreateProcessW` 错误 203，#105 固定 whoami A/B 发现加入 profile `LOCALAPPDATA` 后可启动；其后 Python 主探针一直退出 `0xC0000135`。#112 的 `process_limit=2/1` 同载荷正反对照双架构通过组件断言。#125 x64/ARM64 直读样本显示 System32 控制可读，而 Python EXE、共享库、`pathlib.py`、`encodings` 均被拒绝读取。#131 清点 runtime 共 6,721 项、1 个词法目标位于根内的 symbolic link；这不证明最终对象身份或 ACL 传播安全。runtime ACL 候选仍在 preflight 拒绝、未修改 DACL，Python 启动及运行时文件读取仍失败；新 disposable staging 原生探针尚待 CI。Windows 自动模式继续关闭，R2.3 与完整 R2 未完成。普通 Job、R2.1 workspace、R2.2 Linux/macOS 原生任务在 CI #131 通过；macOS Intel/ARM64 脱组后代按已批准的 Codex 式边界验收。
+R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#134：#91–#105 的启动差分曾返回 `CreateProcessW` 错误 203，#105 固定 whoami A/B 发现加入 profile `LOCALAPPDATA` 后可启动；其后原宿主 Python 一直退出 `0xC0000135`。#112 的 `process_limit=2/1` 同载荷正反对照双架构通过组件断言。#125 x64/ARM64 直读样本显示 System32 控制可读，而宿主 Python EXE、共享库、`pathlib.py`、`encodings` 均被拒绝读取。#131 清点 6,721 项、1 个词法根内 symbolic link；这不证明最终对象身份。#133/#134 的临时 staging Python 3.11.9 宿主正向控制成功，但 AppContainer 候选进程退出 1；#134 确认只读授权作用于 staging 且源 runtime DACL 未触碰，然而全树 ACL 精确恢复失败、`cleanup_failed`，其他组合断言未形成证据。Windows 自动模式继续关闭，R2.3 与完整 R2 未完成。R2.1 三平台、Python 3.11/3.12、普通 Job 和 R2.2 Linux/macOS 当前 CI 子项通过；macOS Intel/ARM64 脱组后代按已批准的 Codex 式边界验收。
+
+### 2026-09-25 UTC：CI #133/#134 staged runtime 与 ACL 回执
+
+CI [#133](https://github.com/ayukyo/icode/actions/runs/36100147033) 的 x64/ARM64 staged Python 3.11.9 宿主正向控制均通过，但 AppContainer 候选退出 1、清理失败；#134 的拆分脱敏回执进一步确认 `runtime_acl_snapshot` 与只读授权成功、ACL root 为 disposable staging、源 runtime DACL 未改，且精确恢复失败。候选错误 `cleanup_failed`，故 workspace/network/child 结果无效，不能声称 Windows 文件/网络沙箱通过。其它 R2.1、Python 3.11/3.12、R2.2 Linux/macOS 和普通 Job 作业通过。
+
+恢复失败原因仍待路径脱敏分类：下轮仅比较对象集合、首次 root/descendant DACL/元数据/SID 残留类别；不输出对象名、路径、ACL 内容或 SID，不改动源 runtime。无论诊断结果如何，在双架构精确恢复与完整组合负例通过前，Windows 自动模式、R2.3 和完整 R2 均保持关闭；若无法安全精确恢复，则停止该继承 ACL 路线并改评替代执行边界，不做宽松回退。
 
 CI [#105 x64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836254760) 与 [#105 ARM64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836255639) 的固定 whoami 同-profile A/B 均显示：省略容器 `LOCALAPPDATA` 时 `CreateProcessW` 返回 203，加入系统 API 返回的 profile 路径后成功且清理通过；但当时完整 AppContainer 流程的常规命令尚未带该变量，整组作业仍失败。当前代码已将容器专属路径接入常规 AppContainer 命令及撤权探针，并新增路径查询失败不启动、准确报告清理状态、临时 profile 数据目录删除/残留核验的测试；这条常规路径尚待新的 Windows x64/ARM64 CI。Windows AppContainer 与完整 R2 仍未验收，自动模式保持关闭。
 

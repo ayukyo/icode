@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
+from collections.abc import Callable
 from unittest import mock
 from urllib.parse import urlsplit
 
@@ -394,6 +395,120 @@ class TestWindowsAppContainer(unittest.TestCase):
     def test_JSON工作流回执超限时必须显式失败(self) -> None:
         with self.assertRaises(AssertionError):
             self._workflow_json_notice("test", {"payload": "x" * 500})
+
+    @staticmethod
+    def _runtime_acl_restore_categories(
+        transaction: windows_appcontainer._RuntimeAclTransaction,
+        sid: ctypes.c_void_p,
+    ) -> dict[str, object]:
+        """Classify the first restore mismatch without exposing object paths."""
+        try:
+            root = transaction.roots[0]
+            actual_paths = windows_appcontainer._walk_workspace(root)
+            expected = {
+                item.path: item for item in transaction.entries
+                if item.path == root or item.path.is_relative_to(root)
+            }
+            actual_set = set(actual_paths)
+            expected_set = set(expected)
+            actual_only = len(actual_set - expected_set)
+            expected_only = len(expected_set - actual_set)
+            if actual_only or expected_only:
+                return {
+                    "state": "path_set_mismatch",
+                    "actual_only": actual_only,
+                    "expected_only": expected_only,
+                }
+
+            for path in actual_paths:
+                current = windows_appcontainer._read_dacl_state(
+                    path, transaction.advapi, transaction.kernel,
+                )
+                before = expected[path]
+                dacl_changed = current.dacl != before.dacl
+                metadata_changed = (
+                    current.control, current.revision, current.present,
+                    current.defaulted, current.file_identity,
+                ) != (
+                    before.control, before.revision, before.present,
+                    before.defaulted, before.file_identity,
+                )
+                sid_residual = windows_appcontainer._contains_sid(
+                    current.dacl, sid, transaction.advapi,
+                )
+                if dacl_changed or metadata_changed or sid_residual:
+                    return {
+                        "state": "object_mismatch",
+                        "object": "root" if path == root else "descendant",
+                        "dacl_changed": dacl_changed,
+                        "metadata_changed": metadata_changed,
+                        "sid_residual": sid_residual,
+                    }
+            return {"state": "snapshot_match_after_failure", "objects": len(actual_paths)}
+        except _AppContainerSetupError as exc:
+            return {"state": "inspection_failed", "category": exc.error}
+        except (OSError, RuntimeError, ValueError):
+            return {"state": "inspection_failed", "category": "filesystem_error"}
+
+    def _observe_runtime_acl_restore(
+        self,
+        restore: Callable[[windows_appcontainer._RuntimeAclTransaction, ctypes.c_void_p], bool],
+        transaction: windows_appcontainer._RuntimeAclTransaction,
+        sid: ctypes.c_void_p,
+        report: dict[str, object],
+    ) -> bool:
+        try:
+            restored = restore(transaction, sid)
+        except Exception:
+            report.update({"state": "restore_exception"})
+            raise
+        report.update(
+            {"state": "restored"}
+            if restored
+            else self._runtime_acl_restore_categories(transaction, sid)
+        )
+        return restored
+
+    def test_runtime_ACL恢复诊断只报告脱敏的不匹配类别(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-diagnostic-") as raw:
+            root = Path(raw) / "runtime"
+            root.mkdir()
+            child = root / "python.dll"
+            child.write_bytes(b"runtime")
+
+            def snapshot(path: Path, dacl: bytes):
+                info = path.lstat()
+                return windows_appcontainer._DaclSnapshot(
+                    path=path, dacl=dacl, control=0, revision=1,
+                    present=True, defaulted=False,
+                    file_identity=(int(info.st_dev), int(info.st_ino)),
+                )
+
+            transaction = windows_appcontainer._RuntimeAclTransaction(
+                roots=(root,),
+                entries=(snapshot(root, b"original-root"), snapshot(child, b"original-child")),
+                advapi=object(), kernel=object(), snapshot_duration_ms=1,
+            )
+            child_after = snapshot(child, b"changed-child")
+
+            def read_state(path: Path, _advapi: object, _kernel: object):
+                return snapshot(path, b"original-root") if path == root else child_after
+
+            with mock.patch.object(
+                windows_appcontainer, "_walk_workspace", return_value=[root, child],
+            ), mock.patch.object(
+                windows_appcontainer, "_read_dacl_state", side_effect=read_state,
+            ), mock.patch.object(
+                windows_appcontainer, "_contains_sid", return_value=False,
+            ):
+                report = self._runtime_acl_restore_categories(
+                    transaction, ctypes.c_void_p(123),
+                )
+
+        self.assertEqual(report["state"], "object_mismatch")
+        self.assertEqual(report["object"], "descendant")
+        self.assertTrue(report["dacl_changed"])
+        self.assertNotIn(str(root), repr(report))
 
     @staticmethod
     def _read_cmd_exit_status(path: Path) -> int | None:
@@ -1929,6 +2044,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         dacl_targets: list[Path] = []
         original_set_dacl = windows_appcontainer._set_dacl
         runtime_acl_snapshot = mock.Mock()
+        runtime_acl_restore_report: dict[str, object] = {}
+        original_restore_runtime_acl = windows_appcontainer._restore_runtime_acl_roots
 
         def record_dacl_target(
             path: Path, dacl: ctypes.c_void_p, advapi: ctypes.WinDLL,
@@ -2071,6 +2188,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                 ) as runtime_acl_snapshot, mock.patch(
                     "icode.windows_appcontainer._set_dacl",
                     side_effect=record_dacl_target,
+                ), mock.patch(
+                    "icode.windows_appcontainer._restore_runtime_acl_roots",
+                    side_effect=lambda transaction, sid: self._observe_runtime_acl_restore(
+                        original_restore_runtime_acl,
+                        transaction, sid, runtime_acl_restore_report,
+                    ),
                 ):
                     candidate = run_windows_appcontainer(
                         [str(staged_executable), "-I", "-c", script],
@@ -2129,6 +2252,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                         ("job_query_failed", "QueryInformationJobObject err="),
                     ) if marker in candidate.detail
                 ],
+                "runtime_acl_restore_report": runtime_acl_restore_report or {"state": "not_observed"},
             }
             self._workflow_json_notice(
                 "Python disposable staging inventory",
@@ -2158,6 +2282,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 {"detail_flags": summary["candidate_detail_flags"]},
             )
             self._workflow_json_notice(
+                "Python disposable staging ACL mismatch classification",
+                summary["runtime_acl_restore_report"],
+            )
+            self._workflow_json_notice(
                 "Python disposable staging boundary assertions",
                 {
                     "acl_restore_verified": summary["acl_restore_verified"],
@@ -2177,6 +2305,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             temporary.cleanup()
 
         stage_deleted = not temp_root.exists()
+        self._workflow_json_notice(
+            "Python disposable staging deletion",
+            {"staging_removed": stage_deleted},
+        )
         self.assertTrue(baseline.cleanup_ok, "baseline AppContainer cleanup failed")
         self.assertFalse(summary["baseline_started"], "AppContainer read staged runtime before grant")
         self.assertTrue(candidate.executed, "staged AppContainer process did not start")
