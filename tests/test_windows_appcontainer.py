@@ -2228,6 +2228,13 @@ class TestWindowsAppContainer(unittest.TestCase):
             )
 
             workspace_marker = workspace / "staging-workspace-write"
+            script_started_marker = workspace / "staging-python-script-started"
+            imports_completed_marker = workspace / "staging-python-imports-completed"
+            paths_completed_marker = workspace / "staging-python-paths-completed"
+            runtime_write_completed_marker = workspace / "staging-runtime-write-completed"
+            source_read_completed_marker = workspace / "staging-source-read-completed"
+            network_completed_marker = workspace / "staging-network-completed"
+            python_failure_marker = workspace / "staging-python-failure-class"
             runtime_write_probe = staged_root / "staging-runtime-write-probe"
             runtime_write_marker = workspace / "staging-runtime-write-denied"
             child_marker = workspace / "staging-child-started"
@@ -2246,41 +2253,73 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f"Path({str(child_marker)!r}).write_text('child-ok')"
                 )
                 script = (
-                    "import _ctypes,_sqlite3,_ssl,ctypes,encodings,json,pathlib,"
-                    "platform,socket,sqlite3,ssl,subprocess,sys,sysconfig\n"
-                    "from pathlib import Path\n"
-                    "root=Path(sys.executable).resolve(strict=True).parent\n"
-                    "modules=[pathlib,encodings,json,platform,ssl,sqlite3,_ctypes,_sqlite3,_ssl]\n"
-                    "module_roots=all(Path(m.__file__).absolute().is_relative_to(root) "
+                    "open('staging-python-script-started','w',encoding='ascii').write('1')\n"
+                    "try:\n"
+                    "    import _ctypes,_sqlite3,_ssl,ctypes,encodings,json,pathlib,"
+                    "platform,socket,sqlite3,ssl,subprocess,sys,sysconfig; from pathlib import Path\n"
+                    "except Exception as exc:\n"
+                    "    open('staging-python-failure-class','w',encoding='ascii').write("
+                    "'imports:'+type(exc).__name__)\n"
+                    "    raise\n"
+                    "def checkpoint(name): Path(name).write_text('1',encoding='ascii')\n"
+                    "def failed(stage,exc): Path('staging-python-failure-class').write_text("
+                    "stage+':'+type(exc).__name__,encoding='ascii')\n"
+                    "checkpoint('staging-python-imports-completed')\n"
+                    "try:\n"
+                    "    root=Path(sys.executable).resolve(strict=True).parent\n"
+                    "    modules=[pathlib,encodings,json,platform,ssl,sqlite3,_ctypes,_sqlite3,_ssl]\n"
+                    "    module_roots=all(Path(m.__file__).absolute().is_relative_to(root) "
                     "for m in modules)\n"
-                    "prefix_ok=Path(sys.prefix).resolve(strict=True)==root\n"
+                    "    prefix_ok=Path(sys.prefix).resolve(strict=True)==root\n"
+                    "except Exception as exc:\n"
+                    "    failed('runtime_path',exc)\n"
+                    "    raise\n"
+                    "checkpoint('staging-python-paths-completed')\n"
                     "try:\n"
                     f"    Path({str(runtime_write_probe)!r}).write_bytes(b'x')\n"
-                    "except OSError:\n"
+                    "except PermissionError:\n"
                     "    runtime_write_denied=True\n"
+                    "except OSError as exc:\n"
+                    "    failed('runtime_write',exc)\n"
+                    "    raise\n"
                     "else:\n"
                     "    runtime_write_denied=False\n"
                     "if runtime_write_denied:\n"
                     f"    Path({str(runtime_write_marker)!r}).write_text('denied')\n"
+                    "checkpoint('staging-runtime-write-completed')\n"
                     "try:\n"
                     f"    Path({str(source_probe)!r}).read_bytes()\n"
                     "except PermissionError:\n"
                     "    source_runtime_denied=True\n"
-                    "except OSError:\n"
-                    "    source_runtime_denied=False\n"
+                    "except OSError as exc:\n"
+                    "    failed('source_read',exc)\n"
+                    "    raise\n"
                     "else:\n"
                     "    source_runtime_denied=False\n"
+                    "checkpoint('staging-source-read-completed')\n"
                     "try:\n"
                     f"    socket.create_connection(('127.0.0.1',{port}),timeout=1)\n"
-                    "except OSError:\n"
+                    "except PermissionError:\n"
                     "    network_denied=True\n"
+                    "except OSError as exc:\n"
+                    "    failed('network',exc)\n"
+                    "    raise\n"
                     "else:\n"
                     "    network_denied=False\n"
-                    "workspace=Path.cwd()\n"
-                    f"Path({str(workspace_marker)!r}).write_text('write-ok')\n"
+                    "checkpoint('staging-network-completed')\n"
+                    "try:\n"
+                    "    workspace=Path.cwd()\n"
+                    f"    Path({str(workspace_marker)!r}).write_text('write-ok')\n"
+                    "except Exception as exc:\n"
+                    "    failed('workspace_write',exc)\n"
+                    "    raise\n"
                     f"child_code={child_script!r}\n"
-                    "child=subprocess.run([sys.executable,'-I','-c',child_code],"
+                    "try:\n"
+                    "    child=subprocess.run([sys.executable,'-I','-c',child_code],"
                     "timeout=5,check=False)\n"
+                    "except Exception as exc:\n"
+                    "    failed('child_launch',exc)\n"
+                    "    raise\n"
                     "result={'prefix_ok':prefix_ok,'module_roots':module_roots,"
                     "'python_version':platform.python_version(),"
                     "'runtime_write_denied':runtime_write_denied,"
@@ -2319,6 +2358,27 @@ class TestWindowsAppContainer(unittest.TestCase):
                 staged_result = json.loads(result_marker.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 staged_result = {}
+            python_failure = "not_observed"
+            try:
+                raw_failure = python_failure_marker.read_text(encoding="ascii").strip()
+            except OSError:
+                raw_failure = ""
+            allowed_failure_records = {
+                f"{stage}:{error}"
+                for stage in (
+                    "imports", "runtime_path", "runtime_write", "source_read",
+                    "network", "workspace_write", "child_launch",
+                )
+                for error in (
+                    "AttributeError", "FileNotFoundError", "ImportError", "ModuleNotFoundError",
+                    "NameError", "NotADirectoryError", "OSError", "PermissionError",
+                    "RuntimeError", "TimeoutExpired", "TypeError", "ValueError",
+                )
+            }
+            if raw_failure in allowed_failure_records:
+                python_failure = raw_failure
+            elif raw_failure:
+                python_failure = "invalid_marker"
             runtime_write_probe.unlink(missing_ok=True)
             summary = {
                 **stage_summary,
@@ -2338,6 +2398,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                     if "runtime_acl_baseline_normalized=true control_delta=" in candidate.detail
                     else "not_observed"
                 ),
+                "python_script_started": script_started_marker.is_file(),
+                "python_imports_completed": imports_completed_marker.is_file(),
+                "python_paths_completed": paths_completed_marker.is_file(),
+                "runtime_write_check_completed": runtime_write_completed_marker.is_file(),
+                "source_read_check_completed": source_read_completed_marker.is_file(),
+                "network_check_completed": network_completed_marker.is_file(),
+                "python_failure": python_failure,
                 "runtime_marker": candidate.executed and candidate.exit_code == 0,
                 "workspace_write": workspace_marker.is_file(),
                 "runtime_write_denied": runtime_write_marker.is_file()
@@ -2407,6 +2474,18 @@ class TestWindowsAppContainer(unittest.TestCase):
                 summary["runtime_acl_restore_report"],
             )
             self._workflow_json_notice(
+                "Python disposable staging script checkpoints",
+                {
+                    "script_started": summary["python_script_started"],
+                    "imports_completed": summary["python_imports_completed"],
+                    "paths_completed": summary["python_paths_completed"],
+                    "runtime_write_check_completed": summary["runtime_write_check_completed"],
+                    "source_read_check_completed": summary["source_read_check_completed"],
+                    "network_check_completed": summary["network_check_completed"],
+                    "python_failure": summary["python_failure"],
+                },
+            )
+            self._workflow_json_notice(
                 "Python disposable staging boundary assertions",
                 {
                     "acl_restore_verified": summary["acl_restore_verified"],
@@ -2436,6 +2515,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertTrue(candidate.executed, "staged AppContainer process did not start")
         self.assertEqual(candidate.exit_code, 0, "staged runtime probe did not complete")
         self.assertTrue(candidate.cleanup_ok, "staged AppContainer cleanup failed")
+        self.assertTrue(summary["python_script_started"], "staged Python never entered its command script")
         self.assertIn(
             summary["acl_baseline_normalization"], {"0", "1024"},
             "staging ACL baseline normalization was not verified",

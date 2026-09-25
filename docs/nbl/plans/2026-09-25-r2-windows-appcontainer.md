@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #133–#137 的 disposable staging Python 3.11.9 宿主正向控制成功，但 AppContainer 候选退出 1。#136/#137 x64 与 ARM64 均确认 staging ACL 的 DACL bytes、身份、其它 descriptor metadata 均匹配且无 Package SID 残留；唯一差异是根对象 `control_delta=0x0400`，即 `SE_DACL_AUTO_INHERITED`。下一轮只在临时 staging 副本上于 snapshot 前建立系统规范化 baseline，再要求后续 ACL 修改对该 baseline 全树精确恢复；源 runtime 与生产 runner 不改，组合探针仍未形成结果。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #133–#138 的 disposable staging Python 3.11.9 宿主正向控制成功。#138 x64/ARM64 已证明：staging 根先规范化 `SE_DACL_AUTO_INHERITED` 后，Package SID 临时 ACL 全树可精确恢复、`cleanup_ok=true`、staging 最终删除，源 runtime 未修改；但候选 Python 退出 1、最终结果 marker 不存在，尚未到达可判定工作区/network/child 的组合结果。下一轮仅增加脚本启动/导入/路径/各负例阶段标记，回执仍不含路径和异常正文。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -239,3 +239,9 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - CI [#137](https://github.com/ayukyo/icode/actions/runs/36104010820) 的 Windows x64 与 ARM64 均回报十进制 `control_delta=1024`（`0x0400`），其余 #136 类别保持不变：DACL bytes/身份无变化、无 SID 残留，staging 删除成功；candidate 仍 `cleanup_failed`，workspace/network/child 断言无效。
 - Microsoft 将 `0x0400` 定义为 `SE_DACL_AUTO_INHERITED`；其自动传播说明指出，对对象设置 DACL 时系统会应用当前继承模型并可能设置此位。与本轮实测结合，可解释为何恢复相同 DACL 后 control 仍有系统规范化差异；该位仍不是可忽略理由。[control flags](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-control) · [automatic propagation](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)
 - **下一项仅限 disposable staging 的实验：**在添加 Package SID 前重设 staging 根的同一 DACL；要求 root 的 DACL bytes、identity、revision/present/defaulted 不变，control 唯一变化为 `0x0400`；随后以该系统规范化状态为 snapshot baseline，并照旧要求临时授权后全树逐对象精确恢复。任何其它差异都停止 candidate。不得修改原 runtime，也不得把 staging 删除作为 ACL restore 证据。此实验即使通过也只验证 disposable-runtime 路线，不直接开放生产 Windows 自动模式。
+
+### 2026-09-25 UTC CI #138：staging ACL 精确恢复通过，Python 组合探针仍未闭环
+
+- CI [#138](https://github.com/ayukyo/icode/actions/runs/36105290309) x64/ARM64 均报告 `acl_baseline_normalization_delta=1024`、`acl_restore_verified=true`、restore classifier `state=restored`、`candidate_cleanup=true`、`staging_removed=true`，且 `source_acl_untouched=true`。因此这轮证明了“staging 先规范化，再对规范化快照精确恢复”的 ACL 子项；不把它外推为宿主 runtime 或生产 Windows 通过。
+- 两架构候选进程 `executed=true` 但退出码 1，结果 JSON、runtime/workspace/network/child marker 均未生成；普通无 ACL baseline 仍为 `0xC0000135`。因此不能判断候选是否进入脚本，也不能声称工作区或网络测试失败/通过。其它 CI 矩阵通过。
+- 下一轮只增加 staging 脚本的固定阶段 marker：命令脚本启动、标准库导入、运行时路径检查、写拒绝、源 runtime 拒绝、loopback 拒绝、workspace 和 child；异常只记录白名单阶段/异常类，不记录路径或错误正文。ACL 初始化与回滚门继续保持，production runner 未接入。
