@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #117 x64/ARM64 的 Unicode `set` 子命令均退出 0 且输出非空，expected alias 已定义；解析值不匹配 API profile 路径或宿主 `LOCALAPPDATA`。profile marker 仍缺失、Python `0xC0000135`。当前再补 exact 键唯一性、实际路径是否为目录及与 API 路径是否为同一文件系统对象的布尔值；不记录路径、不使用宿主路径或放宽 ACL。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #118 x64/ARM64 删除前均确认 actual `LOCALAPPDATA` 键唯一，但 `Path.is_dir` 与 API 路径 `samefile` 为 false；尚未区分不存在和访问拒绝。当前再补只读 `stat` 错误类别和 actual/API 的父子同级关系；不记录路径、不使用宿主路径或放宽 ACL。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -132,7 +132,7 @@
 - 两架构 Python 仍以 `0xC0000135` 退出。profile 探针报告 `LOCALAPPDATA` 已定义、API 返回的目录在宿主启动前存在，但容器内目录检查为假、写入分类为 `path_not_found`、删除前 marker 不存在；profile 最终清理通过。当前证据不能区分容器拿到的字符串与 API 返回值不一致、路径语义或实际目录访问问题。
 - 工作区读写/外部写拒绝、loopback 拒绝、正常退出与 timeout 后代回收有组件级通过 notice；它们不替代 Python 执行、profile 存储或完整文件/网络门禁。
 - 微软[启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)说明 profile 为 AppContainer 提供可创建、读取和写入文件的位置，并可经 `LOCALAPPDATA` 或 `GetAppContainerFolderPath` 访问；[创建 profile API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)说明每用户/每应用文件夹和注册表数据存储随 profile 建立。[路径查询 API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)只返回 Local AppData 路径，不保证其创建目录或修订 ACL。官方文档没有给出精确 ACL mask，因此不能据文档推断 CI runner 上实际 token 一定可达。
-- CI #113 的旧 `set LOCALAPPDATA` 输出比较与 #114 的同块 alias 比较在双架构均为 false。CI #115/#116 未核验 Unicode 输出文件有效性，故比较结果不作结论。CI #117 已确认 alias 存在、`cmd /u` exit 0 且输出非空，解析比较仍不等于 API/宿主路径。当前增加 exact 键数量、目录存在性和与 API 路径 `samefile` 三个安全布尔诊断，防止把解析缺项或路径别名误当环境改写；Microsoft [`cmd /u`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd) 说明该选项输出 Unicode。Actions 不记录路径，亦不调整 ACL。
+- CI #113 的旧 `set LOCALAPPDATA` 输出比较与 #114 的同块 alias 比较在双架构均为 false。CI #115/#116 未核验 Unicode 输出文件有效性，故比较结果不作结论。CI #117 已确认 alias 存在、`cmd /u` exit 0 且输出非空，解析比较仍不等于 API/宿主路径。CI #118 在 profile 删除前确认 actual `LOCALAPPDATA` 唯一，但 `Path.is_dir`/`samefile` 均为 false；当时未区分 not-found 与 access-denied。当前增加宿主只读 `stat` 错误类别及 actual/API 父子同级关系，防止把解析缺项或路径别名误当环境改写。Microsoft [`cmd /u`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd) 说明该选项输出 Unicode。Actions 不记录路径，亦不调整 ACL。
 - Windows R2.3、完整 R2 及自动模式仍未验收，`policy_contract_ready` 必须保持 `false`。
 
 ## 当前实现与验收

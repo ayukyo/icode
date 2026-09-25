@@ -7,8 +7,10 @@ import hashlib
 import http.client
 import http.server
 import json
+import ntpath
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -67,6 +69,39 @@ class TestWindowsAppContainer(unittest.TestCase):
         return bool(actual) and actual == expected
 
     @staticmethod
+    def _profile_path_relation(actual: str, expected: str) -> str:
+        actual_path = ntpath.normcase(ntpath.normpath(actual))
+        expected_path = ntpath.normcase(ntpath.normpath(expected))
+        if not ntpath.isabs(actual_path) or not ntpath.isabs(expected_path):
+            return "invalid"
+        if actual_path == expected_path:
+            return "exact"
+        try:
+            common_path = ntpath.commonpath([actual_path, expected_path])
+        except ValueError:
+            return "other"
+        if common_path == expected_path:
+            return "api_child"
+        if common_path == actual_path:
+            return "api_parent"
+        if ntpath.dirname(actual_path) == ntpath.dirname(expected_path):
+            return "sibling"
+        return "other"
+
+    @staticmethod
+    def _profile_path_stat_class(path: str) -> str:
+        try:
+            metadata = os.stat(path)
+        except OSError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if isinstance(exc, FileNotFoundError) or winerror in {2, 3}:
+                return "not_found"
+            if isinstance(exc, PermissionError) or winerror == 5:
+                return "access_denied"
+            return "other_error"
+        return "directory" if stat.S_ISDIR(metadata.st_mode) else "not_directory"
+
+    @staticmethod
     def _decode_cmd_unicode_output(contents: bytes) -> str:
         if contents.startswith(b"\xff\xfe"):
             contents = contents[2:]
@@ -116,6 +151,20 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertFalse(self._profile_env_matches_api(
             [r"LOCALAPPDATA=C:\one", r"LOCALAPPDATA=C:\two"], [r"C:\one"],
         ))
+
+    def test_profile路径关系只返回结构类别(self) -> None:
+        expected = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
+        self.assertEqual(self._profile_path_relation(expected + "\\", expected), "exact")
+        self.assertEqual(
+            self._profile_path_relation(expected + r"\Temp", expected), "api_child",
+        )
+        self.assertEqual(self._profile_path_relation(ntpath.dirname(expected), expected), "api_parent")
+        self.assertEqual(
+            self._profile_path_relation(ntpath.dirname(expected) + r"\AC2", expected),
+            "sibling",
+        )
+        self.assertEqual(self._profile_path_relation(r"D:\Other", expected), "other")
+        self.assertEqual(self._profile_path_relation("relative", expected), "invalid")
 
     def test_profile环境诊断alias只复制API路径且不输出路径(self) -> None:
         expected = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
@@ -384,7 +433,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         profile_paths: list[str] = []
         profile_directory_exists_before_launch: list[bool] = []
         marker_present_before_delete: list[bool] = []
-        profile_actual_dir_exists_before_delete: list[bool] = []
+        profile_actual_stat_before_delete: list[str] = []
+        profile_actual_relation_before_delete: list[str] = []
         profile_actual_samefile_as_api_before_delete: list[bool] = []
         marker_name = "icode-profile-lifecycle-probe.txt"
         delete_profile = _delete_appcontainer_profile
@@ -408,7 +458,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         ) -> tuple[bool, str]:
             marker_path = Path(localappdata or "") / marker_name
             marker_present_before_delete.append(marker_path.is_file())
-            actual_dir_exists = False
+            actual_stat_class = "unavailable"
+            actual_path_relation = "unavailable"
             actual_samefile_as_api = False
             try:
                 unicode_status = self._read_cmd_exit_status(profile_env_unicode_status)
@@ -417,12 +468,17 @@ class TestWindowsAppContainer(unittest.TestCase):
                 ).splitlines()
                 actual_paths = self._profile_env_values(unicode_output)
                 if unicode_status == 0 and len(actual_paths) == 1:
-                    actual_dir_exists = Path(actual_paths[0]).is_dir()
+                    actual_stat_class = self._profile_path_stat_class(actual_paths[0])
                     if localappdata:
-                        actual_samefile_as_api = Path(actual_paths[0]).samefile(localappdata)
+                        actual_path_relation = self._profile_path_relation(
+                            actual_paths[0], localappdata,
+                        )
+                        if actual_stat_class == "directory":
+                            actual_samefile_as_api = Path(actual_paths[0]).samefile(localappdata)
             except (OSError, UnicodeDecodeError, ValueError):
                 pass  # Diagnostic failure must not prevent the real profile cleanup.
-            profile_actual_dir_exists_before_delete.append(actual_dir_exists)
+            profile_actual_stat_before_delete.append(actual_stat_class)
+            profile_actual_relation_before_delete.append(actual_path_relation)
             profile_actual_samefile_as_api_before_delete.append(actual_samefile_as_api)
             return delete_profile(profile, userenv, localappdata)
 
@@ -569,7 +625,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             f"host_localappdata_defined={host_localappdata_defined} "
             f"profile_unicode_set_matches_host={profile_unicode_env_matches_host} "
             f"profile_unicode_actual_value_defined={profile_unicode_actual_value_defined} "
-            f"profile_unicode_actual_dir_exists={profile_actual_dir_exists_before_delete} "
+            f"profile_unicode_actual_stat={profile_actual_stat_before_delete} "
+            f"profile_unicode_actual_relation={profile_actual_relation_before_delete} "
             f"profile_unicode_actual_samefile_as_api={profile_actual_samefile_as_api_before_delete} "
             f"profile_env_equals_api={profile_env_equals_api} "
             f"profile_dir_before_launch={profile_directory_exists_before_launch} "

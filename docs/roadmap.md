@@ -327,7 +327,11 @@ CI [#116](https://github.com/ayukyo/icode/actions/runs/36078821652) x64 的 prof
 
 ### 2026-09-25 UTC CI #117：有效 Unicode 输出与 API/宿主值均不匹配
 
-CI [#117](https://github.com/ayukyo/icode/actions/runs/36079222456) x64/ARM64 的 `cmd /u` 子命令均退出 0、输出文件非空，expected alias 已定义；当前解析出的 `LOCALAPPDATA` 不等于 API profile 路径，也不等于宿主变量。该结果将问题进一步收窄到受限子进程观察到的值/解析项，但仍未证明实际字符串含义（下一步核实 exact 键唯一性与文件系统对象身份）。profile 不可写、Python `0xC0000135`，Windows 自动模式与 R2.3 继续关闭；不扩大 ACL。
+CI [#117](https://github.com/ayukyo/icode/actions/runs/36079222456) x64/ARM64 的 `cmd /u` 子命令均退出 0、输出文件非空，expected alias 已定义；当前解析出的 `LOCALAPPDATA` 不等于 API profile 路径，也不等于宿主变量。该结果将问题进一步收窄到受限子进程观察到的值/解析项，但仍未证明实际字符串含义（下一步核实 exact 键唯一性、actual/API 父子同级关系与文件系统对象身份）。profile 不可写、Python `0xC0000135`，Windows 自动模式与 R2.3 继续关闭；不扩大 ACL。
+
+### 2026-09-25 UTC CI #118：删除前 actual path 仍不等于 API 对象
+
+CI [#118](https://github.com/ayukyo/icode/actions/runs/36079893851) x64/ARM64 在 profile 删除前都确认 Unicode 输出有效、actual `LOCALAPPDATA` 键唯一，但宿主 `Path.is_dir` 与 `samefile(API profile path)` 均为 false；此采样尚未记录 `stat` 错误码，不能区分路径不存在与 host-side access-denied。下一版记录只读 `stat` 分类及 actual/API 的父子同级关系；不输出路径、不改变权限。Windows 自动模式与 R2.3 继续关闭。
 
 ### 2026-09-24 UTC CI #107：Windows cwd-relative 探针
 
