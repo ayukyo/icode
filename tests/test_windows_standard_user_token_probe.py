@@ -1,0 +1,130 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+import tempfile
+
+from scripts.windows_standard_user_token_probe import (
+    _make_environment_buffer,
+    runner_probe_succeeded,
+    stage_runner_script,
+    build_system_tool_environment,
+    build_runner_command_line,
+    build_runner_environment_block,
+)
+
+
+class TestWindowsStandardUserTokenProbe(unittest.TestCase):
+    def test_runner_success_classifier_requires_all_gate_results(self) -> None:
+        self.assertTrue(runner_probe_succeeded(
+            "runner_standard_user=PASS;child_restricted=PASS;child_non_admin=PASS;"
+            "child_identity=PASS;job_assignment=PASS;exit=PASS",
+        ))
+        self.assertFalse(runner_probe_succeeded(
+            "runner_standard_user=PASS;child_restricted=PASS;child_non_admin=FAIL;"
+            "child_identity=PASS;job_assignment=PASS;exit=PASS",
+        ))
+        self.assertFalse(runner_probe_succeeded("unsupported_platform"))
+
+    def test_runner_environment_contains_only_explicit_non_secret_entries(self) -> None:
+        block = build_runner_environment_block(
+            python_executable=r"C:\Python\python.exe",
+            scratch=r"C:\Users\Public\icode probe",
+            system_root=r"C:\Windows",
+        )
+        entries = [item for item in block.split("\0") if item]
+        names = {
+            item[:item.index("=", 1)] if item.startswith("=")
+            else item.split("=", 1)[0]
+            for item in entries
+        }
+        self.assertEqual(
+            names,
+            {
+                "=C:", "SystemRoot", "WINDIR", "PATH", "TEMP", "TMP",
+                "PYTHONNOUSERSITE", "PYTHONUTF8", "ICODE_R2_PROBE_MODE",
+            },
+        )
+        self.assertTrue(block.endswith("\0\0"))
+        self.assertNotIn("ICODE_PROBE_PASSWORD", block)
+        self.assertNotIn("GITHUB_TOKEN", block)
+        self.assertIn("C:\\Users\\Public\\icode probe", block)
+
+    def test_runner_command_line_quotes_paths_and_obeys_logon_api_limit(self) -> None:
+        command = build_runner_command_line(
+            r"C:\Python Dir\python.exe",
+            r"D:\checkout dir\probe.py",
+            r"C:\Users\Public\probe result.txt",
+        )
+        self.assertIn('"C:\\Python Dir\\python.exe"', command)
+        self.assertIn('"D:\\checkout dir\\probe.py"', command)
+        self.assertLess(len(command), 1024)
+
+    def test_runner_environment_rejects_unsafe_path_serialization(self) -> None:
+        cases = (
+            {"python_executable": "python.exe"},
+            {"scratch": r"C:\Temp" + "\0bad"},
+            {"system_root": ""},
+        )
+        base = {
+            "python_executable": r"C:\Python\python.exe",
+            "scratch": r"C:\Temp",
+            "system_root": r"C:\Windows",
+        }
+        for override in cases:
+            with self.subTest(override=override):
+                values = {**base, **override}
+                with self.assertRaises(ValueError):
+                    build_runner_environment_block(**values)
+
+    def test_runner_command_line_rejects_overlong_or_relative_arguments(self) -> None:
+        with self.assertRaises(ValueError):
+            build_runner_command_line(
+                r"C:\Python\python.exe",
+                "D:\\" + "a" * 1100 + r"\probe.py",
+                r"C:\Temp\result.txt",
+            )
+        with self.assertRaises(ValueError):
+            build_runner_command_line(
+                "python.exe", r"D:\probe.py", r"C:\Temp\result.txt",
+            )
+
+    def test_environment_buffer_preserves_exact_double_terminator(self) -> None:
+        block = build_runner_environment_block(
+            python_executable=r"C:\Python\python.exe",
+            scratch=r"C:\Temp",
+            system_root=r"C:\Windows",
+        )
+        buffer = _make_environment_buffer(block)
+        self.assertEqual(len(buffer), len(block))
+        self.assertEqual(buffer[-1], "\0")
+
+    def test_system_acl_tool_gets_no_ambient_credentials_or_runner_variables(self) -> None:
+        environment = build_system_tool_environment(r"C:\Windows")
+        self.assertEqual(
+            environment,
+            {
+                "SystemRoot": r"C:\Windows",
+                "WINDIR": r"C:\Windows",
+                "PATH": r"C:\Windows\System32",
+            },
+        )
+
+    def test_runner_script_is_copied_into_the_acl_controlled_scratch_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            base = Path(temporary_directory)
+            source = base / "checkout" / "probe.py"
+            scratch = base / "public" / "scratch"
+            source.parent.mkdir()
+            scratch.mkdir(parents=True)
+            source.write_text("fixed probe source\n", encoding="utf-8")
+
+            staged = stage_runner_script(source, scratch)
+
+            self.assertEqual(staged.parent, scratch)
+            self.assertEqual(staged.read_text(encoding="utf-8"), "fixed probe source\n")
+            self.assertEqual(staged.name, "windows_standard_user_token_probe.py")
+
+
+if __name__ == "__main__":
+    unittest.main()

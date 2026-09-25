@@ -10,6 +10,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_windows_standard_user_token_probe:
+        description: Verify restricted-token process creation from a temporary standard Windows user
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -159,6 +164,73 @@ jobs:
           python-version: "3.11"
       - name: Verify normal and timeout descendant cleanup
         run: python -m unittest tests.test_windows_job -v
+
+  windows-standard-user-token-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_windows_standard_user_token_probe
+    name: Standard-user restricted token probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python-architecture: x64
+          - os: windows-11-arm
+            python-architecture: arm64
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          architecture: ${{ matrix.python-architecture }}
+      - name: Probe fixed restricted-token launch as a temporary standard user
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
+          $accountName = "icodeprobe_$suffix"
+          $passwordBytes = [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+          $passwordText = [Convert]::ToBase64String($passwordBytes).TrimEnd('=') + 'aA1!'
+          Write-Output "::add-mask::$passwordText"
+          [Array]::Clear($passwordBytes, 0, $passwordBytes.Length)
+          $securePassword = ConvertTo-SecureString -String $passwordText -AsPlainText -Force
+          $created = $false
+          try {
+            New-LocalUser -Name $accountName -Password $securePassword `
+              -PasswordNeverExpires -AccountNeverExpires | Out-Null
+            $created = $true
+            $sid = (Get-LocalUser -Name $accountName).SID.Value
+            $adminSids = Get-LocalGroupMember -Group 'Administrators' |
+              ForEach-Object { $_.SID.Value }
+            if ($adminSids -contains $sid) {
+              throw 'temporary_probe_account_is_admin'
+            }
+            $env:ICODE_R2_PROBE_USERNAME = $accountName
+            $env:ICODE_R2_PROBE_PASSWORD = $passwordText
+            $env:ICODE_R2_PROBE_SID = $sid
+            python scripts/windows_standard_user_token_probe.py
+            if ($LASTEXITCODE -ne 0) {
+              throw "restricted_token_probe_failed exit=$LASTEXITCODE"
+            }
+          }
+          finally {
+            Remove-Item Env:ICODE_R2_PROBE_USERNAME -ErrorAction SilentlyContinue
+            Remove-Item Env:ICODE_R2_PROBE_PASSWORD -ErrorAction SilentlyContinue
+            Remove-Item Env:ICODE_R2_PROBE_SID -ErrorAction SilentlyContinue
+            if ($created) {
+              Remove-LocalUser -Name $accountName -ErrorAction Stop
+              if (Get-LocalUser -Name $accountName -ErrorAction SilentlyContinue) {
+                throw 'temporary_probe_account_cleanup_failed'
+              }
+            }
+            if ($securePassword) { $securePassword.Dispose() }
+            $passwordText = $null
+          }
 
   windows-appcontainer-diagnostics:
     if: github.event_name == 'workflow_dispatch' && inputs.run_legacy_appcontainer_diagnostics
