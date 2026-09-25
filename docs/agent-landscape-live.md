@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
 - 最近观察：2026-09-26；下次全量复核：不晚于 2026-10-26
-- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.3 Windows runtime/AppContainer 诊断和 R2.4 已安装 wheel 的 Git status broker；20 项观察名单最近全量复核为 2026-09-24。
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.3 Windows runtime/AppContainer 与原生 helper 路线、R2.4 已安装 wheel 的 Git status broker；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -369,3 +369,12 @@
 - **上游契约：**Microsoft 区分文件数据读取、PE 映像 section/view 映射与正常 DLL 加载；`SEC_IMAGE_NO_EXECUTE` 不运行映像代码，`LoadLibraryExW` 正常加载则可能执行 DLL 初始化。[ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile) · [CreateFileMappingW](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw) · [MapViewOfFile](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile) · [LoadLibraryExW](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw)。CPython 3.11.9 的入口会进入 `Py_Main`，core 为 `python311.dll`；但该源码事实不代表 ICODE runner 的 PE imports 或实际缺失模块。[python.c](https://github.com/python/cpython/blob/v3.11.9/Programs/python.c) · [pythoncore.vcxproj](https://github.com/python/cpython/blob/v3.11.9/PCbuild/pythoncore.vcxproj)。
 - **采纳：**分层新增单字节 `ReadFile` 与 `SEC_IMAGE_NO_EXECUTE` 映射；宿主/AppContainer 使用同 runner 上同一组 source/staged Python executable 与 core DLL，输出固定阶段、数值错误码和清理状态，状态用 `read|image` 短码表示。**暂缓：**不在已经加载 staged `pythonXY.dll` 的 Python 中对同名 runtime 使用 `LoadLibraryExW`，不让此探针执行未知 DLL 初始化，也不从单一映射结果推断 `0xC0000135` 根因；若仍需真实 DLL load 差分，先设计独立、可信、短命的原生 helper。
 - **ICODE 成本/安全/验收：**用标准库 `ctypes`，不复制源码、不加包依赖，暂无额外许可负担；读文件和映射目标限定为当前 CI runner 的可信 Python runtime，不改原 runtime ACL，所有 view/handle 要可验证地释放。路径只在临时测试进程内，不写入 Actions notice。当前本机 Windows 模块测试 71 项通过、12 项跳过；新增 native probe 仍待 x64/ARM64 CI。CI [#156](https://github.com/ayukyo/icode/actions/runs/36155715717) 的 Windows 综合步骤仍失败，具体断言日志不可读；未用失败步骤反推 loader 诊断结果。
+
+### 2026-09-26 UTC R2.3 Windows 后端路线决策更新
+
+- **本轮观测范围：**仅刷新 Windows 后端相关的 Codex、Qwen Code、Gemini CLI 和 Microsoft/OpenAI 官方设计；其余观察名单的全量复核日期仍为 2026-09-24，不能借本轮局部研究延长 20 项名单的复核周期。
+- **Codex 观察版本：**官方 Windows 设计文章为 2026-05-13，介绍当时选择 AppContainer/Windows Sandbox/MIC 后，以独立 setup 与 command-runner、专用账号、受限令牌、DPAPI、Firewall 实现 elevated 路线：[文章](https://openai.com/index/building-codex-windows-sandbox/)。另以 `git ls-remote` 固定 Codex `main` 为 `c7e80f873f67dbef58206b9d4f3c60e9d556eb16`（2026-09-26 UTC），其 [app-server README Windows 后端选择](https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/app-server/README.md#L346-L349)显示 MXC readiness 路径不会触发 legacy elevated/unelevated setup。结论：上游路线有演进，不能把文章中的 elevated 路线写成当日唯一默认后端。
+- **机制核对：**OpenAI 官方文章将 AppContainer 的适用性限定为访问集合可预先确定的应用，并指出开放式 shell、Git、Python、包管理器和构建工具存在 toolchain 可达性问题。其工程机制可用于架构比较；它不是通用 Windows API 保证，也不证明 ICODE 当前实现已通过。Qwen Code [`ab61e041`](https://github.com/QwenLM/qwen-code/tree/ab61e04161a30bf825fefede85bcc09ebef7a673) 的 Windows 容器方案仍有 Docker/Podman 前置；Gemini CLI [`bedef96e`](https://github.com/google-gemini/gemini-cli/tree/bedef96ef42905bd84a86dbec021c706168e7e2f) 的 Restricted Token/Low IL/Job/ACL 可参考权限拆分，但本次固定源码未建立与 ICODE 八项 Windows 网络门槛等价的证据。
+- **ICODE 最新闭环：**CI [#158](https://github.com/ayukyo/icode/actions/runs/36165465592) x64/arm64 综合 AppContainer 步骤失败；独立 staged-Python、ACL 恢复及 sandbox loopback 负例子项通过。Annotations 中 `listener reachable` 是宿主 positive control；profile marker、原 Python `0xC0000135` 未解决，确切组合失败项不可读。没有将网络子项通过写成完整网络矩阵，也没有将候选等同任意 toolchain。
+- **采纳 / 暂缓 / 不适配：**采纳显式 backend readiness、setup 和 command-runner 拆分、OS 强制隔离、能力不可用时 fail-closed；保留 AppContainer 源码与测试作为历史诊断，不接生产 executor。恢复 R2.3 原批准路线：匹配架构 wheel 携带 helper，首次由用户接受 UAC 建立 sandbox 身份/网络策略，此后普通用户运行。暂缓生产 helper，直到 IPC、DPAPI、ACL、WFP、Job 和 helper 来源完整性分别有可执行测试；不适配强制用户安装 Docker/Podman/WSL 的默认体验。
+- **收益与代价：**开放式开发工具链兼容性更有希望，且不增加用户侧第三方 runtime；代价是 Windows x64/arm64 构建发布、一次管理员授权、可信 setup/runner 边界、ACL/WFP 崩溃恢复及潜在 Authenticode/SmartScreen 工作。当前未复制源码、不引入上游代码依赖，许可证负担不变。Windows 自动执行仍不可用，发布描述不得写成已支持。

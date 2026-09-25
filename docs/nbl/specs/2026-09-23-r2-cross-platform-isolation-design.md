@@ -268,7 +268,9 @@ class SandboxPolicy:
 
 最低完整支持基线为 Windows 10 22H2、Windows 11，覆盖 x64/arm64。UAC 被拒绝时，自动模式不运行命令，并在工作台提供“重新启用保护”操作。
 
-**实现候选更新（2026-09-25，尚未验收）：**先验证 AppContainer + 每工单 Package SID ACL + Job Object，作为 Python-only 安装下的默认断网和文件隔离路径；它可能减少默认断网场景的首次 UAC/专用账户前置。此候选不改变“任务目录之外不可访问”“失败不裸跑”和 Job 清理要求，也不提供域名 allowlist。临时联网仍须有可按 sandbox identity 强制到代理的 WFP/防火墙策略，通常需要可信提升组件。候选须先通过 Windows x64/ARM64 的目录权限、外部 canary、网络负例、ACL 撤销与 Job 继承测试；通过前，R2.3 与自动模式均保持未完成。详见[Windows AppContainer 实验计划](../plans/2026-09-25-r2-windows-appcontainer.md)。
+**候选更新（2026-09-25，2026-09-26 撤回）：**曾验证 AppContainer + 每工单 Package SID ACL + Job Object，尝试减少首次 UAC/专用账户前置。CI #158 的 disposable staged Python 子项通过，但 x64/ARM64 综合步骤仍失败，profile marker 缺失且原宿主 runtime 不能直接启动；这些结果不足以验收完整开放式研发工具链。结合 OpenAI 官方 Windows sandbox 工程说明，AppContainer 面向访问集合预先已知的应用，不适合作为需要驱动任意 shell、Git、Python、包管理器和构建工具的通用 Agent 后端。因此该实现保留为诊断探针，不再作为产品后端候选；具体未解实验与证据仍见[Windows AppContainer 实验计划](../plans/2026-09-25-r2-windows-appcontainer.md)。
+
+**恢复原批准基线（2026-09-26，尚未实现/验收）：**Windows 产品后端回到本节上方的一次 UAC 初始化 + 专用 sandbox 身份 + 受限令牌 + 身份绑定 WFP + ACL + Job Object 方案。仅靠 Python 包安装指“发布匹配架构且内含原生 helper 的 wheel，不要求用户另装容器/运行时”；首次初始化仍需用户明确接受 Windows UAC。正式实现前必须验证 wheel/安装包中的 helper 完整性和来源、setup/command-runner IPC 边界、DPAPI/凭据保护、WFP 实际生效与卸载恢复；未通过前 Windows 自动模式继续关闭。不得把旧 Codex 代码复制进来；只借鉴机制，并注意 Codex 当前 Windows 后端选择已有演进，不把其 2026-05 文章描述等同当前默认实现。
 
 ## 7. 工作区与受保护目录
 

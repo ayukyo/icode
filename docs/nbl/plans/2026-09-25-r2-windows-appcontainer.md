@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-26 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #157 x64/ARM64 综合 AppContainer 步骤仍失败，Actions logs API 返回 403，具体失败断言未知。#157 注释显示容器不能直接读取原宿主 Python executable/core DLL/stdlib 样本（`access_denied`），原 Python 子进程退出 `0xC0000135`；System32 读取对照成功。独立 disposable runtime staging 步骤在两架构通过，含候选 Python 运行、image mapping、临时 ACL 精确恢复及源 runtime ACL 未变，但不等于生产路径验收。`LOCALAPPDATA` 与显式传入值不一致、profile marker 缺失仍是独立未闭合观测。#157 的 macOS `macos-latest` 原生探针矩阵通过；#156 对应 broker 子项失败未复现，原因未知。不得扩大原 runtime ACL；Windows 自动模式仍关闭。
+- 状态：**AppContainer 仅作诊断，不是生产后端；Windows 自动模式不开放。** CI #158 x64/ARM64 综合步骤仍失败，公开 Actions annotations/logs 无法确认具体触发断言。独立 disposable staged-Python 子项两架构通过，包含候选运行、临时 ACL 精确恢复、原 runtime ACL 未变及 loopback 未连接断言；不证明任意 toolchain 的依赖闭包、性能或生产清理。原宿主 Python 子进程仍退出 `0xC0000135`；profile `LOCALAPPDATA` marker 仍缺失，SID 启动/子进程精确匹配也尚未证明。`listener reachable` 是宿主正向对照，不是容器连通证据。结合官方架构对开放式开发工具链的限制，本候选不再推进为产品执行后端；恢复正式设计中的一次 UAC helper 路线。详见下方 2026-09-26 决策记录。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 > 注：下方按时间追加验证记录。阶段状态以最新 CI 和本机回归为准，历史记录不代表当前 Windows 后端已通过。
@@ -339,3 +339,16 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - 同轮独立的 disposable runtime staging 步骤两架构通过：基线 runtime 在 AppContainer 下不启动；staged Python 3.11.9 候选退出 0。该步骤的断言同时覆盖 host/staged 与容器映像映射、容器 Python tempfile 创建/删除、workspace 写入、staged runtime 写入拒绝、原 runtime 读取拒绝、loopback 未连接、子进程启动及 staging 清理；临时 ACL 精确恢复，ACL roots 限于 staging，源 runtime ACL 未变。这只证明该次 staging 诊断候选，**不证明生产 executor 可安全/经济地为任意工具复制 runtime**。
 - 显式 `LOCALAPPDATA` A/B 仍显示普通进程保留传入值、AppContainer 实际值不同且属于 API profile 下未知嵌套关系；profile marker 仍缺失。这与 runtime 文件访问是并列观测，不据此建立因果关系。综合步骤日志仍不可读，所以确切失败断言不明。
 - **取舍/下一验收：**采纳“原始解释器可达性须单独验证”的方向；暂缓给原 Python 安装根新增 ACE。下一步先评估 disposable staging 能否低成本、无链接逃逸地支持解释器及其完整运行依赖，并与任意外部 tool 的启动合同分开测试；同时继续只读定位 AppContainer 实际 `LOCALAPPDATA` 路径来源。未明确 staging 性能/依赖闭包、ACL 中断恢复与 profile 写入合同前，不把诊断逻辑并入生产 runner。
+
+### 2026-09-26 UTC：CI #158 与产品后端路线重选
+
+- **CI #158：[workflow](https://github.com/ayukyo/icode/actions/runs/36165465592)。**x64/ARM64 综合 AppContainer 步骤均失败，Actions API 可见的注释不足以确定具体失败断言。原宿主 Python 仍退出 `0xC0000135`；source runtime 文件读取被拒。独立 staged Python 子项退出 0，完成 workspace/tempfile、ACL 精确恢复、源 runtime 未变、子进程和 loopback 未连接断言。这里的 `listener reachable` 是宿主正向对照，不是 sandbox 网络连接成功。环境/网络子项通过不能替代组合门槛或完整开发工具链验收。
+- **上游复核：**OpenAI 2026-05-13 [Windows sandbox 设计文章](https://openai.com/index/building-codex-windows-sandbox/)明确 AppContainer 适合权限集合已知的 app，而开放式 shell/Git/Python/构建链不是其合适边界。文章当时描述独立 elevated setup、sandbox user、DPAPI、WFP 与 command-runner。Codex 当前固定主分支提交 [`c7e80f87`](https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/app-server/README.md#L346-L349) 已说明选择 MXC 时不再提供 legacy elevated/unelevated setup；这是路线演进证据，故只借鉴拆分职责与 fail-closed，不能宣称 Codex 当前统一采用文章中的旧路径。Qwen whole-CLI 依赖容器运行时；Gemini 的 Restricted Token/Low IL/Job 证据仍不等同 WFP 网络门槛。
+- **决定：**AppContainer 实验止于诊断，不再继续修 profile/runtime 探针作为产品路径；不删除历史代码和测试。R2 §6.3 已批准路线恢复为随架构 wheel 发布 native helper、首次 UAC 幂等 setup、sandbox 专用身份、受限 token、ACL、WFP 与 Job。pip-only 的含义是无需用户另行安装容器/运行时，且 wheel 包含正确架构 helper；UAC 仍是一次明确系统授权。Windows 自动模式继续关闭。
+- **实现拆分与退出门槛：**
+  1. **helper 打包与来源：**Windows x64/arm64 各自产生 wheel，安装后校验 helper 架构、版本与摘要；纯源码包路径不能伪装成有隔离能力。发布需定义可验证 provenance 和签名/SmartScreen 用户体验。
+  2. **setup/恢复：**UAC 初始化幂等创建/校验专用身份、WFP default-deny/代理例外和受保护状态；升级、重复 setup、中断恢复、撤销/卸载都要覆盖。禁止把 agent 可控命令交给提升进程。
+  3. **command runner：**明确受信 IPC、调用方身份、schema/version、消息限长；DPAPI/秘密不进入 sandbox；在 sandbox principal 下生成 write-restricted token，显式 ACL 仅开放当前工单工作区，Job 限制和退出/崩溃回收生效。runner 自身不接受可覆盖安全策略的任意环境块/路径授权。
+  4. **生产接线：**只有 helper 摘要、setup readiness、token/SID、ACL、WFP、Job 和清理均原生实测通过后，才接 `execute_policy_command` / `ToolContext`；任何 helper 缺失、版本错误、IPC 拒绝、设置未完成均返回稳定 unavailable，禁止裸执行。
+  5. **原生验收：**干净 Windows 10 22H2 与当前 Windows 11 x64/arm64 实测写工作区成功、原仓/.git/凭据不可读写、DNS/TCP/UDP/IPv4/IPv6 与代理绕过被阻、仅代理授权可用、派生后代被 Job 清理；模拟 UAC 拒绝、helper 损坏、杀进程/断电 ACL/WFP 残留、重复 setup 与卸载。CI 或静态测试不能替代缺失的真实 Windows 安装证据。
+- **未决发布风险：**一次 UAC 提示来自未签名 helper 时可能显示未知发布者。开发阶段可先用 CI 原生双架构验证；对普通白领正式发布前须解决代码签名、SmartScreen、wheel provenance 与密钥保管，未解决不得宣传“一键无风险启用”。
