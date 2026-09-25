@@ -1938,6 +1938,47 @@ class TestWindowsAppContainer(unittest.TestCase):
 
             staged_executable = staged_root / source_executable.name
             self.assertTrue(staged_executable.is_file(), "staged Python executable is missing")
+            try:
+                host_stage_probe = subprocess.run(
+                    [
+                        str(staged_executable), "-I", "-c",
+                        "import _ctypes,_sqlite3,_ssl,ctypes,encodings,json,pathlib,platform,sqlite3,ssl; "
+                        "print(json.dumps({'version':platform.python_version()}))",
+                    ],
+                    cwd=workspace, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=10,
+                    shell=False, check=False,
+                )
+                host_stage_probe_exit = host_stage_probe.returncode
+                host_stage_probe_error = "none"
+                try:
+                    host_stage_version = json.loads(host_stage_probe.stdout).get("version")
+                except (AttributeError, json.JSONDecodeError):
+                    host_stage_version = None
+            except subprocess.TimeoutExpired:
+                host_stage_probe_exit = None
+                host_stage_probe_error = "timeout"
+                host_stage_version = None
+            except OSError:
+                host_stage_probe_exit = None
+                host_stage_probe_error = "launch_failed"
+                host_stage_version = None
+            self._workflow_notice(
+                "Python runtime staging host positive control",
+                json.dumps(
+                    {
+                        "executed": host_stage_probe_exit is not None,
+                        "exit": host_stage_probe_exit,
+                        "error": host_stage_probe_error,
+                        "version": host_stage_version,
+                    },
+                    separators=(",", ":"),
+                ),
+            )
+            self.assertEqual(
+                host_stage_probe_exit, 0,
+                f"staged Python did not pass its host positive control ({host_stage_probe_error})",
+            )
             baseline_marker = workspace / "staging-baseline-started"
             baseline = run_windows_appcontainer(
                 [
@@ -1967,10 +2008,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
                 script = (
                     "import _ctypes,_sqlite3,_ssl,ctypes,encodings,json,pathlib,"
-                    "socket,sqlite3,ssl,subprocess,sys,sysconfig\n"
+                    "platform,socket,sqlite3,ssl,subprocess,sys,sysconfig\n"
                     "from pathlib import Path\n"
                     "root=Path(sys.executable).resolve(strict=True).parent\n"
-                    "modules=[pathlib,encodings,ssl,sqlite3,_ctypes,_sqlite3,_ssl]\n"
+                    "modules=[pathlib,encodings,json,platform,ssl,sqlite3,_ctypes,_sqlite3,_ssl]\n"
                     "module_roots=all(Path(m.__file__).absolute().is_relative_to(root) "
                     "for m in modules)\n"
                     "prefix_ok=Path(sys.prefix).resolve(strict=True)==root\n"
@@ -2002,6 +2043,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "child=subprocess.run([sys.executable,'-I','-c',child_code],"
                     "timeout=5,check=False)\n"
                     "result={'prefix_ok':prefix_ok,'module_roots':module_roots,"
+                    "'python_version':platform.python_version(),"
                     "'runtime_write_denied':runtime_write_denied,"
                     "'source_runtime_denied':source_runtime_denied,"
                     "'network_denied':network_denied,'child_exit':child.returncode}\n"
@@ -2041,7 +2083,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "baseline_started": baseline_marker.is_file(),
                 "candidate_executed": candidate.executed,
                 "candidate_exit": candidate.exit_code,
+                "candidate_error": candidate.error,
                 "candidate_cleanup": candidate.cleanup_ok,
+                "staged_python_version": staged_result.get("python_version"),
                 "runtime_marker": candidate.executed and candidate.exit_code == 0,
                 "workspace_write": workspace_marker.is_file(),
                 "runtime_write_denied": runtime_write_marker.is_file()
@@ -2060,6 +2104,22 @@ class TestWindowsAppContainer(unittest.TestCase):
                     or source_root.is_relative_to(path)
                     for path in dacl_targets
                 ),
+                "candidate_detail_flags": [
+                    label for label, marker in (
+                        ("runtime_acl_snapshot", "runtime_acl_snapshot="),
+                        ("runtime_acl_access_granted", "runtime_acl_access=read_execute"),
+                        ("runtime_acl_restore_verified", "runtime_acl_restore_verified=true"),
+                        ("runtime_acl_restore_failed", "runtime_acl_restore_failed"),
+                        ("workspace_acl_restore_failed", "workspace_acl_restore_failed"),
+                        ("workspace_acl_revocation_unverified", "workspace_acl_revocation_unverified"),
+                        ("profile_storage_residual", "profile_storage_residual"),
+                        ("profile_storage_unverified", "profile_storage_unverified"),
+                        ("profile_delete_failed", "profile_delete_failed"),
+                        ("sid_release_failed", "sid_release_failed"),
+                        ("job_terminate_failed", "TerminateJobObject err="),
+                        ("job_query_failed", "QueryInformationJobObject err="),
+                    ) if marker in candidate.detail
+                ],
             }
             self._workflow_notice(
                 "Python disposable staging AppContainer diagnostic",
