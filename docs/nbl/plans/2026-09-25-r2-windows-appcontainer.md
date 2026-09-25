@@ -271,3 +271,10 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - [CI #149 Windows x64](https://github.com/ayukyo/icode/actions/runs/36126829375/job/108044773273) 与 [Windows ARM64](https://github.com/ayukyo/icode/actions/runs/36126829375/job/108044773248) 都已将之前的 `TimeoutError` 作为连接超时完成处理；候选 Python 退出 0、cleanup 成功，所有脚本 checkpoint（含 network-completed）出现。独立 workflow 步骤仍失败，且后续 `Python disposable staging path-resolution probes` 与 boundary notice 未生成。
 - 只读核对输出次序与 `_workflow_json_notice()` 的硬性 500 字符限制后，定位到路径诊断 notice 构造体过长；9 项完整嵌套结构在代表性错误样本下为 671 字符。这是诊断回执门禁失败，不是 candidate 隔离测试的反例或通过证据。新代码保留完整内部操作结果，仅将公开 notice 的操作名固定缩写、字段改为 `[ok,error_class,winerror]`，并以最长白名单异常类测试长度上限。
 - CI #149 的 Ubuntu 22.04/24.04 ARM64 wheel、macOS Intel/`macos-latest` 原生探针、macOS `Verify policy command broker` 均通过；因此 #148 的 macOS-latest 失败未复现。Windows 完整外层路径/ACL/workspace/child 断言尚未全部输出验证，自动模式与 R2.3 仍关闭。
+
+### 2026-09-25 UTC CI #150：staging Python 通过，组合门槛暴露路径别名与两项真实失败
+
+- [Windows x64](https://github.com/ayukyo/icode/actions/runs/36128698379/job/108050697474) 和 [Windows ARM64](https://github.com/ayukyo/icode/actions/runs/36128698379/job/108050697703) 的独立 disposable-staging Python 步骤均退出 0；报告脚本启动、导入、路径操作、运行时写拒绝、源 runtime 读取拒绝、网络探针及 staging ACL 恢复。原宿主解释器正向启动对照仍为 `0xC0000135`，这属于测试/候选运行时启动问题，不是隔离成功的证据。
+- 综合 59 项 Windows 测试两架构都报告 5 failures、4 errors。8 项的具体断言与 `C:\Users\RUNNER~1`/`C:\Users\runneradmin` 8.3 短长路径不一致有关；当前主工作树已在检查 reparse ancestry 后将真实路径 canonicalize，并将测试期望按同一 canonical root 比较。待 CI #151 验证，不先宣称修复完成。
+- 仍有两个真实未通过项：profile 生命周期探针中子进程观察到的 `LOCALAPPDATA` 与 `GetAppContainerFolderPath` 不等，relation 为 API profile 下的多层未知子目录、宿主 `stat=not_found`，目录不可见且 marker 写入类别为 `path_not_found`；普通宿主 Python 在容器内退出 `0xC0000135`，虽然相同副本 staged candidate 成功。两项不能相互归因，且不因 staging candidate 成功而解除生产门槛。
+- **上游采纳/暂缓：**Codex `86be5320b068ef67b56348b02aa8c33706955da6` 的真实 Windows smoke-test 与 Python 允许/拒绝配对控制值得采纳；Qwen Code `ab61e04161a30bf825fefede85bcc09ebef7a673` backend admission 失败不回退宿主值得采纳；Gemini CLI `bedef96ef42905bd84a86dbec021c706168e7e2f` 的真实命令集成测试值得参考，但其 ACL/Job warning-and-continue 不适合作为 ICODE 安全验收。暂缓将 staged runtime 方案接生产执行器，直到性能、重复调用复用、安全生命周期和双架构全边界通过均有可验证答案。

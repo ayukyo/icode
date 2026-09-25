@@ -1067,7 +1067,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     (runtime,), workspace=workspace, advapi=object(), kernel=object(),
                 )
             self.assertEqual(
-                {item.path for item in snapshot.entries}, {runtime, sample},
+                {item.path for item in snapshot.entries},
+                {runtime.resolve(strict=True), sample.resolve(strict=True)},
             )
 
             def read_protected_state(path: Path, _advapi: object, _kernel: object):
@@ -1142,7 +1143,7 @@ class TestWindowsAppContainer(unittest.TestCase):
 
             def apply(root: Path, _sid: object, access: int, *_apis: object) -> None:
                 calls.append((root, access))
-                if root == second:
+                if root == transaction.roots[1]:
                     raise _AppContainerSetupError("runtime_acl_failed", "injected failure")
 
             with mock.patch.object(
@@ -1160,8 +1161,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                 windows_appcontainer._FILE_GENERIC_READ
                 | windows_appcontainer._FILE_GENERIC_EXECUTE
             )
-            self.assertEqual(calls, [(first, expected_access), (second, expected_access)])
-            self.assertEqual(transaction.modified_roots, [first, second])
+            self.assertEqual(
+                calls,
+                [(transaction.roots[0], expected_access), (transaction.roots[1], expected_access)],
+            )
+            self.assertEqual(transaction.modified_roots, list(transaction.roots))
 
     def test_runtime_ACL恢复按逆序执行并要求全树状态精确匹配(self) -> None:
         import ctypes
@@ -1190,7 +1194,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     (first, second), workspace=workspace,
                     advapi=object(), kernel=object(),
                 )
-            transaction.modified_roots[:] = [first, second]
+            transaction.modified_roots[:] = list(transaction.roots)
             restored: list[Path] = []
 
             with mock.patch.object(
@@ -1206,7 +1210,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
 
             self.assertTrue(result)
-            self.assertEqual(restored, [second, first])
+            self.assertEqual(restored, list(reversed(transaction.roots)))
             self.assertEqual(transaction.modified_roots, [])
 
     def test_非_windows平台明确拒绝(self) -> None:

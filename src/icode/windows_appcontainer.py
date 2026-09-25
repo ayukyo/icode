@@ -337,12 +337,15 @@ def _runtime_reparse_inventory(
             raise _AppContainerSetupError(
                 "runtime_reparse_inventory_failed", "runtime root is not a regular directory",
             )
-        root_comparison = Path(os.path.abspath(os.fspath(root_path)))
         for component in reversed(root_path.parents):
             if _is_reparse(component.lstat()):
                 raise _AppContainerSetupError(
                     "runtime_reparse_inventory_failed", "runtime root path contains a reparse point",
                 )
+        # Resolve only after rejecting reparse points in the root ancestry. On
+        # Windows, an existing path may be enumerated with its long name while
+        # GetFinalPathName/Path.resolve reports the equivalent 8.3 alias.
+        root_comparison = root_path.resolve(strict=True)
     except _AppContainerSetupError:
         raise
     except (OSError, RuntimeError, ValueError) as exc:
@@ -480,6 +483,9 @@ def _copy_runtime_tree_for_diagnostic(
         raise _AppContainerSetupError(
             "runtime_staging_unsafe_reparse", "runtime tree has unsafe reparse targets",
         )
+    # Inventory has now rejected reparse points in the source root ancestry;
+    # use the same resolved spelling as each followed file-link target below.
+    source_comparison = source_abs.resolve(strict=True)
     # copytree(symlinks=False) recursively follows directory symlinks. Even a
     # lexically in-root directory target can alias a subtree and make copying
     # unbounded or ambiguous, so only links resolving to regular files are
@@ -501,8 +507,8 @@ def _copy_runtime_tree_for_diagnostic(
                                 "runtime link target cannot be resolved safely",
                             ) from exc
                         if (
-                            resolved_target != source_abs
-                            and source_abs not in resolved_target.parents
+                            resolved_target != source_comparison
+                            and source_comparison not in resolved_target.parents
                         ) or not stat.S_ISREG(target_info.st_mode):
                             raise _AppContainerSetupError(
                                 "runtime_staging_unsafe_reparse",
@@ -863,11 +869,27 @@ def _normalize_staged_runtime_acl_baseline(
         )
     try:
         temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
-        root_abs = Path(os.path.abspath(os.fspath(root)))
+        root_candidate = Path(os.path.abspath(os.fspath(root)))
+        current = Path(root_candidate.anchor)
+        for component in root_candidate.parts[1:]:
+            current = current / component
+            info = current.lstat()
+            if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
+                raise _AppContainerSetupError(
+                    "invalid_diagnostic_probe",
+                    "staging ACL target ancestry contains a reparse point",
+                )
+        # Keep containment checks in one canonical namespace: abspath may
+        # preserve an 8.3 spelling while tempfile.gettempdir().resolve() does not.
+        root_abs = root_candidate.resolve(strict=True)
+        root_info = root_abs.lstat()
         if (
             not root_abs.is_absolute()
             or not root_abs.is_relative_to(temp_root)
             or not root_abs.name.startswith("icode-runtime-staging-")
+            or not stat.S_ISDIR(root_info.st_mode)
+            or stat.S_ISLNK(root_info.st_mode)
+            or _is_reparse(root_info)
         ):
             raise _AppContainerSetupError(
                 "invalid_diagnostic_probe", "ACL normalization target is not disposable staging",
