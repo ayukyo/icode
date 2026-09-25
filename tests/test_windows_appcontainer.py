@@ -144,6 +144,152 @@ except Exception as exc:
     raise
 """
 
+_STAGED_PYTHON_PROFILE_API_PROBE = """\
+def _localappdata_from_process_environment_block():
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    getter = kernel.GetEnvironmentStringsW
+    getter.argtypes = []
+    getter.restype = ctypes.c_void_p
+    freer = kernel.FreeEnvironmentStringsW
+    freer.argtypes = [ctypes.c_void_p]
+    freer.restype = ctypes.c_int
+    block = getter()
+    if not block:
+        raise ctypes.WinError(ctypes.get_last_error())
+    values = []
+    try:
+        base = int(block)
+        offset = 0
+        for _ in range(8192):
+            entry = ctypes.wstring_at(base + offset)
+            if not entry:
+                return values
+            separator = entry.find('=', 1) if entry.startswith('=') else entry.find('=')
+            if separator >= 0 and entry[:separator].casefold() == 'localappdata':
+                values.append(entry[separator + 1:])
+            offset += (len(entry) + 1) * ctypes.sizeof(ctypes.c_wchar)
+        raise RuntimeError('environment block exceeded diagnostic bound')
+    finally:
+        if not freer(block):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+def _current_appcontainer_localappdata(observation):
+    import ctypes.wintypes as wintypes
+    class _AppContainerTokenInfo(ctypes.Structure):
+        _fields_ = [('sid', ctypes.c_void_p)]
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    advapi = ctypes.WinDLL('advapi32', use_last_error=True)
+    userenv = ctypes.WinDLL('userenv', use_last_error=True)
+    ole32 = ctypes.WinDLL('ole32', use_last_error=True)
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = ctypes.c_void_p
+    advapi.OpenProcessToken.argtypes = [ctypes.c_void_p, wintypes.DWORD,
+                                        ctypes.POINTER(ctypes.c_void_p)]
+    advapi.OpenProcessToken.restype = wintypes.BOOL
+    advapi.GetTokenInformation.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                           ctypes.c_void_p, wintypes.DWORD,
+                                           ctypes.POINTER(wintypes.DWORD)]
+    advapi.GetTokenInformation.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p,
+                                              ctypes.POINTER(ctypes.c_void_p)]
+    advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+    userenv.GetAppContainerFolderPath.argtypes = [wintypes.LPCWSTR,
+                                                   ctypes.POINTER(ctypes.c_void_p)]
+    userenv.GetAppContainerFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoTaskMemFree.restype = None
+
+    token = ctypes.c_void_p()
+    sid_string = ctypes.c_void_p()
+    profile_path = ctypes.c_void_p()
+    token_is_appcontainer = wintypes.DWORD()
+    returned = wintypes.DWORD()
+    opened = False
+    try:
+        if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008,
+                                      ctypes.byref(token)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        opened = True
+        if not advapi.GetTokenInformation(token, 29, ctypes.byref(token_is_appcontainer),
+                                           ctypes.sizeof(token_is_appcontainer),
+                                           ctypes.byref(returned)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if token_is_appcontainer.value != 1:
+            raise RuntimeError('current token is not an AppContainer')
+        observation['token_is_appcontainer'] = True
+
+        required = wintypes.DWORD()
+        ctypes.set_last_error(0)
+        advapi.GetTokenInformation(token, 31, None, 0, ctypes.byref(required))
+        if ctypes.get_last_error() != 122 or required.value < ctypes.sizeof(_AppContainerTokenInfo):
+            raise ctypes.WinError(ctypes.get_last_error() or 87)
+        sid_storage = ctypes.create_string_buffer(required.value)
+        if not advapi.GetTokenInformation(token, 31, sid_storage, required.value,
+                                           ctypes.byref(returned)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        token_info = ctypes.cast(sid_storage,
+                                 ctypes.POINTER(_AppContainerTokenInfo)).contents
+        if not token_info.sid:
+            raise RuntimeError('AppContainer SID is missing')
+        observation['token_sid_defined'] = True
+        if not advapi.ConvertSidToStringSidW(token_info.sid, ctypes.byref(sid_string)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        sid_text = ctypes.wstring_at(sid_string)
+        hr = int(userenv.GetAppContainerFolderPath(sid_text,
+                                                   ctypes.byref(profile_path)))
+        if hr != 0 or not profile_path.value:
+            observation['profile_error_code'] = hr & 0xffff
+            raise OSError(hr & 0xffff, 'GetAppContainerFolderPath failed')
+        observation['profile_path'] = ctypes.wstring_at(profile_path)
+    finally:
+        cleanup_error = 0
+        if profile_path.value:
+            try:
+                ole32.CoTaskMemFree(profile_path)
+            except Exception:
+                cleanup_error = 6
+        if sid_string.value:
+            if kernel.LocalFree(sid_string):
+                cleanup_error = ctypes.get_last_error() or 6
+        if opened:
+            if not kernel.CloseHandle(token):
+                cleanup_error = ctypes.get_last_error() or 6
+        if cleanup_error:
+            raise ctypes.WinError(cleanup_error)
+
+_staged_profile_api = {
+    'token_is_appcontainer': False,
+    'token_sid_defined': False,
+    'profile_path': None,
+    'profile_error': None,
+    'profile_error_code': None,
+    'profile_path_state': 'not_defined',
+    'environment_block_scan_complete': False,
+    'environment_block_error': None,
+    'environment_block_localappdata': [],
+    'python_localappdata': staged_environment['LOCALAPPDATA']['python_value'],
+    'win32_localappdata': staged_environment['LOCALAPPDATA']['win32_value'],
+}
+try:
+    _staged_profile_api['environment_block_localappdata'] = \\
+        _localappdata_from_process_environment_block()
+    _staged_profile_api['environment_block_scan_complete'] = True
+except Exception as exc:
+    _staged_profile_api['environment_block_error'] = type(exc).__name__
+try:
+    _current_appcontainer_localappdata(_staged_profile_api)
+    _staged_profile_api['profile_path_state'] = _environment_path_state(
+        _staged_profile_api['profile_path'])
+except Exception as exc:
+    _staged_profile_api['profile_error'] = type(exc).__name__
+    if _staged_profile_api['profile_error_code'] is None:
+        _staged_profile_api['profile_error_code'] = getattr(exc, 'winerror', None)
+"""
+
 _STAGED_PYTHON_TEMPFILE_PROBE = """\
 staged_tempfile = {
     'tempdir': None,
@@ -973,6 +1119,114 @@ class TestWindowsAppContainer(unittest.TestCase):
         return summary
 
     @staticmethod
+    def _summarize_staged_profile_api(
+        observation: object, host_api_profile: str | None,
+    ) -> dict[str, object]:
+        """Publish container identity and profile-path relations, never paths or SID."""
+        required = {
+            "token_is_appcontainer", "token_sid_defined", "profile_path",
+            "profile_error", "profile_error_code", "profile_path_state",
+            "environment_block_scan_complete", "environment_block_localappdata",
+            "environment_block_error", "python_localappdata", "win32_localappdata",
+        }
+        if not isinstance(observation, dict) or not required.issubset(observation):
+            return {"complete": False}
+        if (
+            not isinstance(observation["token_is_appcontainer"], bool)
+            or not isinstance(observation["token_sid_defined"], bool)
+            or not isinstance(observation["environment_block_scan_complete"], bool)
+            or observation["environment_block_error"] is not None
+            and not isinstance(observation["environment_block_error"], str)
+            or not isinstance(observation["environment_block_localappdata"], list)
+            or not all(
+                isinstance(value, str) and value
+                for value in observation["environment_block_localappdata"]
+            )
+            or observation["profile_path"] is not None
+            and (not isinstance(observation["profile_path"], str) or not observation["profile_path"])
+            or observation["profile_error"] is not None
+            and not isinstance(observation["profile_error"], str)
+            or observation["profile_error_code"] is not None
+            and (not isinstance(observation["profile_error_code"], int)
+                 or observation["profile_error_code"] < 0)
+            or observation["profile_path_state"] not in {
+                "not_defined", "directory", "not_directory", "not_found",
+                "path_not_found", "access_denied", "other_error",
+            }
+            or any(
+                observation[name] is not None and not isinstance(observation[name], str)
+                for name in ("python_localappdata", "win32_localappdata")
+            )
+            or host_api_profile is not None
+            and (not isinstance(host_api_profile, str) or not host_api_profile)
+        ):
+            return {"complete": False}
+
+        profile_path = observation["profile_path"]
+        python_value = observation["python_localappdata"]
+        win32_value = observation["win32_localappdata"]
+        environment_values = observation["environment_block_localappdata"]
+
+        def same_path(left: object, right: object) -> bool:
+            return (
+                isinstance(left, str) and bool(left)
+                and isinstance(right, str) and bool(right)
+                and ntpath.normcase(ntpath.normpath(left))
+                == ntpath.normcase(ntpath.normpath(right))
+            )
+
+        profile_error = observation["profile_error"]
+        if profile_error is None:
+            error = "none"
+        elif profile_error in _RUNTIME_PROBE_ERROR_TYPES:
+            error = profile_error
+        else:
+            error = "other"
+        error_code = observation["profile_error_code"]
+        if error_code is not None and error_code > 65535:
+            error_code = None
+        environment_block_error = observation["environment_block_error"]
+        if environment_block_error is None:
+            environment_error = "none"
+        elif environment_block_error in _RUNTIME_PROBE_ERROR_TYPES:
+            environment_error = environment_block_error
+        else:
+            environment_error = "other"
+        if isinstance(profile_path, str):
+            profile_relation = TestWindowsAppContainer._profile_path_relation(
+                profile_path, host_api_profile or "",
+            ) if host_api_profile else "unavailable"
+        else:
+            profile_relation = "unavailable"
+        if isinstance(python_value, str) and isinstance(profile_path, str):
+            environment_relation = TestWindowsAppContainer._profile_path_relation(
+                python_value, profile_path,
+            )
+        else:
+            environment_relation = "unavailable"
+        return {
+            "complete": True,
+            "token_is_appcontainer": observation["token_is_appcontainer"],
+            "token_sid_defined": observation["token_sid_defined"],
+            "profile_api_ok": isinstance(profile_path, str) and error == "none",
+            "profile_api_matches_host": same_path(profile_path, host_api_profile),
+            "profile_api_relation": profile_relation,
+            "profile_path_state": observation["profile_path_state"],
+            "environment_block_scan_complete": observation["environment_block_scan_complete"],
+            "environment_block_error": environment_error,
+            "environment_entry_count": len(environment_values),
+            "environment_block_matches_api": (
+                len(environment_values) == 1
+                and same_path(environment_values[0], profile_path)
+            ),
+            "python_win32_match": same_path(python_value, win32_value),
+            "environment_matches_api": same_path(python_value, profile_path),
+            "environment_relation": environment_relation,
+            "error": error,
+            "error_code": error_code,
+        }
+
+    @staticmethod
     def _summarize_staged_tempfile(
         observation: object, environment: object,
     ) -> dict[str, object]:
@@ -1139,6 +1393,60 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(self._profile_path_relation(r"D:\Other", expected), "other")
         self.assertEqual(self._profile_path_relation("relative", expected), "invalid")
 
+    def test_staged_Python_profileAPI摘要只发布身份与路径关系(self) -> None:
+        summarize = getattr(self, "_summarize_staged_profile_api", None)
+        self.assertTrue(
+            callable(summarize),
+            "profile API probe needs a dedicated path-free summary",
+        )
+        api_profile = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
+        actual_environment = api_profile + r"\Unknown\Nested"
+        summary = summarize(
+            {
+                "token_is_appcontainer": True,
+                "token_sid_defined": True,
+                "profile_path": api_profile,
+                "profile_error": None,
+                "profile_error_code": None,
+                "profile_path_state": "directory",
+                "environment_block_scan_complete": True,
+                "environment_block_error": None,
+                "environment_block_localappdata": [actual_environment],
+                "python_localappdata": actual_environment,
+                "win32_localappdata": actual_environment,
+            },
+            api_profile,
+        )
+
+        self.assertEqual(
+            summary,
+            {
+                "complete": True,
+                "token_is_appcontainer": True,
+                "token_sid_defined": True,
+                "profile_api_ok": True,
+                "profile_api_matches_host": True,
+                "profile_api_relation": "exact",
+                "profile_path_state": "directory",
+                "environment_block_scan_complete": True,
+                "environment_block_error": "none",
+                "environment_entry_count": 1,
+                "environment_block_matches_api": False,
+                "python_win32_match": True,
+                "environment_matches_api": False,
+                "environment_relation": "api_child_other_nested",
+                "error": "none",
+                "error_code": None,
+            },
+        )
+        serialized = json.dumps(summary, ensure_ascii=True)
+        self.assertNotIn("C:\\Users\\runner", serialized)
+        self.assertNotIn("S-1-15-2", serialized)
+        self.assertLessEqual(
+            len(json.dumps(summary, ensure_ascii=True, separators=(",", ":"))), 500,
+        )
+        self.assertEqual(summarize({}, api_profile), {"complete": False})
+
     def test_staged_Python环境观测摘要脱敏并区分API路径(self) -> None:
         api_profile = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
         workspace = r"D:\a\_temp\task"
@@ -1286,6 +1594,12 @@ class TestWindowsAppContainer(unittest.TestCase):
             {"complete": False},
         )
 
+    def test_profile_api_token_calls_bind_Advapi32(self) -> None:
+        self.assertIn("advapi.OpenProcessToken.argtypes", _STAGED_PYTHON_PROFILE_API_PROBE)
+        self.assertIn("advapi.GetTokenInformation.argtypes", _STAGED_PYTHON_PROFILE_API_PROBE)
+        self.assertNotIn("kernel.OpenProcessToken", _STAGED_PYTHON_PROFILE_API_PROBE)
+        self.assertNotIn("kernel.GetTokenInformation", _STAGED_PYTHON_PROFILE_API_PROBE)
+
     def test_staged_Python环境探针片段可独立解析(self) -> None:
         compile(
             _STAGED_PYTHON_ENVIRONMENT_PROBE,
@@ -1293,8 +1607,21 @@ class TestWindowsAppContainer(unittest.TestCase):
             "exec",
         )
         compile(
+            _STAGED_PYTHON_PROFILE_API_PROBE,
+            "<staged-python-profile-api-probe>",
+            "exec",
+        )
+        compile(
             _STAGED_PYTHON_TEMPFILE_PROBE,
             "<staged-python-tempfile-probe>",
+            "exec",
+        )
+        compile(
+            "import ctypes, os, stat\n"
+            + _STAGED_PYTHON_ENVIRONMENT_PROBE
+            + _STAGED_PYTHON_PROFILE_API_PROBE
+            + _STAGED_PYTHON_TEMPFILE_PROBE,
+            "<staged-python-profile-environment-combined-probe>",
             "exec",
         )
 
@@ -2823,6 +3150,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'imports:'+type(exc).__name__)\n"
                     "    raise\n"
                     + _STAGED_PYTHON_ENVIRONMENT_PROBE
+                    + _STAGED_PYTHON_PROFILE_API_PROBE
                     + _STAGED_PYTHON_TEMPFILE_PROBE
                     + "\n"
                     "def checkpoint(name): Path(name).write_text('1',encoding='ascii')\n"
@@ -2968,6 +3296,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "result={'prefix_ok':prefix_ok,'module_roots':module_roots,"
                     "'python_version':platform.python_version(),"
                     "'environment':staged_environment,"
+                    "'profile_api':_staged_profile_api,"
                     "'tempfile':staged_tempfile,"
                     "'runtime_write_denied':runtime_write_denied,"
                     "'source_runtime_denied':source_runtime_denied,"
@@ -3012,6 +3341,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 staged_result = {}
             profile_environment = self._summarize_staged_environment(
                 staged_result.get("environment"),
+                candidate_profile_paths[0] if len(candidate_profile_paths) == 1 else None,
+            )
+            profile_api = self._summarize_staged_profile_api(
+                staged_result.get("profile_api"),
                 candidate_profile_paths[0] if len(candidate_profile_paths) == 1 else None,
             )
             tempfile_probe = self._summarize_staged_tempfile(
@@ -3082,6 +3415,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "python_failure": python_failure,
                 "python_path_resolution": path_resolution_probe,
                 "profile_environment": profile_environment,
+                "profile_api": profile_api,
                 "tempfile_probe": tempfile_probe,
                 "python_path_resolution_probe_complete": set(path_resolution_probe) == {
                     "absolute", "stat", "read", "resolve_strict",
@@ -3180,6 +3514,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "Python staged environment flags", profile_environment,
             )
             self._workflow_json_notice(
+                "Python staged profile API diagnostics", summary["profile_api"],
+            )
+            self._workflow_json_notice(
                 "Python staged tempfile consumer", tempfile_probe,
             )
             self._workflow_json_notice(
@@ -3230,6 +3567,20 @@ class TestWindowsAppContainer(unittest.TestCase):
                 profile_environment[name]["python_win32_match"],
                 f"staged Python and Win32 disagree on {name}",
             )
+        profile_api = summary["profile_api"]
+        self.assertTrue(profile_api.get("complete"), "staged profile API probe is incomplete")
+        self.assertTrue(
+            profile_api["environment_block_scan_complete"],
+            "staged profile environment block could not be inspected",
+        )
+        self.assertEqual(profile_api["environment_entry_count"], 1)
+        self.assertTrue(profile_api["token_is_appcontainer"], "staged process token is not AppContainer")
+        self.assertTrue(profile_api["token_sid_defined"], "staged AppContainer token has no SID")
+        self.assertTrue(profile_api["profile_api_ok"], "container profile API lookup failed")
+        self.assertTrue(
+            profile_api["profile_api_matches_host"],
+            "container and host resolved different profile API paths",
+        )
         tempfile_probe = summary["tempfile_probe"]
         self.assertTrue(
             tempfile_probe.get("complete"),

@@ -1,7 +1,7 @@
 # 开发路线图与取舍原则
 
 - 日期：2026-09-25
-- 状态：**R2.1 工作区边界已验收；R2.2 原生隔离、R2.3 Windows AppContainer、R2.4 Git broker/网络授权仍在 main 实施中，均未通过阶段退出条件。Windows CI #153 的 staged tempfile 子项 x64/ARM64 通过，但完整组合测试仍各有 5 failures、1 error；当前路径别名修复待完整本地回归与 CI #154，profile marker 和宿主 Python `0xC0000135` 仍是独立未解门槛。**
+- 状态：**R2.1 工作区边界已验收；R2.2 原生隔离、R2.3 Windows AppContainer、R2.4 Git broker/网络授权仍在 main 实施中，均未通过阶段退出条件。Windows CI #154 已消除路径别名导致的测试失败；profile marker 与宿主 Python `0xC0000135` 两项仍独立未解。当前新增容器内只读 profile API/token/环境块探针，待 CI #155；不扩大 ACL，Windows 自动模式继续关闭。**
 - 依据：[持续竞品对照](./agent-landscape-live.md) · [方案与决策记录](./design-decisions.md)
 
 ---
