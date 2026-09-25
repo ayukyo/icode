@@ -13,10 +13,22 @@ import ntpath
 import os
 from pathlib import Path
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+
+from icode.windows_runner_pipe import (
+    create_runner_pipe_server,
+    new_runner_pipe_name,
+    open_runner_pipe_client,
+    runner_process_logon_sid,
+    runner_process_user_sid,
+    validate_runner_pipe_name,
+)
 
 
 _USERNAME_RE = re.compile(r"[A-Za-z0-9_-]{1,32}\Z")
@@ -29,6 +41,7 @@ _WAIT_TIMEOUT = 0x00000102
 _INFINITE = 0xFFFFFFFF
 _ERROR_NO_SUCH_USER = 1317
 _ERROR_LOGON_FAILURE = 1326
+_ERROR_ACCESS_DENIED = 5
 _TOKEN_DUPLICATE = 0x0002
 _TOKEN_QUERY = 0x0008
 _TOKEN_ASSIGN_PRIMARY = 0x0001
@@ -81,6 +94,17 @@ def stage_runner_script(source_path: Path, scratch_path: Path) -> Path:
     if source == staged:
         raise ValueError("runner script must be staged into a separate directory")
     shutil.copyfile(source, staged)
+    repository = Path(__file__).resolve().parents[1]
+    package_source = repository / "src" / "icode"
+    package_stage = scratch / "runner-lib" / "icode"
+    package_stage.mkdir(parents=True, exist_ok=True)
+    for name in (
+        "__init__.py", "windows_runner_pipe.py", "windows_runner_protocol.py",
+    ):
+        source_module = package_source / name
+        if not source_module.is_file():
+            raise OSError("runner dependency is missing")
+        shutil.copyfile(source_module, package_stage / name)
     return staged
 
 
@@ -114,7 +138,8 @@ def build_runner_environment_block(
     windows_root = _validate_windows_path("system_root", system_root)
     python_dir = ntpath.dirname(python_path)
     system32 = ntpath.join(windows_root, "System32")
-    if ";" in python_dir or ";" in system32:
+    runner_lib = ntpath.join(scratch_path, "runner-lib")
+    if any(";" in entry for entry in (python_dir, system32, runner_lib)):
         raise ValueError("PATH entries must not contain semicolons")
 
     entries: dict[str, str] = {
@@ -125,6 +150,7 @@ def build_runner_environment_block(
         "TMP": scratch_path,
         "PYTHONNOUSERSITE": "1",
         "PYTHONUTF8": "1",
+        "PYTHONPATH": runner_lib,
         "ICODE_R2_PROBE_MODE": "runner",
     }
     for path in (python_path, scratch_path, windows_root):
@@ -158,6 +184,76 @@ def build_runner_command_line(
     if len(command) >= 1024:
         raise ValueError("runner command line exceeds the logon API limit")
     return command
+
+
+def build_runner_pipe_command_line(
+    python_executable: str,
+    script_path: str,
+    report_path: str,
+    pipe_name: str,
+    server_pid: int,
+    request_id: str,
+) -> str:
+    """Build the fixed runner handshake invocation without credentials or policy."""
+    python_path = _validate_windows_path("python_executable", python_executable)
+    script = _validate_windows_path("script_path", script_path)
+    report = _validate_windows_path("report_path", report_path)
+    pipe = validate_runner_pipe_name(pipe_name)
+    if type(server_pid) is not int or not 1 <= server_pid <= 0xFFFFFFFF:
+        raise ValueError("invalid_runner_pipe_server_pid")
+    if type(request_id) is not str or re.fullmatch(r"[0-9a-f]{32}", request_id) is None:
+        raise ValueError("invalid_runner_pipe_request_id")
+    command = subprocess.list2cmdline([
+        python_path, script, "--runner", report,
+        "--pipe", pipe, "--server-pid", str(server_pid),
+        "--request-id", request_id,
+    ])
+    if len(command) >= 1024:
+        raise ValueError("runner command line exceeds the logon API limit")
+    return command
+
+
+def runner_pipe_wrong_server_pid_probe() -> bool:
+    """Connect to a local endpoint while deliberately expecting another server PID."""
+    if sys.platform != "win32":
+        return False
+    try:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetCurrentProcess.argtypes = []
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.GetCurrentProcessId.argtypes = []
+        kernel.GetCurrentProcessId.restype = wintypes.DWORD
+        process_handle = kernel.GetCurrentProcess()
+        current_pid = int(kernel.GetCurrentProcessId())
+        wrong_pid = current_pid + 1 if current_pid < 0xFFFFFFFF else 1
+        user_sid = runner_process_user_sid(process_handle)
+        failures: list[str] = []
+        with create_runner_pipe_server(user_sid) as pipe:
+            def accept_once() -> None:
+                try:
+                    pipe._connect(5_000)
+                except (OSError, RuntimeError, TimeoutError) as exc:
+                    failures.append(type(exc).__name__)
+
+            worker = threading.Thread(target=accept_once, daemon=True)
+            worker.start()
+            time.sleep(0.025)
+            try:
+                client = open_runner_pipe_client(
+                    pipe.name, wrong_pid, timeout_ms=2_000,
+                )
+            except PermissionError as exc:
+                rejected = str(exc) == "runner_pipe_server_pid_mismatch"
+            else:
+                client.close()
+                rejected = False
+            worker.join(5)
+            if worker.is_alive():
+                pipe.close()
+                worker.join(5)
+            return rejected and pipe._connected and not failures and not worker.is_alive()
+    except (OSError, RuntimeError, ValueError, TimeoutError):
+        return False
 
 
 class _SID_AND_ATTRIBUTES(ctypes.Structure):
@@ -609,6 +705,10 @@ def _run_as_standard_user() -> int:
         print("::error::restricted_token_probe_credentials_invalid")
         return 2
 
+    if not runner_pipe_wrong_server_pid_probe():
+        print("::error::runner_pipe_wrong_server_pid_rejection_failed")
+        return 1
+
     system_root = os.environ.get("SystemRoot", r"C:\Windows")
     public_dir = Path(os.environ.get("PUBLIC", r"C:\Users\Public"))
     if not public_dir.is_dir():
@@ -632,8 +732,12 @@ def _run_as_standard_user() -> int:
             raise RuntimeError("grant_probe_report_acl_failed")
 
         report = scratch / "result.txt"
-        command = build_runner_command_line(
+        pipe_name = new_runner_pipe_name()
+        request_id = secrets.token_hex(16)
+        parent_pid = os.getpid()
+        command = build_runner_pipe_command_line(
             sys.executable, str(runner_script), str(report),
+            pipe_name, parent_pid, request_id,
         )
         environment = build_runner_environment_block(
             python_executable=sys.executable,
@@ -663,11 +767,14 @@ def _run_as_standard_user() -> int:
         kernel.TerminateProcess.restype = wintypes.BOOL
         kernel.CloseHandle.argtypes = [wintypes.HANDLE]
         kernel.CloseHandle.restype = wintypes.BOOL
+        kernel.ResumeThread.argtypes = [wintypes.HANDLE]
+        kernel.ResumeThread.restype = wintypes.DWORD
+        kernel.GetCurrentProcessId.restype = wintypes.DWORD
         try:
             created = advapi.CreateProcessWithLogonW(
                 username, ".", password_buffer, 0, sys.executable,
                 ctypes.create_unicode_buffer(command),
-                _CREATE_UNICODE_ENVIRONMENT | _CREATE_NO_WINDOW,
+                _CREATE_SUSPENDED | _CREATE_UNICODE_ENVIRONMENT | _CREATE_NO_WINDOW,
                 ctypes.cast(environment_buffer, ctypes.c_void_p),
                 str(scratch),
                 ctypes.byref(startup), ctypes.byref(process),
@@ -677,16 +784,50 @@ def _run_as_standard_user() -> int:
         if not created:
             raise _winerror("create_process_with_logon")
         try:
-            wait = kernel.WaitForSingleObject(process.hProcess, 30_000)
-            if wait == _WAIT_TIMEOUT:
-                kernel.TerminateProcess(process.hProcess, 1)
-                kernel.WaitForSingleObject(process.hProcess, 5000)
-                raise RuntimeError("standard_user_runner_timeout")
-            if wait != _WAIT_OBJECT_0:
-                raise _winerror("wait_standard_user_runner")
-            exit_code = wintypes.DWORD()
-            if not kernel.GetExitCodeProcess(process.hProcess, ctypes.byref(exit_code)):
-                raise _winerror("get_standard_user_runner_exit")
+            logon_sid = runner_process_logon_sid(process.hProcess)
+            with create_runner_pipe_server(logon_sid) as timeout_pipe:
+                try:
+                    timeout_pipe._connect(250)
+                except TimeoutError as exc:
+                    if str(exc) != "runner_pipe_connect_timeout":
+                        raise
+                else:
+                    raise RuntimeError("runner_pipe_timeout_probe_unexpected_connection")
+            if timeout_pipe._handle:
+                raise RuntimeError("runner_pipe_timeout_handle_leaked")
+
+            with create_runner_pipe_server(logon_sid, name=pipe_name) as pipe:
+                try:
+                    unauthorized = open_runner_pipe_client(
+                        pipe.name, parent_pid, timeout_ms=1_000,
+                    )
+                except PermissionError as exc:
+                    if exc.errno != _ERROR_ACCESS_DENIED:
+                        raise RuntimeError("runner_pipe_other_sid_rejection_unverified") from exc
+                else:
+                    unauthorized.close()
+                    raise RuntimeError("runner_pipe_other_sid_was_allowed")
+
+                resumed = kernel.ResumeThread(process.hThread)
+                if resumed != 1:
+                    raise RuntimeError("runner_resume_thread_failed")
+                pipe.wait_for_runner_ready(
+                    expected_process_handle=process.hProcess,
+                    expected_user_sid=sid,
+                    expected_logon_sid=logon_sid,
+                    request_id=request_id,
+                    timeout_ms=15_000,
+                )
+                wait = kernel.WaitForSingleObject(process.hProcess, 30_000)
+                if wait == _WAIT_TIMEOUT:
+                    kernel.TerminateProcess(process.hProcess, 1)
+                    kernel.WaitForSingleObject(process.hProcess, 5000)
+                    raise RuntimeError("standard_user_runner_timeout")
+                if wait != _WAIT_OBJECT_0:
+                    raise _winerror("wait_standard_user_runner")
+                exit_code = wintypes.DWORD()
+                if not kernel.GetExitCodeProcess(process.hProcess, ctypes.byref(exit_code)):
+                    raise _winerror("get_standard_user_runner_exit")
         finally:
             if kernel.WaitForSingleObject(process.hProcess, 0) == _WAIT_TIMEOUT:
                 kernel.TerminateProcess(process.hProcess, 1)
@@ -769,6 +910,9 @@ def _run_as_standard_user() -> int:
 
         print(
             "standard_user_token_probe=PASS " + result
+            + " runner_pipe_probe=PASS;logon_sid_dacl=PASS;other_sid=ACCESS_DENIED;"
+            "server_pid_mismatch=DENIED;client_pid=PASS;token_sid_session=PASS;"
+            "timeout_cancel=PASS "
             + " negative_logon_probes=PASS;missing_account=FAIL_CLOSED;"
             "bad_password=FAIL_CLOSED;runner_report=ABSENT;child=ABSENT"
         )
@@ -796,7 +940,12 @@ def _run_as_standard_user() -> int:
     return result_code
 
 
-def _run_child_mode(report_path: str) -> int:
+def _run_child_mode(
+    report_path: str,
+    pipe_name: str,
+    server_pid_text: str,
+    request_id: str,
+) -> int:
     if sys.platform != "win32":
         return 2
     try:
@@ -810,6 +959,21 @@ def _run_child_mode(report_path: str) -> int:
             or report.name != "result.txt"
         ):
             return 2
+        if not server_pid_text.isascii() or not server_pid_text.isdecimal():
+            return 2
+        server_pid = int(server_pid_text)
+        if not 1 <= server_pid <= 0xFFFFFFFF:
+            return 2
+        if re.fullmatch(r"[0-9a-f]{32}", request_id) is None:
+            return 2
+        with open_runner_pipe_client(
+            pipe_name, server_pid, timeout_ms=15_000,
+        ) as pipe:
+            pipe.send_message({
+                "version": 1,
+                "type": "spawn_ready",
+                "request_id": request_id,
+            }, timeout_ms=15_000)
         result = _runner_probe(report)
         _write_report(report, result)
         return 0 if runner_probe_succeeded(result) else 1
@@ -826,8 +990,14 @@ def _run_child_mode(report_path: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) == 2 and args[0] == "--runner":
-        return _run_child_mode(args[1])
+    if (
+        len(args) == 8
+        and args[0] == "--runner"
+        and args[2] == "--pipe"
+        and args[4] == "--server-pid"
+        and args[6] == "--request-id"
+    ):
+        return _run_child_mode(args[1], args[3], args[5], args[7])
     if args:
         print("::error::restricted_token_probe_arguments_invalid")
         return 2

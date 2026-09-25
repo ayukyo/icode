@@ -11,6 +11,7 @@ from scripts.windows_standard_user_token_probe import (
     stage_runner_script,
     build_system_tool_environment,
     build_runner_command_line,
+    build_runner_pipe_command_line,
     build_runner_environment_block,
 )
 
@@ -79,13 +80,17 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             names,
             {
                 "=C:", "SystemRoot", "WINDIR", "PATH", "TEMP", "TMP",
-                "PYTHONNOUSERSITE", "PYTHONUTF8", "ICODE_R2_PROBE_MODE",
+                "PYTHONNOUSERSITE", "PYTHONUTF8", "PYTHONPATH", "ICODE_R2_PROBE_MODE",
             },
         )
         self.assertTrue(block.endswith("\0\0"))
         self.assertNotIn("ICODE_PROBE_PASSWORD", block)
         self.assertNotIn("GITHUB_TOKEN", block)
         self.assertIn("C:\\Users\\Public\\icode probe", block)
+        self.assertIn(
+            "PYTHONPATH=C:\\Users\\Public\\icode probe\\runner-lib",
+            block,
+        )
 
     def test_runner_command_line_quotes_paths_and_obeys_logon_api_limit(self) -> None:
         command = build_runner_command_line(
@@ -96,6 +101,29 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertIn('"C:\\Python Dir\\python.exe"', command)
         self.assertIn('"D:\\checkout dir\\probe.py"', command)
         self.assertLess(len(command), 1024)
+
+    def test_runner_pipe_command_line_binds_random_endpoint_parent_and_request(self) -> None:
+        command = build_runner_pipe_command_line(
+            r"C:\Python Dir\python.exe",
+            r"D:\checkout dir\probe.py",
+            r"C:\Users\Public\probe result.txt",
+            r"\\.\pipe\icode-runner-" + "a1" * 16,
+            4321,
+            "0123456789abcdef0123456789abcdef",
+        )
+        self.assertIn(
+            "--pipe " + r"\\.\pipe\icode-runner-" + "a1" * 16,
+            command,
+        )
+        self.assertIn('--server-pid 4321', command)
+        self.assertIn('--request-id 0123456789abcdef0123456789abcdef', command)
+        self.assertLess(len(command), 1024)
+
+        with self.assertRaises(ValueError):
+            build_runner_pipe_command_line(
+                r"C:\Python\python.exe", r"D:\probe.py", r"C:\Temp\result.txt",
+                r"\\.\pipe\other", 4321, "0123456789abcdef0123456789abcdef",
+            )
 
     def test_runner_environment_rejects_unsafe_path_serialization(self) -> None:
         cases = (
@@ -161,6 +189,10 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             self.assertEqual(staged.parent, scratch)
             self.assertEqual(staged.read_text(encoding="utf-8"), "fixed probe source\n")
             self.assertEqual(staged.name, "windows_standard_user_token_probe.py")
+            runner_lib = scratch / "runner-lib" / "icode"
+            self.assertTrue((runner_lib / "__init__.py").is_file())
+            self.assertTrue((runner_lib / "windows_runner_pipe.py").is_file())
+            self.assertTrue((runner_lib / "windows_runner_protocol.py").is_file())
 
 
 if __name__ == "__main__":
