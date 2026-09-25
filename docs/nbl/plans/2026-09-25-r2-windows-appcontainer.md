@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
-- 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #155 x64/ARM64 均保留 2 项失败：profile 写入 marker 缺失、宿主 Python 退出 `0xC0000135`。新增只读观测显示容器 token/SID 有效，容器与宿主 `GetAppContainerFolderPath` 路径一致且为目录；容器 PEB 仅有一个 `LOCALAPPDATA`，它与 Python/Win32 读取一致，却是 API 根下不存在的未知嵌套路径。待普通进程/AppContainer 同显式环境值差分和 known-folder 只读查询；不扩大 ACL，也不把 staged tempfile 子项外推为 R2.3。
+- 日期：2026-09-26 UTC
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #156 x64/ARM64 综合 AppContainer 步骤仍失败，公开日志无法读到具体断言；macOS-latest 的 policy-command-broker 步骤也失败，未归因。#155 profile/token 观测显示容器与宿主 AppContainer API 路径一致，但实际 `LOCALAPPDATA` 是 API 根下不存在的未知嵌套路径，profile marker 缺失；独立的宿主 Python 子进程仍退出 `0xC0000135`。当前新增只读 source/staged `python.exe` 与 `pythonXY.dll` image-mapping 探针，待 Windows x64/ARM64 原生验证；不扩大 ACL，也不把 staged tempfile 子项外推为 R2.3。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 > 注：下方按时间追加验证记录。阶段状态以最新 CI 和本机回归为准，历史记录不代表当前 Windows 后端已通过。
@@ -326,3 +326,9 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - 已将同一 AppContainer profile API 路径和 sentinel 显式传给普通宿主正向对照与容器命令；容器由独立脚本只读输出环境变量，结果归一化为布尔值与路径关系，不公开原始路径。
 - staged Python 另调用 `SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY)`，通过 `GetCurrentPackageFullName` 记录包身份状态，并与 AppContainer profile API 路径脱敏比较；均是只读 API，不创建目录或修改 ACL。
 - 本机 Linux 完整预检与 Windows AppContainer 模块单测通过；Windows 原生测试在本机按平台跳过。下一步必须等待 x64/ARM64 runner 结果，再决定 profile marker 与 Python loader 的后续根因实验；R2.3、Windows 自动模式保持关闭。
+
+### 2026-09-26 UTC：CI #156 与 runtime image-mapping 诊断
+
+- CI [#156](https://github.com/ayukyo/icode/actions/runs/36155715717) 的 Windows x64/ARM64 综合 AppContainer 步骤均失败；公开 job 查询没有逐项断言，Actions logs API 返回 403，因此只记录“步骤失败”，不推断是 profile、loader 或本轮环境 A/B 所致。同轮 macOS-latest policy-command-broker 也失败，未见可读断言日志，Windows 探针不对其归因。
+- 结合 Microsoft 的文件映射 API 文档，采纳在 staged Python runner 内对 source/staged executable 与 `pythonXY.dll` 逐个执行 `CreateFileW(GENERIC_READ)`、单字节 `ReadFile`、`CreateFileMappingW(PAGE_READONLY | SEC_IMAGE_NO_EXECUTE)`、`MapViewOfFile(FILE_MAP_READ)`；宿主与 AppContainer 做相同目标对照，路径不进入 CI notice，所有 view/handle 显式清理。状态用 `read|image` 短码表示；该阶段可区分文件数据读取与映像布局映射，不解析导入依赖、不执行入口或 DLL 初始化。
+- 暂缓 `LoadLibraryExW`：它会触发正常 DLL 加载/初始化，且 staged Python 已经加载同名 core DLL，不能在此进程中声称独立验证原始 runtime。若映射差分仍不能收敛，另行研究可信、短命、未预加载目标 DLL 的原生 helper；在此之前不扩 ACL、不接生产 runner。该探针的 Linux 语法/摘要测试通过，Windows x64/ARM64 验证仍待新 CI，R2.3 与自动模式继续关闭。

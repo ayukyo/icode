@@ -366,6 +366,117 @@ except Exception as exc:
         _staged_profile_context['package_identity_error_code'] = getattr(exc, 'winerror', None)
 """
 
+_STAGED_PYTHON_RUNTIME_IMAGE_PROBE = """\
+_runtime_image_kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+_runtime_image_kernel32.CreateFileW.argtypes = [
+    ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+]
+_runtime_image_kernel32.CreateFileW.restype = ctypes.c_void_p
+_runtime_image_kernel32.ReadFile.argtypes = [
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p,
+]
+_runtime_image_kernel32.ReadFile.restype = ctypes.c_int
+_runtime_image_kernel32.CreateFileMappingW.argtypes = [
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+    ctypes.c_uint32, ctypes.c_uint32, ctypes.c_wchar_p,
+]
+_runtime_image_kernel32.CreateFileMappingW.restype = ctypes.c_void_p
+_runtime_image_kernel32.MapViewOfFile.argtypes = [
+    ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+    ctypes.c_uint32, ctypes.c_size_t,
+]
+_runtime_image_kernel32.MapViewOfFile.restype = ctypes.c_void_p
+_runtime_image_kernel32.UnmapViewOfFile.argtypes = [ctypes.c_void_p]
+_runtime_image_kernel32.UnmapViewOfFile.restype = ctypes.c_int
+_runtime_image_kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+_runtime_image_kernel32.CloseHandle.restype = ctypes.c_int
+_RUNTIME_GENERIC_READ = 0x80000000
+_RUNTIME_SHARE_READ_WRITE_DELETE = 0x00000007
+_RUNTIME_OPEN_EXISTING = 3
+_RUNTIME_FILE_ATTRIBUTE_NORMAL = 0x00000080
+_RUNTIME_PAGE_READONLY_SEC_IMAGE_NO_EXECUTE = 0x11000002
+_RUNTIME_FILE_MAP_READ = 0x00000004
+
+def _runtime_image_probe(path):
+    result = {
+        'opened': False,
+        'read_ok': False,
+        'section_created': False,
+        'view_mapped': False,
+        'cleanup_ok': True,
+        'open_error': None,
+        'read_error': None,
+        'section_error': None,
+        'view_error': None,
+    }
+    invalid_handle = ctypes.c_void_p(-1).value
+    file_handle = None
+    mapping_handle = None
+    mapped_view = None
+    try:
+        file_handle = _runtime_image_kernel32.CreateFileW(
+            path, _RUNTIME_GENERIC_READ, _RUNTIME_SHARE_READ_WRITE_DELETE,
+            None, _RUNTIME_OPEN_EXISTING, _RUNTIME_FILE_ATTRIBUTE_NORMAL, None)
+        if file_handle is None or file_handle == invalid_handle:
+            result['open_error'] = ctypes.get_last_error()
+        else:
+            result['opened'] = True
+            read_buffer = ctypes.create_string_buffer(1)
+            bytes_read = ctypes.c_uint32()
+            if _runtime_image_kernel32.ReadFile(
+                file_handle, read_buffer, 1, ctypes.byref(bytes_read), None):
+                if bytes_read.value == 1:
+                    result['read_ok'] = True
+                else:
+                    result['read_error'] = 0
+            else:
+                result['read_error'] = ctypes.get_last_error()
+            mapping_handle = _runtime_image_kernel32.CreateFileMappingW(
+                file_handle, None, _RUNTIME_PAGE_READONLY_SEC_IMAGE_NO_EXECUTE,
+                0, 0, None)
+            if mapping_handle is None:
+                result['section_error'] = ctypes.get_last_error()
+            else:
+                result['section_created'] = True
+                mapped_view = _runtime_image_kernel32.MapViewOfFile(
+                    mapping_handle, _RUNTIME_FILE_MAP_READ, 0, 0, 0)
+                if mapped_view is None:
+                    result['view_error'] = ctypes.get_last_error()
+                else:
+                    result['view_mapped'] = True
+    except Exception:
+        if not result['opened']:
+            result['open_error'] = 0
+        elif not result['read_ok'] and result['read_error'] is None:
+            result['read_error'] = 0
+        elif not result['section_created']:
+            result['section_error'] = 0
+        else:
+            result['view_error'] = 0
+    finally:
+        if mapped_view is not None:
+            try:
+                if not _runtime_image_kernel32.UnmapViewOfFile(mapped_view):
+                    result['cleanup_ok'] = False
+            except Exception:
+                result['cleanup_ok'] = False
+        if mapping_handle is not None:
+            try:
+                if not _runtime_image_kernel32.CloseHandle(mapping_handle):
+                    result['cleanup_ok'] = False
+            except Exception:
+                result['cleanup_ok'] = False
+        if file_handle is not None and file_handle != invalid_handle:
+            try:
+                if not _runtime_image_kernel32.CloseHandle(file_handle):
+                    result['cleanup_ok'] = False
+            except Exception:
+                result['cleanup_ok'] = False
+    return result
+"""
+
 _STAGED_PYTHON_TEMPFILE_PROBE = """\
 staged_tempfile = {
     'tempdir': None,
@@ -1441,6 +1552,89 @@ class TestWindowsAppContainer(unittest.TestCase):
         }
 
     @staticmethod
+    def _summarize_runtime_image_probe(
+        host_observation: object, container_observation: object,
+    ) -> dict[str, object]:
+        """Return path-free read|image states using fixed labels and DWORD errors."""
+        labels = (
+            "source_python", "source_core", "staged_python", "staged_core",
+        )
+        expected_fields = {
+            "opened", "read_ok", "section_created", "view_mapped", "cleanup_ok",
+            "open_error", "read_error", "section_error", "view_error",
+        }
+        if (
+            not isinstance(host_observation, dict)
+            or not isinstance(container_observation, dict)
+            or set(host_observation) != set(labels)
+            or set(container_observation) != set(labels)
+        ):
+            return {"complete": False}
+
+        def classify(value: object) -> tuple[str, bool] | None:
+            if not isinstance(value, dict) or set(value) != expected_fields:
+                return None
+            for name in (
+                "opened", "read_ok", "section_created", "view_mapped", "cleanup_ok",
+            ):
+                if type(value[name]) is not bool:
+                    return None
+            for name in ("open_error", "read_error", "section_error", "view_error"):
+                code = value[name]
+                if code is not None and (type(code) is not int or not 0 <= code <= 0xFFFFFFFF):
+                    return None
+            if value["opened"] != (value["open_error"] is None):
+                return None
+            if not value["opened"]:
+                if any(value[name] for name in (
+                    "read_ok", "section_created", "view_mapped",
+                )):
+                    return None
+                if any(value[name] is not None for name in (
+                    "read_error", "section_error", "view_error",
+                )):
+                    return None
+            elif value["read_ok"] != (value["read_error"] is None):
+                return None
+            elif value["section_created"] != (value["section_error"] is None):
+                return None
+            elif not value["section_created"]:
+                if value["view_mapped"] or value["view_error"] is not None:
+                    return None
+            elif value["view_mapped"] != (value["view_error"] is None):
+                return None
+            if value["view_mapped"]:
+                image_state = "ok"
+            elif not value["opened"]:
+                image_state = f"open{value['open_error']}"
+            elif not value["section_created"]:
+                image_state = f"section{value['section_error']}"
+            else:
+                image_state = f"view{value['view_error']}"
+            if value["read_ok"]:
+                read_state = "ok"
+            elif not value["opened"]:
+                read_state = "na"
+            else:
+                read_state = f"e{value['read_error']}"
+            return f"{read_state}|{image_state}", value["cleanup_ok"]
+
+        summary: dict[str, object] = {"complete": True}
+        cleanup_results: list[bool] = []
+        for prefix, observation in (
+            ("host", host_observation), ("container", container_observation),
+        ):
+            for label in labels:
+                classified = classify(observation[label])
+                if classified is None:
+                    return {"complete": False}
+                state, cleanup_ok = classified
+                summary[f"{prefix}_{label}"] = state
+                cleanup_results.append(cleanup_ok)
+        summary["cleanup_ok"] = all(cleanup_results)
+        return summary
+
+    @staticmethod
     def _summarize_staged_tempfile(
         observation: object, environment: object,
     ) -> dict[str, object]:
@@ -2043,6 +2237,110 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("kernel32.GetCurrentPackageFullName.restype", _STAGED_PYTHON_KNOWN_FOLDER_PROBE)
         self.assertIn("0x00004000", _STAGED_PYTHON_KNOWN_FOLDER_PROBE)
 
+    def test_runtime映像探针Win32签名固定且只读不执行(self) -> None:
+        probe = globals().get("_STAGED_PYTHON_RUNTIME_IMAGE_PROBE")
+        self.assertIsInstance(probe, str, "runtime image probe is missing")
+        self.assertIn("CreateFileW.argtypes", probe)
+        self.assertIn("ReadFile.argtypes", probe)
+        self.assertIn("CreateFileMappingW.argtypes", probe)
+        self.assertIn("MapViewOfFile.argtypes", probe)
+        self.assertIn("UnmapViewOfFile.argtypes", probe)
+        self.assertIn("0x11000002", probe)
+        self.assertIn("0x00000004", probe)
+        self.assertNotIn("LoadLibrary", probe)
+        self.assertNotIn("FILE_MAP_EXECUTE", probe)
+
+    def test_runtime映像探针摘要只公开固定阶段和错误码(self) -> None:
+        summarize = getattr(self, "_summarize_runtime_image_probe", None)
+        self.assertTrue(callable(summarize), "runtime image probe needs a safe summary")
+
+        def result(
+            *, opened: bool = True, section: bool = True, view: bool = True,
+            cleanup: bool = True, open_error: int | None = None,
+            read: bool | None = None, read_error: int | None = None,
+            section_error: int | None = None, view_error: int | None = None,
+        ) -> dict[str, object]:
+            if read is None:
+                read = opened
+            return {
+                "opened": opened,
+                "read_ok": read,
+                "section_created": section,
+                "view_mapped": view,
+                "cleanup_ok": cleanup,
+                "open_error": open_error,
+                "read_error": read_error,
+                "section_error": section_error,
+                "view_error": view_error,
+            }
+
+        host = {
+            key: result() for key in (
+                "source_python", "source_core", "staged_python", "staged_core",
+            )
+        }
+        container = dict(host)
+        container["source_core"] = result(
+            opened=False, section=False, view=False, open_error=5, read=False,
+        )
+        container["staged_core"] = result(read=False, read_error=5)
+        summary = summarize(host, container)
+        self.assertEqual(
+            summary,
+            {
+                "complete": True,
+                "host_source_python": "ok|ok",
+                "host_source_core": "ok|ok",
+                "host_staged_python": "ok|ok",
+                "host_staged_core": "ok|ok",
+                "container_source_python": "ok|ok",
+                "container_source_core": "na|open5",
+                "container_staged_python": "ok|ok",
+                "container_staged_core": "e5|ok",
+                "cleanup_ok": True,
+            },
+        )
+        serialized = json.dumps(summary, ensure_ascii=True, separators=(",", ":"))
+        self.assertNotIn("C:\\Users\\runner", serialized)
+        self.assertLessEqual(len(serialized), 500)
+        notice = {
+            "host_exit": 0,
+            "host_error": "none",
+            "observation": summary,
+        }
+        self.assertLessEqual(
+            len(json.dumps(notice, ensure_ascii=True, separators=(",", ":"))),
+            500,
+        )
+        max_failure = result(
+            opened=False, read=False, section=False, view=False,
+            open_error=0xFFFFFFFF,
+        )
+        worst_case = summarize(
+            {label: max_failure for label in (
+                "source_python", "source_core", "staged_python", "staged_core",
+            )},
+            {label: max_failure for label in (
+                "source_python", "source_core", "staged_python", "staged_core",
+            )},
+        )
+        self.assertLessEqual(
+            len(json.dumps(
+                {"host_exit": 0, "host_error": "none", "observation": worst_case},
+                ensure_ascii=True, separators=(",", ":"),
+            )),
+            500,
+        )
+        malformed = dict(container)
+        malformed["source_core"] = result(opened=False, section=True, view=False)
+        self.assertEqual(summarize(host, malformed), {"complete": False})
+        oversized = dict(container)
+        oversized["source_core"] = result(
+            opened=False, section=False, view=False, open_error=0x100000000,
+            read=False,
+        )
+        self.assertEqual(summarize(host, oversized), {"complete": False})
+
     def test_staged_Python环境探针片段可独立解析(self) -> None:
         compile(
             _STAGED_PYTHON_ENVIRONMENT_PROBE,
@@ -2059,6 +2357,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             "<staged-python-known-folder-probe>",
             "exec",
         )
+        image_probe = globals().get("_STAGED_PYTHON_RUNTIME_IMAGE_PROBE")
+        self.assertIsInstance(image_probe, str, "runtime image probe is missing")
+        compile(image_probe, "<staged-python-runtime-image-probe>", "exec")
         compile(
             _STAGED_PYTHON_TEMPFILE_PROBE,
             "<staged-python-tempfile-probe>",
@@ -2069,6 +2370,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             + _STAGED_PYTHON_ENVIRONMENT_PROBE
             + _STAGED_PYTHON_PROFILE_API_PROBE
             + _STAGED_PYTHON_KNOWN_FOLDER_PROBE
+            + image_probe
             + _STAGED_PYTHON_TEMPFILE_PROBE,
             "<staged-python-profile-environment-combined-probe>",
             "exec",
@@ -3515,6 +3817,13 @@ class TestWindowsAppContainer(unittest.TestCase):
 
             staged_executable = staged_root / source_executable.name
             self.assertTrue(staged_executable.is_file(), "staged Python executable is missing")
+            runtime_core_name = (
+                f"python{sys.version_info.major}{sys.version_info.minor}.dll"
+            )
+            source_core = source_root / runtime_core_name
+            staged_core = staged_root / runtime_core_name
+            self.assertTrue(source_core.is_file(), "host Python core DLL is missing")
+            self.assertTrue(staged_core.is_file(), "staged Python core DLL is missing")
             try:
                 host_stage_probe = subprocess.run(
                     [
@@ -3553,6 +3862,38 @@ class TestWindowsAppContainer(unittest.TestCase):
                 host_stage_probe_exit, 0,
                 f"staged Python did not pass its host positive control ({host_stage_probe_error})",
             )
+            host_image_probe_script = (
+                "import ctypes,json\n"
+                + _STAGED_PYTHON_RUNTIME_IMAGE_PROBE
+                + "\n_runtime_image_mapping={"
+                + f"'source_python':_runtime_image_probe({str(source_executable)!r}),"
+                + f"'source_core':_runtime_image_probe({str(source_core)!r}),"
+                + f"'staged_python':_runtime_image_probe({str(staged_executable)!r}),"
+                + f"'staged_core':_runtime_image_probe({str(staged_core)!r})"
+                + "}\nprint(json.dumps(_runtime_image_mapping,separators=(',',':')))\n"
+            )
+            try:
+                host_image_process = subprocess.run(
+                    [str(staged_executable), "-I", "-c", host_image_probe_script],
+                    cwd=workspace, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=10,
+                    shell=False, check=False,
+                )
+                host_image_probe_exit = host_image_process.returncode
+                host_image_probe_error = "none"
+                try:
+                    host_image_observation = json.loads(host_image_process.stdout)
+                except (TypeError, json.JSONDecodeError):
+                    host_image_observation = {}
+                    host_image_probe_error = "invalid_result"
+            except subprocess.TimeoutExpired:
+                host_image_probe_exit = None
+                host_image_probe_error = "timeout"
+                host_image_observation = {}
+            except OSError:
+                host_image_probe_exit = None
+                host_image_probe_error = "launch_failed"
+                host_image_observation = {}
             baseline_marker = workspace / "staging-baseline-started"
             baseline = run_windows_appcontainer(
                 [
@@ -3601,8 +3942,15 @@ class TestWindowsAppContainer(unittest.TestCase):
                     + _STAGED_PYTHON_ENVIRONMENT_PROBE
                     + _STAGED_PYTHON_PROFILE_API_PROBE
                     + _STAGED_PYTHON_KNOWN_FOLDER_PROBE
+                    + _STAGED_PYTHON_RUNTIME_IMAGE_PROBE
                     + _STAGED_PYTHON_TEMPFILE_PROBE
                     + "\n"
+                    + "runtime_image_mapping={"
+                    + f"'source_python':_runtime_image_probe({str(source_executable)!r}),"
+                    + f"'source_core':_runtime_image_probe({str(source_core)!r}),"
+                    + f"'staged_python':_runtime_image_probe({str(staged_executable)!r}),"
+                    + f"'staged_core':_runtime_image_probe({str(staged_core)!r})"
+                    + "}\n"
                     "def checkpoint(name): Path(name).write_text('1',encoding='ascii')\n"
                     "def failed(stage,exc): Path('staging-python-failure-class').write_text("
                     "stage+':'+type(exc).__name__,encoding='ascii')\n"
@@ -3749,6 +4097,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'profile_api':_staged_profile_api,"
                     "'profile_context':_staged_profile_context,"
                     "'tempfile':staged_tempfile,"
+                    "'runtime_image_mapping':runtime_image_mapping,"
                     "'runtime_write_denied':runtime_write_denied,"
                     "'source_runtime_denied':source_runtime_denied,"
                     "'network_connect_failed':network_connect_failed,"
@@ -3804,6 +4153,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             )
             tempfile_probe = self._summarize_staged_tempfile(
                 staged_result.get("tempfile"), staged_result.get("environment"),
+            )
+            runtime_image_mapping = self._summarize_runtime_image_probe(
+                host_image_observation, staged_result.get("runtime_image_mapping"),
             )
             python_failure = "not_observed"
             try:
@@ -3873,6 +4225,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "profile_api": profile_api,
                 "profile_context": profile_context,
                 "tempfile_probe": tempfile_probe,
+                "runtime_image_mapping": runtime_image_mapping,
+                "host_image_probe_exit": host_image_probe_exit,
+                "host_image_probe_error": host_image_probe_error,
                 "python_path_resolution_probe_complete": set(path_resolution_probe) == {
                     "absolute", "stat", "read", "resolve_strict",
                     "resolve_nonstrict", "getfinalpathname", "native_createfile_zero",
@@ -3979,6 +4334,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "Python staged tempfile consumer", tempfile_probe,
             )
             self._workflow_json_notice(
+                "Python staged runtime image mapping (read-only)",
+                {
+                    "host_exit": host_image_probe_exit,
+                    "host_error": host_image_probe_error,
+                    "observation": runtime_image_mapping,
+                },
+            )
+            self._workflow_json_notice(
                 "Python disposable staging boundary assertions",
                 {
                     "acl_restore_verified": summary["acl_restore_verified"],
@@ -4057,6 +4420,36 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertTrue(
             tempfile_probe["deleted"],
             "staged Python tempfile did not remove its temporary file",
+        )
+        runtime_image_mapping = summary["runtime_image_mapping"]
+        self.assertEqual(
+            summary["host_image_probe_exit"], 0,
+            f"runtime image host positive control failed ({summary['host_image_probe_error']})",
+        )
+        self.assertTrue(
+            runtime_image_mapping.get("complete") is True,
+            "runtime image mapping probe did not produce a safe complete observation",
+        )
+        self.assertTrue(
+            runtime_image_mapping.get("cleanup_ok") is True,
+            "runtime image mapping probe did not release all handles/views",
+        )
+        self.assertTrue(
+            all(
+                runtime_image_mapping.get(f"host_{label}") == "ok|ok"
+                for label in (
+                    "source_python", "source_core", "staged_python", "staged_core",
+                )
+            ),
+            "host positive control could not image-map every runtime file",
+        )
+        self.assertEqual(
+            runtime_image_mapping.get("container_staged_python"), "ok|ok",
+            "AppContainer could not image-map the staged Python executable",
+        )
+        self.assertEqual(
+            runtime_image_mapping.get("container_staged_core"), "ok|ok",
+            "AppContainer could not image-map the staged Python core DLL",
         )
         self.assertIn(
             summary["acl_baseline_normalization"], {"0", "1024"},

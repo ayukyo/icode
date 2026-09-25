@@ -1,7 +1,7 @@
 # 开发路线图与取舍原则
 
-- 日期：2026-09-25
-- 状态：**R2.1 工作区边界已验收；R2.2 原生隔离、R2.3 Windows AppContainer、R2.4 Git broker/网络授权仍在 main 实施中，均未通过阶段退出条件。Windows CI #155 x64/ARM64 均验证 profile API 与 token 查询成功，但实际 `LOCALAPPDATA` 是 API 根下不存在的未知嵌套路径；profile marker 与宿主 Python `0xC0000135` 两项仍独立失败。下一轮已加入同一显式环境值的普通进程/AppContainer 对照及容器内 Known Folder/package identity 只读探针，待双架构 CI；不扩大 ACL，Windows 自动模式继续关闭。**
+- 日期：2026-09-26
+- 状态：**R2.1 工作区边界已验收；R2.2 原生隔离、R2.3 Windows AppContainer、R2.4 Git broker/网络授权仍在 main 实施中，均未通过阶段退出条件。CI #156 的 Windows x64/ARM64 综合 AppContainer 步骤仍失败，macOS `macos-latest` 的 policy-command-broker 步骤也失败；公开 API 未提供可读的具体断言日志，本轮不据此归因。#155 profile/token 观测仍显示 `LOCALAPPDATA` 为 API 根下不存在的未知嵌套路径，profile marker 与宿主 Python `0xC0000135` 两项相互独立。当前新增只读 PE image-mapping 差分探针，等待双架构 CI；不扩大 ACL，Windows 自动模式继续关闭。**
 - 依据：[持续竞品对照](./agent-landscape-live.md) · [方案与决策记录](./design-decisions.md)
 
 ---
@@ -340,6 +340,12 @@ R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#151：#91–#105 的�
 ### 2026-09-25 UTC：R2.3 下一诊断片（待 Windows 双架构 CI）
 
 在既有 disposable staged Python 探针中新增 `LOCALAPPDATA`、`TEMP`、`TMP` 的 Python `os.environ` 与 Win32 `GetEnvironmentVariableW` 对照，并按脱敏类别检查路径状态；Actions notice 只含布尔值/固定类别，不含路径，纯测试另守 500 字符上限。该诊断没有修改 profile、ACL、环境变量或生产执行器。本机语法与摘要测试通过，但 Windows x64/ARM64 尚未跑这版；且即使结果一致，也不能将它等同 `0xC0000135` 根因。R2.3、完整 R2 与自动模式保持未完成/关闭。
+
+### 2026-09-26 UTC：CI #156 复核与 staged runtime image-mapping 探针
+
+- CI [#156](https://github.com/ayukyo/icode/actions/runs/36155715717) 的 Windows x64/ARM64 `Verify AppContainer workspace, network denial, ACL revocation, and Job composition` 步骤均失败；macOS `macos-latest` 的 `Verify policy command broker` 步骤也失败。当前可读到的公开 job 状态只标记步骤失败，Actions 日志接口返回 403，故不猜具体断言或跨任务归因。其它平台 job 的通过不能替代这两项门禁。
+- **只读诊断实现（待新双架构 CI）：**在一次性 staged Python 诊断内，以 `CreateFileW(GENERIC_READ)` + `ReadFile(1 byte)` + `CreateFileMappingW(PAGE_READONLY | SEC_IMAGE_NO_EXECUTE)` + `MapViewOfFile(FILE_MAP_READ)`，分别观察原始/staged `python.exe` 与对应 `pythonXY.dll`；由普通宿主与 AppContainer 对同一文件集合做正向/差分对照。视图和句柄逐项释放；回执只含固定阶段标签、Win32 数值错误码与清理布尔值，状态用 `read|image` 短码表示，不含文件路径。该探针能区分文件数据读取和 PE image-section 映射，但不解析依赖闭包、不执行 DLL 初始化，也不等于完整进程 loader；不能仅凭结果指认 `0xC0000135` 根因。
+- **取舍：**采纳单字节读取与 `SEC_IMAGE_NO_EXECUTE` 只读映像映射作为低风险分层诊断；参照 [Microsoft ReadFile](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-readfile)，暂缓 `LoadLibraryExW`，因为正常加载会运行 DLL 初始化代码，若需要应由可信、短命且独立于已加载 `pythonXY.dll` 的原生 helper 另行验证。只复用 Python `ctypes`/Win32 API 文档，不复制第三方代码、不增加安装依赖。Linux 本机 `tests.test_windows_appcontainer` 71 项通过、12 项因平台/CI条件跳过；新 Windows 原生探针仍待 x64/ARM64 CI，R2.3、完整 R2 和自动模式保持未完成/关闭。[Microsoft `CreateFileMappingW`](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-createfilemappingw) · [Microsoft `MapViewOfFile`](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-mapviewoffile) · [Microsoft `LoadLibraryExW`](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-loadlibraryexw)
 
 Linux Git 元数据基座的本机 Landlock 负例已覆盖可读/不可写/不可新建/不可执行、默认拒绝，以及 helper 实际打开时拒绝最终/中间符号链接；`WorkspaceManager` 已把核验过的 layered worktree 身份保存在冻结的 `GitWorkspaceIdentity` 快照，但尚未逐次复核或传给工具，也未绑定已打开元数据目录的对象身份。它们不代表 Git 命令、可信可执行 grant 或 broker 已实现。分层 workspace 中直接 Git 仍返回 `git_broker_unavailable`；详见[R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。
 
