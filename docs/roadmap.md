@@ -319,7 +319,11 @@ CI [#114](https://github.com/ayukyo/icode/actions/runs/36077520320) x64/ARM64 �
 
 ### 2026-09-25 UTC CI #115：alias 存在但 profile 值不匹配
 
-CI [#115](https://github.com/ayukyo/icode/actions/runs/36078212333) x64/ARM64 的 AppContainer 集成仍失败；`expected_localappdata_defined=true`，但 Unicode `set` 输出中 `LOCALAPPDATA` 与 API 路径不匹配，两架构 profile 路径不可见、marker 缺失，Python 退出 `0xC0000135`。下一版仅比较该输出是否与启动器宿主 `LOCALAPPDATA` 相同，报告布尔值；宿主路径不传入产品环境、不授权访问。R2.3 和自动模式继续关闭。
+CI [#115](https://github.com/ayukyo/icode/actions/runs/36078212333) x64/ARM64 的 AppContainer 集成仍失败；`expected_localappdata_defined=true`，profile 路径不可见、marker 缺失，Python 退出 `0xC0000135`。Unicode `set` 输出的解析比较为 false，但当轮未记录子命令退出码或输出是否存在，不能据此判断值不匹配。CI [#116](https://github.com/ayukyo/icode/actions/runs/36078821652) x64 的 API/宿主路径比较也均为 false，但沿用相同的未验证采集文件，仍不能判断实际值。下一版记录 Unicode 子命令退出码和输出非空状态，仅对有效采集做内存布尔比较；不传入宿主路径、不授权访问。R2.3 和自动模式继续关闭。
+
+### 2026-09-25 UTC CI #116：Unicode 采集有效性尚未核验
+
+CI [#116](https://github.com/ayukyo/icode/actions/runs/36078821652) x64 的 profile 路径比较（API 值和宿主值）都报告 false，但 Unicode `set` 子命令的退出码、输出文件是否非空尚未单独采集，因此这两个结果不足以认定路径与两者都不同。下一版仅补这两个采集状态，并在有效时保留 API/宿主两个内存比较；不记录路径、不将宿主 profile 用于容器。Windows 自动模式与 R2.3 继续关闭。
 
 ### 2026-09-24 UTC CI #107：Windows cwd-relative 探针
 

@@ -163,7 +163,7 @@
 
 ### 2026-09-25 UTC Windows AppContainer CI #115
 
-- CI [#115](https://github.com/ayukyo/icode/actions/runs/36078212333) 的 x64 job [107894086441](https://github.com/ayukyo/icode/actions/runs/36078212333/job/107894086441) 与 ARM64 job [107894086354](https://github.com/ayukyo/icode/actions/runs/36078212333/job/107894086354) 复现相同结果：expected alias 确实在进程环境中，但从 `cmd /u` 输出读取的 `LOCALAPPDATA` 仍与 `GetAppContainerFolderPath` 返回值不匹配；profile 不可见、marker 未写入，Python 仍退出 `0xC0000135`。这排除了 alias 未到达和 OEM 编码作为唯一解释，但尚未识别子进程实际拿到的路径。
-- 当前追加仅在宿主内将该 Unicode 输出与启动器自己的 `LOCALAPPDATA` 比较，Actions 仍只接收布尔值；该宿主路径只用作诊断基准，不传给产品执行器、不授权访问。若两架构均匹配宿主值，则证明容器子进程收到的不是目标 profile 值；仍需确定能否用受支持方式构造正确容器环境，不能直接使用宿主 profile。
+- CI [#115](https://github.com/ayukyo/icode/actions/runs/36078212333) 的 x64 job [107894086441](https://github.com/ayukyo/icode/actions/runs/36078212333/job/107894086441) 与 ARM64 job [107894086354](https://github.com/ayukyo/icode/actions/runs/36078212333/job/107894086354) 确认 expected alias 已定义、profile 不可见、marker 未写入，Python 仍退出 `0xC0000135`。采集到的 Unicode `set` 内容比较为 false，但当轮没有记录子命令退出码/输出是否非空，故尚不能把它当作实际路径不匹配。
+- CI [#116](https://github.com/ayukyo/icode/actions/runs/36078821652) x64 notice 中 API 路径比较和宿主路径比较均为 false，宿主变量已定义；同样因 Unicode 子命令是否成功及输出文件是否非空未被单独报告，两个 false 仍可能是采集失败。下一轮补上退出码和非空状态，只有 `set` 成功且输出存在时才计算路径相等布尔值；不传入宿主路径、不输出任何路径。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
