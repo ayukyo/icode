@@ -29,6 +29,7 @@ from icode.isolation import (
     PARTIAL_CLAIM,
     BubblewrapSandbox,
     LandlockSandbox,
+    MetadataReadRoot,
     ContainerSandbox,
     MacSeatbeltSandbox,
     NoIsolation,
@@ -44,6 +45,12 @@ from icode.tools import IsolationUnavailable, ToolContext, default_registry
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.workspace import WorkspaceManager
 from icode.execution_broker import execute_policy_command
+
+
+def _metadata_read_root(path: Path) -> MetadataReadRoot:
+    path = path.resolve(strict=True)
+    status = os.lstat(path)
+    return MetadataReadRoot(path, status.st_dev, status.st_ino)
 
 
 class TestProbe(unittest.TestCase):
@@ -782,19 +789,20 @@ class TestSandboxWrapping(unittest.TestCase):
             metadata = root / "gitdir"
             metadata.mkdir()
             sandbox = LandlockSandbox(helper="/not-needed-for-static-check")
+            metadata_claim = _metadata_read_root(metadata)
 
             self.assertEqual(
-                sandbox._validated_metadata_roots(workspace, (metadata,)),
-                (metadata.resolve(),),
+                sandbox._validated_metadata_roots(workspace, (metadata_claim,)),
+                (metadata_claim,),
             )
             for roots in (
-                (workspace,),
-                (root,),
-                (Path("/"),),
-                (Path("/usr"),),
-                (Path.home(),),
-                (Path(sys.prefix),),
-                (root / "missing",),
+                (_metadata_read_root(workspace),),
+                (_metadata_read_root(root),),
+                (_metadata_read_root(Path("/")),),
+                (_metadata_read_root(Path("/usr")),),
+                (_metadata_read_root(Path.home()),),
+                (_metadata_read_root(Path(sys.prefix)),),
+                (MetadataReadRoot(root / "missing", 0, 0),),
                 ("not-a-path-sequence",),
             ):
                 with self.subTest(roots=roots):
@@ -820,6 +828,7 @@ class TestSandboxWrapping(unittest.TestCase):
             workspace.mkdir()
             metadata = root / "gitdir"
             metadata.mkdir()
+            metadata_claim = _metadata_read_root(metadata)
             index = metadata / "index"
             index.write_text("index-data\n", encoding="ascii")
             hook_marker = workspace / "hook-ran"
@@ -870,7 +879,7 @@ print("metadata-read-only-ok")
                 sandbox._wrap_policy_with_metadata_roots(
                     ["/usr/bin/python3", "-c", script,
                      str(metadata), str(workspace), str(outside)],
-                    policy=policy, metadata_roots=(metadata,),
+                    policy=policy, metadata_roots=(metadata_claim,),
                 ),
                 capture_output=True, text=True, timeout=6, check=False,
             )
@@ -879,6 +888,59 @@ print("metadata-read-only-ok")
             self.assertEqual(index.read_text(encoding="ascii"), "index-data\n")
             self.assertFalse((metadata / "new-index").exists())
             self.assertFalse(hook_marker.exists())
+
+            metadata_file = root / "git-pointer"
+            metadata_file.write_text(
+                f"#!/bin/sh\ntouch {workspace / 'metadata-file-executed'}\n",
+                encoding="utf-8",
+            )
+            metadata_file.chmod(0o755)
+            file_claim = _metadata_read_root(metadata_file)
+            file_probe = subprocess.run(
+                sandbox._wrap_policy_with_metadata_roots(
+                    [
+                        "/usr/bin/python3", "-c",
+                        "from pathlib import Path; import subprocess, sys\n"
+                        "path = Path(sys.argv[1])\n"
+                        "assert path.read_text().startswith('#!/bin/sh')\n"
+                        "try: path.write_text('changed')\n"
+                        "except PermissionError: pass\n"
+                        "else: raise AssertionError('metadata file writable')\n"
+                        "try: result = subprocess.run([str(path)], check=False)\n"
+                        "except PermissionError: pass\n"
+                        "else: assert result.returncode != 0, result.returncode\n",
+                        str(metadata_file),
+                    ],
+                    policy=policy,
+                    metadata_roots=(file_claim,),
+                ),
+                capture_output=True, text=True, timeout=6, check=False,
+            )
+            self.assertEqual(file_probe.returncode, 0, file_probe.stderr)
+            self.assertFalse((workspace / "metadata-file-executed").exists())
+
+            moved_metadata = root / "gitdir-original"
+            metadata.rename(moved_metadata)
+            metadata.mkdir()
+            for entry in moved_metadata.iterdir():
+                shutil.copy2(entry, metadata / entry.name)
+            stale_claim_marker = workspace / "stale-metadata-claim-ran"
+            stale_claim = subprocess.run(
+                [
+                    str(helper), "--workspace", str(workspace),
+                    "--parent-pid", str(os.getpid()),
+                    "--metadata-read", str(metadata),
+                    str(metadata_claim.device), str(metadata_claim.inode), "--",
+                    "/usr/bin/python3", "-c",
+                    "from pathlib import Path\n"
+                    "Path('stale-metadata-claim-ran').write_text('ran')",
+                ],
+                capture_output=True, text=True, timeout=6, check=False,
+            )
+            self.assertNotEqual(stale_claim.returncode, 0, stale_claim.stdout)
+            self.assertFalse(stale_claim_marker.exists())
+            with self.assertRaises(ValueError):
+                sandbox._validated_metadata_roots(workspace, (metadata_claim,))
 
             no_metadata_grant = subprocess.run(
                 sandbox.wrap_policy(
@@ -904,7 +966,9 @@ print("metadata-read-only-ok")
                         [
                             str(helper), "--workspace", str(workspace),
                             "--parent-pid", str(os.getpid()),
-                            "--metadata-read", str(unsafe_root), "--",
+                            "--metadata-read", str(unsafe_root),
+                            str(os.lstat(unsafe_root).st_dev),
+                            str(os.lstat(unsafe_root).st_ino), "--",
                             "/usr/bin/python3", "-c",
                             "from pathlib import Path; Path('symlink-root-payload-ran').write_text('ran')",
                         ],

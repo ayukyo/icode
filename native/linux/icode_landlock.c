@@ -46,13 +46,18 @@
 
 #define FS_READ (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | \
                  LANDLOCK_ACCESS_FS_READ_DIR)
-#define FS_METADATA_READ (LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)
 #define FS_WRITE (LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REMOVE_DIR | \
                   LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_MAKE_CHAR | \
                   LANDLOCK_ACCESS_FS_MAKE_DIR | LANDLOCK_ACCESS_FS_MAKE_REG | \
                   LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_MAKE_FIFO | \
                   LANDLOCK_ACCESS_FS_MAKE_BLOCK | LANDLOCK_ACCESS_FS_MAKE_SYM | \
                   LANDLOCK_ACCESS_FS_REFER | LANDLOCK_ACCESS_FS_TRUNCATE)
+
+struct metadata_read_root {
+    const char *path;
+    uint64_t device;
+    uint64_t inode;
+};
 
 static int add_path(int ruleset, const char *path, uint64_t rights, int required) {
     int fd = open(path, O_PATH | O_CLOEXEC);
@@ -125,14 +130,39 @@ static int open_metadata_path(const char *path) {
     return current;
 }
 
-static int add_metadata_path(int ruleset, const char *path) {
-    int fd = open_metadata_path(path);
+static int parse_u64_decimal(const char *value, uint64_t *result) {
+    if (!value || !*value || !result) return -1;
+    for (const unsigned char *character = (const unsigned char *)value;
+         *character; ++character) {
+        if (*character < '0' || *character > '9') return -1;
+    }
+    errno = 0;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 10);
+    if (errno != 0 || !end || *end != '\0') return -1;
+#if ULLONG_MAX > UINT64_MAX
+    if (parsed > UINT64_MAX) return -1;
+#endif
+    *result = (uint64_t)parsed;
+    return 0;
+}
+
+static int add_metadata_path(int ruleset, const struct metadata_read_root *root) {
+    int fd = open_metadata_path(root->path);
     if (fd < 0) {
         fprintf(stderr, "metadata root rejected\n");
         return -1;
     }
+    struct stat status;
+    if (fstat(fd, &status) != 0 || (uint64_t)status.st_dev != root->device ||
+        (uint64_t)status.st_ino != root->inode) {
+        fprintf(stderr, "metadata root identity changed\n");
+        close(fd);
+        return -1;
+    }
     struct landlock_path_beneath_attr rule = {
-        .allowed_access = FS_METADATA_READ,
+        .allowed_access = LANDLOCK_ACCESS_FS_READ_FILE |
+            (S_ISDIR(status.st_mode) ? LANDLOCK_ACCESS_FS_READ_DIR : 0),
         .parent_fd = fd,
     };
     int result = (int)syscall(SYS_landlock_add_rule, ruleset,
@@ -145,7 +175,7 @@ static int add_metadata_path(int ruleset, const char *path) {
 static int install_filesystem(const char *workspace,
                               const char *const *runtime_roots,
                               size_t runtime_root_count,
-                              const char *const *metadata_roots,
+                              const struct metadata_read_root *metadata_roots,
                               size_t metadata_root_count) {
     int abi = (int)syscall(SYS_landlock_create_ruleset, NULL, 0,
                            LANDLOCK_CREATE_RULESET_VERSION);
@@ -177,7 +207,7 @@ static int install_filesystem(const char *workspace,
     }
     for (size_t i = 0; i < metadata_root_count; ++i) {
         /* Git metadata is readable for the fixed status broker but never executable. */
-        if (add_metadata_path(fd, metadata_roots[i]) != 0) goto fail;
+        if (add_metadata_path(fd, &metadata_roots[i]) != 0) goto fail;
     }
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
         perror("PR_SET_NO_NEW_PRIVS");
@@ -460,7 +490,7 @@ static int child_status(int status) {
 static int run_namespace_init(int parent_pipe, const char *workspace,
                               const char *const *runtime_roots,
                               size_t runtime_root_count,
-                              const char *const *metadata_roots,
+                              const struct metadata_read_root *metadata_roots,
                               size_t metadata_root_count, char **command,
                               int mapless) {
     /* Namespace PID 1 sees its parent as PID 0, so getppid cannot validate it. */
@@ -509,7 +539,7 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
 static int supervise_task(pid_t host_parent, const char *workspace,
                           const char *const *runtime_roots,
                           size_t runtime_root_count,
-                          const char *const *metadata_roots,
+                          const struct metadata_read_root *metadata_roots,
                           size_t metadata_root_count, char **command,
                           const char *setgroups_path,
                           const char *uid_map_path) {
@@ -558,7 +588,10 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     }
     if (argc < 7 || strcmp(argv[1], "--workspace") != 0 ||
         strcmp(argv[3], "--parent-pid") != 0) {
-        fprintf(stderr, "usage: icode-landlock --workspace PATH --parent-pid PID [--runtime-read PATH]... [--metadata-read PATH]... -- COMMAND [ARG...]\n");
+        fprintf(stderr,
+                "usage: icode-landlock --workspace PATH --parent-pid PID "
+                "[--runtime-read PATH]... [--metadata-read PATH DEVICE INODE]... "
+                "-- COMMAND [ARG...]\n");
         return 2;
     }
     char *pid_end = NULL;
@@ -570,7 +603,8 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         return 2;
     }
     const char **runtime_roots = calloc((size_t)argc, sizeof(*runtime_roots));
-    const char **metadata_roots = calloc((size_t)argc, sizeof(*metadata_roots));
+    struct metadata_read_root *metadata_roots = calloc(
+        (size_t)argc, sizeof(*metadata_roots));
     if (!runtime_roots || !metadata_roots) {
         perror("calloc");
         free(runtime_roots);
@@ -581,23 +615,51 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     size_t metadata_root_count = 0;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
-        if (command_index + 1 >= argc || argv[command_index + 1][0] != '/') {
-            fprintf(stderr, "invalid read-only root\n");
-            free(runtime_roots);
-            free(metadata_roots);
-            return 2;
-        }
         if (strcmp(argv[command_index], "--runtime-read") == 0) {
+            if (command_index + 1 >= argc || argv[command_index + 1][0] != '/') {
+                fprintf(stderr, "invalid runtime root\n");
+                free(runtime_roots);
+                free(metadata_roots);
+                return 2;
+            }
             runtime_roots[runtime_root_count++] = argv[command_index + 1];
+            command_index += 2;
         } else if (strcmp(argv[command_index], "--metadata-read") == 0) {
-            metadata_roots[metadata_root_count++] = argv[command_index + 1];
+            if (command_index + 3 >= argc || argv[command_index + 1][0] != '/') {
+                fprintf(stderr, "invalid metadata root\n");
+                free(runtime_roots);
+                free(metadata_roots);
+                return 2;
+            }
+            struct metadata_read_root root = {.path = argv[command_index + 1]};
+            if (parse_u64_decimal(argv[command_index + 2], &root.device) != 0) {
+                fprintf(stderr, "invalid metadata device identity\n");
+                free(runtime_roots);
+                free(metadata_roots);
+                return 2;
+            }
+            if (parse_u64_decimal(argv[command_index + 3], &root.inode) != 0) {
+                fprintf(stderr, "invalid metadata inode identity\n");
+                free(runtime_roots);
+                free(metadata_roots);
+                return 2;
+            }
+            for (size_t i = 0; i < metadata_root_count; ++i) {
+                if (strcmp(metadata_roots[i].path, root.path) == 0) {
+                    fprintf(stderr, "duplicate metadata root\n");
+                    free(runtime_roots);
+                    free(metadata_roots);
+                    return 2;
+                }
+            }
+            metadata_roots[metadata_root_count++] = root;
+            command_index += 4;
         } else {
             fprintf(stderr, "unknown read-only root option\n");
             free(runtime_roots);
             free(metadata_roots);
             return 2;
         }
-        command_index += 2;
     }
     if (command_index + 1 >= argc) {
         fprintf(stderr, "missing command\n");

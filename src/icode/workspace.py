@@ -385,6 +385,16 @@ def default_data_root() -> Path:
 
 
 @dataclass(frozen=True)
+class GitPathIdentity:
+    """A no-follow filesystem object identity captured by WorkspaceManager."""
+
+    path: Path
+    device: int
+    inode: int
+    kind: Literal["file", "directory"]
+
+
+@dataclass(frozen=True)
 class GitWorkspaceIdentity:
     """WorkspaceManager 已核验的分层 Git worktree 身份快照。"""
 
@@ -397,6 +407,7 @@ class GitWorkspaceIdentity:
     revision: str
     identity_token: str
     source_relative_path: Path
+    filesystem_identities: tuple[GitPathIdentity, ...] = ()
 
 
 @dataclass
@@ -559,6 +570,27 @@ def _capture_directory_identity(path: Path) -> _PathIdentity:
     if stat.S_ISLNK(status.st_mode) or is_reparse or not stat.S_ISDIR(status.st_mode):
         raise WorkspaceError("新建工作区目录身份无效")
     return _PathIdentity(status.st_dev, status.st_ino)
+
+
+def _capture_git_path_identity(
+    path: Path, kind: Literal["file", "directory"],
+) -> GitPathIdentity:
+    """Capture a trusted Git metadata object's no-follow device/inode pair."""
+    try:
+        status = os.lstat(path)
+    except OSError as exc:
+        raise WorkspaceError("无法捕获 Git 元数据对象身份") from exc
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    is_reparse = bool(
+        reparse_flag and getattr(status, "st_file_attributes", 0) & reparse_flag
+    )
+    if stat.S_ISLNK(status.st_mode) or is_reparse:
+        raise WorkspaceError("Git 元数据对象不得为符号链接")
+    if kind == "file" and not stat.S_ISREG(status.st_mode):
+        raise WorkspaceError("Git 元数据文件身份无效")
+    if kind == "directory" and not stat.S_ISDIR(status.st_mode):
+        raise WorkspaceError("Git 元数据目录身份无效")
+    return GitPathIdentity(Path(path), status.st_dev, status.st_ino, kind)
 
 
 def _directory_identity_matches(path: Path, identity: _PathIdentity) -> bool:
@@ -1837,16 +1869,42 @@ class WorkspaceManager:
             if not isinstance(raw_git_dir, str) or not isinstance(raw_identity_token, str):
                 raise WorkspaceError("Git 状态身份元数据无效")
             code_root = _normalize_path(checkout_root / "code")
+            normalized_checkout = _normalize_path(checkout_root)
+            normalized_git_dir = _normalize_path(Path(raw_git_dir))
+            normalized_common_dir = _normalize_path(git_identity.common_dir)
+            filesystem_paths: dict[Path, Literal["file", "directory"]] = {}
+            for path in (
+                normalized_checkout,
+                code_root,
+                workspace_root,
+                _normalize_path(git_identity.top_level),
+                normalized_common_dir,
+                normalized_git_dir,
+            ):
+                filesystem_paths[path] = "directory"
+            for path in (
+                normalized_checkout / ".git",
+                normalized_git_dir / "commondir",
+                normalized_git_dir / "HEAD",
+                normalized_git_dir / "icode-workspace-identity",
+            ):
+                filesystem_paths[path] = "file"
             git_status_identity = GitWorkspaceIdentity(
-                checkout_root=_normalize_path(checkout_root),
+                checkout_root=normalized_checkout,
                 code_root=code_root,
                 workspace_root=workspace_root,
-                top_level=git_identity.top_level,
-                common_dir=git_identity.common_dir,
-                git_dir=_normalize_path(Path(raw_git_dir)),
+                top_level=_normalize_path(git_identity.top_level),
+                common_dir=normalized_common_dir,
+                git_dir=normalized_git_dir,
                 revision=git_identity.revision,
                 identity_token=raw_identity_token,
                 source_relative_path=git_identity.relative_source,
+                filesystem_identities=tuple(
+                    _capture_git_path_identity(path, kind)
+                    for path, kind in sorted(
+                        filesystem_paths.items(), key=lambda item: str(item[0])
+                    )
+                ),
             )
         return WorkspaceSession(
             project_id=self.project_id,

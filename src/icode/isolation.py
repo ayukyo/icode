@@ -22,6 +22,7 @@ from __future__ import annotations
 import http.server
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -81,6 +82,15 @@ class ProcessGroupProbeResult:
     passed: bool
     checks: dict[str, bool]
     detail: str
+
+
+@dataclass(frozen=True)
+class MetadataReadRoot:
+    """Trusted path plus creation-time identity for one read-only root."""
+
+    path: Path
+    device: int
+    inode: int
 
 
 _NATIVE_PROBE_CHECKS = (
@@ -415,15 +425,15 @@ class LandlockSandbox:
         return workspace
 
     def _validated_metadata_roots(
-        self, workspace: Path, roots: Sequence[str | os.PathLike[str]],
-    ) -> tuple[Path, ...]:
+        self, workspace: Path, roots: Sequence[MetadataReadRoot],
+    ) -> tuple[MetadataReadRoot, ...]:
         """Validate narrow trusted read-only roots for an internal status broker.
 
         These roots are intentionally not taken from ``SandboxPolicy`` or model
         arguments. They grant read access only, never execute/write access.
         """
         if isinstance(roots, (str, bytes)) or not isinstance(roots, Sequence):
-            raise ValueError("Git metadata roots must be a trusted path sequence")
+            raise ValueError("Git metadata roots must be trusted identity claims")
         workspace = workspace.resolve(strict=True)
         home = Path.home().resolve()
         broad_roots = {Path("/"), Path("/tmp"), Path("/var"), Path("/home")}
@@ -435,13 +445,28 @@ class LandlockSandbox:
         def intersects(left: Path, right: Path) -> bool:
             return left.is_relative_to(right) or right.is_relative_to(left)
 
-        validated: list[Path] = []
-        for raw_root in roots:
+        validated: list[MetadataReadRoot] = []
+        for claim in roots:
+            if (
+                not isinstance(claim, MetadataReadRoot)
+                or not isinstance(claim.path, Path)
+                or type(claim.device) is not int
+                or type(claim.inode) is not int
+                or claim.device < 0
+                or claim.inode < 0
+            ):
+                raise ValueError("Git metadata root identity claim is invalid")
             try:
-                root = Path(raw_root).resolve(strict=True)
+                root = claim.path.resolve(strict=True)
+                status = os.lstat(claim.path)
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 raise ValueError("Git metadata root cannot be resolved") from exc
-            if not root.is_file() and not root.is_dir():
+            if (
+                root != claim.path
+                or stat.S_ISLNK(status.st_mode)
+                or (status.st_dev, status.st_ino) != (claim.device, claim.inode)
+                or not (stat.S_ISREG(status.st_mode) or stat.S_ISDIR(status.st_mode))
+            ):
                 raise ValueError("Git metadata root must be a file or directory")
             if (
                 root in broad_roots
@@ -452,9 +477,9 @@ class LandlockSandbox:
                 raise ValueError("Git metadata root is broad or overlaps the task workspace")
             if any(intersects(root, allowed) for allowed in executable_roots):
                 raise ValueError("Git metadata root overlaps an executable runtime allowlist")
-            if root not in validated:
-                validated.append(root)
-        return tuple(sorted(validated, key=str))
+            if not any(existing.path == root for existing in validated):
+                validated.append(claim)
+        return tuple(sorted(validated, key=lambda claim: str(claim.path)))
 
     def prepare_policy(self, policy: SandboxPolicy) -> None:
         """模型调用前的静态阻断；仅覆盖当前助手已实现的策略子集。"""
@@ -475,7 +500,7 @@ class LandlockSandbox:
 
     def _wrap_policy_with_metadata_roots(
         self, argv: Sequence[str], *, policy: SandboxPolicy,
-        metadata_roots: Sequence[str | os.PathLike[str]], network: bool = False,
+        metadata_roots: Sequence[MetadataReadRoot], network: bool = False,
     ) -> list[str]:
         """Wrap a trusted internal read-only query with extra file/directory roots.
 
@@ -501,7 +526,7 @@ class LandlockSandbox:
 
     def _wrap_with_metadata_roots(
         self, argv: Sequence[str], *, workspace: Path,
-        metadata_roots: Sequence[Path],
+        metadata_roots: Sequence[MetadataReadRoot],
     ) -> list[str]:
         helper = Path(self.helper)
         if not helper.is_file():
@@ -518,7 +543,10 @@ class LandlockSandbox:
         for root in self._runtime_read_roots():
             wrapped.extend(("--runtime-read", str(root)))
         for root in metadata_roots:
-            wrapped.extend(("--metadata-read", str(root)))
+            wrapped.extend((
+                "--metadata-read",
+                str(root.path), str(root.device), str(root.inode),
+            ))
         return [*wrapped, "--", *argv]
 
     def describe(self) -> dict:

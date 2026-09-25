@@ -2,8 +2,9 @@
 
 This module does not launch Git or expose a tool. It verifies the immutable
 workspace-manager identity immediately before a future fixed-argument query.
-The returned metadata roots are candidates only; callers still need the OS
-read-only/network-isolation contract before they may execute Git.
+The returned metadata roots carry expected device/inode claims; the native
+Landlock helper must compare those claims on the same opened fd used to install
+each rule. This module alone is not an execution grant or Git broker.
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ import os
 import stat
 from pathlib import Path
 
-from .workspace import GitWorkspaceIdentity
+from .isolation import MetadataReadRoot
+from .workspace import GitPathIdentity, GitWorkspaceIdentity
 
 _MAX_METADATA_FILE_BYTES = 4096
 _NOFOLLOW_FLAGS = (
@@ -35,7 +37,7 @@ class VerifiedGitLayout:
     git_dir: Path
     common_dir: Path
     pathspec_root: Path
-    metadata_roots: tuple[Path, ...]
+    metadata_roots: tuple[MetadataReadRoot, ...]
 
 
 def verify_git_workspace_identity(
@@ -45,9 +47,9 @@ def verify_git_workspace_identity(
 
     Every path component is opened with ``O_NOFOLLOW`` and metadata files are
     read through already-open directory descriptors. This catches stale
-    pointers, symlinks, changed HEAD contents, and ownership-token drift. It
-    does not bind directory device/inode values across a later helper launch,
-    so the result must not be treated as a complete TOCTOU-proof execution grant.
+    pointers, symlinks, changed/replaced HEAD files, and ownership-token drift.
+    The returned roots preserve the session's expected device/inode values for
+    the native helper to recheck while opening the exact Landlock rule objects.
     """
     if (
         os.name != "posix"
@@ -66,6 +68,7 @@ def verify_git_workspace_identity(
         git_dir = _absolute_path(identity.git_dir)
         common_dir = _absolute_path(identity.common_dir)
         source_relative = identity.source_relative_path
+        filesystem_identities = _verified_object_map(identity)
 
         if not isinstance(source_relative, Path):
             raise GitStatusUnavailable("source_path_invalid")
@@ -76,14 +79,25 @@ def verify_git_workspace_identity(
         if not git_dir.is_relative_to(common_dir) or git_dir == common_dir:
             raise GitStatusUnavailable("git_directory_relationship_invalid")
 
-        for directory in (checkout_root, code_root, workspace_root, top_level,
-                          git_dir, common_dir):
-            descriptor = _open_directory(directory)
-            os.close(descriptor)
+        directory_paths = {
+            checkout_root, code_root, workspace_root, top_level, git_dir, common_dir,
+        }
+        file_paths = {
+            checkout_root / ".git",
+            git_dir / "commondir",
+            git_dir / "HEAD",
+            git_dir / "icode-workspace-identity",
+        }
+        if set(filesystem_identities) != directory_paths | file_paths:
+            raise GitStatusUnavailable("filesystem_identity_set_mismatch")
+        for directory in directory_paths:
+            _verify_directory_identity(directory, filesystem_identities[directory])
 
         checkout_fd = _open_directory(checkout_root)
         try:
-            git_pointer = _read_regular_file_at(checkout_fd, ".git")
+            git_pointer = _read_regular_file_at(
+                checkout_fd, ".git", filesystem_identities[checkout_root / ".git"],
+            )
         finally:
             os.close(checkout_fd)
         pointer_target = _parse_pointer(git_pointer, b"gitdir: ", checkout_root)
@@ -92,9 +106,17 @@ def verify_git_workspace_identity(
 
         git_fd = _open_directory(git_dir)
         try:
-            common_pointer = _read_regular_file_at(git_fd, "commondir")
-            head = _read_regular_file_at(git_fd, "HEAD")
-            ownership = _read_regular_file_at(git_fd, "icode-workspace-identity")
+            common_pointer = _read_regular_file_at(
+                git_fd, "commondir", filesystem_identities[git_dir / "commondir"],
+            )
+            head = _read_regular_file_at(
+                git_fd, "HEAD", filesystem_identities[git_dir / "HEAD"],
+            )
+            ownership = _read_regular_file_at(
+                git_fd,
+                "icode-workspace-identity",
+                filesystem_identities[git_dir / "icode-workspace-identity"],
+            )
         finally:
             os.close(git_fd)
         common_target = _parse_pointer(common_pointer, b"", git_dir)
@@ -132,7 +154,14 @@ def verify_git_workspace_identity(
         git_dir=git_dir,
         common_dir=common_dir,
         pathspec_root=workspace_root,
-        metadata_roots=(checkout_root / ".git", git_dir, common_dir),
+        metadata_roots=tuple(
+            MetadataReadRoot(
+                path,
+                filesystem_identities[path].device,
+                filesystem_identities[path].inode,
+            )
+            for path in (checkout_root / ".git", git_dir, common_dir)
+        ),
     )
 
 
@@ -148,6 +177,40 @@ def _absolute_path(path: Path) -> Path:
 
 def _lexical_absolute(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path)))
+
+
+def _verified_object_map(
+    identity: GitWorkspaceIdentity,
+) -> dict[Path, GitPathIdentity]:
+    objects = identity.filesystem_identities
+    if not objects or any(not isinstance(item, GitPathIdentity) for item in objects):
+        raise GitStatusUnavailable("filesystem_identity_missing")
+    mapped = {item.path: item for item in objects}
+    if len(mapped) != len(objects):
+        raise GitStatusUnavailable("filesystem_identity_duplicate")
+    for path, item in mapped.items():
+        if (
+            not isinstance(path, Path)
+            or type(item.device) is not int
+            or type(item.inode) is not int
+            or item.device < 0
+            or item.inode < 0
+            or item.kind not in ("file", "directory")
+        ):
+            raise GitStatusUnavailable("filesystem_identity_invalid")
+    return mapped
+
+
+def _verify_directory_identity(path: Path, expected: GitPathIdentity) -> None:
+    if expected.path != path or expected.kind != "directory":
+        raise GitStatusUnavailable("directory_identity_invalid")
+    descriptor = _open_directory(path)
+    try:
+        status = os.fstat(descriptor)
+        if (status.st_dev, status.st_ino) != (expected.device, expected.inode):
+            raise GitStatusUnavailable("directory_identity_changed")
+    finally:
+        os.close(descriptor)
 
 
 def _open_directory(path: Path) -> int:
@@ -175,14 +238,18 @@ def _open_directory(path: Path) -> int:
         raise
 
 
-def _read_regular_file_at(directory_fd: int, name: str) -> bytes:
+def _read_regular_file_at(
+    directory_fd: int, name: str, expected: GitPathIdentity,
+) -> bytes:
     if not name or "/" in name or name in (".", ".."):
         raise GitStatusUnavailable("metadata_name_invalid")
+    if expected.kind != "file":
+        raise GitStatusUnavailable("file_identity_invalid")
     descriptor = os.open(name, _NOFOLLOW_FLAGS, dir_fd=directory_fd)
     try:
         status = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(status.st_mode)
+        if not stat.S_ISREG(status.st_mode) or (
+            (status.st_dev, status.st_ino) != (expected.device, expected.inode)
             or status.st_size > _MAX_METADATA_FILE_BYTES
         ):
             raise GitStatusUnavailable("metadata_file_invalid")

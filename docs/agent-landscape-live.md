@@ -272,3 +272,9 @@
 - ICODE 新增纯内部 `verify_git_workspace_identity()`：沿用会话冻结的路径/revision/token，拒绝路径逃逸与 symlink，通过 `openat`/`O_NOFOLLOW` 读取 worktree `.git` 指针、`commondir`、`HEAD`、所有权 marker；7 个定向负/正例通过。它不执行 Git，也没有进入 `ToolContext`。
 - **边界仍未闭合：**当前只有文件内容与路径布局复核，没有在首次会话创建时固定 device/inode，也没有让 Landlock helper 比对预期 inode；真实目录并发替换的竞态仍未解决。因此这只是 revalidation 原语，不是执行 grant 或 Git broker；自动模式和 `git_broker_unavailable` 保持。
 - **下一步采纳/暂缓：**采纳身份字段在会话创建时捕获、并由原生 helper 在授予只读根时再次核对；在该链路通过后才实施固定 Git status。暂缓将函数直接接到 `run_command`，也暂缓允许 submodule 递归状态。完整边界与验证清单见 [R2.4 门禁计划](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。
+
+### 2026-09-25 UTC R2.4 Linux Landlock 对象身份绑定
+
+- Linux 内核 [Landlock 官方 API 文档](https://docs.kernel.org/userspace-api/landlock.html)明确 `LANDLOCK_RULE_PATH_BENEATH.parent_fd` 是权限层级对应的文件/目录 fd；文件与目录读取权分别是 `READ_FILE`、`READ_DIR`。ICODE helper 现按对象类型授权，并用传入路径的 `O_PATH` fd 安装规则。
+- ICODE 会话快照保存 metadata 对象 `(device,inode)`；helper 逐组件拒绝 symlink 后，重新 `fstat` 并比对快照，才以同一 fd 添加 Landlock rule。原目录被同路径、相同内容的新 inode 替换的真实 helper 负例已验证拒绝；metadata 文件测试也确认可读但不可写和不可执行。
+- **采纳/阶段结论：**采纳对象句柄绑定这一 Linux 特定机制；不把它外推到另外两平台，不把 Linux helper 证明等同固定 Git status broker。该机制尚未接到模型命令调用链，配置 helper、子模块、输出上限、超时以及完整工单边界仍待验收。参考实现与门禁见[R2.4 Git broker 计划](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。

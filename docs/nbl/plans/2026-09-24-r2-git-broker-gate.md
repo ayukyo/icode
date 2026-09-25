@@ -76,6 +76,14 @@
 - **阶段边界：仍不是 broker/grant。**结果尚未传入 `ToolContext`，未启动 Git、未对 directory device/inode 与 helper 打开动作作原子绑定，也未扩展 Landlock 接口校验这些预期身份。不能消除真实目录被并发替换的竞态；broker 接线、写入负例和模型入口均继续关闭。
 - 下一片需补目录/metadata 文件身份快照和 helper 侧 inode 对照，再实现有界的固定参数 Git status；对 submodule / 未支持的 common-dir 布局保持 unavailable。任何平台合同未通过前，不接自动执行路径。
 
+## 2026-09-25 Linux metadata 对象身份固定
+
+- `GitWorkspaceIdentity` 现在随 manager 创建/复用流程捕获 checkout/code/source/origin/gitdir/common-dir 目录，以及 `.git`、`commondir`、`HEAD`、随机 marker 文件的 `(st_dev, st_ino, kind)`。每次纯 Python recheck 都通过 nofollow fd 对照原快照，既拒绝 symlink，也拒绝“同路径换成内容完全相同的新目录/文件”。这组 stat 值只留在 session 内存快照，不写入 manifest 或模型上下文。
+- `MetadataReadRoot` 要求可信路径携带预期 device/inode；Python 包装器复核后将三元组传给 helper。原生 Landlock helper 重新逐组件 `openat(O_NOFOLLOW)`，`fstat` 对照声明，再用**同一个 O_PATH fd**安装 `LANDLOCK_RULE_PATH_BENEATH`，消除了校验与规则安装之间通过目录替换绕过的窗口。坏数字、重复根、路径错配、symlink 和 inode 漂移都在 payload 启动前拒绝。
+- 官方 [Linux Landlock 文档](https://docs.kernel.org/userspace-api/landlock.html)说明 `parent_fd` 标识规则作用的文件/目录层级；`READ_FILE` 与 `READ_DIR` 的适用对象不同。因此普通 `.git` 指针文件只授 `READ_FILE`，Git 元数据目录才授 `READ_FILE | READ_DIR`。该约束已加入 C helper。
+- 真实 helper 回归：普通 metadata 目录仍可读但不可写/新建/执行；普通 metadata 文件可读但不可改写/执行；把原 metadata 目录换成同路径、同文件内容的新 inode，旧 claim 会在 payload 启动前拒绝；Git identity 同路径目录和 HEAD 文件替换也 fail-closed。针对上述四条定向套件共 11 项通过，C 用 `-Wall -Wextra -Werror` 编译。
+- **剩余边界：**本片尚未将 recheck/layout 传给 `ToolContext`，也没有启动固定 Git 子命令；未证明 Git config/helper/子模块/超时与输出上限。此特定 Linux metadata grant 不能外推到 macOS/Windows，也不能宣称 R2 broker 或自动模式已完成。下一片才实现内部、有限时/有界输出的 status 执行函数，并维持模型入口关闭。
+
 ### 独立格式审查修正（2026-09-25）
 
 - 上游 Git 回归用例确认 `git add --intent-to-add` 会产生合法 `.A` 状态；解析器现接受该组合，并以真实 Git CLI 输出回归。[Git 上游用例](https://github.com/git/git/blob/master/t/t7064-wtstatus-pv2.sh#L1934-L1953)

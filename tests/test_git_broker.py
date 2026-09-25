@@ -62,9 +62,15 @@ class TestGitWorkspaceIdentityVerification(unittest.TestCase):
         self.assertEqual(layout.git_dir, identity.git_dir)
         self.assertEqual(layout.common_dir, identity.common_dir)
         self.assertEqual(
-            layout.metadata_roots,
+            tuple(root.path for root in layout.metadata_roots),
             (identity.checkout_root / ".git", identity.git_dir, identity.common_dir),
         )
+        snapshots = {item.path: item for item in identity.filesystem_identities}
+        for claim in layout.metadata_roots:
+            snapshot = snapshots[claim.path]
+            self.assertEqual(
+                (claim.device, claim.inode), (snapshot.device, snapshot.inode)
+            )
 
     def test_rejects_changed_git_pointer(self) -> None:
         identity = self.session.git_status_identity
@@ -127,6 +133,31 @@ class TestGitWorkspaceIdentityVerification(unittest.TestCase):
         moved = original.with_name(original.name + "-real")
         original.rename(moved)
         original.symlink_to(moved, target_is_directory=True)
+
+        with self.assertRaises(GitStatusUnavailable):
+            verify_git_workspace_identity(identity)
+
+    def test_rejects_same_path_metadata_directory_replacement(self) -> None:
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        original = identity.git_dir
+        moved = original.with_name(original.name + "-old")
+        original.rename(moved)
+        original.mkdir()
+        for name in ("commondir", "HEAD", "icode-workspace-identity"):
+            (original / name).write_bytes((moved / name).read_bytes())
+
+        with self.assertRaises(GitStatusUnavailable):
+            verify_git_workspace_identity(identity)
+
+    def test_rejects_same_content_metadata_file_replacement(self) -> None:
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        head = identity.git_dir / "HEAD"
+        backup = identity.git_dir / "HEAD-original"
+        contents = head.read_bytes()
+        head.rename(backup)
+        head.write_bytes(contents)
 
         with self.assertRaises(GitStatusUnavailable):
             verify_git_workspace_identity(identity)
