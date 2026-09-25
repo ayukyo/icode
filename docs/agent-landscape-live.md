@@ -221,6 +221,11 @@
 - [x64](https://github.com/ayukyo/icode/actions/runs/36091394407/job/107934399982) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36091394407/job/107934399966) 的差分都在快照阶段因 `FILE_ATTRIBUTE_REPARSE_POINT` 拒绝；候选未运行、runtime ACL 未改。当前回执仍不区分 symbolic link、junction/mount point 或其它 reparse tag。
 - Microsoft 文档列出多种 reparse tag，且路径操作对 symbolic link 的行为会随 API/`FILE_FLAG_OPEN_REPARSE_POINT` 不同；`SetNamedSecurityInfoW` 会传播 ACE 到现存子对象，但没有定义 junction 边界；`GetNamedSecurityInfoW` 文档也未承诺 name-based API 对链接本体/目标的选择语义。故**暂缓**跟随或跳过 reparse point。实现仅将 `st_reparse_tag` 映射为 `symbolic_link` / `mount_point` / `other_reparse` 等固定类别，路径、目标与原始 tag 值均不进入回执；#128 尚未得到新分类 CI 结果，授权边界不变。未来若评估放行，先在一次性临时树用 handle-based API 分别验证链接本体、目标、后代 DACL 与精确恢复；未知 tag、跨卷/外部目标及并发可替换对象继续拒绝。[Python `os.lstat` / `st_reparse_tag`](https://docs.python.org/3.11/library/os.html#os.stat_result)、[Microsoft reparse tag 说明](https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-point-tags)、[reparse point operations](https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-points-and-file-operations)、[symbolic-link API effects](https://learn.microsoft.com/en-us/windows/win32/fileio/symbolic-link-effects-on-file-systems-functions)、[`GetNamedSecurityInfoW`](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getnamedsecurityinfow)、[`SetNamedSecurityInfoW`](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setnamedsecurityinfow)、[ACE 自动传播](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)
 
+### 2026-09-25 UTC R2.3 CI #129：两架构均识别为 symbolic link
+
+- [windows-latest x64](https://github.com/ayukyo/icode/actions/runs/36092603966/job/107937999811) 与 [windows-11-arm](https://github.com/ayukyo/icode/actions/runs/36092603966/job/107937999747) 的 runtime ACL 差分均在任何授权前以 `symbolic_link` 拒绝；候选未启动、清理为真、未改变 Python runtime DACL。原始 AppContainer Python 仍 `0xC0000135`，Python EXE、共享库与标准库文件的直接读取探针仍为 `access_denied`。此结论不识别具体链接名称、目标是否位于 runtime 根内，也不证明 ACL 是 `0xC0000135` 的唯一原因。
+- **暂缓**通用 symbolic-link 放行。下一实验限定在 CI 自建临时树：只创建临时目标与链接，观察实际安全 API 的 link/target/后代差异，并验证所有状态可恢复；不得触碰 hosted Python/toolcache。即便该实验通过，也需另行证明 runner 上实际 runtime link 的目标身份并复验完整 Python 启动、只读、工作区、断网和恢复门禁。
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
 
 ### 2026-09-25 UTC R2.3 临时路径与环境块复核
