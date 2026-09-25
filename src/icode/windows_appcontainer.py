@@ -227,7 +227,8 @@ def _walk_workspace(
                     info = path.lstat()
                     if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
                         raise _AppContainerSetupError(
-                            "unsupported_workspace_entry", "任务目录含重解析点，AppContainer 拒绝启动",
+                            "unsupported_workspace_entry",
+                            f"目录含重解析点类别={_reparse_kind(info)}，AppContainer 拒绝启动",
                         )
                     if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
                         raise _AppContainerSetupError(
@@ -247,6 +248,18 @@ def _walk_workspace(
 
 def _is_reparse(info: os.stat_result) -> bool:
     return bool(getattr(info, "st_file_attributes", 0) & 0x400)
+
+
+def _reparse_kind(info: os.stat_result) -> str:
+    """Return a small path-free category for Windows reparse diagnostics."""
+    if stat.S_ISLNK(info.st_mode):
+        return "symbolic_link"
+    tag = int(getattr(info, "st_reparse_tag", 0))
+    if tag == getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C):
+        return "symbolic_link"
+    if tag == getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003):
+        return "mount_point"
+    return "other_reparse"
 
 
 def _is_unc_runtime_root(raw_root: str | os.PathLike[str], *, windows: bool | None = None) -> bool:
@@ -301,7 +314,8 @@ def _validate_runtime_roots(
                 info = current.lstat()
                 if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
                     raise _AppContainerSetupError(
-                        "unsupported_runtime_root", "runtime path contains a reparse point",
+                        "unsupported_runtime_root",
+                        f"runtime path contains a reparse point ({_reparse_kind(info)})",
                     )
             root = candidate.resolve(strict=True)
             root_info = root.lstat()

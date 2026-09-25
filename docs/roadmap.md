@@ -321,6 +321,10 @@ CI [#125 x64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/10792
 
 Windows x64 与 ARM64 的独立只读 ACL 步骤均在快照阶段拒绝候选（[x64](https://github.com/ayukyo/icode/actions/runs/36090932965/job/107933023862)、[ARM64](https://github.com/ayukyo/icode/actions/runs/36090932965/job/107933023845)），回执只表明“运行时树含不支持的文件系统项”，候选未启动且 cleanup 为真；因此两端均未实际写入 runtime DACL。现有完整 AppContainer Python 仍以 `0xC0000135` 退出。接下来只补充路径脱敏的预检拒绝类别，不放宽过滤；Windows R2.3、完整 R2 与自动模式继续关闭。
 
+### 2026-09-25 UTC：CI #128 将拒绝项收窄为 reparse point
+
+Windows [x64](https://github.com/ayukyo/icode/actions/runs/36091394407/job/107934399982) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36091394407/job/107934399966) runtime-root 差分均由 reparse-point 检查拒绝，候选未启动、DACL 未变；Python 原有失败状态不变。tag 仍未知。当前代码只将 Windows `st_reparse_tag` 映射为路径脱敏类别，并以测试覆盖链接、mount point 与未知 tag；下一轮 CI 用于确认 hosted Python 树的类别。由于 Microsoft 尚未定义 name-based security API 对链接本体/目标的选择及 ACE 穿越 junction 的语义，继续对 reparse point fail-closed。Windows R2.3、完整 R2 与自动模式仍关闭。
+
 设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
 [R2.0 policy contract 实施计划](./nbl/plans/2026-09-23-r2-policy-contract.md) ·
 [R2.1 工作区与租约实施计划](./nbl/plans/2026-09-23-r2-workspace-lease.md) ·

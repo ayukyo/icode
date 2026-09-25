@@ -216,6 +216,11 @@
 - [windows-latest](https://github.com/ayukyo/icode/actions/runs/36090932965/job/107933023862) 与 [windows-11-arm](https://github.com/ayukyo/icode/actions/runs/36090932965/job/107933023845) 的独立差分步骤都在授权前返回 `runtime tree contains unsafe filesystem entries`，候选未启动、清理回执为真；因此没有对 runner Python 安装树进行 ACL 修改。完整 AppContainer Python 仍为 `0xC0000135`。
 - 该回执无法区分运行时树中是重解析点、硬链接、特殊文件还是枚举错误。**暂缓**任何扩大扫描范围或跳过不安全项；只增加固定、脱敏的预检拒绝类别回执，再由 CI 确定准确类别。若无法在保持拒绝边界的前提下完成快照，本 ACL 方案不适配，不授权。
 
+### 2026-09-25 UTC R2.3 CI #128：预检确认是 reparse point
+
+- [x64](https://github.com/ayukyo/icode/actions/runs/36091394407/job/107934399982) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36091394407/job/107934399966) 的差分都在快照阶段因 `FILE_ATTRIBUTE_REPARSE_POINT` 拒绝；候选未运行、runtime ACL 未改。当前回执仍不区分 symbolic link、junction/mount point 或其它 reparse tag。
+- Microsoft 文档列出多种 reparse tag，且路径操作对 symbolic link 的行为会随 API/`FILE_FLAG_OPEN_REPARSE_POINT` 不同；`SetNamedSecurityInfoW` 会传播 ACE 到现存子对象，但没有定义 junction 边界；`GetNamedSecurityInfoW` 文档也未承诺 name-based API 对链接本体/目标的选择语义。故**暂缓**跟随或跳过 reparse point。实现仅将 `st_reparse_tag` 映射为 `symbolic_link` / `mount_point` / `other_reparse` 等固定类别，路径、目标与原始 tag 值均不进入回执；#128 尚未得到新分类 CI 结果，授权边界不变。未来若评估放行，先在一次性临时树用 handle-based API 分别验证链接本体、目标、后代 DACL 与精确恢复；未知 tag、跨卷/外部目标及并发可替换对象继续拒绝。[Python `os.lstat` / `st_reparse_tag`](https://docs.python.org/3.11/library/os.html#os.stat_result)、[Microsoft reparse tag 说明](https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-point-tags)、[reparse point operations](https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-points-and-file-operations)、[symbolic-link API effects](https://learn.microsoft.com/en-us/windows/win32/fileio/symbolic-link-effects-on-file-systems-functions)、[`GetNamedSecurityInfoW`](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getnamedsecurityinfow)、[`SetNamedSecurityInfoW`](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setnamedsecurityinfow)、[ACE 自动传播](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
 
 ### 2026-09-25 UTC R2.3 临时路径与环境块复核

@@ -38,6 +38,19 @@ from icode.windows_job import (
 
 
 class TestWindowsAppContainer(unittest.TestCase):
+    def test_reparse点原因映射为固定脱敏类别(self) -> None:
+        symlink_mode = mock.Mock(st_mode=stat.S_IFLNK, st_reparse_tag=0)
+        junction_tag = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
+        symlink_tag = getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C)
+        junction = mock.Mock(st_mode=stat.S_IFDIR, st_reparse_tag=junction_tag)
+        symlink = mock.Mock(st_mode=stat.S_IFREG, st_reparse_tag=symlink_tag)
+        unknown = mock.Mock(st_mode=stat.S_IFDIR, st_reparse_tag=0x12345678)
+
+        self.assertEqual(windows_appcontainer._reparse_kind(symlink_mode), "symbolic_link")
+        self.assertEqual(windows_appcontainer._reparse_kind(junction), "mount_point")
+        self.assertEqual(windows_appcontainer._reparse_kind(symlink), "symbolic_link")
+        self.assertEqual(windows_appcontainer._reparse_kind(unknown), "other_reparse")
+
     def test_runtime根在触碰文件系统前识别UNC路径(self) -> None:
         self.assertTrue(
             windows_appcontainer._is_unc_runtime_root(
@@ -277,8 +290,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             except OSError:
                 pass  # Windows without developer mode may deny symlink creation.
             else:
-                with self.assertRaises(_AppContainerSetupError):
+                with self.assertRaises(_AppContainerSetupError) as caught:
                     _walk_workspace(workspace)
+                self.assertIn("类别=symbolic_link", caught.exception.detail)
 
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-hardlinks-") as raw:
             root = Path(raw)
@@ -357,6 +371,29 @@ class TestWindowsAppContainer(unittest.TestCase):
                 windows_appcontainer._validate_runtime_roots(
                     (link,), workspace=workspace,
                 )
+
+    def test_runtime树ACL快照以脱敏类别拒绝符号链接(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-tree-link-") as raw:
+            parent = Path(raw)
+            runtime = parent / "python"
+            runtime.mkdir()
+            workspace = parent / "task"
+            workspace.mkdir()
+            outside = parent / "outside.dll"
+            outside.write_bytes(b"outside")
+            try:
+                (runtime / "python.dll").symlink_to(outside)
+            except OSError as exc:
+                self.skipTest(f"文件系统不支持符号链接测试：{exc}")
+
+            with self.assertRaises(_AppContainerSetupError) as caught:
+                windows_appcontainer._snapshot_runtime_acl_roots(
+                    (runtime,), workspace=workspace, advapi=object(), kernel=object(),
+                )
+
+        self.assertEqual(caught.exception.error, "unsupported_runtime_root")
+        self.assertIn("symbolic_link", caught.exception.detail)
+        self.assertNotIn(str(parent), caught.exception.detail)
 
     def test_runtime_ACL快照枚举完整树并拒绝受保护DACL(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-snapshot-") as raw:
