@@ -426,13 +426,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
                 before = expected[path]
                 dacl_changed = current.dacl != before.dacl
-                metadata_changed = (
-                    current.control, current.revision, current.present,
-                    current.defaulted, current.file_identity,
-                ) != (
-                    before.control, before.revision, before.present,
-                    before.defaulted, before.file_identity,
-                )
+                metadata_changes = {
+                    "control_changed": current.control != before.control,
+                    "revision_changed": current.revision != before.revision,
+                    "present_changed": current.present != before.present,
+                    "defaulted_changed": current.defaulted != before.defaulted,
+                    "file_identity_changed": current.file_identity != before.file_identity,
+                }
+                metadata_changed = any(metadata_changes.values())
                 sid_residual = windows_appcontainer._contains_sid(
                     current.dacl, sid, transaction.advapi,
                 )
@@ -442,6 +443,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "object": "root" if path == root else "descendant",
                         "dacl_changed": dacl_changed,
                         "metadata_changed": metadata_changed,
+                        **metadata_changes,
                         "sid_residual": sid_residual,
                     }
             return {"state": "snapshot_match_after_failure", "objects": len(actual_paths)}
@@ -476,10 +478,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             child = root / "python.dll"
             child.write_bytes(b"runtime")
 
-            def snapshot(path: Path, dacl: bytes):
+            def snapshot(path: Path, dacl: bytes, *, control: int = 0):
                 info = path.lstat()
                 return windows_appcontainer._DaclSnapshot(
-                    path=path, dacl=dacl, control=0, revision=1,
+                    path=path, dacl=dacl, control=control, revision=1,
                     present=True, defaulted=False,
                     file_identity=(int(info.st_dev), int(info.st_ino)),
                 )
@@ -490,6 +492,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                 advapi=object(), kernel=object(), snapshot_duration_ms=1,
             )
             child_after = snapshot(child, b"changed-child")
+            root_after = snapshot(root, b"original-root", control=0x0400)
+            child_original = snapshot(child, b"original-child")
 
             def read_state(path: Path, _advapi: object, _kernel: object):
                 return snapshot(path, b"original-root") if path == root else child_after
@@ -508,7 +512,38 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(report["state"], "object_mismatch")
         self.assertEqual(report["object"], "descendant")
         self.assertTrue(report["dacl_changed"])
+        self.assertFalse(report["metadata_changed"])
+        self.assertFalse(report["control_changed"])
+        self.assertFalse(report["revision_changed"])
+        self.assertFalse(report["present_changed"])
+        self.assertFalse(report["defaulted_changed"])
+        self.assertFalse(report["file_identity_changed"])
         self.assertNotIn(str(root), repr(report))
+
+        with mock.patch.object(
+            windows_appcontainer, "_walk_workspace", return_value=[root, child],
+        ), mock.patch.object(
+            windows_appcontainer, "_read_dacl_state",
+            side_effect=lambda path, _advapi, _kernel: (
+                root_after if path == root else child_original
+            ),
+        ), mock.patch.object(
+            windows_appcontainer, "_contains_sid", return_value=False,
+        ):
+            root_report = self._runtime_acl_restore_categories(
+                transaction, ctypes.c_void_p(123),
+            )
+
+        self.assertEqual(root_report["state"], "object_mismatch")
+        self.assertEqual(root_report["object"], "root")
+        self.assertFalse(root_report["dacl_changed"])
+        self.assertTrue(root_report["metadata_changed"])
+        self.assertTrue(root_report["control_changed"])
+        self.assertFalse(root_report["revision_changed"])
+        self.assertFalse(root_report["present_changed"])
+        self.assertFalse(root_report["defaulted_changed"])
+        self.assertFalse(root_report["file_identity_changed"])
+        self.assertNotIn(str(root), repr(root_report))
 
     @staticmethod
     def _read_cmd_exit_status(path: Path) -> int | None:
