@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 from tests import _support  # noqa: F401  # Add the repository's src/ to sys.path.
@@ -132,6 +133,25 @@ class EvidenceFingerprintTestCase(unittest.TestCase):
         fp = evidence_fingerprint(self.make(output="secret-token-should-not-leak"))
         self.assertNotIn("secret-token-should-not-leak", fp)
         self.assertNotIn("secret-token-should-not-leak", self.make(output="x").output_sha256)
+
+    def test_receipt_binds_facts_without_full_output(self) -> None:
+        evidence = self.make(
+            output="traceback secret-token-should-not-leak",
+            artifact_hashes={"calc.py": "abc"},
+            environment_fingerprint="env-1",
+        )
+        receipt = evidence.to_receipt()
+        self.assertEqual(receipt["kind"], "verification")
+        self.assertEqual(receipt["step"], "code")
+        self.assertEqual(receipt["exit_code"], 1)
+        self.assertEqual(receipt["command"], ["python", "-m", "unittest"])
+        self.assertEqual(receipt["environment_fingerprint"], "env-1")
+        self.assertEqual(receipt["artifact_hashes"], {"calc.py": "abc"})
+        self.assertTrue(receipt["output_sha256"])
+        self.assertEqual(receipt["fingerprint"], evidence_fingerprint(evidence))
+        # 回执不得包含输出正文或敏感内容
+        self.assertNotIn("secret-token-should-not-leak", json.dumps(receipt))
+        self.assertNotIn("traceback", receipt["command"])
 
 
 class VerificationLedgerTestCase(unittest.TestCase):

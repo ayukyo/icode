@@ -264,8 +264,15 @@ def build_evidence_pack(
     else:
         warnings.append("未提供 gates.json，未包含契约快照")
 
-    # 4) 外部验证回执
-    receipts = list(verifications or [])
+    # 4) 外部验证回执（R3：VerificationEvidence 会自动序列化成绑定回执）
+    receipts: list[dict] = []
+    for verification in (verifications or []):
+        if isinstance(verification, dict):
+            receipts.append(verification)
+        elif hasattr(verification, "to_receipt"):
+            receipts.append(verification.to_receipt())
+        else:
+            receipts.append({"kind": "verification", "note": str(verification)})
     (dest / "verifications.json").write_text(
         json.dumps({"schema_version": PACK_SCHEMA_VERSION, "receipts": receipts},
                    ensure_ascii=False, indent=2) + "\n",

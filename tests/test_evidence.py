@@ -70,6 +70,33 @@ class TestEvidencePack(unittest.TestCase):
             ):
                 self.assertIn(token, readme, token)
 
+    def test_VerificationEvidence序列化进证据包(self) -> None:
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            evidence = VerificationEvidence(
+                step="code", attempt="1", kind="test",
+                command=("python", "-m", "unittest"), exit_code=1,
+                output="AssertionError: boom",
+                environment_fingerprint="env-fp", category="code",
+                artifact_hashes={"calc.py": "abc"},
+            )
+            _out, dest, report = self._build(
+                ws, workspace=ws / "work", verifications=[evidence],
+            )
+            self.assertTrue(report.ok, report.render())
+            verifications = json.loads(
+                (dest / "verifications.json").read_text(encoding="utf-8")
+            )
+            receipts = verifications["receipts"]
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0]["kind"], "verification")
+            self.assertEqual(receipts[0]["step"], "code")
+            self.assertEqual(receipts[0]["exit_code"], 1)
+            self.assertEqual(receipts[0]["artifact_hashes"], {"calc.py": "abc"})
+            self.assertTrue(receipts[0]["fingerprint"])
+            self.assertNotIn("AssertionError: boom", json.dumps(receipts[0]))
+
     def test_清单列出所有文件且摘要自洽(self) -> None:
         with temp_workspace() as ws:
             _out, dest, report = self._build(ws, workspace=ws / "work")

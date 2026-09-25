@@ -47,6 +47,7 @@ from .self_verify import (
     VerificationEvidence,
     VerificationLedger,
     classify_failure,
+    environment_fingerprint,
 )
 from .tools import ToolContext, default_registry
 from .workspace_snapshot import changed_files as _changed
@@ -134,6 +135,7 @@ class TaskReport:
     loop: LoopResult | None = None
     changed_files: list[str] = field(default_factory=list)
     error: str = ""
+    verification: object | None = None  # R3: VerificationEvidence
 
     @property
     def ok(self) -> bool:
@@ -987,8 +989,30 @@ def run_task(
     after = _snapshot(workspace)
     changed = _changed(before, after)
     exit_code, output = run_unittest(workspace)
+    # R3 证据绑定：独立测试的退出码 + 输出摘要 + 环境指纹 + 改动文件哈希，
+    # 全部绑定成一条 VerificationEvidence；模型自述不算证据。
+    artifact_hashes = {}
+    for rel in changed:
+        path = workspace / rel
+        if path.is_file():
+            import hashlib as _hashlib
+
+            artifact_hashes[rel] = _hashlib.sha256(path.read_bytes()).hexdigest()
+    evidence = VerificationEvidence(
+        step="task", attempt="1", kind="test",
+        command=("python", "-m", "unittest"),
+        exit_code=exit_code,
+        output=output,
+        environment_fingerprint=environment_fingerprint(),
+        # 分类只对失败有意义；通过时留空，不把成功误标成某类失败。
+        category=(
+            classify_failure(exit_code=exit_code, output=output, kind="test")
+            if exit_code != 0 else ""
+        ),
+        artifact_hashes=artifact_hashes,
+    )
     return TaskReport(
         task=task, workspace=str(workspace), exit_code=exit_code,
         test_output=output, loop=result, changed_files=changed,
-        error=result.error,
+        error=result.error, verification=evidence,
     )

@@ -131,6 +131,28 @@ class VerificationEvidence:
             FAILURE_CONTRACT, FAILURE_SIDE_EFFECT_UNKNOWN,
         )
 
+    def to_receipt(self) -> dict[str, Any]:
+        """序列化成证据包 verifications.json 可用的回执（不含输出正文/敏感参数）。
+
+        只放输出摘要与绑定事实；输出正文永不进回执，避免把大输出或
+        敏感内容写进证据包。
+        """
+        return {
+            "kind": "verification",
+            "step": self.step,
+            "attempt": self.attempt,
+            "verify_kind": self.kind,
+            "command": list(self.command),
+            "exit_code": self.exit_code,
+            "environment_fingerprint": self.environment_fingerprint,
+            "output_sha256": self.output_sha256,
+            "artifact_hashes": dict(sorted(self.artifact_hashes.items())),
+            "category": self.category,
+            "passed": self.passed,
+            "fingerprint": evidence_fingerprint(self),
+            "captured_at": self.captured_at,
+        }
+
 
 @dataclass(frozen=True)
 class RepairDecision:

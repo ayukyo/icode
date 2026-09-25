@@ -34,6 +34,16 @@ R3 核心能力（本切片）：
    进入补救回合前先给「产物缺失」分类并绑定证据，`decide_repair` 返回非
    `allow` 时跳过并如实警告，不再无条件重试。
 
+5. **任务级验证证据绑定**（`src/icode/runner.py::run_task`）
+   独立跑 `python -m unittest` 后把退出码、输出摘要、环境指纹、改动文件哈希
+   与失败分类绑定成一条 `VerificationEvidence` 挂到 `TaskReport.verification`；
+   模型自述不算证据。
+
+6. **证据回执序列化**（`VerificationEvidence.to_receipt`）
+   可把一条验证证据序列化成 `verifications.json` 回执（含指纹、环境指纹、
+   产物哈希与失败分类，不含输出正文/敏感参数）；`build_evidence_pack` 直接
+   接受 `VerificationEvidence` 并序列化进证据包。
+
 ## 六类失败定义
 
 | 类别 | 含义 | 证据信号（示例） |
@@ -52,7 +62,9 @@ R3 核心能力（本切片）：
   且不泄露输出正文或敏感参数；
 - `VerificationLedger`：首次新证据允许、同指纹拒绝、输出变化允许、
   超界停止、副作用不明转人工、attempt 递增；
-- runner 补救回合在首次失败时仍会进入（兼容既有离线链），无新证据时跳过。
+- runner 补救回合在首次失败时仍会进入（兼容既有离线链），无新证据时跳过；
+- `run_task` 把独立测试退出码/输出摘要/环境指纹/改动哈希绑进 `TaskReport.verification`；
+- `to_receipt` 与 `build_evidence_pack` 把验证证据序列化进证据包且不含正文。
 
 ## 边界（不冒充）
 

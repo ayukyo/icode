@@ -7,7 +7,7 @@ import hashlib
 import os
 import unittest
 
-from tests._support import REPO_ROOT, temp_workspace
+from tests._support import REPO_ROOT, require_skill, temp_workspace
 
 from icode.backends import BackendError, OpenAICompatibleBackend, Usage, build_backend
 from icode.runner import _changed, _snapshot, prepare_workspace, run_unittest
@@ -445,3 +445,61 @@ class TestBackendRetry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestTaskVerificationEvidence(unittest.TestCase):
+    """R3：run_task 的独立测试回执必须绑定到证据，模型自述不算。"""
+
+    def test_独立测试回执绑定到证据(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import run_task
+
+        settings = require_skill()
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            # 不改动文件：基线测试通过 → exit_code=0
+            report = run_task(
+                settings, backend=FakeBackend(["完成"]), workspace=dst,
+            )
+            self.assertIsNotNone(report.verification)
+            evidence = report.verification
+            self.assertEqual(evidence.step, "task")
+            self.assertEqual(evidence.kind, "test")
+            self.assertEqual(evidence.command, ("python", "-m", "unittest"))
+            self.assertEqual(evidence.exit_code, 0)
+            self.assertTrue(evidence.passed)
+            self.assertTrue(evidence.environment_fingerprint)
+            self.assertTrue(evidence.output_sha256)
+            # 改动为空 → 无产物哈希，但仍绑定环境指纹
+            self.assertEqual(dict(evidence.artifact_hashes), {})
+
+    def test_破坏性改动产生带哈希与分类的证据(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import run_task
+
+        settings = require_skill()
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            # 模拟模型在工作区内把 calc.py 改坏（通过工具，而非直接改文件）
+            calc_path = str(dst / "calc.py")
+            script = [
+                {"content": "", "tool_calls": [
+                    {"id": "break-calc", "name": "write_file",
+                     "arguments": {"path": calc_path,
+                                   "content": "raise RuntimeError('boom')\n"}}
+                ]},
+                "完成",
+            ]
+            report = run_task(
+                settings, backend=FakeBackend(script), workspace=dst,
+            )
+            evidence = report.verification
+            self.assertIsNotNone(evidence)
+            self.assertNotEqual(evidence.exit_code, 0)
+            self.assertFalse(evidence.passed)
+            from icode.self_verify import FAILURE_CODE
+
+            self.assertEqual(evidence.category, FAILURE_CODE)
+            self.assertIn("calc.py", evidence.artifact_hashes)
+            self.assertEqual(len(evidence.artifact_hashes["calc.py"]), 64)
+            self.assertTrue(evidence.environment_fingerprint)
