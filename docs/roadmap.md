@@ -335,7 +335,7 @@ CI [#129 x64](https://github.com/ayukyo/icode/actions/runs/36092603966/job/10793
 [R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md) ·
 [R2.4 临时网络授权门禁](./nbl/plans/2026-09-24-r2-network-proxy-gate.md)
 
-R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#136：#91–#105 的启动差分曾返回 `CreateProcessW` 错误 203，#105 固定 whoami A/B 发现加入 profile `LOCALAPPDATA` 后可启动；其后原宿主 Python 一直退出 `0xC0000135`。#112 的 `process_limit=2/1` 同载荷正反对照双架构通过组件断言。#125 x64/ARM64 直读样本显示 System32 控制可读，而宿主 Python EXE、共享库、`pathlib.py`、`encodings` 均被拒绝读取。#131 清点 6,721 项、1 个词法根内 symbolic link；这不证明最终对象身份。#133–#136 的临时 staging Python 3.11.9 宿主正向控制成功，但 AppContainer 候选进程退出 1。#136 双架构确认根对象 DACL bytes 已恢复、身份相同且无 SID 残留，唯一不匹配是 security descriptor `control` 元数据；staging 最终删除，但不将删除等同 ACL 精确恢复，workspace/network/child 组合探针仍无效。下一轮只采集 control-bit 差分掩码，Windows 自动模式继续关闭，R2.3 与完整 R2 未完成。R2.1 三平台、Python 3.11/3.12、普通 Job 和 R2.2 Linux/macOS 当前 CI 子项通过；macOS Intel/ARM64 脱组后代按已批准的 Codex 式边界验收。
+R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#137：#91–#105 的启动差分曾返回 `CreateProcessW` 错误 203，#105 固定 whoami A/B 发现加入 profile `LOCALAPPDATA` 后可启动；其后原宿主 Python 一直退出 `0xC0000135`。#112 的 `process_limit=2/1` 同载荷正反对照双架构通过组件断言。#125 x64/ARM64 直读样本显示 System32 控制可读，而宿主 Python EXE、共享库、`pathlib.py`、`encodings` 均被拒绝读取。#131 清点 6,721 项、1 个词法根内 symbolic link；这不证明最终对象身份。#133–#137 的临时 staging Python 3.11.9 宿主正向控制成功，但 AppContainer 候选进程退出 1。#136/#137 双架构确认 DACL bytes、身份和其它 metadata 均恢复，唯一差异是根对象 `control_delta=0x0400`（`SE_DACL_AUTO_INHERITED`），且 staging 最终删除；仍不将删除等同 ACL 精确恢复，workspace/network/child 组合探针无效。下一轮只在临时 staging 上先建立该系统规范化 baseline，再验证临时 ACL 改动全树精确恢复；Windows 自动模式继续关闭，R2.3 与完整 R2 未完成。R2.1 三平台、Python 3.11/3.12、普通 Job 和 R2.2 Linux/macOS 当前 CI 子项通过；macOS Intel/ARM64 脱组后代按已批准的 Codex 式边界验收。
 
 ### 2026-09-25 UTC：CI #133/#134 staged runtime 与 ACL 回执
 
@@ -346,6 +346,8 @@ CI [#133](https://github.com/ayukyo/icode/actions/runs/36100147033) 的 x64/ARM6
 ### 2026-09-25 UTC：CI #135/#136 runtime ACL 恢复元数据分类
 
 CI [#135](https://github.com/ayukyo/icode/actions/runs/36102565397) 已确认 staging 检测后删除成功。CI [#136](https://github.com/ayukyo/icode/actions/runs/36103288445) x64 与 ARM64 均确认恢复后根对象只有 security descriptor `control` 字段不匹配：DACL bytes 未变、revision/present/defaulted/file identity 均未变、无 Package SID 残留；ACL 授权仅作用于 staging，源 runtime 未碰。候选仍 `cleanup_failed`，Python 与 workspace/network/child 组合探针没有有效结果。Windows 自动模式及完整 R2 继续关闭。下一轮只透出无路径 `control_delta` 位掩码，确认具体控制位后再决定该 ACL 路线是否可安全恢复，不能用 staging 最终删除覆盖尚未通过的恢复门。
+
+CI [#137](https://github.com/ayukyo/icode/actions/runs/36104010820) 双架构确认 `control_delta=1024`（`0x0400`），Microsoft 文档对应 `SE_DACL_AUTO_INHERITED`；DACL bytes/identity/其它 metadata 未变且没有 SID 残留。该发现解释了 SetNamedSecurityInfo DACL 恢复触发的系统继承规范化，但不等同通过。下一轮只在 disposable staging 中、Package SID 授权前重设原 DACL并验证仅出现该规范化位，再以此为 baseline 继续做全树精确恢复；其它变化仍 fail-closed，不动源 runtime、不开放自动模式。
 
 CI [#105 x64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836254760) 与 [#105 ARM64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836255639) 的固定 whoami 同-profile A/B 均显示：省略容器 `LOCALAPPDATA` 时 `CreateProcessW` 返回 203，加入系统 API 返回的 profile 路径后成功且清理通过；但当时完整 AppContainer 流程的常规命令尚未带该变量，整组作业仍失败。当前代码已将容器专属路径接入常规 AppContainer 命令及撤权探针，并新增路径查询失败不启动、准确报告清理状态、临时 profile 数据目录删除/残留核验的测试；这条常规路径尚待新的 Windows x64/ARM64 CI。Windows AppContainer 与完整 R2 仍未验收，自动模式保持关闭。
 

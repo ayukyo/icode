@@ -31,6 +31,7 @@ from .windows_job import (
 _SE_FILE_OBJECT = 1
 _DACL_SECURITY_INFORMATION = 0x00000004
 _SE_DACL_PROTECTED = 0x1000
+_SE_DACL_AUTO_INHERITED = 0x0400
 _FILE_GENERIC_READ = 0x00120089
 _FILE_GENERIC_WRITE = 0x00120116
 _FILE_GENERIC_EXECUTE = 0x001200A0
@@ -843,6 +844,69 @@ def _set_dacl(
         )
 
 
+def _normalize_staged_runtime_acl_baseline(
+    root: Path, advapi: ctypes.WinDLL, kernel: ctypes.WinDLL,
+) -> int:
+    """Normalize Windows' auto-inherited DACL marker on a disposable staging root.
+
+    This is deliberately limited to the explicitly opted-in GitHub Windows
+    staging diagnostic. It establishes the baseline before temporary Package
+    SID access is added; it is not a production ACL restoration fallback.
+    """
+    if (
+        os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("RUNNER_OS") != "Windows"
+        or os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_STAGING") != "true"
+    ):
+        raise _AppContainerSetupError(
+            "invalid_diagnostic_probe", "staging ACL normalization requires explicit CI opt-in",
+        )
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        root_abs = Path(os.path.abspath(os.fspath(root)))
+        if (
+            not root_abs.is_absolute()
+            or not root_abs.is_relative_to(temp_root)
+            or not root_abs.name.startswith("icode-runtime-staging-")
+        ):
+            raise _AppContainerSetupError(
+                "invalid_diagnostic_probe", "ACL normalization target is not disposable staging",
+            )
+        before = _read_dacl_state(root_abs, advapi, kernel)
+        if before.protected or before.defaulted or not before.present:
+            raise _AppContainerSetupError(
+                "unsupported_runtime_acl", "staging root DACL cannot be normalized safely",
+            )
+        if before.control & _SE_DACL_AUTO_INHERITED:
+            return 0
+
+        original_acl = ctypes.create_string_buffer(before.dacl)
+        _set_dacl(root_abs, ctypes.cast(original_acl, ctypes.c_void_p), advapi)
+        after = _read_dacl_state(root_abs, advapi, kernel)
+    except _AppContainerSetupError:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise _AppContainerSetupError(
+            "runtime_acl_normalization_failed", "staging root ACL baseline cannot be normalized safely",
+        ) from exc
+
+    control_delta = before.control ^ after.control
+    if (
+        after.dacl != before.dacl
+        or after.revision != before.revision
+        or after.present != before.present
+        or after.defaulted != before.defaulted
+        or after.file_identity != before.file_identity
+        or control_delta != _SE_DACL_AUTO_INHERITED
+        or not (after.control & _SE_DACL_AUTO_INHERITED)
+    ):
+        raise _AppContainerSetupError(
+            "runtime_acl_normalization_failed",
+            f"staging root normalization changed unexpected state (control_delta={control_delta})",
+        )
+    return control_delta
+
+
 def _grant_workspace_acl(
     root: Path, sid: ctypes.c_void_p,
 ) -> tuple[bytes, ctypes.WinDLL, ctypes.WinDLL]:
@@ -1334,6 +1398,14 @@ def run_windows_appcontainer(
         acl_api = (advapi, kernel_for_acl)
         if _diagnostic_runtime_acl:
             assert runtime_acl_roots is not None
+            if _diagnostic_runtime_roots is not None:
+                control_delta = _normalize_staged_runtime_acl_baseline(
+                    runtime_acl_roots[0], advapi, kernel_for_acl,
+                )
+                diagnostics.append(
+                    "runtime_acl_baseline_normalized=true "
+                    f"control_delta={control_delta}"
+                )
             runtime_acl_transaction = _snapshot_runtime_acl_roots(
                 runtime_acl_roots,
                 workspace=root, advapi=advapi, kernel=kernel_for_acl,

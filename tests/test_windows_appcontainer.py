@@ -396,6 +396,81 @@ class TestWindowsAppContainer(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self._workflow_json_notice("test", {"payload": "x" * 500})
 
+    def test_staging基线规范化仅接受自动继承控制位变化(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-staging-acl-baseline-") as raw:
+            root = Path(raw) / "icode-runtime-staging-test"
+            root.mkdir()
+            before = windows_appcontainer._DaclSnapshot(
+                path=root, dacl=b"original-dacl", control=0x0004, revision=1,
+                present=True, defaulted=False, file_identity=(1, 2),
+            )
+            after = windows_appcontainer._DaclSnapshot(
+                path=root, dacl=b"original-dacl", control=0x0404, revision=1,
+                present=True, defaulted=False, file_identity=(1, 2),
+            )
+            with mock.patch.dict(os.environ, {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_OS": "Windows",
+                "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
+            }), mock.patch.object(
+                windows_appcontainer, "_read_dacl_state", side_effect=(before, after),
+            ), mock.patch.object(windows_appcontainer, "_set_dacl") as set_dacl:
+                delta = windows_appcontainer._normalize_staged_runtime_acl_baseline(
+                    root, object(), object(),
+                )
+
+        self.assertEqual(delta, 0x0400)
+        set_dacl.assert_called_once()
+        self.assertEqual(set_dacl.call_args.args[0], root)
+
+    def test_staging基线已规范化时不再写入ACL(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-staging-acl-baseline-") as raw:
+            root = Path(raw) / "icode-runtime-staging-test"
+            root.mkdir()
+            snapshot = windows_appcontainer._DaclSnapshot(
+                path=root, dacl=b"original-dacl", control=0x0404, revision=1,
+                present=True, defaulted=False, file_identity=(1, 2),
+            )
+            with mock.patch.dict(os.environ, {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_OS": "Windows",
+                "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
+            }), mock.patch.object(
+                windows_appcontainer, "_read_dacl_state", return_value=snapshot,
+            ), mock.patch.object(windows_appcontainer, "_set_dacl") as set_dacl:
+                delta = windows_appcontainer._normalize_staged_runtime_acl_baseline(
+                    root, object(), object(),
+                )
+
+        self.assertEqual(delta, 0)
+        set_dacl.assert_not_called()
+
+    def test_staging基线规范化发现DACL变化时失败关闭(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-staging-acl-baseline-") as raw:
+            root = Path(raw) / "icode-runtime-staging-test"
+            root.mkdir()
+            before = windows_appcontainer._DaclSnapshot(
+                path=root, dacl=b"original-dacl", control=0x0004, revision=1,
+                present=True, defaulted=False, file_identity=(1, 2),
+            )
+            after = windows_appcontainer._DaclSnapshot(
+                path=root, dacl=b"changed-dacl", control=0x0404, revision=1,
+                present=True, defaulted=False, file_identity=(1, 2),
+            )
+            with mock.patch.dict(os.environ, {
+                "GITHUB_ACTIONS": "true",
+                "RUNNER_OS": "Windows",
+                "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
+            }), mock.patch.object(
+                windows_appcontainer, "_read_dacl_state", side_effect=(before, after),
+            ), mock.patch.object(windows_appcontainer, "_set_dacl"):
+                with self.assertRaises(_AppContainerSetupError) as raised:
+                    windows_appcontainer._normalize_staged_runtime_acl_baseline(
+                        root, object(), object(),
+                    )
+
+        self.assertEqual(raised.exception.error, "runtime_acl_normalization_failed")
+
     @staticmethod
     def _runtime_acl_restore_categories(
         transaction: windows_appcontainer._RuntimeAclTransaction,
@@ -2256,6 +2331,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "candidate_error": candidate.error,
                 "candidate_cleanup": candidate.cleanup_ok,
                 "staged_python_version": staged_result.get("python_version"),
+                "acl_baseline_normalization": (
+                    candidate.detail.split(
+                        "runtime_acl_baseline_normalized=true control_delta=", 1,
+                    )[1].split(";", 1)[0]
+                    if "runtime_acl_baseline_normalized=true control_delta=" in candidate.detail
+                    else "not_observed"
+                ),
                 "runtime_marker": candidate.executed and candidate.exit_code == 0,
                 "workspace_write": workspace_marker.is_file(),
                 "runtime_write_denied": runtime_write_marker.is_file()
@@ -2277,6 +2359,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "candidate_detail_flags": [
                     label for label, marker in (
                         ("runtime_acl_snapshot", "runtime_acl_snapshot="),
+                        ("runtime_acl_baseline_normalized", "runtime_acl_baseline_normalized=true"),
                         ("runtime_acl_access_granted", "runtime_acl_access=read_execute"),
                         ("runtime_acl_restore_verified", "runtime_acl_restore_verified=true"),
                         ("runtime_acl_restore_failed", "runtime_acl_restore_failed"),
@@ -2327,6 +2410,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "Python disposable staging boundary assertions",
                 {
                     "acl_restore_verified": summary["acl_restore_verified"],
+                    "acl_baseline_normalization_delta": summary["acl_baseline_normalization"],
                     "acl_roots_are_staged": summary["acl_roots_are_staged"],
                     "source_acl_untouched": summary["source_acl_untouched"],
                     "runtime_marker": summary["runtime_marker"],
@@ -2352,6 +2436,10 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertTrue(candidate.executed, "staged AppContainer process did not start")
         self.assertEqual(candidate.exit_code, 0, "staged runtime probe did not complete")
         self.assertTrue(candidate.cleanup_ok, "staged AppContainer cleanup failed")
+        self.assertIn(
+            summary["acl_baseline_normalization"], {"0", "1024"},
+            "staging ACL baseline normalization was not verified",
+        )
         self.assertTrue(summary["acl_restore_verified"], "staged runtime DACL was not exactly restored")
         self.assertTrue(summary["acl_roots_are_staged"], "runtime ACL transaction escaped the staging root")
         self.assertTrue(summary["source_acl_untouched"], "source runtime ACL was modified")

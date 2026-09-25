@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #133–#136 的 disposable staging Python 3.11.9 宿主正向控制成功，但 AppContainer 候选退出 1。#136 x64/ARM64 均确认：staging ACL 的 DACL bytes 已恢复、身份未变、无 Package SID 残留、staging 最终删除；唯一报告差异是根对象 security descriptor `control` 字段。下轮只增加脱敏 control-bit 差分，以确认具体变化；尚未证明能按原状态恢复。工作区/network/child 组合结果仍无效；不接入生产、不扩大权限。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #133–#137 的 disposable staging Python 3.11.9 宿主正向控制成功，但 AppContainer 候选退出 1。#136/#137 x64 与 ARM64 均确认 staging ACL 的 DACL bytes、身份、其它 descriptor metadata 均匹配且无 Package SID 残留；唯一差异是根对象 `control_delta=0x0400`，即 `SE_DACL_AUTO_INHERITED`。下一轮只在临时 staging 副本上于 snapshot 前建立系统规范化 baseline，再要求后续 ACL 修改对该 baseline 全树精确恢复；源 runtime 与生产 runner 不改，组合探针仍未形成结果。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -233,3 +233,9 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - CI [#135](https://github.com/ayukyo/icode/actions/runs/36102565397) 已确认两个架构的 staging 在检测后被删除，但当时分类只报告 `metadata_changed=true`。CI [#136](https://github.com/ayukyo/icode/actions/runs/36103288445) 将元数据拆分后，x64 与 ARM64 均报告 `object=root`、`dacl_changed=false`、`control_changed=true`，而 revision/present/defaulted/file identity 均未变化、`sid_residual=false`；授权 root 是 disposable staging，源 Python runtime 未改。
 - 两架构的 Python staging 宿主正向控制通过；AppContainer candidate 仍退出 1、`cleanup_failed`，并且 ACL 恢复失败导致候选 runtime/workspace/network/child assertions 均无效。不得把控制字段差异解释为无害或把 staging 删除替代 ACL 恢复。
 - Microsoft 文档指出 `SetNamedSecurityInfo` 设置 DACL 时会传播可继承 ACE，且自动继承控制位可能被设置；这是待核对的解释，不是本轮对具体位的实测。下一轮诊断仅增加 `control_delta` 掩码，输出不含路径/ACL/SID；只有位值明确后再评估能否在 staging snapshot 前安全规范化并恢复，或停止继承 ACL 路线。此前硬门槛不变。
+
+### 2026-09-25 UTC CI #137：根对象变化确认为 `SE_DACL_AUTO_INHERITED`
+
+- CI [#137](https://github.com/ayukyo/icode/actions/runs/36104010820) 的 Windows x64 与 ARM64 均回报十进制 `control_delta=1024`（`0x0400`），其余 #136 类别保持不变：DACL bytes/身份无变化、无 SID 残留，staging 删除成功；candidate 仍 `cleanup_failed`，workspace/network/child 断言无效。
+- Microsoft 将 `0x0400` 定义为 `SE_DACL_AUTO_INHERITED`；其自动传播说明指出，对对象设置 DACL 时系统会应用当前继承模型并可能设置此位。与本轮实测结合，可解释为何恢复相同 DACL 后 control 仍有系统规范化差异；该位仍不是可忽略理由。[control flags](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-descriptor-control) · [automatic propagation](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)
+- **下一项仅限 disposable staging 的实验：**在添加 Package SID 前重设 staging 根的同一 DACL；要求 root 的 DACL bytes、identity、revision/present/defaulted 不变，control 唯一变化为 `0x0400`；随后以该系统规范化状态为 snapshot baseline，并照旧要求临时授权后全树逐对象精确恢复。任何其它差异都停止 candidate。不得修改原 runtime，也不得把 staging 删除作为 ACL restore 证据。此实验即使通过也只验证 disposable-runtime 路线，不直接开放生产 Windows 自动模式。
