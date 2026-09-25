@@ -410,8 +410,20 @@
 - **运行反馈的证据等级：**Codex 公共 issue 中出现专用 sandbox 账户下 `CreateProcessAsUserW` access denied、ARM64 也失败，以及按用户安装的 Python / shell 无法读取或启动等报告；这些是具体用户案例，不用于估算故障率，但足以把“普通用户 token、用户态安装路径”加入 ICODE 的强制负例。[Windows 11 token report](https://github.com/openai/codex/issues/37086) · [ARM64 report](https://github.com/openai/codex/issues/36508) · [per-user runtime report](https://github.com/openai/codex/issues/38222)。
 - **ICODE 采纳 / 暂缓：**采纳固定 helper/runner 分权、启动失败必须不执行命令、凭据只在受控内存窗口短暂使用并禁止日志回显。暂缓把 legacy Codex token 链直接作为产品决策，也不先给 sandbox 身份额外授予 quota / impersonation 等权限。先在 x64、ARM64 上以真实非管理员账户测 `CreateProcessWithLogonW → restricted token → CreateProcessAsUserW` 与运行时访问；本可行性探针只以 token API 验证 runner / 子进程非管理员、子进程 token 受限且 SID 不变，日志仅保留脱敏布尔结果和错误码，不输出身份或权限清单。任一架构失败即不接入、不回退裸启动，转为评估其它固定 broker 设计。
 - **成本、安全与兼容性：**计划中的探针仅使用 Win32/Windows runner，不复制 Codex/Gemini 源码或增加 ICODE 用户安装依赖；临时 sandbox 凭据只服务于一次性 CI 本地账户并在退出时删除。Codex 路线的明文密码 API、DPAPI 存储与同登录用户进程边界，不能夸大为可抵御同一登录用户权限下的恶意进程。观察日期：2026-09-25。
-- **当前范围边界：**本探针仅包含有效凭据正向路径；CI 对 Windows x64 / ARM64 显式选择匹配架构的 Python。无效凭据、账户缺失、无执行权限、权限不足，以及“失败时无目标 marker / 无子进程残留”仍待后续 Windows helper / 执行器集成测试。它们通过前，Windows 自动模式保持关闭，R2 不得宣告完成。
+- **当前范围边界：**CI 对 Windows x64 / ARM64 显式选择匹配架构的 Python。#171 已完成有效凭据正向路径、缺失账户与错误密码拒绝；无执行权限、权限不足，以及实际 helper/runner IPC 与 setup 恢复仍待后续 Windows 原生测试。自动模式保持关闭，R2 不得宣告完成。
 - **原生试跑修正：**手动 CI [#166](https://github.com/ayukyo/icode/actions/runs/36181092112) 的 x64 与 ARM64 都在标准用户 runner 成功派生子进程后，于管理员组诊断处返回 `WinError 1309`。核对微软 `CheckTokenMembership` 文档后确认传入 primary token 不符合 API 要求（传入句柄必须是 impersonation token）；已改为 `DuplicateToken` 生成 impersonation token 后检查并释放。该失败不是 token 创建路径失败的证据。[Microsoft API contract](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-checktokenmembership)
+
+### 2026-09-25 UTC：双架构无效登录失败关闭门通过
+
+- 手动 CI [#171](https://github.com/ayukyo/icode/actions/runs/36186027245) 的 [Windows Server 2025 x64](https://github.com/ayukyo/icode/actions/runs/36186027245/job/108239460366) 与 [Windows ARM64](https://github.com/ayukyo/icode/actions/runs/36186027245/job/108239460532) 均输出 `standard_user_token_probe=PASS` 和 `negative_logon_probes=PASS`。同一 runner 先通过有效凭据标准用户控制，再分别用不存在账户和错误密码调用 `CreateProcessWithLogonW`；两个负例都确认 API 未创建进程、runner report 不存在、没有可见进程残留。整个 #171 工作流（含 Python 3.11/3.12、workspace、Linux/macOS 原生探针、Windows Job/wheel、仓库展示检查）最终 success。
+- **解释边界：**Microsoft 文档规定 `CreateProcessWithLogonW` 失败时读取 `GetLastError`，但没有保证特定的错误凭据输入必定映射到某一个错误码，也没有替代本地无副作用验证；Windows 错误码表将 1317/1326 分别描述为账户不存在/登录失败。因此当前负例只接受这两个预期错误集合，并以双架构实际无进程/无 marker 观测为准，不把错误码映射宣称为 API 对所有设备的保证。[API](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw) · [系统错误码 1300–1699](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--1300-1699-)
+- **采纳 / 暂缓：**采纳“认证拒绝必须在执行前发生，且失败路径显式检查副作用”的可验证门禁；暂缓把可行性探针视为产品 runner。无 RX、权限不足、系统身份、命名管道 ACL、UAC setup/恢复、ACL、WFP、helper 签名与目标 Windows 10/11 设备矩阵仍未覆盖；Windows 自动模式继续关闭。
+
+### 2026-09-25 UTC：Windows 固定 runner IPC 的低风险先行切片
+
+- **上游源码 / 官方资料：**Codex `rust-v0.155.1` legacy runner client 已实现独立固定 command runner、版本化 `SpawnRequest`/`SpawnReady` 与双向命名管道；Codex `c7e80f87` 的文档又将 legacy elevated 路线与 MXC 划为不同方案，故它不是 Codex 当前唯一后端。[runner client](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/windows-sandbox-rs/src/elevated/runner_client.rs) · [后端边界](https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/app-server/README.md#L346-L349)。Microsoft 指出未指定安全描述符的命名管道默认 DACL 也允许 Everyone 与匿名用户读取；`CreateProcessWithLogonW` 的密码参数是明文。[pipe ACL](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights) · [logon API](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw)
+- **ICODE 现状 / 取舍：**现有 Windows 双架构 wheel 只验证 helper 的 PE 架构和摘要，不包含可运行 Windows sandbox helper、受信 IPC、UAC setup 或工作负载 runner。采纳“提权 provisioning 与普通命令 runner 分离、runner 消息版本化”的机制；不复制 Codex 代码，也不以 SHA-256 相邻清单冒充发布者身份。先用纯 Python TDD 定义协议 envelope、严格字段/长度/关联 ID 和未知操作 fail-closed，不启动进程、不调用 Win32；协议验证通过后再实现原生传输和显式管道 DACL。
+- **成本 / 风险 / 验收：**首切片不新增依赖，不产生 OS 副作用，兼容不参与该协议的现有平台；它不能消除 native IPC 的认证、重放、竞态、特权 helper confused-deputy、签名与 setup 崩溃恢复风险。验收项为截断/畸形输入、未知版本/操作/字段、越界长度和关联 ID 不匹配均拒绝；普通执行 envelope 不得表达 ACL、token、WFP 或额外授权路径。观察日期：2026-09-25。
 
 ### 2026-09-25 UTC：macOS Intel 策略 broker 清理复核
 
