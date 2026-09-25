@@ -63,7 +63,7 @@ R2 不包含：
 
 | 产品 | 安装与隔离方式 | 可借鉴点 | 不直接采用的原因 |
 |---|---|---|---|
-| OpenAI Codex | 单一安装入口，底层按平台使用 Seatbelt、Landlock/Bubblewrap、Windows 原生令牌与 ACL | 平台 wheel/二进制携带原生助手；统一策略、分平台强制 | Rust 内核无法直接作为本项目 Python API 使用 |
+| OpenAI Codex | Linux/macOS 使用各自系统后端；Windows 同时保留显式 opt-in 的 MXC 容器路线与旧 elevated sandbox 路线，不能概括成一个默认 Windows 实现 | 匹配架构原生资源、后端 readiness、提权 setup 与命令执行职责隔离、不可用时失败关闭 | MXC 依赖 Windows PSEC 能力且该固定版本的 prefer 开关默认关闭；旧路线更复杂，涉及 setup/service/runner IPC、token、ACL 与网络策略，不能原样移植到 pip-only Python 产品 |
 | Claude Code / Sandbox Runtime | macOS Seatbelt、Linux/WSL2 Bubblewrap、代理网络；其沙箱文档不支持原生 Windows | 文件与网络双边界、代理授权、违规提示 | Linux 需要系统包；Windows 走 WSL2，不符合本项目原生安装约束 |
 | OpenHands | Docker、远程或云端沙箱 | 独立工作环境、后端可替换 | Docker 是额外前置条件，不符合本项目安装约束 |
 | Cline | 编辑器入口和逐动作审批 | 小白友好的审批交互 | 审批不能形成进程级隔离 |

@@ -2,8 +2,8 @@
 
 - 日期：2026-09-26
 - 状态：**R2.1 工作区边界已验收；R2.2 原生负例矩阵在 CI #158 的六个 Linux/macOS runner 全部通过，但不代替完整 R2 合同评分。R2.3 Windows x64/ARM64 综合 AppContainer 步骤在 #158 仍失败；独立 disposable-staging Python 子项通过，含临时 ACL 精确恢复与 loopback 未连接断言，但 profile marker 仍缺失、原宿主 Python 仍为 `0xC0000135`，组合失败的具体断言不可读。AppContainer 暂撤出生产候选：其强隔离形态不适合通用 shell/Git/Python/构建工具链；恢复原 R2 设计的一次 UAC 原生 helper 路线，实现计划见 [Windows 后端路线复核](./nbl/plans/2026-09-25-r2-windows-appcontainer.md)。R2.4 Linux Git broker 仍为未接入工具链的内部原型；已安装 wheel 恶意仓库闭环在本机 x86_64 与 CI ARM64 通过。Windows 自动模式、Git 工具入口和网络均保持关闭。**
-- R2.3 后续切片（2026-09-26）：Windows 架构 wheel 打包合同已本地实现，CPython 3.11 完整 preflight 与 Linux wheel 端到端测试通过；新增 Windows x64/ARM64 合成 PE 打包安装 CI 尚待回执。该切片不含可运行 Windows helper，不代表 Windows 隔离实现，详见 [Windows 后端路线复核](./nbl/plans/2026-09-25-r2-windows-appcontainer.md)。
-- R2.3 Windows wheel 首轮 runner 复核（2026-09-26）：#161 x64 发现 wheel SHA 清单 CRLF 字节匹配缺陷，已增加窄化换行接受规则和回归测试；修正后的 Windows 双架构验收尚待 CI，不代表后端完成。
+- R2.3 后续切片（2026-09-26）：Windows 架构 wheel 打包合同已在 CPython 3.11 全量 preflight、Linux 安装式 wheel probe 及 Windows x64/ARM64 合成 PE 打包安装 CI 中通过。它不含可运行 Windows 隔离 helper，不代表 Windows 隔离实现，详见 [Windows 后端路线复核](./nbl/plans/2026-09-25-r2-windows-appcontainer.md)。
+- R2.3 Windows wheel 首轮 runner 复核（2026-09-26）：#161 x64 发现 SHA 清单 CRLF 字节匹配缺陷；#162 修复后两个架构 wheel job 均通过。#162 旧 AppContainer 综合步骤仍失败，现计划改为显式手动诊断，保留失败证据，不作为生产路线门禁或通过声明。
 - 依据：[持续竞品对照](./agent-landscape-live.md) · [方案与决策记录](./design-decisions.md)
 
 ---

@@ -353,15 +353,22 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
   5. **原生验收：**干净 Windows 10 22H2 与当前 Windows 11 x64/arm64 实测写工作区成功、原仓/.git/凭据不可读写、DNS/TCP/UDP/IPv4/IPv6 与代理绕过被阻、仅代理授权可用、派生后代被 Job 清理；模拟 UAC 拒绝、helper 损坏、杀进程/断电 ACL/WFP 残留、重复 setup 与卸载。CI 或静态测试不能替代缺失的真实 Windows 安装证据。
 - **未决发布风险：**一次 UAC 提示来自未签名 helper 时可能显示未知发布者。开发阶段可先用 CI 原生双架构验证；对普通白领正式发布前须解决代码签名、SmartScreen、wheel provenance 与密钥保管，未解决不得宣传“一键无风险启用”。
 
-### 2026-09-26 UTC：Windows wheel 打包合同实现中
+### 2026-09-26 UTC：Windows wheel 打包合同切片验收
 
 - **切片范围：**已按原 R2.3 批准路线加上 Windows x64/ARM64 wheel tag、预构建 helper 暂存、PE 架构 + 邻接 SHA-256 检查、安装后只解析包内对应 helper，以及 wheel `WHEEL` / `RECORD` 检查。它只是分发基础设施，不包含 Windows sandbox backend、UAC setup、sandbox identity、WFP、ACL 或 command-runner；Windows 自动模式仍关闭。
 - **失败关闭：**构建时未提供 helper 时保留纯 Python wheel；提供了但架构/摘要错误时拒绝构建。安装期不走 PATH、当前目录或仓库源码兜底。wheel checker 使用临时合成 PE 覆盖标签/机器字段/摘要/RECORD；合成文件从不执行。相邻 SHA 与 RECORD 都不能证明发布者身份或构建 provenance。
 - **上游采纳：**按 Codex 固定提交 [`c7e80f87`](https://github.com/openai/codex/tree/c7e80f873f67dbef58206b9d4f3c60e9d556eb16) 的双架构 helper 构建/资源打包形态设计；用 [PyPA platform compatibility tags](https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/) 区分 Windows 架构。没有复制上游代码或增加 runtime 依赖。签名、预期 signer、SmartScreen 和 attestation 暂缓至真实 helper / 发布主体就位。
-- **当前本地验证：**CPython 3.11 下 14 个 helper/wheel 定向测试通过；`scripts/preflight.py` 密钥扫描、子模块完整性、全量测试 3 道门均通过；`scripts/run_native_wheel_ci.py` 本机 x86_64 构建、wheel 检查、干净 venv 安装、helper 和 Git broker probes 均通过。新增 Windows x64/ARM64 Actions job 尚未回执。阶段退出还要求两个原生 runner 的纯 Python fallback 和 helper wheel 打包安装闭环通过；即使通过也只完成打包切片，不算 R2.3 或完整 R2 完成。
+- **验收结果：**CPython 3.11.15 下 15 个 helper/wheel 定向测试通过；`scripts/preflight.py` 的密钥扫描、子模块完整性、全量测试 3 道门通过；`scripts/run_native_wheel_ci.py` 本机 x86_64 wheel 构建、检查、干净 venv 安装及 helper/Git broker probes 通过。CRLF 修正后，[Windows x64 wheel job](https://github.com/ayukyo/icode/actions/runs/36174592483/job/108202006150) 与 [Windows ARM64 wheel job](https://github.com/ayukyo/icode/actions/runs/36174592483/job/108202006183) 均通过纯 Python fallback、架构标签、合成 helper 暂存、wheel metadata/RECORD、隔离安装、包内解析和缺失 fail-closed 闭环。合成 PE 从未执行。
+- **未越界宣称：**同一 Actions run 两架构 Job Object 清理步骤有通过 notice，但 AppContainer 综合诊断仍分别失败；该实验已退役为产品路线，仅作诊断。上述验收只关闭 wheel 打包切片，Windows 文件/网络/身份隔离未实现，不能标为 R2.3 或完整 R2 完成；Windows 自动模式继续关闭。
 
 ### 2026-09-26 UTC：CI #161 Windows wheel CRLF 缺陷修正
 
 - **原生证据：**[Windows x64 packaging job](https://github.com/ayukyo/icode/actions/runs/36173719473/job/108199173573) 构建 wheel 后，检查器报 `helper SHA-256 manifest invalid`。流程在 Windows 上用 `Path.write_text(..., "\n")` 生成测试清单时会写成 CRLF；helper 校验器走文本模式会规范换行，而 wheel checker 读 ZIP 原始字节，之前只允许 LF，所以两边行为不一致。未把合成 helper 执行，也没有影响真实 backend（尚未实现）。
 - **修正与覆盖：**wheel checker 只接受 64 个小写十六进制字符，随后可选 LF 或 CRLF；新增 CRLF wheel 清单回归用例。CPython 3.11.15 本机 helper/wheel 定向测试 15 项通过。尚须下一次 Windows x64/ARM64 Actions 实跑，未将修复写成双架构验收完成。
 - **剩余边界：**同一 #161 的旧 AppContainer 组合探针仍在失败，属于诊断路线，不因本修复而变成 Windows 后端通过；R2.3 与自动模式仍关闭。
+
+### 2026-09-26 UTC：Windows CI 门禁与已退役诊断分层
+
+- **证据：**#161 的 Windows Job 后代清理 job 与 wheel 打包 job 独立执行；同时 AppContainer 组合步骤继续失败。AppContainer 已经在上面的路线决策中退出生产候选，留存代码的用途是诊断，而非当前 R2 产品契约。
+- **采纳：**正常 push/PR 仍门禁 Windows Job 清理局部探针与架构 wheel 打包；把 AppContainer 诊断移至独立、默认关闭的 `workflow_dispatch` 选项。手工显式开启时，原 x64/ARM64 诊断步骤仍运行并保留失败结果；没有删除测试、忽略失败或将其改写成通过。
+- **边界：**主 CI 变绿只代表当前适用的 Windows 子项通过，不代表 R2.3 文件/网络/身份隔离已通过；Windows 自动模式继续关闭。真实 helper、setup/恢复、受限 token、ACL、WFP、Job 组合和 Windows 实机验收仍是完整 R2 的后续硬门槛。
