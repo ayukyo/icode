@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #133/#134 的 disposable staging Python 3.11.9 在宿主正向控制成功；AppContainer 候选退出 1，且 #134 确认全树 runtime ACL 精确恢复失败、结果为 `cleanup_failed`。ACL 仅作用于 staging，源 runtime DACL 未碰；workspace/network/child 组合探针没有有效结果。恢复类别仍待 #135 的无路径诊断；该 ACL 路线未验收、不接入生产、不扩大权限。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #133–#136 的 disposable staging Python 3.11.9 宿主正向控制成功，但 AppContainer 候选退出 1。#136 x64/ARM64 均确认：staging ACL 的 DACL bytes 已恢复、身份未变、无 Package SID 残留、staging 最终删除；唯一报告差异是根对象 security descriptor `control` 字段。下轮只增加脱敏 control-bit 差分，以确认具体变化；尚未证明能按原状态恢复。工作区/network/child 组合结果仍无效；不接入生产、不扩大权限。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -227,3 +227,9 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - CI [#133](https://github.com/ayukyo/icode/actions/runs/36100147033) 和 [#134](https://github.com/ayukyo/icode/actions/runs/36100928044) 的 x64/ARM64 runtime 树均为 6,721 项、1 个根内词法 symbolic link；复制逻辑将该链接物化为普通文件，staging 无 reparse point。临时副本在宿主可加载 `_ctypes/_sqlite3/_ssl`、标准库与 Python 3.11.9。
 - AppContainer 无 runtime ACL 的基线仍退出 `0xC0000135`；候选进程启动后退出 1。#134 的固定类别回执为 `runtime_acl_snapshot`、`runtime_acl_access_granted`、`runtime_acl_restore_failed`，ACL 根确认仅为 staging，源树 DACL 未修改；candidate `cleanup_failed`，不能把未生成的 Python/workspace/network/child markers解释成某个具体边界失败。
 - **恢复规则不变：**不能仅凭 staging 可删除而把失败改报成功；先诊断全树首次 mismatch 属于 path-set、root/descendant DACL、descriptor metadata、SID residual 或 inspection error。无论分类为何，只有精确恢复验证和完整 AppContainer 组合验收都通过才考虑继续；若持续无法恢复即停止继承 ACL 路线并评估替代，不作宽松回退。
+
+### 2026-09-25 UTC CI #135/#136：恢复差异定位到根对象 control 元数据
+
+- CI [#135](https://github.com/ayukyo/icode/actions/runs/36102565397) 已确认两个架构的 staging 在检测后被删除，但当时分类只报告 `metadata_changed=true`。CI [#136](https://github.com/ayukyo/icode/actions/runs/36103288445) 将元数据拆分后，x64 与 ARM64 均报告 `object=root`、`dacl_changed=false`、`control_changed=true`，而 revision/present/defaulted/file identity 均未变化、`sid_residual=false`；授权 root 是 disposable staging，源 Python runtime 未改。
+- 两架构的 Python staging 宿主正向控制通过；AppContainer candidate 仍退出 1、`cleanup_failed`，并且 ACL 恢复失败导致候选 runtime/workspace/network/child assertions 均无效。不得把控制字段差异解释为无害或把 staging 删除替代 ACL 恢复。
+- Microsoft 文档指出 `SetNamedSecurityInfo` 设置 DACL 时会传播可继承 ACE，且自动继承控制位可能被设置；这是待核对的解释，不是本轮对具体位的实测。下一轮诊断仅增加 `control_delta` 掩码，输出不含路径/ACL/SID；只有位值明确后再评估能否在 staging snapshot 前安全规范化并恢复，或停止继承 ACL 路线。此前硬门槛不变。

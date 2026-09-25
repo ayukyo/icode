@@ -444,6 +444,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "dacl_changed": dacl_changed,
                         "metadata_changed": metadata_changed,
                         **metadata_changes,
+                        "control_delta": before.control ^ current.control,
                         "sid_residual": sid_residual,
                     }
             return {"state": "snapshot_match_after_failure", "objects": len(actual_paths)}
@@ -518,6 +519,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertFalse(report["present_changed"])
         self.assertFalse(report["defaulted_changed"])
         self.assertFalse(report["file_identity_changed"])
+        self.assertEqual(report["control_delta"], 0)
         self.assertNotIn(str(root), repr(report))
 
         with mock.patch.object(
@@ -543,6 +545,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertFalse(root_report["present_changed"])
         self.assertFalse(root_report["defaulted_changed"])
         self.assertFalse(root_report["file_identity_changed"])
+        self.assertEqual(root_report["control_delta"], 0x0400)
         self.assertNotIn(str(root), repr(root_report))
 
     @staticmethod
