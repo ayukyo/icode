@@ -487,6 +487,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             except OSError:
                 profile_env_matches_api = False
             profile_unicode_env_matches_api = False
+            profile_unicode_env_matches_host = False
+            profile_unicode_env_lines: list[str] = []
             try:
                 profile_unicode_env_lines = self._decode_cmd_unicode_output(
                     profile_env_unicode_value.read_bytes(),
@@ -496,6 +498,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
             except (OSError, UnicodeDecodeError):
                 profile_unicode_env_matches_api = False
+            host_localappdata = os.environ.get("LOCALAPPDATA")
+            host_localappdata_defined = bool(host_localappdata)
+            if profile_unicode_env_lines and host_localappdata:
+                profile_unicode_env_matches_host = self._profile_env_matches_api(
+                    profile_unicode_env_lines, [host_localappdata],
+                )
             try:
                 profile_env_equals_api = (
                     profile_env_compare.read_text(encoding="ascii").strip() == "match"
@@ -516,6 +524,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             f"expected_localappdata_defined={profile_expected_env_defined} "
             f"profile_set_output_matches_api={profile_env_matches_api} "
             f"profile_unicode_set_output_matches_api={profile_unicode_env_matches_api} "
+            f"host_localappdata_defined={host_localappdata_defined} "
+            f"profile_unicode_set_matches_host={profile_unicode_env_matches_host} "
             f"profile_env_equals_api={profile_env_equals_api} "
             f"profile_dir_before_launch={profile_directory_exists_before_launch} "
             f"profile_dir_visible={profile_directory_visible} "

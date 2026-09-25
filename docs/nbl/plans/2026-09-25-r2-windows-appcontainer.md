@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #114 中 x64/ARM64 的 `process_limit=2/1` 对照通过组件断言，但 Python 仍以 `0xC0000135` 退出、profile marker 缺失，容器内路径比较为 false。下一轮同时报告 alias 是否存在，并用官方 `cmd /u` 生成 Unicode `set LOCALAPPDATA` 输出供宿主内存比较；不据此扩大 ACL。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #115 中 x64/ARM64 均确认 expected alias 存在，但实际 `LOCALAPPDATA` 与 AppContainer API 路径不同；profile marker 缺失、Python 仍以 `0xC0000135` 退出。当前仅新增宿主路径等值布尔比较以分辨系统值是否回落到 runner 本机 profile；不把宿主路径用于执行或放宽 ACL。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -132,7 +132,7 @@
 - 两架构 Python 仍以 `0xC0000135` 退出。profile 探针报告 `LOCALAPPDATA` 已定义、API 返回的目录在宿主启动前存在，但容器内目录检查为假、写入分类为 `path_not_found`、删除前 marker 不存在；profile 最终清理通过。当前证据不能区分容器拿到的字符串与 API 返回值不一致、路径语义或实际目录访问问题。
 - 工作区读写/外部写拒绝、loopback 拒绝、正常退出与 timeout 后代回收有组件级通过 notice；它们不替代 Python 执行、profile 存储或完整文件/网络门禁。
 - 微软[启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)说明 profile 为 AppContainer 提供可创建、读取和写入文件的位置，并可经 `LOCALAPPDATA` 或 `GetAppContainerFolderPath` 访问；[创建 profile API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)说明每用户/每应用文件夹和注册表数据存储随 profile 建立。[路径查询 API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)只返回 Local AppData 路径，不保证其创建目录或修订 ACL。官方文档没有给出精确 ACL mask，因此不能据文档推断 CI runner 上实际 token 一定可达。
-- CI #113 的旧 `set LOCALAPPDATA` 输出比较与 CI #114 的同块 alias 比较在双架构均为 false。后者降低了 OEM 输出编码作为唯一原因的可能性，但尚未独立确认 alias 到达子进程。新诊断写出 alias-defined 布尔值，并通过 Microsoft [`cmd /u`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd) 让内部 `set` 输出 Unicode；宿主只比较、不记录路径。先确认身份/路径，再决定是否需要最小修复，不创建目录、不调整 ACL。
+- CI #113 的旧 `set LOCALAPPDATA` 输出比较与 #114 的同块 alias 比较在双架构均为 false。CI #115 进一步确认 expected alias 已存在，且 Microsoft [`cmd /u`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd) 输出的 Unicode 值仍不等于 API profile 路径，排除了 alias 缺失及 OEM 输出编码作为唯一解释。当前仅增加宿主侧等值布尔比较，以确认子进程值是否等于 runner 本地 `LOCALAPPDATA`；不记录或传入宿主路径，也不调整 ACL。
 - Windows R2.3、完整 R2 及自动模式仍未验收，`policy_contract_ready` 必须保持 `false`。
 
 ## 当前实现与验收

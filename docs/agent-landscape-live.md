@@ -161,4 +161,9 @@
 - 同块注入的 `ICODE_EXPECTED_LOCALAPPDATA` 与子进程 `LOCALAPPDATA` 的 CMD 比较两架构均为 false；这排除了单纯的控制台输出编码解释，但还未证明 alias 存在于 CMD 环境或路径值如何变化。不能由此确定是 environment block 未传递、AppContainer 对变量的处理还是 CMD 比较/解析行为。
 - 下一轮增加 expected alias 的独立 `defined` 状态，并按 Microsoft [`cmd /u`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd) 选项将 `set LOCALAPPDATA` 重定向为 Unicode，再由宿主在内存中比较、只记录布尔值。普通产品环境和 ACL 不变；结果出来前不调整目录权限、不开放 Windows 自动模式。
 
+### 2026-09-25 UTC Windows AppContainer CI #115
+
+- CI [#115](https://github.com/ayukyo/icode/actions/runs/36078212333) 的 x64 job [107894086441](https://github.com/ayukyo/icode/actions/runs/36078212333/job/107894086441) 与 ARM64 job [107894086354](https://github.com/ayukyo/icode/actions/runs/36078212333/job/107894086354) 复现相同结果：expected alias 确实在进程环境中，但从 `cmd /u` 输出读取的 `LOCALAPPDATA` 仍与 `GetAppContainerFolderPath` 返回值不匹配；profile 不可见、marker 未写入，Python 仍退出 `0xC0000135`。这排除了 alias 未到达和 OEM 编码作为唯一解释，但尚未识别子进程实际拿到的路径。
+- 当前追加仅在宿主内将该 Unicode 输出与启动器自己的 `LOCALAPPDATA` 比较，Actions 仍只接收布尔值；该宿主路径只用作诊断基准，不传给产品执行器、不授权访问。若两架构均匹配宿主值，则证明容器子进程收到的不是目标 profile 值；仍需确定能否用受支持方式构造正确容器环境，不能直接使用宿主 profile。
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
