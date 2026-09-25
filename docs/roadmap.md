@@ -1,7 +1,7 @@
 # 开发路线图与取舍原则
 
 - 日期：2026-09-25
-- 状态：**R2.1 工作区边界已验收；R2.2/R2.3 仍在 main 实施中，尚未通过阶段退出条件**
+- 状态：**R2.1 工作区边界已验收；R2.2 原生隔离、R2.3 Windows AppContainer、R2.4 Git broker/网络授权仍在 main 实施中，均未通过阶段退出条件**
 - 依据：[持续竞品对照](./agent-landscape-live.md) · [方案与决策记录](./design-decisions.md)
 
 ---
@@ -335,9 +335,13 @@ CI [#129 x64](https://github.com/ayukyo/icode/actions/runs/36092603966/job/10793
 [R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md) ·
 [R2.4 临时网络授权门禁](./nbl/plans/2026-09-24-r2-network-proxy-gate.md)
 
-R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#139：#91–#105 的启动差分曾返回 `CreateProcessW` 错误 203，#105 固定 whoami A/B 发现加入 profile `LOCALAPPDATA` 后可启动；其后原宿主 Python 一直退出 `0xC0000135`。#112 的 `process_limit=2/1` 同载荷正反对照双架构通过组件断言。#125 x64/ARM64 直读样本显示 System32 控制可读，而宿主 Python EXE、共享库、`pathlib.py`、`encodings` 均被拒绝读取。#131 清点 6,721 项、1 个词法根内 symbolic link；这不证明最终对象身份。#136/#137 把 staging ACL 差异定位为根对象 `SE_DACL_AUTO_INHERITED`；#138 先规范化该位后，双架构 staging ACL 全树精确恢复、candidate cleanup 与 staging 删除均通过，源 runtime 未修改。#139 的路径检查阶段以 `PermissionError` 失败，尚未拆分出具体 `resolve` 操作；ACL 恢复与 staging/source 清理仍通过，Python 候选边界组合尚无有效结论。接下来仅拆分 executable/module/prefix 检查，不放宽权限。Windows 自动模式继续关闭，R2.3 与完整 R2 未完成。R2.1 三平台、Python 3.11/3.12、普通 Job 和 R2.2 Linux/macOS 当前 CI 子项通过；macOS Intel/ARM64 脱组后代按已批准的 Codex 式边界验收。
+R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#147：#91–#105 的启动差分曾返回 `CreateProcessW` 错误 203，#105 固定 whoami A/B 发现加入 profile `LOCALAPPDATA` 后可启动；其后原宿主 Python 一直退出 `0xC0000135`。#112 的 `process_limit=2/1` 同载荷正反对照双架构通过组件断言。#125 x64/ARM64 直读样本显示 System32 控制可读，而宿主 Python EXE、共享库、`pathlib.py`、`encodings` 均被拒绝读取。#131 清点 6,721 项、1 个词法根内 symbolic link；这不证明最终对象身份。#136/#137 把 staging ACL 差异定位为根对象 `SE_DACL_AUTO_INHERITED`；#138 先规范化该位后，双架构 staging ACL 全树精确恢复、candidate cleanup 与 staging 删除均通过，源 runtime 未修改。#141 的路径探针曾在 `PermissionError` 处中止；#147 双架构现已完成脚本启动、导入、路径、runtime 写拒绝与 source-read 检查，但仍在 network marker 前退出且错误 marker 无效，失败原因待定位。Windows 自动模式继续关闭，R2.3 与完整 R2 未完成。R2.1 三平台、Python 3.11/3.12、普通 Job 和 R2.2 Linux/macOS 当前 CI 子项通过；macOS Intel/ARM64 脱组后代按已批准的 Codex 式边界验收。
 
 Linux Git 元数据基座的本机 Landlock 负例已覆盖可读/不可写/不可新建/不可执行、默认拒绝，以及 helper 实际打开时拒绝最终/中间符号链接；`WorkspaceManager` 已把核验过的 layered worktree 身份保存在冻结的 `GitWorkspaceIdentity` 快照，但尚未逐次复核或传给工具，也未绑定已打开元数据目录的对象身份。它们不代表 Git 命令、可信可执行 grant 或 broker 已实现。分层 workspace 中直接 Git 仍返回 `git_broker_unavailable`；详见[R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。
+
+### 2026-09-25 UTC：CI #147 ARM64 与 Windows 探针复核
+
+CI [#147](https://github.com/ayukyo/icode/actions/runs/36122289071) 的 Ubuntu 22.04/24.04 ARM64 wheel jobs 均因 `/lib64` 可选根缺失、Python 使用 `resolve(strict=True)` 而失败；本轮改为只对固定可选系统可执行根非严格解析，并新增缺失路径测试，待新 ARM64 CI 验证。Windows x64/ARM64 的 staging ACL 恢复、清理与宿主 Python positive control 通过，但候选在网络检查 marker 前退出、失败 marker 为 `invalid_marker`，原因尚未定位。探针现报告“连接未建立”的可观测事实，不声称 WFP/策略拒绝；仍待新双架构 CI。R2.3、R2.4、完整 R2 与 `policy_contract_ready` 继续未完成，自动模式保持关闭。
 
 ### 2026-09-25 UTC：CI #133/#134 staged runtime 与 ACL 回执
 
@@ -397,7 +401,7 @@ CI [#108 x64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/10786
 
 ### 2026-09-24 UTC CI #109–#111：Windows 子项与真实失败分开记录
 
-CI [#109 x64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391485) 与 [#109 ARM64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391466) 的 Windows 测试均有 cwd 工作区、loopback 拒绝、后代回收与 timeout 回收通过 notice，但研究复核指出进程探针只有 0.2 秒宽限。CI [#110](https://github.com/ayukyo/icode/actions/runs/36071476528) 以同 payload host 正对照和五秒后代观察窗重验后，双架构正常/timeout 后代清理 notice 通过；x64/ARM64 profile marker 均未写入，进程数对照尚不可靠。CI [#111](https://github.com/ayukyo/icode/actions/runs/36073278352) 的同步进程正对照父/子 marker 均出现，但临时目录诊断读取太晚、CMD 裸数字状态行未写出，导致两架构都在 `process_limit=1` 负例前失败。Python 仍退出 `0xC0000135`，AppContainer 和自动模式继续关闭；下一轮修正探针本身并重跑原生对照。
+CI [#109 x64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391485) 与 [#109 ARM64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391466) 的 Windows 测试均有 cwd 工作区、loopback 连接失败、后代回收与 timeout 回收通过 notice，但研究复核指出进程探针只有 0.2 秒宽限。CI [#110](https://github.com/ayukyo/icode/actions/runs/36071476528) 以同 payload host 正对照和五秒后代观察窗重验后，双架构正常/timeout 后代清理 notice 通过；x64/ARM64 profile marker 均未写入，进程数对照尚不可靠。CI [#111](https://github.com/ayukyo/icode/actions/runs/36073278352) 的同步进程正对照父/子 marker 均出现，但临时目录诊断读取太晚、CMD 裸数字状态行未写出，导致两架构都在 `process_limit=1` 负例前失败。Python 仍退出 `0xC0000135`，AppContainer 和自动模式继续关闭；下一轮修正探针本身并重跑原生对照。
 
 ## 4. 为什么是这个顺序
 

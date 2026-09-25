@@ -528,8 +528,10 @@ class LandlockSandbox:
         revoke EXECUTE already granted by an overlapping system/runtime root.
         """
         workspace = Path(workspace).resolve(strict=True)
+        # Some supported distributions (notably arm64) omit optional roots
+        # such as /lib64; the native helper also treats those as absent.
         executable_roots = tuple(
-            Path(path).resolve(strict=True)
+            Path(path).resolve(strict=False)
             for path in ("/usr", "/bin", "/lib", "/lib64", "/sbin")
         ) + self._runtime_read_roots()
 

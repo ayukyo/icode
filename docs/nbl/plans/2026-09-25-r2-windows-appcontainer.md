@@ -1,8 +1,10 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #133–#138 的 disposable staging Python 3.11.9 宿主正向控制成功。#138 x64/ARM64 已证明：staging 根先规范化 `SE_DACL_AUTO_INHERITED` 后，Package SID 临时 ACL 全树可精确恢复、`cleanup_ok=true`、staging 最终删除，源 runtime 未修改；但候选 Python 退出 1、最终结果 marker 不存在，尚未到达可判定工作区/network/child 的组合结果。下一轮仅增加脚本启动/导入/路径/各负例阶段标记，回执仍不含路径和异常正文。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #147 x64/ARM64 中 disposable staging ACL 精确恢复、清理与宿主 Python 3.11.9 正向控制通过；候选完成脚本启动、导入、路径、runtime 写拒绝和 source-read 检查，但在网络检查 marker 前退出，失败 marker 为 `invalid_marker`，实际失败类别尚未定位。不能把连接未建立归因于 WFP/策略，也不能推断 workspace/child 子项。现有修正仅完善安全阶段分类与连接失败表述，待新双架构 CI 验证。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
+
+> 注：下方按时间追加验证记录。阶段状态以最新 CI 和本机回归为准，历史记录不代表当前 Windows 后端已通过。
 
 ## 三问与边界
 
@@ -15,7 +17,7 @@
 - **选择性采纳 AppContainer 机制：**Microsoft 官方文档说明，AppContainer 可用 `CreateAppContainerProfile` 建立当前用户 profile，再通过 `STARTUPINFOEX` 的 `PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES` 创建进程；不授网络 capability 时没有网络能力。ICODE 使用 Python 标准库 `ctypes` 调 Win32 API，不增加安装依赖。参考：[AppContainer 启动](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)、[隔离模型](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation)、[创建 profile API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)。
 - **权限与文件策略：**每次运行随机 profile / Package SID；只给传入的独立工单目录添加临时可继承 ACL，原仓、`.git`、common gitdir、用户目录和凭据路径不加该 SID。执行完恢复原始根 ACL，并遍历校验 Package SID ACE 已从当前子树消失；另外以相同 SID 做工作区写入拒绝后测，再删除 profile。工作区含重解析点、硬链接、受保护 ACL、null DACL 或网络共享时拒绝启动。Windows 自动 ACL 传播规则见[官方说明](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)。
 - **Job 组合：**`CREATE_SUSPENDED` 与 `EXTENDED_STARTUPINFO_PRESENT` 组合；AppContainer 创建后先加入独立 Job，再恢复主线程。进程创建、属性设置、Job 归属任一失败时均不运行普通宿主命令。
-- **不开临时网络：**AppContainer 不授 `internetClient` / `privateNetworkClientServer`，当前仅探测本机 loopback 拒绝。需要按域名临时联网时须另行实现可验证的 WFP/防火墙身份规则与受控代理；环境变量和 AppContainer internet capability 不足以表达域名 allowlist。
+- **不开临时网络：**AppContainer 不授 `internetClient` / `privateNetworkClientServer`，当前仅探测本机 loopback 连接是否建立；连接失败本身不证明具体 WFP/策略原因。需要按域名临时联网时须另行实现可验证的 WFP/防火墙身份规则与受控代理；环境变量和 AppContainer internet capability 不足以表达域名 allowlist。
 
 ### 新增研究结论（2026-09-24 UTC）
 
@@ -100,7 +102,7 @@
 
 ## 2026-09-24 UTC CI #109：Windows 子项有通过 notice，Python runtime 仍失败
 
-- CI [#109 x64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391485) 与 [#109 ARM64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391466) notice 报告 workspace 读写/外部写拒绝/loopback 拒绝、正常后代回收、runner timeout 后代回收、`process_limit=1`、环境块及 profile A/B 子项通过。研究复核发现进程探针在 release handshake 后仍只观察 0.2 秒，没有相同 payload 正向对照；这比 #108 清晰，但不足以排除调度延迟造成的假阴性。R2.3 仍不能验收，因为 Windows Agent 尚不能启动 Python 执行器。
+- CI [#109 x64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391485) 与 [#109 ARM64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391466) notice 报告 workspace 读写/外部写拒绝/loopback 连接失败、正常后代回收、runner timeout 后代回收、`process_limit=1`、环境块及 profile A/B 子项通过。研究复核发现进程探针在 release handshake 后仍只观察 0.2 秒，没有相同 payload 正向对照；这比 #108 清晰，但不足以排除调度延迟造成的假阴性。R2.3 仍不能验收，因为 Windows Agent 尚不能启动 Python 执行器。
 - 新增 copy script 自身的启动标记，两架构均确认它已启动；Python executable、共享 DLL、`pathlib.py`、`encodings` 样本均无副本。ARM64 的 System32 `whoami.exe` 对照可复制；x64 的相同 System32 对照也未复制。CMD 原始 copy 错误文本没有保存，不能把退出码 1 直接定性为 `ACCESS_DENIED`；下轮只记录错误类别（不暴露路径），区分访问控制与路径错误。
 - 为避免 Python loader 失败遮住 profile 存储本身的状态，下轮另用受限 CMD 写入 profile 专属 marker，并在删除 profile 前观测 marker、删除后确认路径消失；同时保留原始 copy 文本于任务工作区，仅将安全错误类别写入 Actions notice。
 - 不放宽到整用户目录、整 Python 安装、`site-packages` 或系统盘。只在错误分类确认必要范围后，设计可审计的最小只读运行时访问或暂存；并单独验收 ACL 恢复、Profile 清理、性能和工作区 venv 兼容。
@@ -251,3 +253,10 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - CI [#141](https://github.com/ayukyo/icode/actions/runs/36110318680) 的 Windows x64 与 ARM64 staged Python 均已启动脚本并完成标准库导入，但在 `Path(sys.executable).resolve(strict=True)` 得到 `PermissionError`，随后退出 1。该回执将此前“Python 启动后退出 1”缩小到路径规范化调用；此时 runtime 写拒绝、原 runtime 读取拒绝、loopback、workspace 与子进程均尚未执行，不能把它们解释为通过或失败。ACL 恢复精确验证、源 runtime ACL 未修改和 staging 删除仍单独通过。
 - CPython Windows 源码显示 `Path.resolve(strict=True)` 经 `ntpath.realpath` 调用 `_getfinalpathname`，底层使用 `CreateFileW` 和 `GetFinalPathNameByHandleW(..., VOLUME_NAME_DOS)`；Microsoft 文档将 `VOLUME_NAME_DOS` 定义为返回盘符路径。[CPython 3.11 `posixmodule.c`](https://github.com/python/cpython/blob/3.11/Modules/posixmodule.c) · [CPython `ntpath.py`](https://github.com/python/cpython/blob/main/Lib/ntpath.py) · [Microsoft API](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-getfinalpathnamebyhandlew)。Codex issue [#45871](https://github.com/openai/codex/issues/45871) 的提交者在 AppContainer 中报告同一 DOS 最终路径查询遭拒、NT 路径查询成功；这是已打开的用户报告而非 Codex 维护者确认。它与 ICODE 的异常机制吻合，但 ICODE 尚未记录到底层 API，故根因标为**高相关假设，未证实**。
 - **本轮诊断切片（待双架构 CI）：**在同一可信 disposable staging 路径分别记录词法 `absolute`、`stat`、字节读取、strict/non-strict `resolve`、`nt._getfinalpathname`，并直接比较 Win32 `CreateFileW(access=0)` 及同一文件的 `GetFinalPathNameByHandleW(VOLUME_NAME_NT/DOS)`。回执仅留成功状态、异常类及 WinError 数字，不包含路径、SID、ACL 或错误正文；strict resolve 单项失败后仍使用 `absolute()` 继续执行其余沙箱边界探针。`absolute()` 不解析重解析点，不能当作物理路径 containment 证明；它只用于此处已复制并检查过的无 reparse staging 样本路径比较。生产 runner 和 `policy_contract_ready` 不变，Windows 自动模式仍关闭。
+
+### 2026-09-25 UTC CI #147：探针回执语义与跨架构门禁修正
+
+- [CI #147](https://github.com/ayukyo/icode/actions/runs/36122289071) 的 Windows x64/ARM64 作业都未通过。两架构公开 notice 显示 staging ACL 已精确恢复、清理通过、宿主 staging Python 3.11.9 正向控制成功；候选完成脚本启动、导入、路径、runtime 写拒绝与 source-read 检查，但 `network_check_completed=false` 且 `python_failure=invalid_marker`。网络调用附近是尚未定位的失败边界，不能据此认定 loopback 被策略拒绝，也不能把随后工作区/子进程标记缺失解释为它们的结果。
+- 同一轮 Ubuntu 22.04/24.04 ARM64 wheel probe 都因可选系统路径 `/lib64` 不存在，在 `_validate_non_executable_workspace()` 的 `resolve(strict=True)` 处失败。修正只将固定可选系统可执行根改为非严格解析；工作区本身仍严格解析。原生 helper 对这些系统根使用 `required=0`，遇到 `ENOENT` 即按可选项跳过；新回归模拟 `/lib64` 缺失并继续验证只读工作区与可执行白名单不能重叠。
+- **网络结论修正：**Microsoft Winsock 文档给出连接/系统状态的错误码语义，但单个错误码不标识 WFP 或策略是拒绝原因；Microsoft 的 loopback 默认阻断说明针对 packaged applications，不能直接外推到 ICODE 通过 `CreateAppContainerProfile` 创建的 CI 进程。[Winsock errors](https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2) · [Microsoft loopback IPC](https://learn.microsoft.com/en-us/windows/apps/develop/communication/interprocess-communication#loopback)。Project Zero 2021 在其测试环境观察到 AppContainer loopback 由 WFP receive/accept 层丢弃并表现为 timeout；这是特定环境的实验记录，不是稳定 API 保证。[Project Zero analysis](https://projectzero.google/2021/08/understanding-network-access-windows-app.html#localhost-access)
+- **采纳/暂缓：**采纳安全的阶段/异常类型 marker 与“宿主同一活跃 listener 正向连接成功、容器连接未建立”的诊断设计；结果字段为 `network_connect_failed`。不把 `10013/10060/10061` 等错误直接称为 policy/WFP denial。若以后需要归因，必须收集匹配 AppContainer 身份、目标和 layer 的 WFP classify-drop 证据，或执行隔离环境中的受控 A/B；当前不添加 loopback exemption、不修改宿主网络策略。修正仍待新 CI 双架构验证，不替代 Windows 网络隔离验收；Windows 自动模式继续关闭。

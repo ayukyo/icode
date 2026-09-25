@@ -37,8 +37,81 @@ from icode.windows_job import (
     run_windows_job,
 )
 
+_RUNTIME_PROBE_FAILURE_STAGES = frozenset({
+    "imports", "executable_absolute", "module_path", "prefix_absolute",
+    "runtime_path", "runtime_write", "source_read", "network",
+    "workspace_write", "child_launch",
+})
+_RUNTIME_PROBE_ERROR_TYPES = frozenset({
+    "AttributeError", "ConnectionAbortedError", "ConnectionRefusedError",
+    "ConnectionResetError", "FileExistsError", "FileNotFoundError",
+    "ImportError", "IsADirectoryError", "ModuleNotFoundError", "NameError",
+    "NotADirectoryError", "OSError", "PermissionError", "RuntimeError",
+    "TimeoutError", "TimeoutExpired", "TypeError", "ValueError",
+})
+# Microsoft Winsock errors that indicate the attempted connection did not
+# complete. They do not identify whether WFP, policy, routing, or another cause
+# prevented it; the host-side positive control only validates the listener.
+_APP_CONTAINER_CONNECT_FAILURE_WINERRORS = (
+    10013, 10050, 10051, 10053, 10054, 10060, 10061, 10065,
+)
+
+
+def _classify_runtime_probe_failure(raw_failure: str) -> str:
+    """Keep a known stage and safe class name; never forward exception text/paths."""
+    if not raw_failure:
+        return "not_observed"
+    stage, separator, error_type = raw_failure.partition(":")
+    if (
+        stage not in _RUNTIME_PROBE_FAILURE_STAGES
+        or not separator
+        or not error_type.isascii()
+        or not error_type.isidentifier()
+    ):
+        return "invalid_marker"
+    if error_type in _RUNTIME_PROBE_ERROR_TYPES:
+        return f"{stage}:{error_type}"
+    return f"{stage}:other"
+
+
+def _is_observed_appcontainer_connect_failure(error: OSError) -> bool:
+    """Classify a failed connect attempt without attributing its cause."""
+    return isinstance(error, PermissionError) or getattr(error, "winerror", None) in (
+        _APP_CONTAINER_CONNECT_FAILURE_WINERRORS
+    )
+
 
 class TestWindowsAppContainer(unittest.TestCase):
+    def test_failure_marker分类保留安全阶段但不输出任意异常内容(self) -> None:
+        self.assertEqual(_classify_runtime_probe_failure(""), "not_observed")
+        self.assertEqual(
+            _classify_runtime_probe_failure("network:ConnectionRefusedError"),
+            "network:ConnectionRefusedError",
+        )
+        self.assertEqual(
+            _classify_runtime_probe_failure("workspace_write:UnknownSystemError"),
+            "workspace_write:other",
+        )
+        self.assertEqual(
+            _classify_runtime_probe_failure("network:C:\\private\\secret"),
+            "invalid_marker",
+        )
+        self.assertEqual(
+            _classify_runtime_probe_failure("unknown:/private/secret"),
+            "invalid_marker",
+        )
+        self.assertTrue(_is_observed_appcontainer_connect_failure(PermissionError()))
+        refused = ConnectionRefusedError()
+        refused.winerror = 10061
+        self.assertTrue(_is_observed_appcontainer_connect_failure(refused))
+        reset = ConnectionResetError()
+        reset.winerror = 10054
+        self.assertTrue(_is_observed_appcontainer_connect_failure(reset))
+        unexpected = OSError()
+        unexpected.winerror = 10014
+        self.assertFalse(_is_observed_appcontainer_connect_failure(unexpected))
+        self.assertFalse(_is_observed_appcontainer_connect_failure(OSError()))
+
     def test_staging诊断只物化根内链接且保留源运行时不变(self) -> None:
         stage_runtime = getattr(
             windows_appcontainer, "_copy_runtime_tree_for_diagnostic", None,
@@ -2063,11 +2136,16 @@ class TestWindowsAppContainer(unittest.TestCase):
             workspace.mkdir()
             marker = workspace / "python-runtime-started.txt"
             write_denied = workspace / "runtime-write-denied.txt"
-            network_denied = workspace / "runtime-network-denied.txt"
+            network_connect_failed = workspace / "runtime-network-connect-failed.txt"
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
                 listener.bind(("127.0.0.1", 0))
                 listener.listen(1)
+                listener.settimeout(1)
                 port = listener.getsockname()[1]
+                with socket.create_connection(("127.0.0.1", port), timeout=1):
+                    accepted, _address = listener.accept()
+                    accepted.close()
+                host_loopback_positive_control = True
                 script = (
                     "import os,pathlib,socket,sys,sysconfig,encodings\n"
                     "marker=pathlib.Path('python-runtime-started.txt')\n"
@@ -2086,9 +2164,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "else:\n"
                     "    os.close(fd); raise SystemExit(73)\n"
                     "try:\n"
-                    f"    socket.create_connection(('127.0.0.1',{port}),timeout=1)\n"
-                    "except OSError:\n"
-                    "    pathlib.Path('runtime-network-denied.txt').write_text('true')\n"
+                    f"    with socket.create_connection(('127.0.0.1',{port}),timeout=1):\n"
+                    "        pass\n"
+                    "except PermissionError:\n"
+                    "    pathlib.Path('runtime-network-connect-failed.txt').write_text('true')\n"
+                    "except OSError as exc:\n"
+                    "    if getattr(exc,'winerror',None) in "
+                    f"{_APP_CONTAINER_CONNECT_FAILURE_WINERRORS!r}:\n"
+                    "        pathlib.Path('runtime-network-connect-failed.txt').write_text('true')\n"
+                    "    else:\n"
+                    "        raise\n"
                     "else:\n"
                     "    raise SystemExit(74)\n"
                     "marker.write_text('started')\n"
@@ -2099,7 +2184,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
                 marker.unlink(missing_ok=True)
                 write_denied.unlink(missing_ok=True)
-                network_denied.unlink(missing_ok=True)
+                network_connect_failed.unlink(missing_ok=True)
                 candidate = run_windows_appcontainer(
                     argv, cwd=workspace, timeout_seconds=10, process_limit=4,
                     _diagnostic_runtime_acl=True,
@@ -2114,7 +2199,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "candidate_cleanup": candidate.cleanup_ok,
                 "runtime_marker": marker.is_file(),
                 "runtime_write_denied": write_denied.is_file(),
-                "network_denied": network_denied.is_file(),
+                "host_loopback_positive_control": host_loopback_positive_control,
+                "network_connect_failed": network_connect_failed.is_file(),
                 "runtime_acl_restore_verified": "runtime_acl_restore_verified=true" in candidate.detail,
                 "detail": candidate.detail,
             }
@@ -2127,7 +2213,14 @@ class TestWindowsAppContainer(unittest.TestCase):
             self.assertEqual(candidate.exit_code, 0, candidate)
             self.assertTrue(marker.is_file(), "Python did not write its workspace marker")
             self.assertTrue(write_denied.is_file(), "runtime files unexpectedly accepted write-open")
-            self.assertTrue(network_denied.is_file(), "runtime ACL altered the default-deny network boundary")
+            self.assertTrue(
+                host_loopback_positive_control,
+                "host-side loopback positive-control listener did not accept a connection",
+            )
+            self.assertTrue(
+                network_connect_failed.is_file(),
+                "AppContainer unexpectedly connected to the host-side positive-control listener",
+            )
             self.assertTrue(candidate.cleanup_ok, candidate)
             self.assertIn("runtime_acl_restore_verified=true", candidate.detail)
 
@@ -2248,6 +2341,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 with socket.create_connection(("127.0.0.1", port), timeout=1):
                     accepted, _address = listener.accept()
                     accepted.close()
+                host_loopback_positive_control = True
 
                 child_script = (
                     "import _ctypes,_sqlite3,_ssl; from pathlib import Path; "
@@ -2369,15 +2463,19 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "else:\n"
                     "    source_runtime_denied=False\n"
                     "checkpoint('staging-source-read-completed')\n"
+                    "network_connect_failed=False\n"
                     "try:\n"
-                    f"    socket.create_connection(('127.0.0.1',{port}),timeout=1)\n"
+                    f"    with socket.create_connection(('127.0.0.1',{port}),timeout=1):\n"
+                    "        pass\n"
                     "except PermissionError:\n"
-                    "    network_denied=True\n"
+                    "    network_connect_failed=True\n"
                     "except OSError as exc:\n"
-                    "    failed('network',exc)\n"
-                    "    raise\n"
-                    "else:\n"
-                    "    network_denied=False\n"
+                    "    if getattr(exc,'winerror',None) in "
+                    f"{_APP_CONTAINER_CONNECT_FAILURE_WINERRORS!r}:\n"
+                    "        network_connect_failed=True\n"
+                    "    else:\n"
+                    "        failed('network',exc)\n"
+                    "        raise\n"
                     "checkpoint('staging-network-completed')\n"
                     "try:\n"
                     "    workspace=Path.cwd()\n"
@@ -2396,10 +2494,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'python_version':platform.python_version(),"
                     "'runtime_write_denied':runtime_write_denied,"
                     "'source_runtime_denied':source_runtime_denied,"
-                    "'network_denied':network_denied,'child_exit':child.returncode}\n"
+                    "'network_connect_failed':network_connect_failed,"
+                    "'child_exit':child.returncode}\n"
                     f"Path({str(result_marker)!r}).write_text(json.dumps(result))\n"
                     "if not all((prefix_ok,module_roots,runtime_write_denied,"
-                    "source_runtime_denied,network_denied,child.returncode==0)):\n"
+                    "source_runtime_denied,network_connect_failed,child.returncode==0)):\n"
                     "    raise SystemExit(78)\n"
                 )
                 try:
@@ -2459,23 +2558,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "getfinal_nt", "getfinal_dos",
                 } and isinstance(outcome, dict)
             }
-            allowed_failure_records = {
-                f"{stage}:{error}"
-                for stage in (
-                    "imports", "executable_absolute", "module_path", "prefix_absolute",
-                    "runtime_path", "runtime_write", "source_read",
-                    "network", "workspace_write", "child_launch",
-                )
-                for error in (
-                    "AttributeError", "FileNotFoundError", "ImportError", "ModuleNotFoundError",
-                    "NameError", "NotADirectoryError", "OSError", "PermissionError",
-                    "RuntimeError", "TimeoutExpired", "TypeError", "ValueError",
-                )
-            }
-            if raw_failure in allowed_failure_records:
-                python_failure = raw_failure
-            elif raw_failure:
-                python_failure = "invalid_marker"
+            python_failure = _classify_runtime_probe_failure(raw_failure)
             runtime_write_probe.unlink(missing_ok=True)
             summary = {
                 **stage_summary,
@@ -2513,7 +2596,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "runtime_write_denied": runtime_write_marker.is_file()
                 or staged_result.get("runtime_write_denied") is True,
                 "source_runtime_denied": staged_result.get("source_runtime_denied") is True,
-                "network_denied": staged_result.get("network_denied") is True,
+                "network_connect_failed": staged_result.get("network_connect_failed") is True,
                 "module_roots": staged_result.get("module_roots") is True,
                 "prefix_ok": staged_result.get("prefix_ok") is True,
                 "child_started": child_marker.is_file(),
@@ -2606,7 +2689,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "workspace_write": summary["workspace_write"],
                     "runtime_write_denied": summary["runtime_write_denied"],
                     "source_runtime_denied": summary["source_runtime_denied"],
-                    "network_denied": summary["network_denied"],
+                    "host_loopback_positive_control": host_loopback_positive_control,
+                    "network_connect_failed": summary["network_connect_failed"],
                     "module_roots": summary["module_roots"],
                     "prefix_ok": summary["prefix_ok"],
                     "child_started": summary["child_started"],
@@ -2640,7 +2724,14 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertTrue(summary["workspace_write"], "AppContainer could not write its task workspace")
         self.assertTrue(summary["runtime_write_denied"], "staged runtime accepted a write")
         self.assertTrue(summary["source_runtime_denied"], "AppContainer read the original runtime")
-        self.assertTrue(summary["network_denied"], "staging changed the default-deny network boundary")
+        self.assertTrue(
+            host_loopback_positive_control,
+            "host-side loopback positive-control listener did not accept a connection",
+        )
+        self.assertTrue(
+            summary["network_connect_failed"],
+            "AppContainer unexpectedly connected to the host-side positive-control listener",
+        )
         self.assertTrue(summary["module_roots"], "Python imported a module outside the staged runtime")
         self.assertTrue(summary["prefix_ok"], "staged Python resolved its prefix outside the staging root")
         self.assertTrue(summary["child_started"], "staged Python child process did not start")

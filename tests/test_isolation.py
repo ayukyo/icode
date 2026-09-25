@@ -789,6 +789,26 @@ class TestSandboxWrapping(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     sandbox._validate_non_executable_workspace(root)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux Landlock read-only policy")
+    def test_landlock_Git只读工作区允许缺失的可选系统路径(self) -> None:
+        sandbox = LandlockSandbox(helper="/not-needed-for-static-check")
+        with temp_workspace() as root:
+            workspace = (root / "code").resolve()
+            workspace.mkdir()
+            original_resolve = Path.resolve
+
+            def simulate_missing_lib64(path: Path, *, strict: bool = False) -> Path:
+                if path == Path("/lib64"):
+                    if strict:
+                        raise FileNotFoundError("simulated optional root is absent")
+                    return path
+                return original_resolve(path, strict=strict)
+
+            with mock.patch.object(Path, "resolve", simulate_missing_lib64):
+                self.assertEqual(
+                    sandbox._validate_non_executable_workspace(workspace), workspace,
+                )
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux Git 元数据只读授权")
     def test_landlock_Git元数据根必须明确且与工作区隔离(self) -> None:
         with temp_workspace() as root:
