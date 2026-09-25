@@ -293,3 +293,9 @@
 - 同轮 Windows x64/ARM64 notice 均显示 staging ACL 精确恢复与删除成功、宿主 staging Python positive control 成功，但候选在 `network_check_completed` 前退出，`python_failure=invalid_marker`。当前证据不能确定失败类别，也不能宣称网络 denial；缺少后续 marker 不等于 workspace/child 子项失败。
 - **上游核对（复核日 2026-09-25）：**Microsoft Winsock 文档分别定义权限、超时、拒绝等状态码；这些码描述错误状态，不证明具体 WFP filter/策略是原因。[Winsock error codes](https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2)。Microsoft loopback IPC 指南明确其默认阻断描述针对 packaged apps，未将保证扩展至 ICODE 当前直接创建的 AppContainer profile。[IPC loopback](https://learn.microsoft.com/en-us/windows/apps/develop/communication/interprocess-communication#loopback)。Google Project Zero 2021 将其特定环境的 localhost timeout 与 `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4` 阻断 filter 关联；这是研究者实验而非稳定 API 契约。[文章](https://projectzero.google/2021/08/understanding-network-access-windows-app.html#localhost-access)。
 - **取舍：采纳诊断、不采纳因果推断。**保留同一活跃 listener 的 host positive control；回执仅称容器连接未建立（`network_connect_failed`），异常内容/路径不外传。WFP 归因需要匹配 AppContainer 身份、目标 endpoint 与 layer 的 classify-drop 证据，或隔离环境中受控 A/B。当前不创建例外、不改主机策略。修正尚待 Windows 双架构 CI 验证；自动模式与 R2.3 继续关闭。
+
+### 2026-09-25 UTC CI #148 超时回执复核
+
+- Windows x64/ARM64 在网络探针都得到 `network:TimeoutError`，此前被标成异常脚本失败；本机 runner 错误码白名单遗漏了 Python 层 timeout 类。超时只证明该次本地 connect 在 1 秒内未建立，不证明由何种 filter/策略造成。
+- **采纳：**显式把 `TimeoutError` 归为可观测连接未建立，继续用同一活跃 listener 的宿主 positive control；回执保留白名单错误类 `network_connect_error`，没有异常正文或 endpoint 路径。未知 `OSError` 仍失败关闭；尚待 Windows 双架构 CI。
+- Linux Ubuntu 22.04/24.04 ARM64 安装式 wheel probe 本轮通过。macOS `macos-latest` 的 `Verify policy command broker` job 失败但无公开断言细节，Intel job 通过；不归因于新探针修改，先等待后续重跑复核。暂不改 `execution_broker`。

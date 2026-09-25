@@ -76,8 +76,9 @@ def _classify_runtime_probe_failure(raw_failure: str) -> str:
 
 def _is_observed_appcontainer_connect_failure(error: OSError) -> bool:
     """Classify a failed connect attempt without attributing its cause."""
-    return isinstance(error, PermissionError) or getattr(error, "winerror", None) in (
-        _APP_CONTAINER_CONNECT_FAILURE_WINERRORS
+    return (
+        isinstance(error, (PermissionError, TimeoutError))
+        or getattr(error, "winerror", None) in _APP_CONTAINER_CONNECT_FAILURE_WINERRORS
     )
 
 
@@ -101,6 +102,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             "invalid_marker",
         )
         self.assertTrue(_is_observed_appcontainer_connect_failure(PermissionError()))
+        self.assertTrue(_is_observed_appcontainer_connect_failure(TimeoutError()))
         refused = ConnectionRefusedError()
         refused.winerror = 10061
         self.assertTrue(_is_observed_appcontainer_connect_failure(refused))
@@ -2168,6 +2170,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "        pass\n"
                     "except PermissionError:\n"
                     "    pathlib.Path('runtime-network-connect-failed.txt').write_text('true')\n"
+                    "except TimeoutError:\n"
+                    "    pathlib.Path('runtime-network-connect-failed.txt').write_text('true')\n"
                     "except OSError as exc:\n"
                     "    if getattr(exc,'winerror',None) in "
                     f"{_APP_CONTAINER_CONNECT_FAILURE_WINERRORS!r}:\n"
@@ -2464,15 +2468,21 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "    source_runtime_denied=False\n"
                     "checkpoint('staging-source-read-completed')\n"
                     "network_connect_failed=False\n"
+                    "network_connect_error=None\n"
                     "try:\n"
                     f"    with socket.create_connection(('127.0.0.1',{port}),timeout=1):\n"
                     "        pass\n"
-                    "except PermissionError:\n"
+                    "except PermissionError as exc:\n"
                     "    network_connect_failed=True\n"
+                    "    network_connect_error=type(exc).__name__\n"
+                    "except TimeoutError as exc:\n"
+                    "    network_connect_failed=True\n"
+                    "    network_connect_error=type(exc).__name__\n"
                     "except OSError as exc:\n"
                     "    if getattr(exc,'winerror',None) in "
                     f"{_APP_CONTAINER_CONNECT_FAILURE_WINERRORS!r}:\n"
                     "        network_connect_failed=True\n"
+                    "        network_connect_error=type(exc).__name__\n"
                     "    else:\n"
                     "        failed('network',exc)\n"
                     "        raise\n"
@@ -2495,6 +2505,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'runtime_write_denied':runtime_write_denied,"
                     "'source_runtime_denied':source_runtime_denied,"
                     "'network_connect_failed':network_connect_failed,"
+                    "'network_connect_error':network_connect_error,"
                     "'child_exit':child.returncode}\n"
                     f"Path({str(result_marker)!r}).write_text(json.dumps(result))\n"
                     "if not all((prefix_ok,module_roots,runtime_write_denied,"
@@ -2559,6 +2570,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                 } and isinstance(outcome, dict)
             }
             python_failure = _classify_runtime_probe_failure(raw_failure)
+            raw_network_connect_error = staged_result.get("network_connect_error")
+            if raw_network_connect_error in _RUNTIME_PROBE_ERROR_TYPES:
+                network_connect_error = raw_network_connect_error
+            elif raw_network_connect_error is None:
+                network_connect_error = "not_observed"
+            else:
+                network_connect_error = "other"
             runtime_write_probe.unlink(missing_ok=True)
             summary = {
                 **stage_summary,
@@ -2597,6 +2615,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 or staged_result.get("runtime_write_denied") is True,
                 "source_runtime_denied": staged_result.get("source_runtime_denied") is True,
                 "network_connect_failed": staged_result.get("network_connect_failed") is True,
+                "network_connect_error": network_connect_error,
                 "module_roots": staged_result.get("module_roots") is True,
                 "prefix_ok": staged_result.get("prefix_ok") is True,
                 "child_started": child_marker.is_file(),
@@ -2691,6 +2710,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "source_runtime_denied": summary["source_runtime_denied"],
                     "host_loopback_positive_control": host_loopback_positive_control,
                     "network_connect_failed": summary["network_connect_failed"],
+                    "network_connect_error": summary["network_connect_error"],
                     "module_roots": summary["module_roots"],
                     "prefix_ok": summary["prefix_ok"],
                     "child_started": summary["child_started"],

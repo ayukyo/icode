@@ -335,13 +335,17 @@ CI [#129 x64](https://github.com/ayukyo/icode/actions/runs/36092603966/job/10793
 [R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md) ·
 [R2.4 临时网络授权门禁](./nbl/plans/2026-09-24-r2-network-proxy-gate.md)
 
-R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#147：#91–#105 的启动差分曾返回 `CreateProcessW` 错误 203，#105 固定 whoami A/B 发现加入 profile `LOCALAPPDATA` 后可启动；其后原宿主 Python 一直退出 `0xC0000135`。#112 的 `process_limit=2/1` 同载荷正反对照双架构通过组件断言。#125 x64/ARM64 直读样本显示 System32 控制可读，而宿主 Python EXE、共享库、`pathlib.py`、`encodings` 均被拒绝读取。#131 清点 6,721 项、1 个词法根内 symbolic link；这不证明最终对象身份。#136/#137 把 staging ACL 差异定位为根对象 `SE_DACL_AUTO_INHERITED`；#138 先规范化该位后，双架构 staging ACL 全树精确恢复、candidate cleanup 与 staging 删除均通过，源 runtime 未修改。#141 的路径探针曾在 `PermissionError` 处中止；#147 双架构现已完成脚本启动、导入、路径、runtime 写拒绝与 source-read 检查，但仍在 network marker 前退出且错误 marker 无效，失败原因待定位。Windows 自动模式继续关闭，R2.3 与完整 R2 未完成。R2.1 三平台、Python 3.11/3.12、普通 Job 和 R2.2 Linux/macOS 当前 CI 子项通过；macOS Intel/ARM64 脱组后代按已批准的 Codex 式边界验收。
+R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#148：#91–#105 的启动差分曾返回 `CreateProcessW` 错误 203，#105 固定 whoami A/B 发现加入 profile `LOCALAPPDATA` 后可启动；其后原宿主 Python 一直退出 `0xC0000135`。#112 的 `process_limit=2/1` 同载荷正反对照双架构通过组件断言。#125 x64/ARM64 直读样本显示 System32 控制可读，而宿主 Python EXE、共享库、`pathlib.py`、`encodings` 均被拒绝读取。#131 清点 6,721 项、1 个词法根内 symbolic link；这不证明最终对象身份。#136/#137 把 staging ACL 差异定位为根对象 `SE_DACL_AUTO_INHERITED`；#138 先规范化该位后，双架构 staging ACL 全树精确恢复、candidate cleanup 与 staging 删除均通过，源 runtime 未修改。#148 双架构现已完成脚本启动、导入、路径、runtime 写拒绝和 source-read 检查，但 `network:TimeoutError` 尚未进入连接失败结果处理；当前改为记录“连接超时/未建立”，不归因策略拦截。Linux ARM64 wheel 子项本轮通过。Windows 自动模式继续关闭，R2.3 与完整 R2 未完成；R2.2 macOS-latest policy broker job 本轮失败、公开日志无细节，待下轮复核。
 
 Linux Git 元数据基座的本机 Landlock 负例已覆盖可读/不可写/不可新建/不可执行、默认拒绝，以及 helper 实际打开时拒绝最终/中间符号链接；`WorkspaceManager` 已把核验过的 layered worktree 身份保存在冻结的 `GitWorkspaceIdentity` 快照，但尚未逐次复核或传给工具，也未绑定已打开元数据目录的对象身份。它们不代表 Git 命令、可信可执行 grant 或 broker 已实现。分层 workspace 中直接 Git 仍返回 `git_broker_unavailable`；详见[R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。
 
 ### 2026-09-25 UTC：CI #147 ARM64 与 Windows 探针复核
 
 CI [#147](https://github.com/ayukyo/icode/actions/runs/36122289071) 的 Ubuntu 22.04/24.04 ARM64 wheel jobs 均因 `/lib64` 可选根缺失、Python 使用 `resolve(strict=True)` 而失败；本轮改为只对固定可选系统可执行根非严格解析，并新增缺失路径测试，待新 ARM64 CI 验证。Windows x64/ARM64 的 staging ACL 恢复、清理与宿主 Python positive control 通过，但候选在网络检查 marker 前退出、失败 marker 为 `invalid_marker`，原因尚未定位。探针现报告“连接未建立”的可观测事实，不声称 WFP/策略拒绝；仍待新双架构 CI。R2.3、R2.4、完整 R2 与 `policy_contract_ready` 继续未完成，自动模式保持关闭。
+
+### 2026-09-25 UTC：CI #148 双架构超时与 macOS job 复核
+
+CI [#148](https://github.com/ayukyo/icode/actions/runs/36125785293) 中 Ubuntu 22.04/24.04 ARM64 wheel jobs 通过。Windows x64/ARM64 都在 AppContainer loopback connect 阶段得到 `TimeoutError`；stage ACL 恢复、清理、Python 导入/路径、运行时写拒绝与 source-read 检查通过，但 network-completed marker 未写，后续 workspace/child 尚未执行。当前代码将超时记为连接尝试未建立并保留白名单错误类，不推断 WFP/策略根因，待新 CI。macOS Intel 原生 job 通过，macos-latest 的 `Verify policy command broker` 失败且公开 annotation 只有退出码、日志 API 403，具体失败断言未知；本轮未改 broker，下一轮复核是否重现。R2.3、完整 R2 与自动模式仍未验收。
 
 ### 2026-09-25 UTC：CI #133/#134 staged runtime 与 ACL 回执
 

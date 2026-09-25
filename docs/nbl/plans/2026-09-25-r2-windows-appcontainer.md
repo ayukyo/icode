@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #147 x64/ARM64 中 disposable staging ACL 精确恢复、清理与宿主 Python 3.11.9 正向控制通过；候选完成脚本启动、导入、路径、runtime 写拒绝和 source-read 检查，但在网络检查 marker 前退出，失败 marker 为 `invalid_marker`，实际失败类别尚未定位。不能把连接未建立归因于 WFP/策略，也不能推断 workspace/child 子项。现有修正仅完善安全阶段分类与连接失败表述，待新双架构 CI 验证。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #148 x64/ARM64 中 staging ACL 恢复、清理与宿主 Python 3.11.9 正向控制通过；候选完成脚本启动、导入、路径、runtime 写拒绝和 source-read 检查后，两架构均在 loopback 探针报 `network:TimeoutError`。这表示本次连接尝试超时，尚未执行后续 workspace/child 检查，也不能归因于 WFP/策略。当前修正将超时作为连接未建立的安全可观测结果，补报白名单错误类；待新双架构 CI 验证。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 > 注：下方按时间追加验证记录。阶段状态以最新 CI 和本机回归为准，历史记录不代表当前 Windows 后端已通过。
@@ -260,3 +260,8 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - 同一轮 Ubuntu 22.04/24.04 ARM64 wheel probe 都因可选系统路径 `/lib64` 不存在，在 `_validate_non_executable_workspace()` 的 `resolve(strict=True)` 处失败。修正只将固定可选系统可执行根改为非严格解析；工作区本身仍严格解析。原生 helper 对这些系统根使用 `required=0`，遇到 `ENOENT` 即按可选项跳过；新回归模拟 `/lib64` 缺失并继续验证只读工作区与可执行白名单不能重叠。
 - **网络结论修正：**Microsoft Winsock 文档给出连接/系统状态的错误码语义，但单个错误码不标识 WFP 或策略是拒绝原因；Microsoft 的 loopback 默认阻断说明针对 packaged applications，不能直接外推到 ICODE 通过 `CreateAppContainerProfile` 创建的 CI 进程。[Winsock errors](https://learn.microsoft.com/en-us/windows/win32/winsock/windows-sockets-error-codes-2) · [Microsoft loopback IPC](https://learn.microsoft.com/en-us/windows/apps/develop/communication/interprocess-communication#loopback)。Project Zero 2021 在其测试环境观察到 AppContainer loopback 由 WFP receive/accept 层丢弃并表现为 timeout；这是特定环境的实验记录，不是稳定 API 保证。[Project Zero analysis](https://projectzero.google/2021/08/understanding-network-access-windows-app.html#localhost-access)
 - **采纳/暂缓：**采纳安全的阶段/异常类型 marker 与“宿主同一活跃 listener 正向连接成功、容器连接未建立”的诊断设计；结果字段为 `network_connect_failed`。不把 `10013/10060/10061` 等错误直接称为 policy/WFP denial。若以后需要归因，必须收集匹配 AppContainer 身份、目标和 layer 的 WFP classify-drop 证据，或执行隔离环境中的受控 A/B；当前不添加 loopback exemption、不修改宿主网络策略。修正仍待新 CI 双架构验证，不替代 Windows 网络隔离验收；Windows 自动模式继续关闭。
+
+### 2026-09-25 UTC CI #148：双架构 loopback 超时分类与 macOS job 异常
+
+- [CI #148 Windows x64](https://github.com/ayukyo/icode/actions/runs/36125785293/job/108041458358) 与 [Windows ARM64](https://github.com/ayukyo/icode/actions/runs/36125785293/job/108041458385) notice 一致：staging ACL 精确恢复、清理、宿主 Python 3.11.9 positive control 成功；脚本启动、导入、路径、runtime 写拒绝和 source-read 逐项通过，随后在 `network:TimeoutError` 退出。原探针把未附带 WSA code 的 Python `TimeoutError` 误当作未知错误，未写 network-completed marker。新代码单独接纳 `TimeoutError` 为“连接尝试超时”，并只输出 `network_connect_failed=true` 与安全异常类；不声称 WFP/策略拦截，后续 workspace/child 仍需双架构 CI 验证。
+- 同轮 Ubuntu 22.04/24.04 ARM64 wheel jobs 已通过，确认缺失可选 `/lib64` 的本机与安装式验证修正有效。macOS Intel 原生 job 通过，`macos-latest` 的 `Verify policy command broker` 步骤失败；公开 annotation 只有退出码，没有失败断言，Actions 日志接口返回 403，因此原因未定位。本轮没有修改 broker 实现；下一轮继续观察该步骤，若复现再按证据诊断。
