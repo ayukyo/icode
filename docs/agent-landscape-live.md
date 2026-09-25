@@ -250,4 +250,5 @@
 
 - Windows [CI #139](https://github.com/ayukyo/icode/actions/runs/36106367758) x64/ARM64 的 staging ACL 恢复、源 runtime 未改、临时副本删除均通过；Python 已导入标准库，但路径检查回执为 `runtime_path:PermissionError`。不把 ACL 子项通过外推为 AppContainer 通过；下一轮只拆分 executable/module/prefix 三类路径操作，不改权限。
 - Linux Landlock helper 现可接收独立只读 Git 元数据根，内核负例验证可读但不可写、不可新建、不可执行，且未授权时默认不可读。此处采纳竞品对照中的“OS 边界强制只读 + 禁止外部 helper + 失败关闭”方向，但尚未运行 Git，也没有会话身份或固定参数 broker；保留 `git_broker_unavailable`，macOS/Windows 不沿用 Linux 子项结论。
+- `WorkspaceManager` 现在在分层 Git worktree session 上保留经创建/复用流程核验的冻结 `GitWorkspaceIdentity` 快照；snapshot 与普通 worktree 不带该身份。它还没有进入模型上下文，也不是每次调用前复核的授权。Codex/Qwen/Gemini 上游结论未变化，本阶段只补 ICODE 可信身份快照。
 - 相关上游观察仍为 2026-09-25 固定提交：Codex 的只读 `.git`/gitdir 处理、Qwen 后端启动失败不回退宿主、Gemini 解析 worktree/common-dir；这轮不重复计为新上游发现。下一片研究重点转到固定 Git status 的有效配置面、子模块与 linked-worktree common-dir 的 fail-closed 识别，再决定可信 grant API。

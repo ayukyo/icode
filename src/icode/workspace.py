@@ -384,6 +384,21 @@ def default_data_root() -> Path:
     return _normalize_path(Path.home() / ".local" / "share" / "icode-agent")
 
 
+@dataclass(frozen=True)
+class GitWorkspaceIdentity:
+    """WorkspaceManager 已核验的分层 Git worktree 身份快照。"""
+
+    checkout_root: Path
+    code_root: Path
+    workspace_root: Path
+    top_level: Path
+    common_dir: Path
+    git_dir: Path
+    revision: str
+    identity_token: str
+    source_relative_path: Path
+
+
 @dataclass
 class WorkspaceSession:
     """持有工单租约的隔离工作区会话。"""
@@ -399,6 +414,7 @@ class WorkspaceSession:
     manifest_path: Path
     protected_paths: tuple[Path, ...]
     lease: TicketLease
+    git_status_identity: GitWorkspaceIdentity | None = None
 
     def policy(
         self,
@@ -1405,6 +1421,7 @@ class WorkspaceManager:
                 runtime_root,
                 receipts_root,
                 manifest_path,
+                metadata=metadata,
             )
         except Exception as exc:  # noqa: BLE001 - 公开边界统一清理并归一化异常
             if created_ticket_root is not None:
@@ -1772,6 +1789,7 @@ class WorkspaceManager:
             runtime_root,
             receipts_root,
             manifest_path,
+            metadata=metadata,
         )
 
     def _session(
@@ -1785,6 +1803,8 @@ class WorkspaceManager:
         runtime_root: Path,
         receipts_root: Path,
         manifest_path: Path,
+        *,
+        metadata: Mapping[str, object],
     ) -> WorkspaceSession:
         relative_source = git_identity.relative_source if git_identity else Path()
         code_root = (
@@ -1808,6 +1828,26 @@ class WorkspaceManager:
                     _normalize_path(git_identity.top_level / ".git"),
                 }
             )
+        git_status_identity = None
+        if kind == "git_worktree" and self.isolate_git_metadata:
+            if git_identity is None:
+                raise WorkspaceError("Git 状态身份缺失")
+            raw_git_dir = metadata.get("git_worktree_git_dir")
+            raw_identity_token = metadata.get("git_worktree_identity")
+            if not isinstance(raw_git_dir, str) or not isinstance(raw_identity_token, str):
+                raise WorkspaceError("Git 状态身份元数据无效")
+            code_root = _normalize_path(checkout_root / "code")
+            git_status_identity = GitWorkspaceIdentity(
+                checkout_root=_normalize_path(checkout_root),
+                code_root=code_root,
+                workspace_root=workspace_root,
+                top_level=git_identity.top_level,
+                common_dir=git_identity.common_dir,
+                git_dir=_normalize_path(Path(raw_git_dir)),
+                revision=git_identity.revision,
+                identity_token=raw_identity_token,
+                source_relative_path=git_identity.relative_source,
+            )
         return WorkspaceSession(
             project_id=self.project_id,
             ticket_id=ticket_id,
@@ -1820,4 +1860,5 @@ class WorkspaceManager:
             manifest_path=_normalize_path(manifest_path),
             protected_paths=tuple(sorted(protected, key=str)),
             lease=lease,
+            git_status_identity=git_status_identity,
         )

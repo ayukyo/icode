@@ -60,6 +60,12 @@
 - 这是**执行基座，不是 Git broker**：尚无 `WorkspaceSession` 可信 Git-dir grant、身份漂移复核、固定 Git 子命令/参数与环境、恶意仓库配置/扩展负例，也没有 x64/ARM64 wheel 和 macOS/Windows 等价证明。该接口目前只供内部将来接线使用，未注册模型工具，`git_broker_unavailable` 必须保持。
 - 下一片先从可信 `git_worktree` 会话构造并重核 worktree/gitdir/common-dir 身份，再以固定 `git status --porcelain=v2 -z` 子命令做 Linux-only 实验；遇到子模块、外部 gitdir、身份变化或任何策略无法表达都整体拒绝。现阶段不得将普通宿主 `git status` 当作回退。
 
+## 2026-09-25 WorkspaceSession Git 身份快照
+
+- `WorkspaceManager` 仅对启用 Git 元数据分离的 `git_worktree` 会话附带冻结的 `GitWorkspaceIdentity`：checkout/code/task 根、顶层、common-dir、worktree gitdir、起始 revision、随机身份标记和源码相对路径。首次创建从内部构造元数据派生；复用前须先通过现有 manifest 精确匹配、`.git` 管理文件检查、Git rev-parse 与 worktree 注册校验。snapshot 与普通未分层 worktree 的字段保持 `None`。
+- 新增工作区回归验证创建与复用 session 身份一致，非分层和 snapshot 不会获得 Git 身份。全量工作区与自治 executor 定向测试 112 项通过。
+- **仍不是可执行 grant**：身份快照尚未传给 `ToolContext`，也没有每次调用前复核 `.git`/`commondir`/`HEAD`/身份标记；未启动 Git、未开放工具，`git_broker_unavailable` 保持。下一片为只读会话 recheck 与固定参数 Linux status 实验，失败时只返回 unavailable，不执行普通 Git。
+
 ### 独立格式审查修正（2026-09-25）
 
 - 上游 Git 回归用例确认 `git add --intent-to-add` 会产生合法 `.A` 状态；解析器现接受该组合，并以真实 Git CLI 输出回归。[Git 上游用例](https://github.com/git/git/blob/master/t/t7064-wtstatus-pv2.sh#L1934-L1953)

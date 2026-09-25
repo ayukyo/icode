@@ -496,6 +496,7 @@ class TestWorkspaceManager(unittest.TestCase):
         with manager.open("../ticket-secret", "run-1") as session:
             self.assertIsInstance(session, WorkspaceSession)
             self.assertEqual(session.kind, "git_worktree")
+            self.assertIsNone(session.git_status_identity)
             self.assertEqual(
                 _run_git(session.workspace_root, "rev-parse", "--abbrev-ref", "HEAD"),
                 "HEAD",
@@ -544,10 +545,21 @@ class TestWorkspaceManager(unittest.TestCase):
             self.assertFalse((session.workspace_root / ".git").exists())
             self.assertIn(git_file, session.protected_paths)
             self.assertFalse(git_file.is_relative_to(session.workspace_root))
+            metadata = json.loads(session.manifest_path.read_text(encoding="utf-8"))
+            identity = session.git_status_identity
+            self.assertIsNotNone(identity)
+            self.assertEqual(identity.checkout_root, checkout.resolve())
+            self.assertEqual(identity.code_root, (checkout / "code").resolve())
+            self.assertEqual(identity.workspace_root, session.workspace_root)
+            self.assertEqual(identity.top_level, repository.resolve())
+            self.assertEqual(identity.common_dir, Path(metadata["git_common_dir"]).resolve())
+            self.assertEqual(identity.git_dir, Path(metadata["git_worktree_git_dir"]).resolve())
+            self.assertEqual(identity.revision, metadata["git_revision"])
+            self.assertEqual(identity.identity_token, metadata["git_worktree_identity"])
+            self.assertEqual(identity.source_relative_path, Path("."))
             policy = session.policy("plan")
             self.assertEqual(policy.write_roots, (session.workspace_root,))
             self.assertIn(git_file, policy.deny_write_roots)
-            metadata = json.loads(session.manifest_path.read_text(encoding="utf-8"))
             git_dir = metadata["git_worktree_git_dir"]
             self.assertEqual(
                 _run_git(
@@ -564,6 +576,7 @@ class TestWorkspaceManager(unittest.TestCase):
                 "work\n",
             )
             self.assertEqual(reused.workspace_root, checkout / "code")
+            self.assertEqual(reused.git_status_identity, identity)
 
     @unittest.skipUnless(os.name == "posix", "分层工作区当前仅用于 POSIX")
     def test_启用Git元数据分离不得静默复用旧工作区(self) -> None:
@@ -1038,6 +1051,7 @@ class TestWorkspaceManager(unittest.TestCase):
             "ticket-1", "run-1"
         ) as session:
             self.assertEqual(session.kind, "snapshot")
+            self.assertIsNone(session.git_status_identity)
             self.assertEqual(
                 (session.workspace_root / "file.txt").read_text(encoding="utf-8"),
                 "snapshot\n",
