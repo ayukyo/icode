@@ -144,6 +144,32 @@ except Exception as exc:
     raise
 """
 
+_STAGED_PYTHON_TEMPFILE_PROBE = """\
+staged_tempfile = {
+    'tempdir': None,
+    'cwd': os.getcwd(),
+    'created': False,
+    'deleted': False,
+    'error_type': None,
+}
+_tempfile_probe_path = None
+try:
+    staged_tempfile['tempdir'] = tempfile.gettempdir()
+    with tempfile.NamedTemporaryFile(prefix='icode-temp-probe-', delete=True) as _probe:
+        _tempfile_probe_path = _probe.name
+        _probe.write(b'ICODE')
+        _probe.flush()
+        staged_tempfile['created'] = True
+    staged_tempfile['deleted'] = not os.path.exists(_tempfile_probe_path)
+except Exception as exc:
+    staged_tempfile['error_type'] = type(exc).__name__
+    if _tempfile_probe_path is not None:
+        try:
+            os.unlink(_tempfile_probe_path)
+        except OSError:
+            pass
+"""
+
 
 def _is_observed_appcontainer_connect_failure(error: OSError) -> bool:
     """Classify a failed connect attempt without attributing its cause."""
@@ -924,6 +950,81 @@ class TestWindowsAppContainer(unittest.TestCase):
         return summary
 
     @staticmethod
+    def _summarize_staged_tempfile(
+        observation: object, environment: object,
+    ) -> dict[str, object]:
+        """Publish tempfile behavior without disclosing any observed path."""
+        if (
+            not isinstance(observation, dict)
+            or not isinstance(environment, dict)
+            or not all(name in environment for name in ("LOCALAPPDATA", "TEMP", "TMP"))
+            or not isinstance(observation.get("cwd"), str)
+            or not observation["cwd"]
+        ):
+            return {"complete": False}
+
+        tempdir = observation.get("tempdir")
+        if tempdir is not None and (not isinstance(tempdir, str) or not tempdir):
+            return {"complete": False}
+
+        def environment_value(name: str) -> str | None:
+            item = environment.get(name)
+            if not isinstance(item, dict):
+                return None
+            value = item.get("python_value")
+            return value if isinstance(value, str) and value else None
+
+        def same_path(left: str | None, right: str | None) -> bool:
+            return bool(left and right) and (
+                ntpath.normcase(ntpath.normpath(left))
+                == ntpath.normcase(ntpath.normpath(right))
+            )
+
+        def within_path(path: str | None, parent: str) -> bool:
+            if not path:
+                return False
+            try:
+                return ntpath.normcase(ntpath.commonpath([path, parent])) == (
+                    ntpath.normcase(ntpath.normpath(parent))
+                )
+            except ValueError:
+                return False
+
+        temp_value = environment_value("TEMP")
+        tmp_value = environment_value("TMP")
+        matches_temp = same_path(tempdir, temp_value)
+        matches_tmp = same_path(tempdir, tmp_value)
+        within_workspace = within_path(tempdir, observation["cwd"])
+        if tempdir is None:
+            source = "unavailable"
+        elif matches_temp:
+            source = "temp"
+        elif matches_tmp:
+            source = "tmp"
+        elif within_workspace:
+            source = "workspace"
+        else:
+            source = "other"
+
+        error_type = observation.get("error_type")
+        if error_type is None:
+            error = "none"
+        elif isinstance(error_type, str) and error_type in _RUNTIME_PROBE_ERROR_TYPES:
+            error = error_type
+        else:
+            error = "other"
+        return {
+            "complete": True,
+            "source": source,
+            "matches_temp": matches_temp,
+            "matches_tmp": matches_tmp,
+            "within_workspace": within_workspace,
+            "created": observation.get("created") is True,
+            "deleted": observation.get("deleted") is True,
+            "error": error,
+        }
+
+    @staticmethod
     def _decode_cmd_unicode_output(contents: bytes) -> str:
         if contents.startswith(b"\xff\xfe"):
             contents = contents[2:]
@@ -1081,10 +1182,96 @@ class TestWindowsAppContainer(unittest.TestCase):
             None,
         ), {"complete": False})
 
+    def test_staged_Python_tempfile观测摘要脱敏并区分目录来源(self) -> None:
+        workspace = r"D:\a\_temp\task"
+        temp_dir = workspace + r"\nested-temp"
+        environment = {
+            "LOCALAPPDATA": {
+                "python_value": r"C:\Users\runner\AppData\Local\Packages\icode\AC",
+                "win32_value": r"C:\Users\runner\AppData\Local\Packages\icode\AC",
+                "path_state": "not_found",
+            },
+            "TEMP": {
+                "python_value": r"C:\Users\runner\AppData\Local\Temp",
+                "win32_value": r"C:\Users\runner\AppData\Local\Temp",
+                "path_state": "not_found",
+            },
+            "TMP": {
+                "python_value": r"C:\Users\runner\AppData\Local\Temp",
+                "win32_value": r"C:\Users\runner\AppData\Local\Temp",
+                "path_state": "not_found",
+            },
+        }
+
+        summary = self._summarize_staged_tempfile(
+            {
+                "tempdir": temp_dir,
+                "cwd": workspace,
+                "created": True,
+                "deleted": True,
+                "error_type": None,
+                "error_text": r"D:\private\must-not-escape",
+            },
+            environment,
+        )
+
+        self.assertEqual(
+            summary,
+            {
+                "complete": True,
+                "source": "workspace",
+                "matches_temp": False,
+                "matches_tmp": False,
+                "within_workspace": True,
+                "created": True,
+                "deleted": True,
+                "error": "none",
+            },
+        )
+        serialized = json.dumps(summary, ensure_ascii=True, separators=(",", ":"))
+        self.assertNotIn("D:\\a\\_temp", serialized)
+        self.assertNotIn("D:\\private", serialized)
+        self.assertLessEqual(len(serialized), 500)
+
+        failed = self._summarize_staged_tempfile(
+            {
+                "tempdir": None,
+                "cwd": workspace,
+                "created": False,
+                "deleted": False,
+                "error_type": "PermissionError",
+            },
+            environment,
+        )
+        self.assertEqual(failed["source"], "unavailable")
+        self.assertEqual(failed["error"], "PermissionError")
+        self.assertFalse(failed["created"])
+        profile_temp = self._summarize_staged_tempfile(
+            {
+                "tempdir": r"C:\Users\runner\AppData\Local\Packages\icode\AC\Temp",
+                "cwd": workspace,
+                "created": True,
+                "deleted": True,
+                "error_type": None,
+            },
+            environment,
+        )
+        self.assertEqual(profile_temp["source"], "other")
+        self.assertFalse(profile_temp["within_workspace"])
+        self.assertEqual(
+            self._summarize_staged_tempfile({}, environment),
+            {"complete": False},
+        )
+
     def test_staged_Python环境探针片段可独立解析(self) -> None:
         compile(
             _STAGED_PYTHON_ENVIRONMENT_PROBE,
             "<staged-python-environment-probe>",
+            "exec",
+        )
+        compile(
+            _STAGED_PYTHON_TEMPFILE_PROBE,
+            "<staged-python-tempfile-probe>",
             "exec",
         )
 
@@ -2607,12 +2794,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "open('staging-python-script-started','w',encoding='ascii').write('1')\n"
                     "try:\n"
                     "    import _ctypes,_sqlite3,_ssl,ctypes,encodings,json,pathlib,"
-                    "os,platform,socket,sqlite3,ssl,stat,subprocess,sys,sysconfig; from pathlib import Path\n"
+                    "os,platform,socket,sqlite3,ssl,stat,subprocess,sys,sysconfig,tempfile; from pathlib import Path\n"
                     "except Exception as exc:\n"
                     "    open('staging-python-failure-class','w',encoding='ascii').write("
                     "'imports:'+type(exc).__name__)\n"
                     "    raise\n"
                     + _STAGED_PYTHON_ENVIRONMENT_PROBE
+                    + _STAGED_PYTHON_TEMPFILE_PROBE
                     + "\n"
                     "def checkpoint(name): Path(name).write_text('1',encoding='ascii')\n"
                     "def failed(stage,exc): Path('staging-python-failure-class').write_text("
@@ -2757,6 +2945,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "result={'prefix_ok':prefix_ok,'module_roots':module_roots,"
                     "'python_version':platform.python_version(),"
                     "'environment':staged_environment,"
+                    "'tempfile':staged_tempfile,"
                     "'runtime_write_denied':runtime_write_denied,"
                     "'source_runtime_denied':source_runtime_denied,"
                     "'network_connect_failed':network_connect_failed,"
@@ -2801,6 +2990,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             profile_environment = self._summarize_staged_environment(
                 staged_result.get("environment"),
                 candidate_profile_paths[0] if len(candidate_profile_paths) == 1 else None,
+            )
+            tempfile_probe = self._summarize_staged_tempfile(
+                staged_result.get("tempfile"), staged_result.get("environment"),
             )
             python_failure = "not_observed"
             try:
@@ -2867,6 +3059,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "python_failure": python_failure,
                 "python_path_resolution": path_resolution_probe,
                 "profile_environment": profile_environment,
+                "tempfile_probe": tempfile_probe,
                 "python_path_resolution_probe_complete": set(path_resolution_probe) == {
                     "absolute", "stat", "read", "resolve_strict",
                     "resolve_nonstrict", "getfinalpathname", "native_createfile_zero",
@@ -2964,6 +3157,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "Python staged environment flags", profile_environment,
             )
             self._workflow_json_notice(
+                "Python staged tempfile consumer", tempfile_probe,
+            )
+            self._workflow_json_notice(
                 "Python disposable staging boundary assertions",
                 {
                     "acl_restore_verified": summary["acl_restore_verified"],
@@ -3011,6 +3207,19 @@ class TestWindowsAppContainer(unittest.TestCase):
                 profile_environment[name]["python_win32_match"],
                 f"staged Python and Win32 disagree on {name}",
             )
+        tempfile_probe = summary["tempfile_probe"]
+        self.assertTrue(
+            tempfile_probe.get("complete"),
+            "staged Python tempfile probe did not produce a sanitized result",
+        )
+        self.assertTrue(
+            tempfile_probe["created"],
+            f"staged Python tempfile could not create a file ({tempfile_probe['error']})",
+        )
+        self.assertTrue(
+            tempfile_probe["deleted"],
+            "staged Python tempfile did not remove its temporary file",
+        )
         self.assertIn(
             summary["acl_baseline_normalization"], {"0", "1024"},
             "staging ACL baseline normalization was not verified",
