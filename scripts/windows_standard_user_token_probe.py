@@ -279,7 +279,7 @@ def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
             if worker.is_alive():
                 return False, "server_thread_timeout"
             if failures:
-                return False, f"server_accept_{failures[0]}"
+                return False, f"{client_result}+server_accept_{failures[0]}"
             if not pipe._connected:
                 return False, f"{client_result}+server_not_connected"
             if client_result != "server_pid_mismatch_rejected":

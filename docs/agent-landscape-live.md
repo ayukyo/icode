@@ -444,3 +444,10 @@
 
 - 手动 CI [#168](https://github.com/ayukyo/icode/actions/runs/36183275410) 中 `windows-latest` x64 与 `windows-11-arm` ARM64 都报告 `standard_user_token_probe=PASS`：runner 为标准用户，子进程 token restricted 且非管理员，子进程身份 SID 与 runner 一致，Job 加入成功，固定命令退出码符合合同。临时用户账户由 workflow 检查并清理。
 - **取舍 / 边界：**这证明候选 `CreateProcessWithLogonW → restricted token → CreateProcessAsUserW` 在两种 GitHub hosted runner 正向路径可行，不证明任意 Windows 设备权限、用户 Python/runtime 可达或产品 helper/IPC/setup。无效凭据、账户缺失、无 RX 权限、privilege 不足、失败时无 marker/子进程残留仍未测；自动模式继续关闭。
+
+### 2026-09-26 UTC：Windows runner PID 负例复核与诊断改进
+
+- **实时上游对照：**本阶段沿用上方固定 Codex legacy runner pipe / provisioning listener 证据；#180 结果只改变 ICODE 自身原生管道探针诊断，不足以推翻或确认上游的权限模型，也未复制上游代码。
+- **观测与限制：**手动 [CI #180](https://github.com/ayukyo/icode/actions/runs/36195160595) 中 x64 [job](https://github.com/ayukyo/icode/actions/runs/36195160595/job/108269224331) 与 ARM64 [job](https://github.com/ayukyo/icode/actions/runs/36195160595/job/108269224284) 都失败于错误 server PID 负例，公开摘要为 `server_accept_timeout`。旧诊断优先返回服务端超时，覆盖了客户端访问结果；当前不能区分显式 ACL 拒绝与固定 25 ms sleep/客户端快速断连形成的时序竞态。
+- **采纳 / 暂缓：**采纳“原生负例必须同时保留客户端阶段码与服务端 accept 阶段码”的可观测性要求，暂缓扩大 DACL、去除 PID 校验或将错误归因于 Windows runner。新增模拟两侧结果并显式拒绝超时覆盖的测试，先红后绿；16 项定向测试和完整预检通过。日志不含账户、SID、路径或原始异常文本。
+- **下一验收：**修复尚待双架构 Windows 原生复测，不能记为 IPC 门通过。下轮若确认客户端已打开而服务器未接受，再同步等待真实 ConnectNamedPipe pending 状态，替换固定 sleep；若客户端被拒绝，只针对验证过的 SID/DACL 问题最小修复。Windows 后端、UAC setup、完整文件/网络隔离及自动模式仍未完成。

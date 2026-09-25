@@ -383,6 +383,12 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - **本次前置探针范围：**当前新增代码仅执行双架构上的有效临时标准账户正向路径，并让 setup-python 显式选择 x64 / arm64 解释器；错误口令、账户缺失、无 RX、权限不足及无 marker / 无残留负例尚未实现。它们仍是后续 Windows helper / 执行器组合验收的硬门槛，绝不能据本探针通过开放 Windows 自动模式或报告 R2 完成。
 - **首轮原生执行及修正：**手动 CI [#166](https://github.com/ayukyo/icode/actions/runs/36181092112) 的 x64 与 ARM64 都完成了 `CreateProcessWithLogonW`、restricted token、`CreateProcessAsUserW` 与身份 SID 校验，但在管理员组诊断处以 `WinError 1309` 失败。微软文档规定传给 `CheckTokenMembership` 的非空 token handle 必须是 impersonation token；该探针当时传入的是子进程 primary token。因此这次失败属于诊断器调用错误，不能解释成标准用户 `CreateProcessAsUserW` 不可用。已改为用 `DuplicateToken(..., SecurityImpersonation)` 取得检查句柄并保证关闭；修正版双架构复测待跑，之前的失败原始记录保留。[CheckTokenMembership](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-checktokenmembership)
 
+### 2026-09-26 UTC：CI #180 runner PID 负例失败与诊断补强
+
+- **原生结果：**手动 CI [#180](https://github.com/ayukyo/icode/actions/runs/36195160595) 的 Windows x64 与 ARM64 标准用户 probe 都在 `runner_pipe_wrong_server_pid_rejection_failed` 失败，安全摘要均为 `server_accept_timeout`；其余 #180 作业成功。原探针先启动 `ConnectNamedPipe` 线程，固定 sleep 25 ms 后运行预期被错误 server PID 拒绝的客户端；服务器超时分支优先返回，因此客户端阶段码被覆盖。现有日志无法区分客户端访问拒绝、客户端等待/打开失败或“已打开后迅速关闭、服务端尚未开始接受”的时序竞态，不据此认定根因。
+- **TDD 补强：**先添加回归测试，模拟客户端观察到预期 PID 不匹配、服务端随后 accept 超时；确认旧逻辑错误地仅返回 `server_accept_timeout`（RED）。修正为在失败摘要中并列返回安全白名单客户端阶段与服务器 accept 阶段；16 项标准用户 probe 定向测试及完整 `scripts/preflight.py` 三道守护（密钥扫描、子模块完整性、全量单测）均通过。
+- **当前门槛：**该诊断修正尚未经过 Windows 原生复测，且 #180 不构成错误 PID 拒绝通过证据。下一次双架构 probe 必须先报告客户端实际阶段；若显示成功打开后服务端仍超时，再去掉固定 sleep、引入确认 listener 已进入 pending 的同步；若为 ACL/打开拒绝则只修复经证实的权限问题。不得扩大 pipe ACL 或跳过 PID 检查。生产 runner、权限/网络隔离和 Windows 自动模式仍未就绪。
+
 ### 2026-09-25 UTC：Windows token 修正版前的 macOS CI 复跑
 
 - CI [#167 首次尝试](https://github.com/ayukyo/icode/actions/runs/36181786438) 的测试、wheel、workspace、Linux、Apple Silicon 与 Windows Job/打包子项均通过；仅 macOS Intel broker 测试断言 `cleanup_failed`，另有研究对照日期误标 UTC 的提示。失败作业 attempt 2 通过，说明本次没有复现；没有采集到 `cleanup_errno`，因此不判定为系统行为或回收器根因。
