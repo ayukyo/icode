@@ -781,6 +781,14 @@ class TestSandboxWrapping(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         sandbox._checked_policy_workspace(changed)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux Landlock read-only policy")
+    def test_landlock_Git只读工作区拒绝可执行授权重叠(self) -> None:
+        sandbox = LandlockSandbox(helper="/not-needed-for-static-check")
+        for root in (Path("/"), Path("/usr"), Path("/bin"), Path(sys.prefix)):
+            with self.subTest(root=root):
+                with self.assertRaises(ValueError):
+                    sandbox._validate_non_executable_workspace(root)
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux Git 元数据只读授权")
     def test_landlock_Git元数据根必须明确且与工作区隔离(self) -> None:
         with temp_workspace() as root:
@@ -888,6 +896,37 @@ print("metadata-read-only-ok")
             self.assertEqual(index.read_text(encoding="ascii"), "index-data\n")
             self.assertFalse((metadata / "new-index").exists())
             self.assertFalse(hook_marker.exists())
+
+            noexec_script = workspace / "must-not-execute"
+            noexec_marker = workspace / "noexec-marker"
+            noexec_script.write_text(
+                f"#!/bin/sh\ntouch {noexec_marker}\n", encoding="utf-8"
+            )
+            noexec_script.chmod(0o755)
+            read_only_probe = subprocess.run(
+                sandbox._wrap_policy_with_metadata_roots(
+                    [
+                        "/usr/bin/python3", "-c",
+                        "from pathlib import Path; import subprocess, sys\n"
+                        "script = Path(sys.argv[1]); marker = Path(sys.argv[2])\n"
+                        "assert script.read_text().startswith('#!/bin/sh')\n"
+                        "try: script.write_text('changed')\n"
+                        "except PermissionError: pass\n"
+                        "else: raise AssertionError('workspace is writable')\n"
+                        "try: result = subprocess.run([str(script)], check=False)\n"
+                        "except PermissionError: pass\n"
+                        "else: assert result.returncode != 0, result.returncode\n"
+                        "assert not marker.exists()\n",
+                        str(noexec_script), str(noexec_marker),
+                    ],
+                    policy=policy,
+                    metadata_roots=(),
+                    workspace_read_only=True,
+                ),
+                capture_output=True, text=True, timeout=6, check=False,
+            )
+            self.assertEqual(read_only_probe.returncode, 0, read_only_probe.stderr)
+            self.assertFalse(noexec_marker.exists())
 
             metadata_file = root / "git-pointer"
             metadata_file.write_text(

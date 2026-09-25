@@ -75,6 +75,33 @@ def main() -> int:
                         network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
                         wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
                     )
+                    script = workspace / 'wheel-noexec-script'
+                    marker = workspace / 'wheel-noexec-marker'
+                    script.write_text(
+                        f'#!/bin/sh\\ntouch {marker}\\n', encoding='utf-8'
+                    )
+                    script.chmod(0o755)
+                    read_only_probe = (
+                        'from pathlib import Path; import subprocess, sys\\n'
+                        'script = Path(sys.argv[1]); marker = Path(sys.argv[2])\\n'
+                        "assert script.read_text().startswith('#!/bin/sh')\\n"
+                        "try: script.write_text('changed')\\n"
+                        "except PermissionError: pass\\n"
+                        "else: raise AssertionError('read-only workspace was writable')\\n"
+                        "try: result = subprocess.run([str(script)], check=False)\\n"
+                        "except PermissionError: pass\\n"
+                        "else: assert result.returncode != 0, result.returncode\\n"
+                        "assert not marker.exists()\\n"
+                    )
+                    read_only_command = sandbox._wrap_policy_with_metadata_roots(
+                        [sys.executable, '-c', read_only_probe, str(script), str(marker)],
+                        policy=policy, metadata_roots=(), workspace_read_only=True,
+                    )
+                    read_only = execute_policy_command(
+                        read_only_command, cwd=workspace, policy=policy, timeout=5,
+                    )
+                    assert read_only.error is None and read_only.exit_code == 0, read_only
+                    assert not marker.exists(), 'installed wheel allowed workspace execution'
                     sandbox.prepare_policy(policy)
                     smoke = execute_policy_command(
                         sandbox.wrap_policy([

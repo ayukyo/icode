@@ -87,6 +87,20 @@ class TestPorcelainV2Parser(unittest.TestCase):
         self.assertEqual(entries[0].kind, "tracked")
         self.assertEqual((entries[0].index_status, entries[0].worktree_status), ("M", "."))
         self.assertIsNone(entries[0].original_path)
+        self.assertEqual(entries[0].submodule_status, b"N...")
+
+    def test_submodule_state_is_preserved_for_broker_fail_closed(self) -> None:
+        oid = b"a" * 40
+        output = (
+            b"1 .M S.M. 160000 160000 160000 "
+            + oid + b" " + oid + b" modules/dependency\0"
+        )
+
+        entries = parse_porcelain_v2(output)
+
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].path, b"modules/dependency")
+        self.assertEqual(entries[0].submodule_status, b"S.M.")
 
     def test_rename_consumes_second_nul_terminated_path(self) -> None:
         oid = b"b" * 40

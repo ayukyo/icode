@@ -501,32 +501,57 @@ class LandlockSandbox:
     def _wrap_policy_with_metadata_roots(
         self, argv: Sequence[str], *, policy: SandboxPolicy,
         metadata_roots: Sequence[MetadataReadRoot], network: bool = False,
+        workspace_read_only: bool = False,
     ) -> list[str]:
         """Wrap a trusted internal read-only query with extra file/directory roots.
 
-        This is reserved for the future fixed-argument Git status broker; callers
-        must provide server-derived paths after rechecking worktree identity.
+        Git-status callers provide server-derived roots after rechecking the
+        worktree identity; model-supplied paths are never accepted here.
         """
         if network:
             raise ValueError("Landlock helper does not support network grants")
+        if workspace_read_only:
+            self._validate_non_executable_workspace(policy.workspace_root)
         self.prepare_policy(policy)
         validated_roots = self._validated_metadata_roots(
             policy.workspace_root, metadata_roots,
         )
         return self._wrap_with_metadata_roots(
             argv, workspace=policy.workspace_root, metadata_roots=validated_roots,
+            workspace_read_only=workspace_read_only,
         )
+
+    def _validate_non_executable_workspace(self, workspace: Path) -> Path:
+        """Reject read-only roots whose paths overlap a separately executable grant.
+
+        Landlock rules at one layer add rights; a read-only child rule cannot
+        revoke EXECUTE already granted by an overlapping system/runtime root.
+        """
+        workspace = Path(workspace).resolve(strict=True)
+        executable_roots = tuple(
+            Path(path).resolve(strict=True)
+            for path in ("/usr", "/bin", "/lib", "/lib64", "/sbin")
+        ) + self._runtime_read_roots()
+
+        def intersects(left: Path, right: Path) -> bool:
+            return left.is_relative_to(right) or right.is_relative_to(left)
+
+        if any(intersects(workspace, root) for root in executable_roots):
+            raise ValueError(
+                "read-only workspace overlaps an executable system/runtime root"
+            )
+        return workspace
 
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         if network:
             raise RuntimeError("Landlock helper does not support network grants")
         return self._wrap_with_metadata_roots(
-            argv, workspace=workspace, metadata_roots=(),
+            argv, workspace=workspace, metadata_roots=(), workspace_read_only=False,
         )
 
     def _wrap_with_metadata_roots(
         self, argv: Sequence[str], *, workspace: Path,
-        metadata_roots: Sequence[MetadataReadRoot],
+        metadata_roots: Sequence[MetadataReadRoot], workspace_read_only: bool,
     ) -> list[str]:
         helper = Path(self.helper)
         if not helper.is_file():
@@ -540,6 +565,8 @@ class LandlockSandbox:
             str(helper), "--workspace", str(Path(workspace).resolve()),
             "--parent-pid", str(os.getpid()),
         ]
+        if workspace_read_only:
+            wrapped.append("--workspace-read-only")
         for root in self._runtime_read_roots():
             wrapped.extend(("--runtime-read", str(root)))
         for root in metadata_roots:

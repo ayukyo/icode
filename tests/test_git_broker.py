@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import os
+import hashlib
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
 from dataclasses import replace
+import sys
 
-from icode.git_broker import GitStatusUnavailable, verify_git_workspace_identity
+from icode.git_broker import (
+    GitStatusUnavailable,
+    execute_git_status,
+    verify_git_workspace_identity,
+)
+from icode.isolation import LandlockSandbox
 from icode.workspace import WorkspaceManager
 
 
@@ -80,6 +88,7 @@ class TestGitWorkspaceIdentityVerification(unittest.TestCase):
 
         with self.assertRaises(GitStatusUnavailable):
             verify_git_workspace_identity(identity)
+
 
     def test_rejects_changed_revision_or_ownership_marker(self) -> None:
         identity = self.session.git_status_identity
@@ -161,6 +170,211 @@ class TestGitWorkspaceIdentityVerification(unittest.TestCase):
 
         with self.assertRaises(GitStatusUnavailable):
             verify_git_workspace_identity(identity)
+
+
+@unittest.skipUnless(
+    sys.platform.startswith("linux")
+    and shutil.which("cc")
+    and Path("/usr/bin/git").is_file(),
+    "需要 Linux Landlock、C 编译器和系统 Git",
+)
+class TestGitStatusBrokerExecution(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.repository = self.root / "source"
+        self.repository.mkdir()
+        _git(self.repository, "init", "--initial-branch=main")
+        (self.repository / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+        _git(self.repository, "add", "tracked.txt")
+        _git(self.repository, "commit", "-m", "baseline")
+        self.manager = WorkspaceManager(
+            self.repository,
+            self.root / "data",
+            "git-status-broker-test",
+            isolate_git_metadata=True,
+        )
+        self.session = self.manager.open("ticket-1", "run-1")
+        self.addCleanup(self.session.lease.release)
+
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        self.helper = self.root / "icode-landlock"
+        build = subprocess.run(
+            [
+                shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                "-Werror", str(source), "-o", str(self.helper),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(build.returncode, 0, build.stderr)
+        self.manifest = self.root / "icode-landlock.sha256"
+        self.manifest.write_text(
+            hashlib.sha256(self.helper.read_bytes()).hexdigest() + "\n",
+            encoding="ascii",
+        )
+        self.sandbox = LandlockSandbox(
+            helper=str(self.helper), manifest=str(self.manifest)
+        )
+
+    def _status(self):
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        return execute_git_status(
+            identity,
+            sandbox=self.sandbox,
+            policy=self.session.policy(
+                "review", wall_timeout_seconds=10, output_limit_bytes=1024 * 1024
+            ),
+        )
+
+    def test_status_reports_only_the_task_worktree_and_preserves_index(self) -> None:
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        index = identity.git_dir / "index"
+        index_before = index.read_bytes()
+        (self.session.workspace_root / "tracked.txt").write_text(
+            "modified\n", encoding="utf-8"
+        )
+        (self.session.workspace_root / "new file.txt").write_text(
+            "new\n", encoding="utf-8"
+        )
+
+        entries = self._status()
+
+        self.assertEqual(
+            {entry.path for entry in entries},
+            {b"tracked.txt", b"new file.txt"},
+        )
+        self.assertEqual(index.read_bytes(), index_before)
+        self.assertEqual(
+            (self.repository / "tracked.txt").read_text(encoding="utf-8"),
+            "baseline\n",
+        )
+
+    def test_malicious_fsmonitor_and_external_diff_are_not_executed(self) -> None:
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        marker = self.session.workspace_root / "helper-was-run"
+        fsmonitor = self.session.workspace_root / "fake-fsmonitor"
+        fsmonitor.write_text(
+            f"#!/bin/sh\ntouch {marker}\nexit 0\n", encoding="utf-8"
+        )
+        fsmonitor.chmod(0o755)
+        _git(self.repository, "config", "core.fsmonitor", str(fsmonitor))
+        _git(self.repository, "config", "diff.external", str(fsmonitor))
+        (self.session.workspace_root / "tracked.txt").write_text(
+            "modified\n", encoding="utf-8"
+        )
+
+        entries = self._status()
+
+        self.assertTrue(entries)
+        self.assertFalse(marker.exists())
+
+    def test_configured_clean_filter_is_rejected_without_execution(self) -> None:
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        (self.session.workspace_root / ".gitattributes").write_text(
+            "tracked.txt filter=hostile\n", encoding="ascii"
+        )
+        (self.session.workspace_root / "tracked.txt").write_text(
+            "modified\n", encoding="utf-8"
+        )
+        index = identity.git_dir / "index"
+        index_before = index.read_bytes()
+
+        for scope, hook in (("--local", "clean"), ("--local", "process"),
+                            ("--worktree", "clean")):
+            with self.subTest(scope=scope, hook=hook):
+                marker = self.session.workspace_root / f"{hook}-filter-was-run"
+                filter_script = self.session.workspace_root / f"fake-{hook}-filter"
+                filter_script.write_text(
+                    f"#!/bin/sh\ntouch {marker}\nexec /bin/cat\n", encoding="utf-8"
+                )
+                filter_script.chmod(0o755)
+                if scope == "--worktree":
+                    _git(self.repository, "config", "extensions.worktreeConfig", "true")
+                config_key = f"filter.hostile.{hook}"
+                config = subprocess.run(
+                    ["/usr/bin/git", "--git-dir", str(identity.git_dir),
+                     "--work-tree", str(identity.workspace_root), "config", scope,
+                     config_key, str(filter_script)],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(config.returncode, 0, config.stderr)
+                if scope == "--local" and hook == "clean":
+                    raw_environment = {
+                        "PATH": "/usr/bin:/bin",
+                        "HOME": str(self.root),
+                        "GIT_CONFIG_GLOBAL": os.devnull,
+                        "GIT_CONFIG_SYSTEM": os.devnull,
+                        "GIT_CONFIG_NOSYSTEM": "1",
+                        "GIT_OPTIONAL_LOCKS": "0",
+                        "GIT_TERMINAL_PROMPT": "0",
+                        "GIT_PAGER": "cat",
+                    }
+                    raw_status = subprocess.run(
+                        [
+                            "/usr/bin/git", "--git-dir", str(identity.git_dir),
+                            "--work-tree", str(identity.workspace_root),
+                            "-c", "core.fsmonitor=false", "--no-optional-locks",
+                            "status", "--porcelain=v2", "-z", "--no-branch", "--",
+                        ],
+                        cwd=identity.workspace_root,
+                        env=raw_environment,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(raw_status.returncode, 0, raw_status.stderr)
+                    self.assertTrue(marker.exists(), "Git clean filter probe did not trigger")
+                    marker.unlink()
+                with self.assertRaises(GitStatusUnavailable):
+                    self._status()
+                self.assertFalse(marker.exists())
+                unset = subprocess.run(
+                    ["/usr/bin/git", "--git-dir", str(identity.git_dir),
+                     "--work-tree", str(identity.workspace_root), "config", scope,
+                     "--unset", config_key],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(unset.returncode, 0, unset.stderr)
+
+        self.assertEqual(index.read_bytes(), index_before)
+
+    def test_gitlink_is_rejected_without_entering_submodule(self) -> None:
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        nested = self.session.workspace_root / "module"
+        nested.mkdir()
+        _git(nested, "init", "--initial-branch=main")
+        (nested / "nested.txt").write_text("nested\n", encoding="utf-8")
+        _git(nested, "add", "nested.txt")
+        _git(nested, "commit", "-m", "nested baseline")
+        marker = nested / "nested-fsmonitor-was-run"
+        fsmonitor = nested / "nested-fsmonitor"
+        fsmonitor.write_text(
+            f"#!/bin/sh\ntouch {marker}\nexit 0\n", encoding="utf-8"
+        )
+        fsmonitor.chmod(0o755)
+        _git(nested, "config", "core.fsmonitor", str(fsmonitor))
+        nested_oid = _git(nested, "rev-parse", "HEAD")
+        indexed_gitlink = subprocess.run(
+            [
+                "/usr/bin/git", "--git-dir", str(identity.git_dir),
+                "--work-tree", str(identity.workspace_root), "update-index", "--add",
+                "--cacheinfo", f"160000,{nested_oid},module",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(indexed_gitlink.returncode, 0, indexed_gitlink.stderr)
+
+        with self.assertRaisesRegex(GitStatusUnavailable, "submodules_unsupported"):
+            self._status()
+
+        self.assertFalse(marker.exists())
 
 
 if __name__ == "__main__":

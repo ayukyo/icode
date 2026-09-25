@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -58,6 +59,56 @@ class TestPolicyCommandBroker(unittest.TestCase):
             self.assertEqual(result.exit_code, 0)
             self.assertEqual(result.raw_output, b"\x00\xffA")
             self.assertEqual(result.output, "\x00\ufffdA")
+
+    def test_git_status_environment_is_fixed_and_output_limit_is_tighter(self) -> None:
+        with temp_workspace() as root:
+            root = root.resolve()
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "GIT_DIR": "/host/secret/git",
+                    "GIT_INDEX_FILE": "/host/secret/index",
+                    "GIT_CONFIG_KEY_0": "core.fsmonitor=evil",
+                    "GIT_OPTIONAL_LOCKS": "1",
+                },
+            ):
+                result = execute_policy_command(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import json, os; print(json.dumps({k: os.environ.get(k) for k in "
+                        "('GIT_DIR', 'GIT_INDEX_FILE', 'GIT_CONFIG_KEY_0', "
+                        "'GIT_OPTIONAL_LOCKS', 'GIT_CONFIG_NOSYSTEM', 'GIT_PAGER', 'PATH')}))",
+                    ],
+                    cwd=root,
+                    policy=_context(root).policy,
+                    timeout=5,
+                    git_status=True,
+                    output_limit_bytes=1024,
+                )
+
+            self.assertIsNone(result.error)
+            environment = json.loads(result.output)
+            self.assertEqual(environment["GIT_DIR"], None)
+            self.assertEqual(environment["GIT_INDEX_FILE"], None)
+            self.assertEqual(environment["GIT_CONFIG_KEY_0"], None)
+            self.assertEqual(environment["GIT_OPTIONAL_LOCKS"], "0")
+            self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+            self.assertEqual(environment["GIT_PAGER"], "cat")
+            self.assertEqual(environment["PATH"], "/usr/bin:/bin")
+
+            bounded = execute_policy_command(
+                [sys.executable, "-c", "print('abcdefgh')"],
+                cwd=root,
+                policy=_context(root).policy,
+                timeout=5,
+                git_status=True,
+                output_limit_bytes=4,
+            )
+            self.assertEqual(bounded.error, "output_limit")
+            self.assertTrue(bounded.output_truncated)
+            self.assertEqual(bounded.output_bytes, 4)
+            self.assertEqual(bounded.raw_output, b"abcd")
 
     def test_策略命令不继承密钥且回执不含原始参数(self) -> None:
         with temp_workspace() as root:

@@ -30,7 +30,7 @@ class ExecutionResult:
     raw_output: bytes = b""
 
 
-def _policy_environment(root: Path) -> dict[str, str]:
+def _policy_environment(root: Path, *, git_status: bool = False) -> dict[str, str]:
     """只传运行必需的显式变量，避免模型命令继承宿主密钥与凭据。"""
     paths = [str(Path(sys.executable).parent)]
     paths.extend(
@@ -51,6 +51,20 @@ def _policy_environment(root: Path) -> dict[str, str]:
     source_dir = root / "src"
     if source_dir.is_dir() and source_dir.resolve().is_relative_to(root):
         environment["PYTHONPATH"] = str(source_dir)
+    if git_status:
+        # Git status is a fixed internal query; never inherit host Git controls
+        # or search user-writable executable directories for Git helpers.
+        environment.update(
+            {
+                "PATH": "/usr/bin:/bin",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_OPTIONAL_LOCKS": "0",
+                "GIT_TERMINAL_PROMPT": "0",
+                "GIT_PAGER": "cat",
+                "PAGER": "cat",
+            }
+        )
+        environment.pop("PYTHONPATH", None)
     return environment
 
 
@@ -84,15 +98,27 @@ def _stop_group(process: subprocess.Popen[bytes]) -> tuple[bool, int | None]:
 
 def execute_policy_command(
     argv: list[str], *, cwd: Path, policy: SandboxPolicy, timeout: int,
+    git_status: bool = False, output_limit_bytes: int | None = None,
 ) -> ExecutionResult:
     """执行已由原生后端包装的命令；超时/超量时终止整组。"""
     if os.name != "posix":
         return ExecutionResult(None, "", 0, "unsupported_platform", False, False, None)
 
+    output_limit = policy.output_limit_bytes
+    if output_limit_bytes is not None:
+        try:
+            requested_output_limit = int(output_limit_bytes)
+        except (TypeError, ValueError, OverflowError):
+            return ExecutionResult(None, "", 0, "invalid_output_limit", False, True, None)
+        if requested_output_limit < 1:
+            return ExecutionResult(None, "", 0, "invalid_output_limit", False, True, None)
+        output_limit = min(output_limit, requested_output_limit)
+
     deadline = time.monotonic() + min(max(1, int(timeout)), policy.wall_timeout_seconds)
     try:
         process = subprocess.Popen(  # noqa: S603 - argv 经原生策略包装且 shell=False
-            argv, cwd=str(cwd), env=_policy_environment(policy.workspace_root),
+            argv, cwd=str(cwd),
+            env=_policy_environment(policy.workspace_root, git_status=git_status),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             shell=False, start_new_session=True,
         )
@@ -114,12 +140,12 @@ def execute_policy_command(
             for key, _ in selector.select(remaining):
                 chunk = os.read(
                     key.fd,
-                    min(_READ_CHUNK_BYTES, policy.output_limit_bytes - output_bytes + 1),
+                    min(_READ_CHUNK_BYTES, output_limit - output_bytes + 1),
                 )
                 if not chunk:
                     selector.unregister(key.fileobj)
                     continue
-                remaining_bytes = policy.output_limit_bytes - output_bytes
+                remaining_bytes = output_limit - output_bytes
                 chunks.append(chunk[:remaining_bytes])
                 output_bytes += min(len(chunk), remaining_bytes)
                 if len(chunk) > remaining_bytes:

@@ -46,6 +46,7 @@
 
 #define FS_READ (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | \
                  LANDLOCK_ACCESS_FS_READ_DIR)
+#define FS_READ_ONLY (LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)
 #define FS_WRITE (LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REMOVE_DIR | \
                   LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_MAKE_CHAR | \
                   LANDLOCK_ACCESS_FS_MAKE_DIR | LANDLOCK_ACCESS_FS_MAKE_REG | \
@@ -176,7 +177,8 @@ static int install_filesystem(const char *workspace,
                               const char *const *runtime_roots,
                               size_t runtime_root_count,
                               const struct metadata_read_root *metadata_roots,
-                              size_t metadata_root_count) {
+                              size_t metadata_root_count,
+                              int workspace_read_only) {
     int abi = (int)syscall(SYS_landlock_create_ruleset, NULL, 0,
                            LANDLOCK_CREATE_RULESET_VERSION);
     /* ABI 3 is required to restrict both truncate and cross-directory refer. */
@@ -201,7 +203,10 @@ static int install_filesystem(const char *workspace,
     }
     if (add_path(fd, "/dev/null", LANDLOCK_ACCESS_FS_READ_FILE |
                  LANDLOCK_ACCESS_FS_WRITE_FILE, 1) != 0) goto fail;
-    if (add_path(fd, workspace, FS_READ | FS_WRITE, 1) != 0) goto fail;
+    uint64_t workspace_access = workspace_read_only
+        ? FS_READ_ONLY
+        : FS_READ | FS_WRITE;
+    if (add_path(fd, workspace, workspace_access, 1) != 0) goto fail;
     for (size_t i = 0; i < runtime_root_count; ++i) {
         if (add_path(fd, runtime_roots[i], FS_READ, 1) != 0) goto fail;
     }
@@ -492,7 +497,7 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
                               size_t runtime_root_count,
                               const struct metadata_read_root *metadata_roots,
                               size_t metadata_root_count, char **command,
-                              int mapless) {
+                              int workspace_read_only, int mapless) {
     /* Namespace PID 1 sees its parent as PID 0, so getppid cannot validate it. */
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
         prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0) {
@@ -513,7 +518,8 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
         close(parent_pipe);
         if (drop_payload_capabilities(mapless) != 0 ||
             install_filesystem(workspace, runtime_roots, runtime_root_count,
-                               metadata_roots, metadata_root_count) != 0 ||
+                               metadata_roots, metadata_root_count,
+                               workspace_read_only) != 0 ||
             install_network_deny() != 0) _exit(1);
         execvp(command[0], command);
         perror("execvp");
@@ -541,6 +547,7 @@ static int supervise_task(pid_t host_parent, const char *workspace,
                           size_t runtime_root_count,
                           const struct metadata_read_root *metadata_roots,
                           size_t metadata_root_count, char **command,
+                          int workspace_read_only,
                           const char *setgroups_path,
                           const char *uid_map_path) {
     int mapless = enter_task_namespaces(host_parent, setgroups_path, uid_map_path);
@@ -561,7 +568,8 @@ static int supervise_task(pid_t host_parent, const char *workspace,
         close(control[1]);
         int result = run_namespace_init(
             control[0], workspace, runtime_roots, runtime_root_count,
-            metadata_roots, metadata_root_count, command, mapless);
+            metadata_roots, metadata_root_count, command,
+            workspace_read_only, mapless);
         close(control[0]);
         _exit(result);
     }
@@ -590,7 +598,8 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         strcmp(argv[3], "--parent-pid") != 0) {
         fprintf(stderr,
                 "usage: icode-landlock --workspace PATH --parent-pid PID "
-                "[--runtime-read PATH]... [--metadata-read PATH DEVICE INODE]... "
+                "[--workspace-read-only] [--runtime-read PATH]... "
+                "[--metadata-read PATH DEVICE INODE]... "
                 "-- COMMAND [ARG...]\n");
         return 2;
     }
@@ -613,9 +622,19 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     }
     size_t runtime_root_count = 0;
     size_t metadata_root_count = 0;
+    int workspace_read_only = 0;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
-        if (strcmp(argv[command_index], "--runtime-read") == 0) {
+        if (strcmp(argv[command_index], "--workspace-read-only") == 0) {
+            if (workspace_read_only) {
+                fprintf(stderr, "duplicate workspace read-only option\n");
+                free(runtime_roots);
+                free(metadata_roots);
+                return 2;
+            }
+            workspace_read_only = 1;
+            command_index += 1;
+        } else if (strcmp(argv[command_index], "--runtime-read") == 0) {
             if (command_index + 1 >= argc || argv[command_index + 1][0] != '/') {
                 fprintf(stderr, "invalid runtime root\n");
                 free(runtime_roots);
@@ -691,7 +710,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     int result = supervise_task(
         (pid_t)parent_value, workspace, runtime_roots, runtime_root_count,
         metadata_roots, metadata_root_count, argv + command_index,
-        setgroups_path, uid_map_path);
+        workspace_read_only, setgroups_path, uid_map_path);
     free(workspace);
     free(runtime_roots);
     free(metadata_roots);

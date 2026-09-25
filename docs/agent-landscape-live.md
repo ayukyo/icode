@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
 - 最近观察：2026-09-25；下次全量复核：不晚于 2026-10-25
-- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.3 Windows AppContainer 与 Job 清理验收；20 项观察名单最近全量复核为 2026-09-24。
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.4 Git status/helper 风险；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -278,3 +278,11 @@
 - Linux 内核 [Landlock 官方 API 文档](https://docs.kernel.org/userspace-api/landlock.html)明确 `LANDLOCK_RULE_PATH_BENEATH.parent_fd` 是权限层级对应的文件/目录 fd；文件与目录读取权分别是 `READ_FILE`、`READ_DIR`。ICODE helper 现按对象类型授权，并用传入路径的 `O_PATH` fd 安装规则。
 - ICODE 会话快照保存 metadata 对象 `(device,inode)`；helper 逐组件拒绝 symlink 后，重新 `fstat` 并比对快照，才以同一 fd 添加 Landlock rule。原目录被同路径、相同内容的新 inode 替换的真实 helper 负例已验证拒绝；metadata 文件测试也确认可读但不可写和不可执行。
 - **采纳/阶段结论：**采纳对象句柄绑定这一 Linux 特定机制；不把它外推到另外两平台，不把 Linux helper 证明等同固定 Git status broker。该机制尚未接到模型命令调用链，配置 helper、子模块、输出上限、超时以及完整工单边界仍待验收。参考实现与门禁见[R2.4 Git broker 计划](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。
+
+### 2026-09-25 UTC R2.4 Git status helper 风险复核与 Linux 原型
+
+- **官方行为：**Git [attributes 文档](https://git-scm.com/docs/gitattributes)明确 clean/process filter 是由仓库属性选择的外部命令，process filter 对 clean/smudge 有优先级；[status 文档](https://git-scm.com/docs/git-status)提供稳定 porcelain v2 结构，`-z` 保留未转义文件名字节。ICODE 的真实临时仓库实验补足文档未覆盖的实测点：当前宿主 Git `2.34.1` 对修改文件运行普通 `status` 时确实启动已配置 clean filter。
+- **上游源码对照：**Codex 当前已记录的 `4b1c0c3` 轻量 dirty-check 与 `e4b6861` fsmonitor 控制没有发现新的端到端 Git status broker；该轮不重复计为上游提交变化。ICODE 采纳固定参数、关闭 helper、OS 强制只读及失败关闭，仍不复制 Codex 的 bubblewrap 或安全 daemon 白名单实现。
+- **ICODE 现状：**新内部 Linux 函数要求会话身份和 Landlock，所有 Git 子命令均经 sandbox；status 专用模式令工作区只读且不可执行，并拒绝与系统/runtime 可执行白名单重叠的根（Landlock 权限是叠加而非撤销）。运行前检查 local/worktree config 中 clean/process filter，git index 含 mode `160000` 则拒绝，避免进入不受 grant 覆盖的子模块；fsmonitor、外部 diff、可选锁、hook、pager、全局 attributes/excludes 均固定关闭。解析只消费受限的原始 bytes，任何非完整或异常状态整体 unavailable。
+- **采纳/成本/验收：**采纳“不可执行工作区 + 显式 helper 拒绝 + gitlink 前置拒绝”。代价是配置 filter 与 submodule 仓库目前无 Git 状态；这比运行未审查命令或误报部分状态更安全。测试以真实 helper 验证读/写/执行权限，以普通 Git 的受控恶意 clean filter marker 建立正向风险基线，再验证 ICODE broker 预检阻断；fsmonitor/external diff 与 nested gitlink 也有负例。
+- **限制：**该原型未接工具/模型，未替代 `git_broker_unavailable`；当前仅有 Linux x86_64 宿主和独立 wheel 安装证据，不能外推为 ARM64/macOS/Windows、并发竞态或 R2 自动模式通过。详情和下一步见 [R2.4 门禁计划](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。

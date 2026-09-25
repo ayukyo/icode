@@ -1,23 +1,30 @@
-"""Fail-closed validation primitives for the internal Git status broker.
+"""Fail-closed identity validation and Linux-only internal Git status query.
 
-This module does not launch Git or expose a tool. It verifies the immutable
-workspace-manager identity immediately before a future fixed-argument query.
-The returned metadata roots carry expected device/inode claims; the native
-Landlock helper must compare those claims on the same opened fd used to install
-each rule. This module alone is not an execution grant or Git broker.
+The fixed query accepts no model argv or repository path and is not exposed as
+a tool. Metadata roots carry expected device/inode claims; the native Landlock
+helper compares those claims on the same opened fd used to install each rule.
+The prototype is not wired into user-facing execution or automatic mode.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import shutil
 import stat
 from pathlib import Path
+import sys
 
+from .execution_broker import ExecutionResult, execute_policy_command
 from .isolation import MetadataReadRoot
+from .git_status import GitStatusParseError, GitStatusEntry, parse_porcelain_v2
+from .sandbox_policy import NetworkMode, SandboxPolicy
 from .workspace import GitPathIdentity, GitWorkspaceIdentity
 
 _MAX_METADATA_FILE_BYTES = 4096
+_GIT_STATUS_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+_GIT_CONFIG_CHECK_MAX_OUTPUT_BYTES = 64 * 1024
+_GIT_STATUS_TIMEOUT_SECONDS = 15
 _NOFOLLOW_FLAGS = (
     os.O_RDONLY
     | getattr(os, "O_CLOEXEC", 0)
@@ -38,6 +45,202 @@ class VerifiedGitLayout:
     common_dir: Path
     pathspec_root: Path
     metadata_roots: tuple[MetadataReadRoot, ...]
+
+
+def execute_git_status(
+    identity: GitWorkspaceIdentity | None,
+    *,
+    sandbox: object,
+    policy: SandboxPolicy,
+    timeout: int = _GIT_STATUS_TIMEOUT_SECONDS,
+) -> tuple[GitStatusEntry, ...]:
+    """Run one fixed, Linux-only, read-only status query for the trusted session.
+
+    This remains an internal API: no tool or command route calls it. It accepts
+    neither Git argv nor a repository path from the model. Any unsupported
+    workspace shape, backend, metadata identity, helper, command result, or
+    parser output fails closed with a path-free error.
+    """
+    from .isolation import LandlockSandbox
+
+    if not sys.platform.startswith("linux") or not isinstance(sandbox, LandlockSandbox):
+        raise GitStatusUnavailable("unsupported_backend")
+    if not isinstance(policy, SandboxPolicy):
+        raise GitStatusUnavailable("policy_missing")
+    if (
+        policy.network_mode is not NetworkMode.DENY
+        or policy.allowed_domains
+        or policy.read_roots != (policy.workspace_root,)
+        or policy.write_roots != (policy.workspace_root,)
+        or policy.wall_timeout_seconds < 1
+        or policy.output_limit_bytes < 1
+    ):
+        raise GitStatusUnavailable("policy_not_read_only")
+    if not isinstance(identity, GitWorkspaceIdentity):
+        raise GitStatusUnavailable("identity_missing")
+
+    try:
+        workspace_root = _absolute_path(identity.workspace_root)
+        if (
+            identity.source_relative_path != Path(".")
+            or policy.workspace_root != workspace_root
+            or Path(policy.workspace_root).resolve(strict=True) != workspace_root
+        ):
+            raise GitStatusUnavailable("workspace_shape_unsupported")
+        layout = verify_git_workspace_identity(identity)
+        if (
+            layout.worktree_root != workspace_root
+            or layout.pathspec_root != workspace_root
+        ):
+            raise GitStatusUnavailable("worktree_policy_mismatch")
+        required_deny_roots = {identity.checkout_root / ".git", identity.common_dir}
+        if not required_deny_roots.issubset(set(policy.deny_write_roots)):
+            raise GitStatusUnavailable("metadata_write_protection_missing")
+
+        git = str(_trusted_git_executable())
+        common = [
+            git,
+            "--no-pager",
+            "-c", "core.fsmonitor=false",
+            "-c", "core.untrackedCache=false",
+            "-c", "core.hooksPath=/dev/null",
+            "-c", "core.excludesFile=/dev/null",
+            "-c", "core.attributesFile=/dev/null",
+            "-c", "diff.external=",
+            "-c", "status.renames=false",
+            "--git-dir", str(layout.git_dir),
+            "--work-tree", str(layout.worktree_root),
+            "--no-optional-locks",
+        ]
+        wrap = getattr(sandbox, "_wrap_policy_with_metadata_roots", None)
+        if not callable(wrap):
+            raise GitStatusUnavailable("metadata_read_only_backend_missing")
+
+        def run_query(arguments: list[str], output_limit: int) -> ExecutionResult:
+            wrapped = wrap(
+                [*common, *arguments],
+                policy=policy,
+                metadata_roots=layout.metadata_roots,
+                network=False,
+                workspace_read_only=True,
+            )
+            return execute_policy_command(
+                wrapped,
+                cwd=workspace_root,
+                policy=policy,
+                timeout=timeout,
+                git_status=True,
+                output_limit_bytes=output_limit,
+            )
+
+        # A configured clean/process filter can execute a shell command while
+        # status inspects modified files. Do not try to sandbox arbitrary Git
+        # helpers: conservatively refuse repositories that define either hook.
+        filter_pattern = r"^filter\..*\.(clean|process)$"
+
+        def has_filter_configuration(scope: str) -> bool:
+            check = run_query(
+                ["config", scope, "--null", "--get-regexp", filter_pattern],
+                _GIT_CONFIG_CHECK_MAX_OUTPUT_BYTES,
+            )
+            if (
+                check.error is not None
+                or not check.cleanup_ok
+                or check.output_truncated
+                or check.exit_code not in (0, 1)
+            ):
+                raise GitStatusUnavailable("status_filter_configuration_unsupported")
+            return bool(check.raw_output)
+
+        if has_filter_configuration("--local"):
+            raise GitStatusUnavailable("status_filter_configuration_unsupported")
+
+        extension = run_query(
+            ["config", "--local", "--bool", "--get", "extensions.worktreeConfig"],
+            4096,
+        )
+        if (
+            extension.error is not None
+            or not extension.cleanup_ok
+            or extension.output_truncated
+            or extension.exit_code not in (0, 1)
+            or extension.raw_output not in (b"", b"true\n", b"false\n")
+        ):
+            raise GitStatusUnavailable("status_worktree_config_unsupported")
+        if extension.raw_output == b"true\n" and has_filter_configuration("--worktree"):
+            raise GitStatusUnavailable("status_filter_configuration_unsupported")
+
+        # Git may recursively inspect submodules. Refuse gitlinks before status
+        # and then tell Git not to recurse, so nested repositories cannot supply
+        # their own fsmonitor/filter configuration to this fixed query.
+        index_entries = run_query(
+            ["ls-files", "--stage", "-z"], _GIT_STATUS_MAX_OUTPUT_BYTES,
+        )
+        if (
+            index_entries.error is not None
+            or index_entries.exit_code != 0
+            or not index_entries.cleanup_ok
+            or index_entries.output_truncated
+        ):
+            raise GitStatusUnavailable("status_index_check_failed")
+        for record in index_entries.raw_output.split(b"\0"):
+            if not record:
+                continue
+            header, separator, path = record.partition(b"\t")
+            fields = header.split(b" ")
+            if not separator or not path or len(fields) != 3:
+                raise GitStatusUnavailable("status_index_output_invalid")
+            if fields[0] == b"160000":
+                raise GitStatusUnavailable("submodules_unsupported")
+
+        command = [
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=all",
+            "--no-branch",
+            "--",
+        ]
+        result = run_query(command, _GIT_STATUS_MAX_OUTPUT_BYTES)
+        if (
+            result.error is not None
+            or result.exit_code != 0
+            or not result.cleanup_ok
+            or result.output_truncated
+        ):
+            raise GitStatusUnavailable("status_execution_failed")
+        entries = parse_porcelain_v2(result.raw_output)
+        if any(entry.submodule_status != b"N..." for entry in entries):
+            raise GitStatusUnavailable("submodule_status_unsupported")
+        return entries
+    except GitStatusUnavailable:
+        raise
+    except GitStatusParseError:
+        raise GitStatusUnavailable("status_output_invalid") from None
+    except (OSError, RuntimeError, TypeError, ValueError, OverflowError):
+        raise GitStatusUnavailable("status_execution_unavailable") from None
+
+
+def _trusted_git_executable() -> Path:
+    candidate = shutil.which("git", path="/usr/bin:/bin")
+    if candidate is None:
+        raise GitStatusUnavailable("git_executable_unavailable")
+    try:
+        executable = Path(candidate).resolve(strict=True)
+        status = os.stat(executable, follow_symlinks=False)
+    except (OSError, RuntimeError, ValueError):
+        raise GitStatusUnavailable("git_executable_unavailable") from None
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or not os.access(executable, os.X_OK)
+        or not (
+            executable.is_relative_to(Path("/usr/bin"))
+            or executable.is_relative_to(Path("/bin"))
+        )
+    ):
+        raise GitStatusUnavailable("git_executable_untrusted")
+    return executable
 
 
 def verify_git_workspace_identity(

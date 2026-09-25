@@ -1,7 +1,7 @@
 # R2.4 分层工作区 Git 状态代理门禁
 
 - 日期：2026-09-24
-- 状态：调用链与风险已确认；严格 porcelain v2 解析器及 Linux Landlock 独立只读元数据授权基座已通过本机测试，均未接入模型或启动 Git；broker 与完整 R2 仍阻断
+- 状态：Linux 固定参数 Git status 内部原型已在本机真实 Landlock 下通过定向验证；不注册工具、不接模型调用链。macOS/Windows 等价边界、干净 wheel 和完整 R2 仍阻断
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §4.2、§7；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与现状
@@ -102,3 +102,13 @@
 - **采纳：**固定关闭 `core.fsmonitor`（Codex 在检测安全后可能允许内置 daemon；对只读原型更保守，避免 daemon 与 `.git` IPC 副作用）；同时设 `GIT_OPTIONAL_LOCKS=0`、固定 hooks 路径、清除全部继承 `GIT_*`，并依靠 OS 写隔离，不把参数当作证明。Git `status` 官方文档提示后台刷新可能写 index；全量未跟踪扫描需要有界超时和输出，超限整体失败。
 - **暂缓：**不采纳动态 fsmonitor daemon、不接受外部 helper/用户参数；不承诺 submodule 完整状态。Porcelain v2 的 `S<c><m><u>` 子模块状态需要额外读取子模块元数据，当前 broker 不具备安全 grant；在识别出 submodule 或 linked-worktree common-dir 关系未覆盖时必须整体 unavailable，不能给部分结果冠以完整状态。
 - 阶段方向仍为内部 Linux 原型：可信 identity 重核、固定 Git 可执行文件/argv/environment、NUL bytes + 严格解析、超时/字节上限、metadata-only Landlock；自动执行和模型工具入口继续关闭，直到恶意仓库、零写入与目标平台负例通过。
+
+## 2026-09-25 Linux 固定参数 Git status 内部原型
+
+- `execute_git_status()` 仅接受 WorkspaceManager 捕获的 `GitWorkspaceIdentity`、实际 `LandlockSandbox` 与断网策略；调用前复核 `.git`、`commondir`、`HEAD`、ownership marker 及 device/inode。它不接收模型 argv/path，不注册工具，不进入执行器或 ToolContext 路由。
+- 所有 Git 子命令均经原生 helper 启动：系统 Git 固定在 `/usr/bin:/bin`，环境不继承 `GIT_*`/宿主 PATH，设置 `GIT_OPTIONAL_LOCKS=0`、禁用 fsmonitor、untracked cache、hook、外部 diff、外部 attributes/excludes 与 pager。Git 元数据按 identity inode 只读授权；该查询额外把代码工作区限制为 `READ_FILE | READ_DIR`，不授执行或写入，并拒绝与可执行系统/runtime 白名单重叠的工作区（Landlock 规则权限为叠加，窄规则不能撤销祖先权限）。普通任务策略包装仍保持原权限。
+- 安全预检拒绝仓库级与启用时的 worktree 级 `filter.*.clean/process` 配置；先以固定 `ls-files --stage -z` 查明索引是否含 mode `160000`，存在 gitlink 即 unavailable，状态查询固定 `--ignore-submodules=all`，不递归进入另一仓库。任一执行错误、清理异常、超时、输出截断、未知/畸形 porcelain、非 N... 子模块状态都不给部分结果。
+- 官方 [Git Attributes 文档](https://git-scm.com/docs/gitattributes)将 `filter.<driver>.clean` / `process` 定义为外部命令，并说明配置了 `process` 时优先于单文件 filter；[Git status 文档](https://git-scm.com/docs/git-status)定义 porcelain v2 与 `-z` 路径约束。宿主 Git 2.34.1 的受控临时仓库正向探针进一步实测：普通 status 会启动恶意 clean 脚本；ICODE 固定代理在执行 status 前拒绝该配置，marker 未生成。假的 fsmonitor/external diff 也未启动，gitlink 在任何子模块查询前拒绝。
+- `scripts/run_native_wheel_ci.py` 已在本机 x86_64 构建并检查 Linux wheel、安装至隔离 venv；随包 helper 的原有最小探针和新增 `--workspace-read-only` 写入/执行负例均通过。C 编译单进程执行，没有超出 `-j6`。
+- **采纳：**OS 只读/不可执行边界、固定 Git 参数、外部 filter 与 gitlink 整体 fail-closed、有界原始字节输出。**代价：**配置 clean/process filter 或含 submodule 的仓库当前不给状态；仅 Linux Landlock、顶层源码布局受支持。
+- **阶段边界：原型已实现，R2 未完成。**Linux x86_64 当前 wheel 通过不等于 Linux ARM64、macOS/Windows 等价边界；仍需并发身份/配置变化审计、超时与超量清理压力负例及后续完整工单调用链验收。自动模式及模型工具入口继续关闭，原有 `git_broker_unavailable` 外部行为不变。

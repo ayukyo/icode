@@ -22,6 +22,7 @@ class GitStatusEntry:
     index_status: str | None
     worktree_status: str | None
     original_path: bytes | None = None
+    submodule_status: bytes = b"N..."
 
 
 _MODES = frozenset({
@@ -71,7 +72,12 @@ def parse_porcelain_v2(output: bytes) -> tuple[GitStatusEntry, ...]:
             status = _validate_tracked_fields(fields[1:8])
             path = fields[8]
             _require_path(path)
-            entries.append(GitStatusEntry("tracked", path, status[0], status[1]))
+            entries.append(
+                GitStatusEntry(
+                    "tracked", path, status[0], status[1],
+                    submodule_status=fields[2],
+                )
+            )
             continue
 
         if record.startswith(b"2 "):
@@ -92,7 +98,10 @@ def parse_porcelain_v2(output: bytes) -> tuple[GitStatusEntry, ...]:
             record_index += 1
             _require_path(original_path)
             entries.append(
-                GitStatusEntry("tracked", path, status[0], status[1], original_path),
+                GitStatusEntry(
+                    "tracked", path, status[0], status[1], original_path,
+                    submodule_status=fields[2],
+                ),
             )
             continue
 
@@ -110,7 +119,12 @@ def parse_porcelain_v2(output: bytes) -> tuple[GitStatusEntry, ...]:
                 raise GitStatusParseError("invalid unmerged XY status")
             path = fields[10]
             _require_path(path)
-            entries.append(GitStatusEntry("unmerged", path, status[0], status[1]))
+            entries.append(
+                GitStatusEntry(
+                    "unmerged", path, status[0], status[1],
+                    submodule_status=fields[2],
+                )
+            )
             continue
 
         if record.startswith(b"? "):
