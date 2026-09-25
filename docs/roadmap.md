@@ -1,9 +1,10 @@
 # 开发路线图与取舍原则
 
 - 日期：2026-09-26
-- 状态：**R2.1 工作区边界已验收；R2.2 六个 Linux/macOS runner 的原生负例矩阵在 #158、#171 均通过，但完整十项合同评分仍未闭合。R2.3 Windows AppContainer 综合步骤在 #158 仍失败，已退出生产候选；恢复的一次 UAC native helper 路线仍未实现。Windows 标准用户受限 token 正向路径及错误账户/密码失败关闭已在 #171 x64/ARM64 通过，但这只是前置可行性门，不代表生产 helper、IPC、setup、ACL 或 WFP。R2.4 Linux Git broker 仍为未接入工具链的内部原型；Windows 自动模式、Git 工具入口和网络均保持关闭。**
+- 状态：**R2.1 工作区边界已验收；R2.2 六个 Linux/macOS runner 的原生负例矩阵在 #158、#171 均通过，但完整十项合同评分仍未闭合。R2.3 Windows AppContainer 综合步骤在 #158 仍失败，已退出生产候选；恢复的一次 UAC native helper 路线仍未实现。Windows 标准用户受限 token 正向路径及错误账户/密码失败关闭已在 #171 x64/ARM64 通过；runner IPC v1 目前只有纯 Python 协议编解码与字段校验，#173 通过不代表存在可信管道、生产 helper、setup、ACL 或 WFP。R2.4 Linux Git broker 仍为未接入工具链的内部原型；Windows 自动模式、Git 工具入口和网络均保持关闭。**
 - R2.3 后续切片（2026-09-26）：Windows 架构 wheel 打包合同已在 CPython 3.11 全量 preflight、Linux 安装式 wheel probe 及 Windows x64/ARM64 合成 PE 打包安装 CI 中通过。它不含可运行 Windows 隔离 helper，不代表 Windows 隔离实现，详见 [Windows 后端路线复核](./nbl/plans/2026-09-25-r2-windows-appcontainer.md)。
 - R2.3 Windows wheel/CI runner 复核（2026-09-26）：#161 x64 发现 SHA 清单 CRLF 字节匹配缺陷；#162 修复后两个架构 wheel job 均通过。#162 旧 AppContainer 综合步骤仍失败，已移为显式手动诊断并保留失败证据；随后 #163 常规 CI 整体通过，但不代表 Windows 文件/网络/身份隔离完成。
+- R2.3 IPC 协议切片（2026-09-26）：`windows_runner_protocol.py` 实现纯解析/编码、64 KiB 帧上限及严格版本/字段/类型/关联校验；CI [#173](https://github.com/ayukyo/icode/actions/runs/36188277042) 全部通过。未实现具名管道、对端认证、权限授予或命令执行连接；安全传输与 Windows 自动模式仍关闭。
 - 依据：[持续竞品对照](./agent-landscape-live.md) · [方案与决策记录](./design-decisions.md)
 
 ---
