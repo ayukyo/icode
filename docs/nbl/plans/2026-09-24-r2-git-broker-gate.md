@@ -112,3 +112,10 @@
 - `scripts/run_native_wheel_ci.py` 已在本机 x86_64 构建并检查 Linux wheel、安装至隔离 venv；随包 helper 的原有最小探针和新增 `--workspace-read-only` 写入/执行负例均通过。C 编译单进程执行，没有超出 `-j6`。
 - **采纳：**OS 只读/不可执行边界、固定 Git 参数、外部 filter 与 gitlink 整体 fail-closed、有界原始字节输出。**代价：**配置 clean/process filter 或含 submodule 的仓库当前不给状态；仅 Linux Landlock、顶层源码布局受支持。
 - **阶段边界：原型已实现，R2 未完成。**Linux x86_64 当前 wheel 通过不等于 Linux ARM64、macOS/Windows 等价边界；仍需并发身份/配置变化审计、超时与超量清理压力负例及后续完整工单调用链验收。自动模式及模型工具入口继续关闭，原有 `git_broker_unavailable` 外部行为不变。
+
+## 2026-09-25 UTC 上游 Git/沙箱调用链复核
+
+- **Codex：**固定复核 [`60713126ee0dbc483fba83fc032dfaa5998521ec`](https://github.com/openai/codex/commit/60713126ee0dbc483fba83fc032dfaa5998521ec)。当前状态辅助是面向 UI 的轻量 dirty-check，Linux 沙箱将 `.git` 与解析后的 gitdir 设为只读；这支持“元数据 OS 只读”的方向，但不是 ICODE 可直接复用的跨平台、完整状态 broker。其普通 Git status 结果不得作为 ICODE 安全合同。
+- **Qwen Code：**固定复核 [`790bd83c2b1e3b242e0487d92183b053ceb44ed8`](https://github.com/QwenLM/qwen-code/commit/790bd83c2b1e3b242e0487d92183b053ceb44ed8)。当前 sandbox 文档/测试继续要求后端 admission 或验证失败不退回宿主执行；采纳该 fail-closed 行为，不复制其容器配置实现。
+- **Gemini CLI：**固定复核 [`bedef96ef42905bd84a86dbec021c706168e7e2f`](https://github.com/google-gemini/gemini-cli/commit/bedef96ef42905bd84a86dbec021c706168e7e2f)。会话跟踪 private worktree 与实际 gitdir 的关系值得参考；其 grant 可按用户授权覆盖读或写，不是固定只读 Git 状态合同，因此不接入 ICODE 只读状态端口。
+- **采纳/成本/验收：**采纳 OS 强制只读的元数据根、可信会话身份重核、固定 Git 参数、失败不回宿主；暂缓任何跨平台工具接线。ICODE Linux status 原型仍未进入 `ToolContext`，ARM64、恶意仓库、并发身份漂移、超时/超量清理及 macOS/Windows 等价负例仍是门槛；在通过前，所有 unsupported layout/platform 均保持 `git_broker_unavailable`。本轮只借鉴机制，不复制上游代码或新增第三方依赖。

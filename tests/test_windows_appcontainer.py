@@ -39,7 +39,7 @@ from icode.windows_job import (
 
 _RUNTIME_PROBE_FAILURE_STAGES = frozenset({
     "imports", "executable_absolute", "module_path", "prefix_absolute",
-    "runtime_path", "runtime_write", "source_read", "network",
+    "runtime_path", "runtime_write", "source_read", "environment", "network",
     "workspace_write", "child_launch",
 })
 _RUNTIME_PROBE_ERROR_TYPES = frozenset({
@@ -83,6 +83,66 @@ def _classify_runtime_probe_failure(raw_failure: str) -> str:
     if error_type in _RUNTIME_PROBE_ERROR_TYPES:
         return f"{stage}:{error_type}"
     return f"{stage}:other"
+
+
+_STAGED_PYTHON_ENVIRONMENT_PROBE = """\
+def _win32_environment_value(name):
+    getter = ctypes.WinDLL('kernel32', use_last_error=True).GetEnvironmentVariableW
+    getter.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_wchar), ctypes.c_uint32]
+    getter.restype = ctypes.c_uint32
+    ctypes.set_last_error(0)
+    required = getter(name, None, 0)
+    if required == 0:
+        error = ctypes.get_last_error()
+        if error == 203:
+            return None
+        if error == 0:
+            return ''
+        raise ctypes.WinError(error)
+    buffer = ctypes.create_unicode_buffer(required)
+    ctypes.set_last_error(0)
+    copied = getter(name, buffer, required)
+    if copied == 0:
+        error = ctypes.get_last_error()
+        if error:
+            raise ctypes.WinError(error)
+    return buffer.value
+
+def _environment_path_state(value):
+    if value is None:
+        return 'not_defined'
+    try:
+        metadata = os.stat(value)
+    except PermissionError:
+        return 'access_denied'
+    except FileNotFoundError:
+        return 'not_found'
+    except OSError as exc:
+        error = getattr(exc, 'winerror', None)
+        if error == 3:
+            return 'path_not_found'
+        if error == 2:
+            return 'not_found'
+        if error == 5:
+            return 'access_denied'
+        return 'other_error'
+    return 'directory' if stat.S_ISDIR(metadata.st_mode) else 'not_directory'
+
+try:
+    staged_environment = {}
+    for _name in ('LOCALAPPDATA', 'TEMP', 'TMP'):
+        _python_value = os.environ.get(_name)
+        _win32_value = _win32_environment_value(_name)
+        staged_environment[_name] = {
+            'python_value': _python_value,
+            'win32_value': _win32_value,
+            'path_state': _environment_path_state(_python_value),
+        }
+except Exception as exc:
+    Path('staging-python-failure-class').write_text(
+        'environment:' + type(exc).__name__, encoding='ascii')
+    raise
+"""
 
 
 def _is_observed_appcontainer_connect_failure(error: OSError) -> bool:
@@ -809,6 +869,61 @@ class TestWindowsAppContainer(unittest.TestCase):
         return "directory" if stat.S_ISDIR(metadata.st_mode) else "not_directory"
 
     @staticmethod
+    def _summarize_staged_environment(
+        observation: object, api_profile: str | None,
+    ) -> dict[str, object]:
+        """Keep raw child environment paths local; publish only comparisons and classes."""
+        names = {
+            "LOCALAPPDATA": "localappdata",
+            "TEMP": "temp",
+            "TMP": "tmp",
+        }
+        if (
+            not isinstance(observation, dict)
+            or set(observation) != set(names)
+            or not isinstance(api_profile, str)
+            or not api_profile
+        ):
+            return {"complete": False}
+        summary: dict[str, object] = {"complete": True}
+        for source_name, output_name in names.items():
+            item = observation.get(source_name)
+            if not isinstance(item, dict):
+                return {"complete": False}
+            python_value = item.get("python_value")
+            win32_value = item.get("win32_value")
+            python_defined = isinstance(python_value, str) and bool(python_value)
+            win32_defined = isinstance(win32_value, str) and bool(win32_value)
+            matches = False
+            if python_defined and win32_defined:
+                matches = (
+                    ntpath.normcase(ntpath.normpath(python_value))
+                    == ntpath.normcase(ntpath.normpath(win32_value))
+                )
+            path_state = item.get("path_state")
+            if path_state not in {
+                "not_defined", "directory", "not_directory", "not_found",
+                "path_not_found", "access_denied", "other_error",
+            }:
+                path_state = "invalid"
+            result: dict[str, object] = {
+                "python_defined": python_defined,
+                "win32_defined": win32_defined,
+                "python_win32_match": matches,
+                "path_state": path_state,
+            }
+            if source_name == "LOCALAPPDATA":
+                api_match = False
+                if python_defined and isinstance(api_profile, str) and api_profile:
+                    api_match = (
+                        ntpath.normcase(ntpath.normpath(python_value))
+                        == ntpath.normcase(ntpath.normpath(api_profile))
+                    )
+                result["api_match"] = api_match
+            summary[output_name] = result
+        return summary
+
+    @staticmethod
     def _decode_cmd_unicode_output(contents: bytes) -> str:
         if contents.startswith(b"\xff\xfe"):
             contents = contents[2:]
@@ -890,13 +1005,88 @@ class TestWindowsAppContainer(unittest.TestCase):
             self._profile_path_relation(expected + r"\Private\Nested", expected),
             "api_child_other_nested",
         )
-        self.assertEqual(self._profile_path_relation(ntpath.dirname(expected), expected), "api_parent")
+        self.assertEqual(
+            self._profile_path_relation(ntpath.dirname(expected), expected), "api_parent",
+        )
         self.assertEqual(
             self._profile_path_relation(ntpath.dirname(expected) + r"\AC2", expected),
             "sibling",
         )
         self.assertEqual(self._profile_path_relation(r"D:\Other", expected), "other")
         self.assertEqual(self._profile_path_relation("relative", expected), "invalid")
+
+    def test_staged_Python环境观测摘要脱敏并区分API路径(self) -> None:
+        api_profile = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
+        workspace = r"D:\a\_temp\task"
+        summary = self._summarize_staged_environment(
+            {
+                "LOCALAPPDATA": {
+                    "python_value": api_profile + r"\Unknown\Nested",
+                    "win32_value": api_profile + r"\Unknown\Nested",
+                    "path_state": "path_not_found",
+                },
+                "TEMP": {
+                    "python_value": workspace,
+                    "win32_value": workspace,
+                    "path_state": "directory",
+                },
+                "TMP": {
+                    "python_value": workspace,
+                    "win32_value": workspace,
+                    "path_state": "directory",
+                },
+            },
+            api_profile,
+        )
+
+        self.assertEqual(
+            summary,
+            {
+                "complete": True,
+                "localappdata": {
+                    "python_defined": True,
+                    "win32_defined": True,
+                    "python_win32_match": True,
+                    "api_match": False,
+                    "path_state": "path_not_found",
+                },
+                "temp": {
+                    "python_defined": True,
+                    "win32_defined": True,
+                    "python_win32_match": True,
+                    "path_state": "directory",
+                },
+                "tmp": {
+                    "python_defined": True,
+                    "win32_defined": True,
+                    "python_win32_match": True,
+                    "path_state": "directory",
+                },
+            },
+        )
+        serialized = json.dumps(summary, ensure_ascii=True)
+        self.assertNotIn("C:\\Users\\runner", serialized)
+        self.assertNotIn("D:\\a\\_temp", serialized)
+        compact_notice = json.dumps(summary, ensure_ascii=True, separators=(",", ":"))
+        self.assertLessEqual(len(compact_notice), 500)
+        self.assertEqual(self._summarize_staged_environment({"TEMP": {}}, api_profile), {
+            "complete": False,
+        })
+        self.assertEqual(self._summarize_staged_environment(
+            {
+                "LOCALAPPDATA": {},
+                "TEMP": {},
+                "TMP": {},
+            },
+            None,
+        ), {"complete": False})
+
+    def test_staged_Python环境探针片段可独立解析(self) -> None:
+        compile(
+            _STAGED_PYTHON_ENVIRONMENT_PROBE,
+            "<staged-python-environment-probe>",
+            "exec",
+        )
 
     def test_profile环境诊断alias只复制API路径且不输出路径(self) -> None:
         expected = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
@@ -2304,12 +2494,26 @@ class TestWindowsAppContainer(unittest.TestCase):
         runtime_acl_snapshot = mock.Mock()
         runtime_acl_restore_report: dict[str, object] = {}
         original_restore_runtime_acl = windows_appcontainer._restore_runtime_acl_roots
+        candidate_profile_paths: list[str] = []
 
         def record_dacl_target(
             path: Path, dacl: ctypes.c_void_p, advapi: ctypes.WinDLL,
         ) -> None:
             dacl_targets.append(Path(path).resolve(strict=True))
             original_set_dacl(path, dacl, advapi)
+
+        def record_candidate_profile_path(
+            sid: ctypes.c_void_p,
+            userenv: ctypes.WinDLL,
+            advapi: ctypes.WinDLL,
+            kernel: ctypes.WinDLL,
+            ole32: ctypes.WinDLL,
+        ) -> str:
+            path = _get_appcontainer_localappdata_path(
+                sid, userenv, advapi, kernel, ole32,
+            )
+            candidate_profile_paths.append(path)
+            return path
 
         try:
             try:
@@ -2403,11 +2607,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "open('staging-python-script-started','w',encoding='ascii').write('1')\n"
                     "try:\n"
                     "    import _ctypes,_sqlite3,_ssl,ctypes,encodings,json,pathlib,"
-                    "platform,socket,sqlite3,ssl,subprocess,sys,sysconfig; from pathlib import Path\n"
+                    "os,platform,socket,sqlite3,ssl,stat,subprocess,sys,sysconfig; from pathlib import Path\n"
                     "except Exception as exc:\n"
                     "    open('staging-python-failure-class','w',encoding='ascii').write("
                     "'imports:'+type(exc).__name__)\n"
                     "    raise\n"
+                    + _STAGED_PYTHON_ENVIRONMENT_PROBE
+                    + "\n"
                     "def checkpoint(name): Path(name).write_text('1',encoding='ascii')\n"
                     "def failed(stage,exc): Path('staging-python-failure-class').write_text("
                     "stage+':'+type(exc).__name__,encoding='ascii')\n"
@@ -2550,6 +2756,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "    raise\n"
                     "result={'prefix_ok':prefix_ok,'module_roots':module_roots,"
                     "'python_version':platform.python_version(),"
+                    "'environment':staged_environment,"
                     "'runtime_write_denied':runtime_write_denied,"
                     "'source_runtime_denied':source_runtime_denied,"
                     "'network_connect_failed':network_connect_failed,"
@@ -2571,6 +2778,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "icode.windows_appcontainer._set_dacl",
                     side_effect=record_dacl_target,
                 ), mock.patch(
+                    "icode.windows_appcontainer._get_appcontainer_localappdata_path",
+                    side_effect=record_candidate_profile_path,
+                ), mock.patch(
                     "icode.windows_appcontainer._restore_runtime_acl_roots",
                     side_effect=lambda transaction, sid: self._observe_runtime_acl_restore(
                         original_restore_runtime_acl,
@@ -2588,6 +2798,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 staged_result = json.loads(result_marker.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 staged_result = {}
+            profile_environment = self._summarize_staged_environment(
+                staged_result.get("environment"),
+                candidate_profile_paths[0] if len(candidate_profile_paths) == 1 else None,
+            )
             python_failure = "not_observed"
             try:
                 raw_failure = python_failure_marker.read_text(encoding="ascii").strip()
@@ -2652,6 +2866,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "network_check_completed": network_completed_marker.is_file(),
                 "python_failure": python_failure,
                 "python_path_resolution": path_resolution_probe,
+                "profile_environment": profile_environment,
                 "python_path_resolution_probe_complete": set(path_resolution_probe) == {
                     "absolute", "stat", "read", "resolve_strict",
                     "resolve_nonstrict", "getfinalpathname", "native_createfile_zero",
@@ -2746,6 +2961,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 ),
             )
             self._workflow_json_notice(
+                "Python staged environment flags", profile_environment,
+            )
+            self._workflow_json_notice(
                 "Python disposable staging boundary assertions",
                 {
                     "acl_restore_verified": summary["acl_restore_verified"],
@@ -2782,6 +3000,17 @@ class TestWindowsAppContainer(unittest.TestCase):
             summary["python_path_resolution_probe_complete"],
             "staged Python path-resolution probes did not all report",
         )
+        profile_environment = summary["profile_environment"]
+        self.assertIsInstance(profile_environment, dict)
+        self.assertTrue(
+            profile_environment.get("complete"),
+            "staged Python environment probe is incomplete",
+        )
+        for name in ("localappdata", "temp", "tmp"):
+            self.assertTrue(
+                profile_environment[name]["python_win32_match"],
+                f"staged Python and Win32 disagree on {name}",
+            )
         self.assertIn(
             summary["acl_baseline_normalization"], {"0", "1024"},
             "staging ACL baseline normalization was not verified",

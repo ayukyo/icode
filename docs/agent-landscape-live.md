@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
 - 最近观察：2026-09-25；下次全量复核：不晚于 2026-10-25
-- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.4 Git status/helper 风险；20 项观察名单最近全量复核为 2026-09-24。
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.3 环境探针与 R2.4 Git status/helper 风险；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -312,3 +312,14 @@
 - **ICODE 取舍：**采纳分层集成证据、同载荷正反控制、Windows 原生 probe 与“启动失败不算拒绝访问”；`0xC0000135` 归为 runtime 启动/装载前置失败，不回退宿主、不当成沙箱负例。ACL 恢复、必要 marker 缺失继续阻断。暂缓把一次性 staging 试验接入生产执行器；它证明候选可运行，不证明可接受地复用 Python runtime 或其成本。只采纳测试结构和 fail-closed 原则，不复制代码、不引入第三方运行依赖，因而没有额外许可或部署兼容性负担。
 - **CI #150 实测：**[Windows x64](https://github.com/ayukyo/icode/actions/runs/36128698379/job/108050697474) 与 [Windows ARM64](https://github.com/ayukyo/icode/actions/runs/36128698379/job/108050697703) 均通过 disposable staged Python probe，但组合测试各报告 5 failures、4 errors。复核区分出 8 项是 Windows 8.3 短名与长路径规范名比较不一致，当前工作树统一在拒绝 reparse ancestry 后解析路径并规范化测试期望；两项未解边界仍是 `LOCALAPPDATA` marker 缺失与原宿主 Python `0xC0000135`。profile notice 显示 API 路径不等价，实际值在 API profile 的多层未知子路径且 `stat=not_found`、写入类别为 `path_not_found`；不能据此推断其与 Python loader 失败有因果关系。修复后的路径比较等待 CI #151 双架构复核。
 - **官方契约复核：**Microsoft 的 [AppContainer 启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)示例将 `LOCALAPPDATA` 设为 profile 的 `AC` 路径；[`GetAppContainerFolderPath`](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath) 说明返回值等同 `FOLDERID_LocalAppData`。当前实际 probe 与该简单示例不一致，但官方文档没有说明显式环境块为何观察到不同值，故只记录为未解释差异，不采用猜测的子目录、创建行为或 ACL 扩张。
+
+### 2026-09-25 UTC R2.3 staged Python 环境 API 对照
+
+- **问题与 ICODE 现状：**CI #150 staged Python 候选已能运行，而 profile `LOCALAPPDATA` marker 与直跑宿主 Python 仍未通过。现有 notice 只能说明 API 路径与实际路径关系，尚不能确认进程内 `os.environ` 是否与 Win32 进程环境 API 看到的值一致。新增的 CI-only 探针将在同一候选进程中比较 `LOCALAPPDATA`、`TEMP`、`TMP`，并仅报告定义状态、相等布尔值、与 API profile 是否相等及路径对象类别；原始值只在 runner 的临时工作目录中用于主进程脱敏，工作流 notice 不含路径。探针不创建目录、不改 ACL、不进入生产执行器。
+- **上游刷新（固定提交，2026-09-25）：**Codex [`60713126`](https://github.com/openai/codex/commit/60713126ee0dbc483fba83fc032dfaa5998521ec) 当前的 Git 状态辅助逻辑是轻量 dirty-check（porcelain 状态加 fsmonitor 控制），Linux 隔离将 `.git` 和解析后的 gitdir 设为只读；没有证据表明它提供一个可直接复用的跨平台 Git 状态 broker。Qwen Code [`790bd83c`](https://github.com/QwenLM/qwen-code/commit/790bd83c2b1e3b242e0487d92183b053ceb44ed8) 的当前沙箱说明继续强调 backend 不可用时不在宿主重跑；Gemini CLI [`bedef96e`](https://github.com/google-gemini/gemini-cli/commit/bedef96ef42905bd84a86dbec021c706168e7e2f) 的 worktree/grant 设计会跟踪 private worktree 与主 gitdir，其 grant 可按用户授权扩展为读或写而非固定只读 Git 状态合同。三个上游观察均限于指定版本，不代表运行时验收。
+- **采纳 / 暂缓：**采纳进程内双 API 观测、路径只在本机暂存且对外仅发布脱敏分类，以及“backend 失败不回宿主”的 fail-closed 原则。暂缓根据 `0xC0000135` 推断具体 DLL/ACL 根因，暂缓把 staged runtime 接入产品。没有复制上游代码或增加第三方依赖；本切片无新增许可证负担。验收要求 Windows x64 与 ARM64 探针完整、三项 Python/Win32 环境值一致、notice <=500 字符、路径不外泄，且继续满足 ACL 精确恢复及原组合测试；新 CI 结果出来前不宣称通过。
+
+### 2026-09-25 UTC R2.4 Git 状态代理上游刷新
+
+- Codex [`60713126`](https://github.com/openai/codex/commit/60713126ee0dbc483fba83fc032dfaa5998521ec) 的 `.git`/resolved-gitdir 只读 carveout 可作为 OS 边界参考，其 UI 状态判断不是完整 Git broker；不采纳其潜在的 helper/daemon 放行逻辑。Qwen [`790bd83c`](https://github.com/QwenLM/qwen-code/commit/790bd83c2b1e3b242e0487d92183b053ceb44ed8) 的“沙箱后端失败不回宿主重试”与 ICODE `git_broker_unavailable` 一致。Gemini [`bedef96e`](https://github.com/google-gemini/gemini-cli/commit/bedef96ef42905bd84a86dbec021c706168e7e2f) 对 private worktree 与 shared gitdir 的跟踪值得参考，但其按用户授权的读/写 grant 不能替代固定只读状态合同。
+- **ICODE 取舍：**采纳 OS 强制只读、可信 worktree 身份及失败关闭；继续暂缓跨平台工具入口。当前 Linux 原型未进入 `ToolContext`，仍须完成受支持布局约束、并发身份变化、超时/超量清理与 ARM64 wheel 验收；macOS/Windows 没有等价证明时维持 unavailable。本轮仅记录上游行为，不复制代码、不增加第三方依赖或改变 ICODE 许可证负担。
