@@ -383,6 +383,18 @@ class TestWindowsAppContainer(unittest.TestCase):
         safe_detail = detail[:500].replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         print(f"::notice title=R2.3 {name}::{safe_detail}", flush=True)
 
+    def _workflow_json_notice(self, name: str, detail: dict[str, object]) -> None:
+        encoded = json.dumps(detail, ensure_ascii=True, separators=(",", ":"))
+        self.assertLessEqual(
+            len(encoded), 500,
+            f"R2.3 JSON notice {name!r} would be silently truncated",
+        )
+        self._workflow_notice(name, encoded)
+
+    def test_JSON工作流回执超限时必须显式失败(self) -> None:
+        with self.assertRaises(AssertionError):
+            self._workflow_json_notice("test", {"payload": "x" * 500})
+
     @staticmethod
     def _read_cmd_exit_status(path: Path) -> int | None:
         try:
@@ -1963,17 +1975,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                 host_stage_probe_exit = None
                 host_stage_probe_error = "launch_failed"
                 host_stage_version = None
-            self._workflow_notice(
+            self._workflow_json_notice(
                 "Python runtime staging host positive control",
-                json.dumps(
-                    {
-                        "executed": host_stage_probe_exit is not None,
-                        "exit": host_stage_probe_exit,
-                        "error": host_stage_probe_error,
-                        "version": host_stage_version,
-                    },
-                    separators=(",", ":"),
-                ),
+                {
+                    "executed": host_stage_probe_exit is not None,
+                    "exit": host_stage_probe_exit,
+                    "error": host_stage_probe_error,
+                    "version": host_stage_version,
+                },
             )
             self.assertEqual(
                 host_stage_probe_exit, 0,
@@ -2121,9 +2130,48 @@ class TestWindowsAppContainer(unittest.TestCase):
                     ) if marker in candidate.detail
                 ],
             }
-            self._workflow_notice(
-                "Python disposable staging AppContainer diagnostic",
-                json.dumps(summary, ensure_ascii=True, separators=(",", ":")),
+            self._workflow_json_notice(
+                "Python disposable staging inventory",
+                {
+                    "source_entries": summary.get("source_entries"),
+                    "materialized_links": summary.get("materialized_links"),
+                    "staged_entries": summary.get("staged_entries"),
+                    "host_python_version": host_stage_version,
+                },
+            )
+            self._workflow_json_notice(
+                "Python disposable staging lifecycle",
+                {
+                    "baseline_executed": summary["baseline_executed"],
+                    "baseline_exit": summary["baseline_exit"],
+                    "baseline_cleanup": summary["baseline_cleanup"],
+                    "baseline_started": summary["baseline_started"],
+                    "candidate_executed": summary["candidate_executed"],
+                    "candidate_exit": summary["candidate_exit"],
+                    "candidate_error": summary["candidate_error"],
+                    "candidate_cleanup": summary["candidate_cleanup"],
+                    "staged_python_version": summary["staged_python_version"],
+                },
+            )
+            self._workflow_json_notice(
+                "Python disposable staging cleanup diagnostics",
+                {"detail_flags": summary["candidate_detail_flags"]},
+            )
+            self._workflow_json_notice(
+                "Python disposable staging boundary assertions",
+                {
+                    "acl_restore_verified": summary["acl_restore_verified"],
+                    "acl_roots_are_staged": summary["acl_roots_are_staged"],
+                    "source_acl_untouched": summary["source_acl_untouched"],
+                    "runtime_marker": summary["runtime_marker"],
+                    "workspace_write": summary["workspace_write"],
+                    "runtime_write_denied": summary["runtime_write_denied"],
+                    "source_runtime_denied": summary["source_runtime_denied"],
+                    "network_denied": summary["network_denied"],
+                    "module_roots": summary["module_roots"],
+                    "prefix_ok": summary["prefix_ok"],
+                    "child_started": summary["child_started"],
+                },
             )
         finally:
             temporary.cleanup()
