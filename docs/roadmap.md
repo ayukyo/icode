@@ -293,6 +293,10 @@ R2.2 已合入 main 持续验证 Linux/macOS 原生后端。[CI #85](https://git
 
 CI [#120](https://github.com/ayukyo/icode/actions/runs/36081977910) 中 R2.1 工作区三平台、Python 3.11/3.12 与 R2.2 Linux/macOS 原生探针矩阵均通过，官网工作流 [#55](https://github.com/ayukyo/icode/actions/runs/36081977987) 通过。Windows x64 与 ARM64 AppContainer 作业仍失败：两架构均见 Python `0xC0000135`；actual `LOCALAPPDATA` 键唯一，CMD 对显式注入的 API 路径 alias 比较为不相等，宿主 `stat=not_found`，路径位于 API profile 下方但不是 API `Temp`，profile marker 缺失。具体子目录尚未分类，不能推断与 Python 加载失败有因果关系。工作区、网络和 Job 子项的通过 notice 仍只是组件证据。故 R2.2 的当前原生探针矩阵通过但完整阶段门槛未闭合；R2.3、R2 全阶段与 `policy_contract_ready` 均未通过，自动模式继续关闭。
 
+### 2026-09-25 UTC：CI #121 子目录分类回执
+
+CI [#121](https://github.com/ayukyo/icode/actions/runs/36083440360) 的 Windows x64 与 ARM64 AppContainer 探针均失败；新增脱敏关系分类显示 actual `LOCALAPPDATA` 属于 API profile 下的多层子路径（`api_child_nested`），两架构 Python 仍以 `0xC0000135` 退出，profile marker 缺失。工作区/网络负例、Job 进程限制对照和后代清理的组件 notice 通过，不构成完整 Windows 隔离验收。下一轮只再识别首层是否为 `Temp`、`Local`、`LocalState` 或其他类别，不输出路径、不改 ACL；R2.3、完整 R2 和自动模式仍未通过。
+
 设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
 [R2.0 policy contract 实施计划](./nbl/plans/2026-09-23-r2-policy-contract.md) ·
 [R2.1 工作区与租约实施计划](./nbl/plans/2026-09-23-r2-workspace-lease.md) ·

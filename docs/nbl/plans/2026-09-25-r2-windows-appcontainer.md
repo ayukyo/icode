@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #120 x64/ARM64 删除前均确认 actual `LOCALAPPDATA` 唯一、与显式注入的 API 路径 alias 不相等、宿主 `stat=not_found`，且 actual 位于 API profile 下方但不是 API `Temp`；具体子目录尚未分类。Python 仍以 `0xC0000135` 退出，当前不能认定两者存在因果关系。本地已补充脱敏子目录分类，等待 CI #121 双架构回执；不记录路径、不使用宿主路径或放宽 ACL。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #121 x64/ARM64 删除前均确认 actual `LOCALAPPDATA` 唯一、与显式注入的 API 路径 alias 不相等、宿主 `stat=not_found`，且 actual 位于 API profile 下方的多层路径中；Python 仍以 `0xC0000135` 退出，当前不能认定两者存在因果关系。本地进一步将多层路径分类为固定首层类别，等待 CI #122；不记录路径、不使用宿主路径或放宽 ACL。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -164,4 +164,9 @@ Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve
 
 - [CI #120 x64](https://github.com/ayukyo/icode/actions/runs/36081977910/job/107905707747) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36081977910/job/107905707999) 的脱敏 notice 均为 `alias_match=false`、`equals_api=false`、`relation=api_child`、`api_temp=false`、`stat=not_found`、profile marker 缺失，Python 仍退出 `0xC0000135`。这证明当前子进程观察到的值不同于环境块中传入的 API 路径，但具体后缀未知，且不能推断路径差异导致 Python 加载失败。
 - 微软 [AppContainer 启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)只示例 `LOCALAPPDATA=...\\AC`、`TEMP/TMP=...\\AC\\Temp`；[GetAppContainerFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath) 定义 LocalAppData 返回值，[CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile) 未保证特定子目录。没有官方依据把 MSIX `LocalState` 推定为桌面 AppContainer profile 的子目录。
-- 新增脱敏分类器只输出 `api_child_temp`、`api_child_local`、`api_child_local_state`、`api_child_other` 或 `api_child_nested` 等固定类别，不输出任意后缀。CI #121 待验证分类器及完整原生探针；在双架构结果出来前不创建猜测目录、不放宽 ACL、不开放自动模式。
+
+### 2026-09-25 UTC CI #121 子目录分类回执
+
+- [CI #121 x64](https://github.com/ayukyo/icode/actions/runs/36083440360/job/107910090970) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36083440360/job/107910091117) 均将 actual `LOCALAPPDATA` 分类为 API profile 下的多层子路径（`api_child_nested`）；`alias_match=false`、宿主 `stat=not_found`、profile marker 缺失、Python 退出 `0xC0000135`。不能从共同出现推断该路径分类是 Python 失败原因。
+- 工作区写入/嵌套读取、相邻目录拒绝、loopback 拒绝、Job 进程上限正反对照和后代清理 notice 均通过其各自组件断言；本轮完整 AppContainer 作业仍失败，故不能把它们合并成 Windows 沙箱通过。
+- 首轮分类只区分了多层/单层，信息仍不足。本地测试已转为在多层场景只保留白名单首层类别（`Temp`、`Local`、`LocalState`、其他），继续隐藏任意子路径；等 CI #122 核实双架构结果。无论首层为何，暂不创建目录或更改 ACL。

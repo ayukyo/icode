@@ -83,13 +83,13 @@ class TestWindowsAppContainer(unittest.TestCase):
         if common_path == expected_path:
             relative_path = ntpath.relpath(actual_path, expected_path)
             components = relative_path.split(ntpath.sep)
-            if len(components) != 1:
-                return "api_child_nested"
-            return {
+            first_component = components[0].casefold()
+            category = {
                 "temp": "api_child_temp",
                 "local": "api_child_local",
                 "localstate": "api_child_local_state",
-            }.get(components[0].casefold(), "api_child_other")
+            }.get(first_component, "api_child_other")
+            return category if len(components) == 1 else f"{category}_nested"
         if common_path == actual_path:
             return "api_parent"
         if ntpath.dirname(actual_path) == ntpath.dirname(expected_path):
@@ -181,7 +181,15 @@ class TestWindowsAppContainer(unittest.TestCase):
         )
         self.assertEqual(
             self._profile_path_relation(expected + r"\Temp\Nested", expected),
-            "api_child_nested",
+            "api_child_temp_nested",
+        )
+        self.assertEqual(
+            self._profile_path_relation(expected + r"\Local\Nested", expected),
+            "api_child_local_nested",
+        )
+        self.assertEqual(
+            self._profile_path_relation(expected + r"\Private\Nested", expected),
+            "api_child_other_nested",
         )
         self.assertEqual(self._profile_path_relation(ntpath.dirname(expected), expected), "api_parent")
         self.assertEqual(
