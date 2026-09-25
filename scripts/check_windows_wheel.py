@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from icode.native_helper import windows_pe_architecture
 
 _ARCHES = {"win_amd64": ("x64", 0x8664), "win_arm64": ("arm64", 0xAA64)}
-_SHA256_LINE = re.compile(rb"[0-9a-f]{64}\n?")
+_SHA256_LINE = re.compile(rb"[0-9a-f]{64}(?:\r?\n)?")
 
 
 def _record_hash(content: bytes) -> str:

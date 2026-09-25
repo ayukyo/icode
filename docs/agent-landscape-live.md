@@ -386,3 +386,9 @@
 - **采纳 / 暂缓：**采纳按原生架构生成平台 wheel、固定包内 helper 路径、PE 架构 + 独立 SHA 清单 + wheel RECORD 三层一致性检查；helper 缺失/错架构时不查 PATH、不执行。暂缓正式签名与 PyPI provenance 发布链，等待真实 helper 源码和签名主体；包内哈希不被描述为来源认证。PyPI attestations 需要显式验证，不声称普通 pip 会验证发布 provenance。[pip secure installs](https://pip.pypa.io/en/latest/topics/secure-installs/) · [PyPI attestations](https://docs.pypi.org/attestations/)。
 - **实现与验收：**源码构建只有显式提供经架构/哈希核对的外部 helper 时才生成 `py3-none-win_amd64` 或 `py3-none-win_arm64` wheel；无 helper 时仍是普通纯 Python wheel，不宣称完整 R2。Windows x64/ARM64 CI 使用合成且不执行的 PE 做“纯 Python fallback + helper wheel build → wheel metadata/RECORD → venv install → 包内定位/缺失 fail-closed”验收；此合成验收不能替代后续真实 helper 原生测试、Authenticode signer 检查、UAC/WFP/ACL 测试。CPython 3.11 preflight 三道门全绿，Linux x86_64 wheel 构建/检查/干净 venv 安装及 native helper/Git broker probe 通过；Windows 双架构 Actions 结果待回填。
 - **成本 / 许可证 / 安全影响：**不复制 Codex 代码，不新增运行依赖，新增 setuptools 构建逻辑和两架构 CI 时间；许可证负担无变化。最大残留风险是可信源码构建、签名与 Windows 产品执行链尚未完成。观察日期：2026-09-26。
+
+### 2026-09-26 UTC：Windows wheel 原生 CI 缺陷复核
+
+- **ICODE 现状 / 观察：**CI #161 x64 wheel job 的逐步注释明确失败于 wheel checker 的 SHA 清单格式，而非 PE 架构、RECORD、安装或 helper 定位；测试清单在 Windows 文本模式产生 CRLF，checker 从 ZIP 以原始字节读取。故问题属于跨平台换行合同，不是 helper 本身异常。
+- **取舍：**采纳只容许 LF/CRLF 的精确字节语法，不作宽泛 `strip()` 或忽略任意空白；新增 CRLF 回归测试。修复尚待双架构重跑；不把同轮 AppContainer 组合用例失败与 wheel 修复混为一因。
+- **上游影响：**该问题未改变 Codex / PyPA 复核结论，也未复制上游实现或增加依赖；研究的下一切片继续聚焦 Windows 原生 helper 的受信边界与 setup/runner职责，不因此转向继续扩大 AppContainer 诊断。

@@ -359,3 +359,9 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - **失败关闭：**构建时未提供 helper 时保留纯 Python wheel；提供了但架构/摘要错误时拒绝构建。安装期不走 PATH、当前目录或仓库源码兜底。wheel checker 使用临时合成 PE 覆盖标签/机器字段/摘要/RECORD；合成文件从不执行。相邻 SHA 与 RECORD 都不能证明发布者身份或构建 provenance。
 - **上游采纳：**按 Codex 固定提交 [`c7e80f87`](https://github.com/openai/codex/tree/c7e80f873f67dbef58206b9d4f3c60e9d556eb16) 的双架构 helper 构建/资源打包形态设计；用 [PyPA platform compatibility tags](https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/) 区分 Windows 架构。没有复制上游代码或增加 runtime 依赖。签名、预期 signer、SmartScreen 和 attestation 暂缓至真实 helper / 发布主体就位。
 - **当前本地验证：**CPython 3.11 下 14 个 helper/wheel 定向测试通过；`scripts/preflight.py` 密钥扫描、子模块完整性、全量测试 3 道门均通过；`scripts/run_native_wheel_ci.py` 本机 x86_64 构建、wheel 检查、干净 venv 安装、helper 和 Git broker probes 均通过。新增 Windows x64/ARM64 Actions job 尚未回执。阶段退出还要求两个原生 runner 的纯 Python fallback 和 helper wheel 打包安装闭环通过；即使通过也只完成打包切片，不算 R2.3 或完整 R2 完成。
+
+### 2026-09-26 UTC：CI #161 Windows wheel CRLF 缺陷修正
+
+- **原生证据：**[Windows x64 packaging job](https://github.com/ayukyo/icode/actions/runs/36173719473/job/108199173573) 构建 wheel 后，检查器报 `helper SHA-256 manifest invalid`。流程在 Windows 上用 `Path.write_text(..., "\n")` 生成测试清单时会写成 CRLF；helper 校验器走文本模式会规范换行，而 wheel checker 读 ZIP 原始字节，之前只允许 LF，所以两边行为不一致。未把合成 helper 执行，也没有影响真实 backend（尚未实现）。
+- **修正与覆盖：**wheel checker 只接受 64 个小写十六进制字符，随后可选 LF 或 CRLF；新增 CRLF wheel 清单回归用例。CPython 3.11.15 本机 helper/wheel 定向测试 15 项通过。尚须下一次 Windows x64/ARM64 Actions 实跑，未将修复写成双架构验收完成。
+- **剩余边界：**同一 #161 的旧 AppContainer 组合探针仍在失败，属于诊断路线，不因本修复而变成 Windows 后端通过；R2.3 与自动模式仍关闭。

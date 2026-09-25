@@ -138,6 +138,15 @@ class TestWindowsWheelPackaging(unittest.TestCase):
             _write_wheel(wheel, arch="x64", helper=image, manifest=manifest)
             self.assertEqual(check_windows_wheel(wheel), [])
 
+    def test_wheel_checker_accepts_windows_crlf_sha256_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            wheel = root / "icode_agent-0.1.0-py3-none-win_amd64.whl"
+            image = _pe_image(0x8664)
+            manifest = (hashlib.sha256(image).hexdigest() + "\r\n").encode("ascii")
+            _write_wheel(wheel, arch="x64", helper=image, manifest=manifest)
+            self.assertEqual(check_windows_wheel(wheel), [])
+
     def test_wheel_checker_rejects_wrong_tag_PE_digest_and_RECORD(self) -> None:
         cases = (
             ("wrong_tag", _pe_image(0x8664), "py3-none-win_arm64", False,
