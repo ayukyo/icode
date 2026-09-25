@@ -43,6 +43,13 @@
 - 撤销使用进程内策略代次；若审批等待期间发生撤销则拒绝签发。新建 authority 会有新 HMAC key，因此重启后不能验证旧租约。该实现是授权数据合同，不持久化审批、不创建 socket、不开放执行器网络。
 - 同一进程内的 Python 代码访问边界不由 HMAC 私有成员保护；点时校验和真实连接也存在 TOCTOU 间隙。未来代理必须重新设计并测试连接登记与撤销的并发原子性，不能把本切片宣传为网络安全边界。
 
+### 2026-09-25 活跃连接撤销生命周期切片
+
+- `NetworkLeaseAuthority` 现提供内部 `register_active_connection()` / `release_active_connection()` 和 `close_expired_connections()`：注册在同一 authority 锁内完成租约、策略摘要、用途、目标及期限复核；撤销/到期将对应策略 scope 标为 revoking，可信 close callback 在锁外执行，只有返回严格的 `True` 才从登记表删除。清理失败时保持 fail-closed、拒绝新审批/连接，并允许后续 sweep 重试；新连接注册前也会先清扫已过期记录。
+- 20 个 `tests.test_network_lease` 用例通过，覆盖撤销、自然到期、正常释放幂等、审批/清理并发、回调失败/非严格 True、重试和 scope 阻断。callback 不应包含或透出 socket 异常详情；等待并发 close 有 5 秒上限，避免未确认清理时误报成功。
+- **边界：**registry 仅保存进程内可信代理提供的回调；本身不会建立 socket、验证 callback 是否真的关闭底层传输、运行定时线程、设置 OS 路由或接入模型/工具。未来代理仍必须周期性 sweep、在 connect 前原子登记其连接句柄，并实现 netns→TCP bridge、目的 IP pinning 与代理死亡处置；macOS/Windows 继续 DENY。故这只是消除 ICODE 授权状态模型中的部分并发缺口，不代表网络授权功能或 R2.4 通过。
+- **上游采纳：**Codex `c98e263fb5365a512bb997a103d6ee8aa14c23e6` 的 netns/TCP bridge 与取消时关闭活动连接作为 Linux 架构/验收参考；Gemini CLI `bedef96ef42905bd84a86dbec021c706168e7e2f` 的 Seatbelt 仅放行本机代理及代理死亡停止进程组作为 macOS 候选；Qwen Code `790bd83c2b1e3b242e0487d92183b053ceb44ed8` 继续支持 backend 不可用时失败关闭。未复制代码，未增加依赖；观察与实现复核日期为 2026-09-25。来源详见[持续竞品对照](../../agent-landscape-live.md)。
+
 这些是固定版本源码/官方文档观察，不是上游运行时实测；`HTTP_PROXY` 仅为合作式客户端提供路由信息，不构成安全边界。
 
 ## 必须先红后绿的负例

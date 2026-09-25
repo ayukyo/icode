@@ -2,8 +2,9 @@
 
 The host authority can obtain explicit approval and sign short-lived lease data.
 Platform backends must still deny network access until they enforce proxy-only
-routing in the operating system. A lease or its point-in-time verification is not
-a connection permit or a security boundary by itself.
+routing in the operating system. The authority can atomically register trusted
+proxy close callbacks, but it does not create sockets or enforce routing; a lease
+or point-in-time verification is not a network permission or security boundary.
 """
 
 from __future__ import annotations
@@ -15,8 +16,9 @@ import re
 import secrets
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from typing import Callable
 
 from .approvals import ApprovalRequest, Approver
 from .sandbox_policy import (
@@ -33,6 +35,7 @@ MAX_NETWORK_LEASE_TTL_SECONDS = 15 * 60
 MAX_NETWORK_LEASE_TTL_NS = MAX_NETWORK_LEASE_TTL_SECONDS * NANOSECONDS_PER_SECOND
 MAX_NETWORK_LEASE_DOMAINS = 32
 HTTPS_PORT = 443
+_NETWORK_CONNECTION_CLOSE_WAIT_SECONDS = 5.0
 
 _LEASE_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 _POLICY_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
@@ -45,6 +48,16 @@ class NetworkLeaseValidationError(ValueError):
 
 class NetworkLeaseApprovalDenied(NetworkLeaseValidationError):
     """Raised when network approval is rejected, times out, or cannot be obtained."""
+
+
+class NetworkLeaseConnectionCloseError(NetworkLeaseValidationError):
+    """Raised when active connection closure cannot be confirmed."""
+
+    def __init__(self, failure_count: int) -> None:
+        self.failure_count = failure_count
+        super().__init__(
+            "one or more active network connections could not be confirmed closed"
+        )
 
 
 class NetworkPurpose(str, Enum):
@@ -242,18 +255,39 @@ class IssuedNetworkLease:
             raise NetworkLeaseValidationError("lease signature must be a SHA-256 HMAC hex digest")
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _NetworkConnectionHandle:
+    """Opaque in-process identity; never serialize or pass it to a worker."""
+
+    connection_id: str
+
+
+@dataclass
+class _ActiveNetworkConnection:
+    handle: _NetworkConnectionHandle
+    policy_key: tuple[str, str, str, str]
+    lease: NetworkLease
+    close_callback: Callable[[], bool]
+    closing: bool = False
+    close_complete: threading.Event = field(
+        default_factory=threading.Event, repr=False, compare=False,
+    )
+
+
 class NetworkLeaseAuthority:
     """Host-process signer, explicit-approval gate, and in-memory revocation epoch.
 
     The random HMAC key is never serialized. This authority does not open sockets or
-    enforce OS routing; a future trusted proxy must consult it and independently
-    close active connections on revoke/expiry.
+    enforce OS routing; a future trusted proxy must register its own socket-close
+    callbacks and periodically call ``close_expired_connections``.
     """
 
     def __init__(self) -> None:
         self._key = secrets.token_bytes(32)
         self._lock = threading.RLock()
         self._generations: dict[tuple[str, str, str, str], int] = {}
+        self._revoking_policy_keys: set[tuple[str, str, str, str]] = set()
+        self._active_connections: dict[str, _ActiveNetworkConnection] = {}
 
     @staticmethod
     def _policy_key(policy: SandboxPolicy) -> tuple[str, str, str, str]:
@@ -312,6 +346,10 @@ class NetworkLeaseAuthority:
             raise NetworkLeaseApprovalDenied("network approval service is unavailable")
 
         with self._lock:
+            if policy_key in self._revoking_policy_keys:
+                raise NetworkLeaseValidationError(
+                    "network scope revocation cleanup is incomplete"
+                )
             generation = self._generations.get(policy_key, 1)
         approval_id = f"ap-net-{secrets.token_hex(12)}"
         request = ApprovalRequest(
@@ -341,7 +379,10 @@ class NetworkLeaseAuthority:
             raise NetworkLeaseApprovalDenied("network lease request was denied or timed out")
 
         with self._lock:
-            if self._generations.get(policy_key, 1) != generation:
+            if (
+                policy_key in self._revoking_policy_keys
+                or self._generations.get(policy_key, 1) != generation
+            ):
                 raise NetworkLeaseValidationError(
                     "network scope was revoked while approval was pending"
                 )
@@ -387,21 +428,196 @@ class NetworkLeaseAuthority:
         if not isinstance(issued, IssuedNetworkLease):
             raise NetworkLeaseValidationError("issued network lease is required")
         policy_key = self._policy_key(policy)
+        with self._lock:
+            self._verify_request_locked(
+                issued,
+                policy,
+                policy_key=policy_key,
+                purpose=purpose,
+                hostname=hostname,
+                port=port,
+                now_monotonic_ns=now_monotonic_ns,
+            )
+
+    def _verify_request_locked(
+        self,
+        issued: IssuedNetworkLease,
+        policy: SandboxPolicy,
+        *,
+        policy_key: tuple[str, str, str, str],
+        purpose: NetworkPurpose,
+        hostname: str,
+        port: int,
+        now_monotonic_ns: int,
+    ) -> None:
+        if policy_key in self._revoking_policy_keys:
+            raise NetworkLeaseValidationError(
+                "network scope revocation cleanup is incomplete"
+            )
         expected = hmac.new(
             self._key, issued.lease.canonical_payload(), hashlib.sha256,
         ).hexdigest()
         if not hmac.compare_digest(expected, issued.signature):
             raise NetworkLeaseValidationError("network lease signature is invalid")
+        generation = self._generations.get(policy_key, 1)
+        issued.lease.validate_request(
+            policy,
+            purpose=purpose,
+            hostname=hostname,
+            port=port,
+            now_monotonic_ns=now_monotonic_ns,
+            current_generation=generation,
+        )
+
+    def register_active_connection(
+        self,
+        issued: IssuedNetworkLease,
+        policy: SandboxPolicy,
+        *,
+        purpose: NetworkPurpose,
+        hostname: str,
+        port: int,
+        now_monotonic_ns: int,
+        close: Callable[[], bool],
+    ) -> _NetworkConnectionHandle:
+        """Atomically validate and register one trusted proxy-owned connection.
+
+        A future proxy should register its local/outbound socket closure before
+        connecting; the close callback must return the strict boolean ``True``
+        only after confirming closure. Release the returned handle only after
+        normal closure. This does not create, route, or monitor a socket and is
+        not a network permission by itself.
+        """
+
+        if not callable(close):
+            raise NetworkLeaseValidationError("connection close callback is required")
+        self.close_expired_connections(now_monotonic_ns)
+        policy_key = self._policy_key(policy)
         with self._lock:
-            generation = self._generations.get(policy_key, 1)
-            issued.lease.validate_request(
+            self._verify_request_locked(
+                issued,
                 policy,
+                policy_key=policy_key,
                 purpose=purpose,
                 hostname=hostname,
                 port=port,
                 now_monotonic_ns=now_monotonic_ns,
-                current_generation=generation,
             )
+            handle = _NetworkConnectionHandle(secrets.token_hex(32))
+            self._active_connections[handle.connection_id] = _ActiveNetworkConnection(
+                handle=handle,
+                policy_key=policy_key,
+                lease=issued.lease,
+                close_callback=close,
+            )
+            return handle
+
+    def release_active_connection(self, handle: object) -> bool:
+        """Forget a proxy connection after its owner has closed it normally."""
+
+        if not isinstance(handle, _NetworkConnectionHandle):
+            raise NetworkLeaseValidationError("active network connection handle is invalid")
+        with self._lock:
+            entry = self._active_connections.get(handle.connection_id)
+            if entry is None or entry.handle is not handle:
+                return False
+            if entry.closing or entry.policy_key in self._revoking_policy_keys:
+                return False
+            del self._active_connections[handle.connection_id]
+            entry.close_complete.set()
+            return True
+
+    def _close_active_connections(
+        self,
+        entries: tuple[_ActiveNetworkConnection, ...],
+    ) -> int:
+        closed_count = 0
+        failure_count = 0
+        for entry in entries:
+            with self._lock:
+                if self._active_connections.get(entry.handle.connection_id) is not entry:
+                    continue
+                if entry.closing:
+                    wait_for_close = entry.close_complete
+                else:
+                    entry.closing = True
+                    entry.close_complete.clear()
+                    wait_for_close = None
+
+            if wait_for_close is not None:
+                if not wait_for_close.wait(
+                    timeout=_NETWORK_CONNECTION_CLOSE_WAIT_SECONDS,
+                ):
+                    failure_count += 1
+                    continue
+                with self._lock:
+                    if self._active_connections.get(entry.handle.connection_id) is entry:
+                        failure_count += 1
+                continue
+
+            try:
+                close_confirmed = entry.close_callback() is True
+            except Exception:  # noqa: BLE001 - callback details may contain secrets.
+                close_confirmed = False
+
+            if not close_confirmed:
+                with self._lock:
+                    if self._active_connections.get(entry.handle.connection_id) is entry:
+                        entry.closing = False
+                    entry.close_complete.set()
+                failure_count += 1
+            else:
+                with self._lock:
+                    if self._active_connections.get(entry.handle.connection_id) is entry:
+                        del self._active_connections[entry.handle.connection_id]
+                    entry.closing = False
+                    entry.close_complete.set()
+                closed_count += 1
+
+        if failure_count:
+            raise NetworkLeaseConnectionCloseError(failure_count) from None
+        return closed_count
+
+    def close_expired_connections(self, now_monotonic_ns: int) -> int:
+        """Close expired, revoked-generation, and unfinished-revocation connections.
+
+        The trusted proxy event loop must call this periodically; the authority
+        deliberately creates no background threads on its own.
+        """
+
+        if type(now_monotonic_ns) is not int or now_monotonic_ns < 0:
+            raise NetworkLeaseValidationError(
+                "now_monotonic_ns must be a non-negative integer"
+            )
+        with self._lock:
+            expired_policy_keys = {
+                entry.policy_key
+                for entry in self._active_connections.values()
+                if entry.lease.expires_at_monotonic_ns <= now_monotonic_ns
+            }
+            # Block new approvals/registrations until every tunnel in this scope
+            # is confirmed closed; otherwise a failed close could overlap a new lease.
+            self._revoking_policy_keys.update(expired_policy_keys)
+            entries = tuple(
+                entry
+                for entry in self._active_connections.values()
+                if (
+                    entry.lease.expires_at_monotonic_ns <= now_monotonic_ns
+                    or entry.policy_key in self._revoking_policy_keys
+                    or entry.lease.generation
+                    != self._generations.get(entry.policy_key, 1)
+                )
+            )
+            revoking_keys = tuple(self._revoking_policy_keys)
+        closed_count = self._close_active_connections(entries)
+        with self._lock:
+            for policy_key in revoking_keys:
+                if not any(
+                    entry.policy_key == policy_key
+                    for entry in self._active_connections.values()
+                ):
+                    self._revoking_policy_keys.discard(policy_key)
+        return closed_count
 
     def revoke(self, policy: SandboxPolicy) -> int:
         """Invalidate every lease issued for this run/ticket/step/policy snapshot."""
@@ -410,4 +626,17 @@ class NetworkLeaseAuthority:
         with self._lock:
             generation = self._generations.get(policy_key, 1) + 1
             self._generations[policy_key] = generation
-            return generation
+            self._revoking_policy_keys.add(policy_key)
+            entries = tuple(
+                entry
+                for entry in self._active_connections.values()
+                if entry.policy_key == policy_key
+            )
+        self._close_active_connections(entries)
+        with self._lock:
+            if not any(
+                entry.policy_key == policy_key
+                for entry in self._active_connections.values()
+            ):
+                self._revoking_policy_keys.discard(policy_key)
+        return generation

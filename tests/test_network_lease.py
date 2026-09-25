@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import unittest
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
@@ -15,6 +16,7 @@ from icode.network_lease import (
     NetworkLease,
     NetworkLeaseApprovalDenied,
     NetworkLeaseAuthority,
+    NetworkLeaseConnectionCloseError,
     NetworkLeaseValidationError,
     NetworkPurpose,
 )
@@ -305,6 +307,390 @@ class NetworkLeaseTestCase(unittest.TestCase):
         authority.verify_request(
             renewed, policy, purpose=NetworkPurpose.PACKAGE_INSTALL,
             hostname="pypi.org", port=443, now_monotonic_ns=3_000_000_001,
+        )
+
+    def test_active_connection_is_closed_when_its_lease_is_revoked(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        closed: list[str] = []
+
+        def close_tunnel() -> bool:
+            closed.append("closed")
+            return True
+
+        handle = authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=close_tunnel,
+        )
+
+        self.assertEqual(closed, [])
+        self.assertEqual(authority.revoke(policy), 2)
+        self.assertEqual(closed, ["closed"])
+        self.assertFalse(authority.release_active_connection(handle))
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.verify_request(
+                grant,
+                policy,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="pypi.org",
+                port=443,
+                now_monotonic_ns=3_000_000_001,
+            )
+
+    def test_normal_connection_release_is_idempotent_and_does_not_close_twice(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        close_calls = 0
+
+        def close_tunnel() -> bool:
+            nonlocal close_calls
+            close_calls += 1
+            return True
+
+        handle = authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=close_tunnel,
+        )
+
+        self.assertTrue(authority.release_active_connection(handle))
+        self.assertFalse(authority.release_active_connection(handle))
+        self.assertEqual(close_calls, 0)
+        self.assertEqual(authority.revoke(policy), 2)
+        self.assertEqual(close_calls, 0)
+
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.release_active_connection(object())
+
+    def test_expired_connections_are_closed_without_closing_live_leases(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        closed: list[str] = []
+
+        def close_tunnel() -> bool:
+            closed.append("expired")
+            return True
+
+        handle = authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=close_tunnel,
+        )
+
+        self.assertEqual(authority.close_expired_connections(61_999_999_999), 0)
+        self.assertEqual(closed, [])
+        self.assertEqual(authority.close_expired_connections(62_000_000_000), 1)
+        self.assertEqual(closed, ["expired"])
+        self.assertFalse(authority.release_active_connection(handle))
+
+    def test_new_connection_registration_sweeps_expired_tunnels_first(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        old_grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=1,
+            now_monotonic_ns=1_000_000_000,
+        )
+        closed: list[str] = []
+
+        def close_old_tunnel() -> bool:
+            closed.append("old")
+            return True
+
+        old_handle = authority.register_active_connection(
+            old_grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=1_500_000_000,
+            close=close_old_tunnel,
+        )
+        new_grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=3_000_000_000,
+        )
+
+        new_handle = authority.register_active_connection(
+            new_grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_001,
+            close=lambda: True,
+        )
+
+        self.assertEqual(closed, ["old"])
+        self.assertFalse(authority.release_active_connection(old_handle))
+        self.assertTrue(authority.release_active_connection(new_handle))
+
+    def test_revocation_blocks_new_approval_until_active_close_finishes(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        close_started = threading.Event()
+        allow_close = threading.Event()
+        revoke_finished = threading.Event()
+        revoke_errors: list[Exception] = []
+
+        def close_tunnel() -> bool:
+            close_started.set()
+            return allow_close.wait(timeout=3)
+
+        authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=close_tunnel,
+        )
+
+        def revoke() -> None:
+            try:
+                authority.revoke(policy)
+            except Exception as error:  # noqa: BLE001 - captured for assertion.
+                revoke_errors.append(error)
+            finally:
+                revoke_finished.set()
+
+        revoke_thread = threading.Thread(target=revoke)
+        revoke_thread.start()
+        self.assertTrue(close_started.wait(timeout=1))
+        try:
+            request_finished = threading.Event()
+            request_errors: list[Exception] = []
+
+            def request_new_lease() -> None:
+                try:
+                    authority.request_lease(
+                        policy,
+                        approver=ScriptedApprover([True]),
+                        purpose=NetworkPurpose.PACKAGE_INSTALL,
+                        allowed_domains=("pypi.org",),
+                        ttl_seconds=60,
+                        now_monotonic_ns=4_000_000_000,
+                    )
+                except Exception as error:  # noqa: BLE001 - captured for assertion.
+                    request_errors.append(error)
+                finally:
+                    request_finished.set()
+
+            request_thread = threading.Thread(target=request_new_lease)
+            request_thread.start()
+            self.assertTrue(request_finished.wait(timeout=1))
+            request_thread.join(timeout=1)
+            self.assertFalse(request_thread.is_alive())
+            self.assertEqual(len(request_errors), 1)
+            self.assertIsInstance(request_errors[0], NetworkLeaseValidationError)
+        finally:
+            allow_close.set()
+        revoke_thread.join(timeout=2)
+        self.assertTrue(revoke_finished.is_set())
+        self.assertFalse(revoke_thread.is_alive())
+        self.assertEqual(revoke_errors, [])
+
+    def test_close_failure_keeps_scope_revoked_and_can_be_retried(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True, True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        close_attempts = 0
+
+        def close_tunnel() -> bool:
+            nonlocal close_attempts
+            close_attempts += 1
+            if close_attempts == 1:
+                raise OSError("raw socket detail must not escape")
+            return True
+
+        authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=close_tunnel,
+        )
+
+        with self.assertRaises(NetworkLeaseConnectionCloseError) as raised:
+            authority.revoke(policy)
+        self.assertEqual(raised.exception.failure_count, 1)
+        self.assertNotIn("raw socket detail", str(raised.exception))
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.request_lease(
+                policy,
+                approver=ScriptedApprover([True]),
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("pypi.org",),
+                ttl_seconds=60,
+                now_monotonic_ns=4_000_000_000,
+            )
+
+        self.assertEqual(authority.close_expired_connections(4_000_000_000), 1)
+        self.assertEqual(close_attempts, 2)
+        authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=5_000_000_000,
+        )
+
+    def test_connection_close_callback_requires_literal_true_confirmation(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        close_attempts = 0
+
+        def close_tunnel() -> bool:
+            nonlocal close_attempts
+            close_attempts += 1
+            return 1 if close_attempts == 1 else True  # type: ignore[return-value]
+
+        authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=close_tunnel,
+        )
+
+        with self.assertRaises(NetworkLeaseConnectionCloseError):
+            authority.revoke(policy)
+        self.assertEqual(authority.close_expired_connections(4_000_000_000), 1)
+        self.assertEqual(close_attempts, 2)
+
+    def test_expiry_close_failure_blocks_scope_until_tunnel_cleanup_retries(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        close_attempts = 0
+
+        def close_tunnel() -> bool:
+            nonlocal close_attempts
+            close_attempts += 1
+            return close_attempts > 1
+
+        authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=close_tunnel,
+        )
+
+        with self.assertRaises(NetworkLeaseConnectionCloseError):
+            authority.close_expired_connections(62_000_000_000)
+        blocked_approver = ScriptedApprover([True])
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.request_lease(
+                policy,
+                approver=blocked_approver,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("pypi.org",),
+                ttl_seconds=60,
+                now_monotonic_ns=62_000_000_001,
+            )
+        self.assertEqual(blocked_approver.seen, [])
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.verify_request(
+                grant,
+                policy,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="pypi.org",
+                port=443,
+                now_monotonic_ns=62_000_000_001,
+            )
+
+        self.assertEqual(authority.close_expired_connections(62_000_000_001), 1)
+        self.assertEqual(close_attempts, 2)
+        authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=63_000_000_000,
         )
 
     def test_revoke_during_pending_approval_prevents_lease_issue(self) -> None:

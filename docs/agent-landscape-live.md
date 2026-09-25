@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
 - 最近观察：2026-09-25；下次全量复核：不晚于 2026-10-25
-- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.3 环境探针与 R2.4 Git status/helper 风险；20 项观察名单最近全量复核为 2026-09-24。
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.3 Windows 环境探针、R2.4 Git status/helper 与网络代理生命周期；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -323,3 +323,10 @@
 
 - Codex [`60713126`](https://github.com/openai/codex/commit/60713126ee0dbc483fba83fc032dfaa5998521ec) 的 `.git`/resolved-gitdir 只读 carveout 可作为 OS 边界参考，其 UI 状态判断不是完整 Git broker；不采纳其潜在的 helper/daemon 放行逻辑。Qwen [`790bd83c`](https://github.com/QwenLM/qwen-code/commit/790bd83c2b1e3b242e0487d92183b053ceb44ed8) 的“沙箱后端失败不回宿主重试”与 ICODE `git_broker_unavailable` 一致。Gemini [`bedef96e`](https://github.com/google-gemini/gemini-cli/commit/bedef96ef42905bd84a86dbec021c706168e7e2f) 对 private worktree 与 shared gitdir 的跟踪值得参考，但其按用户授权的读/写 grant 不能替代固定只读状态合同。
 - **ICODE 取舍：**采纳 OS 强制只读、可信 worktree 身份及失败关闭；继续暂缓跨平台工具入口。当前 Linux 原型未进入 `ToolContext`，仍须完成受支持布局约束、并发身份变化、超时/超量清理与 ARM64 wheel 验收；macOS/Windows 没有等价证明时维持 unavailable。本轮仅记录上游行为，不复制代码、不增加第三方依赖或改变 ICODE 许可证负担。
+
+### 2026-09-25 UTC R2.4 活跃网络连接生命周期研究
+
+- **Codex** [`c98e263f`](https://github.com/openai/codex/tree/c98e263fb5365a512bb997a103d6ee8aa14c23e6) 的 Linux 代理拓扑以隔离 netns 阻断直连，再通过 TCP bridge 到宿主可信代理；启动缺少代理/桥接即失败关闭，集成测试覆盖直连被拒及取消时关闭活跃连接。[netns 与 bridge 说明](https://github.com/openai/codex/blob/c98e263fb5365a512bb997a103d6ee8aa14c23e6/codex-rs/linux-sandbox/README.md#L247-L250) · [proxy routing](https://github.com/openai/codex/blob/c98e263fb5365a512bb997a103d6ee8aa14c23e6/codex-rs/network-proxy/README.md#L242-L268) · [桥接实现](https://github.com/openai/codex/blob/c98e263fb5365a512bb997a103d6ee8aa14c23e6/codex-rs/linux-sandbox/src/proxy_routing.rs#L131-L202) · [连接取消测试](https://github.com/openai/codex/blob/c98e263fb5365a512bb997a103d6ee8/codex-rs/linux-sandbox/tests/suite/managed_proxy.rs#L675-L702)。文档亦提示仅在初次 DNS 解析时校验不足以防重绑定，ICODE 必须在实际传输连接处绑定获准 IP。
+- **Gemini CLI** [`bedef96e`](https://github.com/google-gemini/gemini-cli/tree/bedef96ef42905bd84a86dbec021c706168e7e2f) 的 macOS strict-proxied Seatbelt profile 只允许本机代理端点；启动代码监督代理子进程，并在其异常退出时终止沙箱进程组。[profile](https://github.com/google-gemini/gemini-cli/blob/bedef96ef42905bd84a86dbec021c706168e7e2f/packages/cli/src/utils/sandbox-macos-strict-proxied.sb#L126-L132) · [启动与进程组监督](https://github.com/google-gemini/gemini-cli/blob/bedef96ef42905bd84a86dbec021c706168e7e2f/packages/cli/src/utils/sandbox.ts#L314-L374)。这不证明授权租约过期时能撤销既有隧道。
+- **Qwen Code** [`790bd83c`](https://github.com/QwenLM/qwen-code/tree/790bd83c2b1e3b242e0487d92183b053ceb44ed8) 的 bwrap 工具沙箱采用封闭网络并在后端失败时不回退宿主；本次未找到与代理租约续期/到期清理等价的实现。[官方沙箱说明](https://github.com/QwenLM/qwen-code/blob/790bd83c2b1e3b242e0487d92183b053ceb44ed8/docs/users/features/sandbox.md#L221-L231) · [bwrap 执行边界](https://github.com/QwenLM/qwen-code/blob/790bd83c2b1e3b242e0487d92183b053ceb44ed8/packages/core/src/sandbox/bwrap-execution.ts#L79-L100)。
+- **ICODE 采纳 / 暂缓：**采纳 Codex 的“OS 强制只到代理 + 连接随取消关闭”作为 Linux 验收方向，采纳 Gemini 的代理子进程失效即停止沙箱作为 macOS 后续候选；继续采纳 Qwen fail-closed。ICODE 新增的内部 active-connection registry 只在受信调用方注册关闭回调，并在撤销/到期后等待严格布尔确认；它不拥有 socket、不证明真实隧道已关闭、不创建代理，也不替代 netns/Seatbelt/WFP。暂缓所有平台开放代理联网，直到真实桥接、DNS/IP 绑定、到期/撤销存量连接关闭、代理死亡和直连负例在支持架构通过。三个固定上游项目均为 Apache-2.0；未复制源码、无新增依赖或许可负担。观察日期：2026-09-25。
