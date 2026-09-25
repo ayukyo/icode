@@ -2231,6 +2231,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             script_started_marker = workspace / "staging-python-script-started"
             imports_completed_marker = workspace / "staging-python-imports-completed"
             paths_completed_marker = workspace / "staging-python-paths-completed"
+            path_resolution_probe_marker = workspace / "staging-python-path-resolution.json"
             runtime_write_completed_marker = workspace / "staging-runtime-write-completed"
             source_read_completed_marker = workspace / "staging-source-read-completed"
             network_completed_marker = workspace / "staging-network-completed"
@@ -2264,11 +2265,72 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "def checkpoint(name): Path(name).write_text('1',encoding='ascii')\n"
                     "def failed(stage,exc): Path('staging-python-failure-class').write_text("
                     "stage+':'+type(exc).__name__,encoding='ascii')\n"
+                    "def path_probe(call):\n"
+                    "    try:\n"
+                    "        call()\n"
+                    "    except Exception as exc:\n"
+                    "        return {'ok':False,'error':type(exc).__name__,"
+                    "'winerror':getattr(exc,'winerror',None)}\n"
+                    "    return {'ok':True,'error':'none','winerror':None}\n"
+                    "def read_executable_byte():\n"
+                    "    with open(sys.executable,'rb') as stream:\n"
+                    "        return stream.read(1)\n"
+                    "native_kernel32=ctypes.WinDLL('kernel32',use_last_error=True)\n"
+                    "native_create_file=native_kernel32.CreateFileW\n"
+                    "native_create_file.argtypes=[ctypes.c_wchar_p,ctypes.c_uint32,"
+                    "ctypes.c_uint32,ctypes.c_void_p,ctypes.c_uint32,ctypes.c_uint32,"
+                    "ctypes.c_void_p]\n"
+                    "native_create_file.restype=ctypes.c_void_p\n"
+                    "native_get_final_path=native_kernel32.GetFinalPathNameByHandleW\n"
+                    "native_get_final_path.argtypes=[ctypes.c_void_p,"
+                    "ctypes.POINTER(ctypes.c_wchar),ctypes.c_uint32,ctypes.c_uint32]\n"
+                    "native_get_final_path.restype=ctypes.c_uint32\n"
+                    "native_close_handle=native_kernel32.CloseHandle\n"
+                    "native_close_handle.argtypes=[ctypes.c_void_p]\n"
+                    "native_close_handle.restype=ctypes.c_int\n"
+                    "def open_executable_handle():\n"
+                    "    handle=native_create_file(sys.executable,0,0,None,3,"
+                    "0x02000000,None)\n"
+                    "    if handle is None or handle==ctypes.c_void_p(-1).value:\n"
+                    "        raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "    return handle\n"
+                    "def createfile_zero_probe():\n"
+                    "    handle=open_executable_handle()\n"
+                    "    native_close_handle(handle)\n"
+                    "def native_final_path(volume_flag):\n"
+                    "    handle=open_executable_handle()\n"
+                    "    try:\n"
+                    "        buffer=ctypes.create_unicode_buffer(32768)\n"
+                    "        length=native_get_final_path(handle,buffer,len(buffer),volume_flag)\n"
+                    "        if length==0:\n"
+                    "            raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "        if length>=len(buffer):\n"
+                    "            raise OSError(122,'diagnostic path buffer too small')\n"
+                    "        return buffer.value\n"
+                    "    finally:\n"
+                    "        native_close_handle(handle)\n"
                     "checkpoint('staging-python-imports-completed')\n"
+                    "import nt\n"
+                    "path_probes={\n"
+                    "    'absolute':path_probe(lambda:Path(sys.executable).absolute()),\n"
+                    "    'stat':path_probe(lambda:__import__('os').stat(sys.executable)),\n"
+                    "    'read':path_probe(read_executable_byte),\n"
+                    "    'resolve_strict':path_probe("
+                    "lambda:Path(sys.executable).resolve(strict=True)),\n"
+                    "    'resolve_nonstrict':path_probe("
+                    "lambda:Path(sys.executable).resolve(strict=False)),\n"
+                    "    'getfinalpathname':path_probe("
+                    "lambda:nt._getfinalpathname(sys.executable)),\n"
+                    "    'native_createfile_zero':path_probe(createfile_zero_probe),\n"
+                    "    'getfinal_nt':path_probe(lambda:native_final_path(2)),\n"
+                    "    'getfinal_dos':path_probe(lambda:native_final_path(0)),\n"
+                    "}\n"
+                    f"Path({str(path_resolution_probe_marker)!r}).write_text("
+                    "json.dumps(path_probes),encoding='ascii')\n"
                     "try:\n"
-                    "    executable_path=Path(sys.executable).resolve(strict=True)\n"
+                    "    executable_path=Path(sys.executable).absolute()\n"
                     "except Exception as exc:\n"
-                    "    failed('executable_resolve',exc)\n"
+                    "    failed('executable_absolute',exc)\n"
                     "    raise\n"
                     "root=executable_path.parent\n"
                     "modules=[pathlib,encodings,json,platform,ssl,sqlite3,_ctypes,_sqlite3,_ssl]\n"
@@ -2279,9 +2341,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "    raise\n"
                     "module_roots=all(path.is_relative_to(root) for path in module_paths)\n"
                     "try:\n"
-                    "    prefix=Path(sys.prefix).resolve(strict=True)\n"
+                    "    prefix=Path(sys.prefix).absolute()\n"
                     "except Exception as exc:\n"
-                    "    failed('prefix_resolve',exc)\n"
+                    "    failed('prefix_absolute',exc)\n"
                     "    raise\n"
                     "prefix_ok=prefix==root\n"
                     "checkpoint('staging-python-paths-completed')\n"
@@ -2373,10 +2435,34 @@ class TestWindowsAppContainer(unittest.TestCase):
                 raw_failure = python_failure_marker.read_text(encoding="ascii").strip()
             except OSError:
                 raw_failure = ""
+            try:
+                raw_path_resolution_probe = json.loads(
+                    path_resolution_probe_marker.read_text(encoding="ascii"),
+                )
+            except (OSError, ValueError):
+                raw_path_resolution_probe = {}
+            path_resolution_probe = {
+                operation: {
+                    "ok": outcome.get("ok") is True,
+                    "error": outcome.get("error")
+                    if outcome.get("error") in {
+                        "none", "AttributeError", "FileNotFoundError", "OSError",
+                        "PermissionError", "TypeError", "ValueError",
+                    } else "other",
+                    "winerror": outcome.get("winerror")
+                    if isinstance(outcome.get("winerror"), int) else None,
+                }
+                for operation, outcome in raw_path_resolution_probe.items()
+                if operation in {
+                    "absolute", "stat", "read", "resolve_strict",
+                    "resolve_nonstrict", "getfinalpathname", "native_createfile_zero",
+                    "getfinal_nt", "getfinal_dos",
+                } and isinstance(outcome, dict)
+            }
             allowed_failure_records = {
                 f"{stage}:{error}"
                 for stage in (
-                    "imports", "executable_resolve", "module_path", "prefix_resolve",
+                    "imports", "executable_absolute", "module_path", "prefix_absolute",
                     "runtime_path", "runtime_write", "source_read",
                     "network", "workspace_write", "child_launch",
                 )
@@ -2416,6 +2502,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "source_read_check_completed": source_read_completed_marker.is_file(),
                 "network_check_completed": network_completed_marker.is_file(),
                 "python_failure": python_failure,
+                "python_path_resolution": path_resolution_probe,
+                "python_path_resolution_probe_complete": set(path_resolution_probe) == {
+                    "absolute", "stat", "read", "resolve_strict",
+                    "resolve_nonstrict", "getfinalpathname", "native_createfile_zero",
+                    "getfinal_nt", "getfinal_dos",
+                },
                 "runtime_marker": candidate.executed and candidate.exit_code == 0,
                 "workspace_write": workspace_marker.is_file(),
                 "runtime_write_denied": runtime_write_marker.is_file()
@@ -2497,6 +2589,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                 },
             )
             self._workflow_json_notice(
+                "Python disposable staging path-resolution probes",
+                {
+                    "complete": summary["python_path_resolution_probe_complete"],
+                    "operations": summary["python_path_resolution"],
+                },
+            )
+            self._workflow_json_notice(
                 "Python disposable staging boundary assertions",
                 {
                     "acl_restore_verified": summary["acl_restore_verified"],
@@ -2527,6 +2626,10 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(candidate.exit_code, 0, "staged runtime probe did not complete")
         self.assertTrue(candidate.cleanup_ok, "staged AppContainer cleanup failed")
         self.assertTrue(summary["python_script_started"], "staged Python never entered its command script")
+        self.assertTrue(
+            summary["python_path_resolution_probe_complete"],
+            "staged Python path-resolution probes did not all report",
+        )
         self.assertIn(
             summary["acl_baseline_normalization"], {"0", "1024"},
             "staging ACL baseline normalization was not verified",
