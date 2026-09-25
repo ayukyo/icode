@@ -337,7 +337,7 @@ CI [#129 x64](https://github.com/ayukyo/icode/actions/runs/36092603966/job/10793
 
 R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#139：#91–#105 的启动差分曾返回 `CreateProcessW` 错误 203，#105 固定 whoami A/B 发现加入 profile `LOCALAPPDATA` 后可启动；其后原宿主 Python 一直退出 `0xC0000135`。#112 的 `process_limit=2/1` 同载荷正反对照双架构通过组件断言。#125 x64/ARM64 直读样本显示 System32 控制可读，而宿主 Python EXE、共享库、`pathlib.py`、`encodings` 均被拒绝读取。#131 清点 6,721 项、1 个词法根内 symbolic link；这不证明最终对象身份。#136/#137 把 staging ACL 差异定位为根对象 `SE_DACL_AUTO_INHERITED`；#138 先规范化该位后，双架构 staging ACL 全树精确恢复、candidate cleanup 与 staging 删除均通过，源 runtime 未修改。#139 的路径检查阶段以 `PermissionError` 失败，尚未拆分出具体 `resolve` 操作；ACL 恢复与 staging/source 清理仍通过，Python 候选边界组合尚无有效结论。接下来仅拆分 executable/module/prefix 检查，不放宽权限。Windows 自动模式继续关闭，R2.3 与完整 R2 未完成。R2.1 三平台、Python 3.11/3.12、普通 Job 和 R2.2 Linux/macOS 当前 CI 子项通过；macOS Intel/ARM64 脱组后代按已批准的 Codex 式边界验收。
 
-Linux Git 元数据基座的本机 Landlock 负例已覆盖可读/不可写/不可新建/不可执行与默认拒绝；`WorkspaceManager` 已把核验过的 layered worktree 身份保存在冻结的 `GitWorkspaceIdentity` 快照，但尚未逐次复核或传给工具。它们不代表 Git 命令、可信可执行 grant 或 broker 已实现。分层 workspace 中直接 Git 仍返回 `git_broker_unavailable`；详见[R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。
+Linux Git 元数据基座的本机 Landlock 负例已覆盖可读/不可写/不可新建/不可执行、默认拒绝，以及 helper 实际打开时拒绝最终/中间符号链接；`WorkspaceManager` 已把核验过的 layered worktree 身份保存在冻结的 `GitWorkspaceIdentity` 快照，但尚未逐次复核或传给工具，也未绑定已打开元数据目录的对象身份。它们不代表 Git 命令、可信可执行 grant 或 broker 已实现。分层 workspace 中直接 Git 仍返回 `git_broker_unavailable`；详见[R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。
 
 ### 2026-09-25 UTC：CI #133/#134 staged runtime 与 ACL 回执
 

@@ -56,7 +56,9 @@
 ## 2026-09-25 Linux 只读元数据授权基座
 
 - Landlock helper 增加独立 `--metadata-read PATH` 白名单，只授予 `READ_FILE | READ_DIR`，不授予执行或写入权限；它与可读写的代码根、Python 运行时只读根分开表达。Python 内部包装先解析真实路径，再拒绝已知宽泛根、失效路径、非普通文件/目录、与任务代码根重叠，以及与既有可执行系统/runtime 只读根重叠的授权。后一项是因为 Landlock 同一层中路径规则权限叠加，窄只读规则不能撤销较宽祖先规则已授予的执行位。
+- C helper 在真正安装规则时从 `/` 开始逐个 `openat` 路径组件，持有已打开的父目录 fd、对每段使用 `O_NOFOLLOW`，仅接受最终普通文件/目录；因此 Python 校验与 helper 打开之间若路径组件被改成符号链接，会在 payload 启动前失败关闭。
 - Linux 本机真实内核测试验证：获准 Git 元数据可读，既有 index 不可覆写、不能新建文件、可执行 hook 无法启动；代码工作区仍可写，未获授权的邻近文件不可读，省略元数据授权时 Git 元数据默认不可读。静态校验也拒绝 `/usr` 与 Python runtime 根，防止与已有执行白名单叠权。helper 以 `-Wall -Wextra -Werror` 编译；隔离测试 47 项通过、7 项按平台跳过。
+- 另外用真实 helper 验证最终目录符号链接和中间父目录符号链接均导致 payload 不启动。该检查防止 symlink redirection，但还不绑定已打开目录的 device/inode 与 session 快照；非符号链接路径替换及逐次 session 身份复核仍须由 Git broker 层负责。
 - 这是**执行基座，不是 Git broker**：尚无 `WorkspaceSession` 可信 Git-dir grant、身份漂移复核、固定 Git 子命令/参数与环境、恶意仓库配置/扩展负例，也没有 x64/ARM64 wheel 和 macOS/Windows 等价证明。该接口目前只供内部将来接线使用，未注册模型工具，`git_broker_unavailable` 必须保持。
 - 下一片先从可信 `git_worktree` 会话构造并重核 worktree/gitdir/common-dir 身份，再以固定 `git status --porcelain=v2 -z` 子命令做 Linux-only 实验；遇到子模块、外部 gitdir、身份变化或任何策略无法表达都整体拒绝。现阶段不得将普通宿主 `git status` 当作回退。
 

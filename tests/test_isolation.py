@@ -892,6 +892,27 @@ print("metadata-read-only-ok")
             self.assertNotEqual(no_metadata_grant.returncode, 0)
             self.assertIn("PermissionError", no_metadata_grant.stderr)
 
+            metadata_alias = root / "metadata-alias"
+            metadata_alias.symlink_to(metadata, target_is_directory=True)
+            parent_alias = root / "parent-alias"
+            parent_alias.symlink_to(root, target_is_directory=True)
+            escaped_parent_path = parent_alias / metadata.name
+            marker = workspace / "symlink-root-payload-ran"
+            for unsafe_root in (metadata_alias, escaped_parent_path):
+                with self.subTest(unsafe_root=unsafe_root.name):
+                    result = subprocess.run(
+                        [
+                            str(helper), "--workspace", str(workspace),
+                            "--parent-pid", str(os.getpid()),
+                            "--metadata-read", str(unsafe_root), "--",
+                            "/usr/bin/python3", "-c",
+                            "from pathlib import Path; Path('symlink-root-payload-ran').write_text('ran')",
+                        ],
+                        capture_output=True, text=True, timeout=6, check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertFalse(marker.exists())
+
     def test_基线包装是恒等变换(self) -> None:
         sb = NoIsolation()
         argv = ["python", "-m", "unittest"]

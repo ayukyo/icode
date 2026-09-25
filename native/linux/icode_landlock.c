@@ -23,6 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -71,6 +72,76 @@ static int add_path(int ruleset, const char *path, uint64_t rights, int required
     return result;
 }
 
+static int open_metadata_path(const char *path) {
+    if (!path || path[0] != '/' || path[1] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* Pin each parent while walking; never follow a metadata-root symlink. */
+    int current = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC);
+    if (current < 0) return -1;
+    const char *component = path + 1;
+    while (*component != '\0') {
+        const char *separator = strchr(component, '/');
+        size_t length = separator ? (size_t)(separator - component) : strlen(component);
+        if (length == 0 || (length == 1 && component[0] == '.') ||
+            (length == 2 && component[0] == '.' && component[1] == '.')) {
+            close(current);
+            errno = EINVAL;
+            return -1;
+        }
+        char *name = strndup(component, length);
+        if (!name) {
+            close(current);
+            return -1;
+        }
+        int flags = O_PATH | O_NOFOLLOW | O_CLOEXEC;
+        if (separator) flags |= O_DIRECTORY;
+        int next = openat(current, name, flags);
+        free(name);
+        if (next < 0) {
+            close(current);
+            return -1;
+        }
+        close(current);
+        current = next;
+        if (!separator) break;
+        component = separator + 1;
+    }
+
+    struct stat status;
+    if (fstat(current, &status) != 0) {
+        int saved_errno = errno;
+        close(current);
+        errno = saved_errno;
+        return -1;
+    }
+    if (!S_ISDIR(status.st_mode) && !S_ISREG(status.st_mode)) {
+        close(current);
+        errno = EINVAL;
+        return -1;
+    }
+    return current;
+}
+
+static int add_metadata_path(int ruleset, const char *path) {
+    int fd = open_metadata_path(path);
+    if (fd < 0) {
+        fprintf(stderr, "metadata root rejected\n");
+        return -1;
+    }
+    struct landlock_path_beneath_attr rule = {
+        .allowed_access = FS_METADATA_READ,
+        .parent_fd = fd,
+    };
+    int result = (int)syscall(SYS_landlock_add_rule, ruleset,
+                              LANDLOCK_RULE_PATH_BENEATH, &rule, 0);
+    close(fd);
+    if (result != 0) perror("metadata root rule");
+    return result;
+}
+
 static int install_filesystem(const char *workspace,
                               const char *const *runtime_roots,
                               size_t runtime_root_count,
@@ -106,7 +177,7 @@ static int install_filesystem(const char *workspace,
     }
     for (size_t i = 0; i < metadata_root_count; ++i) {
         /* Git metadata is readable for the fixed status broker but never executable. */
-        if (add_path(fd, metadata_roots[i], FS_METADATA_READ, 1) != 0) goto fail;
+        if (add_metadata_path(fd, metadata_roots[i]) != 0) goto fail;
     }
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
         perror("PR_SET_NO_NEW_PRIVS");
