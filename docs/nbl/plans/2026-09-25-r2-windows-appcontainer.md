@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #148 x64/ARM64 中 staging ACL 恢复、清理与宿主 Python 3.11.9 正向控制通过；候选完成脚本启动、导入、路径、runtime 写拒绝和 source-read 检查后，两架构均在 loopback 探针报 `network:TimeoutError`。这表示本次连接尝试超时，尚未执行后续 workspace/child 检查，也不能归因于 WFP/策略。当前修正将超时作为连接未建立的安全可观测结果，补报白名单错误类；待新双架构 CI 验证。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #149 x64/ARM64 中 staging ACL 恢复、清理、宿主 Python 正向控制与候选脚本均通过（candidate exit 0，脚本 checkpoint 全部出现）；workflow 步骤在输出路径诊断 notice 前失败。公开回执序列将失败点缩小到 500 字符 notice 长度守护：旧嵌套 JSON 在代表性完整路径错误样本下为 671 字符。当前仅压缩脱敏回执格式并新增上限测试，权限与执行行为不变，待新双架构 CI 验证完整外层断言。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 > 注：下方按时间追加验证记录。阶段状态以最新 CI 和本机回归为准，历史记录不代表当前 Windows 后端已通过。
@@ -265,3 +265,9 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 
 - [CI #148 Windows x64](https://github.com/ayukyo/icode/actions/runs/36125785293/job/108041458358) 与 [Windows ARM64](https://github.com/ayukyo/icode/actions/runs/36125785293/job/108041458385) notice 一致：staging ACL 精确恢复、清理、宿主 Python 3.11.9 positive control 成功；脚本启动、导入、路径、runtime 写拒绝和 source-read 逐项通过，随后在 `network:TimeoutError` 退出。原探针把未附带 WSA code 的 Python `TimeoutError` 误当作未知错误，未写 network-completed marker。新代码单独接纳 `TimeoutError` 为“连接尝试超时”，并只输出 `network_connect_failed=true` 与安全异常类；不声称 WFP/策略拦截，后续 workspace/child 仍需双架构 CI 验证。
 - 同轮 Ubuntu 22.04/24.04 ARM64 wheel jobs 已通过，确认缺失可选 `/lib64` 的本机与安装式验证修正有效。macOS Intel 原生 job 通过，`macos-latest` 的 `Verify policy command broker` 步骤失败；公开 annotation 只有退出码，没有失败断言，Actions 日志接口返回 403，因此原因未定位。本轮没有修改 broker 实现；下一轮继续观察该步骤，若复现再按证据诊断。
+
+### 2026-09-25 UTC CI #149：连接超时已分类，路径诊断回执超长
+
+- [CI #149 Windows x64](https://github.com/ayukyo/icode/actions/runs/36126829375/job/108044773273) 与 [Windows ARM64](https://github.com/ayukyo/icode/actions/runs/36126829375/job/108044773248) 都已将之前的 `TimeoutError` 作为连接超时完成处理；候选 Python 退出 0、cleanup 成功，所有脚本 checkpoint（含 network-completed）出现。独立 workflow 步骤仍失败，且后续 `Python disposable staging path-resolution probes` 与 boundary notice 未生成。
+- 只读核对输出次序与 `_workflow_json_notice()` 的硬性 500 字符限制后，定位到路径诊断 notice 构造体过长；9 项完整嵌套结构在代表性错误样本下为 671 字符。这是诊断回执门禁失败，不是 candidate 隔离测试的反例或通过证据。新代码保留完整内部操作结果，仅将公开 notice 的操作名固定缩写、字段改为 `[ok,error_class,winerror]`，并以最长白名单异常类测试长度上限。
+- CI #149 的 Ubuntu 22.04/24.04 ARM64 wheel、macOS Intel/`macos-latest` 原生探针、macOS `Verify policy command broker` 均通过；因此 #148 的 macOS-latest 失败未复现。Windows 完整外层路径/ACL/workspace/child 断言尚未全部输出验证，自动模式与 R2.3 仍关闭。

@@ -299,3 +299,9 @@
 - Windows x64/ARM64 在网络探针都得到 `network:TimeoutError`，此前被标成异常脚本失败；本机 runner 错误码白名单遗漏了 Python 层 timeout 类。超时只证明该次本地 connect 在 1 秒内未建立，不证明由何种 filter/策略造成。
 - **采纳：**显式把 `TimeoutError` 归为可观测连接未建立，继续用同一活跃 listener 的宿主 positive control；回执保留白名单错误类 `network_connect_error`，没有异常正文或 endpoint 路径。未知 `OSError` 仍失败关闭；尚待 Windows 双架构 CI。
 - Linux Ubuntu 22.04/24.04 ARM64 安装式 wheel probe 本轮通过。macOS `macos-latest` 的 `Verify policy command broker` job 失败但无公开断言细节，Intel job 通过；不归因于新探针修改，先等待后续重跑复核。暂不改 `execution_broker`。
+
+### 2026-09-25 UTC CI #149 AppContainer 诊断输出限长修正
+
+- **ICODE 实测：**x64/ARM64 都将 `TimeoutError` 归为连接超时后，staging Python candidate exit 0、清理成功、network-completed checkpoint 出现；两架构 Actions step 仍失败。可见 notice 序列停在 path-resolution notice 前。`_workflow_json_notice` 对每条 notice 有 500 字符硬上限；本地以九项完整字段和 `ConnectionAbortedError` 样本计算旧 JSON 长度为 671，因此证据指向诊断 notice 长度守护，而不是容器执行失败。
+- **采纳：**压缩只读回执（固定操作别名 + `[ok,error_class,winerror]` 三元组），保留完整内部摘要与原外层断言；新增最长异常名样本测试，保证编码后 <=500 字符。该变更不放宽 ACL、不动 Windows policy、不把 timeout 称为策略拒绝。
+- **阶段观察：**CI #149 Linux ARM64 wheel、macOS Intel/macOS-latest 原生 job及 policy-command-broker 子项通过；#148 的 macOS job 失败没有重现。Windows notice 修正等待下一轮双架构复核；AppContainer 与 R2 阶段仍未通过。

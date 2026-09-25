@@ -55,6 +55,17 @@ _RUNTIME_PROBE_ERROR_TYPES = frozenset({
 _APP_CONTAINER_CONNECT_FAILURE_WINERRORS = (
     10013, 10050, 10051, 10053, 10054, 10060, 10061, 10065,
 )
+_PATH_RESOLUTION_NOTICE_LABELS = (
+    ("absolute", "abs"),
+    ("stat", "stat"),
+    ("read", "read"),
+    ("resolve_strict", "strict"),
+    ("resolve_nonstrict", "nonstrict"),
+    ("getfinalpathname", "pyfinal"),
+    ("native_createfile_zero", "createfile"),
+    ("getfinal_nt", "nt"),
+    ("getfinal_dos", "dos"),
+)
 
 
 def _classify_runtime_probe_failure(raw_failure: str) -> str:
@@ -80,6 +91,26 @@ def _is_observed_appcontainer_connect_failure(error: OSError) -> bool:
         isinstance(error, (PermissionError, TimeoutError))
         or getattr(error, "winerror", None) in _APP_CONTAINER_CONNECT_FAILURE_WINERRORS
     )
+
+
+def _compact_path_resolution_probe_notice(
+    probe: dict[str, dict[str, object]], *, complete: bool,
+) -> dict[str, object]:
+    """Keep the public Actions notice below its 500-character transport limit."""
+    operations: dict[str, list[object]] = {}
+    for operation, label in _PATH_RESOLUTION_NOTICE_LABELS:
+        outcome = probe.get(operation)
+        if not isinstance(outcome, dict):
+            continue
+        error = outcome.get("error")
+        operations[label] = [
+            outcome.get("ok") is True,
+            error if error in _RUNTIME_PROBE_ERROR_TYPES | {"none"} else "other",
+            outcome.get("winerror") if isinstance(outcome.get("winerror"), int) else None,
+        ]
+    # Tuple fields are [ok, safe error class, WinError]; operation aliases are
+    # fixed above so even nine verbose Windows errors fit one Actions notice.
+    return {"complete": complete, "operations": operations}
 
 
 class TestWindowsAppContainer(unittest.TestCase):
@@ -113,6 +144,19 @@ class TestWindowsAppContainer(unittest.TestCase):
         unexpected.winerror = 10014
         self.assertFalse(_is_observed_appcontainer_connect_failure(unexpected))
         self.assertFalse(_is_observed_appcontainer_connect_failure(OSError()))
+
+    def test_path_resolution诊断回执在Actions长度上限内(self) -> None:
+        probe = {
+            operation: {"ok": False, "error": "ConnectionAbortedError", "winerror": 10053}
+            for operation, _label in _PATH_RESOLUTION_NOTICE_LABELS
+        }
+        notice = _compact_path_resolution_probe_notice(probe, complete=True)
+        encoded = json.dumps(notice, ensure_ascii=True, separators=(",", ":"))
+        self.assertLessEqual(len(encoded), 500)
+        self.assertEqual(
+            notice["operations"]["strict"],
+            [False, "ConnectionAbortedError", 10053],
+        )
 
     def test_staging诊断只物化根内链接且保留源运行时不变(self) -> None:
         stage_runtime = getattr(
@@ -2692,10 +2736,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             )
             self._workflow_json_notice(
                 "Python disposable staging path-resolution probes",
-                {
-                    "complete": summary["python_path_resolution_probe_complete"],
-                    "operations": summary["python_path_resolution"],
-                },
+                _compact_path_resolution_probe_notice(
+                    summary["python_path_resolution"],
+                    complete=summary["python_path_resolution_probe_complete"],
+                ),
             )
             self._workflow_json_notice(
                 "Python disposable staging boundary assertions",
