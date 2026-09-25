@@ -635,7 +635,8 @@ def _snapshot_runtime_acl_roots(
             }:
                 raise
             raise _AppContainerSetupError(
-                "unsupported_runtime_root", "runtime tree contains unsafe filesystem entries",
+                "unsupported_runtime_root",
+                f"runtime tree preflight rejected: {exc.error}; {exc.detail}",
             ) from exc
         for path in paths:
             try:

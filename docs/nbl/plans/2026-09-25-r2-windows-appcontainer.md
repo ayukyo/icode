@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #125 x64/ARM64 的独立逐文件直读步骤均已回执：System32 控制文件 `read_ok`，Python EXE、共享库、`pathlib.py`、`encodings/__init__.py` 均 `access_denied`；完整 AppContainer Python 仍退出 `0xC0000135`、profile marker 缺失。结果支持 runtime tree 访问边界假设，但尚未证明具体 loader 依赖或因果。当前生产路径未新增 runtime ACL；已添加仅供临时 GitHub Windows runner 使用的严格只读 ACL 差分探针，等待双架构原生验收。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #125 x64/ARM64 的独立逐文件直读探针显示 Python EXE/共享库/标准库访问拒绝，完整 AppContainer Python 仍退出 `0xC0000135`；但不能据此确认具体 loader 原因。CI #127 的严格 runtime ACL 预检在 x64/ARM64 都报告运行时树含不支持的文件系统项，且发生在任何 runtime DACL 写入前；具体类别尚未知，生产路径未新增 runtime ACL。只补路径脱敏的拒绝类别回执，不扩大授权范围。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -199,3 +199,8 @@ Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve
 - **下一实验（代码已实现，待 CI）：**仅允许 GitHub Windows runner 的当前解释器，以 `sys.prefix` / `sys.base_prefix` 为候选根；在任何写 ACL 前拒绝 UNC/卷根/系统目录/包含 home 的路径/工作区重叠/reparse point/hardlink/null 或 protected/defaulted DACL，并把扫描限制为 100,000 个对象、30 秒。完整记录每个对象的 DACL bytes、control/revision、present/defaulted 状态与文件身份；只给本次随机 Package SID 添加只读/执行继承 ACE，注入运行时写入拒绝检查。恢复根 DACL 后必须等待并逐对象精确比对全树、确认 SID 无残留；失败则 `cleanup_failed` 且阻止命令继续。该差分有独立 Actions 步骤（诊断失败允许继续以便保留回执），之后完整 AppContainer 测试再次运行并仍是正式门槛。实验仅在临时托管 runner 上运行，生产执行器完全未接入；如果双架构任一端不能精确恢复，就停止 ACL 路线，不以宽松回退补救。读访问成功仍须同时满足 Python 启动、marker、工作区/网络门禁和 ACL 恢复。
 
 Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `SetNamedSecurityInfoW` 不是针对并发写者的原子事务；因此全树前后精确核对是实验硬门槛，并不等价于与并发安装/更新隔离：[ACE inheritance](https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-inheritance-rules)、[automatic propagation](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)、[`SetNamedSecurityInfoW` remarks](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setnamedsecurityinfow#remarks)。
+
+### 2026-09-25 UTC CI #127：差分预检暂未到达 ACL 写入
+
+- [x64](https://github.com/ayukyo/icode/actions/runs/36090932965/job/107933023862) 和 [ARM64](https://github.com/ayukyo/icode/actions/runs/36090932965/job/107933023845) 的新独立诊断都报告 `runtime tree contains unsafe filesystem entries`，候选解释器未启动，`candidate_cleanup=true`；实现是在 runtime snapshot 阶段失败，尚未新增任何 runtime ACL。综合 Python 仍为 `0xC0000135`，其余 Windows 组件 notice 不构成完整通过。
+- #127 的回执没有给出具体拒绝种类，因此不能推断 Python 安装树包含哪类对象。下一版只透出由预检器产生的固定拒绝类别/说明，不记录路径；不跳过项、不放宽 root 校验。若 CI 显示确有 reparse/hardlink/special file，保留拒绝并判断该树不适配；若是可修正的枚举失败，再单独评估可恢复的窄方案。

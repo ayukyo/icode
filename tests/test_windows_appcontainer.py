@@ -404,6 +404,28 @@ class TestWindowsAppContainer(unittest.TestCase):
                     (runtime,), workspace=workspace, advapi=object(), kernel=object(),
                 )
 
+    def test_runtime_ACL预检失败回执保留脱敏拒绝原因(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-reason-") as raw:
+            parent = Path(raw)
+            runtime = parent / "python"
+            runtime.mkdir()
+            workspace = parent / "task"
+            workspace.mkdir()
+            with mock.patch.object(
+                windows_appcontainer, "_walk_workspace",
+                side_effect=_AppContainerSetupError(
+                    "unsupported_workspace_entry", "任务目录含硬链接，AppContainer 拒绝启动",
+                ),
+            ), self.assertRaises(_AppContainerSetupError) as caught:
+                windows_appcontainer._snapshot_runtime_acl_roots(
+                    (runtime,), workspace=workspace, advapi=object(), kernel=object(),
+                )
+
+        self.assertEqual(caught.exception.error, "unsupported_runtime_root")
+        self.assertIn("unsupported_workspace_entry", caught.exception.detail)
+        self.assertIn("硬链接", caught.exception.detail)
+        self.assertNotIn(str(runtime), caught.exception.detail)
+
     def test_runtime_ACL逐根只授读取执行且先记录待恢复根(self) -> None:
         import ctypes
 

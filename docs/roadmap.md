@@ -317,6 +317,10 @@ CI [#125 x64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/10792
 
 新增的私有诊断开关只允许 GitHub-hosted Windows runner 上的当前解释器，并限定 `sys.prefix` / `sys.base_prefix`；生产执行器、自动模式和 `policy_contract_ready` 未接入。变更前逐对象快照 DACL/control/身份，最多扫描 100,000 项、30 秒；只给临时 Package SID 可继承的读取/执行权限。恢复后必须逐对象核对全树原状态及 SID 残留。UNC、卷根、Windows 系统目录、用户目录覆盖、工作区重叠、reparse/hardlink 和不可快照 DACL 均 fail-closed。原生 ACL 修改只在临时托管 runner 上尝试，双架构 CI 尚未执行；在全树精确恢复与 Python/工作区/网络门禁共同通过前，不能判定此方案可行，Windows R2.3、完整 R2、自动模式继续关闭。
 
+### 2026-09-25 UTC：CI #127 runtime ACL 预检结果
+
+Windows x64 与 ARM64 的独立只读 ACL 步骤均在快照阶段拒绝候选（[x64](https://github.com/ayukyo/icode/actions/runs/36090932965/job/107933023862)、[ARM64](https://github.com/ayukyo/icode/actions/runs/36090932965/job/107933023845)），回执只表明“运行时树含不支持的文件系统项”，候选未启动且 cleanup 为真；因此两端均未实际写入 runtime DACL。现有完整 AppContainer Python 仍以 `0xC0000135` 退出。接下来只补充路径脱敏的预检拒绝类别，不放宽过滤；Windows R2.3、完整 R2 与自动模式继续关闭。
+
 设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
 [R2.0 policy contract 实施计划](./nbl/plans/2026-09-23-r2-policy-contract.md) ·
 [R2.1 工作区与租约实施计划](./nbl/plans/2026-09-23-r2-workspace-lease.md) ·

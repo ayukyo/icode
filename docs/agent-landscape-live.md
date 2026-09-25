@@ -211,6 +211,11 @@
 - 变更前逐对象保存 DACL bytes、descriptor control/revision、DACL present/defaulted 状态和文件身份；仅给当次随机 Package SID 增加可继承 read/execute ACE，不授写。恢复后复扫整树，逐对象精确比较并检查 SID 残留；不能恢复/验证即 `cleanup_failed`。这仍是临时 CI 实验，不承诺与并发安装器事务隔离。
 - 微软说明可继承 ACE 会传播到子对象，且安全描述符更新存在自动传播规则（[ACE inheritance](https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-inheritance-rules)、[automatic propagation](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)、[`SetNamedSecurityInfoW` remarks](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setnamedsecurityinfow#remarks)）。所以恢复根 DACL 后仍必须验证每个已有对象的原始状态；SID 消失不等于已精确恢复。下一步由双架构 CI 决定这条方案能否继续，任何一架构失败或精确恢复不通过即停止 ACL 路线，不开放 Windows 自动模式。
 
+### 2026-09-25 UTC R2.3 CI #127：runtime ACL 差分被安全预检挡住
+
+- [windows-latest](https://github.com/ayukyo/icode/actions/runs/36090932965/job/107933023862) 与 [windows-11-arm](https://github.com/ayukyo/icode/actions/runs/36090932965/job/107933023845) 的独立差分步骤都在授权前返回 `runtime tree contains unsafe filesystem entries`，候选未启动、清理回执为真；因此没有对 runner Python 安装树进行 ACL 修改。完整 AppContainer Python 仍为 `0xC0000135`。
+- 该回执无法区分运行时树中是重解析点、硬链接、特殊文件还是枚举错误。**暂缓**任何扩大扫描范围或跳过不安全项；只增加固定、脱敏的预检拒绝类别回执，再由 CI 确定准确类别。若无法在保持拒绝边界的前提下完成快照，本 ACL 方案不适配，不授权。
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
 
 ### 2026-09-25 UTC R2.3 临时路径与环境块复核
