@@ -167,5 +167,10 @@
 - CI [#116](https://github.com/ayukyo/icode/actions/runs/36078821652) x64 notice 中 API 路径比较和宿主路径比较均为 false，宿主变量已定义；同样因 Unicode 子命令是否成功及输出文件是否非空未被单独报告，两个 false 仍可能是采集失败。下一轮补上退出码和非空状态，只有 `set` 成功且输出存在时才计算路径相等布尔值；不传入宿主路径、不输出任何路径。
 - CI [#117](https://github.com/ayukyo/icode/actions/runs/36079222456) x64 job [107897174176](https://github.com/ayukyo/icode/actions/runs/36079222456/job/107897174176) 与 ARM64 job [107897174312](https://github.com/ayukyo/icode/actions/runs/36079222456/job/107897174312) 确认 Unicode `set` 子命令 exit 0、输出文件非空；expected alias 已定义，但解析值既不等于 API profile 路径也不等于宿主 `LOCALAPPDATA`。profile 目录仍不可见、marker 缺失、Python `0xC0000135`。新一轮在 profile 删除前分类宿主 `stat` 错误及 actual/API 的父子同级关系，并核对 exact 键唯一性和 samefile；Actions 只记类别，不记路径内容。
 - CI [#118](https://github.com/ayukyo/icode/actions/runs/36079893851) 的 x64 job [107899342238](https://github.com/ayukyo/icode/actions/runs/36079893851/job/107899342238) 与 ARM64 job [107899342205](https://github.com/ayukyo/icode/actions/runs/36079893851/job/107899342205) 删除前采样一致：Unicode 输出有效、actual `LOCALAPPDATA` 键唯一，但 `Path.is_dir` 与 `samefile(API path)` 均为 false；旧取样没有区分 not-found 与 access-denied。profile/ Python 门槛仍失败。下一轮在删除前只记录宿主 `stat` 类别与 actual/API 父子同级关系，以区分目录缺失、访问拒绝及路径重定位，不披露原始路径。
+- CI [#119](https://github.com/ayukyo/icode/actions/runs/36080610266) 的 Windows x64/ARM64 均失败：actual `LOCALAPPDATA` 在 API profile 路径之下、宿主 `stat=not_found`、与 API 目录不是同一对象，Python 仍退出 `0xC0000135`。微软启动指南的默认环境示例把 `TEMP/TMP` 放在 `AC\\Temp`，但没有界定自定义环境块下 `LOCALAPPDATA` 是否会被重写。下一轮只比较脱敏布尔值“actual 等于 API `Temp` 子目录”，并压短 Actions notice 以保留字段；不改 ACL 或记录路径。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
+
+### 2026-09-25 UTC R2.3 临时路径与环境块复核
+
+微软 [GetTempPath2W](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppath2w) 按 `TMP`→`TEMP`→`USERPROFILE`→Windows 目录选临时路径且不验证目录存在/可达；ICODE 已将前三项绑定工单工作区。`io-harness 0.86.0` [固定源码](https://docs.rs/io-harness/0.86.0/src/io_harness/sandbox/appcontainer.rs.html#1045-1114)显式构建环境块并将临时目录指向授权的 task temp。**采纳**显式、最小化环境块的调用方机制（ICODE 已有），**暂缓**其 Rust 实现；此观察不构成 `LOCALAPPDATA` 子目录或 Python 加载失败的根因证据。

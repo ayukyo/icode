@@ -151,6 +151,9 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertFalse(self._profile_env_matches_api(
             [r"LOCALAPPDATA=C:\one", r"LOCALAPPDATA=C:\two"], [r"C:\one"],
         ))
+        self.assertTrue(self._profile_env_matches_api(
+            [r"LOCALAPPDATA=C:\profile\AC\Temp"], ["C:\\profile\\AC\\Temp\\"],
+        ))
 
     def test_profile路径关系只返回结构类别(self) -> None:
         expected = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
@@ -435,6 +438,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         marker_present_before_delete: list[bool] = []
         profile_actual_stat_before_delete: list[str] = []
         profile_actual_relation_before_delete: list[str] = []
+        profile_actual_matches_api_temp_before_delete: list[bool] = []
         profile_actual_samefile_as_api_before_delete: list[bool] = []
         marker_name = "icode-profile-lifecycle-probe.txt"
         delete_profile = _delete_appcontainer_profile
@@ -460,6 +464,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             marker_present_before_delete.append(marker_path.is_file())
             actual_stat_class = "unavailable"
             actual_path_relation = "unavailable"
+            actual_matches_api_temp = False
             actual_samefile_as_api = False
             try:
                 unicode_status = self._read_cmd_exit_status(profile_env_unicode_status)
@@ -473,12 +478,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                         actual_path_relation = self._profile_path_relation(
                             actual_paths[0], localappdata,
                         )
+                        actual_matches_api_temp = self._profile_env_matches_api(
+                            unicode_output, [ntpath.join(localappdata, "Temp")],
+                        )
                         if actual_stat_class == "directory":
                             actual_samefile_as_api = Path(actual_paths[0]).samefile(localappdata)
             except (OSError, UnicodeDecodeError, ValueError):
                 pass  # Diagnostic failure must not prevent the real profile cleanup.
             profile_actual_stat_before_delete.append(actual_stat_class)
             profile_actual_relation_before_delete.append(actual_path_relation)
+            profile_actual_matches_api_temp_before_delete.append(actual_matches_api_temp)
             profile_actual_samefile_as_api_before_delete.append(actual_samefile_as_api)
             return delete_profile(profile, userenv, localappdata)
 
@@ -615,25 +624,18 @@ class TestWindowsAppContainer(unittest.TestCase):
 
         self._workflow_notice(
             "profile storage lifecycle",
-            f"executed={result.executed} exit={result.exit_code} error={result.error} "
-            f"cleanup={result.cleanup_ok} localappdata_defined={profile_env_defined} "
-            f"expected_localappdata_defined={profile_expected_env_defined} "
-            f"profile_set_output_matches_api={profile_env_matches_api} "
-            f"profile_unicode_set_exit={profile_unicode_set_status} "
-            f"profile_unicode_output_present={profile_unicode_output_present} "
-            f"profile_unicode_set_output_matches_api={profile_unicode_env_matches_api} "
-            f"host_localappdata_defined={host_localappdata_defined} "
-            f"profile_unicode_set_matches_host={profile_unicode_env_matches_host} "
-            f"profile_unicode_actual_value_defined={profile_unicode_actual_value_defined} "
-            f"profile_unicode_actual_stat={profile_actual_stat_before_delete} "
-            f"profile_unicode_actual_relation={profile_actual_relation_before_delete} "
-            f"profile_unicode_actual_samefile_as_api={profile_actual_samefile_as_api_before_delete} "
-            f"profile_env_equals_api={profile_env_equals_api} "
-            f"profile_dir_before_launch={profile_directory_exists_before_launch} "
-            f"profile_dir_visible={profile_directory_visible} "
-            f"write_status={profile_write_status_value} "
-            f"write_error_class={profile_write_error_class} "
-            f"marker_before_delete={marker_present_before_delete}",
+            f"executed={result.executed} exit={result.exit_code} cleanup={result.cleanup_ok} "
+            f"env={profile_env_defined}/{profile_expected_env_defined}/{host_localappdata_defined} "
+            f"unicode={profile_unicode_set_status}/{profile_unicode_output_present} "
+            f"equals_api={profile_env_matches_api}/{profile_unicode_env_matches_api} "
+            f"equals_host={profile_unicode_env_matches_host} alias_match={profile_env_equals_api} "
+            f"actual={profile_unicode_actual_value_defined} "
+            f"stat={profile_actual_stat_before_delete} relation={profile_actual_relation_before_delete} "
+            f"api_temp={profile_actual_matches_api_temp_before_delete} "
+            f"same_api={profile_actual_samefile_as_api_before_delete} "
+            f"dir_before={profile_directory_exists_before_launch} visible={profile_directory_visible} "
+            f"write={profile_write_status_value}/{profile_write_error_class} "
+            f"marker={marker_present_before_delete}",
         )
         self.assertTrue(result.executed, result)
         self.assertEqual(result.exit_code, 0, result)

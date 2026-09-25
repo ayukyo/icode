@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #118 x64/ARM64 删除前均确认 actual `LOCALAPPDATA` 键唯一，但 `Path.is_dir` 与 API 路径 `samefile` 为 false；尚未区分不存在和访问拒绝。当前再补只读 `stat` 错误类别和 actual/API 的父子同级关系；不记录路径、不使用宿主路径或放宽 ACL。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #119 x64/ARM64 删除前均确认 actual `LOCALAPPDATA` 唯一，宿主 `stat` 为 `not_found`、actual 是 API 路径子项且与 API 目录非同一对象；Python 仍以 `0xC0000135` 退出。当前只比较 actual 是否恰为官方示例中的 API `Temp` 子目录，并缩短脱敏 CI notice；不记录路径、不使用宿主路径或放宽 ACL。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -133,6 +133,8 @@
 - 工作区读写/外部写拒绝、loopback 拒绝、正常退出与 timeout 后代回收有组件级通过 notice；它们不替代 Python 执行、profile 存储或完整文件/网络门禁。
 - 微软[启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)说明 profile 为 AppContainer 提供可创建、读取和写入文件的位置，并可经 `LOCALAPPDATA` 或 `GetAppContainerFolderPath` 访问；[创建 profile API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)说明每用户/每应用文件夹和注册表数据存储随 profile 建立。[路径查询 API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)只返回 Local AppData 路径，不保证其创建目录或修订 ACL。官方文档没有给出精确 ACL mask，因此不能据文档推断 CI runner 上实际 token 一定可达。
 - CI #113 的旧 `set LOCALAPPDATA` 输出比较与 #114 的同块 alias 比较在双架构均为 false。CI #115/#116 未核验 Unicode 输出文件有效性，故比较结果不作结论。CI #117 已确认 alias 存在、`cmd /u` exit 0 且输出非空，解析比较仍不等于 API/宿主路径。CI #118 在 profile 删除前确认 actual `LOCALAPPDATA` 唯一，但 `Path.is_dir`/`samefile` 均为 false；当时未区分 not-found 与 access-denied。当前增加宿主只读 `stat` 错误类别及 actual/API 父子同级关系，防止把解析缺项或路径别名误当环境改写。Microsoft [`cmd /u`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd) 说明该选项输出 Unicode。Actions 不记录路径，亦不调整 ACL。
+- CI [#119](https://github.com/ayukyo/icode/actions/runs/36080610266) 的 Windows x64 job [107901499390](https://github.com/ayukyo/icode/actions/runs/36080610266/job/107901499390) 与 ARM64 job [107901499384](https://github.com/ayukyo/icode/actions/runs/36080610266/job/107901499384) 均失败。profile notice 显示 Unicode `LOCALAPPDATA` 唯一、宿主 `stat=not_found`、相对 API 路径类别为 `api_child`、`samefile` 为 false；Python 仍退出 `0xC0000135`。这表明 actual 路径字符串位于 API 返回目录内，但尚未证明具体子目录名称或为何不可见/不可写。
+- Microsoft [AppContainer 启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)示例把 `LOCALAPPDATA` 指向 profile 的 `AC`，并把 `TEMP/TMP` 指向 `AC\\Temp`；[CreateProcessW 环境块说明](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)规定调用者可为新进程提供环境块，但没有说明 AppContainer 对自定义 `LOCALAPPDATA` 值的改写行为。该指南的示例使用默认环境块，不足以裁定 ICODE 的显式环境块。当前 Windows 探针仅比较 actual 是否等于 API `Temp` 子目录，并缩短 notice 避免 GitHub 注释截断；不创建目录、不调整 ACL、不输出路径。若该比较为 true，仍须先查清 `not_found` 与 profile 写入失败，不能直接把 profile 子目录变更为产品契约。
 - Windows R2.3、完整 R2 及自动模式仍未验收，`policy_contract_ready` 必须保持 `false`。
 
 ## 当前实现与验收
@@ -152,3 +154,8 @@ Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve
 - 仅给目录 SID 授权并不能替代工作区构造合同：生产接入前要确认执行根不包含 `.git` 指针/元数据，并继续证明项目链接和重解析点无法访问外部路径。
 - 企业策略可拒绝创建 AppContainer profile，API 失败必须阻止命令执行，不可退回普通 Job。
 - 默认断网可不要求管理员；Windows 临时代理路径仍需管理员可管理的网络策略或等价可信服务，拒绝授权时保持断网。
+
+### 2026-09-25 UTC 追加：默认临时路径与自定义环境块
+
+- Microsoft [GetTempPath2W](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppath2w) 对非 SYSTEM 进程按 `TMP`、`TEMP`、`USERPROFILE`、Windows 目录顺序选路径，且不检查目录是否存在或当前进程是否有权限。ICODE 显式把前三项指向工单工作区，所以 `LOCALAPPDATA` 位于 profile 子目录并不能解释 TEMP 路由或 Python 加载失败；本轮 API `Temp` 比较只判路径归属。
+- [CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile) 说明 profile 文件夹受 ACL 保护，但没有保证 Temp 子目录预创建。[io-harness 0.86.0 固定源码](https://docs.rs/io-harness/0.86.0/src/io_harness/sandbox/appcontainer.rs.html#1045-1114)也构造显式环境块并将临时目录放进其授权工作区。取舍：**采纳**由可信调用方显式构造环境块、明确设置 TMP/TEMP 的机制（ICODE 已实现）；**暂缓**复制 Rust 实现及扩大运行时 ACL。若 API `Temp` 比较不能解释当前观测，再评估小型原生 Win32 probe；须沿用同 SID/Job、脱敏结果、不改 ACL，并限制编译并行度不超过 6。
