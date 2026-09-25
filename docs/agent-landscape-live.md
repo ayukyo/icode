@@ -155,4 +155,10 @@
 - 两架构 AppContainer 集成均失败：Python 退出 `0xC0000135`；profile notice 显示 `LOCALAPPDATA` 已定义、profile 路径在启动前存在、容器内目录不可见、写入错误 `path_not_found`、删除前 marker 缺失。CMD `set LOCALAPPDATA` 重定向文本与 API 路径比较为 false，但输出编码不固定，故这条解析结果暂不作路径不一致结论。
 - 新诊断只在 Windows 测试中把 API 路径以临时 alias 同值注入环境块，由容器内 CMD 比较实际 `LOCALAPPDATA` 与 alias；Actions 只显示相等布尔值，不记录路径，也不改变正式产品环境或 ACL。等待 x64/ARM64 原生 CI 结果后再决定下一项最小修复。Windows 自动模式和 R2.3 仍未验收。
 
+### 2026-09-25 UTC Windows AppContainer CI #114
+
+- CI [#114](https://github.com/ayukyo/icode/actions/runs/36077520320) 的 x64 job [107891968933](https://github.com/ayukyo/icode/actions/runs/36077520320/job/107891968933) 与 ARM64 job [107891968868](https://github.com/ayukyo/icode/actions/runs/36077520320/job/107891968868) 均在 AppContainer 集成失败；`process_limit=2/1` 对照继续通过组件断言，Python 仍为 `0xC0000135`，profile 路径不可见、marker 缺失。
+- 同块注入的 `ICODE_EXPECTED_LOCALAPPDATA` 与子进程 `LOCALAPPDATA` 的 CMD 比较两架构均为 false；这排除了单纯的控制台输出编码解释，但还未证明 alias 存在于 CMD 环境或路径值如何变化。不能由此确定是 environment block 未传递、AppContainer 对变量的处理还是 CMD 比较/解析行为。
+- 下一轮增加 expected alias 的独立 `defined` 状态，并按 Microsoft [`cmd /u`](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/cmd) 选项将 `set LOCALAPPDATA` 重定向为 Unicode，再由宿主在内存中比较、只记录布尔值。普通产品环境和 ACL 不变；结果出来前不调整目录权限、不开放 Windows 自动模式。
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。

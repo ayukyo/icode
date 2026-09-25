@@ -63,6 +63,12 @@ class TestWindowsAppContainer(unittest.TestCase):
         return bool(actual) and actual == expected
 
     @staticmethod
+    def _decode_cmd_unicode_output(contents: bytes) -> str:
+        if contents.startswith(b"\xff\xfe"):
+            contents = contents[2:]
+        return contents.decode("utf-16-le")
+
+    @staticmethod
     def _append_expected_profile_path(block: str, name: str, value: str) -> str:
         updated = _append_windows_environment_value(block, name, value)
         if name.casefold() == "localappdata":
@@ -79,6 +85,16 @@ class TestWindowsAppContainer(unittest.TestCase):
             self.assertEqual(self._read_cmd_exit_status(status), 7)
             status.write_text("7", encoding="ascii")
             self.assertIsNone(self._read_cmd_exit_status(status))
+
+    def test_CMDUnicode输出解析支持有无BOM且拒绝损坏文本(self) -> None:
+        expected = "LOCALAPPDATA=C:\\Users\\runner\\AppData\\Local\\Packages\\icode\\AC\r\n"
+        encoded = expected.encode("utf-16-le")
+        self.assertEqual(self._decode_cmd_unicode_output(encoded), expected)
+        self.assertEqual(
+            self._decode_cmd_unicode_output(b"\xff\xfe" + encoded), expected,
+        )
+        with self.assertRaises(UnicodeDecodeError):
+            self._decode_cmd_unicode_output(b"\x00")
 
     def test_profile环境路径诊断要求唯一键值并与API路径匹配(self) -> None:
         self.assertTrue(self._profile_env_matches_api(
@@ -390,7 +406,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             script = workspace / "profile-write.cmd"
             profile_env_state = workspace / "profile-env-state.txt"
             profile_env_value = workspace / "profile-env-value.txt"
+            profile_env_unicode_value = workspace / "profile-env-unicode-value.txt"
             profile_env_compare = workspace / "profile-env-compare.txt"
+            profile_expected_env_state = workspace / "profile-expected-env-state.txt"
             profile_directory_state = workspace / "profile-directory-state.txt"
             profile_write_status = workspace / "profile-write-status.txt"
             profile_write_stderr = workspace / "profile-write-stderr.txt"
@@ -400,6 +418,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                 f'if defined LOCALAPPDATA (echo defined> "{profile_env_state.name}") '
                 f'else (echo missing> "{profile_env_state.name}")\r\n'
                 f'set LOCALAPPDATA > "{profile_env_value.name}"\r\n'
+                f'if defined ICODE_EXPECTED_LOCALAPPDATA '
+                f'(echo defined> "{profile_expected_env_state.name}") '
+                f'else (echo missing> "{profile_expected_env_state.name}")\r\n'
+                f'cmd.exe /u /d /c "set LOCALAPPDATA" '
+                f'> "{profile_env_unicode_value.name}"\r\n'
                 f'if /i "%LOCALAPPDATA%"=="%ICODE_EXPECTED_LOCALAPPDATA%" '
                 f'(echo match> "{profile_env_compare.name}") '
                 f'else (echo mismatch> "{profile_env_compare.name}")\r\n'
@@ -447,6 +470,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
             except OSError:
                 profile_env_defined = False
+            try:
+                profile_expected_env_defined = (
+                    profile_expected_env_state.read_text(encoding="ascii").strip() == "defined"
+                )
+            except OSError:
+                profile_expected_env_defined = False
             profile_env_matches_api = False
             try:
                 profile_env_lines = profile_env_value.read_text(
@@ -457,6 +486,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
             except OSError:
                 profile_env_matches_api = False
+            profile_unicode_env_matches_api = False
+            try:
+                profile_unicode_env_lines = self._decode_cmd_unicode_output(
+                    profile_env_unicode_value.read_bytes(),
+                ).splitlines()
+                profile_unicode_env_matches_api = self._profile_env_matches_api(
+                    profile_unicode_env_lines, profile_paths,
+                )
+            except (OSError, UnicodeDecodeError):
+                profile_unicode_env_matches_api = False
             try:
                 profile_env_equals_api = (
                     profile_env_compare.read_text(encoding="ascii").strip() == "match"
@@ -474,7 +513,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             "profile storage lifecycle",
             f"executed={result.executed} exit={result.exit_code} error={result.error} "
             f"cleanup={result.cleanup_ok} localappdata_defined={profile_env_defined} "
+            f"expected_localappdata_defined={profile_expected_env_defined} "
             f"profile_set_output_matches_api={profile_env_matches_api} "
+            f"profile_unicode_set_output_matches_api={profile_unicode_env_matches_api} "
             f"profile_env_equals_api={profile_env_equals_api} "
             f"profile_dir_before_launch={profile_directory_exists_before_launch} "
             f"profile_dir_visible={profile_directory_visible} "

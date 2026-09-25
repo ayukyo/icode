@@ -313,6 +313,10 @@ CI [#112](https://github.com/ayukyo/icode/actions/runs/36074365589) 的 x64 与 
 
 CI [#113](https://github.com/ayukyo/icode/actions/runs/36075689060) 的 x64 与 ARM64 普通检查及 `process_limit=2/1` 正反对照通过组件断言；两架构 AppContainer 集成仍失败，Python 继续退出 `0xC0000135`。profile notice 均显示 `LOCALAPPDATA` 已定义、API 路径宿主侧存在、容器内目录不可见、写入错误 `path_not_found`、删除前 marker 缺失。`cmd.exe set LOCALAPPDATA` 重定向文本比较为 false，但输出编码未固定，不能据此断言传入环境值不同。当前测试仅在环境块加入同值临时 alias，由受限进程内 CMD 比较并只发布 match/mismatch，不改生产环境或 ACL；Windows 自动模式和完整 R2 继续关闭。
 
+### 2026-09-25 UTC CI #114：同块 alias 比较仍为 false
+
+CI [#114](https://github.com/ayukyo/icode/actions/runs/36077520320) x64/ARM64 的 AppContainer 集成均失败；Job `process_limit=2/1` 对照仍通过组件断言，Python 仍退出 `0xC0000135`。容器内 `LOCALAPPDATA` 与 API 路径 alias 的 CMD 比较在两架构均为 false，但 alias 是否到达 CMD 尚未单独测量。新一轮只增加 alias-defined 状态和 Unicode `cmd /u` 输出，在宿主内比较实际值与 API 路径、notice 只报布尔值；不输出路径、不改变 ACL。R2.3、完整 R2 与 Windows 自动模式仍未验收。
+
 ### 2026-09-24 UTC CI #107：Windows cwd-relative 探针
 
 CI [#107 x64](https://github.com/ayukyo/icode/actions/runs/36066941127) 的最终环境块与 profile `LOCALAPPDATA` A/B 检查通过；Python 仍退出 `0xC0000135`。CMD 批处理脚本未落下任何工作区标记，运行时文件诊断也未复制文件，故不能推断源文件 ACL。当前探针改用任务工作目录相对路径并增加 inline 写入对照；x64 不通过，ARM64 当时仍运行。R2.3 与自动模式继续关闭。
