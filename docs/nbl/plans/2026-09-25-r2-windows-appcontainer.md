@@ -372,3 +372,4 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - **证据：**#161 的 Windows Job 后代清理 job 与 wheel 打包 job 独立执行；同时 AppContainer 组合步骤继续失败。AppContainer 已经在上面的路线决策中退出生产候选，留存代码的用途是诊断，而非当前 R2 产品契约。
 - **采纳：**正常 push/PR 仍门禁 Windows Job 清理局部探针与架构 wheel 打包；把 AppContainer 诊断移至独立、默认关闭的 `workflow_dispatch` 选项。手工显式开启时，原 x64/ARM64 诊断步骤仍运行并保留失败结果；没有删除测试、忽略失败或将其改写成通过。
 - **边界：**主 CI 变绿只代表当前适用的 Windows 子项通过，不代表 R2.3 文件/网络/身份隔离已通过；Windows 自动模式继续关闭。真实 helper、setup/恢复、受限 token、ACL、WFP、Job 组合和 Windows 实机验收仍是完整 R2 的后续硬门槛。
+- **实跑结果：**[CI #163](https://github.com/ayukyo/icode/actions/runs/36175559660) 在该 workflow 结构下整体通过；Windows x64/ARM64 Job cleanup 与 wheel packaging、Python 3.11/3.12、Linux/macOS probes 均通过，已退役 AppContainer diagnostics 按默认配置跳过。这里的绿色只验证当前门禁配置及保留切片，没有任何完整 Windows sandbox 验收。
