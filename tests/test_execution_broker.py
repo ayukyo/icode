@@ -11,6 +11,7 @@ from unittest import mock
 
 from tests._support import temp_workspace
 
+from icode.execution_broker import execute_policy_command
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.tools import ToolContext, default_registry
 
@@ -39,6 +40,25 @@ def _context(root: Path, *, wall_timeout: int = 5, output_limit: int = 1024) -> 
 
 @unittest.skipUnless(os.name == "posix", "R2.2 仅覆盖 POSIX 策略命令")
 class TestPolicyCommandBroker(unittest.TestCase):
+    def test_policy_command_preserves_raw_bytes_for_binary_protocols(self) -> None:
+        with temp_workspace() as root:
+            root = root.resolve()
+            result = execute_policy_command(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stdout.buffer.write(bytes((0, 255, 65)))",
+                ],
+                cwd=root,
+                policy=_context(root).policy,
+                timeout=5,
+            )
+
+            self.assertIsNone(result.error)
+            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.raw_output, b"\x00\xffA")
+            self.assertEqual(result.output, "\x00\ufffdA")
+
     def test_策略命令不继承密钥且回执不含原始参数(self) -> None:
         with temp_workspace() as root:
             ctx = _context(root.resolve())

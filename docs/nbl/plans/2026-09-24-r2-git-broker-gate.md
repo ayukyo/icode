@@ -73,3 +73,16 @@
 - 上游 Git 回归用例确认 `git add --intent-to-add` 会产生合法 `.A` 状态；解析器现接受该组合，并以真实 Git CLI 输出回归。[Git 上游用例](https://github.com/git/git/blob/master/t/t7064-wtstatus-pv2.sh#L1934-L1953)
 - mode 字段由“任意六位八进制”收紧为已知类型集合 `000000`、`040000`、`100644`、`100755`、`120000`、`160000`，保留删除与 sparse-index 目录模式并拒绝 `777777`；依据 [Git 数据模型](https://git-scm.com/docs/gitdatamodel)与[索引格式](https://git-scm.com/docs/index-format)。
 - 仍忽略格式有效但未知的 `# ` 扩展头；拒绝空头、`#` 后无分隔符或重复空白的畸形头。测试同时验证合法模式集合、`.A`、畸形头及损坏记录 fail-closed。
+
+## 2026-09-25 policy 执行器原始字节回执
+
+- porcelain v2 `-z` 的路径字段是 NUL 分隔原始字节，不能先做 UTF-8 替换再交给解析器。`ExecutionResult` 增加受 `output_limit` 约束的 `raw_output`，原有 `output` 仍以 UTF-8 replacement 解码，保持既有工具调用兼容。
+- 先加 subprocess 回归，确认二进制输出 `00 ff 41` 原样保留且兼容文本为 `\x00�A`；执行器定向测试 6 项通过，完整 preflight 的密钥扫描、子模块完整性和测试全绿通过。
+- 这是字节协议传输前置能力，不执行 Git、不改变权限、不连接模型工具；输出超限仍为错误，不能把截断流交给状态解析器或当作 clean。
+
+## 2026-09-25 Git status 执行策略复核
+
+- 固定复核 Codex `main` commit `4b1c0c30dabd08fed7d6523844f9156d982eb297`：其状态提示 helper 执行 porcelain v1，仅判断是否有输出；Git 子进程管理还包含 timeout、`GIT_OPTIONAL_LOCKS=0`、hooks 限制与仓库级 fsmonitor 处理。这是轻量 UI dirty-check，不是可直接复用的安全 Git broker。Codex Linux sandbox 的主要边界是 bubblewrap 对 `.git` 与解析后 gitdir 做只读 carveout，不能把 ICODE 的 Landlock 入口视为等价。
+- **采纳：**固定关闭 `core.fsmonitor`（Codex 在检测安全后可能允许内置 daemon；对只读原型更保守，避免 daemon 与 `.git` IPC 副作用）；同时设 `GIT_OPTIONAL_LOCKS=0`、固定 hooks 路径、清除全部继承 `GIT_*`，并依靠 OS 写隔离，不把参数当作证明。Git `status` 官方文档提示后台刷新可能写 index；全量未跟踪扫描需要有界超时和输出，超限整体失败。
+- **暂缓：**不采纳动态 fsmonitor daemon、不接受外部 helper/用户参数；不承诺 submodule 完整状态。Porcelain v2 的 `S<c><m><u>` 子模块状态需要额外读取子模块元数据，当前 broker 不具备安全 grant；在识别出 submodule 或 linked-worktree common-dir 关系未覆盖时必须整体 unavailable，不能给部分结果冠以完整状态。
+- 阶段方向仍为内部 Linux 原型：可信 identity 重核、固定 Git 可执行文件/argv/environment、NUL bytes + 严格解析、超时/字节上限、metadata-only Landlock；自动执行和模型工具入口继续关闭，直到恶意仓库、零写入与目标平台负例通过。

@@ -27,6 +27,7 @@ class ExecutionResult:
     output_truncated: bool
     cleanup_ok: bool
     cleanup_errno: int | None
+    raw_output: bytes = b""
 
 
 def _policy_environment(root: Path) -> dict[str, str]:
@@ -134,12 +135,14 @@ def execute_policy_command(
         if process.stdout is not None:
             process.stdout.close()
 
+    raw_output = b"".join(chunks)
     return ExecutionResult(
         process.returncode,
-        b"".join(chunks).decode("utf-8", errors="replace"),
+        raw_output.decode("utf-8", errors="replace"),
         output_bytes,
         error if cleanup_ok else "cleanup_failed",
         error == "output_limit",
         cleanup_ok,
         cleanup_errno,
+        raw_output,
     )
