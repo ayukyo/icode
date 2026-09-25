@@ -789,7 +789,7 @@ def open_runner_pipe_client(
                     raise TimeoutError("runner_pipe_wait_timeout")
                 continue
             if error == _ERROR_ACCESS_DENIED:
-                raise PermissionError(error, "runner_pipe_access_denied")
+                raise PermissionError(error, "runner_pipe_wait_access_denied")
             raise OSError(error, "runner_pipe_wait")
         handle = api.kernel.CreateFileW(
             pipe_name, PIPE_CLIENT_ACCESS_MASK, 0, None, _OPEN_EXISTING,
@@ -801,12 +801,12 @@ def open_runner_pipe_client(
             if error == _ERROR_PIPE_BUSY and time.monotonic() < deadline:
                 continue
             if error == _ERROR_ACCESS_DENIED:
-                raise PermissionError(error, "runner_pipe_access_denied")
+                raise PermissionError(error, "runner_pipe_open_access_denied")
             raise OSError(error, "runner_pipe_open")
         try:
             server_pid = ctypes.c_uint32(0)
             if not api.kernel.GetNamedPipeServerProcessId(handle, ctypes.byref(server_pid)):
-                raise _winerror("runner_pipe_server_pid")
+                raise _winerror("runner_pipe_server_pid_query")
             if server_pid.value != expected_server_pid:
                 raise PermissionError("runner_pipe_server_pid_mismatch")
             return RunnerPipeClient(name=pipe_name, handle=handle, api=api)

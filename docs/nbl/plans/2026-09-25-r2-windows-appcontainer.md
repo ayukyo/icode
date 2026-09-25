@@ -387,7 +387,9 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 
 - **原生结果：**手动 CI [#180](https://github.com/ayukyo/icode/actions/runs/36195160595) 的 Windows x64 与 ARM64 标准用户 probe 都在 `runner_pipe_wrong_server_pid_rejection_failed` 失败，安全摘要均为 `server_accept_timeout`；其余 #180 作业成功。原探针先启动 `ConnectNamedPipe` 线程，固定 sleep 25 ms 后运行预期被错误 server PID 拒绝的客户端；服务器超时分支优先返回，因此客户端阶段码被覆盖。现有日志无法区分客户端访问拒绝、客户端等待/打开失败或“已打开后迅速关闭、服务端尚未开始接受”的时序竞态，不据此认定根因。
 - **TDD 补强：**先添加回归测试，模拟客户端观察到预期 PID 不匹配、服务端随后 accept 超时；确认旧逻辑错误地仅返回 `server_accept_timeout`（RED）。修正为在失败摘要中并列返回安全白名单客户端阶段与服务器 accept 阶段；16 项标准用户 probe 定向测试及完整 `scripts/preflight.py` 三道守护（密钥扫描、子模块完整性、全量单测）均通过。
-- **当前门槛：**该诊断修正尚未经过 Windows 原生复测，且 #180 不构成错误 PID 拒绝通过证据。下一次双架构 probe 必须先报告客户端实际阶段；若显示成功打开后服务端仍超时，再去掉固定 sleep、引入确认 listener 已进入 pending 的同步；若为 ACL/打开拒绝则只修复经证实的权限问题。不得扩大 pipe ACL 或跳过 PID 检查。生产 runner、权限/网络隔离和 Windows 自动模式仍未就绪。
+- **第二轮原生结果：**手动 CI [#182](https://github.com/ayukyo/icode/actions/runs/36196277700) 的 x64 与 ARM64 都返回 `client_access_denied+server_accept_timeout`；该摘要证明客户端路径遇到 PermissionError，但仍把 `WaitNamedPipeW`、`CreateFileW` 与 `GetNamedPipeServerProcessId` 的拒绝合并，尚不知具体 Win32 API 阶段。
+- **相关 API 契约疑点：**Microsoft 对 [`GetNamedPipeServerProcessId`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid) 的 `Pipe` 参数描述为由 `CreateNamedPipe` 创建的句柄；ICODE 当前却从客户端 `CreateFileW` 取得句柄后调用它。这是需要原生错误码/阶段确认的契约疑点，不据文档一句话断言就是本次 `PermissionError` 根因。固定 Codex runner pipe 源码的父端创建管道并用 `GetNamedPipeClientProcessId` 核验 runner PID，没有为 ICODE 当前的客户端 server-PID 查询调用提供先例。[Codex fixed source](https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/windows-sandbox-rs/src/elevated/runner_pipe.rs)
+- **下一诊断：**已先写三种阶段码的回归断言，再为 `WaitNamedPipeW`、`CreateFileW` 和 server-PID 查询增加固定标签映射；测试不可将原始异常/用户名/SID/路径写入日志。该改动通过 16 项定向测试，待完整守护、主 CI 与下一次双架构 Windows 原生 probe。若确认 server-PID 查询端点不合 API 合同，需按父端身份认证与 first-instance 的安全设计重新评估，而不是仅删除身份门；若 CreateFile 的 DACL 被拒，也不得盲目扩权。Windows 自动模式仍关闭。
 
 ### 2026-09-25 UTC：Windows token 修正版前的 macOS CI 复跑
 

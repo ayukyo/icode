@@ -116,7 +116,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
 
         self.assertEqual(result, (False, "client_timeout"))
 
-    def test_wrong_server_pid_probe_preserves_client_result_when_server_accept_times_out(self) -> None:
+    def test_wrong_server_pid_probe_classifies_client_denial_stage_when_server_accept_times_out(self) -> None:
         class FakePipe:
             name = r"\\.\pipe\icode-runner-" + "c" * 32
 
@@ -135,36 +135,43 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             def close(self) -> None:
                 return None
 
-        kernel = mock.Mock()
-        kernel.GetCurrentProcess.return_value = 123
-        kernel.GetCurrentProcessId.return_value = 100
         pipe = FakePipe()
-        with (
-            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
-            mock.patch(
-                "scripts.windows_standard_user_token_probe.ctypes.WinDLL",
-                return_value=kernel,
-                create=True,
-            ),
-            mock.patch(
-                "scripts.windows_standard_user_token_probe.runner_process_user_sid",
-                return_value="S-1-5-21-1-2-3-1001",
-            ),
-            mock.patch(
-                "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
-                return_value=pipe,
-            ),
-            mock.patch(
-                "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
-                side_effect=PermissionError("runner_pipe_server_pid_mismatch"),
-            ),
-        ):
-            result = runner_pipe_wrong_server_pid_probe()
-
-        self.assertEqual(
-            result,
-            (False, "server_pid_mismatch_rejected+server_accept_timeout"),
+        failures = (
+            ("runner_pipe_wait_access_denied", "client_wait_access_denied"),
+            ("runner_pipe_open_access_denied", "client_open_access_denied"),
+            ("runner_pipe_server_pid_query", "client_server_pid_query_access_denied"),
         )
+        for error_stage, expected_stage in failures:
+            with self.subTest(error_stage=error_stage):
+                kernel = mock.Mock()
+                kernel.GetCurrentProcess.return_value = 123
+                kernel.GetCurrentProcessId.return_value = 100
+                with (
+                    mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+                    mock.patch(
+                        "scripts.windows_standard_user_token_probe.ctypes.WinDLL",
+                        return_value=kernel,
+                        create=True,
+                    ),
+                    mock.patch(
+                        "scripts.windows_standard_user_token_probe.runner_process_user_sid",
+                        return_value="S-1-5-21-1-2-3-1001",
+                    ),
+                    mock.patch(
+                        "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
+                        return_value=pipe,
+                    ),
+                    mock.patch(
+                        "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
+                        side_effect=PermissionError(5, error_stage),
+                    ),
+                ):
+                    result = runner_pipe_wrong_server_pid_probe()
+
+                self.assertEqual(
+                    result,
+                    (False, f"{expected_stage}+server_accept_timeout"),
+                )
 
     def test_checkout_script_imports_package_without_pythonpath(self) -> None:
         repository = Path(__file__).resolve().parents[1]

@@ -226,6 +226,17 @@ def _safe_windows_error_code(exc: OSError) -> int:
     return code if type(code) is int and 0 <= code <= 0xFFFFFFFF else 0
 
 
+def _safe_pipe_client_permission_stage(exc: PermissionError) -> str:
+    if exc.args == ("runner_pipe_server_pid_mismatch",):
+        return "server_pid_mismatch_rejected"
+    stage = getattr(exc, "strerror", None)
+    return {
+        "runner_pipe_wait_access_denied": "client_wait_access_denied",
+        "runner_pipe_open_access_denied": "client_open_access_denied",
+        "runner_pipe_server_pid_query": "client_server_pid_query_access_denied",
+    }.get(stage, "client_access_denied")
+
+
 def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
     """Reject a false expected server PID and return only a safe stage code."""
     if sys.platform != "win32":
@@ -261,10 +272,7 @@ def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
                     pipe.name, wrong_pid, timeout_ms=2_000,
                 )
             except PermissionError as exc:
-                if str(exc) == "runner_pipe_server_pid_mismatch":
-                    client_result = "server_pid_mismatch_rejected"
-                else:
-                    client_result = "client_access_denied"
+                client_result = _safe_pipe_client_permission_stage(exc)
             except TimeoutError:
                 client_result = "client_timeout"
             except OSError as exc:
