@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
-- 日期：2026-09-24 UTC（上海时间 2026-09-25）
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #112 中 x64/ARM64 的 `process_limit=2` 正对照与 `process_limit=1` 负对照均通过组件断言；Python 仍以 `0xC0000135` 退出，profile marker 仍未写入，AppContainer 内的 profile 路径可见性尚未解释。正在增加仅输出路径相等布尔值的诊断，再跑双架构 CI；不据此扩大 ACL。
+- 日期：2026-09-25 UTC
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #113 中 x64/ARM64 的 `process_limit=2` 正对照与 `process_limit=1` 负对照均通过组件断言；Python 仍以 `0xC0000135` 退出，profile marker 仍未写入，CMD 导出的 profile 路径比较可能受编码影响。已加入测试专用环境 alias，让容器内直接比较实际 `LOCALAPPDATA` 与 API 路径；待双架构 CI 验证，不据此扩大 ACL。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -132,7 +132,7 @@
 - 两架构 Python 仍以 `0xC0000135` 退出。profile 探针报告 `LOCALAPPDATA` 已定义、API 返回的目录在宿主启动前存在，但容器内目录检查为假、写入分类为 `path_not_found`、删除前 marker 不存在；profile 最终清理通过。当前证据不能区分容器拿到的字符串与 API 返回值不一致、路径语义或实际目录访问问题。
 - 工作区读写/外部写拒绝、loopback 拒绝、正常退出与 timeout 后代回收有组件级通过 notice；它们不替代 Python 执行、profile 存储或完整文件/网络门禁。
 - 微软[启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)说明 profile 为 AppContainer 提供可创建、读取和写入文件的位置，并可经 `LOCALAPPDATA` 或 `GetAppContainerFolderPath` 访问；[创建 profile API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)说明每用户/每应用文件夹和注册表数据存储随 profile 建立。[路径查询 API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)只返回 Local AppData 路径，不保证其创建目录或修订 ACL。官方文档没有给出精确 ACL mask，因此不能据文档推断 CI runner 上实际 token 一定可达。
-- 下一轮仅在任务目录临时文件中采集 `set LOCALAPPDATA` 输出，并在进程内与 API 返回值比较；Actions notice 只发布 `profile_path_matches_api` 布尔值，不发布路径。先确认 identity，再决定是否需要最小修复；本轮不创建目录、不调整 ACL。
+- 下一轮曾在任务目录临时文件中采集 `set LOCALAPPDATA` 输出并与 API 返回值比较；CI #113 两架构均得到 false，但 CMD 重定向文本编码未固定，故不能据此认定路径不一致。当前测试专用环境块 alias 与 API 路径同值，由容器内 CMD 直接比较，只发布 match/mismatch 布尔值、不发布路径；先确认身份/路径，再决定是否需要最小修复，不创建目录、不调整 ACL。
 - Windows R2.3、完整 R2 及自动模式仍未验收，`policy_contract_ready` 必须保持 `false`。
 
 ## 当前实现与验收

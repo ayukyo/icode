@@ -147,6 +147,12 @@
 - CI [#112](https://github.com/ayukyo/icode/actions/runs/36074365589) 的 x64/ARM64 同载荷 `process_limit=2` 正对照均观察到子进程 marker 与状态 0；上限 1 的负对照均有父尝试、无子 marker，子进程启动状态为 1816，清理通过。将 Job 活动进程上限记为该边界下的组件通过，不外推为 AppContainer/R2.3 通过。
 - 两架构 profile 探针均观察到 API 路径在宿主启动前存在、`LOCALAPPDATA` 已定义，但 AppContainer 内目录检查为假，写入错误类别为 `path_not_found`，删除前 marker 不存在。Python 仍退出 `0xC0000135`。尚不能区分环境值不匹配、路径语义或 token/访问边界问题。
 - 微软[启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)将 profile 定义为 AppContainer 可创建、读取和写入文件的位置，并说明可通过 `LOCALAPPDATA` 或 `GetAppContainerFolderPath` 访问；[CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)说明 profile 含每用户/每应用文件夹及注册表存储。[GetAppContainerFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)是路径查询接口，不承诺创建目录或改 ACL；官方文档也未列出具体 ACL mask。因此先核对容器实际 token SID、精确 `LOCALAPPDATA` 值及逐路径访问错误，暂缓手动 mkdir 或扩大 ACL。
-- 当前增加的路径对照只向 Actions notice 发布 `profile_path_matches_api` 布尔值，不发布实际路径。**取舍：**保留 AppContainer 为候选后端，Windows 自动模式关闭；只有 Python、profile 私有写入/退出清理及跨架构全门禁通过后，才讨论接入执行器。
+- 当时增加的路径对照只向 Actions notice 发布 `profile_path_matches_api` 布尔值，不发布实际路径。**取舍：**保留 AppContainer 为候选后端，Windows 自动模式关闭；只有 Python、profile 私有写入/退出清理及跨架构全门禁通过后，才讨论接入执行器。
+
+### 2026-09-25 UTC Windows AppContainer CI #113
+
+- CI [#113](https://github.com/ayukyo/icode/actions/runs/36075689060) 的 x64 与 ARM64 `process_limit=2/1` 同载荷正反对照均通过组件断言；负例父进程尝试启动子进程、没有子进程 marker、启动状态为 1816，Job 清理成功。该结果只验收 Job 活动进程限制子项。
+- 两架构 AppContainer 集成均失败：Python 退出 `0xC0000135`；profile notice 显示 `LOCALAPPDATA` 已定义、profile 路径在启动前存在、容器内目录不可见、写入错误 `path_not_found`、删除前 marker 缺失。CMD `set LOCALAPPDATA` 重定向文本与 API 路径比较为 false，但输出编码不固定，故这条解析结果暂不作路径不一致结论。
+- 新诊断只在 Windows 测试中把 API 路径以临时 alias 同值注入环境块，由容器内 CMD 比较实际 `LOCALAPPDATA` 与 alias；Actions 只显示相等布尔值，不记录路径，也不改变正式产品环境或 ACL。等待 x64/ARM64 原生 CI 结果后再决定下一项最小修复。Windows 自动模式和 R2.3 仍未验收。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。

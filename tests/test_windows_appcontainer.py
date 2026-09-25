@@ -62,6 +62,16 @@ class TestWindowsAppContainer(unittest.TestCase):
         expected = profile_paths[0].rstrip("\\/").casefold()
         return bool(actual) and actual == expected
 
+    @staticmethod
+    def _append_expected_profile_path(block: str, name: str, value: str) -> str:
+        updated = _append_windows_environment_value(block, name, value)
+        if name.casefold() == "localappdata":
+            # Test-only alias enables an in-process comparison without logging either path.
+            updated = _append_windows_environment_value(
+                updated, "ICODE_EXPECTED_LOCALAPPDATA", value,
+            )
+        return updated
+
     def test_CMD退出码探针要求命名字段避免数字被解析成重定向(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-cmd-status-") as raw:
             status = Path(raw) / "status.txt"
@@ -82,6 +92,17 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertFalse(self._profile_env_matches_api(
             [r"LOCALAPPDATA=C:\one", r"LOCALAPPDATA=C:\two"], [r"C:\one"],
         ))
+
+    def test_profile环境诊断alias只复制API路径且不输出路径(self) -> None:
+        expected = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
+        block = self._append_expected_profile_path("\0\0", "LOCALAPPDATA", expected)
+        values = {
+            entry.split("=", 1)[0].casefold(): entry.split("=", 1)[1]
+            for entry in block.split("\0") if entry and "=" in entry
+        }
+        self.assertEqual(values.get("localappdata"), expected)
+        self.assertEqual(values.get("icode_expected_localappdata"), expected)
+        self.assertEqual(len(values), 2)
 
     def _mock_profile_apis(self) -> dict[str, mock.Mock]:
         import ctypes
@@ -369,6 +390,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             script = workspace / "profile-write.cmd"
             profile_env_state = workspace / "profile-env-state.txt"
             profile_env_value = workspace / "profile-env-value.txt"
+            profile_env_compare = workspace / "profile-env-compare.txt"
             profile_directory_state = workspace / "profile-directory-state.txt"
             profile_write_status = workspace / "profile-write-status.txt"
             profile_write_stderr = workspace / "profile-write-stderr.txt"
@@ -378,6 +400,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 f'if defined LOCALAPPDATA (echo defined> "{profile_env_state.name}") '
                 f'else (echo missing> "{profile_env_state.name}")\r\n'
                 f'set LOCALAPPDATA > "{profile_env_value.name}"\r\n'
+                f'if /i "%LOCALAPPDATA%"=="%ICODE_EXPECTED_LOCALAPPDATA%" '
+                f'(echo match> "{profile_env_compare.name}") '
+                f'else (echo mismatch> "{profile_env_compare.name}")\r\n'
                 f'if exist "%LOCALAPPDATA%\\." (echo exists> "{profile_directory_state.name}") '
                 f'else (echo missing> "{profile_directory_state.name}")\r\n'
                 f'(echo profile-write-ok> "%LOCALAPPDATA%\\{marker_name}") '
@@ -391,6 +416,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             ), mock.patch(
                 "icode.windows_appcontainer._delete_appcontainer_profile",
                 side_effect=observe_profile_delete,
+            ), mock.patch(
+                "icode.windows_job._append_windows_environment_value",
+                side_effect=self._append_expected_profile_path,
             ):
                 result = run_windows_appcontainer(
                     [str(command), "/d", "/c", f".\\{script.name}"],
@@ -430,6 +458,12 @@ class TestWindowsAppContainer(unittest.TestCase):
             except OSError:
                 profile_env_matches_api = False
             try:
+                profile_env_equals_api = (
+                    profile_env_compare.read_text(encoding="ascii").strip() == "match"
+                )
+            except OSError:
+                profile_env_equals_api = False
+            try:
                 profile_directory_visible = (
                     profile_directory_state.read_text(encoding="utf-8").strip() == "exists"
                 )
@@ -440,7 +474,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             "profile storage lifecycle",
             f"executed={result.executed} exit={result.exit_code} error={result.error} "
             f"cleanup={result.cleanup_ok} localappdata_defined={profile_env_defined} "
-            f"profile_path_matches_api={profile_env_matches_api} "
+            f"profile_set_output_matches_api={profile_env_matches_api} "
+            f"profile_env_equals_api={profile_env_equals_api} "
             f"profile_dir_before_launch={profile_directory_exists_before_launch} "
             f"profile_dir_visible={profile_directory_visible} "
             f"write_status={profile_write_status_value} "

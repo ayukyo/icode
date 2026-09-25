@@ -1,7 +1,7 @@
 # 开发路线图与取舍原则
 
-- 日期：2026-09-24
-- 状态：**R2.1 工作区边界已验收；R2.2 在 main 实施中，尚未通过退出条件**
+- 日期：2026-09-25
+- 状态：**R2.1 工作区边界已验收；R2.2/R2.3 仍在 main 实施中，尚未通过阶段退出条件**
 - 依据：[持续竞品对照](./agent-landscape-live.md) · [方案与决策记录](./design-decisions.md)
 
 ---
@@ -308,6 +308,10 @@ CI [#106 x64](https://github.com/ayukyo/icode/actions/runs/36063691161/job/10784
 CI [#112](https://github.com/ayukyo/icode/actions/runs/36074365589) 的 x64 与 ARM64 同载荷进程上限正反对照通过组件断言；cap=1 时没有子 marker、启动状态为 1816。两架构 `LOCALAPPDATA` 均已定义、API 路径宿主侧预先存在，但容器目录检查为假、写入类别 `path_not_found`、删除前 marker 缺失；Python 仍退出 `0xC0000135`。最新测试增加了只显示路径相等布尔值的对照，不输出路径；在 token SID、实际环境值与逐段访问问题查清前，不做目录创建或 ACL 放宽。R2.3/完整 R2 未通过，`policy_contract_ready=false`。
 
 ---
+
+### 2026-09-25 UTC CI #113：profile 环境路径比较需原生复验
+
+CI [#113](https://github.com/ayukyo/icode/actions/runs/36075689060) 的 x64 与 ARM64 普通检查及 `process_limit=2/1` 正反对照通过组件断言；两架构 AppContainer 集成仍失败，Python 继续退出 `0xC0000135`。profile notice 均显示 `LOCALAPPDATA` 已定义、API 路径宿主侧存在、容器内目录不可见、写入错误 `path_not_found`、删除前 marker 缺失。`cmd.exe set LOCALAPPDATA` 重定向文本比较为 false，但输出编码未固定，不能据此断言传入环境值不同。当前测试仅在环境块加入同值临时 alias，由受限进程内 CMD 比较并只发布 match/mismatch，不改生产环境或 ACL；Windows 自动模式和完整 R2 继续关闭。
 
 ### 2026-09-24 UTC CI #107：Windows cwd-relative 探针
 
