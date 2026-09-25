@@ -49,6 +49,19 @@ class TestWindowsAppContainer(unittest.TestCase):
         except (OSError, ValueError):
             return None
 
+    @staticmethod
+    def _profile_env_matches_api(env_lines: list[str], profile_paths: list[str]) -> bool:
+        values = [
+            line.split("=", 1)[1]
+            for line in env_lines
+            if line.partition("=")[0].casefold() == "localappdata" and "=" in line
+        ]
+        if len(profile_paths) != 1 or len(values) != 1:
+            return False
+        actual = values[0].rstrip("\\/").casefold()
+        expected = profile_paths[0].rstrip("\\/").casefold()
+        return bool(actual) and actual == expected
+
     def test_CMD退出码探针要求命名字段避免数字被解析成重定向(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-cmd-status-") as raw:
             status = Path(raw) / "status.txt"
@@ -56,6 +69,19 @@ class TestWindowsAppContainer(unittest.TestCase):
             self.assertEqual(self._read_cmd_exit_status(status), 7)
             status.write_text("7", encoding="ascii")
             self.assertIsNone(self._read_cmd_exit_status(status))
+
+    def test_profile环境路径诊断要求唯一键值并与API路径匹配(self) -> None:
+        self.assertTrue(self._profile_env_matches_api(
+            [r"LOCALAPPDATA=C:\Users\runner\AppData\Local\Packages\icode\AC"],
+            ["c:\\users\\RUNNER\\AppData\\Local\\Packages\\icode\\AC\\"],
+        ))
+        self.assertFalse(self._profile_env_matches_api(
+            [r"LOCALAPPDATA=C:\Users\runner\AppData\Local\Packages\other\AC"],
+            [r"C:\Users\runner\AppData\Local\Packages\icode\AC"],
+        ))
+        self.assertFalse(self._profile_env_matches_api(
+            [r"LOCALAPPDATA=C:\one", r"LOCALAPPDATA=C:\two"], [r"C:\one"],
+        ))
 
     def _mock_profile_apis(self) -> dict[str, mock.Mock]:
         import ctypes
@@ -342,6 +368,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             workspace.mkdir()
             script = workspace / "profile-write.cmd"
             profile_env_state = workspace / "profile-env-state.txt"
+            profile_env_value = workspace / "profile-env-value.txt"
             profile_directory_state = workspace / "profile-directory-state.txt"
             profile_write_status = workspace / "profile-write-status.txt"
             profile_write_stderr = workspace / "profile-write-stderr.txt"
@@ -350,6 +377,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "@echo off\r\n"
                 f'if defined LOCALAPPDATA (echo defined> "{profile_env_state.name}") '
                 f'else (echo missing> "{profile_env_state.name}")\r\n'
+                f'set LOCALAPPDATA > "{profile_env_value.name}"\r\n'
                 f'if exist "%LOCALAPPDATA%\\." (echo exists> "{profile_directory_state.name}") '
                 f'else (echo missing> "{profile_directory_state.name}")\r\n'
                 f'(echo profile-write-ok> "%LOCALAPPDATA%\\{marker_name}") '
@@ -391,6 +419,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
             except OSError:
                 profile_env_defined = False
+            profile_env_matches_api = False
+            try:
+                profile_env_lines = profile_env_value.read_text(
+                    encoding="utf-8", errors="replace",
+                ).splitlines()
+                profile_env_matches_api = self._profile_env_matches_api(
+                    profile_env_lines, profile_paths,
+                )
+            except OSError:
+                profile_env_matches_api = False
             try:
                 profile_directory_visible = (
                     profile_directory_state.read_text(encoding="utf-8").strip() == "exists"
@@ -402,6 +440,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             "profile storage lifecycle",
             f"executed={result.executed} exit={result.exit_code} error={result.error} "
             f"cleanup={result.cleanup_ok} localappdata_defined={profile_env_defined} "
+            f"profile_path_matches_api={profile_env_matches_api} "
             f"profile_dir_before_launch={profile_directory_exists_before_launch} "
             f"profile_dir_visible={profile_directory_visible} "
             f"write_status={profile_write_status_value} "

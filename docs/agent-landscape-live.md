@@ -142,4 +142,11 @@
 - CI [#110](https://github.com/ayukyo/icode/actions/runs/36071476528) 的 x64/ARM64 工作区写入、相邻目录写拒绝、loopback 拒绝及正常/超时后代回收 notice 通过；Python 仍退出 `0xC0000135`。两边 profile marker 均未写入；上轮进程上限控制的 x64 正对照未写标记，ARM64 的正向 marker 与父进程退出码相矛盾，故均不记为进程上限通过。暂缓授权 Python 整树；先查明 profile 写入失败类别，并以同步等待同载荷正反控制重测进程限制。AppContainer 路线未完成，不把组件级通过写成 R2.3 通过。
 - 下一轮在不依赖 Python 的 CMD 容器中单独验 profile marker 写入/删除，并将外部运行时复制失败压缩为错误类别；研究/实现都不建议用扩大用户目录 ACL 换启动成功。
 
+### 2026-09-24 UTC Windows AppContainer CI #112
+
+- CI [#112](https://github.com/ayukyo/icode/actions/runs/36074365589) 的 x64/ARM64 同载荷 `process_limit=2` 正对照均观察到子进程 marker 与状态 0；上限 1 的负对照均有父尝试、无子 marker，子进程启动状态为 1816，清理通过。将 Job 活动进程上限记为该边界下的组件通过，不外推为 AppContainer/R2.3 通过。
+- 两架构 profile 探针均观察到 API 路径在宿主启动前存在、`LOCALAPPDATA` 已定义，但 AppContainer 内目录检查为假，写入错误类别为 `path_not_found`，删除前 marker 不存在。Python 仍退出 `0xC0000135`。尚不能区分环境值不匹配、路径语义或 token/访问边界问题。
+- 微软[启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)将 profile 定义为 AppContainer 可创建、读取和写入文件的位置，并说明可通过 `LOCALAPPDATA` 或 `GetAppContainerFolderPath` 访问；[CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)说明 profile 含每用户/每应用文件夹及注册表存储。[GetAppContainerFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)是路径查询接口，不承诺创建目录或改 ACL；官方文档也未列出具体 ACL mask。因此先核对容器实际 token SID、精确 `LOCALAPPDATA` 值及逐路径访问错误，暂缓手动 mkdir 或扩大 ACL。
+- 当前增加的路径对照只向 Actions notice 发布 `profile_path_matches_api` 布尔值，不发布实际路径。**取舍：**保留 AppContainer 为候选后端，Windows 自动模式关闭；只有 Python、profile 私有写入/退出清理及跨架构全门禁通过后，才讨论接入执行器。
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。

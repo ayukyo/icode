@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-24 UTC（上海时间 2026-09-25）
-- 状态：原生实验入口仍未通过验收；CI #91–#104 多轮 x64/ARM64 AppContainer 原生作业显示 CreateProcessW 错误码 203；#105 固定 whoami 同-profile A/B 发现注入 API 返回的 `LOCALAPPDATA` 后可启动，但当时常规路径未注入；#106–#111 常规路径已能启动基础 CMD 探针，Python 仍以 `0xC0000135` 退出。#110 的 profile 写入探针两架构均退出 1、未留下 marker；#111 进一步发现其错误分类是在临时工作区销毁后读取、状态码又被 CMD 解析为重定向，因此这两批字段不能用于判断写入根因。#111 同载荷进程正对照的 marker 已出现，但状态码文件缺失，测试在 `process_limit=1` 负例前结束。工作区/网络与后代清理仅有组件级通过 notice；当前修正探针时序与状态编码后再做双架构原生复验。Windows 自动模式不开放
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #112 中 x64/ARM64 的 `process_limit=2` 正对照与 `process_limit=1` 负对照均通过组件断言；Python 仍以 `0xC0000135` 退出，profile marker 仍未写入，AppContainer 内的 profile 路径可见性尚未解释。正在增加仅输出路径相等布尔值的诊断，再跑双架构 CI；不据此扩大 ACL。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -126,15 +126,24 @@
 - 两架构 `process_limit=2` 的同步正对照中，父尝试 marker 与子 marker 均存在、命令 `exit=0`；状态文件为空。CMD 将 `echo %errorlevel%> file` 展开成以数字紧邻重定向符的语法，数字会被当作文件描述符而不是文本，因此测试在检查正对照状态后失败，没有执行 `process_limit=1` 负例。该轮不构成 process limit 结论。
 - 本轮把 profile 分类读取移到临时目录清理之前，并将退出状态编码为 `exit_code=<整数>` 后解析；新增纯解析器回归测试。现有 Python `0xC0000135` 和其他子项状态不变。CI #111 不作为 Windows 自动模式/R2.3 通过证据；修正后需重新跑双架构原生测试。
 
+## 2026-09-24 UTC CI #112：进程上限组件通过，profile 与 Python 仍阻断
+
+- CI [#112](https://github.com/ayukyo/icode/actions/runs/36074365589) 的 x64/ARM64 `process_limit=2` 同载荷正对照均记录父、子 marker 且状态为 0；`process_limit=1` 均记录父启动尝试、没有子 marker，子进程启动状态为 1816，清理通过。该结果支持 Job 活动进程上限在此测试边界生效，不代表完整 AppContainer 验收。
+- 两架构 Python 仍以 `0xC0000135` 退出。profile 探针报告 `LOCALAPPDATA` 已定义、API 返回的目录在宿主启动前存在，但容器内目录检查为假、写入分类为 `path_not_found`、删除前 marker 不存在；profile 最终清理通过。当前证据不能区分容器拿到的字符串与 API 返回值不一致、路径语义或实际目录访问问题。
+- 工作区读写/外部写拒绝、loopback 拒绝、正常退出与 timeout 后代回收有组件级通过 notice；它们不替代 Python 执行、profile 存储或完整文件/网络门禁。
+- 微软[启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)说明 profile 为 AppContainer 提供可创建、读取和写入文件的位置，并可经 `LOCALAPPDATA` 或 `GetAppContainerFolderPath` 访问；[创建 profile API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)说明每用户/每应用文件夹和注册表数据存储随 profile 建立。[路径查询 API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)只返回 Local AppData 路径，不保证其创建目录或修订 ACL。官方文档没有给出精确 ACL mask，因此不能据文档推断 CI runner 上实际 token 一定可达。
+- 下一轮仅在任务目录临时文件中采集 `set LOCALAPPDATA` 输出，并在进程内与 API 返回值比较；Actions notice 只发布 `profile_path_matches_api` 布尔值，不发布路径。先确认 identity，再决定是否需要最小修复；本轮不创建目录、不调整 ACL。
+- Windows R2.3、完整 R2 及自动模式仍未验收，`policy_contract_ready` 必须保持 `false`。
+
 ## 当前实现与验收
 
-CI [#95](https://github.com/ayukyo/icode/actions/runs/36034747937) 的 x64 与 ARM64 再次在 AppContainer `CreateProcessW` 返回 203；Python 启动及空环境诊断表现一致。CI [#96](https://github.com/ayukyo/icode/actions/runs/36035908657)、#99、#100、[#101](https://github.com/ayukyo/icode/actions/runs/36048561915)、[#102](https://github.com/ayukyo/icode/actions/runs/36051234628) 与 [#104](https://github.com/ayukyo/icode/actions/runs/36056228159) 的普通 Job 对照在 x64 与 ARM64 均成功，而 AppContainer 中仍返回 203。这把问题收窄到 AppContainer 启动路径，但不能据此断言是 GitHub runner 限制。#96 注释还暴露回执缺陷：AppContainer 没有创建进程却标记 `cleanup_failed`；#97 修复后保留 `native_api_failed` 且 `cleanup_ok=True`，但原生启动仍失败。#98 进一步确认省略 `=X:` 当前目录伪变量无效；#99 进一步确认显式对齐属性列表缓冲区仍未改变失败。#101/#102 加入相同最小 Unicode 环境块对照；#102 已排除 attribute-size 查询、profile 创建和 attribute 更新为充分解释。#104 的固定 whoami app-name A/B 两边仍为 203、环境块相等；该差异不构成修复。#105 发现同 profile `LOCALAPPDATA` 单变量 A/B 在两架构中改变了固定探针的启动结果；常规路径接入后，#106–#110 的 Python 仍以 `0xC0000135` 退出。#110 另确认工作区/网络和后代清理组件探针有通过 notice，但 profile marker 未写入且进程数探针不确定；这些均不是完整验收。Windows x64/ARM64 原生复验未通过前不开放自动模式。
+CI [#95](https://github.com/ayukyo/icode/actions/runs/36034747937) 的 x64 与 ARM64 再次在 AppContainer `CreateProcessW` 返回 203；Python 启动及空环境诊断表现一致。CI [#96](https://github.com/ayukyo/icode/actions/runs/36035908657)、#99、#100、[#101](https://github.com/ayukyo/icode/actions/runs/36048561915)、[#102](https://github.com/ayukyo/icode/actions/runs/36051234628) 与 [#104](https://github.com/ayukyo/icode/actions/runs/36056228159) 的普通 Job 对照在 x64 与 ARM64 均成功，而 AppContainer 中仍返回 203。这把问题收窄到 AppContainer 启动路径，但不能据此断言是 GitHub runner 限制。#96 注释还暴露回执缺陷：AppContainer 没有创建进程却标记 `cleanup_failed`；#97 修复后保留 `native_api_failed` 且 `cleanup_ok=True`，但原生启动仍失败。#98 进一步确认省略 `=X:` 当前目录伪变量无效；#99 进一步确认显式对齐属性列表缓冲区仍未改变失败。#101/#102 加入相同最小 Unicode 环境块对照；#102 已排除 attribute-size 查询、profile 创建和 attribute 更新为充分解释。#104 的固定 whoami app-name A/B 两边仍为 203、环境块相等；该差异不构成修复。#105 发现同 profile `LOCALAPPDATA` 单变量 A/B 在两架构中改变了固定探针的启动结果；常规路径接入后，#106–#112 的 Python 仍以 `0xC0000135` 退出。#110 的 profile marker 未写入且进程数探针不确定；#112 的同载荷进程数正反对照通过，但 profile 路径在 AppContainer 内仍不可见、marker 缺失。工作区/网络和后代清理仍只是组件级证据，不代表完整验收。Windows x64/ARM64 原生复验未通过前不开放自动模式。
 
-Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve 工作路径；工作区已有嵌套文件可读、工作区可写、相邻目录 canary 不可读写、容器专属 profile `LOCALAPPDATA` 可写且退出后删除；宿主 loopback 正向对照成立而 AppContainer 连接被拒、主进程正常退出与超时后的子进程回收、`process_limit=1` 阻止再启动子进程；ACL 恢复后，同一 Package SID 不能再写工作区。边界实际是“任务工作区 + 当前容器的私有临时 profile 数据区”，TEMP/TMP 仍固定到任务工作区；profile 不复用、不允许落到宿主 profile，API 删除失败或目录残留均使清理失败。另有跨平台环境块测试验证普通 Job 与 AppContainer 路径均保留盘符伪变量、排序和宿主变量不继承。CI #105 固定 whoami `LOCALAPPDATA` 单变量 A/B 在两架构成功，但正常路径接入后 #106–#110 的 Python 仍无法启动；#110 profile marker 两架构均缺失，进程上限需重新建立可靠的同载荷正反对照。工作区/网络及后代清理 notice 是局部通过，不代表 AppContainer/R2.3 已验收。
+Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve 工作路径；工作区已有嵌套文件可读、工作区可写、相邻目录 canary 不可读写、容器专属 profile `LOCALAPPDATA` 可写且退出后删除；宿主 loopback 正向对照成立而 AppContainer 连接被拒、主进程正常退出与超时后的子进程回收、`process_limit=1` 阻止再启动子进程；ACL 恢复后，同一 Package SID 不能再写工作区。边界实际是“任务工作区 + 当前容器的私有临时 profile 数据区”，TEMP/TMP 仍固定到任务工作区；profile 不复用、不允许落到宿主 profile，API 删除失败或目录残留均使清理失败。另有跨平台环境块测试验证普通 Job 与 AppContainer 路径均保留盘符伪变量、排序和宿主变量不继承。CI #105 固定 whoami `LOCALAPPDATA` 单变量 A/B 在两架构成功，但正常路径接入后 #106–#112 的 Python 仍无法启动；#112 profile marker 两架构均缺失，进程上限同载荷正反对照通过组件断言。工作区/网络及后代清理 notice 是局部通过，不代表 AppContainer/R2.3 已验收。
 
-必须在 GitHub Actions 的 Windows x64 与 ARM64 runner 同时通过，并保持纯 wheel / Python 3.11 路径。当前 Linux 本机仅验证了非 Windows 拒绝分支、链接/硬链接防护、环境块结构、显式属性指针对齐分配、SID/API 内存所有权模拟、固定命令白名单和环境变量差分；它**没有**执行任何 Win32 API。CI #91–#105 双架构的 AppContainer 启动探针失败，#92–#105 可见 notice 包含错误码 203；#106–#110 的 profile 主路径可启动系统 CMD，但 Python 均退出 `0xC0000135`。CI #102 已确认 profile 创建及 attribute 初始化/更新成功；size-query 122/48 符合 Microsoft 预期。#110 两架构均未写 profile marker，进程上限正反对照仍不完整。工作区、loopback 和后代清理的组件 notice 不替代实际 Python 启动、profile 写入/删除、可靠进程上限负例及全套隔离契约；Windows 自动模式继续关闭。
+必须在 GitHub Actions 的 Windows x64 与 ARM64 runner 同时通过，并保持纯 wheel / Python 3.11 路径。当前 Linux 本机仅验证了非 Windows 拒绝分支、链接/硬链接防护、环境块结构、显式属性指针对齐分配、SID/API 内存所有权模拟、固定命令白名单和环境变量差分；它**没有**执行任何 Win32 API。CI #91–#105 双架构的 AppContainer 启动探针失败，#92–#105 可见 notice 包含错误码 203；#106–#112 的 profile 主路径可启动系统 CMD，但 Python 均退出 `0xC0000135`。CI #102 已确认 profile 创建及 attribute 初始化/更新成功；size-query 122/48 符合 Microsoft 预期。#112 两架构均未写 profile marker；同载荷 process-limit 正反对照通过组件断言。工作区、loopback 和后代清理的组件 notice 不替代实际 Python 启动、profile 写入/删除、全套文件/网络隔离契约；Windows 自动模式继续关闭。
 
-目前仍缺少真实 Windows 的 IPv4/IPv6、UDP、DNS、外网直连拒绝、受保护 Git 元数据与凭据 canary、主动脱离/显式换身份尝试、profile/ACL 多轮泄漏以及更完整的失败恢复测试。CI #110 的 profile 专属目录写入和进程数门禁尚未通过；Python 主执行器也无法启动。Windows R2.3、R2.2 和完整 R2 均未验收；`policy_contract_ready` 必须继续为 false。
+目前仍缺少真实 Windows 的 IPv4/IPv6、UDP、DNS、外网直连拒绝、受保护 Git 元数据与凭据 canary、主动脱离/显式换身份尝试、profile/ACL 多轮泄漏以及更完整的失败恢复测试。CI #112 的进程上限正反对照通过组件断言，但 profile 专属目录写入仍失败、路径身份待复核，Python 主执行器也无法启动。Windows R2.3、R2.2 和完整 R2 均未验收；`policy_contract_ready` 必须继续为 false。
 
 ## 风险与成本
 

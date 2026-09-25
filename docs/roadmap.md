@@ -297,11 +297,15 @@ R2.2 已合入 main 持续验证 Linux/macOS 原生后端。[CI #85](https://git
 [R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md) ·
 [R2.4 临时网络授权门禁](./nbl/plans/2026-09-24-r2-network-proxy-gate.md)
 
-R2.3 Windows AppContainer 原生探针现已有 CI #91–#111 结果；Windows x64 与 ARM64 的 #91–#105 原生启动探针多轮返回 `CreateProcessW` 错误码 203，#105 固定 whoami A/B 发现设置 profile `LOCALAPPDATA` 后启动成功。常规路径接入后，#106–#111 的 Python 均退出 `0xC0000135`；#110 的 profile 写入 marker 两架构均缺失，进程数正反对照未形成有效证据。#110 同时有工作区/网络与正常及 timeout 后代清理的通过 notice，但这不等于完整 AppContainer 验收。#111 的 profile 诊断在临时目录删除后读取，CMD 裸数字状态也被解释为重定向；正对照 marker 已出现，但测试在 cap=1 负例之前结束，故 #111 不增加隔离结论。普通 Job 对照双架构通过；属性查询 122/48 为预期，runner 根因未证实。macOS Intel/ARM64 的脱组后代握手负例在 #101 通过，按已批准的 Codex 式边界验收。Windows AppContainer 仍为实验态，不接自动工单。
+R2.3 Windows AppContainer 原生探针现已有 CI #91–#112 结果；Windows x64 与 ARM64 的 #91–#105 原生启动探针多轮返回 `CreateProcessW` 错误码 203，#105 固定 whoami A/B 发现设置 profile `LOCALAPPDATA` 后启动成功。常规路径接入后，#106–#112 的 Python 均退出 `0xC0000135`。#112 的同载荷 `process_limit=2` 正对照与 `process_limit=1` 负对照在双架构均通过组件断言（负例无子 marker、启动状态 1816）；profile 路径仍在 AppContainer 内不可见、marker 两架构均缺失。工作区/网络与后代清理 notice 只是子项证据。微软启动指南称 profile 是 AppContainer 可创建/读写的数据位置，但路径查询本身不创建目录或改 ACL；当前先核对容器实际 SID、环境路径与逐段访问回执，不扩大 ACL。自动模式继续关闭。普通 Job 对照双架构通过；属性查询 122/48 为预期，runner 根因未证实。macOS Intel/ARM64 的脱组后代握手负例在 #101 通过，按已批准的 Codex 式边界验收。Windows AppContainer 仍为实验态，不接自动工单。
 
 CI [#105 x64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836254760) 与 [#105 ARM64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836255639) 的固定 whoami 同-profile A/B 均显示：省略容器 `LOCALAPPDATA` 时 `CreateProcessW` 返回 203，加入系统 API 返回的 profile 路径后成功且清理通过；但当时完整 AppContainer 流程的常规命令尚未带该变量，整组作业仍失败。当前代码已将容器专属路径接入常规 AppContainer 命令及撤权探针，并新增路径查询失败不启动、准确报告清理状态、临时 profile 数据目录删除/残留核验的测试；这条常规路径尚待新的 Windows x64/ARM64 CI。Windows AppContainer 与完整 R2 仍未验收，自动模式保持关闭。
 
 CI [#106 x64](https://github.com/ayukyo/icode/actions/runs/36063691161/job/107848355215) 与 [#106 ARM64](https://github.com/ayukyo/icode/actions/runs/36063691161/job/107848355043) 已证明固定 whoami 的同-profile `LOCALAPPDATA` A/B 两边均可成功；但两项环境块断言拦截的是追加变量前的基础块，属于探针捕获层错误，现改为核对最终传给 `CreateProcessW` 的块。原生 Python 子进程退出码 `0xC0000135`（`STATUS_DLL_NOT_FOUND`），只能确认当前宿主 Python 运行时还不能在此 AppContainer 路径运行，具体依赖/访问原因尚未定位；工作区/网络组合探针仍返回 1，待补齐逐阶段成功标记后复验。上述结果没有证明 Windows 文件/网络门禁通过，R2.3、完整 R2 与自动模式仍未验收。
+
+### 2026-09-24 UTC CI #112：进程上限组件通过，profile 与 Python 仍失败
+
+CI [#112](https://github.com/ayukyo/icode/actions/runs/36074365589) 的 x64 与 ARM64 同载荷进程上限正反对照通过组件断言；cap=1 时没有子 marker、启动状态为 1816。两架构 `LOCALAPPDATA` 均已定义、API 路径宿主侧预先存在，但容器目录检查为假、写入类别 `path_not_found`、删除前 marker 缺失；Python 仍退出 `0xC0000135`。最新测试增加了只显示路径相等布尔值的对照，不输出路径；在 token SID、实际环境值与逐段访问问题查清前，不做目录创建或 ACL 放宽。R2.3/完整 R2 未通过，`policy_contract_ready=false`。
 
 ---
 
