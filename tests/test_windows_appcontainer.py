@@ -290,6 +290,82 @@ except Exception as exc:
         _staged_profile_api['profile_error_code'] = getattr(exc, 'winerror', None)
 """
 
+_STAGED_PYTHON_KNOWN_FOLDER_PROBE = """\
+import uuid
+
+_staged_profile_context = {
+    'known_folder_path': None,
+    'known_folder_error': None,
+    'known_folder_error_code': None,
+    'known_folder_path_state': 'not_defined',
+    'package_identity': 'other_error',
+    'package_identity_error_code': None,
+}
+try:
+    import ctypes.wintypes as wintypes
+    class _KnownFolderId(ctypes.Structure):
+        _fields_ = [('data1', wintypes.DWORD), ('data2', wintypes.WORD),
+                    ('data3', wintypes.WORD), ('data4', wintypes.BYTE * 8)]
+    shell32 = ctypes.WinDLL('shell32', use_last_error=True)
+    ole32 = ctypes.WinDLL('ole32', use_last_error=True)
+    shell32.SHGetKnownFolderPath.argtypes = [
+        ctypes.POINTER(_KnownFolderId), wintypes.DWORD, wintypes.HANDLE,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+    ole32.CoTaskMemFree.restype = None
+    _known_folder_id = _KnownFolderId.from_buffer_copy(
+        uuid.UUID('F1B32785-6FBA-4FCF-9D55-7B8E7F157091').bytes_le)
+    _known_folder_path = ctypes.c_void_p()
+    try:
+        _known_folder_hr = int(shell32.SHGetKnownFolderPath(
+            ctypes.byref(_known_folder_id), 0x00004000, None,
+            ctypes.byref(_known_folder_path)))
+        if _known_folder_hr != 0 or not _known_folder_path.value:
+            _staged_profile_context['known_folder_error_code'] = _known_folder_hr & 0xffff
+            raise OSError(_known_folder_hr & 0xffff, 'SHGetKnownFolderPath failed')
+        _staged_profile_context['known_folder_path'] = ctypes.wstring_at(
+            _known_folder_path)
+        _staged_profile_context['known_folder_path_state'] = _environment_path_state(
+            _staged_profile_context['known_folder_path'])
+    except Exception as exc:
+        _staged_profile_context['known_folder_error'] = type(exc).__name__
+        if _staged_profile_context['known_folder_error_code'] is None:
+            _staged_profile_context['known_folder_error_code'] = getattr(exc, 'winerror', None)
+    finally:
+        if _known_folder_path.value:
+            try:
+                ole32.CoTaskMemFree(_known_folder_path)
+            except Exception:
+                _staged_profile_context['known_folder_error'] = 'cleanup_failed'
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.GetCurrentPackageFullName.argtypes = [
+        ctypes.POINTER(wintypes.DWORD), wintypes.LPWSTR,
+    ]
+    kernel32.GetCurrentPackageFullName.restype = ctypes.c_long
+    package_length = wintypes.DWORD(0)
+    package_result = int(kernel32.GetCurrentPackageFullName(
+        ctypes.byref(package_length), None))
+    if package_result == 122 and package_length.value:
+        package_name = ctypes.create_unicode_buffer(package_length.value)
+        package_result = int(kernel32.GetCurrentPackageFullName(
+            ctypes.byref(package_length), package_name))
+    if package_result == 0:
+        _staged_profile_context['package_identity'] = 'present'
+    elif package_result == 15700:
+        _staged_profile_context['package_identity'] = 'no_package'
+        _staged_profile_context['package_identity_error_code'] = package_result
+    else:
+        _staged_profile_context['package_identity'] = 'other_error'
+        _staged_profile_context['package_identity_error_code'] = package_result
+except Exception as exc:
+    if _staged_profile_context['known_folder_error'] is None:
+        _staged_profile_context['known_folder_error'] = type(exc).__name__
+    if _staged_profile_context['package_identity_error_code'] is None:
+        _staged_profile_context['package_identity_error_code'] = getattr(exc, 'winerror', None)
+"""
+
 _STAGED_PYTHON_TEMPFILE_PROBE = """\
 staged_tempfile = {
     'tempdir': None,
@@ -1227,6 +1303,144 @@ class TestWindowsAppContainer(unittest.TestCase):
         }
 
     @staticmethod
+    def _summarize_localappdata_environment_ab(
+        host_observation: object,
+        appcontainer_observation: object,
+        supplied_profile: str,
+    ) -> dict[str, object]:
+        """Compare explicit environment values while discarding both raw paths."""
+        expected = {
+            "launch_ok", "exit_code", "localappdata", "expected_localappdata",
+        }
+        app_expected = expected | {"cleanup_ok"}
+        if (
+            not isinstance(host_observation, dict)
+            or not isinstance(appcontainer_observation, dict)
+            or not expected.issubset(host_observation)
+            or not app_expected.issubset(appcontainer_observation)
+            or not isinstance(supplied_profile, str)
+            or not supplied_profile
+            or not ntpath.isabs(supplied_profile)
+        ):
+            return {"complete": False}
+
+        for observation in (host_observation, appcontainer_observation):
+            if (
+                type(observation["launch_ok"]) is not bool
+                or observation["exit_code"] is not None
+                and type(observation["exit_code"]) is not int
+                or observation["localappdata"] is not None
+                and (not isinstance(observation["localappdata"], str)
+                     or not observation["localappdata"])
+                or observation["expected_localappdata"] is not None
+                and (not isinstance(observation["expected_localappdata"], str)
+                     or not observation["expected_localappdata"])
+            ):
+                return {"complete": False}
+        if type(appcontainer_observation["cleanup_ok"]) is not bool:
+            return {"complete": False}
+
+        def same_path(left: object, right: str) -> bool:
+            return (
+                isinstance(left, str) and bool(left)
+                and ntpath.normcase(ntpath.normpath(left))
+                == ntpath.normcase(ntpath.normpath(right))
+            )
+
+        host_value = host_observation["localappdata"]
+        host_sentinel = host_observation["expected_localappdata"]
+        app_value = appcontainer_observation["localappdata"]
+        app_sentinel = appcontainer_observation["expected_localappdata"]
+        return {
+            "complete": True,
+            "host_launch_ok": host_observation["launch_ok"],
+            "host_exit_ok": host_observation["exit_code"] == 0,
+            "host_matches_supplied": same_path(host_value, supplied_profile),
+            "host_sentinel_matches_supplied": same_path(host_sentinel, supplied_profile),
+            "appcontainer_launch_ok": appcontainer_observation["launch_ok"],
+            "appcontainer_exit_ok": appcontainer_observation["exit_code"] == 0,
+            "appcontainer_cleanup_ok": appcontainer_observation["cleanup_ok"],
+            "appcontainer_matches_supplied": same_path(app_value, supplied_profile),
+            "appcontainer_sentinel_matches_supplied": same_path(
+                app_sentinel, supplied_profile,
+            ),
+            "appcontainer_profile_relation": (
+                TestWindowsAppContainer._profile_path_relation(
+                    app_value, supplied_profile,
+                )
+                if isinstance(app_value, str) and app_value else "unavailable"
+            ),
+        }
+
+    @staticmethod
+    def _summarize_known_folder_observation(
+        observation: object, profile_api_path: str,
+    ) -> dict[str, object]:
+        required = {
+            "known_folder_path", "known_folder_error", "known_folder_error_code",
+            "known_folder_path_state", "package_identity",
+            "package_identity_error_code",
+        }
+        if (
+            not isinstance(observation, dict)
+            or not required.issubset(observation)
+            or not isinstance(profile_api_path, str)
+            or not profile_api_path
+            or not ntpath.isabs(profile_api_path)
+        ):
+            return {"complete": False}
+        path = observation["known_folder_path"]
+        error = observation["known_folder_error"]
+        error_code = observation["known_folder_error_code"]
+        path_state = observation["known_folder_path_state"]
+        package_state = observation["package_identity"]
+        package_error_code = observation["package_identity_error_code"]
+        if (
+            path is not None and (not isinstance(path, str) or not path)
+            or error is not None and not isinstance(error, str)
+            or error_code is not None
+            and (type(error_code) is not int or error_code < 0)
+            or not isinstance(path_state, str)
+            or path_state not in {
+                "not_defined", "directory", "not_directory", "not_found",
+                "path_not_found", "access_denied", "other_error",
+            }
+            or not isinstance(package_state, str)
+            or package_state not in {"not_checked", "present", "no_package", "other_error"}
+            or package_error_code is not None
+            and (type(package_error_code) is not int or package_error_code < 0)
+        ):
+            return {"complete": False}
+        if error is None:
+            safe_error = "none"
+        elif error in _RUNTIME_PROBE_ERROR_TYPES:
+            safe_error = error
+        else:
+            safe_error = "other"
+        if error_code is not None and error_code > 65535:
+            error_code = None
+        if package_error_code is not None and package_error_code > 65535:
+            package_error_code = None
+        return {
+            "complete": True,
+            "query_ok": isinstance(path, str) and safe_error == "none",
+            "matches_profile_api": (
+                isinstance(path, str)
+                and ntpath.normcase(ntpath.normpath(path))
+                == ntpath.normcase(ntpath.normpath(profile_api_path))
+            ),
+            "relation": (
+                TestWindowsAppContainer._profile_path_relation(path, profile_api_path)
+                if isinstance(path, str) else "unavailable"
+            ),
+            "path_state": path_state,
+            "error": safe_error,
+            "error_code": error_code,
+            "package_identity": package_state,
+            "package_error_code": package_error_code,
+        }
+
+    @staticmethod
     def _summarize_staged_tempfile(
         observation: object, environment: object,
     ) -> dict[str, object]:
@@ -1447,6 +1661,228 @@ class TestWindowsAppContainer(unittest.TestCase):
         )
         self.assertEqual(summarize({}, api_profile), {"complete": False})
 
+    def test_AppContainer_known_folder摘要只返回关系状态和错误码(self) -> None:
+        summarize = getattr(self, "_summarize_known_folder_observation", None)
+        self.assertTrue(callable(summarize), "known-folder probe needs a safe summary")
+        api_profile = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
+        summary = summarize(
+            {
+                "known_folder_path": api_profile,
+                "known_folder_error": None,
+                "known_folder_error_code": None,
+                "known_folder_path_state": "directory",
+                "package_identity": "no_package",
+                "package_identity_error_code": 15700,
+            },
+            api_profile,
+        )
+
+        self.assertEqual(
+            summary,
+            {
+                "complete": True,
+                "query_ok": True,
+                "matches_profile_api": True,
+                "relation": "exact",
+                "path_state": "directory",
+                "error": "none",
+                "error_code": None,
+                "package_identity": "no_package",
+                "package_error_code": 15700,
+            },
+        )
+        serialized = json.dumps(summary, ensure_ascii=True, separators=(",", ":"))
+        self.assertNotIn("C:\\Users\\runner", serialized)
+        self.assertNotIn("S-1-15-2", serialized)
+        self.assertLessEqual(len(serialized), 500)
+        invalid_context = {
+            "known_folder_path": api_profile,
+            "known_folder_error": None,
+            "known_folder_error_code": None,
+            "known_folder_path_state": [],
+            "package_identity": [],
+            "package_identity_error_code": None,
+        }
+        self.assertEqual(summarize(invalid_context, api_profile), {"complete": False})
+        self.assertEqual(summarize({}, api_profile), {"complete": False})
+
+    def test_LOCALAPPDATA环境A_B摘要只输出脱敏比较(self) -> None:
+        summarize = getattr(self, "_summarize_localappdata_environment_ab", None)
+        self.assertTrue(callable(summarize), "profile env A/B needs a safe summary")
+        api_profile = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
+        summary = summarize(
+            {
+                "launch_ok": True,
+                "exit_code": 0,
+                "localappdata": api_profile,
+                "expected_localappdata": api_profile,
+            },
+            {
+                "launch_ok": True,
+                "exit_code": 0,
+                "cleanup_ok": True,
+                "localappdata": api_profile + r"\Unknown\Nested",
+                "expected_localappdata": api_profile,
+            },
+            api_profile,
+        )
+
+        self.assertEqual(
+            summary,
+            {
+                "complete": True,
+                "host_launch_ok": True,
+                "host_exit_ok": True,
+                "host_matches_supplied": True,
+                "host_sentinel_matches_supplied": True,
+                "appcontainer_launch_ok": True,
+                "appcontainer_exit_ok": True,
+                "appcontainer_cleanup_ok": True,
+                "appcontainer_matches_supplied": False,
+                "appcontainer_sentinel_matches_supplied": True,
+                "appcontainer_profile_relation": "api_child_other_nested",
+            },
+        )
+        serialized = json.dumps(summary, ensure_ascii=True)
+        self.assertNotIn("C:\\Users\\runner", serialized)
+        self.assertLessEqual(
+            len(json.dumps(summary, ensure_ascii=True, separators=(",", ":"))), 500,
+        )
+        self.assertEqual(
+            summarize({}, {}, api_profile), {"complete": False},
+        )
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
+    def test_宿主与AppContainer接收相同显式LOCALAPPDATA(self) -> None:
+        """Observe explicit profile input in both launch contexts without logging paths."""
+        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        command = system_root / "System32" / "cmd.exe"
+        profile_paths: list[str] = []
+
+        def record_profile_path(
+            sid: ctypes.c_void_p,
+            userenv: ctypes.WinDLL,
+            advapi: ctypes.WinDLL,
+            kernel: ctypes.WinDLL,
+            ole32: ctypes.WinDLL,
+        ) -> str:
+            path = _get_appcontainer_localappdata_path(
+                sid, userenv, advapi, kernel, ole32,
+            )
+            profile_paths.append(path)
+            return path
+
+        def read_environment(path: Path) -> dict[str, str | None]:
+            lines = self._decode_cmd_unicode_output(path.read_bytes()).splitlines()
+            parsed: dict[str, str | None] = {}
+            for name in ("LOCALAPPDATA", "ICODE_EXPECTED_LOCALAPPDATA"):
+                prefix = name.casefold() + "="
+                values = [
+                    line.split("=", 1)[1] for line in lines
+                    if line.casefold().startswith(prefix)
+                ]
+                parsed[name.casefold()] = values[0] if len(values) == 1 else None
+            return parsed
+
+        with tempfile.TemporaryDirectory(prefix="icode-localappdata-ab-") as raw:
+            workspace = Path(raw) / "task"
+            workspace.mkdir()
+            script = workspace / "environment.cmd"
+            app_output = workspace / "appcontainer-environment.txt"
+            host_output = workspace / "host-environment.txt"
+            script.write_text(
+                "@echo off\r\n"
+                'set LOCALAPPDATA > "appcontainer-environment.txt"\r\n'
+                'set ICODE_EXPECTED_LOCALAPPDATA >> "appcontainer-environment.txt"\r\n',
+                encoding="ascii",
+            )
+            with mock.patch(
+                "icode.windows_appcontainer._get_appcontainer_localappdata_path",
+                side_effect=record_profile_path,
+            ), mock.patch(
+                "icode.windows_job._append_windows_environment_value",
+                side_effect=self._append_expected_profile_path,
+            ):
+                app_result = run_windows_appcontainer(
+                    [str(command), "/u", "/d", "/c", f".\\{script.name}"],
+                    cwd=workspace, timeout_seconds=10, process_limit=2,
+                )
+
+            self.assertEqual(len(profile_paths), 1, "one API profile path should be captured")
+            supplied_profile = profile_paths[0]
+            host_environment_block = _build_windows_environment_block(
+                command, workspace, system_root,
+            )
+            host_environment = {
+                entry.split("=", 1)[0]: entry.split("=", 1)[1]
+                for entry in host_environment_block.split("\0") if entry
+                and not entry.startswith("=") and "=" in entry
+            }
+            host_environment["LOCALAPPDATA"] = supplied_profile
+            host_environment["ICODE_EXPECTED_LOCALAPPDATA"] = supplied_profile
+            host_script = workspace / "host-environment.cmd"
+            host_script.write_text(
+                "@echo off\r\n"
+                'set LOCALAPPDATA > "host-environment.txt"\r\n'
+                'set ICODE_EXPECTED_LOCALAPPDATA >> "host-environment.txt"\r\n',
+                encoding="ascii",
+            )
+            host_launch_ok = True
+            try:
+                host_result = subprocess.run(
+                    [str(command), "/u", "/d", "/c", f".\\{host_script.name}"],
+                    cwd=workspace, env=host_environment, capture_output=True,
+                    timeout=10, check=False, shell=False,
+                )
+                host_exit_code = host_result.returncode
+            except subprocess.TimeoutExpired:
+                host_launch_ok = False
+                host_exit_code = None
+            except OSError:
+                host_launch_ok = False
+                host_exit_code = None
+            try:
+                app_values = read_environment(app_output)
+            except (OSError, UnicodeDecodeError):
+                app_values = {"localappdata": None, "icode_expected_localappdata": None}
+            try:
+                host_values = read_environment(host_output)
+            except (OSError, UnicodeDecodeError):
+                host_values = {"localappdata": None, "icode_expected_localappdata": None}
+
+        summary = self._summarize_localappdata_environment_ab(
+            {
+                "launch_ok": host_launch_ok,
+                "exit_code": host_exit_code,
+                "localappdata": host_values["localappdata"],
+                "expected_localappdata": host_values["icode_expected_localappdata"],
+            },
+            {
+                "launch_ok": app_result.executed,
+                "exit_code": app_result.exit_code,
+                "cleanup_ok": app_result.cleanup_ok,
+                "localappdata": app_values["localappdata"],
+                "expected_localappdata": app_values["icode_expected_localappdata"],
+            },
+            supplied_profile,
+        )
+        self._workflow_json_notice("explicit LOCALAPPDATA host/AppContainer A/B", summary)
+        self.assertTrue(summary.get("complete"), "A/B environment summary is incomplete")
+        self.assertTrue(summary["host_launch_ok"], "host explicit-environment control did not launch")
+        self.assertTrue(summary["host_exit_ok"], "host explicit-environment positive control failed")
+        self.assertTrue(summary["host_matches_supplied"], "host changed explicit LOCALAPPDATA")
+        self.assertTrue(
+            summary["host_sentinel_matches_supplied"],
+            "host control did not receive the matching sentinel",
+        )
+        self.assertTrue(summary["appcontainer_launch_ok"], "AppContainer command did not launch")
+        self.assertTrue(summary["appcontainer_exit_ok"], "AppContainer environment script failed")
+        self.assertTrue(summary["appcontainer_cleanup_ok"], "AppContainer job cleanup failed")
+        self.assertLessEqual(
+            len(json.dumps(summary, separators=(",", ":"))), 500,
+            "A/B workflow notice exceeds the compact notice limit",
+        )
+
     def test_staged_Python环境观测摘要脱敏并区分API路径(self) -> None:
         api_profile = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
         workspace = r"D:\a\_temp\task"
@@ -1600,6 +2036,13 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertNotIn("kernel.OpenProcessToken", _STAGED_PYTHON_PROFILE_API_PROBE)
         self.assertNotIn("kernel.GetTokenInformation", _STAGED_PYTHON_PROFILE_API_PROBE)
 
+    def test_known_folder_and_package_identity_APIs_have_explicit_signatures(self) -> None:
+        self.assertIn("shell32.SHGetKnownFolderPath.argtypes", _STAGED_PYTHON_KNOWN_FOLDER_PROBE)
+        self.assertIn("shell32.SHGetKnownFolderPath.restype", _STAGED_PYTHON_KNOWN_FOLDER_PROBE)
+        self.assertIn("kernel32.GetCurrentPackageFullName.argtypes", _STAGED_PYTHON_KNOWN_FOLDER_PROBE)
+        self.assertIn("kernel32.GetCurrentPackageFullName.restype", _STAGED_PYTHON_KNOWN_FOLDER_PROBE)
+        self.assertIn("0x00004000", _STAGED_PYTHON_KNOWN_FOLDER_PROBE)
+
     def test_staged_Python环境探针片段可独立解析(self) -> None:
         compile(
             _STAGED_PYTHON_ENVIRONMENT_PROBE,
@@ -1612,6 +2055,11 @@ class TestWindowsAppContainer(unittest.TestCase):
             "exec",
         )
         compile(
+            _STAGED_PYTHON_KNOWN_FOLDER_PROBE,
+            "<staged-python-known-folder-probe>",
+            "exec",
+        )
+        compile(
             _STAGED_PYTHON_TEMPFILE_PROBE,
             "<staged-python-tempfile-probe>",
             "exec",
@@ -1620,6 +2068,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             "import ctypes, os, stat\n"
             + _STAGED_PYTHON_ENVIRONMENT_PROBE
             + _STAGED_PYTHON_PROFILE_API_PROBE
+            + _STAGED_PYTHON_KNOWN_FOLDER_PROBE
             + _STAGED_PYTHON_TEMPFILE_PROBE,
             "<staged-python-profile-environment-combined-probe>",
             "exec",
@@ -3151,6 +3600,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "    raise\n"
                     + _STAGED_PYTHON_ENVIRONMENT_PROBE
                     + _STAGED_PYTHON_PROFILE_API_PROBE
+                    + _STAGED_PYTHON_KNOWN_FOLDER_PROBE
                     + _STAGED_PYTHON_TEMPFILE_PROBE
                     + "\n"
                     "def checkpoint(name): Path(name).write_text('1',encoding='ascii')\n"
@@ -3297,6 +3747,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'python_version':platform.python_version(),"
                     "'environment':staged_environment,"
                     "'profile_api':_staged_profile_api,"
+                    "'profile_context':_staged_profile_context,"
                     "'tempfile':staged_tempfile,"
                     "'runtime_write_denied':runtime_write_denied,"
                     "'source_runtime_denied':source_runtime_denied,"
@@ -3345,6 +3796,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             )
             profile_api = self._summarize_staged_profile_api(
                 staged_result.get("profile_api"),
+                candidate_profile_paths[0] if len(candidate_profile_paths) == 1 else None,
+            )
+            profile_context = self._summarize_known_folder_observation(
+                staged_result.get("profile_context"),
                 candidate_profile_paths[0] if len(candidate_profile_paths) == 1 else None,
             )
             tempfile_probe = self._summarize_staged_tempfile(
@@ -3416,6 +3871,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "python_path_resolution": path_resolution_probe,
                 "profile_environment": profile_environment,
                 "profile_api": profile_api,
+                "profile_context": profile_context,
                 "tempfile_probe": tempfile_probe,
                 "python_path_resolution_probe_complete": set(path_resolution_probe) == {
                     "absolute", "stat", "read", "resolve_strict",
@@ -3517,6 +3973,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "Python staged profile API diagnostics", summary["profile_api"],
             )
             self._workflow_json_notice(
+                "Python staged known-folder context", summary["profile_context"],
+            )
+            self._workflow_json_notice(
                 "Python staged tempfile consumer", tempfile_probe,
             )
             self._workflow_json_notice(
@@ -3580,6 +4039,11 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertTrue(
             profile_api["profile_api_matches_host"],
             "container and host resolved different profile API paths",
+        )
+        profile_context = summary["profile_context"]
+        self.assertTrue(
+            profile_context.get("complete"),
+            "staged known-folder/package context probe is incomplete",
         )
         tempfile_probe = summary["tempfile_probe"]
         self.assertTrue(

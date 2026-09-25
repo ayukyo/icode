@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #154 双架构已消除全部 8.3 短名/长路径断言失败；完整 Windows 测试仍有 2 项失败：profile 写入 marker 缺失、宿主 Python 退出 `0xC0000135`。当前主线新增容器内只读 profile API/token/原始环境块观测，纯单测与脚本语法通过，待 CI #155；不扩大 ACL，也不把 staged tempfile 子项通过外推为 R2.3。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #155 x64/ARM64 均保留 2 项失败：profile 写入 marker 缺失、宿主 Python 退出 `0xC0000135`。新增只读观测显示容器 token/SID 有效，容器与宿主 `GetAppContainerFolderPath` 路径一致且为目录；容器 PEB 仅有一个 `LOCALAPPDATA`，它与 Python/Win32 读取一致，却是 API 根下不存在的未知嵌套路径。待普通进程/AppContainer 同显式环境值差分和 known-folder 只读查询；不扩大 ACL，也不把 staged tempfile 子项外推为 R2.3。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 > 注：下方按时间追加验证记录。阶段状态以最新 CI 和本机回归为准，历史记录不代表当前 Windows 后端已通过。
@@ -313,3 +313,16 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - **下一只读诊断（本提交待 #155 双架构验证）：**在能够运行的 disposable staged Python 子进程中查询 `TokenIsAppContainer`、`TokenAppContainerSid`、该 SID 的 `GetAppContainerFolderPath`，并读取 `GetEnvironmentStringsW` 中 `LOCALAPPDATA` 项数/值，再与同进程 `GetEnvironmentVariableW`、Python `os.environ` 及宿主 API 路径作比较。原始路径/SID 只保留在短寿命 staging 结果文件中，Actions notice 仅报告布尔值、固定路径关系类别和白名单错误/错误码。此探针不写 profile、不改环境、不扩展权限，不证明 profile marker 已修复；如果数据确认容器 API 与宿主一致但环境指向不存在的子路径，才另行设计最小因果 A/B。
 - **竞品取舍：**FastRender 固定提交 `19bf1036105d4eeb8bf3330678b7cb11c1490bdc` 的 Windows sandbox 设计/实现从 AppContainer API 路径建立目录，并将 `TEMP/TMP` 收敛至该 profile 的 `Temp`；它没有实测解释本项目进程环境与 API 路径差异，且其许可证本次未审。采纳“按可信 API 路径建立临时目录、临时变量显式白名单”作为待评估思路；暂缓建目录、改 `TEMP/TMP` 或授权访问，先取回 #155 只读观测。[设计](https://github.com/wilsonzlin/fastrender/blob/19bf1036105d4eeb8bf3330678b7cb11c1490bdc/docs/windows_sandbox.md#L526-L540) · [固定源码](https://github.com/wilsonzlin/fastrender/blob/19bf1036105d4eeb8bf3330678b7cb11c1490bdc/src/sandbox/windows.rs)。没有复制代码或引入依赖。
 - **下一 runtime loader 阶段仍未实施：**只读调研建议先记录实际 Windows runner 的 Python 版本/架构与 `python.exe`、`python311.dll` 哈希，再解析实际 PE 普通/延迟 imports；后续若仍需因果确认，使用独立原生 helper 在同一 AppContainer/Job 对原文件区分 `FILE_READ_DATA`、`SEC_IMAGE`、`LoadLibraryExW`，同调用宿主正向对照。不在已加载 staged Python 中再次 `LoadLibrary` 原树同名 DLL，以免命中已加载模块。当前未解析 PE imports、未验证 loader API、未触碰原 runtime ACL；这些都不能写成根因结论。
+
+### 2026-09-25 UTC CI #155：profile API 与环境块分离结果
+
+- [CI #155 x64](https://github.com/ayukyo/icode/actions/runs/36151002037/job/108123945569) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36151002037/job/108123945487) 的 profile API 只读探针均完整：当前 token 是 AppContainer 且含 SID；容器调用 `GetAppContainerFolderPath` 成功，路径与宿主对同一 SID 查询的 API 路径一致，且容器内状态为目录；原始 PEB 环境块只含一项 `LOCALAPPDATA`。该项与 `GetEnvironmentVariableW` 和 Python `os.environ` 一致，但位于 API 根下未识别的嵌套层且精确路径不存在。日志仅输出固定关系类别和状态，不含路径或 SID。
+- Microsoft 的 `GetAppContainerFolderPath` 文档说明结果应与 `SHGetKnownFolderPath(FOLDERID_LocalAppData)` 相同；启动指南示例使用 `...\\AC` 和 `...\\AC\\Temp`。`CreateProcessW` 文档允许调用者提供显式 Unicode 环境块，但官方 AppContainer 启动示例使用继承环境，尚无官方依据可将本次未知嵌套值解释为系统预期重写。[API](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath) · [启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer) · [CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)。
+- **阶段取舍：**采纳下一步同一显式 `LOCALAPPDATA` 值的普通进程/AppContainer 环境对照，并在容器内只读比较 `SHGetKnownFolderPath` 与 AppContainer API、查询是否存在包身份；用结果区分调用方环境块、容器启动上下文和 Windows 路径 API，不写 profile、不创建目录、不改 ACL。FastRender 等上游观察也未给出该现象的原生 CPython 等价测试，不能用它们推断原因。
+- CI #155 除上述新观测外仍有 2 项 Windows 测试失败；staged tempfile、AppContainer 的工作区/网络/ACL/Job 组件用例通过。新观测不是修复或退出证据，R2.3 与 Windows 自动模式继续关闭。
+
+### 下一轮只读差分（待双架构 CI）
+
+- 已将同一 AppContainer profile API 路径和 sentinel 显式传给普通宿主正向对照与容器命令；容器由独立脚本只读输出环境变量，结果归一化为布尔值与路径关系，不公开原始路径。
+- staged Python 另调用 `SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY)`，通过 `GetCurrentPackageFullName` 记录包身份状态，并与 AppContainer profile API 路径脱敏比较；均是只读 API，不创建目录或修改 ACL。
+- 本机 Linux 完整预检与 Windows AppContainer 模块单测通过；Windows 原生测试在本机按平台跳过。下一步必须等待 x64/ARM64 runner 结果，再决定 profile marker 与 Python loader 的后续根因实验；R2.3、Windows 自动模式保持关闭。

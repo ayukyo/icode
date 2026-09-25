@@ -1,7 +1,7 @@
 # 开发路线图与取舍原则
 
 - 日期：2026-09-25
-- 状态：**R2.1 工作区边界已验收；R2.2 原生隔离、R2.3 Windows AppContainer、R2.4 Git broker/网络授权仍在 main 实施中，均未通过阶段退出条件。Windows CI #154 已消除路径别名导致的测试失败；profile marker 与宿主 Python `0xC0000135` 两项仍独立未解。当前新增容器内只读 profile API/token/环境块探针，待 CI #155；不扩大 ACL，Windows 自动模式继续关闭。**
+- 状态：**R2.1 工作区边界已验收；R2.2 原生隔离、R2.3 Windows AppContainer、R2.4 Git broker/网络授权仍在 main 实施中，均未通过阶段退出条件。Windows CI #155 x64/ARM64 均验证 profile API 与 token 查询成功，但实际 `LOCALAPPDATA` 是 API 根下不存在的未知嵌套路径；profile marker 与宿主 Python `0xC0000135` 两项仍独立失败。下一轮已加入同一显式环境值的普通进程/AppContainer 对照及容器内 Known Folder/package identity 只读探针，待双架构 CI；不扩大 ACL，Windows 自动模式继续关闭。**
 - 依据：[持续竞品对照](./agent-landscape-live.md) · [方案与决策记录](./design-decisions.md)
 
 ---
