@@ -1,1 +1,2 @@
 include native/linux/icode_landlock.c
+include scripts/windows_wheel.py

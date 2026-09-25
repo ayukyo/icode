@@ -8,6 +8,7 @@ import re
 import stat
 import struct
 import sys
+import sysconfig
 from pathlib import Path
 
 _SHA256_LINE = re.compile(r"[0-9a-f]{64}\n?")
@@ -44,27 +45,66 @@ def bundled_linux_helper() -> Path | None:
     return binary if verify_native_helper(binary, manifest) else None
 
 
+def _windows_pe_architecture_from_headers(
+    dos_header: bytes, pe_header: bytes,
+) -> str | None:
+    if len(dos_header) != 64 or dos_header[:2] != b"MZ" or len(pe_header) != 6:
+        return None
+    try:
+        pe_offset = struct.unpack_from("<I", dos_header, 0x3C)[0]
+    except struct.error:
+        return None
+    if pe_offset < 64 or pe_offset > 16 * 1024 * 1024:
+        return None
+    if pe_header[:4] != b"PE\0\0":
+        return None
+    machine = struct.unpack_from("<H", pe_header, 4)[0]
+    return {0x8664: "x64", 0xAA64: "arm64"}.get(machine)
+
+
+def windows_pe_architecture(image: bytes) -> str | None:
+    """Read a PE COFF machine field without loading or executing the image."""
+    if not isinstance(image, bytes) or len(image) < 64 or image[:2] != b"MZ":
+        return None
+    pe_offset = struct.unpack_from("<I", image, 0x3C)[0]
+    if pe_offset + 6 > len(image):
+        return None
+    return _windows_pe_architecture_from_headers(
+        image[:64], image[pe_offset:pe_offset + 6],
+    )
+
+
+def windows_arch_from_platform(platform_name: str) -> str:
+    """Map supported Windows wheel/runtime platform spellings to PE machine names."""
+    if not isinstance(platform_name, str):
+        raise ValueError("unsupported Windows platform")
+    normalized = platform_name.lower()
+    try:
+        return {
+            "win-amd64": "x64",
+            "win_amd64": "x64",
+            "win-arm64": "arm64",
+            "win_arm64": "arm64",
+        }[normalized]
+    except KeyError as exc:
+        raise ValueError("unsupported Windows platform") from exc
+
+
 def _windows_pe_architecture(binary: Path) -> str | None:
-    """Read the PE COFF machine field without loading or executing the image."""
+    """Read a helper's PE COFF machine field without loading or executing it."""
     try:
         with Path(binary).open("rb") as stream:
             dos_header = stream.read(64)
             if len(dos_header) != 64 or dos_header[:2] != b"MZ":
                 return None
             pe_offset = struct.unpack_from("<I", dos_header, 0x3C)[0]
-            # A PE header is conventionally near the start. Bound seeks so malformed
-            # images cannot induce unbounded sparse-file scans or integer surprises.
             if pe_offset < 64 or pe_offset > 16 * 1024 * 1024:
                 return None
             stream.seek(pe_offset)
-            header = stream.read(6)
+            pe_header = stream.read(6)
     except (OSError, ValueError, struct.error):
         return None
-
-    if len(header) != 6 or header[:4] != b"PE\0\0":
-        return None
-    machine = struct.unpack_from("<H", header, 4)[0]
-    return {0x8664: "x64", 0xAA64: "arm64"}.get(machine)
+    return _windows_pe_architecture_from_headers(dos_header, pe_header)
 
 
 def verify_windows_helper(
@@ -76,7 +116,7 @@ def verify_windows_helper(
     a signature, publisher identity, provenance proof, or race-free launch grant.
     Callers must not execute the returned path based on this check alone.
     """
-    if expected_arch not in {"x64", "arm64"}:
+    if expected_arch not in ("x64", "arm64"):
         return False
     try:
         binary_stat = Path(binary).lstat()
@@ -97,3 +137,24 @@ def verify_windows_helper(
         return digest.hexdigest() == expected.strip()
     except (OSError, UnicodeError, ValueError):
         return False
+
+
+def bundled_windows_helper() -> Path | None:
+    """Resolve only the matching, verified helper shipped inside this package.
+
+    No PATH, current-directory, or source-checkout fallback is permitted. This
+    only detects package integrity/architecture; it does not authorize execution.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        arch = windows_arch_from_platform(sysconfig.get_platform())
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    try:
+        directory = Path(__file__).resolve().parent / "native"
+        binary = directory / f"icode-sandbox-windows-{arch}.exe"
+        manifest = Path(str(binary) + ".sha256")
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+    return binary if verify_windows_helper(binary, manifest, expected_arch=arch) else None

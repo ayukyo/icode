@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+from pathlib import Path
 import unittest
+from unittest.mock import patch
 import icode.native_helper as native_helper
 
 from tests._support import temp_workspace
@@ -91,6 +93,42 @@ class TestWindowsNativeHelper(unittest.TestCase):
             second_link = root / "hardlink.exe"
             os.link(helper, second_link)
             self.assertFalse(verifier(helper, manifest, expected_arch="x64"))
+
+    def test_包内定位仅接受当前Windows架构的helper且不查PATH(self) -> None:
+        resolver = native_helper.bundled_windows_helper
+        with temp_workspace() as root:
+            package = root / "icode"
+            native = package / "native"
+            native.mkdir(parents=True)
+            helper = native / "icode-sandbox-windows-x64.exe"
+            manifest = Path(str(helper) + ".sha256")
+            image = self._synthetic_pe(0x8664)
+            helper.write_bytes(image)
+            manifest.write_text(hashlib.sha256(image).hexdigest() + "\n", encoding="ascii")
+            outsider = root / "attacker"
+            outsider.mkdir()
+            (outsider / helper.name).write_bytes(self._synthetic_pe(0xAA64))
+
+            with (
+                patch.object(native_helper, "__file__", str(package / "native_helper.py")),
+                patch.object(native_helper.sys, "platform", "win32"),
+                patch.object(
+                    native_helper.sysconfig, "get_platform", return_value="win-amd64",
+                ),
+                patch.dict(os.environ, {"PATH": str(outsider)}),
+            ):
+                self.assertEqual(resolver(), helper)
+                wrong_image = self._synthetic_pe(0xAA64)
+                helper.write_bytes(wrong_image)
+                manifest.write_text(
+                    hashlib.sha256(wrong_image).hexdigest() + "\n", encoding="ascii",
+                )
+                self.assertIsNone(resolver())
+                helper.unlink()
+                manifest.unlink()
+                (native / "icode-sandbox-windows-arm64.exe").write_bytes(wrong_image)
+                self.assertTrue((outsider / helper.name).is_file())
+                self.assertIsNone(resolver())
 
 
 if __name__ == "__main__":

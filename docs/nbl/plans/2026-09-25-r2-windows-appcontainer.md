@@ -352,3 +352,10 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
   4. **生产接线：**只有 helper 摘要、setup readiness、token/SID、ACL、WFP、Job 和清理均原生实测通过后，才接 `execute_policy_command` / `ToolContext`；任何 helper 缺失、版本错误、IPC 拒绝、设置未完成均返回稳定 unavailable，禁止裸执行。
   5. **原生验收：**干净 Windows 10 22H2 与当前 Windows 11 x64/arm64 实测写工作区成功、原仓/.git/凭据不可读写、DNS/TCP/UDP/IPv4/IPv6 与代理绕过被阻、仅代理授权可用、派生后代被 Job 清理；模拟 UAC 拒绝、helper 损坏、杀进程/断电 ACL/WFP 残留、重复 setup 与卸载。CI 或静态测试不能替代缺失的真实 Windows 安装证据。
 - **未决发布风险：**一次 UAC 提示来自未签名 helper 时可能显示未知发布者。开发阶段可先用 CI 原生双架构验证；对普通白领正式发布前须解决代码签名、SmartScreen、wheel provenance 与密钥保管，未解决不得宣传“一键无风险启用”。
+
+### 2026-09-26 UTC：Windows wheel 打包合同实现中
+
+- **切片范围：**已按原 R2.3 批准路线加上 Windows x64/ARM64 wheel tag、预构建 helper 暂存、PE 架构 + 邻接 SHA-256 检查、安装后只解析包内对应 helper，以及 wheel `WHEEL` / `RECORD` 检查。它只是分发基础设施，不包含 Windows sandbox backend、UAC setup、sandbox identity、WFP、ACL 或 command-runner；Windows 自动模式仍关闭。
+- **失败关闭：**构建时未提供 helper 时保留纯 Python wheel；提供了但架构/摘要错误时拒绝构建。安装期不走 PATH、当前目录或仓库源码兜底。wheel checker 使用临时合成 PE 覆盖标签/机器字段/摘要/RECORD；合成文件从不执行。相邻 SHA 与 RECORD 都不能证明发布者身份或构建 provenance。
+- **上游采纳：**按 Codex 固定提交 [`c7e80f87`](https://github.com/openai/codex/tree/c7e80f873f67dbef58206b9d4f3c60e9d556eb16) 的双架构 helper 构建/资源打包形态设计；用 [PyPA platform compatibility tags](https://packaging.python.org/en/latest/specifications/platform-compatibility-tags/) 区分 Windows 架构。没有复制上游代码或增加 runtime 依赖。签名、预期 signer、SmartScreen 和 attestation 暂缓至真实 helper / 发布主体就位。
+- **当前本地验证：**CPython 3.11 下 14 个 helper/wheel 定向测试通过；`scripts/preflight.py` 密钥扫描、子模块完整性、全量测试 3 道门均通过；`scripts/run_native_wheel_ci.py` 本机 x86_64 构建、wheel 检查、干净 venv 安装、helper 和 Git broker probes 均通过。新增 Windows x64/ARM64 Actions job 尚未回执。阶段退出还要求两个原生 runner 的纯 Python fallback 和 helper wheel 打包安装闭环通过；即使通过也只完成打包切片，不算 R2.3 或完整 R2 完成。
