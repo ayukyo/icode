@@ -266,3 +266,9 @@
 - **Git 官方行为：**[`git status`](https://git-scm.com/docs/git-status) 说明后台 index refresh 可产生写入；porcelain v2 的 `-z` 路径必须按原始字节和 NUL 解析；`--untracked-files=all` 会增加遍历成本。[`core.fsmonitor`](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corefsmonitor) 可启动 daemon/helper，Git 文档也说明 daemon 会有 IPC/socket 生命周期。故 ICODE 原型选择固定 `core.fsmonitor=false`、`GIT_OPTIONAL_LOCKS=0`、禁 hooks，并保留 OS 只读边界和超时/输出上限；不照搬 Codex 对已验证内置 daemon 的条件式放行。
 - **采纳：**当前 `ExecutionResult.raw_output` 保留执行器已捕获的原始 bytes，供严格 porcelain v2 parser 消费；文本 `output` 保持向后兼容。status 必须用固定二进制与 argv、清除 `GIT_*`、禁止 helper，并在超限时整体失败。
 - **暂缓：**不扫描/递归开放 submodule 状态；v2 `S<c><m><u>` 可能需要访问子模块仓库，当前 grant 尚不覆盖该链。识别到不支持的 submodule、外部 gitdir、身份漂移或 common-dir 关系时整次拒绝。此阶段仍无可调用 broker，不开放模型工具或自动模式。
+
+### 2026-09-25 UTC R2.4 Git worktree 身份重核实现
+
+- ICODE 新增纯内部 `verify_git_workspace_identity()`：沿用会话冻结的路径/revision/token，拒绝路径逃逸与 symlink，通过 `openat`/`O_NOFOLLOW` 读取 worktree `.git` 指针、`commondir`、`HEAD`、所有权 marker；7 个定向负/正例通过。它不执行 Git，也没有进入 `ToolContext`。
+- **边界仍未闭合：**当前只有文件内容与路径布局复核，没有在首次会话创建时固定 device/inode，也没有让 Landlock helper 比对预期 inode；真实目录并发替换的竞态仍未解决。因此这只是 revalidation 原语，不是执行 grant 或 Git broker；自动模式和 `git_broker_unavailable` 保持。
+- **下一步采纳/暂缓：**采纳身份字段在会话创建时捕获、并由原生 helper 在授予只读根时再次核对；在该链路通过后才实施固定 Git status。暂缓将函数直接接到 `run_command`，也暂缓允许 submodule 递归状态。完整边界与验证清单见 [R2.4 门禁计划](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。

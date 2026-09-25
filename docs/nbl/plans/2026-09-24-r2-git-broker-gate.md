@@ -68,6 +68,14 @@
 - 新增工作区回归验证创建与复用 session 身份一致，非分层和 snapshot 不会获得 Git 身份。全量工作区与自治 executor 定向测试 112 项通过。
 - **仍不是可执行 grant**：身份快照尚未传给 `ToolContext`，也没有每次调用前复核 `.git`/`commondir`/`HEAD`/身份标记；未启动 Git、未开放工具，`git_broker_unavailable` 保持。下一片为只读会话 recheck 与固定参数 Linux status 实验，失败时只返回 unavailable，不执行普通 Git。
 
+## 2026-09-25 Linux 会话身份重核原语
+
+- 新增内部 `git_broker.verify_git_workspace_identity()`，不执行 Git、不注册工具。它仅接受 `WorkspaceManager` 生成的 `GitWorkspaceIdentity`，校验所有路径为绝对规范路径、source 相对路径不逃逸、worktree gitdir 位于 common-dir 内，并用逐组件 `openat`/`O_NOFOLLOW` 检查 checkout、代码根、源码根、原仓顶层、gitdir、common-dir。`.git`、`commondir`、`HEAD` 与随机 marker 通过已打开目录 fd 安全读取并逐项匹配冻结 identity。
+- 正常布局返回 checkout code root、worktree gitdir/common-dir、源子目录与三个最小 metadata 候选根（`.git` 指针文件、gitdir、common-dir）。身份缺失、指针/HEAD/token 替换、symlink、路径逃逸和不支持的平台均 fail-closed；错误不包含真实路径或 marker。
+- TDD 验收先因新模块缺失而失败，补实现后 7 个 broker 测试通过；另与分层 workspace 回归联合执行 68 项通过，`compileall` 与 `git diff --check` 通过。当前环境未安装 Ruff，未声称通过 Ruff。
+- **阶段边界：仍不是 broker/grant。**结果尚未传入 `ToolContext`，未启动 Git、未对 directory device/inode 与 helper 打开动作作原子绑定，也未扩展 Landlock 接口校验这些预期身份。不能消除真实目录被并发替换的竞态；broker 接线、写入负例和模型入口均继续关闭。
+- 下一片需补目录/metadata 文件身份快照和 helper 侧 inode 对照，再实现有界的固定参数 Git status；对 submodule / 未支持的 common-dir 布局保持 unavailable。任何平台合同未通过前，不接自动执行路径。
+
 ### 独立格式审查修正（2026-09-25）
 
 - 上游 Git 回归用例确认 `git add --intent-to-add` 会产生合法 `.A` 状态；解析器现接受该组合，并以真实 Git CLI 输出回归。[Git 上游用例](https://github.com/git/git/blob/master/t/t7064-wtstatus-pv2.sh#L1934-L1953)
