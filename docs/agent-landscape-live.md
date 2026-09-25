@@ -184,6 +184,14 @@
 - **采纳方向：**进程所需只读 runtime roots 与 Agent 文件工具的授权范围分离；ICODE 当前只有 Linux Landlock helper 有独立 Python runtime roots，Windows AppContainer runner 尚未接入，需在确认依赖边界后设计。**暂缓：**默认递归授权整套 home/toolchain/package-manager 配置：会扩大读取面，并可能暴露 `.netrc`、`.pypirc` 凭据；递归 ACL 的耗时与回滚也需单独验收。不复制 Rust 代码。
 - 现有直读探针把所有 Actions notice 延迟到候选文件循环结束，早期断言会丢失已观测的首项结果。已改为每项完成后先发送固定字段 notice（标签、尺寸、结果类别、状态），再断言；不含实际路径、原始错误文本或文件内容，等待 CI #123 双架构验证。
 
+### 2026-09-25 UTC R2.3 CI #123：直读候选清单观测缺口
+
+- CI [#123 x64](https://github.com/ayukyo/icode/actions/runs/36085435118/job/107916150553) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36085435118/job/107916150560) 仍在 Python AppContainer 探针失败（`0xC0000135`）；对应组件 notice 仍显示 profile marker 缺失。R2.1 三平台、Python 3.11/3.12 和 R2.2 Linux/macOS 原生矩阵通过，但整轮 CI 失败。
+- #123 没有产生 Python runtime direct-read 的逐文件 notice。代码复核发现样本数量断言 `len(runtime_files) >= 4` 位于全部 notice 之前，因此不能判断是候选文件不足、运行时异常还是其它原因。下一轮会先只输出固定候选标签与可用数量，再保留原四样本门槛并发出逐文件脱敏回执；不降低验收要求、不输出源路径。
+- Windows SDK `ntstatus.h` 将 `0xC0000135` 定义为 `STATUS_DLL_NOT_FOUND`，这是 loader 依赖缺失的直接线索，但不定位具体 DLL 或 ACL 根因；微软[动态链接库搜索顺序](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order)说明 unpackaged 应用搜索多个目录，`PATH` 位于搜索序列末尾。ICODE 当前最小环境块的 `PATH` 只有解释器父目录和 System32，Python 可执行文件/动态库所在安装树尚未得到独立访问验证。
+- CPython [3.11 Windows 模块查找文档](https://docs.python.org/3.11/using/windows.html#finding-modules)及[3.12 对应文档](https://docs.python.org/3.12/using/windows.html#finding-modules)说明 `._pth`、`PYTHONHOME`、`pyvenv.cfg`、`Lib\\os.py`/`pythonXY.zip` 等影响模块搜索；这属于解释器进入后的模块/stdlib 路径，不能直接解释 Windows loader 的 `STATUS_DLL_NOT_FOUND`。Windows AppContainer [隔离文档](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation)说明文件能力依 ACL 授予，不能为排查而扩大成用户目录访问。
+- Harn v0.10.142 固定提交还会创建 profile `Temp` 目录（[源码行 395–420](https://github.com/burin-labs/harn/blob/8f9587982efa0d515230ee04ae4559fc60f1f394/crates/harn-vm/src/stdlib/sandbox/windows.rs#L395-L420)）；这只能作为隔离的目录准备 A/B 候选，不解释 `0xC0000135`，其环境块单测也不是原生 Python/AppContainer 验收。当前**优先**拿到直读 inventory 和具体 loader 依赖证据；**暂缓**`._pth`/`PYTHONHOME` 修改与 profile ACL 扩权，避免把模块搜索、临时目录和 DLL loader 混为同一根因。
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
 
 ### 2026-09-25 UTC R2.3 临时路径与环境块复核

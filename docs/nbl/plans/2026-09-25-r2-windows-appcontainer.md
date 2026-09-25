@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #122 x64/ARM64 删除前均确认 actual `LOCALAPPDATA` 唯一、与显式注入的 API 路径 alias 不相等、宿主 `stat=not_found`，且 actual 位于 API profile 下方的未知首层多层路径中；Python 仍以 `0xC0000135` 退出，当前不能认定两者存在因果关系。下一步优先取得运行时文件逐项直读回执，不再猜测路径名称；不记录路径、不使用宿主路径或放宽 ACL。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #123 x64/ARM64 仍观察到 Python `0xC0000135`、profile marker 缺失；#123 未出现运行时文件直读 notice。代码复核发现候选数量 `>=4` 断言早于所有直读 notice，现补固定标签/数量 inventory notice，下一轮确认候选清单是否满足门槛；未确认原因前不改 ACL、不创建 runtime/profile 路径、不开放自动模式。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -177,3 +177,10 @@ Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve
 - 补充观察（不加入固定 20 项热门名单）：Harn v0.10.142，固定源码提交 [`8f9587982efa0d515230ee04ae4559fc60f1f394`](https://github.com/burin-labs/harn/blob/8f9587982efa0d515230ee04ae4559fc60f1f394/crates/harn-vm/src/stdlib/sandbox/windows.rs)，采用每进程 AppContainer + Job，调用 `GetAppContainerFolderPath`，创建 `<profile>\\Temp`，并构造 `LOCALAPPDATA`/`TEMP`/`TMP` 覆盖；其进程沙箱还可按 preset/root 对只读工具链目录运行 `icacls` 授权。该提交自报 pre-1.0；本次核对到的环境测试验证的是环境块序列化，并非 Windows 原生 AppContainer 内启动 Python 的实测，因此不据此判定 Harn 已解决 ICODE 的环境观察。
 - 取舍：**采纳方向而不照抄实现**——将 child-process 运行时只读依赖与 Agent 自身文件工具可读范围分开审查；ICODE 当前仅 Linux Landlock helper 有独立 Python runtime roots，Windows AppContainer runner 尚未接入此类授权。**暂缓**默认递归开放完整 Python/toolchain/user roots：递归 ACL 有耗时与撤权风险，Harn 的 package-manager preset 文档还涵盖 `.netrc`/`.pypirc` 等凭据配置，不能隐式扩权。不得复制 Rust 代码或仅凭静态 env 测试宣称跨平台可用。
 - 另发现运行时文件直读探针把 notice 放在全部候选文件循环结束之后，任何早期断言都会丢掉该组逐文件观测。下一轮把无路径 notice 移到每个文件回执之后、断言之前；按单文件区分 `read_ok`、访问拒绝、路径/文件缺失等类别，随后再判断最小只读运行时授权实验。
+
+### 2026-09-25 UTC CI #123 直读探针复核
+
+- [CI #123 x64](https://github.com/ayukyo/icode/actions/runs/36085435118/job/107916150553) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36085435118/job/107916150560) 均在 AppContainer 综合测试步骤失败；脱敏 annotations 仍显示 Python `0xC0000135` 与 profile marker 缺失，未出现 runtime direct-read 单文件结果。其它平台阶段矩阵通过不改变 Windows 验收状态。
+- 复核发现 `len(runtime_files) >= 4` 的样本门槛在 notice 之前执行，因此 #123 未给出候选清单证据。增加候选/可用样本数及固定标签 notice，保留原四样本门槛；仍不输出路径，不把 DLL 状态码解释为具体依赖或 ACL 失败。
+- Windows SDK `ntstatus.h` 固定版本定义 `0xC0000135` 为 `STATUS_DLL_NOT_FOUND`（[SDK 源码](https://github.com/microsoft/win32metadata/blob/1bfb76db1c360653bdcb56512af0fdf987aceab8/generation/WinSDK/RecompiledIdlHeaders/shared/ntstatus.h#L4921-L4927)）；微软[DLL 搜索顺序](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order)显示直接或传递依赖搜索不等同于顶层 EXE 可执行路径。ICODE 最小环境 `PATH` 仅含 EXE 父目录和 System32，尚未验证完整 DLL 依赖闭包。CPython `._pth`/`PYTHONHOME`/`pyvenv.cfg` 影响解释器模块搜索（[3.11 文档](https://docs.python.org/3.11/using/windows.html#finding-modules)），但目前无进程已进入 Python 的证据，故暂缓改动这些设置。
+- Harn v0.10.142 固定源码在 profile 下创建 `Temp` 目录（[行 395–420](https://github.com/burin-labs/harn/blob/8f9587982efa0d515230ee04ae4559fc60f1f394/crates/harn-vm/src/stdlib/sandbox/windows.rs#L395-L420)），可作单变量目录准备 A/B，但这并不解释 DLL 状态码；先完成 inventory/direct-read 与依赖闭包证据，再考虑低风险可撤销实验，不继承完整宿主 `PATH` 或递归授权 runner/home。

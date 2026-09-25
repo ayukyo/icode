@@ -301,6 +301,10 @@ CI [#121](https://github.com/ayukyo/icode/actions/runs/36083440360) 的 Windows 
 
 CI [#122](https://github.com/ayukyo/icode/actions/runs/36083962877) 的 Windows x64 与 ARM64 均将 actual `LOCALAPPDATA` 归为 `api_child_other_nested`；宿主 `stat=not_found`、profile marker 缺失、Python 仍退出 `0xC0000135`。其它平台矩阵通过。profile 子目录进一步猜测的收益有限，下一轮改为每个 Python 运行时文件直读探针完成时立即输出脱敏 notice，避免末尾断言失败掩盖逐项证据；仍不放宽 ACL 或输出路径。Windows R2.3、完整 R2 与自动模式继续关闭。
 
+### 2026-09-25 UTC：CI #123 直读诊断缺口
+
+CI [#123](https://github.com/ayukyo/icode/actions/runs/36085435118) 的 Windows x64 与 ARM64 综合探针继续失败；两架构 Python 3.11 均退出 `0xC0000135`、profile marker 缺失，通用 Python 3.11/3.12、R2.1 三平台与 R2.2 Linux/macOS 子项通过。新增逐文件直读 notice 未出现；代码复核发现 `runtime_files` 四样本断言先于 notice，尚不能判断运行时文件候选是否足够。下一轮先输出固定标签与候选数，再保留四样本门槛并输出逐项结果，不输出路径、不扩大 ACL。Windows SDK 将该状态码定义为 [`STATUS_DLL_NOT_FOUND`](https://github.com/microsoft/win32metadata/blob/1bfb76db1c360653bdcb56512af0fdf987aceab8/generation/WinSDK/RecompiledIdlHeaders/shared/ntstatus.h#L4921-L4927)，这提示先验证 loader 依赖闭包，但还不能定位具体 DLL 或访问拒绝；Python `sys.path`、`._pth`、`PYTHONHOME` 等模块搜索配置也不能直接解释 Windows loader 状态码。Windows R2.3、完整 R2 与自动模式继续关闭。
+
 设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
 [R2.0 policy contract 实施计划](./nbl/plans/2026-09-23-r2-policy-contract.md) ·
 [R2.1 工作区与租约实施计划](./nbl/plans/2026-09-23-r2-workspace-lease.md) ·

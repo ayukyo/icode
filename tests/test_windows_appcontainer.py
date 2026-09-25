@@ -1017,6 +1017,18 @@ class TestWindowsAppContainer(unittest.TestCase):
             ("stdlib_archive", executable.parent / f"python{version}.zip"),
         ]
         runtime_files = [(label, path) for label, path in candidates if path.is_file()]
+        self._workflow_notice(
+            "Python runtime direct-read inventory",
+            json.dumps(
+                {
+                    "candidate_count": len(candidates),
+                    "available_count": len(runtime_files),
+                    "available_labels": [label for label, _ in runtime_files],
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ),
+        )
         self.assertGreaterEqual(
             len(runtime_files), 4,
             "Windows CI runtime layout changed; direct-read diagnostic lacks enough samples",
