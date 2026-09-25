@@ -51,6 +51,120 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(windows_appcontainer._reparse_kind(symlink), "symbolic_link")
         self.assertEqual(windows_appcontainer._reparse_kind(unknown), "other_reparse")
 
+    def test_reparse目标关系诊断只返回固定路径关系类别(self) -> None:
+        self.assertEqual(
+            windows_appcontainer._classify_runtime_link_target(
+                "python311.exe", r"C:\hostedtoolcache\windows\Python\3.11\x64",
+                r"C:\hostedtoolcache\windows\Python\3.11\x64", windows=True,
+            ),
+            "inside_root",
+        )
+        self.assertEqual(
+            windows_appcontainer._classify_runtime_link_target(
+                r"..\outside\python311.exe",
+                r"C:\hostedtoolcache\windows\Python\3.11\x64",
+                r"C:\hostedtoolcache\windows\Python\3.11\x64", windows=True,
+            ),
+            "outside_root",
+        )
+        self.assertEqual(
+            windows_appcontainer._classify_runtime_link_target(
+                r"\\build-share\python\python.exe",
+                r"C:\hostedtoolcache\windows\Python\3.11\x64",
+                r"C:\hostedtoolcache\windows\Python\3.11\x64", windows=True,
+            ),
+            "outside_root",
+        )
+        self.assertEqual(
+            windows_appcontainer._classify_runtime_link_target(
+                r"\??\Volume{1234}\python.exe",
+                r"C:\hostedtoolcache\windows\Python\3.11\x64",
+                r"C:\hostedtoolcache\windows\Python\3.11\x64", windows=True,
+            ),
+            "unknown",
+        )
+        self.assertEqual(
+            windows_appcontainer._classify_runtime_link_target(
+                r"\\?\C:\hostedtoolcache\windows\Python\3.11\x64\python311.exe",
+                r"C:\hostedtoolcache\windows\Python\3.11\x64",
+                r"C:\hostedtoolcache\windows\Python\3.11\x64", windows=True,
+            ),
+            "inside_root",
+        )
+
+    def test_runtime重解析清点不跟随链接且不输出目标(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-reparse-inventory-") as raw:
+            parent = Path(raw)
+            runtime = parent / "python"
+            runtime.mkdir()
+            workspace = parent / "task"
+            workspace.mkdir()
+            internal_target = runtime / "python-real.exe"
+            internal_target.write_bytes(b"inside")
+            external_target = parent / "outside.exe"
+            external_target.write_bytes(b"outside")
+            external_directory = parent / "outside-runtime"
+            external_directory.mkdir()
+            (external_directory / "sentinel.exe").write_bytes(b"outside")
+            links = (
+                runtime / "python.exe", runtime / "helper.exe",
+                runtime / "vendor",
+            )
+            try:
+                links[0].symlink_to(internal_target)
+                links[1].symlink_to(external_target)
+                links[2].symlink_to(external_directory, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"文件系统不支持符号链接清点测试：{exc}")
+
+            summary = windows_appcontainer._runtime_reparse_inventory(runtime)
+
+        self.assertEqual(summary["entries"], 4)
+        self.assertEqual(summary["symbolic_link"], 3)
+        self.assertEqual(summary["link_target_inside_root"], 1)
+        self.assertEqual(summary["link_target_outside_root"], 2)
+        self.assertEqual(summary["link_target_unknown"], 0)
+        self.assertNotIn(str(parent), repr(summary))
+
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-reparse-inventory-limit-") as raw:
+            root = Path(raw)
+            (root / "first").write_text("1", encoding="utf-8")
+            (root / "second").write_text("2", encoding="utf-8")
+            with self.assertRaises(_AppContainerSetupError):
+                windows_appcontainer._runtime_reparse_inventory(root, max_entries=1)
+            with self.assertRaises(_AppContainerSetupError):
+                windows_appcontainer._runtime_reparse_inventory(
+                    root, deadline=time.monotonic() - 1,
+                )
+
+    @unittest.skipUnless(
+        sys.platform == "win32"
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_OS") == "Windows"
+        and os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_REPARSE_INVENTORY") == "true",
+        "运行时 reparse 清点只在单独启用的 Windows Actions 诊断步骤执行",
+    )
+    def test_诊断Python运行时重解析目标关系(self) -> None:
+        roots = tuple(dict.fromkeys((Path(sys.prefix), Path(sys.base_prefix))))
+        summary = {
+            "root_count": len(roots),
+            "entries": 0,
+            "symbolic_link": 0,
+            "mount_point": 0,
+            "other_reparse": 0,
+            "link_target_inside_root": 0,
+            "link_target_outside_root": 0,
+            "link_target_unknown": 0,
+        }
+        for root in roots:
+            observed = windows_appcontainer._runtime_reparse_inventory(root)
+            for name, count in observed.items():
+                summary[name] += count
+        self._workflow_notice(
+            "Python runtime reparse inventory (path-free lexical relation)",
+            json.dumps(summary, ensure_ascii=True, separators=(",", ":")),
+        )
+
     def test_runtime根在触碰文件系统前识别UNC路径(self) -> None:
         self.assertTrue(
             windows_appcontainer._is_unc_runtime_root(

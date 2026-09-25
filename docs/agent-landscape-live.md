@@ -224,7 +224,7 @@
 ### 2026-09-25 UTC R2.3 CI #129：两架构均识别为 symbolic link
 
 - [windows-latest x64](https://github.com/ayukyo/icode/actions/runs/36092603966/job/107937999811) 与 [windows-11-arm](https://github.com/ayukyo/icode/actions/runs/36092603966/job/107937999747) 的 runtime ACL 差分均在任何授权前以 `symbolic_link` 拒绝；候选未启动、清理为真、未改变 Python runtime DACL。原始 AppContainer Python 仍 `0xC0000135`，Python EXE、共享库与标准库文件的直接读取探针仍为 `access_denied`。此结论不识别具体链接名称、目标是否位于 runtime 根内，也不证明 ACL 是 `0xC0000135` 的唯一原因。
-- **暂缓**通用 symbolic-link 放行。下一实验限定在 CI 自建临时树：只创建临时目标与链接，观察实际安全 API 的 link/target/后代差异，并验证所有状态可恢复；不得触碰 hosted Python/toolcache。即便该实验通过，也需另行证明 runner 上实际 runtime link 的目标身份并复验完整 Python 启动、只读、工作区、断网和恢复门禁。
+- **暂缓**通用 symbolic-link 放行。下一轮先由 CI 清点链接数量，并仅用 `readlink` 文本做不跟随的词法关系分类（根内/根外/未知），绝不回执链接名、原始 target 或路径；根外与未知均保留拒绝，根内也只够决定是否开展下一项隔离实验。只有继续推进时，才在 CI 自建临时树观察实际安全 API 的 link/target/后代差异并验证状态恢复；不得触碰 hosted Python/toolcache。即便临时实验通过，也需另行证明 runner 上实际 runtime link 的目标身份并复验完整 Python 启动、只读、工作区、断网和恢复门禁。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
 

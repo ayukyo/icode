@@ -213,4 +213,4 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 ### 2026-09-25 UTC CI #129：两架构具体类别为 symbolic_link
 
 - [Windows x64](https://github.com/ayukyo/icode/actions/runs/36092603966/job/107937999811) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36092603966/job/107937999747) 都在 ACL 预检阶段报告 `symbolic_link`，候选未启动，清理为真且无 runtime DACL 变更；完整 AppContainer Python 仍退出 `0xC0000135`，已抽样的 runtime 文件仍不能从容器读取。
-- #129 没有泄露 offending path 或 target，因此不能称它为 `python.exe` 链接，也不能判断 target 是否在授权根内。暂不放行；下一阶段用一次性临时树实测 link/target/后代安全描述符传播和恢复，实验通过也不自动改变 hosted runtime 预检策略。
+- #129 没有泄露 offending path 或 target，因此不能称它为 `python.exe` 链接，也不能判断 target 是否在 runtime 根内。暂不放行；下一 CI 仅用 `readlink` 文本做词法目标关系计数（根内/根外/未知），不跟随链接、不泄露名称/路径、不改 ACL。仅当出现根内链接时，才考虑进一步用一次性临时树实测 link/target/后代安全描述符传播和恢复；实验通过也不自动改变 hosted runtime 预检策略。

@@ -262,6 +262,144 @@ def _reparse_kind(info: os.stat_result) -> str:
     return "other_reparse"
 
 
+def _classify_runtime_link_target(
+    raw_target: str, link_parent: str | os.PathLike[str],
+    runtime_root: str | os.PathLike[str], *, windows: bool | None = None,
+) -> str:
+    """Classify a link target lexically without opening or following it."""
+    if not raw_target:
+        return "unknown"
+    if windows is None:
+        windows = os.name == "nt"
+
+    if windows:
+        target = raw_target
+        if target.startswith("\\\\?\\UNC\\"):
+            target = "\\\\" + target[8:]
+        elif target.startswith("\\\\?\\"):
+            target = target[4:]
+        if target.startswith(("\\??\\", "\\Device\\", "\\\\.\\")):
+            return "unknown"
+        target_drive, _target_tail = ntpath.splitdrive(target)
+        if target_drive.startswith("\\\\"):
+            return "outside_root"
+        if not ntpath.isabs(target):
+            if target_drive:
+                return "unknown"
+            target = ntpath.join(os.fspath(link_parent), target)
+        if not ntpath.isabs(target):
+            return "unknown"
+
+        root = os.fspath(runtime_root)
+        if root.startswith("\\\\?\\"):
+            root = root[4:]
+        root_drive, _root_tail = ntpath.splitdrive(root)
+        if not root_drive or root_drive.startswith("\\\\"):
+            return "unknown"
+        target = ntpath.normcase(ntpath.normpath(target))
+        root = ntpath.normcase(ntpath.normpath(root))
+        try:
+            common = ntpath.commonpath((root, target))
+        except ValueError:
+            return "outside_root"
+        return "inside_root" if common == root else "outside_root"
+
+    target_path = Path(raw_target)
+    if not target_path.is_absolute():
+        target_path = Path(link_parent) / target_path
+    target = os.path.normcase(os.path.abspath(os.path.normpath(str(target_path))))
+    root = os.path.normcase(os.path.abspath(os.path.normpath(os.fspath(runtime_root))))
+    try:
+        common = os.path.commonpath((root, target))
+    except ValueError:
+        return "outside_root"
+    return "inside_root" if common == root else "outside_root"
+
+
+def _runtime_reparse_inventory(
+    root: str | os.PathLike[str], *, max_entries: int = _MAX_RUNTIME_ACL_OBJECTS,
+    deadline: float | None = None,
+) -> dict[str, int]:
+    """Count reparse categories and lexical target relations without following links."""
+    root_path = Path(root)
+    if not root_path.is_absolute() or max_entries < 1:
+        raise _AppContainerSetupError(
+            "runtime_reparse_inventory_failed", "runtime reparse inventory input is invalid",
+        )
+    if deadline is None:
+        deadline = time.monotonic() + _MAX_RUNTIME_ACL_SNAPSHOT_SECONDS
+    try:
+        root_info = root_path.lstat()
+        if not stat.S_ISDIR(root_info.st_mode) or _is_reparse(root_info):
+            raise _AppContainerSetupError(
+                "runtime_reparse_inventory_failed", "runtime root is not a regular directory",
+            )
+        root_comparison = Path(os.path.abspath(os.fspath(root_path)))
+        for component in reversed(root_path.parents):
+            if _is_reparse(component.lstat()):
+                raise _AppContainerSetupError(
+                    "runtime_reparse_inventory_failed", "runtime root path contains a reparse point",
+                )
+    except _AppContainerSetupError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise _AppContainerSetupError(
+            "runtime_reparse_inventory_failed", "runtime root cannot be inspected safely",
+        ) from exc
+
+    summary = {
+        "entries": 0,
+        "symbolic_link": 0,
+        "mount_point": 0,
+        "other_reparse": 0,
+        "link_target_inside_root": 0,
+        "link_target_outside_root": 0,
+        "link_target_unknown": 0,
+    }
+    pending = [root_path]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as children:
+                for child in children:
+                    summary["entries"] += 1
+                    if summary["entries"] > max_entries:
+                        raise _AppContainerSetupError(
+                            "runtime_reparse_inventory_too_large",
+                            "runtime reparse inventory exceeds object limit",
+                        )
+                    if time.monotonic() > deadline:
+                        raise _AppContainerSetupError(
+                            "runtime_reparse_inventory_too_slow",
+                            "runtime reparse inventory exceeded time limit",
+                        )
+                    info = child.stat(follow_symlinks=False)
+                    if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
+                        kind = _reparse_kind(info)
+                        summary[kind] += 1
+                        if kind == "symbolic_link":
+                            try:
+                                raw_target = os.readlink(child.path)
+                            except (OSError, ValueError):
+                                relation = "unknown"
+                            else:
+                                relation = _classify_runtime_link_target(
+                                    raw_target, directory, root_comparison,
+                                )
+                            summary[f"link_target_{relation}"] += 1
+                        continue
+                    if stat.S_ISDIR(info.st_mode):
+                        pending.append(Path(child.path))
+        except _AppContainerSetupError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise _AppContainerSetupError(
+                "runtime_reparse_inventory_failed",
+                "runtime reparse inventory could not inspect an entry",
+            ) from exc
+    return summary
+
+
 def _is_unc_runtime_root(raw_root: str | os.PathLike[str], *, windows: bool | None = None) -> bool:
     """Recognize Windows UNC roots lexically, before touching the share."""
     if windows is None:
