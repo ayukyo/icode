@@ -32,6 +32,7 @@ _TOKEN_QUERY = 0x0008
 _TOKEN_ASSIGN_PRIMARY = 0x0001
 _TOKEN_ADJUST_DEFAULT = 0x0080
 _TOKEN_ADJUST_PRIVILEGES = 0x0020
+_SECURITY_IMPERSONATION = 2
 _DISABLE_MAX_PRIVILEGE = 0x0001
 _LUA_TOKEN = 0x0004
 _WRITE_RESTRICTED = 0x0008
@@ -274,6 +275,10 @@ def _runner_probe(report_path: Path) -> str:
     advapi.CreateRestrictedToken.restype = wintypes.BOOL
     advapi.IsTokenRestricted.argtypes = [wintypes.HANDLE]
     advapi.IsTokenRestricted.restype = wintypes.BOOL
+    advapi.DuplicateToken.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.POINTER(wintypes.HANDLE),
+    ]
+    advapi.DuplicateToken.restype = wintypes.BOOL
     advapi.CreateProcessAsUserW.argtypes = [
         wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPWSTR,
         ctypes.c_void_p, ctypes.c_void_p, wintypes.BOOL, wintypes.DWORD,
@@ -293,6 +298,7 @@ def _runner_probe(report_path: Path) -> str:
 
     restricted_token = wintypes.HANDLE()
     child_token = wintypes.HANDLE()
+    membership_token = wintypes.HANDLE()
     job = wintypes.HANDLE()
     process = _PROCESS_INFORMATION()
     assigned_to_job = False
@@ -386,14 +392,22 @@ def _runner_probe(report_path: Path) -> str:
             raise _winerror("assign_process_to_job")
         assigned_to_job = True
         if not advapi.OpenProcessToken(
-            process.hProcess, _TOKEN_QUERY, ctypes.byref(child_token),
+            process.hProcess, _TOKEN_QUERY | _TOKEN_DUPLICATE,
+            ctypes.byref(child_token),
         ):
             raise _winerror("open_child_token")
         if not advapi.IsTokenRestricted(child_token):
             raise RuntimeError("child_token_not_restricted")
+        # CheckTokenMembership requires an impersonation token when a handle
+        # is supplied; the process token above is primary, so duplicate it.
+        if not advapi.DuplicateToken(
+            child_token, _SECURITY_IMPERSONATION,
+            ctypes.byref(membership_token),
+        ):
+            raise _winerror("duplicate_child_token_for_membership")
         child_is_admin = wintypes.BOOL()
         if not advapi.CheckTokenMembership(
-            child_token, admin_sid_buffer, ctypes.byref(child_is_admin),
+            membership_token, admin_sid_buffer, ctypes.byref(child_is_admin),
         ):
             raise _winerror("check_child_admin_membership")
         if child_is_admin.value:
@@ -435,6 +449,8 @@ def _runner_probe(report_path: Path) -> str:
             raise RuntimeError(f"restricted_child_exit={exit_code.value}")
         return _RUNNER_SUCCESS_RESULT
     finally:
+        if membership_token:
+            kernel.CloseHandle(membership_token)
         if child_token:
             kernel.CloseHandle(child_token)
         if process.hProcess:
