@@ -201,9 +201,15 @@
 ### 2026-09-25 UTC R2.3 CI #125：Python runtime 最小只读授权候选
 
 - [CI #125 x64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/107921726078) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/107921726100) 的独立 AppContainer 直读探针都执行完成。inventory 为 6 个候选、5 个可用；两架构的 System32 控制可读，Python EXE、Python 共享库、`pathlib.py` 和 `encodings/__init__.py` 均报告 `access_denied`。完整 Python 仍以 `0xC0000135` 退出。逐项通知不含源路径，并显示清理成功。
-- **采纳进入下一步验证：**把子进程 Python runtime 的只读执行依赖，与 Agent 文件工具可读范围分开设计；只针对经过边界校验的 runtime roots 做原生双架构 A/B，检查读取/执行放行、写入拒绝、DACL 精确恢复和 AppContainer SID 无残留。
+- **采纳进入下一步验证：**把子进程 Python runtime 的只读执行依赖，与 Agent 文件工具可读范围分开设计；先只在临时 GitHub Windows runner 上验证经过边界校验的 runtime roots，不接入生产执行器。
 - **暂缓：**直接授权整个 home、PATH 中所有目录或完整工具链 preset。CI 直读拒绝是文件读取证据，不是 DLL loader 完整依赖因果证明；尚无 DACL A/B 结果。Harn v0.10.142 的 roots/preset ACL 仍仅作架构参考，其测试没有提供该 Windows 原生 Python/AppContainer 证据。
 - 验收前置：拒绝 UNC、卷根、用户凭据目录、与写入工作区重叠、reparse point/hardlink 或 DACL 无法精确快照的根；任何授权/恢复失败均中止命令并保留 fail-closed。即使逐文件读取转为成功，也不能单独宣称 `0xC0000135` 已修复或 Windows R2.3 已通过。
+
+### 2026-09-25 UTC R2.3 CI-only runtime ACL 差分实现
+
+- 诊断开关仅接受 GitHub-hosted Windows runner 上的当前 `sys.executable`，作用范围为 `sys.prefix` / `sys.base_prefix`，拒绝 UNC、卷根、系统目录、用户目录覆盖、工作区重叠、重解析点、硬链接、null/protected/defaulted DACL；扫描最多 100,000 个对象且不超过 30 秒。生产 runner、自动模式和 `policy_contract_ready` 均未接入。
+- 变更前逐对象保存 DACL bytes、descriptor control/revision、DACL present/defaulted 状态和文件身份；仅给当次随机 Package SID 增加可继承 read/execute ACE，不授写。恢复后复扫整树，逐对象精确比较并检查 SID 残留；不能恢复/验证即 `cleanup_failed`。这仍是临时 CI 实验，不承诺与并发安装器事务隔离。
+- 微软说明可继承 ACE 会传播到子对象，且安全描述符更新存在自动传播规则（[ACE inheritance](https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-inheritance-rules)、[automatic propagation](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)、[`SetNamedSecurityInfoW` remarks](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setnamedsecurityinfow#remarks)）。所以恢复根 DACL 后仍必须验证每个已有对象的原始状态；SID 消失不等于已精确恢复。下一步由双架构 CI 决定这条方案能否继续，任何一架构失败或精确恢复不通过即停止 ACL 路线，不开放 Windows 自动模式。
 
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
 

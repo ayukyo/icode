@@ -10,6 +10,7 @@ import json
 import ntpath
 import os
 from pathlib import Path
+import socket
 import stat
 import subprocess
 import sys
@@ -21,6 +22,7 @@ import unittest
 from unittest import mock
 from urllib.parse import urlsplit
 
+import icode.windows_appcontainer as windows_appcontainer
 from icode.windows_appcontainer import (
     _AppContainerSetupError,
     _delete_appcontainer_profile,
@@ -36,6 +38,43 @@ from icode.windows_job import (
 
 
 class TestWindowsAppContainer(unittest.TestCase):
+    def test_runtime根在触碰文件系统前识别UNC路径(self) -> None:
+        self.assertTrue(
+            windows_appcontainer._is_unc_runtime_root(
+                r"\\build-share\python\3.12", windows=True,
+            ),
+        )
+        self.assertTrue(
+            windows_appcontainer._is_unc_runtime_root(
+                "//build-share/python/3.12", windows=True,
+            ),
+        )
+        self.assertFalse(
+            windows_appcontainer._is_unc_runtime_root(
+                r"C:\hostedtoolcache\Python\3.12", windows=True,
+            ),
+        )
+        self.assertFalse(
+            windows_appcontainer._is_unc_runtime_root(
+                r"\\build-share\python\3.12", windows=False,
+            ),
+        )
+
+    def test_workspace_DACL读取不要求运行时快照对象标识(self) -> None:
+        snapshot = windows_appcontainer._DaclSnapshot(
+            path=Path("runtime"), dacl=b"dacl", control=0, revision=1,
+            present=True, defaulted=False, file_identity=(1, 0),
+        )
+        with mock.patch.object(
+            windows_appcontainer, "_read_dacl_state", return_value=snapshot,
+        ) as read_state:
+            dacl, protected = windows_appcontainer._read_dacl(
+                Path("runtime"), object(), object(),
+            )
+        self.assertEqual(dacl, b"dacl")
+        self.assertFalse(protected)
+        self.assertEqual(read_state.call_args.args[0], Path("runtime"))
+
     def _workflow_notice(self, name: str, detail: str) -> None:
         """Expose only bounded probe outcomes in public Actions annotations."""
         if os.environ.get("GITHUB_ACTIONS") != "true":
@@ -254,6 +293,216 @@ class TestWindowsAppContainer(unittest.TestCase):
             with self.assertRaises(_AppContainerSetupError):
                 _walk_workspace(workspace)
 
+    def test_runtime_ACL目录扫描支持对象数和时限上限(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-tree-limit-") as raw:
+            root = Path(raw)
+            (root / "python.dll").write_bytes(b"runtime")
+            with self.assertRaises(_AppContainerSetupError):
+                windows_appcontainer._walk_workspace(root, max_entries=1)
+            with self.assertRaises(_AppContainerSetupError):
+                windows_appcontainer._walk_workspace(
+                    root, deadline=time.monotonic() - 1,
+                )
+
+    def test_runtime根校验去重并拒绝覆盖工作区的目录(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-roots-") as raw:
+            parent = Path(raw)
+            runtime = parent / "python"
+            runtime.mkdir()
+            workspace = parent / "task"
+            workspace.mkdir()
+
+            roots = windows_appcontainer._validate_runtime_roots(
+                (runtime, runtime.resolve()), workspace=workspace,
+            )
+
+            self.assertEqual(roots, (runtime.resolve(),))
+            with self.assertRaises(_AppContainerSetupError):
+                windows_appcontainer._validate_runtime_roots(
+                    (parent,), workspace=workspace,
+                )
+
+    def test_runtime根校验拒绝嵌套授权根和用户目录根(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-roots-overlap-") as raw:
+            parent = Path(raw)
+            runtime = parent / "python"
+            nested = runtime / "Lib"
+            nested.mkdir(parents=True)
+            workspace = parent / "task"
+            workspace.mkdir()
+
+            with self.assertRaises(_AppContainerSetupError):
+                windows_appcontainer._validate_runtime_roots(
+                    (runtime, nested), workspace=workspace,
+                )
+            with self.assertRaises(_AppContainerSetupError):
+                windows_appcontainer._validate_runtime_roots(
+                    (Path.home(),), workspace=workspace,
+                )
+
+    def test_runtime根校验拒绝指向外部目录的符号链接(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-root-link-") as raw:
+            parent = Path(raw)
+            actual = parent / "python"
+            actual.mkdir()
+            workspace = parent / "task"
+            workspace.mkdir()
+            link = parent / "python-alias"
+            try:
+                link.symlink_to(actual, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"文件系统不支持符号链接测试：{exc}")
+
+            with self.assertRaises(_AppContainerSetupError):
+                windows_appcontainer._validate_runtime_roots(
+                    (link,), workspace=workspace,
+                )
+
+    def test_runtime_ACL快照枚举完整树并拒绝受保护DACL(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-snapshot-") as raw:
+            parent = Path(raw)
+            runtime = parent / "python"
+            runtime.mkdir()
+            sample = runtime / "python.dll"
+            sample.write_bytes(b"runtime")
+            workspace = parent / "task"
+            workspace.mkdir()
+
+            def read_state(path: Path, _advapi: object, _kernel: object):
+                info = path.lstat()
+                return windows_appcontainer._DaclSnapshot(
+                    path=path, dacl=b"original-dacl", control=0, revision=1,
+                    present=True, defaulted=False,
+                    file_identity=(int(info.st_dev), int(info.st_ino)),
+                )
+
+            with mock.patch.object(
+                windows_appcontainer, "_read_dacl_state", side_effect=read_state,
+            ):
+                snapshot = windows_appcontainer._snapshot_runtime_acl_roots(
+                    (runtime,), workspace=workspace, advapi=object(), kernel=object(),
+                )
+            self.assertEqual(
+                {item.path for item in snapshot.entries}, {runtime, sample},
+            )
+
+            def read_protected_state(path: Path, _advapi: object, _kernel: object):
+                state = read_state(path, _advapi, _kernel)
+                if path == sample:
+                    return windows_appcontainer._DaclSnapshot(
+                        path=path, dacl=state.dacl,
+                        control=windows_appcontainer._SE_DACL_PROTECTED, revision=1,
+                        present=True, defaulted=False,
+                        file_identity=state.file_identity,
+                    )
+                return state
+
+            with mock.patch.object(
+                windows_appcontainer, "_read_dacl_state", side_effect=read_protected_state,
+            ), self.assertRaises(_AppContainerSetupError):
+                windows_appcontainer._snapshot_runtime_acl_roots(
+                    (runtime,), workspace=workspace, advapi=object(), kernel=object(),
+                )
+
+    def test_runtime_ACL逐根只授读取执行且先记录待恢复根(self) -> None:
+        import ctypes
+
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-apply-") as raw:
+            parent = Path(raw)
+            first = parent / "python-a"
+            second = parent / "python-b"
+            first.mkdir()
+            second.mkdir()
+            workspace = parent / "task"
+            workspace.mkdir()
+
+            def read_state(path: Path, _advapi: object, _kernel: object):
+                info = path.lstat()
+                return windows_appcontainer._DaclSnapshot(
+                    path=path, dacl=b"original-dacl", control=0, revision=1,
+                    present=True, defaulted=False,
+                    file_identity=(int(info.st_dev), int(info.st_ino)),
+                )
+
+            with mock.patch.object(
+                windows_appcontainer, "_read_dacl_state", side_effect=read_state,
+            ):
+                transaction = windows_appcontainer._snapshot_runtime_acl_roots(
+                    (first, second), workspace=workspace,
+                    advapi=object(), kernel=object(),
+                )
+
+            calls: list[tuple[Path, int]] = []
+
+            def apply(root: Path, _sid: object, access: int, *_apis: object) -> None:
+                calls.append((root, access))
+                if root == second:
+                    raise _AppContainerSetupError("runtime_acl_failed", "injected failure")
+
+            with mock.patch.object(
+                windows_appcontainer, "_read_dacl_state", side_effect=read_state,
+            ), mock.patch.object(
+                windows_appcontainer, "_contains_sid", return_value=False,
+            ), mock.patch.object(
+                windows_appcontainer, "_add_runtime_acl", side_effect=apply,
+            ), self.assertRaises(_AppContainerSetupError):
+                windows_appcontainer._grant_runtime_acl_roots(
+                    transaction, ctypes.c_void_p(123),
+                )
+
+            expected_access = (
+                windows_appcontainer._FILE_GENERIC_READ
+                | windows_appcontainer._FILE_GENERIC_EXECUTE
+            )
+            self.assertEqual(calls, [(first, expected_access), (second, expected_access)])
+            self.assertEqual(transaction.modified_roots, [first, second])
+
+    def test_runtime_ACL恢复按逆序执行并要求全树状态精确匹配(self) -> None:
+        import ctypes
+
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-restore-") as raw:
+            parent = Path(raw)
+            first = parent / "python-a"
+            second = parent / "python-b"
+            first.mkdir()
+            second.mkdir()
+            workspace = parent / "task"
+            workspace.mkdir()
+
+            def read_state(path: Path, _advapi: object, _kernel: object):
+                info = path.lstat()
+                return windows_appcontainer._DaclSnapshot(
+                    path=path, dacl=b"original-dacl", control=0, revision=1,
+                    present=True, defaulted=False,
+                    file_identity=(int(info.st_dev), int(info.st_ino)),
+                )
+
+            with mock.patch.object(
+                windows_appcontainer, "_read_dacl_state", side_effect=read_state,
+            ):
+                transaction = windows_appcontainer._snapshot_runtime_acl_roots(
+                    (first, second), workspace=workspace,
+                    advapi=object(), kernel=object(),
+                )
+            transaction.modified_roots[:] = [first, second]
+            restored: list[Path] = []
+
+            with mock.patch.object(
+                windows_appcontainer, "_set_dacl",
+                side_effect=lambda path, *_args: restored.append(path),
+            ), mock.patch.object(
+                windows_appcontainer, "_read_dacl_state", side_effect=read_state,
+            ), mock.patch.object(
+                windows_appcontainer, "_contains_sid", return_value=False,
+            ):
+                result = windows_appcontainer._restore_runtime_acl_roots(
+                    transaction, ctypes.c_void_p(123),
+                )
+
+            self.assertTrue(result)
+            self.assertEqual(restored, [second, first])
+            self.assertEqual(transaction.modified_roots, [])
+
     def test_非_windows平台明确拒绝(self) -> None:
         if sys.platform == "win32":
             self.skipTest("仅用于验证非 Windows 拒绝路径")
@@ -279,6 +528,71 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertFalse(result.executed)
         self.assertEqual(result.error, "invalid_diagnostic_probe")
         load_api.assert_not_called()
+
+    def test_runtime_ACL诊断在GitHubActions以外被拒绝(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-gate-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):
+            result = run_windows_appcontainer(
+                [sys.executable, "-c", "pass"], cwd=raw, timeout_seconds=2,
+                _diagnostic_runtime_acl=True,
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+        self.assertFalse(result.cleanup_ok)
+
+    def test_runtime_ACL诊断在主进程前授权并在退出后恢复(self) -> None:
+        apis = self._mock_profile_apis()
+        transaction = windows_appcontainer._RuntimeAclTransaction(
+            roots=(Path("C:/runtime"),), entries=(),
+            advapi=apis["advapi32"], kernel=apis["kernel32"],
+            snapshot_duration_ms=1,
+        )
+        job_result = WindowsJobResult(True, 0, None, True, "")
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-flow-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows"}), \
+             mock.patch(
+                 "icode.windows_appcontainer.ctypes.WinDLL",
+                 create=True,
+                 side_effect=lambda name, **_kwargs: apis[name],
+             ), \
+             mock.patch(
+                 "icode.windows_appcontainer._grant_workspace_acl",
+                 return_value=(b"workspace-dacl", apis["advapi32"], apis["kernel32"]),
+             ), \
+             mock.patch(
+                 "icode.windows_appcontainer._get_appcontainer_localappdata_path",
+                 return_value=r"C:\runner\profile\AC",
+             ), \
+             mock.patch(
+                 "icode.windows_appcontainer._snapshot_runtime_acl_roots",
+                 return_value=transaction,
+             ) as snapshot, \
+             mock.patch("icode.windows_appcontainer._grant_runtime_acl_roots") as grant, \
+             mock.patch(
+                 "icode.windows_appcontainer._restore_runtime_acl_roots", return_value=True,
+             ) as restore_runtime, \
+             mock.patch(
+                 "icode.windows_appcontainer._restore_workspace_acl", return_value=True,
+             ), mock.patch(
+                 "icode.windows_appcontainer.run_windows_job", return_value=job_result,
+             ) as run_job:
+            result = run_windows_appcontainer(
+                [sys.executable, "-c", "pass"], cwd=raw, timeout_seconds=2,
+                _diagnostic_runtime_acl=True,
+            )
+
+        self.assertTrue(result.executed, result)
+        self.assertTrue(result.cleanup_ok, result)
+        snapshot.assert_called_once()
+        self.assertEqual(
+            snapshot.call_args.args[0], (Path(sys.prefix), Path(sys.base_prefix)),
+        )
+        grant.assert_called_once_with(transaction, apis["advapi32"].FreeSid.call_args.args[0])
+        restore_runtime.assert_called_once()
+        self.assertGreaterEqual(run_job.call_count, 1)
 
     def test_容器LOCALAPPDATA通过SID字符串查询并释放Win32内存(self) -> None:
         import ctypes
@@ -1110,6 +1424,87 @@ class TestWindowsAppContainer(unittest.TestCase):
                 result_summary["copy_script_started"],
                 "AppContainer did not start the workspace-relative copy script",
             )
+
+    @unittest.skipUnless(
+        sys.platform == "win32"
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_OS") == "Windows",
+        "runtime ACL A/B 仅在隔离的 GitHub Windows runner 上执行",
+    )
+    def test_诊断Python运行时只读ACL启动写入拒绝与精确恢复(self) -> None:
+        """Mutate only hosted toolcache ACLs, then require byte-exact restoration."""
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-native-") as raw:
+            workspace = Path(raw) / "task"
+            workspace.mkdir()
+            marker = workspace / "python-runtime-started.txt"
+            write_denied = workspace / "runtime-write-denied.txt"
+            network_denied = workspace / "runtime-network-denied.txt"
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+                listener.bind(("127.0.0.1", 0))
+                listener.listen(1)
+                port = listener.getsockname()[1]
+                script = (
+                    "import os,pathlib,socket,sys,sysconfig,encodings\n"
+                    "marker=pathlib.Path('python-runtime-started.txt')\n"
+                    "stdlib=pathlib.Path(sysconfig.get_path('stdlib'))\n"
+                    "files=[pathlib.Path(sys.executable),pathlib.Path(pathlib.__file__),"
+                    "pathlib.Path(encodings.__file__)]\n"
+                    "dll=sysconfig.get_config_var('DLLLIBRARY')\n"
+                    "if dll: files.extend([pathlib.Path(sys.executable).parent/dll,"
+                    "pathlib.Path(sys.base_prefix)/dll])\n"
+                    "for item in files:\n"
+                    "    if item.is_file(): item.read_bytes()\n"
+                    "try:\n"
+                    "    fd=os.open(pathlib.__file__,os.O_WRONLY|os.O_APPEND)\n"
+                    "except OSError:\n"
+                    "    pathlib.Path('runtime-write-denied.txt').write_text('true')\n"
+                    "else:\n"
+                    "    os.close(fd); raise SystemExit(73)\n"
+                    "try:\n"
+                    f"    socket.create_connection(('127.0.0.1',{port}),timeout=1)\n"
+                    "except OSError:\n"
+                    "    pathlib.Path('runtime-network-denied.txt').write_text('true')\n"
+                    "else:\n"
+                    "    raise SystemExit(74)\n"
+                    "marker.write_text('started')\n"
+                )
+                argv = [sys.executable, "-I", "-c", script]
+                baseline = run_windows_appcontainer(
+                    argv, cwd=workspace, timeout_seconds=10, process_limit=4,
+                )
+                marker.unlink(missing_ok=True)
+                write_denied.unlink(missing_ok=True)
+                network_denied.unlink(missing_ok=True)
+                candidate = run_windows_appcontainer(
+                    argv, cwd=workspace, timeout_seconds=10, process_limit=4,
+                    _diagnostic_runtime_acl=True,
+                )
+
+            summary = {
+                "baseline_executed": baseline.executed,
+                "baseline_exit": baseline.exit_code,
+                "baseline_cleanup": baseline.cleanup_ok,
+                "candidate_executed": candidate.executed,
+                "candidate_exit": candidate.exit_code,
+                "candidate_cleanup": candidate.cleanup_ok,
+                "runtime_marker": marker.is_file(),
+                "runtime_write_denied": write_denied.is_file(),
+                "network_denied": network_denied.is_file(),
+                "runtime_acl_restore_verified": "runtime_acl_restore_verified=true" in candidate.detail,
+                "detail": candidate.detail,
+            }
+            self._workflow_notice(
+                "Python runtime read-only ACL A/B",
+                json.dumps(summary, ensure_ascii=True, separators=(",", ":")),
+            )
+            self.assertTrue(baseline.cleanup_ok, baseline)
+            self.assertTrue(candidate.executed, candidate)
+            self.assertEqual(candidate.exit_code, 0, candidate)
+            self.assertTrue(marker.is_file(), "Python did not write its workspace marker")
+            self.assertTrue(write_denied.is_file(), "runtime files unexpectedly accepted write-open")
+            self.assertTrue(network_denied.is_file(), "runtime ACL altered the default-deny network boundary")
+            self.assertTrue(candidate.cleanup_ok, candidate)
+            self.assertIn("runtime_acl_restore_verified=true", candidate.detail)
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows AppContainer 原生实测")
     def test_在AppContainer中运行Python并解析工作路径(self) -> None:

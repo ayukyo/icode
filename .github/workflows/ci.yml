@@ -156,6 +156,9 @@ jobs:
       - name: Emit isolated Python runtime file access diagnostics
         run: python -m unittest tests.test_windows_appcontainer.TestWindowsAppContainer.test_诊断容器对宿主Python运行时文件的直接读取 -v
         continue-on-error: true
+      - name: Diagnose runtime read-only ACL and exact restoration
+        run: python -m unittest tests.test_windows_appcontainer.TestWindowsAppContainer.test_诊断Python运行时只读ACL启动写入拒绝与精确恢复 -v
+        continue-on-error: true
       - name: Verify AppContainer workspace, network denial, ACL revocation, and Job composition
         run: python -m unittest tests.test_windows_appcontainer -v
 

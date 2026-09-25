@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #125 x64/ARM64 的独立逐文件直读步骤均已回执：System32 控制文件 `read_ok`，Python EXE、共享库、`pathlib.py`、`encodings/__init__.py` 均 `access_denied`；完整 AppContainer Python 仍退出 `0xC0000135`、profile marker 缺失。结果支持 runtime tree 访问边界假设，但尚未证明具体 loader 依赖或因果。当前生产路径未新增 runtime ACL；下一步仅设计可恢复、只读、限于验证 runtime roots 的原生 A/B。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #125 x64/ARM64 的独立逐文件直读步骤均已回执：System32 控制文件 `read_ok`，Python EXE、共享库、`pathlib.py`、`encodings/__init__.py` 均 `access_denied`；完整 AppContainer Python 仍退出 `0xC0000135`、profile marker 缺失。结果支持 runtime tree 访问边界假设，但尚未证明具体 loader 依赖或因果。当前生产路径未新增 runtime ACL；已添加仅供临时 GitHub Windows runner 使用的严格只读 ACL 差分探针，等待双架构原生验收。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -196,4 +196,6 @@ Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve
 - [CI #125 x64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/107921726078) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/107921726100) 的隔离直读步骤都执行完成。两架构候选清单均为 6 项、其中 5 项可用：`system32_control`、`python_executable`、`python_shared_library`、`stdlib_pathlib`、`stdlib_encodings`；`stdlib_archive` 未提供。
 - 两架构均观察到 `system32_control=read_ok`；Python EXE、共享库、`pathlib.py`、`encodings/__init__.py` 均 `copy_error_class=access_denied`、探针退出 1、`cleanup_ok=true`。x64 样本大小依次为 103192、5800216、49972、6058 bytes；ARM64 为 102680、6076184、49972、6058 bytes。原始路径未进入 notice。
 - 完整 AppContainer Python 两架构仍退出十进制 `3221225781`（`0xC0000135`，`STATUS_DLL_NOT_FOUND`），marker 缺失。和逐文件访问拒绝同时出现，使“AppContainer SID 无法读取 Python 安装树”成为优先验证假设；但直接读探针不是 loader 依赖映射测试，不能证明哪一个 DLL 缺失，也不能仅凭共现认定 ACL 就是唯一根因。
-- **下一实验：**在 Windows 原生 x64/ARM64 CI 中，对经验证的 Python `sys.prefix` / `sys.base_prefix` runtime roots 做严格只读 ACL A/B；拒绝盘符根、UNC、用户目录/凭据树、与可写工单目录重叠或含重解析点/硬链接的候选。记录每个根的原始 DACL、只授读取/执行 ACE、注入运行时写入拒绝、子进程执行结果、逐项精确恢复及 SID 残留检查。任何准备/授权/恢复失败都 fail-closed 并阻止命令；未通过前不接入生产自动模式。读访问成功仍须和 Python 启动、marker、工作区/网络策略、ACL 恢复一起验收。
+- **下一实验（代码已实现，待 CI）：**仅允许 GitHub Windows runner 的当前解释器，以 `sys.prefix` / `sys.base_prefix` 为候选根；在任何写 ACL 前拒绝 UNC/卷根/系统目录/包含 home 的路径/工作区重叠/reparse point/hardlink/null 或 protected/defaulted DACL，并把扫描限制为 100,000 个对象、30 秒。完整记录每个对象的 DACL bytes、control/revision、present/defaulted 状态与文件身份；只给本次随机 Package SID 添加只读/执行继承 ACE，注入运行时写入拒绝检查。恢复根 DACL 后必须等待并逐对象精确比对全树、确认 SID 无残留；失败则 `cleanup_failed` 且阻止命令继续。该差分有独立 Actions 步骤（诊断失败允许继续以便保留回执），之后完整 AppContainer 测试再次运行并仍是正式门槛。实验仅在临时托管 runner 上运行，生产执行器完全未接入；如果双架构任一端不能精确恢复，就停止 ACL 路线，不以宽松回退补救。读访问成功仍须同时满足 Python 启动、marker、工作区/网络门禁和 ACL 恢复。
+
+Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `SetNamedSecurityInfoW` 不是针对并发写者的原子事务；因此全树前后精确核对是实验硬门槛，并不等价于与并发安装/更新隔离：[ACE inheritance](https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-inheritance-rules)、[automatic propagation](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)、[`SetNamedSecurityInfoW` remarks](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setnamedsecurityinfow#remarks)。

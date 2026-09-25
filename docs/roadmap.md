@@ -313,6 +313,10 @@ CI [#124](https://github.com/ayukyo/icode/actions/runs/36086599173) 的 Windows 
 
 CI [#125 x64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/107921726078) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/107921726100) 的独立直读步骤均执行完成，候选清单为 6 项、可用 5 项。两架构 `system32_control` 均为 `read_ok`；`python_executable`、`python_shared_library`、`stdlib_pathlib`、`stdlib_encodings` 均为 `access_denied`，复制探针退出 1 且清理为真。综合 AppContainer Python 仍退出 `0xC0000135`，profile marker 缺失，因此 #125 整轮失败；其余平台阶段矩阵通过。该证据优先支持验证 Python runtime root 的读取边界，但不能确认具体 DLL、证明映射失败由 ACL 单独导致，也不是 Windows 文件/网络隔离验收。生产 ACL 未改；下一步仅做经校验 runtime roots 的读取/执行授权 A/B，并测试写拒绝、精确 DACL 恢复、SID 残留、Python 启动及既有工作区/网络门禁。任一失败即保留 fail-closed；Windows 自动模式与完整 R2 仍未验收。
 
+### 2026-09-25 UTC：CI-only Python runtime ACL 差分已实现，待双架构
+
+新增的私有诊断开关只允许 GitHub-hosted Windows runner 上的当前解释器，并限定 `sys.prefix` / `sys.base_prefix`；生产执行器、自动模式和 `policy_contract_ready` 未接入。变更前逐对象快照 DACL/control/身份，最多扫描 100,000 项、30 秒；只给临时 Package SID 可继承的读取/执行权限。恢复后必须逐对象核对全树原状态及 SID 残留。UNC、卷根、Windows 系统目录、用户目录覆盖、工作区重叠、reparse/hardlink 和不可快照 DACL 均 fail-closed。原生 ACL 修改只在临时托管 runner 上尝试，双架构 CI 尚未执行；在全树精确恢复与 Python/工作区/网络门禁共同通过前，不能判定此方案可行，Windows R2.3、完整 R2、自动模式继续关闭。
+
 设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
 [R2.0 policy contract 实施计划](./nbl/plans/2026-09-23-r2-policy-contract.md) ·
 [R2.1 工作区与租约实施计划](./nbl/plans/2026-09-23-r2-workspace-lease.md) ·

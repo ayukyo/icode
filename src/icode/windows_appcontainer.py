@@ -8,11 +8,13 @@ profile 销毁后必须确认该目录已消失；残留或无法核验均作为
 from __future__ import annotations
 
 import ctypes
+from dataclasses import dataclass, field
 import ntpath
 import os
 from pathlib import Path
 import stat
 import sys
+import time
 import uuid
 from ctypes import wintypes
 from typing import Sequence
@@ -42,6 +44,33 @@ _GRANT_ACCESS = 1
 _TRUSTEE_IS_SID = 0
 _TRUSTEE_IS_UNKNOWN = 0
 _PROFILE_DELETE_ATTEMPTS = 2
+_MAX_RUNTIME_ACL_OBJECTS = 100_000
+_MAX_RUNTIME_ACL_SNAPSHOT_SECONDS = 30
+
+
+@dataclass(frozen=True)
+class _DaclSnapshot:
+    path: Path
+    dacl: bytes
+    control: int
+    revision: int
+    present: bool
+    defaulted: bool
+    file_identity: tuple[int, int]
+
+    @property
+    def protected(self) -> bool:
+        return bool(self.control & _SE_DACL_PROTECTED)
+
+
+@dataclass
+class _RuntimeAclTransaction:
+    roots: tuple[Path, ...]
+    entries: tuple[_DaclSnapshot, ...]
+    advapi: ctypes.WinDLL
+    kernel: ctypes.WinDLL
+    snapshot_duration_ms: int
+    modified_roots: list[Path] = field(default_factory=list)
 
 
 class _AppContainerSetupError(RuntimeError):
@@ -167,7 +196,9 @@ def _win32_error_code(detail: str) -> str:
     return value if value.isdecimal() else "unknown"
 
 
-def _walk_workspace(root: Path) -> list[Path]:
+def _walk_workspace(
+    root: Path, *, max_entries: int | None = None, deadline: float | None = None,
+) -> list[Path]:
     """拒绝重解析点和硬链接，避免 ACL 沿路径/文件别名扩大到工作区外。"""
     try:
         root_info = root.lstat()
@@ -175,27 +206,38 @@ def _walk_workspace(root: Path) -> list[Path]:
         raise _AppContainerSetupError("invalid_workspace", "无法检查任务目录") from exc
     if not stat.S_ISDIR(root_info.st_mode) or _is_reparse(root_info):
         raise _AppContainerSetupError("invalid_workspace", "任务目录必须是普通目录")
+    if max_entries is not None and max_entries < 1:
+        raise _AppContainerSetupError("invalid_workspace", "目录扫描上限无效")
 
     paths = [root]
     try:
         for current, directories, files in os.walk(root, topdown=True, followlinks=False):
             current_path = Path(current)
-            for name in [*directories, *files]:
-                path = current_path / name
-                info = path.lstat()
-                if _is_reparse(info):
-                    raise _AppContainerSetupError(
-                        "unsupported_workspace_entry", "任务目录含重解析点，AppContainer 拒绝启动",
-                    )
-                if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
-                    raise _AppContainerSetupError(
-                        "unsupported_workspace_entry", "任务目录含硬链接，AppContainer 拒绝启动",
-                    )
-                if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
-                    raise _AppContainerSetupError(
-                        "unsupported_workspace_entry", "任务目录含非普通文件，AppContainer 拒绝启动",
-                    )
-                paths.append(path)
+            for names in (directories, files):
+                for name in names:
+                    if deadline is not None and time.monotonic() > deadline:
+                        raise _AppContainerSetupError(
+                            "runtime_acl_preflight_too_slow", "目录安全扫描超过时间上限",
+                        )
+                    if max_entries is not None and len(paths) >= max_entries:
+                        raise _AppContainerSetupError(
+                            "runtime_acl_preflight_too_large", "目录安全扫描超过对象数上限",
+                        )
+                    path = current_path / name
+                    info = path.lstat()
+                    if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
+                        raise _AppContainerSetupError(
+                            "unsupported_workspace_entry", "任务目录含重解析点，AppContainer 拒绝启动",
+                        )
+                    if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
+                        raise _AppContainerSetupError(
+                            "unsupported_workspace_entry", "任务目录含硬链接，AppContainer 拒绝启动",
+                        )
+                    if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                        raise _AppContainerSetupError(
+                            "unsupported_workspace_entry", "任务目录含非普通文件，AppContainer 拒绝启动",
+                        )
+                    paths.append(path)
     except _AppContainerSetupError:
         raise
     except OSError as exc:
@@ -207,9 +249,143 @@ def _is_reparse(info: os.stat_result) -> bool:
     return bool(getattr(info, "st_file_attributes", 0) & 0x400)
 
 
-def _read_dacl(
+def _is_unc_runtime_root(raw_root: str | os.PathLike[str], *, windows: bool | None = None) -> bool:
+    """Recognize Windows UNC roots lexically, before touching the share."""
+    if windows is None:
+        windows = os.name == "nt"
+    if not windows:
+        return False
+    drive, _tail = ntpath.splitdrive(os.fspath(raw_root))
+    return drive.startswith(("\\\\", "//"))
+
+
+def _validate_runtime_roots(
+    roots: Sequence[Path], *, workspace: Path,
+) -> tuple[Path, ...]:
+    """Validate narrow, disjoint local runtime roots before any ACL mutation."""
+    try:
+        workspace_path = Path(workspace)
+        if not workspace_path.is_absolute():
+            raise ValueError("workspace must be absolute")
+        workspace_path = workspace_path.resolve(strict=True)
+        home = Path.home().resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise _AppContainerSetupError(
+            "invalid_runtime_root", "runtime/workspace boundary cannot be resolved",
+        ) from exc
+
+    def intersects(left: Path, right: Path) -> bool:
+        left_text = os.path.normcase(os.path.normpath(str(left)))
+        right_text = os.path.normcase(os.path.normpath(str(right)))
+        try:
+            common = os.path.commonpath((left_text, right_text))
+        except ValueError:
+            return False
+        return common == left_text or common == right_text
+
+    unique: dict[str, Path] = {}
+    for raw_root in roots:
+        if _is_unc_runtime_root(raw_root):
+            raise _AppContainerSetupError(
+                "unsupported_runtime_root", "UNC or non-local runtime roots are unsupported",
+            )
+        try:
+            candidate = Path(raw_root)
+            if not candidate.is_absolute():
+                raise ValueError("runtime root must be absolute")
+            # Inspect each path component before resolve() so a junction/symlink
+            # cannot silently redirect the DACL target to a different tree.
+            current = Path(candidate.anchor)
+            for component in candidate.parts[1:]:
+                current = current / component
+                info = current.lstat()
+                if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
+                    raise _AppContainerSetupError(
+                        "unsupported_runtime_root", "runtime path contains a reparse point",
+                    )
+            root = candidate.resolve(strict=True)
+            root_info = root.lstat()
+        except _AppContainerSetupError:
+            raise
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise _AppContainerSetupError(
+                "invalid_runtime_root", "runtime root is not a resolvable local directory",
+            ) from exc
+
+        if (
+            not stat.S_ISDIR(root_info.st_mode)
+            or stat.S_ISLNK(root_info.st_mode)
+            or _is_reparse(root_info)
+        ):
+            raise _AppContainerSetupError(
+                "invalid_runtime_root", "runtime root must be a regular directory",
+            )
+        if root == Path(root.anchor):
+            raise _AppContainerSetupError(
+                "unsupported_runtime_root", "filesystem root is too broad for runtime access",
+            )
+        if os.name == "nt":
+            drive, _tail = ntpath.splitdrive(str(root))
+            if not drive or drive.startswith("\\\\"):
+                raise _AppContainerSetupError(
+                    "unsupported_runtime_root", "UNC or non-local runtime roots are unsupported",
+                )
+            if root == Path(root.anchor):
+                raise _AppContainerSetupError(
+                    "unsupported_runtime_root", "filesystem root is too broad for runtime access",
+                )
+            try:
+                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel.GetDriveTypeW.argtypes = [wintypes.LPCWSTR]
+                kernel.GetDriveTypeW.restype = wintypes.UINT
+                drive_type = int(kernel.GetDriveTypeW(root.anchor))
+            except (AttributeError, OSError, TypeError, ValueError) as exc:
+                raise _AppContainerSetupError(
+                    "invalid_runtime_root", "runtime volume type cannot be verified",
+                ) from exc
+            if drive_type != 3:  # DRIVE_FIXED; reject removable and mapped drives.
+                raise _AppContainerSetupError(
+                    "unsupported_runtime_root", "runtime root must reside on a fixed local drive",
+                )
+        if home.is_relative_to(root):
+            raise _AppContainerSetupError(
+                "unsupported_runtime_root", "runtime root includes the user home directory",
+            )
+        if intersects(root, workspace_path):
+            raise _AppContainerSetupError(
+                "unsupported_runtime_root", "runtime root overlaps the writable task workspace",
+            )
+        if os.name == "nt":
+            system_root_raw = os.environ.get("SystemRoot", r"C:\Windows")
+            try:
+                system_root = Path(system_root_raw).resolve(strict=True)
+            except (OSError, RuntimeError):
+                raise _AppContainerSetupError(
+                    "invalid_runtime_root", "Windows system root cannot be verified",
+                ) from None
+            if intersects(root, system_root):
+                raise _AppContainerSetupError(
+                    "unsupported_runtime_root", "Windows system directories are not runtime roots",
+                )
+
+        key = os.path.normcase(os.path.normpath(str(root)))
+        unique[key] = root
+
+    result = tuple(sorted(unique.values(), key=lambda path: os.path.normcase(str(path))))
+    for index, root in enumerate(result):
+        for other in result[index + 1:]:
+            if intersects(root, other):
+                raise _AppContainerSetupError(
+                    "unsupported_runtime_root", "runtime roots overlap or are nested",
+                )
+    if not result:
+        raise _AppContainerSetupError("invalid_runtime_root", "no Python runtime roots were provided")
+    return result
+
+
+def _read_dacl_state(
     path: Path, advapi: ctypes.WinDLL, kernel: ctypes.WinDLL,
-) -> tuple[bytes, bool]:
+) -> _DaclSnapshot:
     dacl = ctypes.c_void_p()
     descriptor = ctypes.c_void_p()
     status = advapi.GetNamedSecurityInfoW(
@@ -221,9 +397,20 @@ def _read_dacl(
             "workspace_acl_unavailable", f"GetNamedSecurityInfoW err={int(status)}",
         )
     try:
-        if not dacl.value:
+        present = wintypes.BOOL()
+        descriptor_dacl = ctypes.c_void_p()
+        defaulted = wintypes.BOOL()
+        if not advapi.GetSecurityDescriptorDacl(
+            descriptor, ctypes.byref(present), ctypes.byref(descriptor_dacl),
+            ctypes.byref(defaulted),
+        ):
             raise _AppContainerSetupError(
-                "workspace_acl_unavailable", "任务目录存在 null DACL，拒绝扩大访问",
+                "workspace_acl_unavailable",
+                f"GetSecurityDescriptorDacl err={ctypes.get_last_error()}",
+            )
+        if not present.value or not dacl.value or not descriptor_dacl.value:
+            raise _AppContainerSetupError(
+                "workspace_acl_unavailable", "目标存在 absent/null DACL，拒绝扩大访问",
             )
         class ACL_SIZE_INFORMATION(ctypes.Structure):
             _fields_ = [
@@ -252,10 +439,27 @@ def _read_dacl(
                 "workspace_acl_unavailable",
                 f"GetSecurityDescriptorControl err={ctypes.get_last_error()}",
             )
-        return ctypes.string_at(dacl, acl_size), bool(control.value & _SE_DACL_PROTECTED)
+        info = path.lstat()
+        file_identity = (int(info.st_dev), int(info.st_ino))
+        return _DaclSnapshot(
+            path=path,
+            dacl=ctypes.string_at(dacl, acl_size),
+            control=int(control.value),
+            revision=int(revision.value),
+            present=bool(present.value),
+            defaulted=bool(defaulted.value),
+            file_identity=file_identity,
+        )
     finally:
         if descriptor.value:
             kernel.LocalFree(descriptor)
+
+
+def _read_dacl(
+    path: Path, advapi: ctypes.WinDLL, kernel: ctypes.WinDLL,
+) -> tuple[bytes, bool]:
+    snapshot = _read_dacl_state(path, advapi, kernel)
+    return snapshot.dacl, snapshot.protected
 
 
 def _contains_sid(
@@ -345,6 +549,11 @@ def _grant_workspace_acl(
         ctypes.c_void_p, ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD),
     ]
     advapi.GetSecurityDescriptorControl.restype = wintypes.BOOL
+    advapi.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL),
+    ]
+    advapi.GetSecurityDescriptorDacl.restype = wintypes.BOOL
     advapi.SetEntriesInAclW.argtypes = [
         wintypes.ULONG, ctypes.c_void_p, ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_void_p),
@@ -401,6 +610,188 @@ def _grant_workspace_acl(
     return original_dacl, advapi, kernel
 
 
+def _snapshot_runtime_acl_roots(
+    roots: Sequence[Path], *, workspace: Path,
+    advapi: ctypes.WinDLL, kernel: ctypes.WinDLL,
+) -> _RuntimeAclTransaction:
+    """Capture every target DACL/control state before a runtime ACL experiment."""
+    validated_roots = _validate_runtime_roots(roots, workspace=workspace)
+    started = time.monotonic()
+    deadline = started + _MAX_RUNTIME_ACL_SNAPSHOT_SECONDS
+    entries: list[_DaclSnapshot] = []
+    for root in validated_roots:
+        remaining_entries = _MAX_RUNTIME_ACL_OBJECTS - len(entries)
+        if remaining_entries < 1:
+            raise _AppContainerSetupError(
+                "runtime_acl_preflight_too_large", "runtime ACL snapshot exceeds object limit",
+            )
+        try:
+            paths = _walk_workspace(
+                root, max_entries=remaining_entries, deadline=deadline,
+            )
+        except _AppContainerSetupError as exc:
+            if exc.error in {
+                "runtime_acl_preflight_too_large", "runtime_acl_preflight_too_slow",
+            }:
+                raise
+            raise _AppContainerSetupError(
+                "unsupported_runtime_root", "runtime tree contains unsafe filesystem entries",
+            ) from exc
+        for path in paths:
+            try:
+                snapshot = _read_dacl_state(path, advapi, kernel)
+            except _AppContainerSetupError as exc:
+                raise _AppContainerSetupError(
+                    "runtime_acl_unavailable", "runtime tree DACL cannot be snapshotted safely",
+                ) from exc
+            if not snapshot.file_identity[1]:
+                raise _AppContainerSetupError(
+                    "runtime_acl_unavailable",
+                    "runtime object has no stable filesystem identity",
+                )
+            if snapshot.protected or snapshot.defaulted or not snapshot.present:
+                raise _AppContainerSetupError(
+                    "unsupported_runtime_acl",
+                    "runtime tree contains protected or non-restorable DACL state",
+                )
+            entries.append(snapshot)
+            if time.monotonic() > deadline:
+                raise _AppContainerSetupError(
+                    "runtime_acl_preflight_too_slow", "runtime ACL snapshot exceeded time limit",
+                )
+    return _RuntimeAclTransaction(
+        roots=validated_roots,
+        entries=tuple(entries),
+        advapi=advapi,
+        kernel=kernel,
+        snapshot_duration_ms=int((time.monotonic() - started) * 1000),
+    )
+
+
+def _add_runtime_acl(
+    root: Path, sid: ctypes.c_void_p, access: int, original_dacl: bytes,
+    advapi: ctypes.WinDLL, kernel: ctypes.WinDLL,
+) -> None:
+    """Add one inheritable, read-only ACE based on the captured root DACL."""
+    class TRUSTEE_W(ctypes.Structure):
+        _fields_ = [
+            ("pMultipleTrustee", ctypes.c_void_p),
+            ("MultipleTrusteeOperation", ctypes.c_int),
+            ("TrusteeForm", ctypes.c_int),
+            ("TrusteeType", ctypes.c_int),
+            ("ptstrName", ctypes.c_void_p),
+        ]
+
+    class EXPLICIT_ACCESS_W(ctypes.Structure):
+        _fields_ = [
+            ("grfAccessPermissions", wintypes.DWORD),
+            ("grfAccessMode", ctypes.c_int),
+            ("grfInheritance", wintypes.DWORD),
+            ("Trustee", TRUSTEE_W),
+        ]
+
+    original_acl = ctypes.create_string_buffer(original_dacl)
+    explicit = EXPLICIT_ACCESS_W()
+    explicit.grfAccessPermissions = access
+    explicit.grfAccessMode = _GRANT_ACCESS
+    explicit.grfInheritance = _OBJECT_INHERIT_ACE | _CONTAINER_INHERIT_ACE
+    explicit.Trustee = TRUSTEE_W(
+        None, 0, _TRUSTEE_IS_SID, _TRUSTEE_IS_UNKNOWN,
+        ctypes.cast(sid, ctypes.c_void_p),
+    )
+    new_acl = ctypes.c_void_p()
+    status = advapi.SetEntriesInAclW(
+        1, ctypes.byref(explicit), ctypes.cast(original_acl, ctypes.c_void_p),
+        ctypes.byref(new_acl),
+    )
+    if status != 0 or not new_acl.value:
+        raise _AppContainerSetupError(
+            "runtime_acl_failed", f"SetEntriesInAclW err={int(status)}",
+        )
+    try:
+        _set_dacl(root, new_acl, advapi)
+    finally:
+        kernel.LocalFree(new_acl)
+
+
+def _grant_runtime_acl_roots(
+    transaction: _RuntimeAclTransaction, sid: ctypes.c_void_p,
+) -> None:
+    """Grant only read/execute to the current Package SID, tracking partial writes."""
+    access = _FILE_GENERIC_READ | _FILE_GENERIC_EXECUTE
+    for root in transaction.roots:
+        root_snapshot = next(
+            item for item in transaction.entries if item.path == root
+        )
+        current = _read_dacl_state(root, transaction.advapi, transaction.kernel)
+        if current != root_snapshot or _contains_sid(
+            current.dacl, sid, transaction.advapi,
+        ):
+            raise _AppContainerSetupError(
+                "runtime_acl_changed_during_preflight",
+                "runtime root DACL changed after its snapshot",
+            )
+        # Track before the native mutation so finally can restore even when the
+        # API reports an error after partially changing the security descriptor.
+        transaction.modified_roots.append(root)
+        _add_runtime_acl(
+            root, sid, access, root_snapshot.dacl,
+            transaction.advapi, transaction.kernel,
+        )
+
+
+def _runtime_acl_matches_snapshot(
+    transaction: _RuntimeAclTransaction, sid: ctypes.c_void_p,
+) -> bool:
+    """Compare every original object, DACL byte, control flag and file identity."""
+    try:
+        for root in transaction.roots:
+            actual_paths = _walk_workspace(root)
+            expected = {
+                item.path: item for item in transaction.entries
+                if item.path == root or item.path.is_relative_to(root)
+            }
+            if set(actual_paths) != set(expected):
+                return False
+            for path in actual_paths:
+                actual = _read_dacl_state(
+                    path, transaction.advapi, transaction.kernel,
+                )
+                before = expected[path]
+                if actual != before or _contains_sid(
+                    actual.dacl, sid, transaction.advapi,
+                ):
+                    return False
+        return True
+    except (OSError, _AppContainerSetupError, ValueError):
+        return False
+
+
+def _restore_runtime_acl_roots(
+    transaction: _RuntimeAclTransaction, sid: ctypes.c_void_p,
+) -> bool:
+    """Restore root DACLs and require exact per-object state before reporting clean."""
+    restore_ok = True
+    for root in reversed(transaction.modified_roots):
+        original = next(item for item in transaction.entries if item.path == root)
+        original_acl = ctypes.create_string_buffer(original.dacl)
+        try:
+            _set_dacl(root, ctypes.cast(original_acl, ctypes.c_void_p), transaction.advapi)
+        except Exception:  # noqa: BLE001 - keep restoring other roots, then fail closed
+            restore_ok = False
+    if not restore_ok:
+        return False
+
+    # Inheritable ACE propagation can complete after SetNamedSecurityInfoW returns.
+    for attempt in range(21):
+        if _runtime_acl_matches_snapshot(transaction, sid):
+            transaction.modified_roots.clear()
+            return True
+        if attempt < 20:
+            time.sleep(0.1)
+    return False
+
+
 def _restore_workspace_acl(
     root: Path, original_dacl: bytes, sid: ctypes.c_void_p,
     advapi: ctypes.WinDLL, kernel: ctypes.WinDLL,
@@ -428,13 +819,15 @@ def run_windows_appcontainer(
     process_limit: int = 8,
     _diagnostic_null_application_name: bool = False,
     _diagnostic_omit_localappdata: bool = False,
+    _diagnostic_runtime_acl: bool = False,
 ) -> WindowsJobResult:
     """在无网络能力的 AppContainer + 独立 Job 中运行单条命令。
 
     此为 R2.3 开发期原生实验，不接自动工单。它临时给 ``cwd`` 的 AppContainer
     Package SID 授权，并提供当前 profile 专属的 LOCALAPPDATA 临时存储；退出后恢复工作区 ACL，
     删除 profile 并核验其私有数据目录不存在。cwd 必须是独立任务工作区，不能是原始仓库。
-    私有启动差分仅允许无参数的系统 whoami 探针，不用于任何工单命令。
+    runtime ACL 差分仅允许 GitHub Windows runner 当前 Python 的只读诊断，不用于工单命令。
+    其它私有启动差分仅允许固定无参数 whoami 探针，不用于任何工单命令。
     """
     if sys.platform != "win32":
         return WindowsJobResult(False, None, "unsupported_platform", False, "仅适用于 Windows")
@@ -444,6 +837,24 @@ def run_windows_appcontainer(
         return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断启动模式无效")
     if not isinstance(_diagnostic_omit_localappdata, bool):
         return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断启动模式无效")
+    if not isinstance(_diagnostic_runtime_acl, bool):
+        return WindowsJobResult(False, None, "invalid_diagnostic_probe", False, "诊断 ACL 模式无效")
+    if _diagnostic_runtime_acl:
+        try:
+            requested_executable = os.path.normcase(os.path.realpath(argv[0]))
+            current_executable = os.path.normcase(os.path.realpath(sys.executable))
+        except (OSError, TypeError, ValueError):
+            requested_executable = ""
+            current_executable = "<unavailable>"
+        if (
+            os.environ.get("GITHUB_ACTIONS") != "true"
+            or os.environ.get("RUNNER_OS") != "Windows"
+            or requested_executable != current_executable
+        ):
+            return WindowsJobResult(
+                False, None, "invalid_diagnostic_probe", False,
+                "runtime ACL 差分仅允许 GitHub Windows runner 的当前 Python",
+            )
     if _diagnostic_omit_localappdata and (
         _diagnostic_null_application_name
         or not _is_fixed_system_whoami_probe(
@@ -529,6 +940,7 @@ def run_windows_appcontainer(
     primary_job_cleanup_ok = True
     diagnostic_process_executed = False
     profile_local_app_data: str | None = None
+    runtime_acl_transaction: _RuntimeAclTransaction | None = None
     try:
         hr = int(userenv.CreateAppContainerProfile(
             profile, "ICODE task", "Temporary task isolation", None, 0, ctypes.byref(sid),
@@ -550,6 +962,19 @@ def run_windows_appcontainer(
             )
         original_dacl, advapi, kernel_for_acl = _grant_workspace_acl(root, sid)
         acl_api = (advapi, kernel_for_acl)
+        if _diagnostic_runtime_acl:
+            runtime_acl_transaction = _snapshot_runtime_acl_roots(
+                (Path(sys.prefix), Path(sys.base_prefix)),
+                workspace=root, advapi=advapi, kernel=kernel_for_acl,
+            )
+            diagnostics.append(
+                "runtime_acl_snapshot="
+                f"roots:{len(runtime_acl_transaction.roots)},"
+                f"objects:{len(runtime_acl_transaction.entries)},"
+                f"ms:{runtime_acl_transaction.snapshot_duration_ms}"
+            )
+            _grant_runtime_acl_roots(runtime_acl_transaction, sid)
+            diagnostics.append("runtime_acl_access=read_execute")
         profile_local_app_data = _get_appcontainer_localappdata_path(
             sid, userenv, advapi, kernel, ole32,
         )
@@ -619,6 +1044,18 @@ def run_windows_appcontainer(
             f"{type(exc).__name__} during native setup",
         )
     finally:
+        if runtime_acl_transaction is not None:
+            try:
+                runtime_acl_restored = _restore_runtime_acl_roots(
+                    runtime_acl_transaction, sid,
+                )
+            except Exception:  # noqa: BLE001 - 不可验证的 runtime DACL 恢复必须 fail closed
+                runtime_acl_restored = False
+            if not runtime_acl_restored:
+                cleanup_ok = False
+                details.append("runtime_acl_restore_failed")
+            else:
+                diagnostics.append("runtime_acl_restore_verified=true")
         if original_dacl is not None and acl_api is not None and sid.value:
             try:
                 acl_restored = _restore_workspace_acl(root, original_dacl, sid, *acl_api)
