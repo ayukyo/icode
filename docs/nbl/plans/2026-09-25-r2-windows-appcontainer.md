@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #149 x64/ARM64 中 staging ACL 恢复、清理、宿主 Python 正向控制与候选脚本均通过（candidate exit 0，脚本 checkpoint 全部出现）；workflow 步骤在输出路径诊断 notice 前失败。公开回执序列将失败点缩小到 500 字符 notice 长度守护：旧嵌套 JSON 在代表性完整路径错误样本下为 671 字符。当前仅压缩脱敏回执格式并新增上限测试，权限与执行行为不变，待新双架构 CI 验证完整外层断言。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #153 的 x64/ARM64 staged tempfile 创建/写入/删除探针通过，但完整 Windows 测试各有 5 failures、1 error：其中四项为 8.3 短名/长路径比较、profile 写入 marker 缺失、普通宿主 Python 退出 `0xC0000135`。当前工作树修复路径清点/测试中的词法与规范路径混用，局部测试通过，完整回归与 CI #154 待验；不将 tempfile 子项通过外推为 R2.3 通过。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 > 注：下方按时间追加验证记录。阶段状态以最新 CI 和本机回归为准，历史记录不代表当前 Windows 后端已通过。
@@ -297,3 +297,11 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - [CI #152](https://github.com/ayukyo/icode/actions/runs/36139938565) 的 staged Python x64/ARM64 仍观察到 `LOCALAPPDATA`、`TEMP`、`TMP` 的 Python 与 Win32 值匹配，但路径分类为 `not_found`，`LOCALAPPDATA` 与 API profile 不匹配。staged candidate 正常运行；完整 AppContainer 组合步骤仍失败，直接宿主 Python 仍为 `0xC0000135`，loopback 仍只观测到连接超时。该轮未调用 `tempfile`，所以不能据此判断标准临时目录候选或实际文件创建能力。
 - CPython 3.11.16 固定源码显示 tempfile 候选优先为 `TMPDIR`、`TEMP`、`TMP`；Windows 后续尝试用户 Temp、系统 Temp 与当前目录，不把 `LOCALAPPDATA` 本身直接作为候选。候选可用性通过真实创建、写入和删除探测，全部失败才抛 `FileNotFoundError`；`gettempdir()` 结果还会在进程内缓存。[固定源码](https://github.com/python/cpython/blob/41388c9cb160d0886d5ca00d2e6c8782608a4549/Lib/tempfile.py) · [3.11 tempfile 文档](https://docs.python.org/3.11/library/tempfile.html)。因此 `stat=not_found` 不能替代真实消费者测试，也不单独构成根因。
 - **本次待双架构验证的诊断实现：**staged candidate 现在调用 `tempfile.gettempdir()`，再执行一次 `NamedTemporaryFile` 写入/关闭/自动删除；runner 只保留 TEMP/TMP 精确匹配、workspace、other/unavailable 等固定类别、是否位于 workspace、创建/删除布尔值和白名单异常类。完整原始路径只经过临时 workspace marker，读取摘要后随 staging workspace 一起清理。纯单测覆盖路径脱敏、目录分类、成功/失败结果与 notice <=500 字符。探针不改环境块、不创建 profile 目录、不扩大 ACL，也不接生产执行器；仍保留宿主 Python 启动差异为独立失败门槛。只有 Windows x64/ARM64 notice 与完整步骤回执齐备，才能判断该小诊断是否完成；这不等于 R2.3 或 R2 完成。
+
+### 2026-09-25 UTC CI #153：tempfile 子项通过，组合门禁仍失败
+
+- [CI #153](https://github.com/ayukyo/icode/actions/runs/36143290017) 的 Windows x64 与 ARM64 staged candidate 都完成 `tempfile.gettempdir()` 与 `NamedTemporaryFile` 创建/删除：结果为 `source=workspace`、`within_workspace=true`、`created=true`、`deleted=true`。这说明该候选 Python 可回退到工单工作目录使用临时文件，不说明 profile 私有目录可写，也不解释另一宿主 Python 的加载失败。
+- 两架构完整测试仍各有 5 failures、1 error。当前归纳为：路径短名/长名规范化预期有四项失败；profile marker 未出现（子进程退出码 0 但 marker 缺失，写入类别 `path_not_found`）；宿主 Python 以 `0xC0000135`（十进制 3221225781）退出。失败项不能互相归因；尤其不能把 staged candidate 成功解释为原安装树或 profile 写入通过。
+- **只读上游复核：**Microsoft `CreateProcessW` 文档说明调用返回时子进程可能尚未初始化完成，必需 DLL 缺失/初始化失败会终止子进程；Windows 错误表将 `0xC0000135` 定义为 `STATUS_DLL_NOT_FOUND`，但不指定缺失模块或根因。[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw) · [MS-ERREF](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55)。CPython 3.11.9 的 `python.exe` 入口调用 `Py_Main`，而 Python core 是 `python311.dll` 动态库；因此优先检查 Windows image-loader/native DLL 依赖，而不是先改 `PYTHONHOME` 或 `._pth`。[入口](https://raw.githubusercontent.com/python/cpython/v3.11.9/Programs/python.c) · [项目链接](https://github.com/python/cpython/blob/v3.11.9/PCbuild/pythoncore.vcxproj) · [命名配置](https://github.com/python/cpython/blob/v3.11.9/PCbuild/python.props)。原 runtime 文件读取拒绝（CI #125）是优先调查线索，不等同 DLL 映射诊断。
+- **本地路径规范化修复（待完整回归与 CI #154）：**`_runtime_reparse_inventory` 仅保留经 `normpath` 归一的词法 root 拼写，避免 Windows `Path.resolve()` 将短路径变成长路径、而 `os.readlink()` 保留短路径时误判链接关系；该清点仍拒绝 root ancestry reparse。实际 staging 复制另行 `resolve(strict=True)` 每个链接目标，并要求最终目标是源 root 内的 regular file，因此安全 containment 仍由真实目标解析路径负责。测试相应区分 lexical inventory 与 canonical Win32 ACL 路径；当前 `tests.test_windows_appcontainer` 局部通过（63 tests，11 skipped），完整套件/守护及双架构 CI 尚待执行。
+- **下一步：**先跑完整本地回归并让 #154 验证路径修复；之后单独追踪 profile marker 的真实写入目标和原 runtime 的 native loader 依赖，不扩大 ACL、不回退宿主、不直接把 staged runtime 接入生产执行器。R2.3、R2 与 Windows 自动模式继续关闭。

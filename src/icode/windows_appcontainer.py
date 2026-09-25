@@ -342,10 +342,12 @@ def _runtime_reparse_inventory(
                 raise _AppContainerSetupError(
                     "runtime_reparse_inventory_failed", "runtime root path contains a reparse point",
                 )
-        # Resolve only after rejecting reparse points in the root ancestry. On
-        # Windows, an existing path may be enumerated with its long name while
-        # GetFinalPathName/Path.resolve reports the equivalent 8.3 alias.
-        root_comparison = root_path.resolve(strict=True)
+        # Keep the normalized lexical spelling. On Windows, Path.resolve can
+        # turn an 8.3 root alias into its long form while os.readlink retains
+        # the link target's original spelling. The disposable-copy caller
+        # separately resolves every followed link and validates its final
+        # regular-file target remains inside the source root.
+        root_comparison = Path(os.path.normpath(os.fspath(root_path)))
     except _AppContainerSetupError:
         raise
     except (OSError, RuntimeError, ValueError) as exc:

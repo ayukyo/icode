@@ -272,6 +272,26 @@ class TestWindowsAppContainer(unittest.TestCase):
             self.assertTrue(link.is_symlink())
             self.assertEqual(windows_appcontainer._runtime_reparse_inventory(destination)["symbolic_link"], 0)
 
+    def test_runtime重解析清点保留root词法拼写避免链接目标别名误判(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-runtime-reparse-lexical-") as raw:
+            runtime = Path(raw) / "runtime"
+            runtime.mkdir()
+            target = runtime / "python-real.exe"
+            target.write_bytes(b"inside")
+            (runtime / "python.exe").symlink_to(target.name)
+
+            # Windows may resolve an 8.3 root spelling to its long form while
+            # os.readlink retains the link's original spelling. Inventory is
+            # lexical by contract; the later disposable-copy step separately
+            # resolves and validates the final file object before following it.
+            with mock.patch.object(
+                Path, "resolve", side_effect=AssertionError("root spelling was rewritten"),
+            ):
+                summary = windows_appcontainer._runtime_reparse_inventory(runtime)
+
+        self.assertEqual(summary["link_target_inside_root"], 1)
+        self.assertEqual(summary["link_target_outside_root"], 0)
+
     def test_stagingACL诊断只接受runner临时目录中的专用根(self) -> None:
         validate_roots = getattr(
             windows_appcontainer, "_validate_diagnostic_runtime_roots", None,
@@ -605,6 +625,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="icode-staging-acl-baseline-") as raw:
             root = Path(raw) / "icode-runtime-staging-test"
             root.mkdir()
+            root_resolved = root.resolve(strict=True)
             before = windows_appcontainer._DaclSnapshot(
                 path=root, dacl=b"original-dacl", control=0x0004, revision=1,
                 present=True, defaulted=False, file_identity=(1, 2),
@@ -626,7 +647,9 @@ class TestWindowsAppContainer(unittest.TestCase):
 
         self.assertEqual(delta, 0x0400)
         set_dacl.assert_called_once()
-        self.assertEqual(set_dacl.call_args.args[0], root)
+        # The normalization helper deliberately passes its verified canonical
+        # temp-root spelling to Win32, which may differ from an 8.3 alias.
+        self.assertEqual(set_dacl.call_args.args[0], root_resolved)
 
     def test_staging基线已规范化时不再写入ACL(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-staging-acl-baseline-") as raw:
@@ -1450,7 +1473,7 @@ class TestWindowsAppContainer(unittest.TestCase):
 
             def read_protected_state(path: Path, _advapi: object, _kernel: object):
                 state = read_state(path, _advapi, _kernel)
-                if path == sample:
+                if path.resolve(strict=True) == sample.resolve(strict=True):
                     return windows_appcontainer._DaclSnapshot(
                         path=path, dacl=state.dacl,
                         control=windows_appcontainer._SE_DACL_PROTECTED, revision=1,
