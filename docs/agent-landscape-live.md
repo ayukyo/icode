@@ -177,6 +177,13 @@
 - ICODE CI [#121 x64](https://github.com/ayukyo/icode/actions/runs/36083440360/job/107910090970) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36083440360/job/107910091117) 将路径分类为 API profile 下的多层子路径，Python 仍退出 `0xC0000135`、profile marker 缺失。工作区、网络拒绝、Job 进程数和后代清理只有组件级通过，不等于完整 Windows 验收。
 - 首轮 `api_child_nested` 仍隐藏了首层类别。下一探针仅细分到白名单首层（`Temp`、`Local`、`LocalState`、其他），保留 alias 布尔对照，不输出路径。已本地 RED/GREEN 验证，等待 CI #122 双架构回执；在查明前不创建目录、不改 ACL、不开放自动模式。
 
+### 2026-09-25 UTC R2.3 CI #122 与 Harn Windows 沙箱源码
+
+- CI [#122 x64](https://github.com/ayukyo/icode/actions/runs/36083962877/job/107911650724) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36083962877/job/107911650705) 均将 actual `LOCALAPPDATA` 归为 `api_child_other_nested`；Python `0xC0000135`、profile marker 缺失。路径值与 Python 加载失败之间仍无因果证明；下一轮先让运行时直接读取探针逐项返回脱敏结果，不继续盲猜路径段。
+- 补充技术参照而非固定 20 项热门观察名单：Harn v0.10.142 固定提交 [`8f9587982efa0d515230ee04ae4559fc60f1f394`](https://github.com/burin-labs/harn/blob/8f9587982efa0d515230ee04ae4559fc60f1f394/crates/harn-vm/src/stdlib/sandbox/windows.rs)的 Windows 实现创建 profile `Temp` 并设置 `LOCALAPPDATA`/`TEMP`/`TMP`；还用进程沙箱 roots/presets 为部分工具链目录做只读 ACL。我们检查到的 env-block 单测只校验序列化，不是 Windows 原生 AppContainer 运行 Python 的证据；项目自述 pre-1.0，故不把文档方案视作已验证解法。
+- **采纳方向：**进程所需只读 runtime roots 与 Agent 文件工具的授权范围分离；ICODE 当前只有 Linux Landlock helper 有独立 Python runtime roots，Windows AppContainer runner 尚未接入，需在确认依赖边界后设计。**暂缓：**默认递归授权整套 home/toolchain/package-manager 配置：会扩大读取面，并可能暴露 `.netrc`、`.pypirc` 凭据；递归 ACL 的耗时与回滚也需单独验收。不复制 Rust 代码。
+- 现有直读探针把所有 Actions notice 延迟到候选文件循环结束，早期断言会丢失已观测的首项结果。已改为每项完成后先发送固定字段 notice（标签、尺寸、结果类别、状态），再断言；不含实际路径、原始错误文本或文件内容，等待 CI #123 双架构验证。
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
 
 ### 2026-09-25 UTC R2.3 临时路径与环境块复核

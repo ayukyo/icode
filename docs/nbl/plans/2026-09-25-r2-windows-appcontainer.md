@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #121 x64/ARM64 删除前均确认 actual `LOCALAPPDATA` 唯一、与显式注入的 API 路径 alias 不相等、宿主 `stat=not_found`，且 actual 位于 API profile 下方的多层路径中；Python 仍以 `0xC0000135` 退出，当前不能认定两者存在因果关系。本地进一步将多层路径分类为固定首层类别，等待 CI #122；不记录路径、不使用宿主路径或放宽 ACL。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #122 x64/ARM64 删除前均确认 actual `LOCALAPPDATA` 唯一、与显式注入的 API 路径 alias 不相等、宿主 `stat=not_found`，且 actual 位于 API profile 下方的未知首层多层路径中；Python 仍以 `0xC0000135` 退出，当前不能认定两者存在因果关系。下一步优先取得运行时文件逐项直读回执，不再猜测路径名称；不记录路径、不使用宿主路径或放宽 ACL。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -170,3 +170,10 @@ Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve
 - [CI #121 x64](https://github.com/ayukyo/icode/actions/runs/36083440360/job/107910090970) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36083440360/job/107910091117) 均将 actual `LOCALAPPDATA` 分类为 API profile 下的多层子路径（`api_child_nested`）；`alias_match=false`、宿主 `stat=not_found`、profile marker 缺失、Python 退出 `0xC0000135`。不能从共同出现推断该路径分类是 Python 失败原因。
 - 工作区写入/嵌套读取、相邻目录拒绝、loopback 拒绝、Job 进程上限正反对照和后代清理 notice 均通过其各自组件断言；本轮完整 AppContainer 作业仍失败，故不能把它们合并成 Windows 沙箱通过。
 - 首轮分类只区分了多层/单层，信息仍不足。本地测试已转为在多层场景只保留白名单首层类别（`Temp`、`Local`、`LocalState`、其他），继续隐藏任意子路径；等 CI #122 核实双架构结果。无论首层为何，暂不创建目录或更改 ACL。
+
+### 2026-09-25 UTC CI #122 与相邻上游源码复核
+
+- CI [#122 x64](https://github.com/ayukyo/icode/actions/runs/36083962877/job/107911650724) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36083962877/job/107911650705) 均返回 `relation=api_child_other_nested`、`alias_match=false`、`stat=not_found`、marker 缺失、Python `0xC0000135`。工作区/网络/Job/进程清理 notice 为各自组件证据；不能从路径和 Python 失败共现推断因果。
+- 补充观察（不加入固定 20 项热门名单）：Harn v0.10.142，固定源码提交 [`8f9587982efa0d515230ee04ae4559fc60f1f394`](https://github.com/burin-labs/harn/blob/8f9587982efa0d515230ee04ae4559fc60f1f394/crates/harn-vm/src/stdlib/sandbox/windows.rs)，采用每进程 AppContainer + Job，调用 `GetAppContainerFolderPath`，创建 `<profile>\\Temp`，并构造 `LOCALAPPDATA`/`TEMP`/`TMP` 覆盖；其进程沙箱还可按 preset/root 对只读工具链目录运行 `icacls` 授权。该提交自报 pre-1.0；本次核对到的环境测试验证的是环境块序列化，并非 Windows 原生 AppContainer 内启动 Python 的实测，因此不据此判定 Harn 已解决 ICODE 的环境观察。
+- 取舍：**采纳方向而不照抄实现**——将 child-process 运行时只读依赖与 Agent 自身文件工具可读范围分开审查；ICODE 当前仅 Linux Landlock helper 有独立 Python runtime roots，Windows AppContainer runner 尚未接入此类授权。**暂缓**默认递归开放完整 Python/toolchain/user roots：递归 ACL 有耗时与撤权风险，Harn 的 package-manager preset 文档还涵盖 `.netrc`/`.pypirc` 等凭据配置，不能隐式扩权。不得复制 Rust 代码或仅凭静态 env 测试宣称跨平台可用。
+- 另发现运行时文件直读探针把 notice 放在全部候选文件循环结束之后，任何早期断言都会丢掉该组逐文件观测。下一轮把无路径 notice 移到每个文件回执之后、断言之前；按单文件区分 `read_ok`、访问拒绝、路径/文件缺失等类别，随后再判断最小只读运行时授权实验。

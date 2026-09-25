@@ -1021,8 +1021,6 @@ class TestWindowsAppContainer(unittest.TestCase):
             len(runtime_files), 4,
             "Windows CI runtime layout changed; direct-read diagnostic lacks enough samples",
         )
-        results: list[dict[str, object]] = []
-
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-runtime-access-") as raw:
             workspace = Path(raw) / "task"
             workspace.mkdir()
@@ -1066,7 +1064,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                     copy_error_class = "other_copy_error"
                 else:
                     copy_error_class = "no_copy_diagnostic"
-                results.append({
+                error_class = "none"
+                if result.error is not None:
+                    error_class = (
+                        result.error
+                        if result.error in {
+                            "timeout", "native_api_failed", "cleanup_failed", "job_creation_failed",
+                        }
+                        else "other_error"
+                    )
+                result_summary: dict[str, object] = {
                     "label": label,
                     "copy_script_started": copy_script_started,
                     "source_size": source_size,
@@ -1074,21 +1081,21 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "copy_error_class": copy_error_class,
                     "executed": result.executed,
                     "exit_code": result.exit_code,
-                    "error": result.error,
+                    "error_class": error_class,
                     "cleanup_ok": result.cleanup_ok,
                     "copied_size": copied_size,
-                })
+                }
+                # Emit each bounded, path-free observation before assertions so an
+                # early runtime/ACL failure cannot hide earlier file results.
+                self._workflow_notice(
+                    "Python runtime direct-read diagnostic",
+                    json.dumps(result_summary, ensure_ascii=True, separators=(",", ":")),
+                )
                 self.assertTrue(result.executed, result)
                 self.assertIsNone(result.error, result)
                 self.assertTrue(result.cleanup_ok, result)
-
-        for result in results:
-            self._workflow_notice(
-                "Python runtime direct-read diagnostic",
-                json.dumps(result, ensure_ascii=True, separators=(",", ":")),
-            )
             self.assertTrue(
-                result["copy_script_started"],
+                result_summary["copy_script_started"],
                 "AppContainer did not start the workspace-relative copy script",
             )
 

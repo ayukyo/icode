@@ -297,6 +297,10 @@ CI [#120](https://github.com/ayukyo/icode/actions/runs/36081977910) 中 R2.1 工
 
 CI [#121](https://github.com/ayukyo/icode/actions/runs/36083440360) 的 Windows x64 与 ARM64 AppContainer 探针均失败；新增脱敏关系分类显示 actual `LOCALAPPDATA` 属于 API profile 下的多层子路径（`api_child_nested`），两架构 Python 仍以 `0xC0000135` 退出，profile marker 缺失。工作区/网络负例、Job 进程限制对照和后代清理的组件 notice 通过，不构成完整 Windows 隔离验收。下一轮只再识别首层是否为 `Temp`、`Local`、`LocalState` 或其他类别，不输出路径、不改 ACL；R2.3、完整 R2 和自动模式仍未通过。
 
+### 2026-09-25 UTC：CI #122 Windows profile 路径复核
+
+CI [#122](https://github.com/ayukyo/icode/actions/runs/36083962877) 的 Windows x64 与 ARM64 均将 actual `LOCALAPPDATA` 归为 `api_child_other_nested`；宿主 `stat=not_found`、profile marker 缺失、Python 仍退出 `0xC0000135`。其它平台矩阵通过。profile 子目录进一步猜测的收益有限，下一轮改为每个 Python 运行时文件直读探针完成时立即输出脱敏 notice，避免末尾断言失败掩盖逐项证据；仍不放宽 ACL 或输出路径。Windows R2.3、完整 R2 与自动模式继续关闭。
+
 设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
 [R2.0 policy contract 实施计划](./nbl/plans/2026-09-23-r2-policy-contract.md) ·
 [R2.1 工作区与租约实施计划](./nbl/plans/2026-09-23-r2-workspace-lease.md) ·
