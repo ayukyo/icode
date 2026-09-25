@@ -1,6 +1,6 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
-- 日期：2026-09-26 UTC
+- 日期：2026-09-25 UTC
 - 状态：**AppContainer 仅作诊断，不是生产后端；Windows 自动模式不开放。** CI #158 x64/ARM64 综合步骤仍失败，公开 Actions annotations/logs 无法确认具体触发断言。独立 disposable staged-Python 子项两架构通过，包含候选运行、临时 ACL 精确恢复、原 runtime ACL 未变及 loopback 未连接断言；不证明任意 toolchain 的依赖闭包、性能或生产清理。原宿主 Python 子进程仍退出 `0xC0000135`；profile `LOCALAPPDATA` marker 仍缺失，SID 启动/子进程精确匹配也尚未证明。`listener reachable` 是宿主正向对照，不是容器连通证据。结合官方架构对开放式开发工具链的限制，本候选不再推进为产品执行后端；恢复正式设计中的一次 UAC helper 路线。详见下方 2026-09-26 决策记录。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
@@ -327,20 +327,20 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - staged Python 另调用 `SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY)`，通过 `GetCurrentPackageFullName` 记录包身份状态，并与 AppContainer profile API 路径脱敏比较；均是只读 API，不创建目录或修改 ACL。
 - 本机 Linux 完整预检与 Windows AppContainer 模块单测通过；Windows 原生测试在本机按平台跳过。下一步必须等待 x64/ARM64 runner 结果，再决定 profile marker 与 Python loader 的后续根因实验；R2.3、Windows 自动模式保持关闭。
 
-### 2026-09-26 UTC：CI #156 与 runtime image-mapping 诊断
+### 2026-09-25 UTC：CI #156 与 runtime image-mapping 诊断
 
 - CI [#156](https://github.com/ayukyo/icode/actions/runs/36155715717) 的 Windows x64/ARM64 综合 AppContainer 步骤均失败；公开 job 查询没有逐项断言，Actions logs API 返回 403，因此只记录“步骤失败”，不推断是 profile、loader 或本轮环境 A/B 所致。同轮 macOS-latest policy-command-broker 也失败，未见可读断言日志，Windows 探针不对其归因。
 - 结合 Microsoft 的文件映射 API 文档，采纳在 staged Python runner 内对 source/staged executable 与 `pythonXY.dll` 逐个执行 `CreateFileW(GENERIC_READ)`、单字节 `ReadFile`、`CreateFileMappingW(PAGE_READONLY | SEC_IMAGE_NO_EXECUTE)`、`MapViewOfFile(FILE_MAP_READ)`；宿主与 AppContainer 做相同目标对照，路径不进入 CI notice，所有 view/handle 显式清理。状态用 `read|image` 短码表示；该阶段可区分文件数据读取与映像布局映射，不解析导入依赖、不执行入口或 DLL 初始化。
 - 暂缓 `LoadLibraryExW`：它会触发正常 DLL 加载/初始化，且 staged Python 已经加载同名 core DLL，不能在此进程中声称独立验证原始 runtime。若映射差分仍不能收敛，另行研究可信、短命、未预加载目标 DLL 的原生 helper；在此之前不扩 ACL、不接生产 runner。该探针的 Linux 语法/摘要测试通过，Windows x64/ARM64 验证仍待新 CI，R2.3 与自动模式继续关闭。
 
-### 2026-09-26 UTC：CI #157 双架构回执与 runtime 访问边界
+### 2026-09-25 UTC：CI #157 双架构回执与 runtime 访问边界
 
 - CI [#157](https://github.com/ayukyo/icode/actions/runs/36161303803) 的 x64 与 ARM64 综合 AppContainer 步骤仍失败；对应 job 注释显示，System32 控制文件可读，而原宿主 `python.exe`、Python core DLL、`pathlib`、`encodings` 样本的 `ReadFile` 均为 `access_denied`。从原宿主解释器启动的子进程仍退出 `0xC0000135`。`0xC0000135` 仍只标识 `STATUS_DLL_NOT_FOUND`，不能定位具体依赖，也不因这轮数据读取对照而证明唯一根因。
 - 同轮独立的 disposable runtime staging 步骤两架构通过：基线 runtime 在 AppContainer 下不启动；staged Python 3.11.9 候选退出 0。该步骤的断言同时覆盖 host/staged 与容器映像映射、容器 Python tempfile 创建/删除、workspace 写入、staged runtime 写入拒绝、原 runtime 读取拒绝、loopback 未连接、子进程启动及 staging 清理；临时 ACL 精确恢复，ACL roots 限于 staging，源 runtime ACL 未变。这只证明该次 staging 诊断候选，**不证明生产 executor 可安全/经济地为任意工具复制 runtime**。
 - 显式 `LOCALAPPDATA` A/B 仍显示普通进程保留传入值、AppContainer 实际值不同且属于 API profile 下未知嵌套关系；profile marker 仍缺失。这与 runtime 文件访问是并列观测，不据此建立因果关系。综合步骤日志仍不可读，所以确切失败断言不明。
 - **取舍/下一验收：**采纳“原始解释器可达性须单独验证”的方向；暂缓给原 Python 安装根新增 ACE。下一步先评估 disposable staging 能否低成本、无链接逃逸地支持解释器及其完整运行依赖，并与任意外部 tool 的启动合同分开测试；同时继续只读定位 AppContainer 实际 `LOCALAPPDATA` 路径来源。未明确 staging 性能/依赖闭包、ACL 中断恢复与 profile 写入合同前，不把诊断逻辑并入生产 runner。
 
-### 2026-09-26 UTC：CI #158 与产品后端路线重选
+### 2026-09-25 UTC：CI #158 与产品后端路线重选
 
 - **CI #158：[workflow](https://github.com/ayukyo/icode/actions/runs/36165465592)。**x64/ARM64 综合 AppContainer 步骤均失败，Actions API 可见的注释不足以确定具体失败断言。原宿主 Python 仍退出 `0xC0000135`；source runtime 文件读取被拒。独立 staged Python 子项退出 0，完成 workspace/tempfile、ACL 精确恢复、源 runtime 未变、子进程和 loopback 未连接断言。这里的 `listener reachable` 是宿主正向对照，不是 sandbox 网络连接成功。环境/网络子项通过不能替代组合门槛或完整开发工具链验收。
 - **上游复核：**OpenAI 2026-05-13 [Windows sandbox 设计文章](https://openai.com/index/building-codex-windows-sandbox/)明确 AppContainer 适合权限集合已知的 app，而开放式 shell/Git/Python/构建链不是其合适边界。文章当时描述独立 elevated setup、sandbox user、DPAPI、WFP 与 command-runner。Codex 当前固定主分支提交 [`c7e80f87`](https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/app-server/README.md#L346-L349) 已说明选择 MXC 时不再提供 legacy elevated/unelevated setup；这是路线演进证据，故只借鉴拆分职责与 fail-closed，不能宣称 Codex 当前统一采用文章中的旧路径。Qwen whole-CLI 依赖容器运行时；Gemini 的 Restricted Token/Low IL/Job 证据仍不等同 WFP 网络门槛。
@@ -353,7 +353,7 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
   5. **原生验收：**干净 Windows 10 22H2 与当前 Windows 11 x64/arm64 实测写工作区成功、原仓/.git/凭据不可读写、DNS/TCP/UDP/IPv4/IPv6 与代理绕过被阻、仅代理授权可用、派生后代被 Job 清理；模拟 UAC 拒绝、helper 损坏、杀进程/断电 ACL/WFP 残留、重复 setup 与卸载。CI 或静态测试不能替代缺失的真实 Windows 安装证据。
 - **未决发布风险：**一次 UAC 提示来自未签名 helper 时可能显示未知发布者。开发阶段可先用 CI 原生双架构验证；对普通白领正式发布前须解决代码签名、SmartScreen、wheel provenance 与密钥保管，未解决不得宣传“一键无风险启用”。
 
-### 2026-09-26 UTC：Windows wheel 打包合同切片验收
+### 2026-09-25 UTC：Windows wheel 打包合同切片验收
 
 - **切片范围：**已按原 R2.3 批准路线加上 Windows x64/ARM64 wheel tag、预构建 helper 暂存、PE 架构 + 邻接 SHA-256 检查、安装后只解析包内对应 helper，以及 wheel `WHEEL` / `RECORD` 检查。它只是分发基础设施，不包含 Windows sandbox backend、UAC setup、sandbox identity、WFP、ACL 或 command-runner；Windows 自动模式仍关闭。
 - **失败关闭：**构建时未提供 helper 时保留纯 Python wheel；提供了但架构/摘要错误时拒绝构建。安装期不走 PATH、当前目录或仓库源码兜底。wheel checker 使用临时合成 PE 覆盖标签/机器字段/摘要/RECORD；合成文件从不执行。相邻 SHA 与 RECORD 都不能证明发布者身份或构建 provenance。
@@ -361,20 +361,20 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - **验收结果：**CPython 3.11.15 下 15 个 helper/wheel 定向测试通过；`scripts/preflight.py` 的密钥扫描、子模块完整性、全量测试 3 道门通过；`scripts/run_native_wheel_ci.py` 本机 x86_64 wheel 构建、检查、干净 venv 安装及 helper/Git broker probes 通过。CRLF 修正后，[Windows x64 wheel job](https://github.com/ayukyo/icode/actions/runs/36174592483/job/108202006150) 与 [Windows ARM64 wheel job](https://github.com/ayukyo/icode/actions/runs/36174592483/job/108202006183) 均通过纯 Python fallback、架构标签、合成 helper 暂存、wheel metadata/RECORD、隔离安装、包内解析和缺失 fail-closed 闭环。合成 PE 从未执行。
 - **未越界宣称：**同一 Actions run 两架构 Job Object 清理步骤有通过 notice，但 AppContainer 综合诊断仍分别失败；该实验已退役为产品路线，仅作诊断。上述验收只关闭 wheel 打包切片，Windows 文件/网络/身份隔离未实现，不能标为 R2.3 或完整 R2 完成；Windows 自动模式继续关闭。
 
-### 2026-09-26 UTC：CI #161 Windows wheel CRLF 缺陷修正
+### 2026-09-25 UTC：CI #161 Windows wheel CRLF 缺陷修正
 
 - **原生证据：**[Windows x64 packaging job](https://github.com/ayukyo/icode/actions/runs/36173719473/job/108199173573) 构建 wheel 后，检查器报 `helper SHA-256 manifest invalid`。流程在 Windows 上用 `Path.write_text(..., "\n")` 生成测试清单时会写成 CRLF；helper 校验器走文本模式会规范换行，而 wheel checker 读 ZIP 原始字节，之前只允许 LF，所以两边行为不一致。未把合成 helper 执行，也没有影响真实 backend（尚未实现）。
 - **修正与覆盖：**wheel checker 只接受 64 个小写十六进制字符，随后可选 LF 或 CRLF；新增 CRLF wheel 清单回归用例。CPython 3.11.15 本机 helper/wheel 定向测试 15 项通过。尚须下一次 Windows x64/ARM64 Actions 实跑，未将修复写成双架构验收完成。
 - **剩余边界：**同一 #161 的旧 AppContainer 组合探针仍在失败，属于诊断路线，不因本修复而变成 Windows 后端通过；R2.3 与自动模式仍关闭。
 
-### 2026-09-26 UTC：Windows CI 门禁与已退役诊断分层
+### 2026-09-25 UTC：Windows CI 门禁与已退役诊断分层
 
 - **证据：**#161 的 Windows Job 后代清理 job 与 wheel 打包 job 独立执行；同时 AppContainer 组合步骤继续失败。AppContainer 已经在上面的路线决策中退出生产候选，留存代码的用途是诊断，而非当前 R2 产品契约。
 - **采纳：**正常 push/PR 仍门禁 Windows Job 清理局部探针与架构 wheel 打包；把 AppContainer 诊断移至独立、默认关闭的 `workflow_dispatch` 选项。手工显式开启时，原 x64/ARM64 诊断步骤仍运行并保留失败结果；没有删除测试、忽略失败或将其改写成通过。
 - **边界：**主 CI 变绿只代表当前适用的 Windows 子项通过，不代表 R2.3 文件/网络/身份隔离已通过；Windows 自动模式继续关闭。真实 helper、setup/恢复、受限 token、ACL、WFP、Job 组合和 Windows 实机验收仍是完整 R2 的后续硬门槛。
 - **实跑结果：**[CI #163](https://github.com/ayukyo/icode/actions/runs/36175559660) 在该 workflow 结构下整体通过；Windows x64/ARM64 Job cleanup 与 wheel packaging、Python 3.11/3.12、Linux/macOS probes 均通过，已退役 AppContainer diagnostics 按默认配置跳过。这里的绿色只验证当前门禁配置及保留切片，没有任何完整 Windows sandbox 验收。
 
-### 2026-09-26 UTC：标准用户受限 token 派生可行性门
+### 2026-09-25 UTC：标准用户受限 token 派生可行性门
 
 - **实现观察点：**Codex `rust-v0.155.1` legacy runner 先用 `CreateProcessWithLogonW` 在 sandbox 本地账户中启动固定 runner；runner 从自身 primary token 派生 restricted token，再用 `CreateProcessAsUserW` 启动命令。[runner client](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/windows-sandbox-rs/src/elevated/runner_client.rs) · [token](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/windows-sandbox-rs/src/token.rs) · [process](https://github.com/openai/codex/blob/rust-v0.155.1/codex-rs/windows-sandbox-rs/src/process.rs)。源码调用链可读，但还不是普通用户 x64/ARM64 成功率证明。
 - **Win32 前提：**微软 API 文档指出，`CreateProcessAsUserW` 通常需要 `SeIncreaseQuotaPrivilege`，可能需要 `SeAssignPrimaryTokenPrivilege`；“受限为调用者自身 primary token”的例外仅涉及后一项。`CreateProcessWithLogonW` 则要求目标账户可本机交互登录且以明文密码参数调用；`CreateProcessWithTokenW` 需要 `SeImpersonatePrivilege`。[CreateProcessAsUserW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw) · [CreateProcessWithLogonW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw) · [CreateProcessWithTokenW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithtokenw)。
@@ -382,3 +382,13 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - **负例与发布成本：**强制验证错误口令/账户缺失、helper/可执行文件无 RX 权限、非管理员 token privilege 不足，以及失败时无目标 marker/子进程残留。公开 Codex issue 已有 `CreateProcessAsUserW` access denied（含 ARM64）与 per-user runtime 不可读案例，属单机报告，不推断故障率；ICODE 将其作为测试设计依据而非产品性能结论。[#37086](https://github.com/openai/codex/issues/37086) · [#36508](https://github.com/openai/codex/issues/36508) · [#38222](https://github.com/openai/codex/issues/38222)。正式发行仍须解决签名、SmartScreen、凭据/DPAPI ACL 与按用户 Python runtime 的兼容性；测试通过不代表这些发布门槛已关闭。
 - **本次前置探针范围：**当前新增代码仅执行双架构上的有效临时标准账户正向路径，并让 setup-python 显式选择 x64 / arm64 解释器；错误口令、账户缺失、无 RX、权限不足及无 marker / 无残留负例尚未实现。它们仍是后续 Windows helper / 执行器组合验收的硬门槛，绝不能据本探针通过开放 Windows 自动模式或报告 R2 完成。
 - **首轮原生执行及修正：**手动 CI [#166](https://github.com/ayukyo/icode/actions/runs/36181092112) 的 x64 与 ARM64 都完成了 `CreateProcessWithLogonW`、restricted token、`CreateProcessAsUserW` 与身份 SID 校验，但在管理员组诊断处以 `WinError 1309` 失败。微软文档规定传给 `CheckTokenMembership` 的非空 token handle 必须是 impersonation token；该探针当时传入的是子进程 primary token。因此这次失败属于诊断器调用错误，不能解释成标准用户 `CreateProcessAsUserW` 不可用。已改为用 `DuplicateToken(..., SecurityImpersonation)` 取得检查句柄并保证关闭；修正版双架构复测待跑，之前的失败原始记录保留。[CheckTokenMembership](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-checktokenmembership)
+
+### 2026-09-25 UTC：Windows token 修正版前的 macOS CI 复跑
+
+- CI [#167 首次尝试](https://github.com/ayukyo/icode/actions/runs/36181786438) 的测试、wheel、workspace、Linux、Apple Silicon 与 Windows Job/打包子项均通过；仅 macOS Intel broker 测试断言 `cleanup_failed`，另有研究对照日期误标 UTC 的提示。失败作业 attempt 2 通过，说明本次没有复现；没有采集到 `cleanup_errno`，因此不判定为系统行为或回收器根因。
+- 当时没有生产代码改动。本机同一策略 broker 测试连续 20 次通过仅是 Linux x86_64 对照，不替代 macOS 结果。失败后已把相关文档日期统一修正为 UTC；若该 Intel 清理断言再现，先补诊断 errno/进程状态，不先更改信号语义或引入 Apple private `proc_listpgrppids`。
+
+### 2026-09-25 UTC：CI #168 标准用户受限 token 正向路径
+
+- **原生复测：**手动 CI [#168 x64/ARM64](https://github.com/ayukyo/icode/actions/runs/36183275410) 的 `windows-latest` 与 `windows-11-arm` 均 `standard_user_token_probe=PASS`，回执字段为 `runner_standard_user=PASS`、`child_restricted=PASS`、`child_non_admin=PASS`、`child_identity=PASS`、`job_assignment=PASS`、`exit=PASS`。workflow 使用显式架构匹配的 Python，建立并最终移除随机临时普通账户；修正后的 impersonation-token membership 检查通过。
+- **采纳 / 暂缓：**只关闭“有效临时普通账户下 CreateProcessWithLogonW → restricted token → CreateProcessAsUserW 的正向可行性”门，不接产品执行器、不改变自动模式。错误密码/账号、可执行文件不可读、权限不足、失败无 marker/无残留、helper IPC、UAC setup/回滚、DPAPI/ACL/WFP 及真实用户 Windows 环境仍未验收。它们不通过前 R2 不得宣告完成。

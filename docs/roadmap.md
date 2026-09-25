@@ -347,7 +347,7 @@ R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#151：#91–#105 的�
 
 在既有 disposable staged Python 探针中新增 `LOCALAPPDATA`、`TEMP`、`TMP` 的 Python `os.environ` 与 Win32 `GetEnvironmentVariableW` 对照，并按脱敏类别检查路径状态；Actions notice 只含布尔值/固定类别，不含路径，纯测试另守 500 字符上限。该诊断没有修改 profile、ACL、环境变量或生产执行器。本机语法与摘要测试通过，但 Windows x64/ARM64 尚未跑这版；且即使结果一致，也不能将它等同 `0xC0000135` 根因。R2.3、完整 R2 与自动模式保持未完成/关闭。
 
-### 2026-09-26 UTC：CI #156 复核与 staged runtime image-mapping 探针
+### 2026-09-25 UTC：CI #156 复核与 staged runtime image-mapping 探针
 
 - CI [#156](https://github.com/ayukyo/icode/actions/runs/36155715717) 的 Windows x64/ARM64 `Verify AppContainer workspace, network denial, ACL revocation, and Job composition` 步骤均失败；macOS `macos-latest` 的 `Verify policy command broker` 步骤也失败。当前可读到的公开 job 状态只标记步骤失败，Actions 日志接口返回 403，故不猜具体断言或跨任务归因。其它平台 job 的通过不能替代这两项门禁。
 - **只读诊断实现（待新双架构 CI）：**在一次性 staged Python 诊断内，以 `CreateFileW(GENERIC_READ)` + `ReadFile(1 byte)` + `CreateFileMappingW(PAGE_READONLY | SEC_IMAGE_NO_EXECUTE)` + `MapViewOfFile(FILE_MAP_READ)`，分别观察原始/staged `python.exe` 与对应 `pythonXY.dll`；由普通宿主与 AppContainer 对同一文件集合做正向/差分对照。视图和句柄逐项释放；回执只含固定阶段标签、Win32 数值错误码与清理布尔值，状态用 `read|image` 短码表示，不含文件路径。该探针能区分文件数据读取和 PE image-section 映射，但不解析依赖闭包、不执行 DLL 初始化，也不等于完整进程 loader；不能仅凭结果指认 `0xC0000135` 根因。

@@ -120,7 +120,7 @@
 - **Gemini CLI：**固定复核 [`bedef96ef42905bd84a86dbec021c706168e7e2f`](https://github.com/google-gemini/gemini-cli/commit/bedef96ef42905bd84a86dbec021c706168e7e2f)。会话跟踪 private worktree 与实际 gitdir 的关系值得参考；其 grant 可按用户授权覆盖读或写，不是固定只读 Git 状态合同，因此不接入 ICODE 只读状态端口。
 - **采纳/成本/验收：**采纳 OS 强制只读的元数据根、可信会话身份重核、固定 Git 参数、失败不回宿主；暂缓任何跨平台工具接线。ICODE Linux status 原型仍未进入 `ToolContext`，ARM64、恶意仓库、并发身份漂移、超时/超量清理及 macOS/Windows 等价负例仍是门槛；在通过前，所有 unsupported layout/platform 均保持 `git_broker_unavailable`。本轮只借鉴机制，不复制上游代码或新增第三方依赖。
 
-## 2026-09-26 UTC 干净安装 wheel Git broker 闭环
+## 2026-09-25 UTC 干净安装 wheel Git broker 闭环
 
 - `scripts/run_native_wheel_ci.py` 现不只确认 wheel 内原生 helper 存在、可运行；完成隔离 venv 安装后，还用该 interpreter 执行 `scripts/probe_installed_git_broker.py`。探针只导入已安装 wheel 的 broker 与随包 Landlock helper，不从源码树导入实现、不在测试中重新编译 helper。
 - 临时 fixture 创建私有源仓与 `WorkspaceManager` 分层 worktree，验证 modified/untracked 状态；为同一仓库配置 hostile fsmonitor/external-diff 脚本并确认未产生 marker。随后用普通 Git status 正向确认 hostile clean filter 在受控 fixture 中会运行，再确认 broker 在执行 status 前 fail-closed 拒绝配置且不触发 filter。
