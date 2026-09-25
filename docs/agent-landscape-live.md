@@ -192,6 +192,12 @@
 - CPython [3.11 Windows 模块查找文档](https://docs.python.org/3.11/using/windows.html#finding-modules)及[3.12 对应文档](https://docs.python.org/3.12/using/windows.html#finding-modules)说明 `._pth`、`PYTHONHOME`、`pyvenv.cfg`、`Lib\\os.py`/`pythonXY.zip` 等影响模块搜索；这属于解释器进入后的模块/stdlib 路径，不能直接解释 Windows loader 的 `STATUS_DLL_NOT_FOUND`。Windows AppContainer [隔离文档](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation)说明文件能力依 ACL 授予，不能为排查而扩大成用户目录访问。
 - Harn v0.10.142 固定提交还会创建 profile `Temp` 目录（[源码行 395–420](https://github.com/burin-labs/harn/blob/8f9587982efa0d515230ee04ae4559fc60f1f394/crates/harn-vm/src/stdlib/sandbox/windows.rs#L395-L420)）；这只能作为隔离的目录准备 A/B 候选，不解释 `0xC0000135`，其环境块单测也不是原生 Python/AppContainer 验收。当前**优先**拿到直读 inventory 和具体 loader 依赖证据；**暂缓**`._pth`/`PYTHONHOME` 修改与 profile ACL 扩权，避免把模块搜索、临时目录和 DLL loader 混为同一根因。
 
+### 2026-09-25 UTC R2.3 CI #124：隔离直读步骤
+
+- CI [#124 x64](https://github.com/ayukyo/icode/actions/runs/36086599173/job/107919764633) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36086599173/job/107919764585) 仍因 AppContainer Python `0xC0000135` 失败，profile marker 缺失；R2.1 三平台、Python 3.11/3.12 通用任务和 R2.2 Linux/macOS 原生子项通过。
+- 将 inventory notice 移到四样本断言之前后，#124 的综合作业 annotations 仍未出现 inventory 或逐文件 notice；该公开摘要不能证明测试未运行，也不能说明异常位置。下一轮在完整 Windows 验收步骤之前单独运行直读单测（其失败 `continue-on-error`，完整套件仍会重复并保留正式门禁），以便独立取得 traceback 和路径脱敏回执。
+- 对照 CI #124 的公开结果仍未证明 profile 子目录、DLL 搜索路径或 ACL 中哪一项导致退出；继续按固定标签输出，保持不继承宿主完整 `PATH`、不扩大 ACL、不开放自动模式。
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
 
 ### 2026-09-25 UTC R2.3 临时路径与环境块复核

@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #123 x64/ARM64 仍观察到 Python `0xC0000135`、profile marker 缺失；#123 未出现运行时文件直读 notice。代码复核发现候选数量 `>=4` 断言早于所有直读 notice，现补固定标签/数量 inventory notice，下一轮确认候选清单是否满足门槛；未确认原因前不改 ACL、不创建 runtime/profile 路径、不开放自动模式。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #124 x64/ARM64 仍观察到 Python `0xC0000135`、profile marker 缺失；综合作业 annotations 仍没有 runtime direct-read inventory/逐文件 notice，无法从公开摘要判断测试是否运行或在哪处失败。新增独立直读 CI 步骤以收集该探针的单独回执；在其与综合门槛实测通过前不改 ACL、不创建 runtime/profile 路径、不开放自动模式。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -184,3 +184,9 @@ Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve
 - 复核发现 `len(runtime_files) >= 4` 的样本门槛在 notice 之前执行，因此 #123 未给出候选清单证据。增加候选/可用样本数及固定标签 notice，保留原四样本门槛；仍不输出路径，不把 DLL 状态码解释为具体依赖或 ACL 失败。
 - Windows SDK `ntstatus.h` 固定版本定义 `0xC0000135` 为 `STATUS_DLL_NOT_FOUND`（[SDK 源码](https://github.com/microsoft/win32metadata/blob/1bfb76db1c360653bdcb56512af0fdf987aceab8/generation/WinSDK/RecompiledIdlHeaders/shared/ntstatus.h#L4921-L4927)）；微软[DLL 搜索顺序](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order)显示直接或传递依赖搜索不等同于顶层 EXE 可执行路径。ICODE 最小环境 `PATH` 仅含 EXE 父目录和 System32，尚未验证完整 DLL 依赖闭包。CPython `._pth`/`PYTHONHOME`/`pyvenv.cfg` 影响解释器模块搜索（[3.11 文档](https://docs.python.org/3.11/using/windows.html#finding-modules)），但目前无进程已进入 Python 的证据，故暂缓改动这些设置。
 - Harn v0.10.142 固定源码在 profile 下创建 `Temp` 目录（[行 395–420](https://github.com/burin-labs/harn/blob/8f9587982efa0d515230ee04ae4559fc60f1f394/crates/harn-vm/src/stdlib/sandbox/windows.rs#L395-L420)），可作单变量目录准备 A/B，但这并不解释 DLL 状态码；先完成 inventory/direct-read 与依赖闭包证据，再考虑低风险可撤销实验，不继承完整宿主 `PATH` 或递归授权 runner/home。
+
+### 2026-09-25 UTC CI #124 与独立直读步骤
+
+- [CI #124 x64](https://github.com/ayukyo/icode/actions/runs/36086599173/job/107919764633) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36086599173/job/107919764585) 均在综合 AppContainer 测试失败，Python `0xC0000135`、profile marker 缺失；R2.1、通用 Python 3.11/3.12 和 R2.2 非 Windows 子项通过。
+- #124 未显示 #123 代码调整后新增的 inventory notice。公开 annotations 只给 workflow command 失败，不足以判断单测未执行、候选构造异常或平台 notice 收集限制。新增单独执行该单测的 Windows CI 步骤，并将该诊断步骤设为可继续；完整单测仍保留原正式门禁并再次运行该用例。
+- 不新增权限或解释器环境变更。下一轮依据独立步骤的可用标签数及每文件 `copy_error_class`、启动状态、清理状态决定是否扩充运行时依赖样本；读取成功只证明文件内容可读/复制，不单独证明 DLL 可映射执行。
