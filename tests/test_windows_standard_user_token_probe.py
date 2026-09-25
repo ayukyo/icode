@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 
 from scripts.windows_standard_user_token_probe import (
@@ -17,6 +20,57 @@ from scripts.windows_standard_user_token_probe import (
 
 
 class TestWindowsStandardUserTokenProbe(unittest.TestCase):
+    def test_checkout_script_imports_package_without_pythonpath(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        environment = os.environ.copy()
+        environment.pop("PYTHONPATH", None)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-S",
+                str(repository / "scripts" / "windows_standard_user_token_probe.py"),
+                "--invalid-test-argument",
+            ],
+            cwd=repository,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("restricted_token_probe_arguments_invalid", result.stdout)
+
+    def test_staged_runner_imports_its_copied_package_from_pythonpath(self) -> None:
+        repository = Path(__file__).resolve().parents[1]
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = ""
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            scratch = Path(temporary_directory)
+            staged = stage_runner_script(
+                repository / "scripts" / "windows_standard_user_token_probe.py",
+                scratch,
+            )
+            environment["PYTHONPATH"] = str(scratch / "runner-lib")
+            result = subprocess.run(
+                [
+                    sys.executable, "-S", str(staged),
+                    "--invalid-test-argument",
+                ],
+                cwd=scratch,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("restricted_token_probe_arguments_invalid", result.stdout)
+
     def test_runner_success_classifier_requires_all_gate_results(self) -> None:
         self.assertTrue(runner_probe_succeeded(
             "runner_standard_user=PASS;child_restricted=PASS;child_non_admin=PASS;"

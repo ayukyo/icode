@@ -21,6 +21,12 @@ import tempfile
 import threading
 import time
 
+_SOURCE_PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src"
+if (_SOURCE_PACKAGE_ROOT / "icode").is_dir():
+    # Running this file directly sets sys.path[0] to scripts/, not the
+    # repository's src/ tree; Windows CI intentionally has no PYTHONPATH.
+    sys.path.insert(0, str(_SOURCE_PACKAGE_ROOT))
+
 from icode.windows_runner_pipe import (
     create_runner_pipe_server,
     new_runner_pipe_name,
