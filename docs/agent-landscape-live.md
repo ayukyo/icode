@@ -198,6 +198,13 @@
 - 将 inventory notice 移到四样本断言之前后，#124 的综合作业 annotations 仍未出现 inventory 或逐文件 notice；该公开摘要不能证明测试未运行，也不能说明异常位置。下一轮在完整 Windows 验收步骤之前单独运行直读单测（其失败 `continue-on-error`，完整套件仍会重复并保留正式门禁），以便独立取得 traceback 和路径脱敏回执。
 - 对照 CI #124 的公开结果仍未证明 profile 子目录、DLL 搜索路径或 ACL 中哪一项导致退出；继续按固定标签输出，保持不继承宿主完整 `PATH`、不扩大 ACL、不开放自动模式。
 
+### 2026-09-25 UTC R2.3 CI #125：Python runtime 最小只读授权候选
+
+- [CI #125 x64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/107921726078) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/107921726100) 的独立 AppContainer 直读探针都执行完成。inventory 为 6 个候选、5 个可用；两架构的 System32 控制可读，Python EXE、Python 共享库、`pathlib.py` 和 `encodings/__init__.py` 均报告 `access_denied`。完整 Python 仍以 `0xC0000135` 退出。逐项通知不含源路径，并显示清理成功。
+- **采纳进入下一步验证：**把子进程 Python runtime 的只读执行依赖，与 Agent 文件工具可读范围分开设计；只针对经过边界校验的 runtime roots 做原生双架构 A/B，检查读取/执行放行、写入拒绝、DACL 精确恢复和 AppContainer SID 无残留。
+- **暂缓：**直接授权整个 home、PATH 中所有目录或完整工具链 preset。CI 直读拒绝是文件读取证据，不是 DLL loader 完整依赖因果证明；尚无 DACL A/B 结果。Harn v0.10.142 的 roots/preset ACL 仍仅作架构参考，其测试没有提供该 Windows 原生 Python/AppContainer 证据。
+- 验收前置：拒绝 UNC、卷根、用户凭据目录、与写入工作区重叠、reparse point/hardlink 或 DACL 无法精确快照的根；任何授权/恢复失败均中止命令并保留 fail-closed。即使逐文件读取转为成功，也不能单独宣称 `0xC0000135` 已修复或 Windows R2.3 已通过。
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
 
 ### 2026-09-25 UTC R2.3 临时路径与环境块复核

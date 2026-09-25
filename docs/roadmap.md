@@ -309,6 +309,10 @@ CI [#123](https://github.com/ayukyo/icode/actions/runs/36085435118) 的 Windows 
 
 CI [#124](https://github.com/ayukyo/icode/actions/runs/36086599173) 的 Windows x64 与 ARM64 仍在 Python 3.11 AppContainer `0xC0000135` 失败，profile marker 缺失；其余平台、Python 通用测试和 R2.2 子项通过。即使把 inventory notice 前移到候选数断言前，综合作业 annotations 仍未显示该探针结果，公开摘要不足以判断方法是否执行或实际失败位置。下一轮在综合步骤前独立运行直读单测，诊断步骤失败允许继续，综合测试仍作为正式门槛重跑全部用例。Windows R2.3、完整 R2 与自动模式继续关闭。
 
+### 2026-09-25 UTC：CI #125 双架构 Python runtime 直读结果
+
+CI [#125 x64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/107921726078) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36087232240/job/107921726100) 的独立直读步骤均执行完成，候选清单为 6 项、可用 5 项。两架构 `system32_control` 均为 `read_ok`；`python_executable`、`python_shared_library`、`stdlib_pathlib`、`stdlib_encodings` 均为 `access_denied`，复制探针退出 1 且清理为真。综合 AppContainer Python 仍退出 `0xC0000135`，profile marker 缺失，因此 #125 整轮失败；其余平台阶段矩阵通过。该证据优先支持验证 Python runtime root 的读取边界，但不能确认具体 DLL、证明映射失败由 ACL 单独导致，也不是 Windows 文件/网络隔离验收。生产 ACL 未改；下一步仅做经校验 runtime roots 的读取/执行授权 A/B，并测试写拒绝、精确 DACL 恢复、SID 残留、Python 启动及既有工作区/网络门禁。任一失败即保留 fail-closed；Windows 自动模式与完整 R2 仍未验收。
+
 设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
 [R2.0 policy contract 实施计划](./nbl/plans/2026-09-23-r2-policy-contract.md) ·
 [R2.1 工作区与租约实施计划](./nbl/plans/2026-09-23-r2-workspace-lease.md) ·
@@ -317,7 +321,7 @@ CI [#124](https://github.com/ayukyo/icode/actions/runs/36086599173) 的 Windows 
 [R2.4 Git 状态代理门禁](./nbl/plans/2026-09-24-r2-git-broker-gate.md) ·
 [R2.4 临时网络授权门禁](./nbl/plans/2026-09-24-r2-network-proxy-gate.md)
 
-R2.3 Windows AppContainer 原生探针现已有 CI #91–#112 结果；Windows x64 与 ARM64 的 #91–#105 原生启动探针多轮返回 `CreateProcessW` 错误码 203，#105 固定 whoami A/B 发现设置 profile `LOCALAPPDATA` 后启动成功。常规路径接入后，#106–#112 的 Python 均退出 `0xC0000135`。#112 的同载荷 `process_limit=2` 正对照与 `process_limit=1` 负对照在双架构均通过组件断言（负例无子 marker、启动状态 1816）；profile 路径仍在 AppContainer 内不可见、marker 两架构均缺失。工作区/网络与后代清理 notice 只是子项证据。微软启动指南称 profile 是 AppContainer 可创建/读写的数据位置，但路径查询本身不创建目录或改 ACL；当前先核对容器实际 SID、环境路径与逐段访问回执，不扩大 ACL。自动模式继续关闭。普通 Job 对照双架构通过；属性查询 122/48 为预期，runner 根因未证实。macOS Intel/ARM64 的脱组后代握手负例在 #101 通过，按已批准的 Codex 式边界验收。Windows AppContainer 仍为实验态，不接自动工单。
+R2.3 Windows AppContainer 原生探针已覆盖 CI #91–#125：#91–#105 的启动差分曾返回 `CreateProcessW` 错误 203，#105 固定 whoami A/B 发现加入 profile `LOCALAPPDATA` 后可启动；其后 Python 主探针一直退出 `0xC0000135`。#112 的 `process_limit=2/1` 同载荷正反对照双架构通过组件断言。最新 #125 x64/ARM64 直读样本显示 System32 控制可读，而 Python EXE、共享库、`pathlib.py`、`encodings` 均被拒绝读取；此证据支持优先验证 runtime-root ACL，但不证明具体 DLL 加载原因。工作区、网络与后代清理 notice 仍只是子项证据。Windows 自动模式继续关闭，R2.3 与完整 R2 未完成；下一步仅在原生双架构运行严格只读授权、写拒绝及 DACL 回滚 A/B。普通 Job 对照双架构通过；macOS Intel/ARM64 脱组后代按已批准的 Codex 式边界验收。
 
 CI [#105 x64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836254760) 与 [#105 ARM64](https://github.com/ayukyo/icode/actions/runs/36059960206/job/107836255639) 的固定 whoami 同-profile A/B 均显示：省略容器 `LOCALAPPDATA` 时 `CreateProcessW` 返回 203，加入系统 API 返回的 profile 路径后成功且清理通过；但当时完整 AppContainer 流程的常规命令尚未带该变量，整组作业仍失败。当前代码已将容器专属路径接入常规 AppContainer 命令及撤权探针，并新增路径查询失败不启动、准确报告清理状态、临时 profile 数据目录删除/残留核验的测试；这条常规路径尚待新的 Windows x64/ARM64 CI。Windows AppContainer 与完整 R2 仍未验收，自动模式保持关闭。
 
