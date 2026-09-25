@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #119 x64/ARM64 删除前均确认 actual `LOCALAPPDATA` 唯一，宿主 `stat` 为 `not_found`、actual 是 API 路径子项且与 API 目录非同一对象；Python 仍以 `0xC0000135` 退出。当前只比较 actual 是否恰为官方示例中的 API `Temp` 子目录，并缩短脱敏 CI notice；不记录路径、不使用宿主路径或放宽 ACL。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #120 x64/ARM64 删除前均确认 actual `LOCALAPPDATA` 唯一、与显式注入的 API 路径 alias 不相等、宿主 `stat=not_found`，且 actual 位于 API profile 下方但不是 API `Temp`；具体子目录尚未分类。Python 仍以 `0xC0000135` 退出，当前不能认定两者存在因果关系。本地已补充脱敏子目录分类，等待 CI #121 双架构回执；不记录路径、不使用宿主路径或放宽 ACL。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与边界
@@ -157,5 +157,11 @@ Windows 实验用例覆盖目标：在 AppContainer 中启动 Python 并 resolve
 
 ### 2026-09-25 UTC 追加：默认临时路径与自定义环境块
 
-- Microsoft [GetTempPath2W](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppath2w) 对非 SYSTEM 进程按 `TMP`、`TEMP`、`USERPROFILE`、Windows 目录顺序选路径，且不检查目录是否存在或当前进程是否有权限。ICODE 显式把前三项指向工单工作区，所以 `LOCALAPPDATA` 位于 profile 子目录并不能解释 TEMP 路由或 Python 加载失败；本轮 API `Temp` 比较只判路径归属。
-- [CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile) 说明 profile 文件夹受 ACL 保护，但没有保证 Temp 子目录预创建。[io-harness 0.86.0 固定源码](https://docs.rs/io-harness/0.86.0/src/io_harness/sandbox/appcontainer.rs.html#1045-1114)也构造显式环境块并将临时目录放进其授权工作区。取舍：**采纳**由可信调用方显式构造环境块、明确设置 TMP/TEMP 的机制（ICODE 已实现）；**暂缓**复制 Rust 实现及扩大运行时 ACL。若 API `Temp` 比较不能解释当前观测，再评估小型原生 Win32 probe；须沿用同 SID/Job、脱敏结果、不改 ACL，并限制编译并行度不超过 6。
+- Microsoft [GetTempPath2W](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettemppath2w) 对非 SYSTEM 进程按 `TMP`、`TEMP`、`USERPROFILE`、Windows 目录顺序选路径，且不检查目录是否存在或当前进程是否有权限。ICODE 显式把前三项指向工单工作区，所以 `LOCALAPPDATA` 位于 profile 子目录并不能解释 TEMP 路由或 Python 加载失败；CI #120 的 `api_temp=false` 只排除与 API `Temp` 完全相同。
+- [CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile) 说明 profile 文件夹受 ACL 保护，但没有保证 `Temp`、`Local` 或 `LocalState` 子目录预创建。[io-harness 0.86.0 固定源码](https://docs.rs/io-harness/0.86.0/src/io_harness/sandbox/appcontainer.rs.html#1045-1114)也构造显式环境块并将临时目录放进其授权工作区。取舍：**采纳**由可信调用方显式构造环境块、明确设置 TMP/TEMP 的机制（ICODE 已实现）；**暂缓**复制 Rust 实现及扩大运行时 ACL。FastRender 固定提交 `19bf1036105d4eeb8bf3330678b7cb11c1490bdc` 同样只显式重设 `TEMP/TMP`，未提供 `LOCALAPPDATA` 重写证据，故不据此推断 Windows 机制。下一步先用不输出路径的白名单分类探针区分 `Temp`、`Local`、`LocalState`、其他单层/多层子路径；沿用同 SID/Job，不改 ACL，不新增编译。
+
+### 2026-09-25 UTC CI #120 回执与 #121 探针
+
+- [CI #120 x64](https://github.com/ayukyo/icode/actions/runs/36081977910/job/107905707747) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36081977910/job/107905707999) 的脱敏 notice 均为 `alias_match=false`、`equals_api=false`、`relation=api_child`、`api_temp=false`、`stat=not_found`、profile marker 缺失，Python 仍退出 `0xC0000135`。这证明当前子进程观察到的值不同于环境块中传入的 API 路径，但具体后缀未知，且不能推断路径差异导致 Python 加载失败。
+- 微软 [AppContainer 启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)只示例 `LOCALAPPDATA=...\\AC`、`TEMP/TMP=...\\AC\\Temp`；[GetAppContainerFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath) 定义 LocalAppData 返回值，[CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile) 未保证特定子目录。没有官方依据把 MSIX `LocalState` 推定为桌面 AppContainer profile 的子目录。
+- 新增脱敏分类器只输出 `api_child_temp`、`api_child_local`、`api_child_local_state`、`api_child_other` 或 `api_child_nested` 等固定类别，不输出任意后缀。CI #121 待验证分类器及完整原生探针；在双架构结果出来前不创建猜测目录、不放宽 ACL、不开放自动模式。

@@ -289,6 +289,10 @@ Linux 本地回归验证了同工单两进程互斥、worker 退出后释放租�
 R2.2 已合入 main 持续验证 Linux/macOS 原生后端。[CI #85](https://github.com/ayukyo/icode/actions/runs/36001610973) 的 Ubuntu 22.04/24.04 x64/ARM64 原生与 wheel 测试全部通过，只验收 Linux PID 清理子项；两平台完整退出条件尚未通过，自动模式仍阻断。R2.3 当前开发 Windows AppContainer + Job Object 的原生实验；CI #91–#105 的 Windows AppContainer 原生启动探针多轮返回 `CreateProcessW` 错误 203，#105 固定 whoami 对照发现需设置 profile `LOCALAPPDATA`。常规路径接入后，CI #106–#111 的 Python 仍退出 `0xC0000135`；#110 的工作区/网络和后代清理组件 notice 通过，但 profile marker 两架构均未写入，进程数正反对照不确定。#111 发现测试诊断时序和 CMD 状态行编码有误，未运行 `process_limit=1` 负例；这些属于 harness 问题，不产生新的隔离结论。CI #96–#102 普通 Job 对照双架构通过，#104 windows-latest 普通 Job 正向对照也成功；#102 属性大小查询 122/48 字节符合 Win32 预期。不得据子项通过认定 Windows 隔离完成，自动模式继续关闭。macOS Intel/ARM64 的脱组后代握手负例在 #101 通过，按已批准的 Codex 式边界验收。默认无网络能力的 AppContainer 是候选实现，域名代理仍需独立网络强制机制。R2.4 Git 仅完成不执行 Git 的 porcelain v2 字节解析器前置模块；`git_broker_unavailable` 不变，可信会话绑定、元数据只读、helper 禁止、无网络、原仓不变及跨平台恶意仓库负例尚待实现/验收。R2.4 网络代理已新增 `NetworkLease` 范围校验和本机审批/HMAC/内存撤销 authority；最长租期 15 分钟，绑定策略摘要与工单步骤。但它未创建代理、未接入执行器，也未设置 OS 强制路由，联网保持关闭；点时验证与未来连接建立间还存在撤销竞态，代理须解决原子连接登记和到期/撤销关闭。已研究建议 Linux 先做 netns + 可信桥接 HTTP(S) 切片，macOS/Windows 在各自 OS 级门禁通过前保持 DENY。R2.5 负责安装引导和发布矩阵。开发期线上只保留 main，不以合入主线代替阶段验收。
 完整 R2 的验收门槛仍是 Linux、macOS、Windows 每个平台均达到 ≥9/10，且 8 项 critical 全部通过。
 
+### 2026-09-25 UTC：CI #120 交叉平台回执
+
+CI [#120](https://github.com/ayukyo/icode/actions/runs/36081977910) 中 R2.1 工作区三平台、Python 3.11/3.12 与 R2.2 Linux/macOS 原生探针矩阵均通过，官网工作流 [#55](https://github.com/ayukyo/icode/actions/runs/36081977987) 通过。Windows x64 与 ARM64 AppContainer 作业仍失败：两架构均见 Python `0xC0000135`；actual `LOCALAPPDATA` 键唯一，CMD 对显式注入的 API 路径 alias 比较为不相等，宿主 `stat=not_found`，路径位于 API profile 下方但不是 API `Temp`，profile marker 缺失。具体子目录尚未分类，不能推断与 Python 加载失败有因果关系。工作区、网络和 Job 子项的通过 notice 仍只是组件证据。故 R2.2 的当前原生探针矩阵通过但完整阶段门槛未闭合；R2.3、R2 全阶段与 `policy_contract_ready` 均未通过，自动模式继续关闭。
+
 设计与实施依据：[R2 跨平台隔离设计](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md) ·
 [R2.0 policy contract 实施计划](./nbl/plans/2026-09-23-r2-policy-contract.md) ·
 [R2.1 工作区与租约实施计划](./nbl/plans/2026-09-23-r2-workspace-lease.md) ·

@@ -169,6 +169,13 @@
 - CI [#118](https://github.com/ayukyo/icode/actions/runs/36079893851) 的 x64 job [107899342238](https://github.com/ayukyo/icode/actions/runs/36079893851/job/107899342238) 与 ARM64 job [107899342205](https://github.com/ayukyo/icode/actions/runs/36079893851/job/107899342205) 删除前采样一致：Unicode 输出有效、actual `LOCALAPPDATA` 键唯一，但 `Path.is_dir` 与 `samefile(API path)` 均为 false；旧取样没有区分 not-found 与 access-denied。profile/ Python 门槛仍失败。下一轮在删除前只记录宿主 `stat` 类别与 actual/API 父子同级关系，以区分目录缺失、访问拒绝及路径重定位，不披露原始路径。
 - CI [#119](https://github.com/ayukyo/icode/actions/runs/36080610266) 的 Windows x64/ARM64 均失败：actual `LOCALAPPDATA` 在 API profile 路径之下、宿主 `stat=not_found`、与 API 目录不是同一对象，Python 仍退出 `0xC0000135`。微软启动指南的默认环境示例把 `TEMP/TMP` 放在 `AC\\Temp`，但没有界定自定义环境块下 `LOCALAPPDATA` 是否会被重写。下一轮只比较脱敏布尔值“actual 等于 API `Temp` 子目录”，并压短 Actions notice 以保留字段；不改 ACL 或记录路径。
 
+### 2026-09-25 UTC R2.3 `LOCALAPPDATA` 子目录分类复核
+
+- CI [#120 x64](https://github.com/ayukyo/icode/actions/runs/36081977910/job/107905707747) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36081977910/job/107905707999) 的实际环境值均不等于显式传入的 API 路径 alias，位于 API profile 路径下方但不是 `Temp`，宿主 `stat=not_found`；Python 均以 `0xC0000135` 退出。CI 只证明观测差异，不证明它与 Python 加载失败有因果关系。
+- 微软 [AppContainer 启动指南](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)展示默认环境 `LOCALAPPDATA=...\\AC` 与 `TEMP/TMP=...\\AC\\Temp`，没有说明自定义环境块里 `LOCALAPPDATA` 是否被系统重写；[GetAppContainerFolderPath](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getappcontainerfolderpath)及[CreateAppContainerProfile](https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-createappcontainerprofile)也没有规定 `AC\\Local` / `AC\\LocalState` 等具体子目录。不得套用 MSIX 包应用目录约定或自行创建目录。
+- FastRender 固定观察提交 [`19bf1036105d4eeb8bf3330678b7cb11c1490bdc`](https://github.com/wilsonzlin/fastrender/blob/19bf1036105d4eeb8bf3330678b7cb11c1490bdc/src/sandbox/windows.rs)显式构造环境块并设置 `TEMP/TMP`，没有 `LOCALAPPDATA` 重写实现或原生实测。ICODE **采纳**显式、最小环境块及任务临时目录路由（现有实现）；**暂缓**照搬其 Rust 代码或推断其能解释当前差异。
+- ICODE 下一项用固定白名单只记录 API 子路径类别（`Temp`、`Local`、`LocalState`、其他单层、多层），保留直接 alias 比较，不向 Actions 输出实际路径。此分类探针已本地通过，等待 CI #121 的 Windows 双架构回执；在查明后缀前不创建猜测目录、不改 ACL、不将 Windows 自动模式接入。
+
 本页记录的是设计依据和阶段候选，不等于交付证明；交付状态以[路线图](./roadmap.md)、测试和线上 CI 为准。
 
 ### 2026-09-25 UTC R2.3 临时路径与环境块复核

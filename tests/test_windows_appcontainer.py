@@ -81,7 +81,15 @@ class TestWindowsAppContainer(unittest.TestCase):
         except ValueError:
             return "other"
         if common_path == expected_path:
-            return "api_child"
+            relative_path = ntpath.relpath(actual_path, expected_path)
+            components = relative_path.split(ntpath.sep)
+            if len(components) != 1:
+                return "api_child_nested"
+            return {
+                "temp": "api_child_temp",
+                "local": "api_child_local",
+                "localstate": "api_child_local_state",
+            }.get(components[0].casefold(), "api_child_other")
         if common_path == actual_path:
             return "api_parent"
         if ntpath.dirname(actual_path) == ntpath.dirname(expected_path):
@@ -155,11 +163,25 @@ class TestWindowsAppContainer(unittest.TestCase):
             [r"LOCALAPPDATA=C:\profile\AC\Temp"], ["C:\\profile\\AC\\Temp\\"],
         ))
 
-    def test_profile路径关系只返回结构类别(self) -> None:
+    def test_profile路径关系只返回脱敏子目录类别(self) -> None:
         expected = r"C:\Users\runner\AppData\Local\Packages\icode\AC"
         self.assertEqual(self._profile_path_relation(expected + "\\", expected), "exact")
         self.assertEqual(
-            self._profile_path_relation(expected + r"\Temp", expected), "api_child",
+            self._profile_path_relation(expected + r"\Temp", expected), "api_child_temp",
+        )
+        self.assertEqual(
+            self._profile_path_relation(expected + r"\Local", expected), "api_child_local",
+        )
+        self.assertEqual(
+            self._profile_path_relation(expected + r"\LocalState", expected),
+            "api_child_local_state",
+        )
+        self.assertEqual(
+            self._profile_path_relation(expected + r"\Private", expected), "api_child_other",
+        )
+        self.assertEqual(
+            self._profile_path_relation(expected + r"\Temp\Nested", expected),
+            "api_child_nested",
         )
         self.assertEqual(self._profile_path_relation(ntpath.dirname(expected), expected), "api_parent")
         self.assertEqual(
@@ -438,7 +460,6 @@ class TestWindowsAppContainer(unittest.TestCase):
         marker_present_before_delete: list[bool] = []
         profile_actual_stat_before_delete: list[str] = []
         profile_actual_relation_before_delete: list[str] = []
-        profile_actual_matches_api_temp_before_delete: list[bool] = []
         profile_actual_samefile_as_api_before_delete: list[bool] = []
         marker_name = "icode-profile-lifecycle-probe.txt"
         delete_profile = _delete_appcontainer_profile
@@ -464,7 +485,6 @@ class TestWindowsAppContainer(unittest.TestCase):
             marker_present_before_delete.append(marker_path.is_file())
             actual_stat_class = "unavailable"
             actual_path_relation = "unavailable"
-            actual_matches_api_temp = False
             actual_samefile_as_api = False
             try:
                 unicode_status = self._read_cmd_exit_status(profile_env_unicode_status)
@@ -478,16 +498,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                         actual_path_relation = self._profile_path_relation(
                             actual_paths[0], localappdata,
                         )
-                        actual_matches_api_temp = self._profile_env_matches_api(
-                            unicode_output, [ntpath.join(localappdata, "Temp")],
-                        )
                         if actual_stat_class == "directory":
                             actual_samefile_as_api = Path(actual_paths[0]).samefile(localappdata)
             except (OSError, UnicodeDecodeError, ValueError):
                 pass  # Diagnostic failure must not prevent the real profile cleanup.
             profile_actual_stat_before_delete.append(actual_stat_class)
             profile_actual_relation_before_delete.append(actual_path_relation)
-            profile_actual_matches_api_temp_before_delete.append(actual_matches_api_temp)
             profile_actual_samefile_as_api_before_delete.append(actual_samefile_as_api)
             return delete_profile(profile, userenv, localappdata)
 
@@ -631,7 +647,6 @@ class TestWindowsAppContainer(unittest.TestCase):
             f"equals_host={profile_unicode_env_matches_host} alias_match={profile_env_equals_api} "
             f"actual={profile_unicode_actual_value_defined} "
             f"stat={profile_actual_stat_before_delete} relation={profile_actual_relation_before_delete} "
-            f"api_temp={profile_actual_matches_api_temp_before_delete} "
             f"same_api={profile_actual_samefile_as_api_before_delete} "
             f"dir_before={profile_directory_exists_before_launch} visible={profile_directory_visible} "
             f"write={profile_write_status_value}/{profile_write_error_class} "
