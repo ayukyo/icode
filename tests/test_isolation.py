@@ -774,6 +774,124 @@ class TestSandboxWrapping(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         sandbox._checked_policy_workspace(changed)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux Git 元数据只读授权")
+    def test_landlock_Git元数据根必须明确且与工作区隔离(self) -> None:
+        with temp_workspace() as root:
+            workspace = root / "code"
+            workspace.mkdir()
+            metadata = root / "gitdir"
+            metadata.mkdir()
+            sandbox = LandlockSandbox(helper="/not-needed-for-static-check")
+
+            self.assertEqual(
+                sandbox._validated_metadata_roots(workspace, (metadata,)),
+                (metadata.resolve(),),
+            )
+            for roots in (
+                (workspace,),
+                (root,),
+                (Path("/"),),
+                (Path("/usr"),),
+                (Path.home(),),
+                (Path(sys.prefix),),
+                (root / "missing",),
+                ("not-a-path-sequence",),
+            ):
+                with self.subTest(roots=roots):
+                    with self.assertRaises(ValueError):
+                        sandbox._validated_metadata_roots(workspace, roots)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc"),
+                         "需要 Linux C 编译器验证只读 Git 元数据边界")
+    def test_landlock_Git元数据根只读且不可执行(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "native" / "linux" / "icode_landlock.c"
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                 str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            manifest = root / "icode-landlock.sha256"
+            manifest.write_text(hashlib.sha256(helper.read_bytes()).hexdigest() + "\n",
+                                encoding="ascii")
+
+            workspace = root / "code"
+            workspace.mkdir()
+            metadata = root / "gitdir"
+            metadata.mkdir()
+            index = metadata / "index"
+            index.write_text("index-data\n", encoding="ascii")
+            hook_marker = workspace / "hook-ran"
+            hook = metadata / "hook"
+            hook.write_text(f"#!/bin/sh\ntouch {hook_marker}\n", encoding="utf-8")
+            hook.chmod(0o755)
+            outside = root / "not-authorized"
+            outside.write_text("secret\n", encoding="ascii")
+
+            policy = SandboxPolicy(
+                schema_version=1, run_id="git-ro-test", ticket_id="git-ro-test",
+                step="code", workspace_root=workspace.resolve(),
+                read_roots=(workspace.resolve(),), write_roots=(workspace.resolve(),),
+                deny_read_roots=(), deny_write_roots=(),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+            )
+            sandbox = LandlockSandbox(helper=str(helper), manifest=str(manifest))
+            script = """
+from pathlib import Path
+import subprocess
+import sys
+
+meta, work, outside = sys.argv[1:]
+assert (Path(meta) / "index").read_text() == "index-data\\n"
+(Path(work) / "allowed-write").write_text("ok")
+
+def must_be_denied(action, label):
+    try:
+        action()
+    except PermissionError:
+        return
+    raise AssertionError(f"unexpected permission: {label}")
+
+must_be_denied(lambda: (Path(meta) / "index").write_text("changed"), "overwrite")
+must_be_denied(lambda: (Path(meta) / "new-index").write_text("new"), "create")
+must_be_denied(lambda: Path(outside).read_text(), "outside read")
+try:
+    run = subprocess.run([str(Path(meta) / "hook")], check=False)
+except PermissionError:
+    pass
+else:
+    assert run.returncode != 0, run.returncode
+assert not (Path(work) / "hook-ran").exists()
+print("metadata-read-only-ok")
+"""
+            result = subprocess.run(
+                sandbox._wrap_policy_with_metadata_roots(
+                    ["/usr/bin/python3", "-c", script,
+                     str(metadata), str(workspace), str(outside)],
+                    policy=policy, metadata_roots=(metadata,),
+                ),
+                capture_output=True, text=True, timeout=6, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("metadata-read-only-ok", result.stdout)
+            self.assertEqual(index.read_text(encoding="ascii"), "index-data\n")
+            self.assertFalse((metadata / "new-index").exists())
+            self.assertFalse(hook_marker.exists())
+
+            no_metadata_grant = subprocess.run(
+                sandbox.wrap_policy(
+                    ["/usr/bin/python3", "-c",
+                     "from pathlib import Path; import sys; Path(sys.argv[1]).read_text()",
+                     str(index)],
+                    policy=policy,
+                ),
+                capture_output=True, text=True, timeout=6, check=False,
+            )
+            self.assertNotEqual(no_metadata_grant.returncode, 0)
+            self.assertIn("PermissionError", no_metadata_grant.stderr)
+
     def test_基线包装是恒等变换(self) -> None:
         sb = NoIsolation()
         argv = ["python", "-m", "unittest"]

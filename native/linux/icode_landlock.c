@@ -45,6 +45,7 @@
 
 #define FS_READ (LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | \
                  LANDLOCK_ACCESS_FS_READ_DIR)
+#define FS_METADATA_READ (LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR)
 #define FS_WRITE (LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REMOVE_DIR | \
                   LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_MAKE_CHAR | \
                   LANDLOCK_ACCESS_FS_MAKE_DIR | LANDLOCK_ACCESS_FS_MAKE_REG | \
@@ -72,7 +73,9 @@ static int add_path(int ruleset, const char *path, uint64_t rights, int required
 
 static int install_filesystem(const char *workspace,
                               const char *const *runtime_roots,
-                              size_t runtime_root_count) {
+                              size_t runtime_root_count,
+                              const char *const *metadata_roots,
+                              size_t metadata_root_count) {
     int abi = (int)syscall(SYS_landlock_create_ruleset, NULL, 0,
                            LANDLOCK_CREATE_RULESET_VERSION);
     /* ABI 3 is required to restrict both truncate and cross-directory refer. */
@@ -100,6 +103,10 @@ static int install_filesystem(const char *workspace,
     if (add_path(fd, workspace, FS_READ | FS_WRITE, 1) != 0) goto fail;
     for (size_t i = 0; i < runtime_root_count; ++i) {
         if (add_path(fd, runtime_roots[i], FS_READ, 1) != 0) goto fail;
+    }
+    for (size_t i = 0; i < metadata_root_count; ++i) {
+        /* Git metadata is readable for the fixed status broker but never executable. */
+        if (add_path(fd, metadata_roots[i], FS_METADATA_READ, 1) != 0) goto fail;
     }
     if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
         perror("PR_SET_NO_NEW_PRIVS");
@@ -381,7 +388,9 @@ static int child_status(int status) {
 
 static int run_namespace_init(int parent_pipe, const char *workspace,
                               const char *const *runtime_roots,
-                              size_t runtime_root_count, char **command,
+                              size_t runtime_root_count,
+                              const char *const *metadata_roots,
+                              size_t metadata_root_count, char **command,
                               int mapless) {
     /* Namespace PID 1 sees its parent as PID 0, so getppid cannot validate it. */
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
@@ -402,7 +411,8 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
     if (payload == 0) {
         close(parent_pipe);
         if (drop_payload_capabilities(mapless) != 0 ||
-            install_filesystem(workspace, runtime_roots, runtime_root_count) != 0 ||
+            install_filesystem(workspace, runtime_roots, runtime_root_count,
+                               metadata_roots, metadata_root_count) != 0 ||
             install_network_deny() != 0) _exit(1);
         execvp(command[0], command);
         perror("execvp");
@@ -427,7 +437,9 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
 
 static int supervise_task(pid_t host_parent, const char *workspace,
                           const char *const *runtime_roots,
-                          size_t runtime_root_count, char **command,
+                          size_t runtime_root_count,
+                          const char *const *metadata_roots,
+                          size_t metadata_root_count, char **command,
                           const char *setgroups_path,
                           const char *uid_map_path) {
     int mapless = enter_task_namespaces(host_parent, setgroups_path, uid_map_path);
@@ -446,8 +458,9 @@ static int supervise_task(pid_t host_parent, const char *workspace,
     }
     if (init == 0) {
         close(control[1]);
-        int result = run_namespace_init(control[0], workspace, runtime_roots,
-                                        runtime_root_count, command, mapless);
+        int result = run_namespace_init(
+            control[0], workspace, runtime_roots, runtime_root_count,
+            metadata_roots, metadata_root_count, command, mapless);
         close(control[0]);
         _exit(result);
     }
@@ -474,7 +487,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     }
     if (argc < 7 || strcmp(argv[1], "--workspace") != 0 ||
         strcmp(argv[3], "--parent-pid") != 0) {
-        fprintf(stderr, "usage: icode-landlock --workspace PATH --parent-pid PID [--runtime-read PATH]... -- COMMAND [ARG...]\n");
+        fprintf(stderr, "usage: icode-landlock --workspace PATH --parent-pid PID [--runtime-read PATH]... [--metadata-read PATH]... -- COMMAND [ARG...]\n");
         return 2;
     }
     char *pid_end = NULL;
@@ -486,50 +499,69 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         return 2;
     }
     const char **runtime_roots = calloc((size_t)argc, sizeof(*runtime_roots));
-    if (!runtime_roots) {
+    const char **metadata_roots = calloc((size_t)argc, sizeof(*metadata_roots));
+    if (!runtime_roots || !metadata_roots) {
         perror("calloc");
+        free(runtime_roots);
+        free(metadata_roots);
         return 2;
     }
     size_t runtime_root_count = 0;
+    size_t metadata_root_count = 0;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
-        if (strcmp(argv[command_index], "--runtime-read") != 0 ||
-            command_index + 1 >= argc || argv[command_index + 1][0] != '/') {
-            fprintf(stderr, "invalid runtime read root\n");
+        if (command_index + 1 >= argc || argv[command_index + 1][0] != '/') {
+            fprintf(stderr, "invalid read-only root\n");
             free(runtime_roots);
+            free(metadata_roots);
             return 2;
         }
-        runtime_roots[runtime_root_count++] = argv[command_index + 1];
+        if (strcmp(argv[command_index], "--runtime-read") == 0) {
+            runtime_roots[runtime_root_count++] = argv[command_index + 1];
+        } else if (strcmp(argv[command_index], "--metadata-read") == 0) {
+            metadata_roots[metadata_root_count++] = argv[command_index + 1];
+        } else {
+            fprintf(stderr, "unknown read-only root option\n");
+            free(runtime_roots);
+            free(metadata_roots);
+            return 2;
+        }
         command_index += 2;
     }
     if (command_index + 1 >= argc) {
         fprintf(stderr, "missing command\n");
         free(runtime_roots);
+        free(metadata_roots);
         return 2;
     }
     ++command_index;
     if (install_parent_death_signal((pid_t)parent_value) != 0 ||
         restore_child_reaping() != 0) {
         free(runtime_roots);
+        free(metadata_roots);
         return 1;
     }
     char *workspace = realpath(argv[2], NULL);
     if (!workspace) {
         perror("workspace realpath");
         free(runtime_roots);
+        free(metadata_roots);
         return 2;
     }
     if (chdir(workspace) != 0) {
         perror("chdir workspace");
         free(workspace);
         free(runtime_roots);
+        free(metadata_roots);
         return 1;
     }
-    int result = supervise_task((pid_t)parent_value, workspace, runtime_roots,
-                                runtime_root_count, argv + command_index,
-                                setgroups_path, uid_map_path);
+    int result = supervise_task(
+        (pid_t)parent_value, workspace, runtime_roots, runtime_root_count,
+        metadata_roots, metadata_root_count, argv + command_index,
+        setgroups_path, uid_map_path);
     free(workspace);
     free(runtime_roots);
+    free(metadata_roots);
     return result;
 }
 

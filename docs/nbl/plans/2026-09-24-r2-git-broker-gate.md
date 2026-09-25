@@ -1,7 +1,7 @@
 # R2.4 分层工作区 Git 状态代理门禁
 
 - 日期：2026-09-24
-- 状态：调用链与风险已确认；严格 porcelain v2 解析器仅作为内部前置模块通过本机测试，未接入模型或启动 Git；broker 与完整 R2 仍阻断
+- 状态：调用链与风险已确认；严格 porcelain v2 解析器及 Linux Landlock 独立只读元数据授权基座已通过本机测试，均未接入模型或启动 Git；broker 与完整 R2 仍阻断
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §4.2、§7；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与现状
@@ -52,6 +52,13 @@
 - 对照 [Git 官方 `git status` 格式文档](https://git-scm.com/docs/git-status)，实现 `src/icode/git_status.py` 的纯字节解析：要求完整 NUL 终止；保留任意路径字节；重命名/复制记录按格式消费紧随其后的旧路径字段；忽略可扩展的 `#` 头；损坏或未知状态记录整体拒绝，不返回部分结果。
 - 测试覆盖实际 Git CLI 输出、空格/换行/非 UTF-8 路径、重命名双路径、未合并/未跟踪/忽略类型、已文档化状态组合，以及错误字段和截断数据。此模块自身从不执行 Git。
 - **阶段结论：前置解析可用，Git broker 未实现。** 模块没有 OS 权限、网络、helper、仓库路径或会话控制能力，因此不是安全边界；它没有注册成工具，`git_broker_unavailable` 必须保留。接线前仍须完成上面的会话身份、固定参数、helper 禁止、只读 gitdir、无网络、原仓不变、恶意仓库和三平台 wheel 验收。
+
+## 2026-09-25 Linux 只读元数据授权基座
+
+- Landlock helper 增加独立 `--metadata-read PATH` 白名单，只授予 `READ_FILE | READ_DIR`，不授予执行或写入权限；它与可读写的代码根、Python 运行时只读根分开表达。Python 内部包装先解析真实路径，再拒绝已知宽泛根、失效路径、非普通文件/目录、与任务代码根重叠，以及与既有可执行系统/runtime 只读根重叠的授权。后一项是因为 Landlock 同一层中路径规则权限叠加，窄只读规则不能撤销较宽祖先规则已授予的执行位。
+- Linux 本机真实内核测试验证：获准 Git 元数据可读，既有 index 不可覆写、不能新建文件、可执行 hook 无法启动；代码工作区仍可写，未获授权的邻近文件不可读，省略元数据授权时 Git 元数据默认不可读。静态校验也拒绝 `/usr` 与 Python runtime 根，防止与已有执行白名单叠权。helper 以 `-Wall -Wextra -Werror` 编译；隔离测试 47 项通过、7 项按平台跳过。
+- 这是**执行基座，不是 Git broker**：尚无 `WorkspaceSession` 可信 Git-dir grant、身份漂移复核、固定 Git 子命令/参数与环境、恶意仓库配置/扩展负例，也没有 x64/ARM64 wheel 和 macOS/Windows 等价证明。该接口目前只供内部将来接线使用，未注册模型工具，`git_broker_unavailable` 必须保持。
+- 下一片先从可信 `git_worktree` 会话构造并重核 worktree/gitdir/common-dir 身份，再以固定 `git status --porcelain=v2 -z` 子命令做 Linux-only 实验；遇到子模块、外部 gitdir、身份变化或任何策略无法表达都整体拒绝。现阶段不得将普通宿主 `git status` 当作回退。
 
 ### 独立格式审查修正（2026-09-25）
 

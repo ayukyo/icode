@@ -414,6 +414,48 @@ class LandlockSandbox:
             raise ValueError("Landlock /dev/null 写入例外与拒写路径冲突")
         return workspace
 
+    def _validated_metadata_roots(
+        self, workspace: Path, roots: Sequence[str | os.PathLike[str]],
+    ) -> tuple[Path, ...]:
+        """Validate narrow trusted read-only roots for an internal status broker.
+
+        These roots are intentionally not taken from ``SandboxPolicy`` or model
+        arguments. They grant read access only, never execute/write access.
+        """
+        if isinstance(roots, (str, bytes)) or not isinstance(roots, Sequence):
+            raise ValueError("Git metadata roots must be a trusted path sequence")
+        workspace = workspace.resolve(strict=True)
+        home = Path.home().resolve()
+        broad_roots = {Path("/"), Path("/tmp"), Path("/var"), Path("/home")}
+        executable_roots = tuple(
+            Path(path) for path in ("/usr", "/bin", "/lib", "/lib64", "/sbin")
+        )
+        executable_roots += self._runtime_read_roots()
+
+        def intersects(left: Path, right: Path) -> bool:
+            return left.is_relative_to(right) or right.is_relative_to(left)
+
+        validated: list[Path] = []
+        for raw_root in roots:
+            try:
+                root = Path(raw_root).resolve(strict=True)
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                raise ValueError("Git metadata root cannot be resolved") from exc
+            if not root.is_file() and not root.is_dir():
+                raise ValueError("Git metadata root must be a file or directory")
+            if (
+                root in broad_roots
+                or home.is_relative_to(root)
+                or root.is_relative_to(workspace)
+                or workspace.is_relative_to(root)
+            ):
+                raise ValueError("Git metadata root is broad or overlaps the task workspace")
+            if any(intersects(root, allowed) for allowed in executable_roots):
+                raise ValueError("Git metadata root overlaps an executable runtime allowlist")
+            if root not in validated:
+                validated.append(root)
+        return tuple(sorted(validated, key=str))
+
     def prepare_policy(self, policy: SandboxPolicy) -> None:
         """模型调用前的静态阻断；仅覆盖当前助手已实现的策略子集。"""
         self._checked_policy_workspace(policy)
@@ -427,14 +469,40 @@ class LandlockSandbox:
     def wrap_policy(
         self, argv: Sequence[str], *, policy: SandboxPolicy, network: bool = False,
     ) -> list[str]:
+        return self._wrap_policy_with_metadata_roots(
+            argv, policy=policy, metadata_roots=(), network=network,
+        )
+
+    def _wrap_policy_with_metadata_roots(
+        self, argv: Sequence[str], *, policy: SandboxPolicy,
+        metadata_roots: Sequence[str | os.PathLike[str]], network: bool = False,
+    ) -> list[str]:
+        """Wrap a trusted internal read-only query with extra file/directory roots.
+
+        This is reserved for the future fixed-argument Git status broker; callers
+        must provide server-derived paths after rechecking worktree identity.
+        """
         if network:
             raise ValueError("Landlock helper does not support network grants")
         self.prepare_policy(policy)
-        return self.wrap(argv, workspace=policy.workspace_root)
+        validated_roots = self._validated_metadata_roots(
+            policy.workspace_root, metadata_roots,
+        )
+        return self._wrap_with_metadata_roots(
+            argv, workspace=policy.workspace_root, metadata_roots=validated_roots,
+        )
 
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         if network:
             raise RuntimeError("Landlock helper does not support network grants")
+        return self._wrap_with_metadata_roots(
+            argv, workspace=workspace, metadata_roots=(),
+        )
+
+    def _wrap_with_metadata_roots(
+        self, argv: Sequence[str], *, workspace: Path,
+        metadata_roots: Sequence[Path],
+    ) -> list[str]:
         helper = Path(self.helper)
         if not helper.is_file():
             raise RuntimeError("Landlock helper is unavailable")
@@ -449,6 +517,8 @@ class LandlockSandbox:
         ]
         for root in self._runtime_read_roots():
             wrapped.extend(("--runtime-read", str(root)))
+        for root in metadata_roots:
+            wrapped.extend(("--metadata-read", str(root)))
         return [*wrapped, "--", *argv]
 
     def describe(self) -> dict:

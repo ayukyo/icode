@@ -245,3 +245,9 @@
 - **开源机制参考：**`io-harness` 0.86.0（Apache-2.0，固定提交 `8c03ca273246937975bf63da8413c927ba264916`）区分目录遍历、运行时只读执行、工作区完全访问，并将 AppContainer 置于 Job 中。[固定源码](https://github.com/initorigin/io-harness/blob/8c03ca273246937975bf63da8413c927ba264916/src/sandbox/appcontainer.rs)。仅采纳权限分层与分别验收；不复制代码，也不把 Rust/Cargo 目录经验等同 CPython 原生验证。
 - **ICODE 决定：采纳宿主正向对照；暂缓内置 embeddable CPython；ACL 方案保持关闭。**x64/ARM64 CI 确认同一 staging Python 3.11.9 与标准库/扩展可在宿主完整导入。无 runtime 授权的 AppContainer 对照仍不能启动；这不等于容器内 ACL 候选已通过。
 - CI [#133](https://github.com/ayukyo/icode/actions/runs/36100147033) 与 [#134](https://github.com/ayukyo/icode/actions/runs/36100928044) 两个 Windows 架构均显示候选进程启动但退出 1、`cleanup_failed`；#134 确认只读 ACL 授权到达、ACL 根为 staging、源 DACL 未触碰，但全树精确恢复失败。workspace/network/child 探针因主脚本提前退出而无结论。不能推断具体对象、传播时序或 Python 失败根因；不开放自动模式、不扩大 ACL。下一轮只报告首次还原不匹配的对象层级及 DACL/元数据/SID 类别，路径和原始 ACL 不进入回执。
+
+### 2026-09-25 UTC R2.3/R2.4 阶段实现回看
+
+- Windows [CI #139](https://github.com/ayukyo/icode/actions/runs/36106367758) x64/ARM64 的 staging ACL 恢复、源 runtime 未改、临时副本删除均通过；Python 已导入标准库，但路径检查回执为 `runtime_path:PermissionError`。不把 ACL 子项通过外推为 AppContainer 通过；下一轮只拆分 executable/module/prefix 三类路径操作，不改权限。
+- Linux Landlock helper 现可接收独立只读 Git 元数据根，内核负例验证可读但不可写、不可新建、不可执行，且未授权时默认不可读。此处采纳竞品对照中的“OS 边界强制只读 + 禁止外部 helper + 失败关闭”方向，但尚未运行 Git，也没有会话身份或固定参数 broker；保留 `git_broker_unavailable`，macOS/Windows 不沿用 Linux 子项结论。
+- 相关上游观察仍为 2026-09-25 固定提交：Codex 的只读 `.git`/gitdir 处理、Qwen 后端启动失败不回退宿主、Gemini 解析 worktree/common-dir；这轮不重复计为新上游发现。下一片研究重点转到固定 Git status 的有效配置面、子模块与 linked-worktree common-dir 的 fail-closed 识别，再决定可信 grant API。

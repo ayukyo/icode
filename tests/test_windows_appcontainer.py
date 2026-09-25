@@ -2266,14 +2266,24 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "stage+':'+type(exc).__name__,encoding='ascii')\n"
                     "checkpoint('staging-python-imports-completed')\n"
                     "try:\n"
-                    "    root=Path(sys.executable).resolve(strict=True).parent\n"
-                    "    modules=[pathlib,encodings,json,platform,ssl,sqlite3,_ctypes,_sqlite3,_ssl]\n"
-                    "    module_roots=all(Path(m.__file__).absolute().is_relative_to(root) "
-                    "for m in modules)\n"
-                    "    prefix_ok=Path(sys.prefix).resolve(strict=True)==root\n"
+                    "    executable_path=Path(sys.executable).resolve(strict=True)\n"
                     "except Exception as exc:\n"
-                    "    failed('runtime_path',exc)\n"
+                    "    failed('executable_resolve',exc)\n"
                     "    raise\n"
+                    "root=executable_path.parent\n"
+                    "modules=[pathlib,encodings,json,platform,ssl,sqlite3,_ctypes,_sqlite3,_ssl]\n"
+                    "try:\n"
+                    "    module_paths=[Path(m.__file__).absolute() for m in modules]\n"
+                    "except Exception as exc:\n"
+                    "    failed('module_path',exc)\n"
+                    "    raise\n"
+                    "module_roots=all(path.is_relative_to(root) for path in module_paths)\n"
+                    "try:\n"
+                    "    prefix=Path(sys.prefix).resolve(strict=True)\n"
+                    "except Exception as exc:\n"
+                    "    failed('prefix_resolve',exc)\n"
+                    "    raise\n"
+                    "prefix_ok=prefix==root\n"
                     "checkpoint('staging-python-paths-completed')\n"
                     "try:\n"
                     f"    Path({str(runtime_write_probe)!r}).write_bytes(b'x')\n"
@@ -2366,7 +2376,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             allowed_failure_records = {
                 f"{stage}:{error}"
                 for stage in (
-                    "imports", "runtime_path", "runtime_write", "source_read",
+                    "imports", "executable_resolve", "module_path", "prefix_resolve",
+                    "runtime_path", "runtime_write", "source_read",
                     "network", "workspace_write", "child_launch",
                 )
                 for error in (
