@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 
 from scripts.windows_standard_user_token_probe import (
     _make_environment_buffer,
@@ -16,10 +17,105 @@ from scripts.windows_standard_user_token_probe import (
     build_runner_command_line,
     build_runner_pipe_command_line,
     build_runner_environment_block,
+    runner_pipe_wrong_server_pid_probe,
 )
 
 
 class TestWindowsStandardUserTokenProbe(unittest.TestCase):
+    def test_wrong_server_pid_probe_confirms_only_the_expected_pid_mismatch(self) -> None:
+        class FakePipe:
+            name = r"\\.\pipe\icode-runner-" + "b" * 32
+
+            def __init__(self) -> None:
+                self._connected = False
+
+            def _connect(self, timeout_ms: int) -> None:
+                self._connected = True
+
+            def __enter__(self) -> "FakePipe":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        kernel = mock.Mock()
+        kernel.GetCurrentProcess.return_value = 123
+        kernel.GetCurrentProcessId.return_value = 100
+        pipe = FakePipe()
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.ctypes.WinDLL",
+                return_value=kernel,
+                create=True,
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.runner_process_user_sid",
+                return_value="S-1-5-21-1-2-3-1001",
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
+                return_value=pipe,
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
+                side_effect=PermissionError("runner_pipe_server_pid_mismatch"),
+            ),
+        ):
+            result = runner_pipe_wrong_server_pid_probe()
+
+        self.assertEqual(result, (True, "server_pid_mismatch_rejected"))
+
+    def test_wrong_server_pid_probe_reports_only_sanitized_client_timeout(self) -> None:
+        class FakePipe:
+            name = r"\\.\pipe\icode-runner-" + "a" * 32
+
+            def __init__(self) -> None:
+                self._connected = False
+
+            def _connect(self, timeout_ms: int) -> None:
+                self._connected = True
+
+            def __enter__(self) -> "FakePipe":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        kernel = mock.Mock()
+        kernel.GetCurrentProcess.return_value = 123
+        kernel.GetCurrentProcessId.return_value = 100
+        pipe = FakePipe()
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.ctypes.WinDLL",
+                return_value=kernel,
+                create=True,
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.runner_process_user_sid",
+                return_value="S-1-5-21-1-2-3-1001",
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
+                return_value=pipe,
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
+                side_effect=TimeoutError("runner_pipe_wait_timeout"),
+            ),
+        ):
+            result = runner_pipe_wrong_server_pid_probe()
+
+        self.assertEqual(result, (False, "client_timeout"))
+
     def test_checkout_script_imports_package_without_pythonpath(self) -> None:
         repository = Path(__file__).resolve().parents[1]
         environment = os.environ.copy()

@@ -219,10 +219,17 @@ def build_runner_pipe_command_line(
     return command
 
 
-def runner_pipe_wrong_server_pid_probe() -> bool:
-    """Connect to a local endpoint while deliberately expecting another server PID."""
+def _safe_windows_error_code(exc: OSError) -> int:
+    code = getattr(exc, "winerror", None)
+    if type(code) is not int:
+        code = exc.errno
+    return code if type(code) is int and 0 <= code <= 0xFFFFFFFF else 0
+
+
+def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
+    """Reject a false expected server PID and return only a safe stage code."""
     if sys.platform != "win32":
-        return False
+        return False, "unsupported_platform"
     try:
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel.GetCurrentProcess.argtypes = []
@@ -238,28 +245,54 @@ def runner_pipe_wrong_server_pid_probe() -> bool:
             def accept_once() -> None:
                 try:
                     pipe._connect(5_000)
-                except (OSError, RuntimeError, TimeoutError) as exc:
-                    failures.append(type(exc).__name__)
+                except TimeoutError:
+                    failures.append("timeout")
+                except OSError as exc:
+                    failures.append(f"winerror_{_safe_windows_error_code(exc)}")
+                except RuntimeError:
+                    failures.append("invalid_state")
 
             worker = threading.Thread(target=accept_once, daemon=True)
             worker.start()
             time.sleep(0.025)
+            client_result = "client_not_started"
             try:
                 client = open_runner_pipe_client(
                     pipe.name, wrong_pid, timeout_ms=2_000,
                 )
             except PermissionError as exc:
-                rejected = str(exc) == "runner_pipe_server_pid_mismatch"
+                if str(exc) == "runner_pipe_server_pid_mismatch":
+                    client_result = "server_pid_mismatch_rejected"
+                else:
+                    client_result = "client_access_denied"
+            except TimeoutError:
+                client_result = "client_timeout"
+            except OSError as exc:
+                client_result = f"client_winerror_{_safe_windows_error_code(exc)}"
             else:
                 client.close()
-                rejected = False
+                client_result = "wrong_server_pid_accepted"
             worker.join(5)
             if worker.is_alive():
                 pipe.close()
                 worker.join(5)
-            return rejected and pipe._connected and not failures and not worker.is_alive()
-    except (OSError, RuntimeError, ValueError, TimeoutError):
-        return False
+            if worker.is_alive():
+                return False, "server_thread_timeout"
+            if failures:
+                return False, f"server_accept_{failures[0]}"
+            if not pipe._connected:
+                return False, f"{client_result}+server_not_connected"
+            if client_result != "server_pid_mismatch_rejected":
+                return False, client_result
+            return True, "server_pid_mismatch_rejected"
+    except PermissionError:
+        return False, "setup_access_denied"
+    except TimeoutError:
+        return False, "setup_timeout"
+    except OSError as exc:
+        return False, f"setup_winerror_{_safe_windows_error_code(exc)}"
+    except (RuntimeError, ValueError):
+        return False, "setup_invalid_state"
 
 
 class _SID_AND_ATTRIBUTES(ctypes.Structure):
@@ -711,8 +744,12 @@ def _run_as_standard_user() -> int:
         print("::error::restricted_token_probe_credentials_invalid")
         return 2
 
-    if not runner_pipe_wrong_server_pid_probe():
-        print("::error::runner_pipe_wrong_server_pid_rejection_failed")
+    pipe_rejected, pipe_detail = runner_pipe_wrong_server_pid_probe()
+    if not pipe_rejected:
+        print(
+            "::error::runner_pipe_wrong_server_pid_rejection_failed "
+            f"detail={pipe_detail}"
+        )
         return 1
 
     system_root = os.environ.get("SystemRoot", r"C:\Windows")
