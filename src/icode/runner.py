@@ -43,6 +43,11 @@ from .operations import OperationRecorder
 from .reasoning import ReasoningGate, TraceRow, append_trace, run_deliberation
 from .recovery import Recoverer
 from .sandbox_policy import SandboxPolicy
+from .self_verify import (
+    VerificationEvidence,
+    VerificationLedger,
+    classify_failure,
+)
 from .tools import ToolContext, default_registry
 from .workspace_snapshot import changed_files as _changed
 from .workspace_snapshot import snapshot_workspace as _snapshot
@@ -273,6 +278,9 @@ def run_contract_step(
         # 于是同一 request 键重复出现 → 控制面判定 ambiguous_side_effect → 命令被拒。
         # （实测踩过：补救回合里所有 run_command 都变成"副作用歧义，拒绝重放"。）
         step_ops = OperationRecorder(cp, out_dir, ticket_id, scope=step)
+        # R3：每次失败都绑定证据，只允许在出现**新证据**时有界修复；
+        # 无新证据或副作用不明时停止，避免「没有证据就反复碰运气」。
+        verify_ledger = VerificationLedger(max_attempts=2)
 
         # 契约驱动的复检点 + 模型工作
         occurrence = 0
@@ -329,6 +337,25 @@ def run_contract_step(
                         if p.value not in ("review_manifest.json",)
                     ]
                     if not still_missing:
+                        break
+                    # R3 证据门：先给本次失败分类并绑定证据，再决定是否补救。
+                    category = classify_failure(
+                        exit_code=None, kind="gate",
+                        missing_artifacts=tuple(p.value for p in still_missing),
+                    )
+                    evidence = VerificationEvidence(
+                        step=step, attempt=str(repair_round), kind="gate",
+                        command=("missing_artifacts",),
+                        exit_code=None,
+                        output="、".join(p.value for p in still_missing),
+                        category=category,
+                    )
+                    decision = verify_ledger.decide_repair(evidence)
+                    if decision.action != "allow":
+                        report.warn(
+                            f"跳过补救回合 {repair_round}：{decision.reason} "
+                            f"（missing={'、'.join(p.value for p in still_missing)}）"
+                        )
                         break
                     report.warn(
                         f"产物缺失，进入补救回合 {repair_round}："

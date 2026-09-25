@@ -1,7 +1,7 @@
 # 开发路线图与取舍原则
 
 - 日期：2026-09-26
-- 状态：**R2.1 工作区边界已验收；R2.2 六个 Linux/macOS runner 的原生负例矩阵在 #158、#171 均通过，但完整十项合同评分仍未闭合。R2.3 Windows AppContainer 综合步骤在 #158 仍失败，已退出生产候选；恢复的一次 UAC native helper 路线仍未实现。Windows 标准用户受限 token 正向路径及错误账户/密码失败关闭已在 #171 x64/ARM64 通过；runner IPC v1 目前只有纯 Python 协议编解码与字段校验，#173 通过不代表存在可信管道、生产 helper、setup、ACL 或 WFP。R2.4 Linux Git broker 仍为未接入工具链的内部原型；Windows 自动模式、Git 工具入口和网络均保持关闭。**
+- 状态：**R2.1 工作区边界已验收；R2.2 六个 Linux/macOS runner 的原生负例矩阵在 #158、#171 均通过，十项合同评分已接线（`conformance_evidence` + doctor + 原生探针 CI），但完整十项在 doctor 上保守为「仅直接证据通过」，仍不等于平台验收闭合。R2.3 Windows AppContainer 综合步骤在 #158 仍失败，已退出生产候选；恢复的一次 UAC native helper 路线仍未实现。Windows 标准用户受限 token 正向路径及错误账户/密码失败关闭已在 #171 x64/ARM64 通过；runner IPC v1 目前只有纯 Python 协议编解码与字段校验，#173 通过不代表存在可信管道、生产 helper、setup、ACL 或 WFP。R2.4 Linux Git broker 仍为未接入工具链的内部原型；Windows 自动模式、Git 工具入口和网络均保持关闭。R3 自验证与有界修复核心切片已实现并离线验收（失败分类 / 证据绑定 / 有界修复决策 / runner 补救回合证据门），独立 Reviewer 与回归证据绑定 commit/diff 尚未接线。**
 - R2.3 后续切片（2026-09-26）：Windows 架构 wheel 打包合同已在 CPython 3.11 全量 preflight、Linux 安装式 wheel probe 及 Windows x64/ARM64 合成 PE 打包安装 CI 中通过。它不含可运行 Windows 隔离 helper，不代表 Windows 隔离实现，详见 [Windows 后端路线复核](./nbl/plans/2026-09-25-r2-windows-appcontainer.md)。
 - R2.3 Windows wheel/CI runner 复核（2026-09-26）：#161 x64 发现 SHA 清单 CRLF 字节匹配缺陷；#162 修复后两个架构 wheel job 均通过。#162 旧 AppContainer 综合步骤仍失败，已移为显式手动诊断并保留失败证据；随后 #163 常规 CI 整体通过，但不代表 Windows 文件/网络/身份隔离完成。
 - R2.3 IPC 协议切片（2026-09-26）：`windows_runner_protocol.py` 实现纯解析/编码、64 KiB 帧上限及严格版本/字段/类型/关联校验；CI [#173](https://github.com/ayukyo/icode/actions/runs/36188277042) 全部通过。未实现具名管道、对端认证、权限授予或命令执行连接；安全传输与 Windows 自动模式仍关闭。
@@ -291,6 +291,8 @@ Linux 本地回归验证了同工单两进程互斥、worker 退出后释放租�
 这些工作区边界和策略合同**不等于操作系统强制隔离**：模型执行尚未被原生内核机制限制。
 R2.2 已合入 main 持续验证 Linux/macOS 原生后端。CI [#157](https://github.com/ayukyo/icode/actions/runs/36161303803) 的六个 Linux/macOS 原生探针 runner 全部通过；此前 #156 的 macos-latest policy-command-broker 失败未在 #157 重现，具体差异未知。仍需按最终十项合同核对资源限制与平台得分，不能只用原生探针矩阵宣称阶段结束。macOS 的进程组清理按用户批准的 Codex 式边界验收，主动脱组后代不承诺零残留。
 
+R2.2 十项合同评分已接线（2026-09-26）：新增 `src/icode/conformance_evidence.py`，把真实探针证据（`probe_native_sandbox` 的逐项检查、macOS 同组清理、独立回收/资源/回执证据）映射到十项能力并评分；`capability_report()`（`icode doctor`）与 `scripts/run_native_probe_ci.py` 现在输出逐项证据来源与 `passed/total/critical_passed/ready`。评分是**保守**的：没有直接证据的能力一律记 False，因此 doctor 单靠最小探针不会误报 ready。这不等于平台验收闭合——完整十项仍需在干净 CI/VM 上跑全矩阵并核对资源限制与统一违规回执。
+
 R2.3 的 AppContainer + Job Object 路线已降为诊断实验，不再作为产品执行后端。CI #158 的 Windows x64/ARM64 综合步骤仍失败；独立 disposable staged-Python 子项、临时 ACL 精确恢复与 loopback 未连接断言通过，但不能代表任意工具链闭包或生产接线。原 Python 子进程退出 `0xC0000135`、`LOCALAPPDATA` profile marker 缺失且综合步骤的具体失败断言不可读。结合开放式研发工具兼容性，R2.3 恢复原批准的一次 UAC native helper、专用 sandbox 身份、受限 token、ACL、WFP 与 Job 路线。手动 CI [#171](https://github.com/ayukyo/icode/actions/runs/36186027245) 的 Windows Server 2025 x64/ARM64 有效账户控制、缺失账户与错误密码 fail-closed 均通过；这是凭据/进程创建前置可行性门，不是生产 runner。下一小阶段先定义固定 runner IPC envelope 并用纯 Python fail-closed 单测锁定协议边界，随后才做受信管道与原生 helper。生产 helper、UAC setup/恢复、IPC、ACL、WFP 与工作负载接线仍未实现；详细拆分及验收要求见 [Windows 后端路线复核](./nbl/plans/2026-09-25-r2-windows-appcontainer.md)。Windows 自动模式继续关闭。
 
 R2.4 Git 已有 Linux-only 内部固定状态查询：每次调用重核 `WorkspaceManager` 的 `GitWorkspaceIdentity`，固定 Git 可执行文件和 status/porcelain v2 参数，在 Landlock 下将工作区与 Git 元数据只读、断网；clean/process filter、gitlink 和不支持的布局失败关闭。CI #157 的 Linux wheel 仍未包含本轮探针；现已将“构建、安装干净 wheel 后真实调用 broker + 恶意仓库负例”接入 Linux wheel CI，本机 x86_64 通过，ARM64 等待新 CI。它尚未接入 `ToolContext` 或模型工具，macOS/Windows 无等价后端，`git_broker_unavailable` 保持。R2.4 网络租约仍只是范围/HMAC authority 和进程内连接登记、撤销/到期状态合同；它未创建代理/真实 socket、不运行周期 sweep、不接入执行器或设置 OS 强制路由，联网继续关闭。建议 Linux 先做 netns + 可信桥接 HTTP(S) 切片，macOS/Windows 在 OS 级门禁通过前保持 DENY。R2.5 负责安装引导和发布矩阵。开发期线上只保留 main，不以合入主线代替阶段验收。
@@ -433,6 +435,12 @@ CI [#108 x64](https://github.com/ayukyo/icode/actions/runs/36067827628/job/10786
 ### 2026-09-24 UTC CI #109–#111：Windows 子项与真实失败分开记录
 
 CI [#109 x64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391485) 与 [#109 ARM64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/107865391466) 的 Windows 测试均有 cwd 工作区、loopback 连接失败、后代回收与 timeout 回收通过 notice，但研究复核指出进程探针只有 0.2 秒宽限。CI [#110](https://github.com/ayukyo/icode/actions/runs/36071476528) 以同 payload host 正对照和五秒后代观察窗重验后，双架构正常/timeout 后代清理 notice 通过；x64/ARM64 profile marker 均未写入，进程数对照尚不可靠。CI [#111](https://github.com/ayukyo/icode/actions/runs/36073278352) 的同步进程正对照父/子 marker 均出现，但临时目录诊断读取太晚、CMD 裸数字状态行未写出，导致两架构都在 `process_limit=1` 负例前失败。Python 仍退出 `0xC0000135`，AppContainer 和自动模式继续关闭；下一轮修正探针本身并重跑原生对照。
+
+### R3 —— 自验证与有界修复（实施中）
+
+R3 核心切片已合入 main（2026-09-26）：`src/icode/self_verify.py` 实现失败分类（六类）、证据绑定（`VerificationEvidence` + `evidence_fingerprint`）与有界修复决策（`VerificationLedger`）；`runner.run_contract_step` 的补救回合接入证据门——进入补救前先分类并绑定证据，无新证据或副作用不明时跳过并如实警告。离线测试覆盖分类、指纹稳定性/敏感性、同指纹拒绝、超界停止、副作用转人工与 runner 兼容既有离线链。计划与边界见 [R3 自验证与有界修复](./nbl/plans/2026-09-26-r3-self-verification.md)。
+
+**R3 仍未验收的部分（如实标注）**：独立 Reviewer 的隔离上下文、验证证据绑定到具体 commit/diff、回归证据打包到事件链与证据包，以及真实模型下的端到端修复循环。R3 完整退出门槛（架构 §13.7）未闭合。
 
 ## 4. 为什么是这个顺序
 

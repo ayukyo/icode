@@ -8,7 +8,35 @@ import sys
 import tempfile
 from pathlib import Path
 
+from icode.conformance_evidence import score_probe_evidence
 from icode.isolation import LandlockSandbox, MacSeatbeltSandbox, probe_native_sandbox
+
+
+def _emit_conformance_score(
+    checks: dict[str, bool],
+    *,
+    platform: str,
+    doctor_self_test: bool,
+) -> None:
+    """把本次原生探针证据映射到十项一致性合同并打印评分。
+
+    只把**本次探针实际采集的证据**计入；未验证能力保守为 False，
+    因此该分数反映「当前探针矩阵已直接证明的能力」，不冒充完整验收。
+    """
+    report = score_probe_evidence(
+        checks, platform=platform, doctor_self_test=doctor_self_test,
+    )
+    score = report["score"]
+    print(
+        f"::notice::conformance {platform} "
+        f"passed={score['passed']}/{score['total']} "
+        f"critical_passed={str(score['critical_passed']).lower()} "
+        f"ready={str(score['ready']).lower()}"
+    )
+    for capability_id, passed in sorted(report["outcomes"].items()):
+        mark = "PASS" if passed else "UNVERIFIED"
+        source = ",".join(report["evidence"][capability_id]) or "-"
+        print(f"conformance {platform} {capability_id}: {mark} ({source})")
 
 
 def main() -> int:
@@ -44,6 +72,9 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     result = probe_native_sandbox(backend)
     for name, passed in result.checks.items():
         print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
+    platform = "linux" if sys.platform.startswith("linux") else "macos"
+    _emit_conformance_score(result.checks, platform=platform,
+                            doctor_self_test=result.ready)
     if not result.ready:
         if isinstance(backend, MacSeatbeltSandbox):
             true_path = shutil.which("true")

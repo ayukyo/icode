@@ -981,6 +981,44 @@ def select_sandbox(preference: str | None = None) -> Sandbox:
     return NoIsolation()
 
 
+def _conformance_from_evidence(
+    *,
+    checks: dict[str, bool],
+    platform: str,
+    process_tree_cleanup: bool | None = None,
+    process_group_cleanup: bool | None = None,
+    resource_limits: bool | None = None,
+    uniform_violation: bool | None = None,
+    doctor_self_test: bool | None = None,
+) -> dict:
+    """把 doctor 已采集的探针证据评分；无证据时保守全 False。"""
+    from .conformance_evidence import score_probe_evidence
+
+    try:
+        return score_probe_evidence(
+            checks,
+            platform=platform,
+            process_tree_cleanup=process_tree_cleanup,
+            resource_limits=resource_limits,
+            uniform_violation=uniform_violation,
+            doctor_self_test=doctor_self_test,
+            process_group_cleanup=process_group_cleanup,
+        )
+    except Exception:  # noqa: BLE001 - doctor 诊断失败不得误报可用
+        return {
+            "platform": platform,
+            "outcomes": {},
+            "evidence": {},
+            "score": {
+                "passed": 0, "total": 10, "critical_passed": False,
+                "platform_critical_passed": False, "ready": False,
+            },
+            "contract": {"id": "icode-sandbox-v1", "total": 10,
+                         "critical": 8, "minimum_passed": 9},
+            "honest_note": "证据评分异常，按未验证处理",
+        }
+
+
 def capability_report() -> dict:
     """给 `icode doctor` 用的隔离能力报告（措辞必须能追溯到实测）。"""
     from .conformance import load_conformance_contract
@@ -995,6 +1033,8 @@ def capability_report() -> dict:
         "policy_ready": False,
         "detail": "当前平台不适用",
     }
+    native_checks: dict[str, bool] = {}
+    process_group_cleanup: bool | None = None
     if sys.platform.startswith("linux"):
         try:
             bundled_sandbox = LandlockSandbox.from_bundle()
@@ -1002,6 +1042,7 @@ def capability_report() -> dict:
                 bundled["detail"] = "随包助手缺失或完整性校验失败"
             else:
                 result = probe_native_sandbox(bundled_sandbox)
+                native_checks = dict(result.checks)
                 bundled.update({
                     "installed": True,
                     "minimal_probe_passed": result.ready,
@@ -1014,12 +1055,14 @@ def capability_report() -> dict:
     }
     if sys.platform == "darwin":
         group_result = probe_macos_process_group_cleanup(MacSeatbeltSandbox())
+        process_group_cleanup = group_result.passed
         macos_group = {
             "executed": group_result.executed,
             "passed": group_result.passed,
             "checks": group_result.checks,
             "detail": group_result.detail,
         }
+        native_checks = dict(group_result.checks) or native_checks
     windows_job: dict[str, object] = {
         "executed": False, "passed": False, "checks": {}, "detail": "当前平台不适用",
     }
@@ -1033,6 +1076,25 @@ def capability_report() -> dict:
             "checks": job_result.checks,
             "detail": job_result.detail,
         }
+        native_checks = dict(job_result.checks)
+        process_group_cleanup = job_result.passed
+
+    platform = ("linux" if sys.platform.startswith("linux")
+                else "macos" if sys.platform == "darwin"
+                else "windows" if sys.platform == "win32"
+                else "linux")
+    conformance = _conformance_from_evidence(
+        checks=native_checks,
+        platform=platform,
+        process_tree_cleanup=None,   # doctor 不跑完整回收探针，保守不计
+        process_group_cleanup=process_group_cleanup,
+        resource_limits=None,        # doctor 不跑独立资源限制探针，保守不计
+        uniform_violation=None,      # doctor 不跑独立违规回执探针，保守不计
+        doctor_self_test=(
+            bool(bundled.get("minimal_probe_passed"))
+            if platform == "linux" else bool(native_checks)
+        ),
+    )
     return {
         "probes": [
             {"name": c.name, "available": c.available, "kind": c.kind, "detail": c.detail}
@@ -1051,6 +1113,9 @@ def capability_report() -> dict:
             "total": len(contract["capabilities"]),
             "critical": sum(item["critical"] for item in contract["capabilities"]),
             "minimum_passed": contract["minimum_passed"],
-            "executed": False,
+            "executed": True,
+            "score": conformance["score"],
+            "outcomes": conformance["outcomes"],
+            "evidence": conformance["evidence"],
         },
     }

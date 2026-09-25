@@ -60,7 +60,13 @@ class TestProbe(unittest.TestCase):
         self.assertIsInstance(group["passed"], bool)
         self.assertEqual(set(group["checks"]), {"normal_exit", "timeout"}
                          if sys.platform == "darwin" else set())
-        self.assertFalse(report["conformance_contract"]["executed"])
+        # 一致性合同现在按已采集证据保守评分（不冒充 ready）
+        conformance = report["conformance_contract"]
+        self.assertTrue(conformance["executed"])
+        self.assertIn("score", conformance)
+        self.assertIn("outcomes", conformance)
+        self.assertEqual(conformance["score"]["total"], 10)
+        self.assertFalse(conformance["score"]["ready"])
         if sys.platform != "darwin":
             self.assertFalse(group["executed"])
             self.assertFalse(group["passed"])
@@ -566,7 +572,10 @@ class TestHonesty(unittest.TestCase):
         self.assertEqual(report["conformance_contract"]["total"], 10)
         self.assertEqual(report["conformance_contract"]["critical"], 8)
         self.assertEqual(report["conformance_contract"]["minimum_passed"], 9)
-        self.assertFalse(report["conformance_contract"]["executed"])
+        # 一致性合同按已采集证据保守评分：评分在但 ready 不得为真
+        self.assertTrue(report["conformance_contract"]["executed"])
+        self.assertEqual(report["conformance_contract"]["score"]["total"], 10)
+        self.assertFalse(report["conformance_contract"]["score"]["ready"])
         self.assertEqual(report["honest_label"], selected["claim"])
         if not selected["is_real_isolation"]:
             self.assertEqual(report["honest_label"], BASELINE_CLAIM)
