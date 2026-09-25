@@ -1,7 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-26 UTC
-- 状态：**未通过验收，Windows 自动模式不开放。** CI #156 x64/ARM64 综合 AppContainer 步骤仍失败，公开日志无法读到具体断言；macOS-latest 的 policy-command-broker 步骤也失败，未归因。#155 profile/token 观测显示容器与宿主 AppContainer API 路径一致，但实际 `LOCALAPPDATA` 是 API 根下不存在的未知嵌套路径，profile marker 缺失；独立的宿主 Python 子进程仍退出 `0xC0000135`。当前新增只读 source/staged `python.exe` 与 `pythonXY.dll` image-mapping 探针，待 Windows x64/ARM64 原生验证；不扩大 ACL，也不把 staged tempfile 子项外推为 R2.3。
+- 状态：**未通过验收，Windows 自动模式不开放。** CI #157 x64/ARM64 综合 AppContainer 步骤仍失败，Actions logs API 返回 403，具体失败断言未知。#157 注释显示容器不能直接读取原宿主 Python executable/core DLL/stdlib 样本（`access_denied`），原 Python 子进程退出 `0xC0000135`；System32 读取对照成功。独立 disposable runtime staging 步骤在两架构通过，含候选 Python 运行、image mapping、临时 ACL 精确恢复及源 runtime ACL 未变，但不等于生产路径验收。`LOCALAPPDATA` 与显式传入值不一致、profile marker 缺失仍是独立未闭合观测。#157 的 macOS `macos-latest` 原生探针矩阵通过；#156 对应 broker 子项失败未复现，原因未知。不得扩大原 runtime ACL；Windows 自动模式仍关闭。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 > 注：下方按时间追加验证记录。阶段状态以最新 CI 和本机回归为准，历史记录不代表当前 Windows 后端已通过。
@@ -332,3 +332,10 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - CI [#156](https://github.com/ayukyo/icode/actions/runs/36155715717) 的 Windows x64/ARM64 综合 AppContainer 步骤均失败；公开 job 查询没有逐项断言，Actions logs API 返回 403，因此只记录“步骤失败”，不推断是 profile、loader 或本轮环境 A/B 所致。同轮 macOS-latest policy-command-broker 也失败，未见可读断言日志，Windows 探针不对其归因。
 - 结合 Microsoft 的文件映射 API 文档，采纳在 staged Python runner 内对 source/staged executable 与 `pythonXY.dll` 逐个执行 `CreateFileW(GENERIC_READ)`、单字节 `ReadFile`、`CreateFileMappingW(PAGE_READONLY | SEC_IMAGE_NO_EXECUTE)`、`MapViewOfFile(FILE_MAP_READ)`；宿主与 AppContainer 做相同目标对照，路径不进入 CI notice，所有 view/handle 显式清理。状态用 `read|image` 短码表示；该阶段可区分文件数据读取与映像布局映射，不解析导入依赖、不执行入口或 DLL 初始化。
 - 暂缓 `LoadLibraryExW`：它会触发正常 DLL 加载/初始化，且 staged Python 已经加载同名 core DLL，不能在此进程中声称独立验证原始 runtime。若映射差分仍不能收敛，另行研究可信、短命、未预加载目标 DLL 的原生 helper；在此之前不扩 ACL、不接生产 runner。该探针的 Linux 语法/摘要测试通过，Windows x64/ARM64 验证仍待新 CI，R2.3 与自动模式继续关闭。
+
+### 2026-09-26 UTC：CI #157 双架构回执与 runtime 访问边界
+
+- CI [#157](https://github.com/ayukyo/icode/actions/runs/36161303803) 的 x64 与 ARM64 综合 AppContainer 步骤仍失败；对应 job 注释显示，System32 控制文件可读，而原宿主 `python.exe`、Python core DLL、`pathlib`、`encodings` 样本的 `ReadFile` 均为 `access_denied`。从原宿主解释器启动的子进程仍退出 `0xC0000135`。`0xC0000135` 仍只标识 `STATUS_DLL_NOT_FOUND`，不能定位具体依赖，也不因这轮数据读取对照而证明唯一根因。
+- 同轮独立的 disposable runtime staging 步骤两架构通过：基线 runtime 在 AppContainer 下不启动；staged Python 3.11.9 候选退出 0。该步骤的断言同时覆盖 host/staged 与容器映像映射、容器 Python tempfile 创建/删除、workspace 写入、staged runtime 写入拒绝、原 runtime 读取拒绝、loopback 未连接、子进程启动及 staging 清理；临时 ACL 精确恢复，ACL roots 限于 staging，源 runtime ACL 未变。这只证明该次 staging 诊断候选，**不证明生产 executor 可安全/经济地为任意工具复制 runtime**。
+- 显式 `LOCALAPPDATA` A/B 仍显示普通进程保留传入值、AppContainer 实际值不同且属于 API profile 下未知嵌套关系；profile marker 仍缺失。这与 runtime 文件访问是并列观测，不据此建立因果关系。综合步骤日志仍不可读，所以确切失败断言不明。
+- **取舍/下一验收：**采纳“原始解释器可达性须单独验证”的方向；暂缓给原 Python 安装根新增 ACE。下一步先评估 disposable staging 能否低成本、无链接逃逸地支持解释器及其完整运行依赖，并与任意外部 tool 的启动合同分开测试；同时继续只读定位 AppContainer 实际 `LOCALAPPDATA` 路径来源。未明确 staging 性能/依赖闭包、ACL 中断恢复与 profile 写入合同前，不把诊断逻辑并入生产 runner。

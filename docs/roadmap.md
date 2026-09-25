@@ -1,7 +1,7 @@
 # 开发路线图与取舍原则
 
 - 日期：2026-09-26
-- 状态：**R2.1 工作区边界已验收；R2.2 原生隔离、R2.3 Windows AppContainer、R2.4 Git broker/网络授权仍在 main 实施中，均未通过阶段退出条件。CI #156 的 Windows x64/ARM64 综合 AppContainer 步骤仍失败，macOS `macos-latest` 的 policy-command-broker 步骤也失败；公开 API 未提供可读的具体断言日志，本轮不据此归因。#155 profile/token 观测仍显示 `LOCALAPPDATA` 为 API 根下不存在的未知嵌套路径，profile marker 与宿主 Python `0xC0000135` 两项相互独立。当前新增只读 PE image-mapping 差分探针，等待双架构 CI；不扩大 ACL，Windows 自动模式继续关闭。**
+- 状态：**R2.1 工作区边界已验收；R2.2 原生负例矩阵在 CI #157 的六个 Linux/macOS runner 全部通过（#156 macos-latest 的 broker 步骤失败未复现，原因未知），但不代替完整 R2 合同评分。R2.3 Windows x64/ARM64 综合 AppContainer 步骤仍失败；#157 注释显示原宿主 Python 运行时文件读取被拒、子进程为 `0xC0000135`，而独立 disposable-staging 探针通过并恢复 ACL，这支持继续调查运行时可达性但不构成生产后端通过。`LOCALAPPDATA` profile marker 仍未闭环。R2.4 Linux Git broker 仍为未接入工具链的内部原型；新加已安装 wheel 恶意仓库闭环，本机 x86_64 通过，CI ARM64 待验。Windows 自动模式、Git 工具入口和网络均保持关闭。**
 - 依据：[持续竞品对照](./agent-landscape-live.md) · [方案与决策记录](./design-decisions.md)
 
 ---
@@ -286,7 +286,11 @@ R2.0 已发布版本化 policy schema、冲突规则与 contract vectors/score�
 R2.1 已实现每工单 Git worktree 或非 Git 清单快照、跨进程租约、受保护路径策略，并接入自主运行生命周期。
 Linux 本地回归验证了同工单两进程互斥、worker 退出后释放租约、原始 Git 工作树内容与状态不变、非 Git 快照清单和受保护路径合同。[三平台 CI 验收](https://github.com/ayukyo/icode/actions/runs/35880420396) 的 Linux、macOS、Windows 工作区专项、Python 3.11/3.12 全量测试与仓库展示检查均通过。
 这些工作区边界和策略合同**不等于操作系统强制隔离**：模型执行尚未被原生内核机制限制。
-R2.2 已合入 main 持续验证 Linux/macOS 原生后端。[CI #85](https://github.com/ayukyo/icode/actions/runs/36001610973) 的 Ubuntu 22.04/24.04 x64/ARM64 原生与 wheel 测试全部通过，只验收 Linux PID 清理子项；两平台完整退出条件尚未通过，自动模式仍阻断。R2.3 当前开发 Windows AppContainer + Job Object 的原生实验；CI #91–#105 的 Windows AppContainer 原生启动探针多轮返回 `CreateProcessW` 错误 203，#105 固定 whoami 对照发现需设置 profile `LOCALAPPDATA`。常规路径接入后，Python 仍退出 `0xC0000135`；CI #151 确认 staged candidate 可运行、ACL 恢复通过，Python 与 Win32 对 `LOCALAPPDATA`/`TEMP`/`TMP` 所见环境值一致，但三项 `stat` 均为 `not_found`，profile marker 仍 `path_not_found`，故不能解释为环境 API 分歧已修复。Windows 组合门禁两架构继续失败，loopback `TimeoutError` 仅说明未连通，不是策略拒绝证明。普通 Job、部分 workspace/Job 子项通过不等于 Windows 隔离完成；自动模式继续关闭。macOS Intel/ARM64 的脱组后代握手负例在 #101 通过，按已批准的 Codex 式边界验收。默认无网络能力的 AppContainer 是候选实现，域名代理仍需独立网络强制机制。R2.4 Git 已有不执行 Git 的 porcelain v2 字节解析器、Linux-only Landlock 只读元数据内核负例和经过 WorkspaceManager 校验的冻结 `GitWorkspaceIdentity` 快照；尚无每次调用前身份复核、执行上下文传递、固定 Git broker、恶意仓库/helper 禁止与跨平台等价验收，故 `git_broker_unavailable` 不变。R2.4 网络租约已有范围/HMAC authority 和进程内连接登记、撤销/到期关闭回调及失败重试状态合同；它未创建代理/真实 socket、不运行周期 sweep、不接入执行器或设置 OS 强制路由，联网继续关闭，真实连接竞态与清理仍须代理实现并验收。已研究建议 Linux 先做 netns + 可信桥接 HTTP(S) 切片，macOS/Windows 在各自 OS 级门禁通过前保持 DENY。R2.5 负责安装引导和发布矩阵。开发期线上只保留 main，不以合入主线代替阶段验收。
+R2.2 已合入 main 持续验证 Linux/macOS 原生后端。CI [#157](https://github.com/ayukyo/icode/actions/runs/36161303803) 的六个 Linux/macOS 原生探针 runner 全部通过；此前 #156 的 macos-latest policy-command-broker 失败未在 #157 重现，具体差异未知。仍需按最终十项合同核对资源限制与平台得分，不能只用原生探针矩阵宣称阶段结束。macOS 的进程组清理按用户批准的 Codex 式边界验收，主动脱组后代不承诺零残留。
+
+R2.3 当前开发 Windows AppContainer + Job Object 原生实验。CI #157 的 Windows x64/ARM64 综合步骤仍失败；同轮通知显示 System32 文件读取正对照成功，但宿主 Python executable、core DLL 与 stdlib 样本在容器内 `access_denied`，原 Python 子进程退出 `0xC0000135`。独立 disposable runtime staging 探针的 x64/ARM64 步骤通过，且验证候选运行时、临时 ACL 精确恢复与源 runtime ACL 不变；这是运行时隔离诊断，不是生产接线。显式 `LOCALAPPDATA` 的 AppContainer 观测仍与传入值不匹配且 profile marker 缺失；两者不据此合并为单一根因。普通 Job、workspace 与部分网络/清理子项通过不等于 Windows 隔离完成；自动模式继续关闭。默认无网络能力的 AppContainer 是候选实现，域名代理仍需独立网络强制机制。
+
+R2.4 Git 已有 Linux-only 内部固定状态查询：每次调用重核 `WorkspaceManager` 的 `GitWorkspaceIdentity`，固定 Git 可执行文件和 status/porcelain v2 参数，在 Landlock 下将工作区与 Git 元数据只读、断网；clean/process filter、gitlink 和不支持的布局失败关闭。CI #157 的 Linux wheel 仍未包含本轮探针；现已将“构建、安装干净 wheel 后真实调用 broker + 恶意仓库负例”接入 Linux wheel CI，本机 x86_64 通过，ARM64 等待新 CI。它尚未接入 `ToolContext` 或模型工具，macOS/Windows 无等价后端，`git_broker_unavailable` 保持。R2.4 网络租约仍只是范围/HMAC authority 和进程内连接登记、撤销/到期状态合同；它未创建代理/真实 socket、不运行周期 sweep、不接入执行器或设置 OS 强制路由，联网继续关闭。建议 Linux 先做 netns + 可信桥接 HTTP(S) 切片，macOS/Windows 在 OS 级门禁通过前保持 DENY。R2.5 负责安装引导和发布矩阵。开发期线上只保留 main，不以合入主线代替阶段验收。
 完整 R2 的验收门槛仍是 Linux、macOS、Windows 每个平台均达到 ≥9/10，且 8 项 critical 全部通过。
 
 ### 2026-09-25 UTC：CI #120 交叉平台回执

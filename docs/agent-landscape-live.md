@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- 最近观察：2026-09-25；下次全量复核：不晚于 2026-10-25
-- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.3 Windows 环境探针、R2.4 Git status/helper 与网络代理生命周期；20 项观察名单最近全量复核为 2026-09-24。
+- 最近观察：2026-09-26；下次全量复核：不晚于 2026-10-26
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R2.3 Windows runtime/AppContainer 诊断和 R2.4 已安装 wheel 的 Git status broker；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -89,6 +89,14 @@
 - Codex commit `e4b68615f06621c43b365d66823ed01b8f8e8416` 的 `fsmonitor.rs` 检查仓库 `core.fsmonitor` 配置并覆盖可能指定外部 helper 的值；core README 记录 macOS `.git`、解析后的 worktree `gitdir` 与 `.codex` 在 workspace-write 策略中保持只读。Git Doctor 另有从文件系统读取元数据、不启动 Git 的诊断实现。未找到 Codex 专门的只读 Git 状态 broker；这些都是可借鉴组件而不是端到端能力。
 - Qwen Code v0.24.4 的 Linux 工具执行沙箱由系统/用户设置控制，项目设置不能降低策略，配置错误不回退宿主执行；它明确说明 `network: closed` 仍不隐藏宿主文件，也不隔离全部本机服务。官方文档禁用宿主 Git 预览等未移植工具；未发现独立 Git 状态 broker。
 - ICODE 取舍：采纳可信会话绑定、操作系统级只读 Git 元数据/禁网、禁用外部 helper 与失败关闭；暂不开放模型命令入口。先做固定可执行文件与参数、NUL 结构化输出和恶意仓库负例，执行隔离必须可证明且覆盖链接 worktree 的 gitdir/common-dir；不能仅用 `GIT_OPTIONAL_LOCKS=0`、环境清理或正则参数过滤宣称安全。
+
+### 2026-09-26 UTC R2.4 安装 wheel Git broker 与上游更新
+
+- **Codex**：固定观察 [`aa380897f67b91e1a47d530d7286d497b6726d3f`](https://github.com/openai/codex/commit/aa380897f67b91e1a47d530d7286d497b6726d3f)，核对 [Linux sandbox README](https://github.com/openai/codex/blob/aa380897f67b91e1a47d530d7286d497b6726d3f/codex-rs/linux-sandbox/README.md) 与 [Git info helper](https://github.com/openai/codex/blob/aa380897f67b91e1a47d530d7286d497b6726d3f/codex-rs/git-utils/src/info.rs)。上游把 `.git`/解析后的 `gitdir` 当只读边界，并在元数据查询中使用固定超时、`GIT_OPTIONAL_LOCKS=0`、hook 禁用和 fsmonitor 控制。**采纳机制**：按解析后的真实 Git 元数据路径加 OS 只读规则、内部查询有界；**不适配直接复用**：Codex helper 是 UI 状态辅助，且依赖其 bwrap 集成，不是 pip wheel 单独可用的安全 broker。
+- **Qwen Code**：固定观察 [`34246c66068dc496e937adc05b01661e66bf1e1f`](https://github.com/QwenLM/qwen-code/commit/34246c66068dc496e937adc05b01661e66bf1e1f) 的[沙箱契约](https://github.com/QwenLM/qwen-code/blob/34246c66068dc496e937adc05b01661e66bf1e1f/docs/users/features/sandbox.md)。文档要求 operator policy 不可由 workspace settings 降级、配置异常失败关闭，并明确 network closed 不隐藏宿主文件/密钥或全部本机服务。**采纳**：保持工具 admission 失败关闭，把网络隔离与宿主文件保密分别验收；**不适配**：Qwen 的整体命令沙箱不是 Git 状态 API，文档陈述也不替代 ICODE 实测。
+- **Gemini CLI**：固定观察 [`562f0361fe63952fcf2db793e3e9fc0ae69ec506`](https://github.com/google-gemini/gemini-cli/commit/562f0361fe63952fcf2db793e3e9fc0ae69ec506) 的 [`gitUtils.ts`](https://github.com/google-gemini/gemini-cli/blob/562f0361fe63952fcf2db793e3e9fc0ae69ec506/packages/core/src/utils/gitUtils.ts) 与该[修正提交/测试](https://github.com/google-gemini/gemini-cli/commit/562f0361fe63952fcf2db793e3e9fc0ae69ec506)。其 safe Git env 会剥离继承的 `GIT_CONFIG_*` 并限制 helper；本次上游还移除了空 `diff.external` override，测试指出 Git 会把空值解释为尝试执行空名称程序。ICODE 原 status 命令也无必要传 `-c diff.external=`；本机只读 `git -c diff.external= diff` 复现 exit 128。**采纳**：移除该无关 override，保留恶意 external-diff 配置的 status 不执行回归；**不适配**：通用 shell env defense-in-depth 不是 OS 沙箱，也不是 ICODE 独立 Git broker。
+- **ICODE 当前差异与成本**：新增 `scripts/probe_installed_git_broker.py`，实际从隔离 venv 的已安装 wheel 导入 `LandlockSandbox.from_bundle()` 和 `execute_git_status()`，在临时 Git worktree 对正常 modified/untracked 状态、恶意 fsmonitor/external-diff 配置、可执行 clean-filter 对照、index/checkout/gitdir/common-dir快照与源仓文件进行闭环验证；本机 Linux x86_64 通过，Linux ARM64 等待 CI。测试增加一次受限 Git worktree 操作和全树哈希检查，会增加 Linux wheel job 时间；不添加运行依赖。没有复制上游代码，故本轮无新增代码许可证义务。
+- **阶段决定**：采纳“真实安装制品必须调用安全 broker、恶意仓库是负例、源仓及元数据不变”的验收要求；移除已本机复现无效/有害的空 external-diff 参数。**暂缓**把 Git broker 接入 `ToolContext`、模型或自动模式：macOS/Windows 不支持、Linux ARM64 尚未跑新 wheel probe、并发变更/超量/超时全量与网络 broker 均未完成，`git_broker_unavailable` 不变。
 
 ### 2026-09-24 Windows AppContainer 追查补充
 

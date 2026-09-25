@@ -9,7 +9,9 @@ import tempfile
 import unittest
 from dataclasses import replace
 import sys
+from unittest.mock import patch
 
+from icode.execution_broker import ExecutionResult
 from icode.git_broker import (
     GitStatusUnavailable,
     execute_git_status,
@@ -228,6 +230,36 @@ class TestGitStatusBrokerExecution(unittest.TestCase):
             policy=self.session.policy(
                 "review", wall_timeout_seconds=10, output_limit_bytes=1024 * 1024
             ),
+        )
+
+    def test_status_command_does_not_install_empty_external_diff_override(self) -> None:
+        commands: list[list[str]] = []
+
+        def successful_or_absent(*args, **kwargs) -> ExecutionResult:
+            command = args[0]
+            commands.append(command)
+            exit_code = 1 if len(commands) <= 2 else 0
+            return ExecutionResult(
+                exit_code=exit_code,
+                output="",
+                output_bytes=0,
+                error=None,
+                output_truncated=False,
+                cleanup_ok=True,
+                cleanup_errno=None,
+                raw_output=b"",
+            )
+
+        with patch(
+            "icode.git_broker.execute_policy_command",
+            side_effect=successful_or_absent,
+        ):
+            entries = self._status()
+
+        self.assertEqual(entries, ())
+        self.assertEqual(len(commands), 4)
+        self.assertFalse(
+            any("diff.external=" in argument for command in commands for argument in command)
         )
 
     def test_status_reports_only_the_task_worktree_and_preserves_index(self) -> None:

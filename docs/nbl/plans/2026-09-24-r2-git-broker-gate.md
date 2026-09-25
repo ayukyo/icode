@@ -106,7 +106,7 @@
 ## 2026-09-25 Linux 固定参数 Git status 内部原型
 
 - `execute_git_status()` 仅接受 WorkspaceManager 捕获的 `GitWorkspaceIdentity`、实际 `LandlockSandbox` 与断网策略；调用前复核 `.git`、`commondir`、`HEAD`、ownership marker 及 device/inode。它不接收模型 argv/path，不注册工具，不进入执行器或 ToolContext 路由。
-- 所有 Git 子命令均经原生 helper 启动：系统 Git 固定在 `/usr/bin:/bin`，环境不继承 `GIT_*`/宿主 PATH，设置 `GIT_OPTIONAL_LOCKS=0`、禁用 fsmonitor、untracked cache、hook、外部 diff、外部 attributes/excludes 与 pager。Git 元数据按 identity inode 只读授权；该查询额外把代码工作区限制为 `READ_FILE | READ_DIR`，不授执行或写入，并拒绝与可执行系统/runtime 白名单重叠的工作区（Landlock 规则权限为叠加，窄规则不能撤销祖先权限）。普通任务策略包装仍保持原权限。
+- 所有 Git 子命令均经原生 helper 启动：系统 Git 固定在 `/usr/bin:/bin`，环境不继承 `GIT_*`/宿主 PATH，设置 `GIT_OPTIONAL_LOCKS=0`、禁用 fsmonitor、untracked cache、hook、外部 attributes/excludes 与 pager。固定命令只有 `config`、`ls-files`、`status`，不传无关的空 `diff.external` 值。Git 元数据按 identity inode 只读授权；该查询额外把代码工作区限制为 `READ_FILE | READ_DIR`，不授执行或写入，并拒绝与可执行系统/runtime 白名单重叠的工作区（Landlock 规则权限为叠加，窄规则不能撤销祖先权限）。普通任务策略包装仍保持原权限。
 - 安全预检拒绝仓库级与启用时的 worktree 级 `filter.*.clean/process` 配置；先以固定 `ls-files --stage -z` 查明索引是否含 mode `160000`，存在 gitlink 即 unavailable，状态查询固定 `--ignore-submodules=all`，不递归进入另一仓库。任一执行错误、清理异常、超时、输出截断、未知/畸形 porcelain、非 N... 子模块状态都不给部分结果。
 - 官方 [Git Attributes 文档](https://git-scm.com/docs/gitattributes)将 `filter.<driver>.clean` / `process` 定义为外部命令，并说明配置了 `process` 时优先于单文件 filter；[Git status 文档](https://git-scm.com/docs/git-status)定义 porcelain v2 与 `-z` 路径约束。宿主 Git 2.34.1 的受控临时仓库正向探针进一步实测：普通 status 会启动恶意 clean 脚本；ICODE 固定代理在执行 status 前拒绝该配置，marker 未生成。假的 fsmonitor/external diff 也未启动，gitlink 在任何子模块查询前拒绝。
 - `scripts/run_native_wheel_ci.py` 已在本机 x86_64 构建并检查 Linux wheel、安装至隔离 venv；随包 helper 的原有最小探针和新增 `--workspace-read-only` 写入/执行负例均通过。C 编译单进程执行，没有超出 `-j6`。
@@ -119,3 +119,12 @@
 - **Qwen Code：**固定复核 [`790bd83c2b1e3b242e0487d92183b053ceb44ed8`](https://github.com/QwenLM/qwen-code/commit/790bd83c2b1e3b242e0487d92183b053ceb44ed8)。当前 sandbox 文档/测试继续要求后端 admission 或验证失败不退回宿主执行；采纳该 fail-closed 行为，不复制其容器配置实现。
 - **Gemini CLI：**固定复核 [`bedef96ef42905bd84a86dbec021c706168e7e2f`](https://github.com/google-gemini/gemini-cli/commit/bedef96ef42905bd84a86dbec021c706168e7e2f)。会话跟踪 private worktree 与实际 gitdir 的关系值得参考；其 grant 可按用户授权覆盖读或写，不是固定只读 Git 状态合同，因此不接入 ICODE 只读状态端口。
 - **采纳/成本/验收：**采纳 OS 强制只读的元数据根、可信会话身份重核、固定 Git 参数、失败不回宿主；暂缓任何跨平台工具接线。ICODE Linux status 原型仍未进入 `ToolContext`，ARM64、恶意仓库、并发身份漂移、超时/超量清理及 macOS/Windows 等价负例仍是门槛；在通过前，所有 unsupported layout/platform 均保持 `git_broker_unavailable`。本轮只借鉴机制，不复制上游代码或新增第三方依赖。
+
+## 2026-09-26 UTC 干净安装 wheel Git broker 闭环
+
+- `scripts/run_native_wheel_ci.py` 现不只确认 wheel 内原生 helper 存在、可运行；完成隔离 venv 安装后，还用该 interpreter 执行 `scripts/probe_installed_git_broker.py`。探针只导入已安装 wheel 的 broker 与随包 Landlock helper，不从源码树导入实现、不在测试中重新编译 helper。
+- 临时 fixture 创建私有源仓与 `WorkspaceManager` 分层 worktree，验证 modified/untracked 状态；为同一仓库配置 hostile fsmonitor/external-diff 脚本并确认未产生 marker。随后用普通 Git status 正向确认 hostile clean filter 在受控 fixture 中会运行，再确认 broker 在执行 status 前 fail-closed 拒绝配置且不触发 filter。
+- 每次 broker 调用前后对 checkout、gitdir、common-dir 做不跟随链接的路径/类型/内容摘要对比，同时核对 index 与源仓 tracked file 未变；不会发布临时路径或仓库内容。断网策略必须为 DENY。
+- 新测试本机 Linux x86_64：wheel 构建/检查、隔离 venv 安装、原 native-helper 负例、已安装 broker hostile-repo probe 全部 PASS；Git broker 定向模块 14 项 PASS。Linux ARM64 由新提交触发的原生 wheel matrix 待验证，macOS/Windows 不适用此 Landlock 原型。
+- **TDD 上游修正：**Gemini CLI commit [`562f0361fe63952fcf2db793e3e9fc0ae69ec506`](https://github.com/google-gemini/gemini-cli/commit/562f0361fe63952fcf2db793e3e9fc0ae69ec506) 移除 `diff.external=''`，其回归测试说明空值会被 Git 当成执行空名称程序。ICODE 新增命令捕获测试先失败，再移除固定 status 参数中无关的 `-c diff.external=`；本机只读命令 `git -c diff.external= diff` 复现 exit 128。原恶意 external-diff status 回归保留；固定查询仍不执行 `git diff`。
+- **采纳/暂缓与影响：**采纳“交付 wheel 必须真实调用状态 broker”和上述负例；没有复制任何上游代码、无新增运行依赖，新增 CI 时间仅包括临时仓库/wheel 内 helper 操作。暂缓模型工具接线：ToolContext 身份传递、并发 config/身份替换、超时/超量输出、ARM64 wheel 与所有非 Linux 等价边界尚未清零；`git_broker_unavailable`、automatic mode 和网络 DENY 不变。

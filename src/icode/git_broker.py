@@ -106,7 +106,6 @@ def execute_git_status(
             "-c", "core.hooksPath=/dev/null",
             "-c", "core.excludesFile=/dev/null",
             "-c", "core.attributesFile=/dev/null",
-            "-c", "diff.external=",
             "-c", "status.renames=false",
             "--git-dir", str(layout.git_dir),
             "--work-tree", str(layout.worktree_root),

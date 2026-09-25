@@ -142,6 +142,12 @@ def main() -> int:
                 print('installed wheel helper: namespace, Python and cleanup PASS')
             """)
             _run("probe installed wheel", [str(python), "-c", code], cwd=root, env=clean_env)
+            _run(
+                "probe installed Git status broker",
+                [str(python), str(repository / "scripts" / "probe_installed_git_broker.py")],
+                cwd=root,
+                env=clean_env,
+            )
     except (OSError, subprocess.TimeoutExpired, RuntimeError) as exc:
         print(f"::error::{exc}")
         return 1
