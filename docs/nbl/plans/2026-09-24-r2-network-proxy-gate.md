@@ -69,7 +69,7 @@
 
 ## 2026-09-27 上游网络到期路径复核
 
-- **Codex 当前源码：**观察 `main` 固定 SHA [`12de0e395d3313bc564190d983cb4f5acf0be713`](https://github.com/openai/codex/commit/12de0e395d3313bc564190d983cb4f5acf0be713)，Apache-2.0。Managed Seatbelt 可只放行本机代理端口；代理策略逐请求决策，scope shutdown 会关闭 HTTP keep-alive、CONNECT 与 SOCKS 活动连接。但这证明的是 scope 生命周期清理，不是租约 TTL 自动过期清理；缺少强制 managed 配置时也不能笼统声称缺代理必定断网。
+- **Codex 当前源码：**观察 `main` 固定 SHA [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473)，Apache-2.0。Managed Seatbelt 可只放行本机代理端口；代理策略逐请求决策，scope shutdown 会关闭 HTTP keep-alive、CONNECT 与 SOCKS 活动连接。但这证明的是 scope 生命周期清理，不是租约 TTL 自动过期清理；缺少强制 managed 配置时也不能笼统声称缺代理必定断网。
 - **Gemini CLI 当前源码：**观察 `main` 固定 SHA [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，Apache-2.0。严格代理 Seatbelt 默认 deny，仅开放本机代理端口，代理退出可停止 sandbox 进程组；未发现按单一租约期限关闭 keep-alive 隧道的证据。
 - **ICODE 现状：**`NetworkLeaseAuthority` 仍只是授权数据与活跃连接登记接口；没有生产 socket caller、代理服务、周期 sweeper 或 OS “仅到代理”路由。macOS 不接受 `PROXY_ALLOWLIST`，Linux/Windows 也未形成租约到内核强制边界的生产路径。当前状态不得因上游机制或 lease 单测改变。
 - **采纳 / 暂缓：**采纳 OS 强制只到可信固定代理端点、代理逐请求检查精确授权、代理退出终止进程组作为故障兜底；暂缓把静态本机代理端口当成到期授权，禁止依赖 `HTTP_PROXY`/`NO_PROXY`。真正开放前还须证明过期/撤销同时关闭已建立连接并取消进行中的连接、过期后复用与新连接均拒绝，以及代理死亡无直连回退；DNS 私网/重绑定、IPv4/IPv6/UDP/loopback 绕过与两架构原生验证仍是门槛。上游仅作架构参考，未复制实现、无新增许可或依赖。详情见[持续竞品对照](../../agent-landscape-live.md)。
@@ -80,3 +80,10 @@
 - **上游刷新：**Codex `main` SHA [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473)，Gemini CLI `main` SHA [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，均 Apache-2.0。Codex scope shutdown 测试可借鉴真实 keep-alive/CONNECT/SOCKS 双端 EOF/reset 验证，但没有据此推断租约 TTL；Gemini 的 fixed loopback Seatbelt 和代理退出后停进程组也不等于 lease 到期语义。
 - **采纳 / 暂缓：**先实现 Agent 不可调用的本机真实 socket 生命周期垂直切片：用宿主 scope 绑定现有 lease authority，在真实双向连接上测试 revoke/自然到期的关断与后续请求拒绝；候选 policy 保持 `DENY`，本片不打开执行网络、不更改自动模式。待此语义稳定，再独立实现各平台 OS 强制“只到可信代理”与 bypass/native/wheel 验收。不采纳仅靠 `HTTP_PROXY`/`NO_PROXY` 的软限制，也不以 callback 的布尔返回充当 socket 已关闭证明；不复制代码、不引入依赖。
 - **验收边界：**测试需用真实 client/upstream sockets 观察双方在约定期限内 EOF/reset，覆盖到期、显式 revoke、过期后连接复用/新请求拒绝，以及 revoke 与建立连接并发；失败清理必须保持 scope 阻断和 worker fail-closed。该垂直切片不等于 DNS 私网/重绑定、IPv4/IPv6/UDP/loopback 旁路防护，也不代表 Linux/macOS/Windows 网络边界已通过，R2 最终门槛保持原样。
+
+### 2026-09-27 真实 TCP socket 生命周期切片
+
+- **实现：**`NetworkLeaseAuthority.register_active_sockets()` 仅接受非空、精确类型的标准 socket tuple，且每个 socket 必须是已连接的 IPv4/IPv6 TCP stream；以 `SO_TYPE` 和 `getpeername()` 验证，拒绝监听、未连接和 UDP socket。注册前快照并校验底层 fd 均打开且唯一，拒绝以两个 Python wrapper 共用同一 fd 的输入，避免重复关闭和误伤复用后的描述符。authority 随后 `dup()` 并持有独立 descriptor 副本，撤销/过期回调对副本执行 shutdown/close，避免调用方 detach 原 wrapper 后令底层连接逃过关闭确认。注册失败时关闭已创建副本。
+- **本地验收：**`tests.test_network_lease` 25 项通过。真实 loopback TCP 用例验证 revoke 与显式 expiry sweep 后 peer 收到 EOF；另外验证共享 fd wrapper 被拒绝、注册后 detach 原 wrapper 仍无法阻断 revoke，以及监听/未连接 TCP 和 UDP（含已连接 UDP）均被拒绝。新增负例均先按预期失败，再实施对应收紧。Python 3.11.15 下完整 `scripts/preflight.py` 的密钥扫描、子模块完整性与 unittest 三道守护通过；站点、治理、竞品对照校验、107 个 Python 文件 AST 解析和 `git diff --check` 通过。对应的平台 CI 步骤已加入，尚待远端矩阵运行。
+- **严格边界：**这不是 HTTP/TCP relay 或生产代理，也不让 Agent/worker 获得网络权限；没有后台 sweeper，expiry 仍由显式调用触发。双 TCP 对只证明登记 socket 的关闭会传至 peer，不证明真实流量转发、DNS/IP 策略、expiry 后新请求拒绝、连接建立竞态或 OS 路由；调用方必须是可信宿主，且注册期间不得并发修改原 wrapper。网络基础策略保持 `DENY`，macOS/Windows 网络继续关闭。
+- **下一步：**等待 Ubuntu/macOS/Windows（含现有 x64/ARM runner）模块 CI 与独立 socket 生命周期复审；之后把 lease registry 接入真实宿主代理 scope，测试过期后复用/新请求拒绝、连接进行中撤销与失败清理重试，再单独做 Linux netns→可信桥接和其他平台强制“只到代理”门禁。上述缺口未通过前不得开放联网或宣称 R2/R2.4 完成。

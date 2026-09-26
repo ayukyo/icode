@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import socket
 import threading
 import unittest
 from dataclasses import FrozenInstanceError, replace
@@ -28,6 +29,22 @@ class NetworkLeaseTestCase(unittest.TestCase):
         self._temp_dir = TemporaryDirectory()
         self.addCleanup(self._temp_dir.cleanup)
         self.workspace = Path(self._temp_dir.name).resolve()
+
+    def make_tcp_pair(self) -> tuple[socket.socket, socket.socket]:
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.settimeout(1.0)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        self.addCleanup(listener.close)
+
+        peer = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        peer.settimeout(1.0)
+        self.addCleanup(peer.close)
+        peer.connect(listener.getsockname())
+        accepted, _ = listener.accept()
+        accepted.settimeout(1.0)
+        self.addCleanup(accepted.close)
+        return peer, accepted
 
     def make_policy(self, **overrides: object) -> SandboxPolicy:
         values: dict[str, object] = {
@@ -349,6 +366,186 @@ class NetworkLeaseTestCase(unittest.TestCase):
                 port=443,
                 now_monotonic_ns=3_000_000_001,
             )
+
+    def test_revoke_closes_real_tcp_tunnel_endpoints(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        client_peer, proxy_client = self.make_tcp_pair()
+        proxy_upstream, upstream_peer = self.make_tcp_pair()
+
+        register_sockets = getattr(authority, "register_active_sockets", None)
+        self.assertTrue(callable(register_sockets), "authority lacks real-socket registration")
+        handle = register_sockets(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            sockets=(proxy_client, proxy_upstream),
+        )
+        client_peer.sendall(b"client-alive")
+        self.assertEqual(proxy_client.recv(12), b"client-alive")
+        upstream_peer.sendall(b"upstream-alive")
+        self.assertEqual(proxy_upstream.recv(14), b"upstream-alive")
+
+        authority.revoke(policy)
+
+        self.assertEqual(client_peer.recv(1), b"")
+        self.assertEqual(upstream_peer.recv(1), b"")
+        self.assertFalse(authority.release_active_connection(handle))
+
+    def test_registration_rejects_distinct_socket_objects_sharing_one_fd(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        _, proxy_socket = self.make_tcp_pair()
+        aliased_socket = socket.socket(fileno=proxy_socket.fileno())
+        self.assertIsNot(aliased_socket, proxy_socket)
+        self.assertEqual(aliased_socket.fileno(), proxy_socket.fileno())
+
+        try:
+            with self.assertRaisesRegex(NetworkLeaseValidationError, "duplicate"):
+                authority.register_active_sockets(
+                    grant,
+                    policy,
+                    purpose=NetworkPurpose.PACKAGE_INSTALL,
+                    hostname="pypi.org",
+                    port=443,
+                    now_monotonic_ns=3_000_000_000,
+                    sockets=(proxy_socket, aliased_socket),
+                )
+        finally:
+            # Both wrappers refer to the same descriptor; leave its ownership
+            # with proxy_socket so the test cleanup closes it exactly once.
+            aliased_socket.detach()
+
+    def test_revoke_closes_socket_after_original_wrapper_detaches(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        client_peer, proxy_socket = self.make_tcp_pair()
+        handle = authority.register_active_sockets(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            sockets=(proxy_socket,),
+        )
+
+        detached_socket = socket.socket(fileno=proxy_socket.detach())
+        self.addCleanup(detached_socket.close)
+        detached_socket.sendall(b"still-active")
+        self.assertEqual(client_peer.recv(12), b"still-active")
+
+        authority.revoke(policy)
+
+        client_peer.setblocking(False)
+        try:
+            observed = client_peer.recv(1)
+        except BlockingIOError:
+            observed = None
+        self.assertEqual(observed, b"")
+        self.assertFalse(authority.release_active_connection(handle))
+
+    def test_registration_rejects_unconnected_or_non_tcp_sockets(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        self.addCleanup(listener.close)
+        unconnected_tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.addCleanup(unconnected_tcp.close)
+        unconnected_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.addCleanup(unconnected_udp.close)
+        connected_udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        connected_udp.connect(("127.0.0.1", 9))
+        self.addCleanup(connected_udp.close)
+
+        for candidate in (listener, unconnected_tcp, unconnected_udp, connected_udp):
+            with self.subTest(socket_type=candidate.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)):
+                with self.assertRaisesRegex(
+                    NetworkLeaseValidationError, "connected IPv4/IPv6 TCP"
+                ):
+                    authority.register_active_sockets(
+                        grant,
+                        policy,
+                        purpose=NetworkPurpose.PACKAGE_INSTALL,
+                        hostname="pypi.org",
+                        port=443,
+                        now_monotonic_ns=3_000_000_000,
+                        sockets=(candidate,),
+                    )
+
+    def test_expiry_sweep_closes_real_tcp_tunnel_endpoints(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=1,
+            now_monotonic_ns=2_000_000_000,
+        )
+        client_peer, proxy_client = self.make_tcp_pair()
+        proxy_upstream, upstream_peer = self.make_tcp_pair()
+
+        register_sockets = getattr(authority, "register_active_sockets", None)
+        self.assertTrue(callable(register_sockets), "authority lacks real-socket registration")
+        handle = register_sockets(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=2_500_000_000,
+            sockets=(proxy_client, proxy_upstream),
+        )
+        client_peer.sendall(b"before-expiry")
+        self.assertEqual(proxy_client.recv(13), b"before-expiry")
+        upstream_peer.sendall(b"before-expiry")
+        self.assertEqual(proxy_upstream.recv(13), b"before-expiry")
+
+        self.assertEqual(authority.close_expired_connections(3_000_000_000), 1)
+
+        self.assertEqual(client_peer.recv(1), b"")
+        self.assertEqual(upstream_peer.recv(1), b"")
+        self.assertFalse(authority.release_active_connection(handle))
 
     def test_normal_connection_release_is_idempotent_and_does_not_close_twice(self) -> None:
         policy = self.make_policy()

@@ -14,6 +14,7 @@ import hmac
 import json
 import re
 import secrets
+import socket
 import threading
 import time
 from dataclasses import dataclass, field
@@ -511,6 +512,107 @@ class NetworkLeaseAuthority:
                 close_callback=close,
             )
             return handle
+
+    def register_active_sockets(
+        self,
+        issued: IssuedNetworkLease,
+        policy: SandboxPolicy,
+        *,
+        purpose: NetworkPurpose,
+        hostname: str,
+        port: int,
+        now_monotonic_ns: int,
+        sockets: tuple[socket.socket, ...],
+    ) -> _NetworkConnectionHandle:
+        """Register real proxy-owned sockets for authority-controlled closure.
+
+        This method duplicates descriptors supplied by trusted host-side code
+        and owns those duplicates for shutdown. It does not create a proxy,
+        connect a socket, or permit worker network access. The caller retains
+        ownership of its originals and must not mutate them concurrently with
+        registration or share them with an untrusted worker.
+        """
+
+        if type(sockets) is not tuple or not sockets:
+            raise NetworkLeaseValidationError(
+                "active proxy sockets must be a non-empty tuple"
+            )
+        if any(type(sock) is not socket.socket for sock in sockets):
+            raise NetworkLeaseValidationError(
+                "active proxy sockets must be standard socket objects"
+            )
+        file_descriptors = tuple(sock.fileno() for sock in sockets)
+        if any(file_descriptor < 0 for file_descriptor in file_descriptors):
+            raise NetworkLeaseValidationError(
+                "active proxy sockets must all be open"
+            )
+        if len(set(file_descriptors)) != len(file_descriptors):
+            raise NetworkLeaseValidationError(
+                "active proxy socket tuple contains duplicate file descriptors"
+            )
+        try:
+            for sock in sockets:
+                if (
+                    sock.family not in (socket.AF_INET, socket.AF_INET6)
+                    or sock.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)
+                    != socket.SOCK_STREAM
+                ):
+                    raise NetworkLeaseValidationError(
+                        "active proxy sockets must be connected IPv4/IPv6 TCP streams"
+                    )
+                sock.getpeername()
+        except OSError:
+            raise NetworkLeaseValidationError(
+                "active proxy sockets must be connected IPv4/IPv6 TCP streams"
+            ) from None
+
+        owned_sockets: list[socket.socket] = []
+
+        def discard_owned_sockets() -> None:
+            for sock in owned_sockets:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+
+        try:
+            for sock in sockets:
+                owned_sockets.append(sock.dup())
+        except BaseException:
+            discard_owned_sockets()
+            raise
+
+        owned_socket_tuple = tuple(owned_sockets)
+
+        def close_sockets() -> bool:
+            for sock in owned_socket_tuple:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    # A peer may already have shut down one direction;
+                    # still close each authority-owned descriptor.
+                    pass
+                try:
+                    sock.close()
+                except OSError:
+                    # Continue closing the rest; final descriptor checks
+                    # keep an incomplete close fail-closed in the authority.
+                    pass
+            return all(sock.fileno() < 0 for sock in owned_socket_tuple)
+
+        try:
+            return self.register_active_connection(
+                issued,
+                policy,
+                purpose=purpose,
+                hostname=hostname,
+                port=port,
+                now_monotonic_ns=now_monotonic_ns,
+                close=close_sockets,
+            )
+        except Exception:
+            discard_owned_sockets()
+            raise
 
     def release_active_connection(self, handle: object) -> bool:
         """Forget a proxy connection after its owner has closed it normally."""

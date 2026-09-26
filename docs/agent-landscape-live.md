@@ -609,3 +609,9 @@
 - **Apple 文档边界：**[App Sandbox 官方文档](https://developer.apple.com/documentation/security/app_sandbox)描述 entitlement 型 App Sandbox；本次未找到 Apple 一手公开材料证明 `sandbox-exec` SBPL 的通用 deny-vs-allow 顺序。ICODE 因此不叠加一条可能与广泛授权冲突的 deny 来依赖优先级，而将 `require-not literal` 和 `require-not subpath` 直接合入 workspace read allow，并要求原生 macOS 负例验收。
 - **ICODE 采纳 / 拒绝：**采纳“carve-out 位于授权谓词本身”、拒绝不确定/带链接/越界/缺失目录，以及避免额外 Python/系统 read grant 重新开放账本的设计；也将 Reviewer 沙箱执行文件约束为 `/usr/bin/sandbox-exec`，不能由 PATH 同名程序替代。不复制上游实现、不加依赖；容器、Windows 与策略化 Reviewer 不因该实现而开放。
 - **当前验收状态：**本地 profile、路径拒绝、固定系统执行器与 ToolContext 调用链用例已过；隔离模块 73 项通过、8 项跳过。GitHub [CI #223](https://github.com/ayukyo/icode/actions/runs/36269281752) 中 macOS 实际 file-read/file-write/alias 负例在 ARM64 `macos-latest` 与 Intel `macos-15-intel` 均通过；runner 标签/架构映射见 [官方文档](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。这不外推为整个 R2 隔离就绪。观察日期：2026-09-27 UTC。
+
+### 2026-09-27 UTC 实施结果：R2 授权租约的真实 socket 关闭适配器
+
+- **相关上游结论：**Codex 固定源码 [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473) 与 Gemini CLI [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18) 的生命周期证据只用于借鉴关闭活跃连接与 fail-closed 机制；没有复制代码，也没有新增运行依赖。上游代理 scope shutdown 测试不证明 ICODE 单租约 TTL 或生产代理已接入。
+- **ICODE 改动与本地证据：**增加宿主侧 `register_active_sockets()`，只接收已连接的 IPv4/IPv6 TCP stream（排除监听/未连接 TCP 与 UDP），并将 socket 接到现有 authority revoke/expiry callback；authority 持有描述符副本，实测 revoke 与显式 expiry sweep 后真实 loopback TCP peer 收到 EOF，并拒绝不同 wrapper 共用同一 fd、验证调用方 detach 原 wrapper 仍不能绕过 revoke。租约模块测试和 Python 3.11.15 完整 preflight 结果见对应阶段记录；平台专用 CI 步骤已加，远端结果待验证。
+- **未通过/尚未覆盖：**适配器不创建代理、不转发 HTTP/TCP 流量、不连接 Agent 或 worker；没有后台 expiry sweeper，过期后复用/新请求、连接中撤销竞态、失败重试与 OS 级禁直连均不由本切片证明。调用方须是可信宿主，注册期间不可并发修改原 wrapper。工作策略继续 `DENY`，网络不开放；真实代理、DNS/私网/重绑定、IPv4/IPv6/UDP/loopback 旁路和干净 wheel 仍是 R2 门槛。观察日期：2026-09-27 UTC。
