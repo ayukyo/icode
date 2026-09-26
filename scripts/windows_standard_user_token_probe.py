@@ -52,7 +52,14 @@ _ERROR_LOGON_FAILURE = 1326
 _ERROR_ACCESS_DENIED = 5
 _ERROR_NO_TOKEN = 1008
 _SE_KERNEL_OBJECT = 6
+_OWNER_SECURITY_INFORMATION = 0x00000001
+_GROUP_SECURITY_INFORMATION = 0x00000002
 _DACL_SECURITY_INFORMATION = 0x00000004
+_ACCESS_CHECK_SECURITY_INFORMATION = (
+    _OWNER_SECURITY_INFORMATION
+    | _GROUP_SECURITY_INFORMATION
+    | _DACL_SECURITY_INFORMATION
+)
 _ACCESS_ALLOWED_ACE_TYPE = 0
 _SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010
 _SE_GROUP_ENABLED = 0x00000004
@@ -608,8 +615,9 @@ def _diagnose_runner_pipe_access(
         ):
             expected_sid = ctypes.c_void_p()
 
+        # AccessCheck rejects a descriptor without owner and group SIDs.
         status = advapi.GetSecurityInfo(
-            pipe_handle, _SE_KERNEL_OBJECT, _DACL_SECURITY_INFORMATION,
+            pipe_handle, _SE_KERNEL_OBJECT, _ACCESS_CHECK_SECURITY_INFORMATION,
             None, None, None, None, ctypes.byref(security_descriptor),
         )
         if status == 0 and security_descriptor:

@@ -83,6 +83,12 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(token_probe._ACCESS_ALLOWED_ACE.SidStart.offset, 8)
         self.assertEqual(ctypes.sizeof(token_probe._ACCESS_ALLOWED_ACE), 12)
 
+    def test_access_check_security_descriptor_includes_owner_group_and_dacl(self) -> None:
+        self.assertEqual(
+            token_probe._ACCESS_CHECK_SECURITY_INFORMATION,
+            0x00000001 | 0x00000002 | 0x00000004,
+        )
+
     def test_pipe_diagnostic_can_target_the_exited_child_token(self) -> None:
         diagnostic_parameters = inspect.signature(
             token_probe._diagnose_runner_pipe_access,

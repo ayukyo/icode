@@ -17,6 +17,13 @@
 - **修正与回归：**提取纯函数 `_safe_standard_user_probe_error()`，只允许精确的已知状态、完整小写 `stage:winerror=N`、或总长不超 200 字符且满足固定语法的受限子进程标签。增加正例验证 child-token/DACL 标签完整保留，负例验证 Windows 路径与秘密文本仍折叠为 `RuntimeError`。新测试先 RED，修正后 `test_windows_standard_user_token_probe` 31 项通过；`compileall`、`git diff --check` 与全量 `scripts/preflight.py` 通过。
 - **边界：**这修正回执可见性并收紧错误输出，不改变权限、不宣称 `AccessCheck` 等同 `CreateFileW`，也不代表管道连接成功。需以新提交重新跑双架构 `workflow_dispatch`，读取 DACL、ACE、child primary-token、logon SID 与 AccessCheck 标签；R2 Windows 自动模式继续关闭，R3 Git SHA 与 workflow Reviewer OS 边界仍待验收。
 
+## 2026-09-26 UTC：CI #204 AccessCheck 状态与安全描述符修正
+
+- **原生证据：**手动 [CI #204](https://github.com/ayukyo/icode/actions/runs/36242591553) 的 Windows x64/ARM64 都报告相同标签：`client_open_access_denied+dacl_present+ace_match+token_child_process+logon_enabled+restricted_no+access_unavailable`。因此已看到真实 DACL 有预期 ACE，child primary token 的 logon SID enabled 且 token 非 restricted；真实 `CreateFileW` 仍拒绝。Linux/macOS `5/10`、`critical_passed=false`、`ready=false`，不能据此通过 R2。
+- **API 合同与推断：**Microsoft [`AccessCheck`](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-accesscheck) 说明其输入需为有效安全描述符，缺少 owner/group SID 时会以 `ERROR_INVALID_SECURITY_DESCR` 失败；[`GetSecurityInfo`](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo) 仅返回被 `SecurityInfo` flags 请求的组件。本地原代码只请求 `DACL_SECURITY_INFORMATION`，与 `access_unavailable` 一致；但 CI 没保留 API 错误码，所以这仍是待验证根因，不是已确认结论。
+- **TDD 修正：**先增加安全信息 mask RED 测试，再令 `GetSecurityInfo` 同时请求 `OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION`；DACL 读取/ACE 匹配逻辑、访问掩码及 ACL 均不改变。`test_windows_standard_user_token_probe` 32 项通过；下一次双架构原生 probe 必须验证 `access_allow` 或 `access_deny`，且不把 AccessCheck 单独当作 CreateFile 实际结果。
+- **未关闭边界：**管道 `CreateFileW` access denied、标准用户 runner probe、Windows 文件/网络隔离与自动模式仍未通过/开放。即便 AccessCheck 返回 allow，也要继续分析 AccessCheck 与内核 CreateFile 结果差异，不能扩大权限试探。
+
 ## 目标与范围
 
 从「能修改」升级到「能根据真实失败证据验证和修复」：
