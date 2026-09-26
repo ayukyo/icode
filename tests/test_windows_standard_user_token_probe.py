@@ -35,13 +35,18 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             logon_sid="enabled",
             restricted="no",
             access="deny",
+            client_integrity="medium",
+            pipe_integrity="high",
+            pipe_no_write_up="yes",
+            client_no_write_up="yes",
         )
 
         self.assertEqual(
             summary,
-            "dacl_present+ace_match+token_thread+logon_enabled+restricted_no+access_deny",
+            "dacl_present+ace_match+token_thread+logon_enabled+restricted_no+"
+            "access_deny+client_il_medium+pipe_il_high+pipe_nwu_yes+token_nwu_yes",
         )
-        self.assertLessEqual(len(summary), 120)
+        self.assertLessEqual(len(summary), 210)
         self.assertNotIn("S-1-5-", summary)
         with self.assertRaises(ValueError):
             token_probe._format_runner_pipe_access_diagnostic(
@@ -51,6 +56,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 logon_sid="enabled",
                 restricted="no",
                 access="deny",
+                client_integrity="S-1-16-12288",
             )
 
         child_summary = token_probe._format_runner_pipe_access_diagnostic(
@@ -60,9 +66,167 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             logon_sid="enabled",
             restricted="no",
             access="allow",
+            client_integrity="low",
+            pipe_integrity="high",
+            pipe_no_write_up="yes",
+            client_no_write_up="yes",
         )
-        self.assertIn("token_child_process", child_summary)
-        self.assertLessEqual(len(child_summary), 120)
+        self.assertIn("token_child", child_summary)
+        self.assertIn("client_il_low+pipe_il_high+pipe_nwu_yes+token_nwu_yes", child_summary)
+        self.assertLessEqual(len(child_summary), 210)
+
+    def test_token_integrity_rid_maps_only_to_fixed_labels(self) -> None:
+        integrity_level = getattr(token_probe, "_integrity_level_from_rid", None)
+        self.assertTrue(callable(integrity_level))
+
+        self.assertEqual(integrity_level(0), "untrusted")
+        self.assertEqual(integrity_level(0x1000), "low")
+        self.assertEqual(integrity_level(0x2000), "medium")
+        self.assertEqual(integrity_level(0x2100), "medium_plus")
+        self.assertEqual(integrity_level(0x3000), "high")
+        self.assertEqual(integrity_level(0x4000), "system")
+        self.assertEqual(integrity_level(0x5000), "protected_process")
+        self.assertEqual(integrity_level(0x2222), "other")
+
+    def test_token_integrity_query_uses_token_query_class_and_mandatory_label(self) -> None:
+        reader = getattr(token_probe, "_token_integrity_level", None)
+        self.assertTrue(callable(reader))
+        self.assertEqual(token_probe._TOKEN_INTEGRITY_LEVEL_CLASS, 25)
+        self.assertEqual(token_probe._TOKEN_MANDATORY_POLICY_CLASS, 27)
+
+        authority_type = getattr(token_probe, "_SID_IDENTIFIER_AUTHORITY", None)
+        label_type = getattr(token_probe, "_TOKEN_MANDATORY_LABEL", None)
+        self.assertIsNotNone(authority_type)
+        self.assertIsNotNone(label_type)
+        authority = authority_type((ctypes.c_ubyte * 6)(0, 0, 0, 0, 0, 16))
+        count = ctypes.c_ubyte(1)
+        rid = ctypes.c_uint32(0x2100)
+        label_buffer = ctypes.create_string_buffer(ctypes.sizeof(label_type))
+        label = ctypes.cast(label_buffer, ctypes.POINTER(label_type)).contents
+        label.Label.Sid = 0x1234
+
+        class FakeApi:
+            pass
+
+        api = FakeApi()
+        api.advapi = mock.Mock()
+        api.advapi.IsValidSid.return_value = 1
+        api.advapi.GetSidIdentifierAuthority.return_value = ctypes.pointer(authority)
+        api.advapi.GetSidSubAuthorityCount.return_value = ctypes.pointer(count)
+        api.advapi.GetSidSubAuthority.return_value = ctypes.pointer(rid)
+
+        with mock.patch.object(
+            token_probe._runner_pipe,
+            "_get_token_information",
+            return_value=label_buffer,
+        ) as get_information:
+            self.assertEqual(reader(api, 456), "medium_plus")
+
+        get_information.assert_called_once_with(
+            api, 456, token_probe._TOKEN_INTEGRITY_LEVEL_CLASS,
+        )
+        api.advapi.GetSidSubAuthority.assert_called_once_with(0x1234, 0)
+
+        authority.Value[5] = 17
+        with mock.patch.object(
+            token_probe._runner_pipe,
+            "_get_token_information",
+            return_value=label_buffer,
+        ):
+            self.assertEqual(reader(api, 456), "other")
+
+    def test_client_mandatory_policy_reads_only_no_write_up_bit(self) -> None:
+        reader = getattr(token_probe, "_token_mandatory_no_write_up", None)
+        policy_type = getattr(token_probe, "_TOKEN_MANDATORY_POLICY", None)
+        self.assertTrue(callable(reader))
+        self.assertIsNotNone(policy_type)
+        policy_buffer = ctypes.create_string_buffer(ctypes.sizeof(policy_type))
+        policy = ctypes.cast(
+            policy_buffer, ctypes.POINTER(policy_type),
+        ).contents
+        policy.Policy = token_probe._TOKEN_MANDATORY_POLICY_NO_WRITE_UP | 0x2
+
+        class FakeApi:
+            advapi = mock.Mock()
+
+        with mock.patch.object(
+            token_probe._runner_pipe,
+            "_get_token_information",
+            return_value=policy_buffer,
+        ) as get_information:
+            self.assertEqual(reader(FakeApi(), 456), "yes")
+
+        get_information.assert_called_once_with(
+            mock.ANY, 456, token_probe._TOKEN_MANDATORY_POLICY_CLASS,
+        )
+        policy.Policy = 0
+        with mock.patch.object(
+            token_probe._runner_pipe,
+            "_get_token_information",
+            return_value=policy_buffer,
+        ):
+            self.assertEqual(reader(FakeApi(), 456), "no")
+
+    def test_pipe_integrity_reads_only_the_mandatory_label_ace(self) -> None:
+        reader = getattr(token_probe, "_pipe_integrity_details", None)
+        ace_type = getattr(token_probe, "_SYSTEM_MANDATORY_LABEL_ACE", None)
+        self.assertTrue(callable(reader))
+        self.assertIsNotNone(ace_type)
+
+        authority_type = token_probe._SID_IDENTIFIER_AUTHORITY
+        authority = authority_type((ctypes.c_ubyte * 6)(0, 0, 0, 0, 0, 16))
+        count = ctypes.c_ubyte(1)
+        rid = ctypes.c_uint32(0x3000)
+        acl = token_probe._ACL_HEADER()
+        acl.AceCount = 1
+        ace = ace_type()
+        ace.Header.AceType = token_probe._SYSTEM_MANDATORY_LABEL_ACE_TYPE
+        ace.Mask = token_probe._SYSTEM_MANDATORY_LABEL_NO_WRITE_UP
+
+        class FakeApi:
+            pass
+
+        api = FakeApi()
+        api.advapi = mock.Mock()
+
+        def get_sacl(_descriptor, present, sacl_pointer, _defaulted) -> int:
+            present._obj.value = 1
+            sacl_pointer._obj.value = ctypes.addressof(acl)
+            return 1
+
+        def get_ace(_acl, _index: int, ace_pointer) -> int:
+            ace_pointer._obj.value = ctypes.addressof(ace)
+            return 1
+
+        api.advapi.GetSecurityDescriptorSacl.side_effect = get_sacl
+        api.advapi.GetAce.side_effect = get_ace
+        api.advapi.IsValidSid.return_value = 1
+        api.advapi.GetSidIdentifierAuthority.return_value = ctypes.pointer(authority)
+        api.advapi.GetSidSubAuthorityCount.return_value = ctypes.pointer(count)
+        api.advapi.GetSidSubAuthority.return_value = ctypes.pointer(rid)
+
+        self.assertEqual(reader(api, 789), ("high", "yes"))
+        api.advapi.GetSecurityDescriptorSacl.assert_called_once()
+        api.advapi.GetAce.assert_called_once()
+
+        acl.AceCount = 2
+        self.assertEqual(reader(api, 789), ("unavailable", "unavailable"))
+
+    def test_pipe_integrity_without_a_label_is_distinguished_from_query_failure(self) -> None:
+        reader = getattr(token_probe, "_pipe_integrity_details", None)
+        self.assertTrue(callable(reader))
+
+        class FakeApi:
+            advapi = mock.Mock()
+
+        def no_sacl(_descriptor, present, sacl_pointer, _defaulted) -> int:
+            present._obj.value = 0
+            sacl_pointer._obj.value = 0
+            return 1
+
+        FakeApi.advapi.GetSecurityDescriptorSacl.side_effect = no_sacl
+
+        self.assertEqual(reader(FakeApi(), 789), ("absent", "unavailable"))
 
     def test_pipe_access_diagnostic_is_unavailable_off_windows(self) -> None:
         with mock.patch.object(
@@ -74,7 +238,9 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(
             summary,
             "dacl_unavailable+ace_unavailable+token_unavailable+"
-            "logon_unavailable+restricted_unavailable+access_unavailable",
+            "logon_unavailable+restricted_unavailable+access_unavailable+"
+            "client_il_unavailable+pipe_il_unavailable+pipe_nwu_unavailable+"
+            "token_nwu_unavailable",
         )
         self.assertNotIn("not-logged", summary)
 
@@ -82,11 +248,16 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(token_probe._ACL_HEADER.AceCount.offset, 4)
         self.assertEqual(token_probe._ACCESS_ALLOWED_ACE.SidStart.offset, 8)
         self.assertEqual(ctypes.sizeof(token_probe._ACCESS_ALLOWED_ACE), 12)
+        self.assertEqual(token_probe._SYSTEM_MANDATORY_LABEL_ACE.SidStart.offset, 8)
+        self.assertEqual(ctypes.sizeof(token_probe._SYSTEM_MANDATORY_LABEL_ACE), 12)
 
-    def test_access_check_security_descriptor_includes_owner_group_and_dacl(self) -> None:
+    def test_pipe_security_information_includes_dacl_and_mandatory_label(self) -> None:
         self.assertEqual(
-            token_probe._ACCESS_CHECK_SECURITY_INFORMATION,
-            0x00000001 | 0x00000002 | 0x00000004,
+            token_probe._PIPE_DIAGNOSTIC_SECURITY_INFORMATION,
+            token_probe._OWNER_SECURITY_INFORMATION
+            | token_probe._GROUP_SECURITY_INFORMATION
+            | token_probe._DACL_SECURITY_INFORMATION
+            | token_probe._LABEL_SECURITY_INFORMATION,
         )
 
     def test_pipe_diagnostic_can_target_the_exited_child_token(self) -> None:
@@ -111,6 +282,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 output._obj.value = 1
                 return True
 
+        # Child reports keep their legacy 120-character detail limit. The
+        # expanded native diagnostic is appended by the parent after parsing.
         diagnostic = (
             "dacl_present+ace_match+token_child_process+logon_enabled+"
             "restricted_no+access_allow"
@@ -545,10 +718,21 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         )
 
     def test_parent_error_filter_preserves_bounded_pipe_diagnostic_tags(self) -> None:
+        summary = token_probe._format_runner_pipe_access_diagnostic(
+            dacl="present",
+            ace="match",
+            token="child_process",
+            logon_sid="enabled",
+            restricted="no",
+            access="allow",
+            client_integrity="low",
+            pipe_integrity="high",
+            pipe_no_write_up="yes",
+            client_no_write_up="yes",
+        )
         diagnostic = (
             "standard_user_restricted_child_failed:client_open_access_denied+"
-            "dacl_present+ace_match+token_child_process+logon_enabled+"
-            "restricted_no+access_allow"
+            + summary
         )
 
         self.assertEqual(
@@ -619,6 +803,10 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(
             restricted_child_failure_detail("failed=stage;detail=" + "x" * 121),
             "unclassified",
+        )
+        self.assertEqual(
+            restricted_child_failure_detail("failed=stage;detail=" + "x" * 120),
+            "stage:" + "x" * 120,
         )
 
     def test_wrong_pid_probe_runs_in_standard_user_context_and_still_handshakes(self) -> None:

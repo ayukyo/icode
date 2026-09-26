@@ -24,6 +24,14 @@
 - **TDD 修正：**先增加安全信息 mask RED 测试，再令 `GetSecurityInfo` 同时请求 `OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION`；DACL 读取/ACE 匹配逻辑、访问掩码及 ACL 均不改变。`test_windows_standard_user_token_probe` 32 项通过；下一次双架构原生 probe 必须验证 `access_allow` 或 `access_deny`，且不把 AccessCheck 单独当作 CreateFile 实际结果。
 - **未关闭边界：**管道 `CreateFileW` access denied、标准用户 runner probe、Windows 文件/网络隔离与自动模式仍未通过/开放。即便 AccessCheck 返回 allow，也要继续分析 AccessCheck 与内核 CreateFile 结果差异，不能扩大权限试探。
 
+## 2026-09-26 UTC：CI #206 DACL 放行但管道连接仍拒绝
+
+- **独立原生证据：**手动 [CI #206](https://github.com/ayukyo/icode/actions/runs/36243032179) 的 Windows x64 与 ARM64 都报告 `dacl_present+ace_match+token_child_process+logon_enabled+restricted_no+access_allow`；同一目标子进程的真实 `CreateFileW` 仍 `access_denied`。Linux/macOS 原生 conformance 仍为 `passed=5/10`、`critical_passed=false`、`ready=false`。因此只确认 DACL `AccessCheck` 不是充分解释，不能将失败归咎于完整性控制。
+- **只读诊断补充：**根据并行微软 API 核对，将下一轮诊断收窄到实际 pipe 对象的 `LABEL_SECURITY_INFORMATION` 中 `SYSTEM_MANDATORY_LABEL_ACE`/`NO_WRITE_UP` bit，以及真实目标 child token 的 `TokenIntegrityLevel` 和 `TokenMandatoryPolicy`；只输出固定标签，不输出 SID/RID，不回退到父 token。Label-only 查询不读取审计 SACL；token 查询只需 `TOKEN_QUERY`。没有权限变更、重试 open 或改变探针判定。
+- **微软 API 依据与推断边界：**[`GetSecurityInfo`](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo) 对管道 handle 可按 [`SECURITY_INFORMATION`](https://learn.microsoft.com/en-us/windows/win32/secauthz/security-information) 请求 `LABEL_SECURITY_INFORMATION`；微软分别说明完整 SACL 查询与 label-only 查询的权限边界。`GetTokenInformation` 的 [`TokenIntegrityLevel`](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_mandatory_label) 与 [`TokenMandatoryPolicy`](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-token_mandatory_policy) 均通过 `TOKEN_QUERY` 读取；[Mandatory Integrity Control](https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control) 在 DACL 之外检查对象标签与 mandatory policy，[SYSTEM_MANDATORY_LABEL_ACE](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-system_mandatory_label_ace) 定义 `NO_WRITE_UP`。对象 label + 有效 client token + 读写请求三者匹配才能形成强 MIC 候选，仍不能宣称唯一根因。
+- **本机验证：**新增固定 RID/authority 分类、mandatory-label ACE 结构、缺失 label 与查询失败区分、token policy bit、白名单及较长但有界回执测试；Windows 探针单测 37 项通过。该环境不能原生执行 Windows API；需在后续 x64/ARM64 CI 确认新标签，且结果仍不能替代真实 `CreateFileW` 结论。
+- **未关闭边界：**`CreateFileW` 拒绝、Windows 文件/网络隔离、runner 自动模式、Linux/macOS 5/10 门槛以及 R3 SHA 锚定和跨平台 workflow Reviewer 均未关闭。
+
 ## 目标与范围
 
 从「能修改」升级到「能根据真实失败证据验证和修复」：

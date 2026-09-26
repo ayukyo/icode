@@ -55,12 +55,16 @@ _SE_KERNEL_OBJECT = 6
 _OWNER_SECURITY_INFORMATION = 0x00000001
 _GROUP_SECURITY_INFORMATION = 0x00000002
 _DACL_SECURITY_INFORMATION = 0x00000004
-_ACCESS_CHECK_SECURITY_INFORMATION = (
+_LABEL_SECURITY_INFORMATION = 0x00000010  # Read mandatory label, not full SACL.
+_PIPE_DIAGNOSTIC_SECURITY_INFORMATION = (
     _OWNER_SECURITY_INFORMATION
     | _GROUP_SECURITY_INFORMATION
     | _DACL_SECURITY_INFORMATION
+    | _LABEL_SECURITY_INFORMATION
 )
 _ACCESS_ALLOWED_ACE_TYPE = 0
+_SYSTEM_MANDATORY_LABEL_ACE_TYPE = 0x11
+_SYSTEM_MANDATORY_LABEL_NO_WRITE_UP = 0x00000001
 _SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010
 _SE_GROUP_ENABLED = 0x00000004
 _SECURITY_IMPERSONATION_LEVEL = 2
@@ -72,6 +76,18 @@ _FILE_GENERIC_EXECUTE = 0x001200A0
 _FILE_ALL_ACCESS = 0x001F01FF
 _TOKEN_DUPLICATE = 0x0002
 _TOKEN_QUERY = 0x0008
+# TOKEN_INFORMATION_CLASS values: TokenIntegrityLevel=25, TokenMandatoryPolicy=27.
+_TOKEN_INTEGRITY_LEVEL_CLASS = 25
+_TOKEN_MANDATORY_POLICY_CLASS = 27
+_TOKEN_MANDATORY_POLICY_NO_WRITE_UP = 0x00000001
+_SECURITY_MANDATORY_LABEL_AUTHORITY = bytes((0, 0, 0, 0, 0, 16))
+_SECURITY_MANDATORY_UNTRUSTED_RID = 0x0000
+_SECURITY_MANDATORY_LOW_RID = 0x1000
+_SECURITY_MANDATORY_MEDIUM_RID = 0x2000
+_SECURITY_MANDATORY_MEDIUM_PLUS_RID = 0x2100
+_SECURITY_MANDATORY_HIGH_RID = 0x3000
+_SECURITY_MANDATORY_SYSTEM_RID = 0x4000
+_SECURITY_MANDATORY_PROTECTED_PROCESS_RID = 0x5000
 _TOKEN_ASSIGN_PRIMARY = 0x0001
 _TOKEN_ADJUST_DEFAULT = 0x0080
 _TOKEN_ADJUST_PRIVILEGES = 0x0020
@@ -353,7 +369,7 @@ def _safe_standard_user_probe_error(exc: Exception) -> str:
         return safe
     if re.fullmatch(r"[a-z_]+:winerror=\d+", safe):
         return safe
-    if len(safe) <= 200 and re.fullmatch(
+    if len(safe) <= 300 and re.fullmatch(
         r"standard_user_restricted_child_failed:[a-z_+]+"
         r"(?::winerror=\d+)?(?::[A-Za-z0-9_+.-]{1,120})?",
         safe,
@@ -461,6 +477,18 @@ class _TOKEN_USER(ctypes.Structure):
     _fields_ = [("User", _SID_AND_ATTRIBUTES)]
 
 
+class _SID_IDENTIFIER_AUTHORITY(ctypes.Structure):
+    _fields_ = [("Value", ctypes.c_ubyte * 6)]
+
+
+class _TOKEN_MANDATORY_LABEL(ctypes.Structure):
+    _fields_ = [("Label", _SID_AND_ATTRIBUTES)]
+
+
+class _TOKEN_MANDATORY_POLICY(ctypes.Structure):
+    _fields_ = [("Policy", wintypes.DWORD)]
+
+
 class _ACL_HEADER(ctypes.Structure):
     _fields_ = [
         ("AclRevision", ctypes.c_ubyte),
@@ -487,6 +515,14 @@ class _ACCESS_ALLOWED_ACE(ctypes.Structure):
     ]
 
 
+class _SYSTEM_MANDATORY_LABEL_ACE(ctypes.Structure):
+    _fields_ = [
+        ("Header", _ACE_HEADER),
+        ("Mask", ctypes.c_uint32),
+        ("SidStart", ctypes.c_uint32),
+    ]
+
+
 class _GENERIC_MAPPING(ctypes.Structure):
     _fields_ = [
         ("GenericRead", ctypes.c_uint32),
@@ -499,6 +535,10 @@ class _GENERIC_MAPPING(ctypes.Structure):
 def _format_runner_pipe_access_diagnostic(
     *, dacl: str, ace: str, token: str, logon_sid: str,
     restricted: str, access: str,
+    client_integrity: str = "unavailable",
+    pipe_integrity: str = "unavailable",
+    pipe_no_write_up: str = "unavailable",
+    client_no_write_up: str = "unavailable",
 ) -> str:
     """Serialize only fixed diagnostic states, never SID or ACL contents."""
     choices = {
@@ -508,6 +548,16 @@ def _format_runner_pipe_access_diagnostic(
         "logon_sid": {"enabled", "disabled", "deny_only", "absent", "unavailable"},
         "restricted": {"yes", "no", "unavailable"},
         "access": {"allow", "deny", "unavailable"},
+        "client_integrity": {
+            "untrusted", "low", "medium", "medium_plus", "high", "system",
+            "protected_process", "other", "unavailable",
+        },
+        "pipe_integrity": {
+            "untrusted", "low", "medium", "medium_plus", "high", "system",
+            "protected_process", "other", "absent", "unavailable",
+        },
+        "pipe_no_write_up": {"yes", "no", "unavailable"},
+        "client_no_write_up": {"yes", "no", "unavailable"},
     }
     values = {
         "dacl": dacl,
@@ -516,13 +566,173 @@ def _format_runner_pipe_access_diagnostic(
         "logon_sid": logon_sid,
         "restricted": restricted,
         "access": access,
+        "client_integrity": client_integrity,
+        "pipe_integrity": pipe_integrity,
+        "pipe_no_write_up": pipe_no_write_up,
+        "client_no_write_up": client_no_write_up,
     }
     if any(value not in choices[key] for key, value in values.items()):
         raise ValueError("invalid_pipe_access_diagnostic")
-    labels = {"logon_sid": "logon"}
-    return "+".join(
+    labels = {
+        "logon_sid": "logon",
+        "client_integrity": "client_il",
+        "pipe_integrity": "pipe_il",
+        "pipe_no_write_up": "pipe_nwu",
+        "client_no_write_up": "token_nwu",
+    }
+    summary = "+".join(
         f"{labels.get(key, key)}_{value}" for key, value in values.items()
     )
+    if len(summary) > 210:
+        raise ValueError("pipe_access_diagnostic_too_long")
+    return summary
+
+
+def _integrity_level_from_rid(rid: int) -> str:
+    """Map a mandatory-label RID to a fixed, non-sensitive diagnostic label."""
+    return {
+        _SECURITY_MANDATORY_UNTRUSTED_RID: "untrusted",
+        _SECURITY_MANDATORY_LOW_RID: "low",
+        _SECURITY_MANDATORY_MEDIUM_RID: "medium",
+        _SECURITY_MANDATORY_MEDIUM_PLUS_RID: "medium_plus",
+        _SECURITY_MANDATORY_HIGH_RID: "high",
+        _SECURITY_MANDATORY_SYSTEM_RID: "system",
+        _SECURITY_MANDATORY_PROTECTED_PROCESS_RID: "protected_process",
+    }.get(rid, "other")
+
+
+def _integrity_level_from_sid(
+    advapi: object, sid: int | ctypes.c_void_p | None,
+) -> str:
+    """Normalize a mandatory-label SID without exposing its contents."""
+    try:
+        advapi.IsValidSid.argtypes = [ctypes.c_void_p]
+        advapi.IsValidSid.restype = wintypes.BOOL
+        advapi.GetSidIdentifierAuthority.argtypes = [ctypes.c_void_p]
+        advapi.GetSidIdentifierAuthority.restype = ctypes.POINTER(
+            _SID_IDENTIFIER_AUTHORITY,
+        )
+        advapi.GetSidSubAuthorityCount.argtypes = [ctypes.c_void_p]
+        advapi.GetSidSubAuthorityCount.restype = ctypes.POINTER(ctypes.c_ubyte)
+        advapi.GetSidSubAuthority.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+        advapi.GetSidSubAuthority.restype = ctypes.POINTER(wintypes.DWORD)
+        if not sid or not advapi.IsValidSid(sid):
+            return "unavailable"
+        authority = advapi.GetSidIdentifierAuthority(sid)
+        subauthority_count = advapi.GetSidSubAuthorityCount(sid)
+        if not authority or not subauthority_count:
+            return "unavailable"
+        if bytes(authority.contents.Value) != _SECURITY_MANDATORY_LABEL_AUTHORITY:
+            return "other"
+        count = int(subauthority_count.contents.value)
+        if count < 1:
+            return "unavailable"
+        rid_pointer = advapi.GetSidSubAuthority(sid, count - 1)
+        if not rid_pointer:
+            return "unavailable"
+        return _integrity_level_from_rid(int(rid_pointer.contents.value))
+    except Exception:
+        return "unavailable"
+
+
+def _token_integrity_level(
+    api: object, token: int | ctypes.c_void_p | None,
+) -> str:
+    """Observe token IL using the documented mandatory-label token class."""
+    if not token:
+        return "unavailable"
+    try:
+        buffer = _runner_pipe._get_token_information(
+            api, token, _TOKEN_INTEGRITY_LEVEL_CLASS,
+        )
+        label = ctypes.cast(
+            buffer, ctypes.POINTER(_TOKEN_MANDATORY_LABEL),
+        ).contents
+        return _integrity_level_from_sid(api.advapi, label.Label.Sid)
+    except Exception:
+        # Missing diagnostic APIs or token data never changes the probe result.
+        return "unavailable"
+
+
+def _token_mandatory_no_write_up(
+    api: object, token: int | ctypes.c_void_p | None,
+) -> str:
+    """Report only the token's mandatory NO_WRITE_UP policy bit."""
+    if not token:
+        return "unavailable"
+    try:
+        buffer = _runner_pipe._get_token_information(
+            api, token, _TOKEN_MANDATORY_POLICY_CLASS,
+        )
+        policy = ctypes.cast(
+            buffer, ctypes.POINTER(_TOKEN_MANDATORY_POLICY),
+        ).contents
+        return (
+            "yes"
+            if policy.Policy & _TOKEN_MANDATORY_POLICY_NO_WRITE_UP
+            else "no"
+        )
+    except Exception:
+        return "unavailable"
+
+
+def _pipe_integrity_details(
+    api: object, security_descriptor: int | ctypes.c_void_p | None,
+) -> tuple[str, str]:
+    """Read only the pipe's mandatory-label ACE and its NO_WRITE_UP bit."""
+    unavailable = ("unavailable", "unavailable")
+    if not security_descriptor:
+        return unavailable
+    try:
+        advapi = api.advapi
+        advapi.GetSecurityDescriptorSacl.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL),
+        ]
+        advapi.GetSecurityDescriptorSacl.restype = wintypes.BOOL
+        advapi.GetAce.argtypes = [
+            ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi.GetAce.restype = wintypes.BOOL
+        sacl_present = wintypes.BOOL()
+        sacl = ctypes.c_void_p()
+        sacl_defaulted = wintypes.BOOL()
+        if not advapi.GetSecurityDescriptorSacl(
+            security_descriptor, ctypes.byref(sacl_present),
+            ctypes.byref(sacl), ctypes.byref(sacl_defaulted),
+        ):
+            return unavailable
+        if not sacl_present.value or not sacl:
+            return "absent", "unavailable"
+        header = ctypes.cast(sacl, ctypes.POINTER(_ACL_HEADER)).contents
+        if header.AceCount > _DIAGNOSTIC_MAX_ACE_COUNT:
+            return unavailable
+        labels: list[tuple[str, str]] = []
+        for index in range(int(header.AceCount)):
+            ace_pointer = ctypes.c_void_p()
+            if not advapi.GetAce(sacl, index, ctypes.byref(ace_pointer)) or not ace_pointer:
+                return unavailable
+            ace_header = ctypes.cast(
+                ace_pointer, ctypes.POINTER(_ACE_HEADER),
+            ).contents
+            if ace_header.AceType != _SYSTEM_MANDATORY_LABEL_ACE_TYPE:
+                continue
+            ace = ctypes.cast(
+                ace_pointer, ctypes.POINTER(_SYSTEM_MANDATORY_LABEL_ACE),
+            ).contents
+            sid_offset = _SYSTEM_MANDATORY_LABEL_ACE.SidStart.offset
+            sid = ctypes.c_void_p(ace_pointer.value + sid_offset)
+            labels.append((
+                _integrity_level_from_sid(advapi, sid),
+                "yes" if ace.Mask & _SYSTEM_MANDATORY_LABEL_NO_WRITE_UP else "no",
+            ))
+        if not labels:
+            return "absent", "unavailable"
+        if len(labels) != 1:
+            return unavailable
+        return labels[0]
+    except Exception:
+        return unavailable
 
 
 def _open_pipe_diagnostic_token(
@@ -568,6 +778,8 @@ def _diagnose_runner_pipe_access(
     expected_sid = ctypes.c_void_p()
     effective_token = ctypes.c_void_p()
     impersonation_token = ctypes.c_void_p()
+    client_integrity_state = client_no_write_up_state = "unavailable"
+    pipe_integrity_state = pipe_no_write_up_state = "unavailable"
     try:
         if sys.platform != "win32" or not pipe_handle:
             return _format_runner_pipe_access_diagnostic(
@@ -617,7 +829,7 @@ def _diagnose_runner_pipe_access(
 
         # AccessCheck rejects a descriptor without owner and group SIDs.
         status = advapi.GetSecurityInfo(
-            pipe_handle, _SE_KERNEL_OBJECT, _ACCESS_CHECK_SECURITY_INFORMATION,
+            pipe_handle, _SE_KERNEL_OBJECT, _PIPE_DIAGNOSTIC_SECURITY_INFORMATION,
             None, None, None, None, ctypes.byref(security_descriptor),
         )
         if status == 0 and security_descriptor:
@@ -669,7 +881,14 @@ def _diagnose_runner_pipe_access(
         effective_token, token_source = _open_pipe_diagnostic_token(
             api, client_process_handle=client_process_handle,
         )
+        pipe_integrity_state, pipe_no_write_up_state = _pipe_integrity_details(
+            api, security_descriptor,
+        )
         if effective_token:
+            client_integrity_state = _token_integrity_level(api, effective_token)
+            client_no_write_up_state = _token_mandatory_no_write_up(
+                api, effective_token,
+            )
             groups_buffer, groups = _runner_pipe._token_group_entries(
                 _runner_pipe._get_token_information(
                     api, effective_token, _runner_pipe._TOKEN_GROUPS_CLASS,
@@ -730,7 +949,10 @@ def _diagnose_runner_pipe_access(
     return _format_runner_pipe_access_diagnostic(
         dacl=dacl_state, ace=ace_state, token=token_source,
         logon_sid=logon_state, restricted=restricted_state,
-        access=access_state,
+        access=access_state, client_integrity=client_integrity_state,
+        pipe_integrity=pipe_integrity_state,
+        pipe_no_write_up=pipe_no_write_up_state,
+        client_no_write_up=client_no_write_up_state,
     )
 
 
