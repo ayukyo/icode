@@ -1,7 +1,7 @@
 # R2.4 临时网络授权与代理门禁
 
 - 日期：2026-09-24
-- 状态：已新增 lease 范围模型与本机审批/HMAC/撤销 authority 契约；代理和 OS 强制路由仍未实现，自动模式保持默认断网
+- 状态：已新增 v2 host-only lease overlay（绑定默认 DENY 基线）、本机审批/HMAC/撤销 authority 契约及真实 socket 关闭测试适配器；没有生产代理或 OS 强制路由，自动模式保持默认断网
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §8、§14；[持续竞品对照](../../agent-landscape-live.md)
 
 ## 三问与现状
@@ -87,3 +87,10 @@
 - **本地验收：**`tests.test_network_lease` 25 项通过。真实 loopback TCP 用例验证 revoke 与显式 expiry sweep 后 peer 收到 EOF；另外验证共享 fd wrapper 被拒绝、注册后 detach 原 wrapper 仍无法阻断 revoke，以及监听/未连接 TCP 和 UDP（含已连接 UDP）均被拒绝。新增负例均先按预期失败，再实施对应收紧。Python 3.11.15 下完整 `scripts/preflight.py` 的密钥扫描、子模块完整性与 unittest 三道守护通过；站点、治理、竞品对照校验、107 个 Python 文件 AST 解析和 `git diff --check` 通过。对应的平台 CI 步骤已加入，尚待远端矩阵运行。
 - **严格边界：**这不是 HTTP/TCP relay 或生产代理，也不让 Agent/worker 获得网络权限；没有后台 sweeper，expiry 仍由显式调用触发。双 TCP 对只证明登记 socket 的关闭会传至 peer，不证明真实流量转发、DNS/IP 策略、expiry 后新请求拒绝、连接建立竞态或 OS 路由；调用方必须是可信宿主，且注册期间不得并发修改原 wrapper。网络基础策略保持 `DENY`，macOS/Windows 网络继续关闭。
 - **下一步：**等待 Ubuntu/macOS/Windows（含现有 x64/ARM runner）模块 CI 与独立 socket 生命周期复审；之后把 lease registry 接入真实宿主代理 scope，测试过期后复用/新请求拒绝、连接进行中撤销与失败清理重试，再单独做 Linux netns→可信桥接和其他平台强制“只到代理”门禁。上述缺口未通过前不得开放联网或宣称 R2/R2.4 完成。
+
+### 2026-09-27 默认 DENY 上的 host-only lease overlay
+
+- **问题与设计：**原 schema v1 要求静态 `PROXY_ALLOWLIST` 并把 lease 域名约束到候选 `SandboxPolicy.allowed_domains`；普通工单基线为 `DENY`，而 `tighten_policy()` 正确拒绝普通候选扩大权限。改为 schema v2 的宿主授权 overlay：仍绑定原始 deny-only policy hash、run/ticket/step；租约自身持有经审批的精确 ASCII DNS 域名、用途、443、单调期限与代次，不写入或改写候选策略。仅允许 `network_mode=DENY` 且 `allowed_domains=()` 的策略签发/校验 overlay，其他 mode/静态域名组合 fail-closed。无效 IP literal/hostname 在审批 UI 调用之前拒绝。策略收紧逻辑未修改。
+- **本机证据：**对“DENY 工单可申请指定域名租约”和“非法目标/非 DENY 策略拒绝”新增两项先红后绿测试；`tests.test_network_lease` 28 项在 Python 3.11.15 通过。还覆盖租约 schema v1 语义被拒绝、policy hash/身份绑定、撤销代次、真实双端关闭和已知负例。文档更新后 `scripts/preflight.py` 的密钥、子模块与全量 unittest 三道守护通过；`check_governance.py`、`check_site.py`、`check_agent_landscape.py` 与 `git diff --check` 均通过。
+- **远端边界：**GitHub [CI #226](https://github.com/ayukyo/icode/actions/runs/36271940621) workspace-platforms 3 项 job 均完成成功，含 `tests.test_network_lease`；整轮 CI 因另行 macOS R2.2 protected-paths/native probe 失败而非 workspace 测试失败，详细日志受匿名访问限制，不能据摘要解释断言。新 overlay 尚需随主线下一轮 CI 验证。
+- **严格边界与后续：**overlay 不是 sandbox permission，不会令 DENY 命令联网。还没有 HTTPS CONNECT handler、可信 DNS 解析和数值 IP pinning、pending DNS/connect 的原子撤销、周期 TTL timer、隧道 idle reuse 拒绝、worker 停止机制或任意 OS 网络强制；没有向 Agent 暴露 localhost listener。下一垂直切片只能先实现宿主拥有的本机 fake-upstream CONNECT scope，覆盖批准/拒绝、IP 分类/pinning、建立中撤销、TTL 与双端 EOF；OS “仅到代理”门独立验证后才可能接线，R2 网络合同和自动模式继续关闭。

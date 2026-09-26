@@ -14,6 +14,7 @@ from tests import _support  # noqa: F401  # Add the repository's src/ to sys.pat
 from icode.approvals import DenyAllApprover, ScriptedApprover
 from icode.network_lease import (
     MAX_NETWORK_LEASE_TTL_NS,
+    NETWORK_LEASE_SCHEMA_VERSION,
     NetworkLease,
     NetworkLeaseApprovalDenied,
     NetworkLeaseAuthority,
@@ -67,8 +68,8 @@ class NetworkLeaseTestCase(unittest.TestCase):
             "write_roots": (self.workspace,),
             "deny_read_roots": (self.workspace / ".git",),
             "deny_write_roots": (self.workspace / ".git",),
-            "network_mode": NetworkMode.PROXY_ALLOWLIST,
-            "allowed_domains": ("pypi.org", "files.pythonhosted.org"),
+            "network_mode": NetworkMode.DENY,
+            "allowed_domains": (),
             "process_limit": 8,
             "wall_timeout_seconds": 600,
             "output_limit_bytes": 1024 * 1024,
@@ -77,9 +78,16 @@ class NetworkLeaseTestCase(unittest.TestCase):
         values.update(overrides)
         return SandboxPolicy(**values)
 
+    def make_deny_policy(self, **overrides: object) -> SandboxPolicy:
+        return self.make_policy(
+            network_mode=NetworkMode.DENY,
+            allowed_domains=(),
+            **overrides,
+        )
+
     def make_lease(self, policy: SandboxPolicy, **overrides: object) -> NetworkLease:
         values: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": NETWORK_LEASE_SCHEMA_VERSION,
             "lease_id": "a" * 32,
             "approval_id": "approval-001",
             "run_id": policy.run_id,
@@ -130,6 +138,13 @@ class NetworkLeaseTestCase(unittest.TestCase):
                         current_generation=7,
                     )
 
+    def test_legacy_lease_semantics_are_rejected_by_schema_version(self) -> None:
+        with self.assertRaises(NetworkLeaseValidationError):
+            self.make_lease(
+                self.make_deny_policy(),
+                schema_version=1,
+            )
+
     def test_lease_is_bound_to_policy_identity_and_hash(self) -> None:
         policy = self.make_policy()
         lease = self.make_lease(policy)
@@ -137,7 +152,10 @@ class NetworkLeaseTestCase(unittest.TestCase):
             (replace(policy, run_id="run-002"), "run-002"),
             (replace(policy, ticket_id="ICODE-25"), "ICODE-25"),
             (replace(policy, step="verify"), "verify"),
-            (replace(policy, allowed_domains=("pypi.org",)), "same identity, new policy hash"),
+            (
+                replace(policy, output_limit_bytes=policy.output_limit_bytes + 1),
+                "same identity, new policy hash",
+            ),
         )
         for altered_policy, label in mismatches:
             with self.subTest(mismatch=label):
@@ -157,8 +175,15 @@ class NetworkLeaseTestCase(unittest.TestCase):
         for now, generation, altered_policy in (
             (31_000_000_000, 7, policy),
             (2_000_000_000, 8, policy),
-            (2_000_000_000, 7, replace(policy, network_mode=NetworkMode.DENY,
-                                        allowed_domains=())),
+            (
+                2_000_000_000,
+                7,
+                replace(
+                    policy,
+                    network_mode=NetworkMode.PROXY_ALLOWLIST,
+                    allowed_domains=("pypi.org",),
+                ),
+            ),
         ):
             with self.subTest(now=now, generation=generation):
                 with self.assertRaises(NetworkLeaseValidationError):
@@ -235,6 +260,70 @@ class NetworkLeaseTestCase(unittest.TestCase):
             now_monotonic_ns=2_000_000_001,
         )
 
+    def test_host_only_lease_overlay_binds_denied_base_policy(self) -> None:
+        policy = self.make_deny_policy()
+        approver = ScriptedApprover([True])
+        authority = NetworkLeaseAuthority()
+
+        grant = authority.request_lease(
+            policy,
+            approver=approver,
+            purpose=NetworkPurpose.WEB_READ,
+            allowed_domains=("docs.example",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+
+        self.assertIs(policy.network_mode, NetworkMode.DENY)
+        self.assertEqual(policy.allowed_domains, ())
+        self.assertEqual(grant.lease.policy_hash, policy.policy_hash)
+        authority.verify_request(
+            grant,
+            policy,
+            purpose=NetworkPurpose.WEB_READ,
+            hostname="docs.example",
+            port=443,
+            now_monotonic_ns=2_000_000_001,
+        )
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.verify_request(
+                grant,
+                policy,
+                purpose=NetworkPurpose.WEB_READ,
+                hostname="sub.docs.example",
+                port=443,
+                now_monotonic_ns=2_000_000_001,
+            )
+
+    def test_host_only_lease_rejects_non_denied_policy_and_invalid_domains(self) -> None:
+        authority = NetworkLeaseAuthority()
+        denied_policy = self.make_deny_policy()
+        invalid_domain_approver = ScriptedApprover([True])
+
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.request_lease(
+                denied_policy,
+                approver=invalid_domain_approver,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("127.0.0.1",),
+                ttl_seconds=60,
+                now_monotonic_ns=2_000_000_000,
+            )
+        self.assertEqual(invalid_domain_approver.seen, [])
+
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.request_lease(
+                self.make_policy(
+                    network_mode=NetworkMode.PROXY_ALLOWLIST,
+                    allowed_domains=("pypi.org",),
+                ),
+                approver=ScriptedApprover([True]),
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("pypi.org",),
+                ttl_seconds=60,
+                now_monotonic_ns=2_000_000_000,
+            )
+
     def test_deny_all_approval_never_issues_a_lease(self) -> None:
         with self.assertRaises(NetworkLeaseApprovalDenied):
             NetworkLeaseAuthority().request_lease(
@@ -246,7 +335,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
                 now_monotonic_ns=2_000_000_000,
             )
 
-    def test_approval_failure_and_out_of_policy_domains_fail_closed(self) -> None:
+    def test_approval_failure_and_invalid_domains_fail_closed(self) -> None:
         policy = self.make_policy()
         authority = NetworkLeaseAuthority()
 
@@ -270,7 +359,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
                 policy,
                 approver=approver,
                 purpose=NetworkPurpose.PACKAGE_INSTALL,
-                allowed_domains=("attacker.example",),
+                allowed_domains=("127.0.0.1",),
                 ttl_seconds=60,
                 now_monotonic_ns=2_000_000_000,
             )

@@ -30,7 +30,7 @@ from .sandbox_policy import (
 )
 
 
-NETWORK_LEASE_SCHEMA_VERSION = 1
+NETWORK_LEASE_SCHEMA_VERSION = 2
 NANOSECONDS_PER_SECOND = 1_000_000_000
 MAX_NETWORK_LEASE_TTL_SECONDS = 15 * 60
 MAX_NETWORK_LEASE_TTL_NS = MAX_NETWORK_LEASE_TTL_SECONDS * NANOSECONDS_PER_SECOND
@@ -68,7 +68,12 @@ class NetworkPurpose(str, Enum):
 
 @dataclass(frozen=True)
 class NetworkLease:
-    """An immutable, narrowly scoped authorization contract for a future broker."""
+    """A signed host-only authorization overlay for a future trusted broker.
+
+    ``policy_hash`` binds the unchanged, deny-only SandboxPolicy. The lease is
+    not a SandboxPolicy permission and must never be passed to an untrusted
+    worker as evidence that operating-system network access is available.
+    """
 
     schema_version: int
     lease_id: str
@@ -180,7 +185,11 @@ class NetworkLease:
         now_monotonic_ns: int,
         current_generation: int,
     ) -> None:
-        """Validate one proposed proxy request without opening a connection."""
+        """Validate a host-proxy request over an unchanged deny-only base policy.
+
+        The lease is a host-side authorization overlay. It does not alter the
+        candidate ``SandboxPolicy`` or grant a worker network permission.
+        """
 
         self.validate()
         if not isinstance(policy, SandboxPolicy):
@@ -189,8 +198,13 @@ class NetworkLease:
             policy.validate()
         except PolicyValidationError as error:
             raise NetworkLeaseValidationError("sandbox policy is invalid") from error
-        if policy.network_mode is not NetworkMode.PROXY_ALLOWLIST:
-            raise NetworkLeaseValidationError("sandbox policy does not allow proxy routing")
+        if (
+            policy.network_mode is not NetworkMode.DENY
+            or policy.allowed_domains
+        ):
+            raise NetworkLeaseValidationError(
+                "network lease must overlay a deny-only sandbox policy"
+            )
         if (
             self.run_id != policy.run_id
             or self.ticket_id != policy.ticket_id
@@ -198,8 +212,6 @@ class NetworkLease:
             or self.policy_hash != policy.policy_hash
         ):
             raise NetworkLeaseValidationError("network lease is bound to a different policy")
-        if not set(self.allowed_domains).issubset(policy.allowed_domains):
-            raise NetworkLeaseValidationError("lease domains exceed the sandbox policy")
         if type(purpose) is not NetworkPurpose or purpose is not self.purpose:
             raise NetworkLeaseValidationError("request purpose differs from the lease")
         if (
@@ -298,9 +310,12 @@ class NetworkLeaseAuthority:
             policy.validate()
         except PolicyValidationError as error:
             raise NetworkLeaseValidationError("sandbox policy is invalid") from error
-        if policy.network_mode is not NetworkMode.PROXY_ALLOWLIST:
+        if (
+            policy.network_mode is not NetworkMode.DENY
+            or policy.allowed_domains
+        ):
             raise NetworkLeaseValidationError(
-                "network leases require a proxy-allowlist policy"
+                "network leases require a deny-only sandbox policy"
             )
         return policy.run_id, policy.ticket_id, policy.step, policy.policy_hash
 
@@ -318,7 +333,8 @@ class NetworkLeaseAuthority:
 
         The host caller must keep the authority and HMAC key out of untrusted
         subprocesses. A missing/failed approver or revocation during the prompt
-        produces no lease.
+        produces no lease. Lease domains form a host-only overlay over the
+        deny-only base policy; they never broaden the policy passed to a worker.
         """
 
         policy_key = self._policy_key(policy)
@@ -329,8 +345,12 @@ class NetworkLeaseAuthority:
         ):
             raise NetworkLeaseValidationError("allowed_domains must be a tuple of strings")
         normalized_domains = tuple(sorted({domain.lower() for domain in allowed_domains}))
-        if not normalized_domains or not set(normalized_domains).issubset(policy.allowed_domains):
-            raise NetworkLeaseValidationError("requested domains exceed the sandbox policy")
+        if not normalized_domains or any(
+            not is_exact_dns_hostname(domain) for domain in normalized_domains
+        ):
+            raise NetworkLeaseValidationError(
+                "requested domains must be exact ASCII DNS hostnames"
+            )
         if len(normalized_domains) > MAX_NETWORK_LEASE_DOMAINS:
             raise NetworkLeaseValidationError(
                 f"a network lease may contain at most {MAX_NETWORK_LEASE_DOMAINS} domains"
