@@ -1463,6 +1463,106 @@ print("metadata-read-only-ok")
         self.assertIn(f'(allow file-read* (subpath "{quoted_workspace}"))', profile)
         self.assertNotIn(f'(allow file-write* (subpath "{quoted_workspace}"))', profile)
 
+    def test_seatbelt_只读Reviewer把排除目录从工作区读授权中精确剔除(self) -> None:
+        with temp_workspace() as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            excluded = workspace / '.icode_output "private"'
+            excluded.mkdir()
+            wrap_excluding = getattr(
+                MacSeatbeltSandbox(sandbox_exec="/usr/bin/sandbox-exec"),
+                "wrap_read_only_excluding", None,
+            )
+            self.assertTrue(callable(wrap_excluding), "Seatbelt 缺少只读排除目录能力")
+            argv = wrap_excluding(
+                ["python", "-m", "unittest"], workspace=workspace,
+                deny_read_roots=(excluded,),
+            )
+
+        profile = argv[argv.index("-p") + 1]
+        quoted_workspace = str(workspace.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+        quoted_excluded = str(excluded.resolve()).replace("\\", "\\\\").replace('"', '\\"')
+        self.assertIn(
+            f'(allow file-read* (require-all (subpath "{quoted_workspace}") '
+            f'(require-not (literal "{quoted_excluded}")) '
+            f'(require-not (subpath "{quoted_excluded}"))))',
+            profile,
+        )
+        self.assertNotIn(f'(allow file-read* (subpath "{quoted_workspace}"))', profile)
+        self.assertNotIn("(allow network*)", profile)
+
+    def test_seatbelt_只读Reviewer对不确定排除路径拒绝包装(self) -> None:
+        with temp_workspace() as temporary_root:
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            wrap_excluding = getattr(
+                MacSeatbeltSandbox(sandbox_exec="/usr/bin/sandbox-exec"),
+                "wrap_read_only_excluding", None,
+            )
+            self.assertTrue(callable(wrap_excluding), "Seatbelt 缺少只读排除目录能力")
+            missing = workspace / ".icode_output" / "missing"
+            with self.assertRaises((OSError, ValueError)):
+                wrap_excluding(["/usr/bin/true"], workspace=workspace,
+                               deny_read_roots=(missing,))
+            outside = temporary_root / "outside"
+            outside.mkdir()
+            for invalid in (workspace, workspace.parent, outside):
+                with self.subTest(invalid=invalid), self.assertRaises((OSError, ValueError)):
+                    wrap_excluding(["/usr/bin/true"], workspace=workspace,
+                                   deny_read_roots=(invalid,))
+            real = workspace / "real"
+            real.mkdir()
+            alias = workspace / "alias"
+            alias.symlink_to(real, target_is_directory=True)
+            with self.assertRaises((OSError, ValueError)):
+                wrap_excluding(["/usr/bin/true"], workspace=workspace,
+                               deny_read_roots=(alias,))
+
+    def test_seatbelt_只读Reviewer拒绝与额外Python读授权重叠的账本路径(self) -> None:
+        with temp_workspace() as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            output_root = workspace / ".icode_output"
+            output_root.mkdir()
+            sandbox = MacSeatbeltSandbox(sandbox_exec="/usr/bin/sandbox-exec")
+            wrap_excluding = getattr(sandbox, "wrap_read_only_excluding", None)
+            self.assertTrue(callable(wrap_excluding), "Seatbelt 缺少只读排除目录能力")
+            with mock.patch("icode.isolation.sys.base_prefix", str(output_root)):
+                with self.assertRaises(ValueError):
+                    wrap_excluding(
+                        ["/usr/bin/true"], workspace=workspace,
+                        deny_read_roots=(output_root,),
+                    )
+
+    def test_seatbelt_只读Reviewer在macOS拒绝PATH外部指定的沙箱程序(self) -> None:
+        with temp_workspace() as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            output_root = workspace / ".icode_output"
+            output_root.mkdir()
+            sandbox = MacSeatbeltSandbox(sandbox_exec="/tmp/untrusted-sandbox-exec")
+            wrap_excluding = getattr(sandbox, "wrap_read_only_excluding", None)
+            self.assertTrue(callable(wrap_excluding), "Seatbelt 缺少只读排除目录能力")
+            with mock.patch("icode.isolation.sys.platform", "darwin"):
+                with self.assertRaises(ValueError):
+                    wrap_excluding(
+                        ["/usr/bin/true"], workspace=workspace,
+                        deny_read_roots=(output_root,),
+                    )
+
+    def test_seatbelt_无账本排除根的只读Reviewer也固定系统沙箱程序(self) -> None:
+        with temp_workspace() as workspace, mock.patch(
+            "icode.isolation.sys.platform", "darwin",
+        ):
+            trusted = MacSeatbeltSandbox().wrap_read_only(
+                ["/usr/bin/true"], workspace=workspace,
+            )
+            self.assertEqual(trusted[0], "/usr/bin/sandbox-exec")
+
+            untrusted = MacSeatbeltSandbox(sandbox_exec="/tmp/untrusted-sandbox-exec")
+            with self.assertRaises(ValueError):
+                untrusted.wrap_read_only(["/usr/bin/true"], workspace=workspace)
+
     def test_seatbelt_工作区路径不能注入_profile(self) -> None:
         sb = MacSeatbeltSandbox()
         profile = sb._profile(Path('/tmp/work"space'), False)
@@ -1719,6 +1819,61 @@ print("metadata-read-only-ok")
             self.assertNotEqual(result.returncode, 0, result)
             self.assertNotIn("outside-private-tmp-secret", result.stdout)
 
+    @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt + Reviewer 联测")
+    def test_seatbelt_只读Reviewer真实隐藏账本且阻断工作区内外写入(self) -> None:
+        with temp_workspace() as temporary_root:
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            source = workspace / "reviewed.py"
+            source.write_text("source-original\n", encoding="utf-8")
+            output_root = workspace / ".icode_output"
+            ticket_dir = output_root / "ticket-1"
+            out_dir = ticket_dir / "review"
+            out_dir.mkdir(parents=True)
+            ledger = ticket_dir / "ledger.json"
+            ledger.write_text("private-ledger-marker\n", encoding="utf-8")
+            alias = workspace / "ledger-alias"
+            alias.symlink_to(ledger)
+            outside_secret = temporary_root / "outside-secret.txt"
+            outside_secret.write_text("outside-secret-marker\n", encoding="utf-8")
+
+            code = (
+                "from pathlib import Path\n"
+                "source = Path('reviewed.py')\n"
+                "assert source.read_text() == 'source-original\\n'\n"
+                "for path in (Path('.icode_output/ticket-1/ledger.json'), Path('ledger-alias')):\n"
+                "    try: path.read_text()\n"
+                "    except OSError: pass\n"
+                "    else: raise AssertionError(f'excluded content readable: {path}')\n"
+                "for path in (source, Path('.icode_output/new.json')):\n"
+                "    try: path.write_text('tampered')\n"
+                "    except OSError: pass\n"
+                "    else: raise AssertionError(f'writable: {path}')\n"
+                f"outside = Path({str(outside_secret)!r})\n"
+                "try: outside.read_text()\n"
+                "except OSError: pass\n"
+                "else: raise AssertionError('outside workspace was readable')\n"
+                "print('seatbelt-review-boundary-ok')\n"
+            )
+            sandbox = MacSeatbeltSandbox(
+                sandbox_exec="/usr/bin/sandbox-exec",
+            )
+            wrapped = sandbox.wrap_read_only_excluding(
+                [str(Path(getattr(sys, "_base_executable", sys.executable)).resolve()),
+                 "-c", code],
+                workspace=workspace, deny_read_roots=(output_root, out_dir),
+            )
+            result = subprocess.run(
+                wrapped, cwd=workspace, capture_output=True, text=True,
+                timeout=8, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            self.assertEqual(result.stdout.strip(), "seatbelt-review-boundary-ok")
+            self.assertNotIn("private-ledger-marker", result.stdout + result.stderr)
+            self.assertEqual(source.read_text(encoding="utf-8"), "source-original\n")
+            self.assertEqual(ledger.read_text(encoding="utf-8"), "private-ledger-marker\n")
+            self.assertEqual(outside_secret.read_text(encoding="utf-8"), "outside-secret-marker\n")
+
     def test_容器_包装默认断网且只挂工作区(self) -> None:
         argv = ContainerSandbox(runtime="podman").wrap(["python", "-V"], workspace=Path("/tmp/ws"))
         self.assertEqual(argv[:3], ["podman", "run", "--rm"])
@@ -1785,6 +1940,25 @@ class TestContextIntegration(unittest.TestCase):
         ctx = ToolContext(root=self.ws, sandbox=NoIsolation(), read_only_workspace=True)
         with self.assertRaises(IsolationUnavailable):
             ctx.wrap_command(["python", "-m", "unittest"])
+
+    def test_Seatbelt工作流Reviewer命令绑定工单账本拒读根(self) -> None:
+        output_root = self.ws / ".icode_output"
+        out_dir = output_root / "ticket-1" / "review"
+        out_dir.mkdir(parents=True)
+        ctx = ToolContext(
+            root=self.ws, sandbox=MacSeatbeltSandbox(sandbox_exec="/usr/bin/sandbox-exec"),
+            read_only_workspace=True,
+            deny_read_roots=(output_root, out_dir),
+        )
+
+        wrapped = ctx.wrap_command(["python", "-c", "print('review')"])
+        profile = wrapped[wrapped.index("-p") + 1]
+        quoted_output_root = str(output_root.resolve()).replace('"', '\\"')
+
+        self.assertEqual(wrapped[0], "/usr/bin/sandbox-exec")
+        self.assertIn(f'(require-not (subpath "{quoted_output_root}"))', profile)
+        self.assertNotIn('(allow file-write* (subpath', profile)
+        self.assertNotIn("(allow network*)", profile)
 
     def test_策略化Reviewer命令因缺少可证明的只读策略交集而拒绝(self) -> None:
         policy = SandboxPolicy(

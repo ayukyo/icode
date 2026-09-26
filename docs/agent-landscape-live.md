@@ -596,3 +596,10 @@
 - **OpenHands 固定源码：**同日核对 Extensions [`976f3c9cb61b137d113cd48d6b264e06aa4af54a`](https://github.com/OpenHands/extensions/commit/976f3c9cb61b137d113cd48d6b264e06aa4af54a)，MIT。其 [PR Reviewer 工具配置](https://github.com/OpenHands/extensions/blob/976f3c9cb61b137d113cd48d6b264e06aa4af54a/plugins/pr-review/scripts/agent_script.py)提供 terminal/file-editor 与基于提示/JSON 的 review 工作流；本次路径没有 OS mount 拒读嵌套账本的证据，因此不将应用层工具配置当作安全边界。
 - **ICODE 采纳 / 调整：**仅 Bubblewrap 暴露显式 `wrap_read_only_excluding`；在只读工作区 mount 后，以空 tmpfs 覆盖最浅排除目录并 remount-ro。只接收现存工作区内真实目录，严格拒绝链接、越界、根目录本身、文件叶子及缺失路径；命令无法包装即 fail-closed。ArtifactBroker 仍是宿主按合同交付产物的唯一路径。未复制上游实现、未加依赖，无新增许可证义务。
 - **本机证据与剩余风险：**真实 Bubblewrap 测试证明 reviewer 命令可读源文件、不可读取账本与 workspace 外 sentinel、不可写源文件或隐藏输出目录；静态链接别名/缺失/越界/文件路径为拒绝。隔离模块 59 项通过、7 项平台条件跳过。此处不证明有敌意的同用户进程在路径检查与 bwrap 启动间竞态替换目录；也不覆盖 macOS、Windows、WSL、容器及策略化 Reviewer。跨平台 OS 拒读边界和 R2 自动模式仍关闭。观察日期：2026-09-27 UTC。
+
+### 2026-09-27 UTC 定向刷新：macOS Seatbelt Reviewer 账本拒读 carve-out
+
+- **Codex 固定源码：**`openai/codex` SHA [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473)，Apache-2.0。[Seatbelt 规则构造](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/sandboxing/src/seatbelt.rs#L484-L588)把路径排除表达为读取授权条件的一部分，同时要求不匹配排除路径本身与其子树；这属于 Codex 源码的机制证据，不是 Apple 对所有 SBPL 冲突规则排序的承诺。
+- **Apple 文档边界：**[App Sandbox 官方文档](https://developer.apple.com/documentation/security/app_sandbox)描述 entitlement 型 App Sandbox；本次未找到 Apple 一手公开材料证明 `sandbox-exec` SBPL 的通用 deny-vs-allow 顺序。ICODE 因此不叠加一条可能与广泛授权冲突的 deny 来依赖优先级，而将 `require-not literal` 和 `require-not subpath` 直接合入 workspace read allow，并要求原生 macOS 负例验收。
+- **ICODE 采纳 / 拒绝：**采纳“carve-out 位于授权谓词本身”、拒绝不确定/带链接/越界/缺失目录，以及避免额外 Python/系统 read grant 重新开放账本的设计；也将 Reviewer 沙箱执行文件约束为 `/usr/bin/sandbox-exec`，不能由 PATH 同名程序替代。不复制上游实现、不加依赖；容器、Windows 与策略化 Reviewer 不因该实现而开放。
+- **当前验收状态：**本地 profile、路径拒绝、固定系统执行器与 ToolContext 调用链用例已过；隔离模块 73 项通过、8 项跳过。macOS 实际 file-read/file-write/alias 负例已加到 Intel 和 Apple Silicon CI，但远端结果未取得前不声称该平台已验收，也不外推为 R2 隔离就绪。观察日期：2026-09-27 UTC。

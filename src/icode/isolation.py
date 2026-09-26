@@ -51,6 +51,8 @@ _MAC_PROCESS_RULES = (
     "(allow process-info* (target same-sandbox))",
 )
 
+_MACOS_SEATBELT_EXEC = "/usr/bin/sandbox-exec"
+
 
 @dataclass(frozen=True)
 class Capability:
@@ -430,6 +432,58 @@ class Sandbox(Protocol):
 
     def describe(self) -> dict:
         ...
+
+
+def _validated_read_only_exclusions(
+    workspace: Path, deny_read_roots: Sequence[Path],
+) -> tuple[Path, ...]:
+    """Resolve only strict, existing, non-symlink directory exclusions."""
+    workspace_input = Path(workspace)
+    workspace_lexical = Path(os.path.abspath(workspace_input))
+    workspace_resolved = workspace_input.resolve(strict=True)
+    if not workspace_resolved.is_dir():
+        raise ValueError("Reviewer 工作区必须是已存在的目录")
+
+    validated: list[Path] = []
+    for denied in deny_read_roots:
+        denied_input = Path(denied)
+        candidate = (
+            denied_input if denied_input.is_absolute()
+            else workspace_lexical / denied_input
+        )
+        lexical = Path(os.path.abspath(candidate))
+        try:
+            relative = lexical.relative_to(workspace_lexical)
+        except ValueError as exc:
+            raise ValueError("Reviewer 排除目录必须严格位于工作区内") from exc
+        if not relative.parts:
+            raise ValueError("Reviewer 排除目录不能等于工作区根目录")
+
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_relative_to(workspace_resolved):
+            raise ValueError("Reviewer 排除目录解析后逃出工作区")
+
+        # Reject every symlink component, including aliases that resolve back
+        # inside the workspace; otherwise the mount target could be ambiguous.
+        current = workspace_resolved
+        for component in relative.parts:
+            current = current / component
+            info = os.lstat(current)
+            if stat.S_ISLNK(info.st_mode):
+                raise ValueError("Reviewer 排除目录不能包含符号链接")
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError("Reviewer 排除路径必须是已存在的目录")
+        if current.resolve(strict=True) != resolved:
+            raise ValueError("Reviewer 排除目录的规范路径不匹配")
+        validated.append(current)
+
+    # An ancestor carve-out already hides every nested exclusion. Keeping only
+    # the shallowest roots also avoids overlaying below a hidden mount.
+    minimal: list[Path] = []
+    for path in sorted(set(validated), key=lambda item: (len(item.parts), str(item))):
+        if not any(path.is_relative_to(parent) for parent in minimal):
+            minimal.append(path)
+    return tuple(minimal)
 
 
 @dataclass
@@ -869,62 +923,11 @@ class BubblewrapSandbox:
         Each excluded directory is replaced by an empty tmpfs and remounted
         read-only inside the same mount namespace as the workspace bind.
         """
-        exclusions = self._validated_read_only_exclusions(workspace, deny_read_roots)
+        exclusions = _validated_read_only_exclusions(workspace, deny_read_roots)
         return self._wrap(
             argv, workspace=workspace, network=network, read_only=True,
             deny_read_roots=exclusions,
         )
-
-    @staticmethod
-    def _validated_read_only_exclusions(
-        workspace: Path, deny_read_roots: Sequence[Path],
-    ) -> tuple[Path, ...]:
-        workspace_input = Path(workspace)
-        workspace_lexical = Path(os.path.abspath(workspace_input))
-        workspace_resolved = workspace_input.resolve(strict=True)
-        if not workspace_resolved.is_dir():
-            raise ValueError("Reviewer 工作区必须是已存在的目录")
-
-        validated: list[Path] = []
-        for denied in deny_read_roots:
-            denied_input = Path(denied)
-            candidate = (
-                denied_input if denied_input.is_absolute()
-                else workspace_lexical / denied_input
-            )
-            lexical = Path(os.path.abspath(candidate))
-            try:
-                relative = lexical.relative_to(workspace_lexical)
-            except ValueError as exc:
-                raise ValueError("Reviewer 排除目录必须严格位于工作区内") from exc
-            if not relative.parts:
-                raise ValueError("Reviewer 排除目录不能等于工作区根目录")
-
-            resolved = candidate.resolve(strict=True)
-            if not resolved.is_relative_to(workspace_resolved):
-                raise ValueError("Reviewer 排除目录解析后逃出工作区")
-
-            # Reject every symlink component, including aliases that resolve back
-            # inside the workspace; otherwise the mount target could be ambiguous.
-            current = workspace_resolved
-            for component in relative.parts:
-                current = current / component
-                info = os.lstat(current)
-                if stat.S_ISLNK(info.st_mode):
-                    raise ValueError("Reviewer 排除目录不能包含符号链接")
-                if not stat.S_ISDIR(info.st_mode):
-                    raise ValueError("Reviewer 排除路径必须是已存在的目录")
-            if current.resolve(strict=True) != resolved:
-                raise ValueError("Reviewer 排除目录的规范路径不匹配")
-            validated.append(current)
-
-        # An ancestor tmpfs already hides every nested exclusion. Keeping only
-        # the shallowest roots also avoids mounting below a now-empty overlay.
-        minimal: list[Path] = []
-        for path in sorted(set(validated), key=lambda item: (len(item.parts), str(item))):
-            if not any(path.is_relative_to(parent) for parent in minimal):
-                minimal.append(path)
-        return tuple(minimal)
 
     def _wrap(
         self, argv: Sequence[str], *, workspace: Path, network: bool, read_only: bool,
@@ -998,6 +1001,7 @@ class MacSeatbeltSandbox:
 
     def _profile(
         self, workspace: Path, network: bool, *, read_only: bool = False,
+        deny_read_roots: Sequence[Path] = (),
     ) -> str:
         ws = str(Path(workspace).resolve())
         if any(ord(char) < 32 or ord(char) == 127 for char in ws):
@@ -1007,6 +1011,46 @@ class MacSeatbeltSandbox:
         if any(ord(char) < 32 or ord(char) == 127 for char in python_prefix):
             raise ValueError("Seatbelt Python runtime path contains control characters")
         escaped_python_prefix = python_prefix.replace("\\", "\\\\").replace('"', '\\"')
+
+        if deny_read_roots and not read_only:
+            raise ValueError("Seatbelt read exclusions require a read-only profile")
+        exclusions = (
+            _validated_read_only_exclusions(workspace, deny_read_roots)
+            if deny_read_roots else ()
+        )
+        independently_allowed = tuple(
+            Path(path).resolve()
+            for path in (
+                "/usr", "/System", "/Library", "/bin", "/sbin",
+                "/private/etc/ssl", python_prefix,
+            )
+        )
+        for excluded in exclusions:
+            if any(
+                excluded.is_relative_to(root) or root.is_relative_to(excluded)
+                for root in independently_allowed
+            ):
+                raise ValueError(
+                    "Reviewer 排除目录与 Seatbelt 系统/Python 读取授权重叠"
+                )
+
+        workspace_read = f'(allow file-read* (subpath "{escaped_ws}"))'
+        if exclusions:
+            filters: list[str] = []
+            for excluded in exclusions:
+                value = str(excluded)
+                if any(ord(char) < 32 or ord(char) == 127 for char in value):
+                    raise ValueError("Seatbelt Reviewer exclusion path contains control characters")
+                quoted = value.replace("\\", "\\\\").replace('"', '\\"')
+                filters.extend((
+                    f'(require-not (literal "{quoted}"))',
+                    f'(require-not (subpath "{quoted}"))',
+                ))
+            workspace_read = (
+                f'(allow file-read* (require-all (subpath "{escaped_ws}") '
+                + " ".join(filters) + "))"
+            )
+
         net = "(allow network*)" if network else ""
         workspace_write = "" if read_only else f'(allow file-write* (subpath "{escaped_ws}"))'
         return (
@@ -1016,7 +1060,7 @@ class MacSeatbeltSandbox:
             + "(allow sysctl-read)"
             f'(allow file-read-metadata file-test-existence (path-ancestors "{escaped_ws}"))'
             '(allow file-read* file-test-existence (literal "/"))'
-            f'(allow file-read* (subpath "{escaped_ws}"))'
+            f"{workspace_read}"
             f"{workspace_write}"
             "(allow file-read* (subpath \"/usr\") (subpath \"/System\") (subpath \"/Library\")"
             ' (subpath \"/bin\") (subpath \"/sbin\")'
@@ -1091,11 +1135,35 @@ class MacSeatbeltSandbox:
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         return [self.sandbox_exec, "-p", self._profile(workspace, network), *argv]
 
+    def _reviewer_sandbox_exec(self) -> str:
+        """Use the fixed OS Seatbelt executable for read-only reviews on macOS."""
+        if sys.platform != "darwin":
+            return self.sandbox_exec
+        if self.sandbox_exec not in ("sandbox-exec", _MACOS_SEATBELT_EXEC):
+            raise ValueError("macOS Reviewer requires the trusted system sandbox-exec")
+        return _MACOS_SEATBELT_EXEC
+
     def wrap_read_only(
         self, argv: Sequence[str], *, workspace: Path, network: bool = False,
     ) -> list[str]:
         """Wrap Reviewer commands with no workspace file-write grant."""
-        return [self.sandbox_exec, "-p", self._profile(workspace, network, read_only=True), *argv]
+        return [
+            self._reviewer_sandbox_exec(), "-p",
+            self._profile(workspace, network, read_only=True), *argv,
+        ]
+
+    def wrap_read_only_excluding(
+        self, argv: Sequence[str], *, workspace: Path, network: bool = False,
+        deny_read_roots: Sequence[Path],
+    ) -> list[str]:
+        """Wrap Reviewer commands read-only, excluding ticket-ledger subtrees."""
+        if not argv:
+            raise ValueError("empty command")
+        sandbox_exec = self._reviewer_sandbox_exec()
+        profile = self._profile(
+            workspace, network, read_only=True, deny_read_roots=deny_read_roots,
+        )
+        return [sandbox_exec, "-p", profile, *argv]
 
     def describe(self) -> dict:
         return {
