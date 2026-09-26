@@ -335,6 +335,26 @@ def _safe_pipe_client_permission_stage(exc: PermissionError) -> str:
     }.get(stage, "client_access_denied")
 
 
+def _safe_standard_user_probe_error(exc: Exception) -> str:
+    """Expose fixed probe labels while keeping arbitrary exception text private."""
+    safe = str(exc)
+    if safe in {
+        "grant_probe_report_acl_failed",
+        "standard_user_runner_timeout",
+        "standard_user_runner_report_missing",
+    }:
+        return safe
+    if re.fullmatch(r"[a-z_]+:winerror=\d+", safe):
+        return safe
+    if len(safe) <= 200 and re.fullmatch(
+        r"standard_user_restricted_child_failed:[a-z_+]+"
+        r"(?::winerror=\d+)?(?::[A-Za-z0-9_+.-]{1,120})?",
+        safe,
+    ):
+        return safe
+    return type(exc).__name__
+
+
 def _safe_runner_child_exception_detail(exc: Exception) -> str:
     """Return a bounded stage or exception-class label; never include raw text."""
     message = str(exc)
@@ -1366,17 +1386,10 @@ def _run_as_standard_user() -> int:
         )
         result_code = 0
     except (OSError, RuntimeError, subprocess.TimeoutExpired, ValueError) as exc:
-        safe = str(exc)
-        if "winerror=" not in safe and safe not in {
-            "grant_probe_report_acl_failed", "standard_user_runner_timeout",
-            "standard_user_runner_report_missing",
-        }:
-            if not re.fullmatch(
-                r"standard_user_restricted_child_failed:[a-z_]+"
-                r"(?::winerror=\d+)?(?::[A-Za-z0-9_+.-]{1,120})?", safe,
-            ):
-                safe = type(exc).__name__
-        print(f"::error::standard_user_token_probe_failed {safe}")
+        print(
+            "::error::standard_user_token_probe_failed "
+            + _safe_standard_user_probe_error(exc)
+        )
     finally:
         if scratch is not None:
             try:

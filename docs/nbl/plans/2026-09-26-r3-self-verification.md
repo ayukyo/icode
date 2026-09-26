@@ -10,6 +10,13 @@
 - R2 手动 [CI #200](https://github.com/ayukyo/icode/actions/runs/36240714328) 中 Windows x64/ARM64 标准用户探针都在子进程 `CreateFileW` 返回 `access_denied`；Linux/macOS conformance `passed=5/10`、`critical_passed=false`、`ready=false`。本地正在加入只读 DACL/实际客户端 primary token 诊断，尚无新 Windows 原生运行结果。
 - 本地回归新增验证必须选择被诊断的子进程 token，且无法打开时不能回退到父线程/进程 token；`test_windows_standard_user_token_probe` 29 项通过。该测试不调用 Windows API，不能替代 x64/ARM64 原生 CI。R2 自动模式与 Windows runner pipe 仍关闭。
 
+## 2026-09-26 UTC：CI #202 回执过滤根因与修正
+
+- **原生复验：**手动 [CI #202](https://github.com/ayukyo/icode/actions/runs/36242053362) 的 Windows x64/ARM64 标准用户步骤都仍输出通用 `RuntimeError`；此前的新增 DACL/token 诊断标签没有泄漏，但也被外层错误过滤器隐藏。此次运行其他已完成的 Windows Job、wheel、workspace 和 native-probe 作业保持其各自结果；它们不把 R2 变为通过。
+- **根因：**子进程报告 parser 返回由 `+` 连接的固定安全标签，父端再包成 `standard_user_restricted_child_failed:<detail>`；最外层只接受 `[a-z_]+` 阶段名，因此将合法标签折叠成异常类型。并且旧的 `"winerror=" in safe` 快速通道不够严格，可能放行未按格式校验的异常正文。
+- **修正与回归：**提取纯函数 `_safe_standard_user_probe_error()`，只允许精确的已知状态、完整小写 `stage:winerror=N`、或总长不超 200 字符且满足固定语法的受限子进程标签。增加正例验证 child-token/DACL 标签完整保留，负例验证 Windows 路径与秘密文本仍折叠为 `RuntimeError`。新测试先 RED，修正后 `test_windows_standard_user_token_probe` 31 项通过；`compileall`、`git diff --check` 与全量 `scripts/preflight.py` 通过。
+- **边界：**这修正回执可见性并收紧错误输出，不改变权限、不宣称 `AccessCheck` 等同 `CreateFileW`，也不代表管道连接成功。需以新提交重新跑双架构 `workflow_dispatch`，读取 DACL、ACE、child primary-token、logon SID 与 AccessCheck 标签；R2 Windows 自动模式继续关闭，R3 Git SHA 与 workflow Reviewer OS 边界仍待验收。
+
 ## 目标与范围
 
 从「能修改」升级到「能根据真实失败证据验证和修复」：

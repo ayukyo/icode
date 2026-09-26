@@ -538,6 +538,38 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             "type_error",
         )
 
+    def test_parent_error_filter_preserves_bounded_pipe_diagnostic_tags(self) -> None:
+        diagnostic = (
+            "standard_user_restricted_child_failed:client_open_access_denied+"
+            "dacl_present+ace_match+token_child_process+logon_enabled+"
+            "restricted_no+access_allow"
+        )
+
+        self.assertEqual(
+            token_probe._safe_standard_user_probe_error(RuntimeError(diagnostic)),
+            diagnostic,
+        )
+
+    def test_parent_error_filter_keeps_arbitrary_details_private(self) -> None:
+        self.assertEqual(
+            token_probe._safe_standard_user_probe_error(
+                RuntimeError("standard_user_restricted_child_failed:C:\\private")
+            ),
+            "RuntimeError",
+        )
+        self.assertEqual(
+            token_probe._safe_standard_user_probe_error(
+                RuntimeError("unexpected failure at C:\\private\\secret.txt")
+            ),
+            "RuntimeError",
+        )
+        self.assertEqual(
+            token_probe._safe_standard_user_probe_error(
+                RuntimeError("unexpected winerror=C:\\private\\secret.txt")
+            ),
+            "RuntimeError",
+        )
+
     def test_runner_failure_report_is_read_only_after_child_exit(self) -> None:
         class FakeKernel:
             def __init__(self, wait_result: int, exit_code: int = 1) -> None:
