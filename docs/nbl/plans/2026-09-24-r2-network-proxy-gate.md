@@ -73,3 +73,10 @@
 - **Gemini CLI 当前源码：**观察 `main` 固定 SHA [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，Apache-2.0。严格代理 Seatbelt 默认 deny，仅开放本机代理端口，代理退出可停止 sandbox 进程组；未发现按单一租约期限关闭 keep-alive 隧道的证据。
 - **ICODE 现状：**`NetworkLeaseAuthority` 仍只是授权数据与活跃连接登记接口；没有生产 socket caller、代理服务、周期 sweeper 或 OS “仅到代理”路由。macOS 不接受 `PROXY_ALLOWLIST`，Linux/Windows 也未形成租约到内核强制边界的生产路径。当前状态不得因上游机制或 lease 单测改变。
 - **采纳 / 暂缓：**采纳 OS 强制只到可信固定代理端点、代理逐请求检查精确授权、代理退出终止进程组作为故障兜底；暂缓把静态本机代理端口当成到期授权，禁止依赖 `HTTP_PROXY`/`NO_PROXY`。真正开放前还须证明过期/撤销同时关闭已建立连接并取消进行中的连接、过期后复用与新连接均拒绝，以及代理死亡无直连回退；DNS 私网/重绑定、IPv4/IPv6/UDP/loopback 绕过与两架构原生验证仍是门槛。上游仅作架构参考，未复制实现、无新增许可或依赖。详情见[持续竞品对照](../../agent-landscape-live.md)。
+
+## 2026-09-27 当前主线复核与下一垂直切片
+
+- **基线：**ICODE `17c7b95b8b565643ab61da63ca103076c72632de`；刷新时间 2026-09-27。生产 `src` 中 `NetworkLeaseAuthority` 无调用方；点时 lease 校验与回调 registry 不创建代理/socket，也没有生产周期 sweeper。基础策略仍为 `DENY`，网络能力未向 Agent 开放。
+- **上游刷新：**Codex `main` SHA [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473)，Gemini CLI `main` SHA [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，均 Apache-2.0。Codex scope shutdown 测试可借鉴真实 keep-alive/CONNECT/SOCKS 双端 EOF/reset 验证，但没有据此推断租约 TTL；Gemini 的 fixed loopback Seatbelt 和代理退出后停进程组也不等于 lease 到期语义。
+- **采纳 / 暂缓：**先实现 Agent 不可调用的本机真实 socket 生命周期垂直切片：用宿主 scope 绑定现有 lease authority，在真实双向连接上测试 revoke/自然到期的关断与后续请求拒绝；候选 policy 保持 `DENY`，本片不打开执行网络、不更改自动模式。待此语义稳定，再独立实现各平台 OS 强制“只到可信代理”与 bypass/native/wheel 验收。不采纳仅靠 `HTTP_PROXY`/`NO_PROXY` 的软限制，也不以 callback 的布尔返回充当 socket 已关闭证明；不复制代码、不引入依赖。
+- **验收边界：**测试需用真实 client/upstream sockets 观察双方在约定期限内 EOF/reset，覆盖到期、显式 revoke、过期后连接复用/新请求拒绝，以及 revoke 与建立连接并发；失败清理必须保持 scope 阻断和 worker fail-closed。该垂直切片不等于 DNS 私网/重绑定、IPv4/IPv6/UDP/loopback 旁路防护，也不代表 Linux/macOS/Windows 网络边界已通过，R2 最终门槛保持原样。
