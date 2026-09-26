@@ -46,6 +46,7 @@ _CREATE_UNICODE_ENVIRONMENT = 0x00000400
 _WAIT_OBJECT_0 = 0
 _WAIT_TIMEOUT = 0x00000102
 _INFINITE = 0xFFFFFFFF
+_CHILD_REPORT_EXIT_GRACE_MS = 2_000
 _ERROR_NO_SUCH_USER = 1317
 _ERROR_LOGON_FAILURE = 1326
 _ERROR_ACCESS_DENIED = 5
@@ -99,6 +100,45 @@ def restricted_child_failure_detail(result: str) -> str:
     if not detail or len(detail) > 120 or not re.fullmatch(r"[A-Za-z0-9_+.-]+", detail):
         return "unclassified"
     return f"{stage}:{detail}"
+
+
+def runner_report_failure_detail(result: str, exit_code: int) -> str | None:
+    """Keep a child failure visible without trusting its report as free text."""
+    if type(exit_code) is not int or not 0 <= exit_code <= 0xFFFFFFFF:
+        return "unclassified"
+    try:
+        if len(result.encode("ascii")) > 512:
+            return "unclassified"
+    except (AttributeError, UnicodeError):
+        return "unclassified"
+    if exit_code == 0 and runner_probe_succeeded(result):
+        return None
+    return restricted_child_failure_detail(result)
+
+
+def _runner_child_failure_if_exited(
+    *, kernel, process_handle: int, report_path: Path,
+) -> str | None:
+    """Wait briefly for a timed-out peer to report, then read only after exit."""
+    if kernel.WaitForSingleObject(
+        process_handle, _CHILD_REPORT_EXIT_GRACE_MS,
+    ) != _WAIT_OBJECT_0:
+        return None
+    exit_code = wintypes.DWORD()
+    if not kernel.GetExitCodeProcess(process_handle, ctypes.byref(exit_code)):
+        return None
+    try:
+        with Path(report_path).open("rb") as report_file:
+            raw_report = report_file.read(513)
+    except OSError:
+        return None
+    if len(raw_report) > 512:
+        return "unclassified"
+    try:
+        report = raw_report.decode("ascii")
+    except UnicodeError:
+        return "unclassified"
+    return runner_report_failure_detail(report.strip(), int(exit_code.value))
 
 
 def logon_rejection_succeeded(
@@ -1142,13 +1182,25 @@ def _run_as_standard_user() -> int:
                 resumed = kernel.ResumeThread(process.hThread)
                 if resumed != 1:
                     raise RuntimeError("runner_resume_thread_failed")
-                pipe.wait_for_runner_ready(
-                    expected_process_handle=process.hProcess,
-                    expected_user_sid=sid,
-                    expected_logon_sid=logon_sid,
-                    request_id=request_id,
-                    timeout_ms=15_000,
-                )
+                try:
+                    pipe.wait_for_runner_ready(
+                        expected_process_handle=process.hProcess,
+                        expected_user_sid=sid,
+                        expected_logon_sid=logon_sid,
+                        request_id=request_id,
+                        timeout_ms=15_000,
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    detail = _runner_child_failure_if_exited(
+                        kernel=kernel,
+                        process_handle=process.hProcess,
+                        report_path=report,
+                    )
+                    if detail is not None:
+                        raise RuntimeError(
+                            f"standard_user_restricted_child_failed:{detail}"
+                        ) from exc
+                    raise
                 wait = kernel.WaitForSingleObject(process.hProcess, 30_000)
                 if wait == _WAIT_TIMEOUT:
                     kernel.TerminateProcess(process.hProcess, 1)

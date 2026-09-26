@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-26
-- 状态：核心切片及离线回归已完成。2026-09-26 的工作流 `step=review` 有独立只读上下文与宿主 `ArtifactBroker` 通道；任务级 `run_task` 新增真实模型 Reviewer 回合，Guard 使用精确改动文件白名单，仅暴露 `read_file`，拒绝工作区其它文件、工单账本、写工具和命令；要求完整读取改动文件、严格 JSON findings、证据指纹绑定与审查前后 diff 不变。无改动任务不能因为基线测试通过而报告成功。现有 OS wrappers 尚不能证明排除树对命令不可见，因此工作流 Reviewer 的 `run_command` fail-closed 禁用，策略化 Reviewer 命令也继续拒绝。Reviewer/Guard/runner 定向测试 57 项通过；真模型 MiniMax-M3 在独立靶场完成一次 `run_task`，`calc.py` 单文件改动、12 项 unittest、独立模型 Reviewer 合同及最终 TaskReport 均通过，10 次调用 / 37,276 tokens。该次没有触发自动修复，故真实模型有界修复分支尚未验收；全量预检与跨平台原生 CI、真实 Git SHA 锚定仍未闭合。
+- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。`run_task` Reviewer 精确读取改动文件，并通过只读上下文的 `submit_review` JSON Schema 工具提交；长上下文在完整读取后仍漏提交时，新增受限短上下文终结器作为一次有界兼容路径，只接收完整读回的源码（合计最多 64 KiB）且只开放具名提交工具。宿主继续校验 findings、证据指纹和 diff；权限越界、未完整读取、合同错误、预算/回合耗尽都 fail-closed。MiniMax-M3 最新独立靶场任务修改两个文件，独立 17 项测试及常规结构化 Reviewer 通过（14 次调用 / 64,427 tokens），但未触发短上下文终结器或自动修复；此前真实 repair 分支测试由失败转通过，但最终因 Executor 回合耗尽与 Reviewer 合同失败而未通过 TaskReport。当前全量测试 830 项通过（23 skipped），`scripts/preflight.py` 三道门通过。R2 Windows runner-pipe 新诊断仍待双架构原生复测；R3 成功真实修复闭环、工作流 Reviewer 跨平台只读边界和真实 Git SHA 锚定尚未闭合。OS wrappers 仍不能证明 Reviewer 命令不可见排除树，因此工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 目标与范围
@@ -49,8 +49,9 @@ R3 核心能力（本切片）：
    Guard 判定锁死；`IndependentReviewer.review` 针对改动文件与验证证据产出
    带严重级别、类别、文件/行号与证据指纹引用的结构化发现，且不能修改被审对象
    （符号链接被审对象直接拒绝）。`run_task` 使用独立模型对话执行语义审查，工具
-   运行时通过 `Guard.allowed_read_files` 精确限制为本次改动文件，只开放 `read_file`；
-   需完整读取所有改动文件并以严格 JSON 返回，finding 绑定验证证据，审查结束重核
+   运行时通过 `Guard.allowed_read_files` 精确限制为本次改动文件，仅开放 `read_file`
+   与只读上下文专用 `submit_review`；后者以 JSON Schema 承载结构化结果，局部校验
+   失败最多反馈纠正一次；未经结构化工具提交或超过回合/纠正上限均失败关闭。需完整读取所有改动文件，finding 绑定验证证据，审查结束重核
    diff 指纹。任何越权、无效响应、文件快照漂移或 Reviewer 错误均失败关闭。
 
 8. **回归证据绑定到具体 diff**（`workspace_snapshot.diff_fingerprint`）
@@ -149,3 +150,18 @@ R3 核心能力（本切片）：
 - **根因区分：**Windows `capability_report()` 把 Job 的正常退出/超时回收局部探针作为 `doctor_self_test`，并把 Windows Job 清理错传成 macOS 专用 `process_group_cleanup`；评分因此回退到空证据。macOS 原生 CI 的 `scripts/run_native_probe_ci.py` 评分前只运行六项文件/网络探针，没有运行真实同组清理探针，而 evaluator 按设计拒绝缺失证据。
 - **修正与本地回归：**先新增跨平台 capability-report 与 macOS 原生 CI 编排测试并观测 RED，再修为：仅 Linux 已完成的内核沙箱最小探针可点亮 doctor `doctor_self_test`；Windows Job/macOS 同组清理只保留其局部证据；macOS 原生 CI 评分前运行真实组清理，把通过或失败的布尔值写入评分，失败仍令作业非零。额外发现 CI evidence 的来源字段可能是字符串或数组；补上输出格式回归，避免把字符串逐字符 join。当前 focused tests 与 Linux 原生探针通过；Windows、Intel macOS、Apple Silicon 的真实 runner 复验尚待后续 workflow。
 - **状态边界：**CI #188 原始失败保留为历史证据。上述本地修正不等同原生复验，不关闭 R2；R3 的真模型端到端有界修复与 review 步骤接线仍是独立未闭门项。
+
+## 2026-09-26 UTC：真实模型修复分支首次端到端试跑
+
+- **靶场与实际分支：**使用一次性隔离 Python 计算器靶场，预置确定性除零缺陷。真实模型触发独立测试失败，分类结果进入可修复分支，`repair_decisions=["allow"]`；模型修改了计算逻辑及相关测试，第二次 unittest 从失败转为通过。此次证明有界修复分支确实执行，不是此前“只跑一次且没有触发修复”的成功用例。
+- **最终任务结果：**首轮 Executor 与 repair Executor 都在 `max_turns=8` 到顶；Reviewer 虽读取本次改动文件，但返回值不符合严格 JSON findings schema。`TaskReport` 因回合耗尽和 Reviewer 合同错误正确 fail-closed，没有报告任务成功。整次调用为 18 次模型调用 / 68,929 tokens；因此这不是 R3 端到端验收通过，也不覆盖成功 Reviewer 后的最终闭环。
+- **修正方向：**下一步先分析每一轮工具调用消耗与提示响应大小，确定合理且仍有限的 Executor / Reviewer 回合上限；压缩 Reviewer 输出合同、对格式错误保留失败证据并禁止修复器接管 Reviewer；以相同靶场再次验证“初始测试失败 → `allow` → 修复后测试通过 → Reviewer 合法 JSON → TaskReport 成功”。预算与最大回合仍为硬上限，不通过时保持失败关闭。
+- **清理与边界：**临时缺陷靶场已移除；模型密钥只经既有本机配置读取，不写入仓库、命令记录或输出。该试跑不证明任意仓库的修复率、成本或生产环境成功率。
+
+## 2026-09-26 UTC：Reviewer 短上下文终结回退
+
+- **现象与改动：**MiniMax-M3 长 Reviewer 会话曾在完整读取改动后仍连续未调用被强制的 `submit_review`。新增只在 `required_tool_not_called`、所有改动文件已完整无截断读取、无此前无效提交且无权限拒绝时启用的全新终结上下文；最终上下文只暴露 `submit_review`，源码从已验证的 `read_file` 输出重建并受 64 KiB 上限约束，仍共用原 `BudgetTracker`。
+- **回归与边界：**FakeBackend 正例验证读取阶段自由文本失败后短上下文提交可通过；负例验证终结器请求 `read_file` 会被拒绝。结构化结果仍走原本地合同校验，随后核验工作区快照与 diff fingerprint；fallback 本身不能形成成功，只有本地验证通过的工具提交可形成审查报告。
+- **真模型复验：**MiniMax-M3 在 bubblewrap 临时靶场添加 `calc_clamp` 与测试，改动 `calc.py`、`test_calc.py`；独立 unittest 17 项通过，Reviewer 读取两个改动文件并提交有效 schema，TaskReport 通过（14 次调用 / 64,427 tokens）。本次没有进入 fallback 或 repair，因此只作为常规真模型链路证据；fallback 当前由离线回归验证。
+- **验证状态：**Reviewer/loop/runner/Windows token probe 聚焦测试 104 项通过；`./.venv/bin/python -m unittest`：830 项通过、23 项跳过；`scripts/preflight.py` 密钥扫描、子模块完整性、全量测试门均通过。真实修复 TaskReport 成功、R2 Windows 双架构 probe 和 Git SHA 锚点仍待完成。
+- **Windows 诊断边界：**父子握手都可能在 15 秒附近超时；父端失败后增加最多 2 秒退出宽限，再读取最多 512 字节的安全白名单报告。该改动只改善失败归因，不能让管道握手变成通过；当前 CI #196 使用旧 SHA，必须重跑双架构手动 probe。

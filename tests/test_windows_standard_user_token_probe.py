@@ -378,6 +378,63 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             restricted_child_failure_detail("failed=stage;detail=bad value"),
             "unclassified",
         )
+
+    def test_runner_failure_report_is_exposed_only_as_bounded_safe_detail(self) -> None:
+        expected = "runner_pipe_server_pid_mismatch:client_open_access_denied"
+        report = "failed=runner_pipe_server_pid_mismatch;detail=client_open_access_denied"
+
+        self.assertEqual(token_probe.runner_report_failure_detail(report, 1), expected)
+        self.assertEqual(token_probe.runner_report_failure_detail(report, 0), expected)
+        self.assertIsNone(token_probe.runner_report_failure_detail(
+            "runner_standard_user=PASS;server_pid_mismatch=PASS;child_restricted=PASS;"
+            "child_non_admin=PASS;child_identity=PASS;job_assignment=PASS;exit=PASS",
+            0,
+        ))
+        self.assertEqual(
+            token_probe.runner_report_failure_detail("failed=Path C:\\private\\secret", 1),
+            "unclassified",
+        )
+
+    def test_runner_failure_report_is_read_only_after_child_exit(self) -> None:
+        class FakeKernel:
+            def __init__(self, wait_result: int, exit_code: int = 1) -> None:
+                self.wait_result = wait_result
+                self.exit_code = exit_code
+
+            def WaitForSingleObject(self, _handle: int, timeout_ms: int) -> int:
+                self.wait_timeout_ms = timeout_ms
+                return self.wait_result
+
+            def GetExitCodeProcess(self, _handle: int, output) -> bool:
+                output._obj.value = self.exit_code
+                return True
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "result.txt"
+            report.write_text(
+                "failed=runner_pipe_server_pid_mismatch;detail=client_open_access_denied",
+                encoding="ascii",
+            )
+            exited = FakeKernel(token_probe._WAIT_OBJECT_0)
+            self.assertEqual(
+                token_probe._runner_child_failure_if_exited(
+                    kernel=exited, process_handle=12, report_path=report,
+                ),
+                "runner_pipe_server_pid_mismatch:client_open_access_denied",
+            )
+            self.assertEqual(
+                exited.wait_timeout_ms,
+                token_probe._CHILD_REPORT_EXIT_GRACE_MS,
+            )
+
+            running = FakeKernel(token_probe._WAIT_TIMEOUT)
+            self.assertIsNone(token_probe._runner_child_failure_if_exited(
+                kernel=running, process_handle=12, report_path=report,
+            ))
+            self.assertEqual(
+                running.wait_timeout_ms,
+                token_probe._CHILD_REPORT_EXIT_GRACE_MS,
+            )
         self.assertEqual(
             restricted_child_failure_detail("failed=stage;detail=" + "x" * 121),
             "unclassified",

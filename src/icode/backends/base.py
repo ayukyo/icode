@@ -47,6 +47,7 @@ class Backend(Protocol):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 2048,
+        tool_choice: str = "auto",
     ) -> AssistantMessage:
         """执行一个模型回合。"""
         ...

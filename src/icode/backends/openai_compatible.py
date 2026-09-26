@@ -178,7 +178,10 @@ class OpenAICompatibleBackend:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 2048,
+        tool_choice: str = "auto",
     ) -> AssistantMessage:
+        if not isinstance(tool_choice, str) or not tool_choice:
+            raise ValueError("tool_choice 必须为非空模式或工具名")
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -188,7 +191,13 @@ class OpenAICompatibleBackend:
             payload["temperature"] = self.temperature
         if tools:
             payload["tools"] = tools
-            payload["tool_choice"] = "auto"
+            if tool_choice in ("auto", "required"):
+                payload["tool_choice"] = tool_choice
+            else:
+                payload["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": tool_choice},
+                }
 
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(

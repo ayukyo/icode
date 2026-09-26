@@ -31,6 +31,8 @@ class LoopConfig:
     max_turns: int = 12
     max_tool_calls_per_turn: int = 8
     max_output_tokens: int = 2048
+    tool_choice: str = "auto"
+    tool_choice_after_read: str | None = None
 
 
 @dataclass
@@ -103,6 +105,16 @@ class AgentLoop:
         self.operations = operations
         self.budget = budget or BudgetTracker()
         self.config = config or LoopConfig()
+        if (self.config.tool_choice not in ("auto", "required")
+                and self.registry.get(self.config.tool_choice) is None):
+            raise ValueError("tool_choice 必须是 auto、required 或已注册工具名")
+        if self.config.tool_choice_after_read is not None:
+            if self.config.tool_choice != "read_file":
+                raise ValueError("tool_choice_after_read 需要初始 tool_choice=read_file")
+            if self.registry.get(self.config.tool_choice_after_read) is None:
+                raise ValueError("tool_choice_after_read 必须是已注册工具名")
+            if not self.guard.scope.allowed_read_files:
+                raise ValueError("tool_choice_after_read 需要精确文件读取白名单")
         self.on_event = on_event or (lambda kind, payload: None)
         # 每个回合结束后回调（用于写检查点；不得在此抛错中断循环）
         self.on_turn = on_turn
@@ -110,6 +122,12 @@ class AgentLoop:
     # ---- 权限判定 ----
 
     def _decide(self, name: str, args: dict[str, Any]):
+        if name == "submit_review":
+            if (self.ctx.review_submission_enabled
+                    and self.ctx.read_only_workspace
+                    and self.ctx.change_baseline is not None):
+                return Verdict(Decision.ALLOW, "只读 Reviewer 的结构化输出端口")
+            return Verdict(Decision.DENY, "结构化审查提交仅在独立只读 Reviewer 中开放")
         if name in ("submit_artifact", "read_artifact"):
             if self.ctx.artifact_broker is None:
                 return Verdict(Decision.DENY, "当前步骤未开放受控产物端口")
@@ -216,6 +234,12 @@ class AgentLoop:
         stop_reason = "max_turns"
         error = ""
         total_tool_calls = 0
+        tool_choice = self.config.tool_choice
+        required_tool_retry_remaining = 1 if tool_choice != "auto" else 0
+        expected_read_files = set(self.guard.scope.allowed_read_files or ())
+        read_spans: dict[Path, list[tuple[int, int]]] = {}
+        read_totals: dict[Path, int] = {}
+        completed_read_files: set[Path] = set()
 
         for index in range(1, self.config.max_turns + 1):
             if self.budget.verdict == "over_budget":
@@ -227,6 +251,7 @@ class AgentLoop:
                     history,
                     tools=self.registry.schemas(),
                     max_tokens=self.config.max_output_tokens,
+                    tool_choice=tool_choice,
                 )
             except Exception as exc:  # noqa: BLE001 - 模型失败要如实上报，不吞掉
                 return LoopResult(False, "backend_error", turns, history,
@@ -243,6 +268,22 @@ class AgentLoop:
 
             if not assistant.has_tool_calls:
                 turns.append(turn)
+                if tool_choice != "auto":
+                    _notify_turn(self.on_turn, index, total_tool_calls, history)
+                    if required_tool_retry_remaining > 0:
+                        required_tool_retry_remaining -= 1
+                        history.append({
+                            "role": "user",
+                            "content": (
+                                "本步骤要求通过已提供的工具完成操作；上一条普通文本不会被采纳。"
+                                "请按当前 system 指令调用所需工具，不要用自由文本代替。"
+                            ),
+                        })
+                        continue
+                    stop_reason = "required_tool_not_called"
+                    error = "必需工具模式下模型连续未调用工具，已失败关闭"
+                    return LoopResult(False, stop_reason, turns, history,
+                                      self.budget.usage, error)
                 stop_reason = "no_tool_calls"
                 _notify_turn(self.on_turn, index, total_tool_calls, history)
                 return LoopResult(True, stop_reason, turns, history, self.budget.usage)
@@ -254,6 +295,32 @@ class AgentLoop:
                 inv = self._invoke(call.name, dict(call.arguments or {}))
                 turn.invocations.append(inv)
                 history.append(_tool_message(call.id, inv))
+                completed_path = _record_complete_read_file(
+                        inv,
+                        expected_files=expected_read_files,
+                        spans=read_spans,
+                        totals=read_totals,
+                        output_limit=self.ctx.output_limit,
+                    )
+                if completed_path is not None:
+                    completed_read_files.add(completed_path)
+                if (
+                    self.config.tool_choice_after_read is not None
+                    and tool_choice == self.config.tool_choice
+                    and expected_read_files.issubset(completed_read_files)
+                ):
+                    # 只有所有精确白名单文件均被无截断、完整读取后，才强制最终提交工具。
+                    tool_choice = self.config.tool_choice_after_read
+                if (
+                    tool_choice != "auto"
+                    and call.name == "submit_review"
+                    and inv.result is not None
+                    and inv.result.ok
+                    and inv.result.meta.get("review_output") == "schema_valid"
+                ):
+                    # Reviewer 结构化提交通过本地校验后，允许模型自然结束；
+                    # 提交前强制使用工具，避免只返回自由文本绕过合同。
+                    tool_choice = "auto"
 
             # 超出单回合上限的调用**也要回一条配对结果**：
             # OpenAI 兼容协议要求 assistant 消息里每个 tool_call 都有对应的 tool 消息，
@@ -298,6 +365,47 @@ def _notify_turn(
         hook(turn_index, total_tool_calls, history)
     except Exception:  # noqa: BLE001
         pass
+
+
+def _record_complete_read_file(
+    invocation: ToolInvocation,
+    *,
+    expected_files: set[Path],
+    spans: dict[Path, list[tuple[int, int]]],
+    totals: dict[Path, int],
+    output_limit: int,
+) -> Path | None:
+    """Record a successful, untruncated read span and report if this span closes the file."""
+    if invocation.name != "read_file" or invocation.result is None or not invocation.result.ok:
+        return None
+    if invocation.result.clipped(output_limit) != invocation.result.content:
+        return None
+    try:
+        meta = invocation.result.meta
+        path = Path(meta["path"]).resolve(strict=True)
+        start, end, total = meta["start"], meta["end"], meta["total_lines"]
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+        return None
+    if (path not in expected_files or type(start) is not int or type(end) is not int
+            or type(total) is not int or total < 0):
+        return None
+    previous_total = totals.setdefault(path, total)
+    if previous_total != total:
+        totals.pop(path, None)
+        spans.pop(path, None)
+        return None
+    file_spans = spans.setdefault(path, [])
+    file_spans.append((start, end))
+    if total == 0:
+        return path if start == 1 and end == 0 else None
+    next_line = 1
+    for span_start, span_end in sorted(file_spans):
+        if span_end < next_line:
+            continue
+        if span_start > next_line:
+            return None
+        next_line = max(next_line, span_end + 1)
+    return path if next_line > total else None
 
 
 def _assistant_message(msg: AssistantMessage) -> dict:

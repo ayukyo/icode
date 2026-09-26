@@ -448,6 +448,50 @@ class TestBackendRetry(unittest.TestCase):
 
         return _Resp()
 
+    def test_required_tool_choice透传到兼容API(self) -> None:
+        import json as _json
+        from unittest import mock
+
+        captured: list[dict] = []
+
+        class _Opener:
+            def open(self, req, timeout=None):
+                captured.append(_json.loads(req.data.decode("utf-8")))
+                return TestBackendRetry._ok_response(self)
+
+        b = OpenAICompatibleBackend(api_key="k", max_retries=0)
+        with mock.patch.object(b, "_opener", return_value=_Opener()):
+            b.complete(
+                [{"role": "user", "content": "review"}],
+                tools=[{"type": "function", "function": {"name": "submit_review"}}],
+                tool_choice="required",
+            )
+
+        self.assertEqual(captured[0]["tool_choice"], "required")
+
+    def test_named_tool_choice转换为函数选择对象(self) -> None:
+        import json as _json
+        from unittest import mock
+
+        captured: list[dict] = []
+
+        class _Opener:
+            def open(self, req, timeout=None):
+                captured.append(_json.loads(req.data.decode("utf-8")))
+                return TestBackendRetry._ok_response(self)
+
+        b = OpenAICompatibleBackend(api_key="k", max_retries=0)
+        with mock.patch.object(b, "_opener", return_value=_Opener()):
+            b.complete(
+                [{"role": "user", "content": "review"}],
+                tools=[{"type": "function", "function": {"name": "submit_review"}}],
+                tool_choice="submit_review",
+            )
+
+        self.assertEqual(captured[0]["tool_choice"], {
+            "type": "function", "function": {"name": "submit_review"},
+        })
+
     def test_首次超时后重试成功(self) -> None:
         from unittest import mock
 

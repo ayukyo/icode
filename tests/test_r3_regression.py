@@ -181,7 +181,12 @@ class TestModelReviewerExecution(unittest.TestCase):
                     "id": "review-read", "name": "read_file",
                     "arguments": {"path": "README.md"},
                 }]},
-                json.dumps({"summary": "Reviewed the changed documentation.", "findings": []}),
+                {"content": "", "tool_calls": [{
+                    "id": "review-submit", "name": "submit_review", "arguments": {
+                        "summary": "Reviewed the changed documentation.", "findings": [],
+                    },
+                }]},
+                "review submitted",
             ])
 
             report = run_task(self.settings, backend=backend, workspace=dst)
@@ -199,6 +204,16 @@ class TestModelReviewerExecution(unittest.TestCase):
                 if call["messages"]
                 and call["messages"][0].get("content", "").startswith("你是独立代码审查代理")
             )
+            reviewer_calls = [
+                call for call in backend.calls
+                if call["messages"]
+                and call["messages"][0].get("content", "").startswith("你是独立代码审查代理")
+            ]
+            self.assertEqual(
+                [call["tool_choice"] for call in reviewer_calls],
+                ["read_file", "submit_review", "auto"],
+                "Reviewer 先读文件，读全后强制提交，校验通过后恢复自然结束",
+            )
             self.assertEqual(
                 [reviewer_call["messages"][0]["role"], reviewer_call["messages"][1]["role"]],
                 ["system", "user"],
@@ -207,10 +222,7 @@ class TestModelReviewerExecution(unittest.TestCase):
                 "你是编码代理", reviewer_call["messages"][0]["content"],
                 "Reviewer 必须使用新的模型上下文，不继承 Executor system prompt",
             )
-            self.assertIn(
-                '{"summary":"未发现可操作问题。","findings":[]}',
-                reviewer_call["messages"][0]["content"],
-            )
+            self.assertIn("必须调用 submit_review", reviewer_call["messages"][0]["content"])
             executor_call = next(
                 call for call in backend.calls
                 if call["messages"]
@@ -220,10 +232,20 @@ class TestModelReviewerExecution(unittest.TestCase):
                 '{"argv": ["python", "-m", "unittest"]}',
                 executor_call["messages"][0]["content"],
             )
+            self.assertIn("任务给出精确路径，直接读取", executor_call["messages"][0]["content"])
+            self.assertIn("不要先全目录 glob/搜索", executor_call["messages"][0]["content"])
             tool_names = {item["function"]["name"] for item in reviewer_call["tools"]}
-            self.assertEqual(tool_names, {"read_file"})
+            self.assertEqual(tool_names, {"read_file", "submit_review"})
             self.assertNotIn("executor finished", str(reviewer_call["messages"]))
             self.assertTrue(report.reviewer_loop.turns[0].invocations[0].result.ok)
+            self.assertTrue(report.reviewer_loop.turns[1].invocations[0].result.ok)
+
+            submit_schema = next(
+                item["function"] for item in reviewer_call["tools"]
+                if item["function"]["name"] == "submit_review"
+            )
+            self.assertEqual(submit_schema["parameters"]["required"], ["summary", "findings"])
+            self.assertFalse(submit_schema["parameters"]["additionalProperties"])
 
     def test_审查模型请求读取工单或尝试写执行时失败关闭(self) -> None:
         from icode.backends import FakeBackend
@@ -285,11 +307,16 @@ class TestModelReviewerExecution(unittest.TestCase):
                     "id": "review-read", "name": "read_file",
                     "arguments": {"path": "README.md"},
                 }]},
-                json.dumps({"summary": "A blocking issue remains.", "findings": [{
-                    "severity": "blocking", "category": "correctness",
-                    "file": "README.md", "line": 1,
-                    "message": "The required user-facing behavior is missing.",
-                }]}),
+                {"content": "", "tool_calls": [{
+                    "id": "review-submit", "name": "submit_review", "arguments": {
+                        "summary": "A blocking issue remains.", "findings": [{
+                            "severity": "blocking", "category": "correctness",
+                            "file": "README.md", "line": 1,
+                            "message": "The required user-facing behavior is missing.",
+                        }],
+                    },
+                }]},
+                "review submitted",
             ])
 
             report = run_task(self.settings, backend=backend, workspace=dst)
@@ -300,6 +327,217 @@ class TestModelReviewerExecution(unittest.TestCase):
         self.assertEqual(len(blocking), 1)
         self.assertEqual(blocking[0].line, 1)
         self.assertEqual(blocking[0].evidence_ref, evidence_fingerprint(report.verification))
+
+    def test_结构化Reviewer只允许一次受限格式纠正(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            readme = dst / "README.md"
+            original = readme.read_text(encoding="utf-8")
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit", "name": "write_file",
+                    "arguments": {"path": str(readme), "content": original + "\n# change\n"},
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read", "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "review-submit-invalid", "name": "submit_review", "arguments": {
+                        "summary": "Invalid file reference.", "findings": [{
+                            "severity": "warning", "category": "correctness",
+                            "file": "calc.py", "line": 1,
+                            "message": "This file was not changed.",
+                        }],
+                    },
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "review-submit-valid", "name": "submit_review", "arguments": {
+                        "summary": "Reviewed the changed documentation.", "findings": [],
+                    },
+                }]},
+                "review submitted",
+            ])
+
+            report = run_task(self.settings, backend=backend, workspace=dst)
+
+        self.assertTrue(report.ok, report.render())
+        self.assertTrue(report.review.model_reviewed)
+        review_submissions = [
+            invocation
+            for turn in report.reviewer_loop.turns
+            for invocation in turn.invocations
+            if invocation.name == "submit_review"
+        ]
+        self.assertEqual(len(review_submissions), 2)
+        self.assertFalse(review_submissions[0].result.ok)
+        self.assertTrue(review_submissions[1].result.ok)
+
+    def test_结构化Reviewer超过一次纠正后失败关闭(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            readme = dst / "README.md"
+            original = readme.read_text(encoding="utf-8")
+            summary = {"summary": "Reviewed the changed documentation.", "findings": []}
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit", "name": "write_file",
+                    "arguments": {"path": str(readme), "content": original + "\n# change\n"},
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read", "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }]},
+                *[
+                    {"content": "", "tool_calls": [{
+                        "id": f"review-submit-{index}",
+                        "name": "submit_review", "arguments": summary,
+                    }]}
+                    for index in range(3)
+                ],
+                "review submitted",
+            ])
+
+            report = run_task(self.settings, backend=backend, workspace=dst)
+
+        self.assertFalse(report.ok)
+        self.assertFalse(report.review.model_reviewed)
+        self.assertIn("纠正次数已耗尽", report.reviewer_loop.turns[3].invocations[0].result.content)
+
+    def test_Reviewer不得绕过结构化提交工具(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            readme = dst / "README.md"
+            original = readme.read_text(encoding="utf-8")
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit", "name": "write_file",
+                    "arguments": {"path": str(readme), "content": original + "\n# change\n"},
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read", "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }]},
+                json.dumps({"summary": "Reviewed the changed documentation.", "findings": []}),
+            ])
+
+            report = run_task(self.settings, backend=backend, workspace=dst)
+
+        self.assertFalse(report.ok)
+        self.assertFalse(report.review.model_reviewed)
+        self.assertEqual(report.reviewer_loop.stop_reason, "required_tool_not_called")
+        self.assertIn("required_tool_not_called", report.review.error)
+
+    def test_完整只读取证后使用短上下文强制结构化提交(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            readme = dst / "README.md"
+            original = readme.read_text(encoding="utf-8")
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit", "name": "write_file",
+                    "arguments": {"path": str(readme), "content": original + "\n# change\n"},
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read", "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }]},
+                "I have finished reading the changed file.",
+                "I cannot provide a structured result in this context.",
+                {"content": "", "tool_calls": [{
+                    "id": "review-finalize", "name": "submit_review", "arguments": {
+                        "summary": "Reviewed the changed documentation.", "findings": [],
+                    },
+                }]},
+                "review submitted",
+            ])
+
+            report = run_task(self.settings, backend=backend, workspace=dst)
+
+        self.assertTrue(report.ok, report.render())
+        self.assertTrue(report.review.model_reviewed)
+        self.assertEqual(report.review.summary, "Reviewed the changed documentation.")
+        reviewer_calls = [
+            call for call in backend.calls
+            if call["messages"]
+            and call["messages"][0].get("content", "").startswith("你是独立代码审查")
+        ]
+        self.assertEqual([call["tool_choice"] for call in reviewer_calls], [
+            "read_file", "submit_review", "submit_review", "submit_review", "auto",
+        ])
+        self.assertEqual(
+            [item["function"]["name"] for item in reviewer_calls[3]["tools"]],
+            ["submit_review"],
+            "短上下文终结阶段只能提交，不能再读取、搜索或执行",
+        )
+        self.assertIn("# change", reviewer_calls[3]["messages"][1]["content"])
+        self.assertIn("evidence_fingerprint", reviewer_calls[3]["messages"][1]["content"])
+        self.assertEqual(
+            [inv.name for turn in report.reviewer_loop.turns for inv in turn.invocations],
+            ["read_file", "submit_review"],
+        )
+        self.assertEqual(
+            [turn.index for turn in report.reviewer_loop.turns], [1, 2, 3, 4, 5],
+        )
+
+    def test_短上下文终结器尝试读取文件时仍失败关闭(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            readme = dst / "README.md"
+            original = readme.read_text(encoding="utf-8")
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit", "name": "write_file",
+                    "arguments": {"path": str(readme), "content": original + "\n# change\n"},
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read", "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }]},
+                "I have finished reading the changed file.",
+                "I cannot provide a structured result in this context.",
+                {"content": "", "tool_calls": [{
+                    "id": "finalizer-read", "name": "read_file",
+                    "arguments": {"path": "calc.py"},
+                }]},
+                "I cannot provide a structured result.",
+                "I still cannot provide a structured result.",
+            ])
+
+            report = run_task(self.settings, backend=backend, workspace=dst)
+
+        self.assertFalse(report.ok)
+        self.assertFalse(report.review.model_reviewed)
+        self.assertIn("未授权", report.review.error)
+        finalizer_read = next(
+            invocation
+            for turn in report.reviewer_loop.turns
+            for invocation in turn.invocations
+            if invocation.name == "read_file"
+            and invocation.arguments.get("path") == "calc.py"
+        )
+        self.assertEqual(finalizer_read.decision, "deny")
+        self.assertEqual(finalizer_read.result.meta.get("error"), "unknown_tool")
 
     def test_无效审查响应或非改动文件发现必须失败关闭(self) -> None:
         from icode.backends import FakeBackend
@@ -489,14 +727,23 @@ class TestBoundedRepairLoop(unittest.TestCase):
                 ]},
                 "完成",
             ]
+            task = "按原有 pycalc 契约恢复 calc.py 并确保独立测试通过。"
+            backend = FakeBackend(script)
             report = run_task(
-                self.settings, backend=FakeBackend(script), workspace=dst,
+                self.settings, backend=backend, workspace=dst, task=task,
             )
             # 第一次破坏 → code 类失败 → 允许修复 → 第二次恢复 → 回归通过
             self.assertEqual(report.repair_decisions, ["allow"])
             self.assertEqual(len(report.repair_attempts), 2)
             self.assertEqual(report.exit_code, 0)
             self.assertTrue(report.verification.passed)
+            repair_prompt = next(
+                message["content"] for message in backend.calls[2]["messages"]
+                if message.get("role") == "user"
+                and "独立测试失败" in message.get("content", "")
+            )
+            self.assertIn("【原始任务】", repair_prompt)
+            self.assertIn(task, repair_prompt)
             self.assertEqual(report.repair_attempts[0].category, FAILURE_CODE)
             self.assertNotEqual(
                 report.repair_attempts[0].diff_fingerprint,

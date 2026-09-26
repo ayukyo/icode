@@ -41,6 +41,7 @@ class ToolContext:
     artifact_broker: ArtifactBroker | None = None
     change_baseline: dict[str, str] | None = None
     read_only_workspace: bool = False
+    review_submission_enabled: bool = False
     deny_read_roots: tuple[Path, ...] = ()
 
     def resolve(self, path: str) -> Path:

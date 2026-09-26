@@ -33,8 +33,14 @@ class FakeBackend:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         max_tokens: int = 2048,
+        tool_choice: str = "auto",
     ) -> AssistantMessage:
-        self.calls.append({"messages": messages, "tools": tools, "max_tokens": max_tokens})
+        self.calls.append({
+            "messages": messages,
+            "tools": tools,
+            "max_tokens": max_tokens,
+            "tool_choice": tool_choice,
+        })
         item = self.script[min(self._index, len(self.script) - 1)]
         self._index += 1
 

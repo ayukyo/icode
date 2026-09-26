@@ -23,7 +23,7 @@ from icode.contracts import Port, StepContract
 from icode.guard import Decision, Guard, Scope
 from icode.loop import AgentLoop, LoopConfig
 from icode.operations import StartedOperation
-from icode.tools import ToolContext, default_registry
+from icode.tools import Tool, ToolContext, ToolResult, default_registry
 
 
 class _StubOps:
@@ -98,6 +98,123 @@ class TestLoopGuards(unittest.TestCase):
         ))
         self.assertEqual(loop._decide("submit_artifact", {"name": "01_plan.md"}).decision,
                          Decision.ALLOW)
+
+    def test_结构化Reviewer提交仅在只读Reviewer上下文放行(self) -> None:
+        loop = _loop(["done"], self.root)
+
+        self.assertEqual(loop._decide("submit_review", {}).decision, Decision.DENY)
+
+        loop.ctx.read_only_workspace = True
+        loop.ctx.change_baseline = {}
+        loop.ctx.review_submission_enabled = True
+        self.assertEqual(loop._decide("submit_review", {}).decision, Decision.ALLOW)
+
+        loop.ctx.review_submission_enabled = False
+        self.assertEqual(loop._decide("submit_review", {}).decision, Decision.DENY)
+
+    def test_required模式下自由文本只允许一次纠正后提交再结束(self) -> None:
+        file_path = self.root / "reviewed.txt"
+        file_path.write_text("reviewed content\n", encoding="utf-8")
+        loop = _loop([
+            {"content": "", "tool_calls": [{
+                "id": "read", "name": "read_file",
+                "arguments": {"path": str(file_path)},
+            }]},
+            "这是普通文本，不是结构化审查工具提交。",
+            {"content": "", "tool_calls": [{
+                "id": "submit", "name": "submit_review", "arguments": {},
+            }]},
+            "审查已提交。",
+        ], self.root, config=LoopConfig(max_turns=6, tool_choice="required"))
+        loop.ctx.read_only_workspace = True
+        loop.ctx.change_baseline = {}
+        loop.ctx.review_submission_enabled = True
+        loop.registry.register(Tool(
+            name="submit_review",
+            description="test-only structured output",
+            parameters={"type": "object", "properties": {}, "required": [],
+                        "additionalProperties": False},
+            handler=lambda _ctx: ToolResult(
+                True, "valid", {"review_output": "schema_valid"},
+            ),
+        ))
+
+        result = loop.run([{"role": "user", "content": "review"}])
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.stop_reason, "no_tool_calls")
+        self.assertEqual(
+            [call["tool_choice"] for call in loop.backend.calls],
+            ["required", "required", "required", "auto"],
+        )
+
+    def test_required工具模式连续漏调后失败关闭且有界(self) -> None:
+        loop = _loop(
+            ["no tool one", "no tool two"], self.root,
+            config=LoopConfig(max_turns=6, tool_choice="required"),
+        )
+
+        result = loop.run([{"role": "user", "content": "review"}])
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.stop_reason, "required_tool_not_called")
+        self.assertEqual(len(loop.backend.calls), 2)
+
+    def test_精确Reviewer读完全部文件后强制结构化提交(self) -> None:
+        first = self.root / "first.py"
+        second = self.root / "second.py"
+        first.write_text("line 1\nline 2\nline 3\n", encoding="utf-8")
+        second.write_text("one line\n", encoding="utf-8")
+        backend = FakeBackend([
+            {"content": "", "tool_calls": [{
+                "id": "read-first-1", "name": "read_file",
+                "arguments": {"path": str(first), "offset": 1, "limit": 1},
+            }]},
+            {"content": "", "tool_calls": [
+                {"id": "read-first-2", "name": "read_file",
+                 "arguments": {"path": str(first), "offset": 2, "limit": 5}},
+                {"id": "read-second", "name": "read_file",
+                 "arguments": {"path": str(second)}},
+            ]},
+            {"content": "", "tool_calls": [{
+                "id": "submit", "name": "submit_review", "arguments": {},
+            }]},
+            "review complete",
+        ])
+        registry = default_registry()
+        registry.register(Tool(
+            name="submit_review",
+            description="test-only structured output",
+            parameters={"type": "object", "properties": {}, "required": [],
+                        "additionalProperties": False},
+            handler=lambda _ctx: ToolResult(
+                True, "valid", {"review_output": "schema_valid"},
+            ),
+        ))
+        loop = AgentLoop(
+            backend=backend,
+            registry=registry,
+            guard=Guard(Scope(
+                workspace_root=self.root,
+                allowed_read_files=(first, second),
+            )),
+            ctx=ToolContext(
+                root=self.root, read_only_workspace=True,
+                change_baseline={}, review_submission_enabled=True,
+            ),
+            config=LoopConfig(
+                max_turns=6, max_tool_calls_per_turn=3,
+                tool_choice="read_file", tool_choice_after_read="submit_review",
+            ),
+        )
+
+        result = loop.run([{"role": "user", "content": "review"}])
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            [call["tool_choice"] for call in backend.calls],
+            ["read_file", "read_file", "submit_review", "auto"],
+        )
 
     def test_工作区内写入被放行(self) -> None:
         loop = _loop([_write_call("a.py"), "完成"], self.root)
