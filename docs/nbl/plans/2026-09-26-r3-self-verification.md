@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
-- 日期：2026-09-26
-- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。MiniMax-M3 TDD 靶场完成真实失败 → `allow` → 修复 → 独立测试 → Reviewer 合法提交（25 次调用 / 109,087 tokens）；Reviewer 短上下文终结器仍缺真模型路径证据。当前本地证据锚点把真实 `base_commit_sha`、初始/受测工作区指纹及相对 diff 纳入证据指纹、回执和 Reviewer 上下文；工作区指纹现区分普通文件/符号链接类型及 POSIX Git 可执行位，133 项聚焦测试与全量 preflight（861 项测试、23 skipped）通过。基线 SHA 不冒充未提交结果 commit；结果 commit/tree 匹配与子模块/ignored/attributes 语义仍未实现。常规 [CI #212](https://github.com/ayukyo/icode/actions/runs/36252023822) 与网站 [#123](https://github.com/ayukyo/icode/actions/runs/36252023817) 通过，但标准用户 pipe 探针被跳过，Linux/macOS conformance 仍 `5/10`、`critical_passed=false`、`ready=false`；手动 [CI #213](https://github.com/ayukyo/icode/actions/runs/36252440492) 已完成但 x64/ARM64 标准用户管道均在 `CreateFileW` 以 `winerror=5` 失败。跨平台只读边界未闭合，工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
+- 日期：2026-09-27
+- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。MiniMax-M3 TDD 靶场完成真实失败 → `allow` → 修复 → 独立测试 → Reviewer 合法提交（25 次调用 / 109,087 tokens）；Reviewer 短上下文终结器仍缺真模型路径证据。本轮新增只读原始 Git tree 投影 OID，进入验证证据/回执/Reviewer 上下文，并在 Reviewer 后复核未漂移；目前仍未比对结果 commit 的 `^{tree}`，不宣称 commit 已验证。树投影仅支持 POSIX 仓库根，最多 250,000 项、128 层和 256 MiB 文件字节，Python SHA-1 OID 不构成签名或抗碰撞安全证明；子模块/嵌套 `.git`、Windows、attributes clean 转换、ACL/xattr、宿主环境与执行轨迹均不在该证明范围。43 项 R3 回归通过，全量 preflight 871 项通过、23 项跳过。常规 [CI #214](https://github.com/ayukyo/icode/actions/runs/36254293856) 成功，但 Linux 与 macOS 原生隔离均为 `5/10`、`critical_passed=false`、`ready=false`，Windows 标准用户 pipe 探针被跳过；前次手动 [CI #213](https://github.com/ayukyo/icode/actions/runs/36252440492) x64/ARM64 管道均在 `CreateFileW` 以 `winerror=5` 失败。跨平台只读边界未闭合，工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 2026-09-26 UTC 当前联动状态
@@ -11,6 +11,15 @@
 - R3 真模型修复闭环已在受控 MiniMax-M3 靶场完成；本地 `run_task` 将真实 Git 基线 SHA 与初始/受测工作区指纹纳入回执，快照进一步区分文件类型与 POSIX 可执行位。133 项聚焦测试和全量 preflight（861 项测试、23 skipped）通过。Reviewer 跨平台只读命令边界、终结器真模型路径及结果 commit/tree 匹配仍未验收。
 - R2 常规 [CI #212](https://github.com/ayukyo/icode/actions/runs/36252023822) 成功，但 Windows 标准用户探针在 push 运行中跳过；Linux/macOS conformance 仍 `5/10`、`critical_passed=false`、`ready=false`。手动 [CI #213](https://github.com/ayukyo/icode/actions/runs/36252440492) 同 SHA x64/ARM64 标准用户管道均在子进程 `CreateFileW` 返回 `access_denied`，自动模式保持关闭。
 - R2.4 Linux x86_64 Git broker 有精确 helper 白名单和污染环境的已安装 wheel 负例；不是跨平台 broker，尚未接入模型工具入口。#212 常规 CI 通过不验证手动 Windows pipe、R2 全部 10 项隔离门或 R3 Reviewer OS 边界。
+
+## 2026-09-27 UTC：稳定受测 Git tree 投影 OID
+
+- **实现边界：**`run_task` 在每轮测试前后只读计算 POSIX 仓库根的 Git 原始文件树投影，并在前后 tree OID 与完整工作区指纹一致时，才把 `tested_git_tree_oid` / `tested_git_tree_status=stable` 写入验证证据、指纹、回执和 Reviewer 输入；测试修改工作区或 Reviewer 后发生漂移都会撤销/否决证据。非 Git 靶场继续留空；没有调用 Git、`git add`、用户 index、attributes、filter 或仓库 helper。
+- **算法与限制：**以 Git 对象序列化规则计算 SHA-1/SHA-256 tree，路径排序、常规文件模式、符号链接目标及目录均有 Git CLI 交叉向量；不跟随链接。扫描上限为 250,000 项、128 层、256 MiB 普通文件内容。未知特殊文件、嵌套 `.git`/子模块、竞态、超限、非 POSIX 或非仓库根均不给 OID。所有 ignored/未跟踪文件纳入原始投影，不应用 clean filter；因而这不是等价于 Git index/tree 的“已提交内容”证明，投影不匹配时 fail-closed。
+- **密码学边界：**Python 标准库 SHA-1 OID 与 Git 对象 ID 兼容，但没有复用 Git 的碰撞检测 SHA-1，因此 OID 不用作签名或抗碰撞安全根。Git 正在迁移/加固 SHA-1 的官方说明见 [hash-function transition](https://git-scm.com/docs/hash-function-transition/2.48.0) 与 [Git 2.48 highlights](https://github.blog/open-source/git/highlights-from-git-2-48/)；此处仅将 OID 用作本地相等性筛查，后续结果 commit 验证需保持这一风险边界，并结合已绑定证据，不得升级为安全认证声明。
+- **验证：**R3 聚焦回归 43 项通过；全量 `scripts/preflight.py` 三项保护门通过，独立全量 unittest 为 871 项通过、23 项平台跳过。专用临时 Git 仓库覆盖 SHA-1/SHA-256、staged/unstaged、untracked/ignored、模式、类型、链接、特殊文件与属性 helper 不执行；还核验用户 index 字节及时间戳未改变、测试期间变化撤销 OID。
+- **线上隔离状态：**push CI [#214](https://github.com/ayukyo/icode/actions/runs/36254293856) 总体成功；其中 Linux/macOS 原生隔离均 `5/10`、`critical_passed=false`、`ready=false`，Windows 标准用户管道 job 跳过。不得把常规 CI 成功写成 R2 通过；自动模式仍关闭。
+- **下一步：**另行设计并实现结果 commit `^{tree}` 与受测投影的精确匹配和 receipt/reviewer 后验闭环；在 commit 或 tree 格式、普通 commit/gitlink、staged/unstaged 与 ignored/attributes 等情形没有明确可验证合同前，不得输出 `result_commit_verified`。同时继续解决 R2 原生隔离红门、跨平台只读 Reviewer 命令边界和终结器真模型路径证据。
 
 ## 2026-09-26 UTC：CI #202 回执过滤根因与修正
 
@@ -183,9 +192,15 @@ R3 核心能力（本切片）：
 ## 下一片（尚未闭合）
 
 1. **已实现的基础锚点：**`base_commit_sha` 只表示任务开始时的提交；`initial_worktree_fingerprint` 与 `tested_worktree_fingerprint` 覆盖包括预存脏改动在内的快照，`diff_fingerprint` 保留本轮改动语义。回执与 Reviewer 终态校验均覆盖这些字段；快照摘要现包含文件类型、符号链接目标及 POSIX Git 可执行位，相关行为先 RED 后 GREEN。该快照仍不等于 Git tree。
-2. 后续若要声明某个**结果 commit** 已验证，须使用隔离临时 Git 目录/index 把受测工作区序列化为 tree OID，并确认结果 commit 的 tree OID 与其一致；不得碰用户 index。需覆盖 staged/unstaged、未跟踪与 ignored 文件、特殊路径、symlink、Git attributes/filter、子模块 gitlink 与脏子模块，以及测试期间文件/模式漂移。遇未合并 index、未知转换或无法完整表示的输入时必须不给 tree 等价结论。
+2. **受测 tree 方案已收窄：**从 POSIX 仓库根以 no-follow 文件描述符只读扫描当前 Git 文件投影，用 Python 标准库按 Git object serialization 计算 tree OID；包含 staged/unstaged 当前工作树状态、未跟踪及 ignored 项，不触碰用户 index、不调用 `git add`/filters。以测试前后工作树 fingerprint 与 tree OID 一致作为可记录条件。结果 commit 需在后续切片与此 OID 精确比较；本切片不单独宣布 commit 已验证。Windows、子目录工作区、嵌套 `.git`/gitlink、特殊文件、路径竞态或不可读项一律不提供 OID。Attributes 不被读取或执行：其转换最多造成安全的不匹配，不能把 raw-worktree 哈希解释为 Git clean-filter 结果；commit tree 的相等只证明 tree 层路径/字节/模式一致，不含 ACL、xattr 或执行环境。
 3. 对工作流 review 步骤只读命令边界完成跨平台原生验收；策略化 Reviewer 的只读文件权限与拒读子路径仍需证明能由同一 OS profile 强制组合；
 4. 补足 Reviewer 短上下文终结器的真模型路径证据。Windows/其他平台门未过前继续 fail-closed，不能用本机 R3 回执锚定代替 R2 OS 沙箱验收。
+
+## 2026-09-27 UTC：受测 tree 证据方案复核
+
+- **竞品研究：**OpenCode `a42f393c850bec0c0f395fb91bf19b1ee8b31666` 用独立 Git 目录/index/对象库构造可撤销会话快照，但会按 ignore 筛选且不代表测试认证；Codex `b334d5b3f2d9441b95286a8c2af8c2152737d977` 提供 HEAD→worktree diff/未跟踪清单，本次未见测试结果 tree 绑定。详细源码链接、采纳/暂缓判断见[持续竞品对照](../../agent-landscape-live.md)。
+- **方案判断：**Git 官方对象是由类型、长度与正文寻址，Git tree 由路径、模式与子对象 ID 构成；`write-tree` 仅写 index。为避免临时索引过程继承配置并执行 clean/process filter，本实现不调用 Git 来生成投影，而在 Python 中只算规范 OID、不写对象。官方 `gitattributes` 可改写 check-in 字节，故只将 OID 等值解释成最终 Git tree 字节相同；不匹配不推断测试失败，未知条目则不给 OID。
+- **验收切片：**先覆盖 canonical object hash 与 Git CLI tree 的交叉测试、类型/模式/符号链接/字节路径排序、untracked+ignored 输入、SHA-1/SHA-256，以及测试前后净漂移与用户 index 未变化。真实 `result_commit_sha`/`^{tree}` 比对、receipt/reviewer 后验绑定和 Windows no-follow 实现仍是后续门槛。研究日期：2026-09-27 UTC。
 
 ## 2026-09-26 UTC：CI #188 跨平台证据接线回归
 

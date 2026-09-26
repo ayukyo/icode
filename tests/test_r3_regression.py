@@ -127,6 +127,155 @@ class TestSnapshotGitFileSemantics(unittest.TestCase):
             self.assertEqual(changed_files(non_executable, executable), ["run.sh"])
 
 
+@unittest.skipUnless(
+    os.name == "posix", "Git tree worktree hashing currently requires POSIX fd APIs",
+)
+class TestWorktreeGitTreeOID(unittest.TestCase):
+    def _git(self, root, *arguments: str) -> str:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            check=True, capture_output=True, text=True,
+        )
+        return result.stdout.strip()
+
+    def test_tree_oid与Git写树一致并覆盖忽略项链接和模式(self) -> None:
+        from icode.workspace_snapshot import worktree_git_tree_oid
+
+        with temp_workspace() as ws:
+            repo = ws / "repo"
+            repo.mkdir()
+            self._git(ws, "init", "-q", str(repo))
+            self._git(repo, "config", "user.name", "ICODE tests")
+            self._git(repo, "config", "user.email", "icode-tests@example.invalid")
+            (repo / ".gitignore").write_text("ignored.data\n", encoding="utf-8")
+            (repo / "tracked.txt").write_text("baseline\n", encoding="utf-8")
+            script = repo / "run.sh"
+            script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            script.chmod(0o755)
+            (repo / "foo.bar").write_text("file before directory sort\n", encoding="utf-8")
+            (repo / "foo").mkdir()
+            (repo / "foo" / "child.txt").write_text("nested\n", encoding="utf-8")
+            (repo / "empty").mkdir()
+            external = ws / "external.txt"
+            external.write_text("outside v1", encoding="utf-8")
+            try:
+                (repo / "outside-link").symlink_to("../external.txt")
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            self._git(repo, "add", "-f", "-A")
+            self._git(repo, "commit", "-q", "-m", "baseline")
+
+            (repo / "tracked.txt").write_text("staged edit\n", encoding="utf-8")
+            self._git(repo, "add", "tracked.txt")
+            (repo / "tracked.txt").write_text("later unstaged edit\n", encoding="utf-8")
+            script.chmod(0o644)
+            (repo / "new \u7a7a\nname.txt").write_text("untracked\n", encoding="utf-8")
+            (repo / "ignored.data").write_text("ignored but present\n", encoding="utf-8")
+
+            self._git(repo, "add", "-f", "-A")
+            expected = self._git(repo, "write-tree")
+            actual = worktree_git_tree_oid(repo, object_format="sha1")
+
+            self.assertEqual(actual, expected)
+            external.write_text("outside v2", encoding="utf-8")
+            self.assertEqual(worktree_git_tree_oid(repo, object_format="sha1"), actual)
+
+    def test_attributes所选clean_filter不会执行(self) -> None:
+        from icode.workspace_snapshot import worktree_git_tree_oid
+
+        import subprocess
+
+        with temp_workspace() as ws:
+            repo = ws / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            marker = ws / "filter-was-run"
+            helper = ws / "clean-filter.sh"
+            helper.write_text(
+                "#!/bin/sh\nprintf invoked > '" + str(marker) + "'\ncat\n",
+                encoding="utf-8",
+            )
+            helper.chmod(0o755)
+            (repo / ".gitattributes").write_text("*.txt filter=probe\n", encoding="utf-8")
+            (repo / "source.txt").write_text("unchanged bytes\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "filter.probe.clean", str(helper)],
+                check=True,
+            )
+
+            worktree_git_tree_oid(repo, object_format="sha1")
+
+            self.assertFalse(
+                marker.exists(), "tree 哈希不得执行工作区配置选择的 filter",
+            )
+
+    def test_sha256工作树OID与Git写树一致(self) -> None:
+        from icode.workspace_snapshot import worktree_git_tree_oid
+
+        import subprocess
+
+        with temp_workspace() as ws:
+            repo = ws / "repo"
+            repo.mkdir()
+            try:
+                subprocess.run(
+                    ["git", "init", "-q", "--object-format=sha256", str(repo)],
+                    check=True, capture_output=True,
+                )
+            except (OSError, subprocess.CalledProcessError) as exc:
+                self.skipTest(f"installed Git lacks SHA-256 repository support: {exc}")
+            (repo / "content.bin").write_bytes(bytes(range(256)))
+            self._git(repo, "add", "-f", "-A")
+            expected = self._git(repo, "write-tree")
+            self.assertEqual(
+                worktree_git_tree_oid(repo, object_format="sha256"), expected,
+            )
+
+    def test_不遍历子模块且特殊文件失败关闭(self) -> None:
+        from icode.workspace_snapshot import WorktreeTreeUnavailable, worktree_git_tree_oid
+
+        with temp_workspace() as ws:
+            repo = ws / "repo"
+            repo.mkdir()
+            os.mkfifo(repo / "fifo")
+            with self.assertRaises(WorktreeTreeUnavailable):
+                worktree_git_tree_oid(repo, object_format="sha1")
+
+            (repo / "fifo").unlink()
+            nested_repo = repo / "nested"
+            nested_repo.mkdir()
+            (nested_repo / ".git").write_text("gitdir: ../.git/modules/nested\n", encoding="utf-8")
+            with self.assertRaises(WorktreeTreeUnavailable):
+                worktree_git_tree_oid(repo, object_format="sha1")
+
+    def test_超出受限扫描预算时失败关闭(self) -> None:
+        from icode.workspace_snapshot import WorktreeTreeUnavailable, worktree_git_tree_oid
+
+        with temp_workspace() as ws:
+            (ws / "file.bin").write_bytes(b"more than one byte")
+            with patch("icode.workspace_snapshot._MAX_GIT_TREE_BYTES", 1):
+                with self.assertRaises(WorktreeTreeUnavailable):
+                    worktree_git_tree_oid(ws, object_format="sha1")
+
+    def test_根目录符号链接和未知对象格式被拒绝(self) -> None:
+        from icode.workspace_snapshot import WorktreeTreeUnavailable, worktree_git_tree_oid
+
+        with temp_workspace() as ws:
+            target = ws / "target"
+            target.mkdir()
+            link = ws / "link"
+            try:
+                link.symlink_to(target, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+            with self.assertRaises(WorktreeTreeUnavailable):
+                worktree_git_tree_oid(link, object_format="sha1")
+            with self.assertRaises(WorktreeTreeUnavailable):
+                worktree_git_tree_oid(target, object_format="sha3")
+
+
 class TestEvidenceDiffBinding(unittest.TestCase):
     def test_diff_fingerprint进入指纹与回执(self) -> None:
         from icode.self_verify import VerificationEvidence, evidence_fingerprint
@@ -138,10 +287,20 @@ class TestEvidenceDiffBinding(unittest.TestCase):
         )
         a = VerificationEvidence(**base)
         b = VerificationEvidence(**{**base, "diff_fingerprint": "diff-B"})
+        tree_a = VerificationEvidence(**{
+            **base, "tested_git_tree_oid": "tree-A", "tested_git_tree_status": "stable",
+        })
+        tree_b = VerificationEvidence(**{
+            **base, "tested_git_tree_oid": "tree-B", "tested_git_tree_status": "stable",
+        })
         self.assertNotEqual(evidence_fingerprint(a), evidence_fingerprint(b))
+        self.assertNotEqual(evidence_fingerprint(tree_a), evidence_fingerprint(tree_b))
         receipt = a.to_receipt()
         self.assertEqual(receipt["diff_fingerprint"], "diff-A")
         self.assertIn("diff_fingerprint", receipt)
+        tree_receipt = tree_a.to_receipt()
+        self.assertEqual(tree_receipt["tested_git_tree_oid"], "tree-A")
+        self.assertEqual(tree_receipt["tested_git_tree_status"], "stable")
 
 
 class TestTaskReviewAndDiffBinding(unittest.TestCase):
@@ -162,6 +321,8 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
             evidence = report.verification
             self.assertIsNotNone(evidence)
             self.assertEqual(evidence.base_commit_sha, "")
+            self.assertEqual(evidence.tested_git_tree_oid, "")
+            self.assertEqual(evidence.tested_git_tree_status, "not_git_workspace")
             self.assertEqual(
                 evidence.initial_worktree_fingerprint,
                 snapshot_fingerprint(snapshot_workspace(dst)),
@@ -191,8 +352,14 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
             repo.mkdir()
             (repo / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.name", "ICODE tests"], check=True)
-            subprocess.run(["git", "-C", str(repo), "config", "user.email", "icode-tests@example.invalid"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.name", "ICODE tests"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "icode-tests@example.invalid"],
+                check=True,
+            )
             subprocess.run(["git", "-C", str(repo), "add", "calc.py"], check=True)
             subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "baseline"], check=True)
             expected_base = subprocess.run(
@@ -203,13 +370,25 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
             # 基线 SHA 不会冒充工作区状态；任务启动前已有的未提交文件也必须进入初始锚点。
             (repo / "preexisting.txt").write_text("local dirty input\n", encoding="utf-8")
             initial_snapshot = snapshot_workspace(repo)
+            index_path = repo / ".git" / "index"
+            index_bytes = index_path.read_bytes()
+            index_mtime_ns = index_path.stat().st_mtime_ns
             report = run_task(
                 require_skill(), backend=FakeBackend(["完成"]), workspace=repo,
             )
 
             evidence = report.verification
             self.assertIsNotNone(evidence)
+            from icode.workspace_snapshot import worktree_git_tree_oid
+
             self.assertEqual(evidence.base_commit_sha, expected_base)
+            self.assertEqual(evidence.tested_git_tree_status, "stable")
+            self.assertEqual(
+                evidence.tested_git_tree_oid,
+                worktree_git_tree_oid(repo, object_format="sha1"),
+            )
+            self.assertEqual(index_path.read_bytes(), index_bytes)
+            self.assertEqual(index_path.stat().st_mtime_ns, index_mtime_ns)
             self.assertEqual(
                 evidence.initial_worktree_fingerprint,
                 snapshot_fingerprint(initial_snapshot),
@@ -218,6 +397,229 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
                 evidence.tested_worktree_fingerprint,
                 snapshot_fingerprint(snapshot_workspace(repo)),
             )
+
+    def test_SHA256基线自动选择对应tree对象格式(self) -> None:
+        import subprocess
+
+        from icode.runner import _capture_task_git_tree_oid
+        from icode.workspace_snapshot import worktree_git_tree_oid
+
+        with temp_workspace() as ws:
+            repo = ws / "repo"
+            repo.mkdir()
+            try:
+                subprocess.run(
+                    ["git", "init", "-q", "--object-format=sha256", str(repo)],
+                    check=True, capture_output=True,
+                )
+            except (OSError, subprocess.CalledProcessError) as exc:
+                self.skipTest(f"installed Git lacks SHA-256 repository support: {exc}")
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.name", "ICODE tests"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "icode-tests@example.invalid"],
+                check=True,
+            )
+            (repo / "file.txt").write_text("content\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(repo), "add", "file.txt"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-q", "-m", "baseline"],
+                check=True,
+            )
+            base_sha = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+            actual, status = _capture_task_git_tree_oid(repo, base_sha)
+
+            self.assertEqual(status, "captured")
+            self.assertEqual(len(actual), 64)
+            self.assertEqual(actual, worktree_git_tree_oid(repo, object_format="sha256"))
+
+    def test_Git工作树受测tree进入Reviewer证据且终态重核(self) -> None:
+        import subprocess
+
+        from icode.backends import FakeBackend
+        from icode.runner import run_task
+
+        with temp_workspace() as ws:
+            repo = ws / "repo"
+            repo.mkdir()
+            source = repo / "calc.py"
+            source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.name", "ICODE tests"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "icode-tests@example.invalid"],
+                check=True,
+            )
+            subprocess.run(["git", "-C", str(repo), "add", "calc.py"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "baseline"], check=True)
+            index_path = repo / ".git" / "index"
+            index_before = index_path.read_bytes()
+            index_mtime_before = index_path.stat().st_mtime_ns
+
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit", "name": "write_file",
+                    "arguments": {"path": str(source), "content": (
+                        "def add(a, b):\n    return a + b\n\n# reviewed change\n"
+                    )},
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read", "name": "read_file",
+                    "arguments": {"path": "calc.py"},
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "review-submit", "name": "submit_review", "arguments": {
+                        "summary": "Reviewed the changed source.", "findings": [],
+                    },
+                }]},
+                "review submitted",
+            ])
+            report = run_task(require_skill(), backend=backend, workspace=repo)
+
+            self.assertTrue(report.ok, report.render())
+            self.assertIsNotNone(report.verification)
+            self.assertEqual(report.verification.tested_git_tree_status, "stable")
+            self.assertEqual(len(report.verification.tested_git_tree_oid), 40)
+            reviewer_inputs = [
+                message.get("content", "")
+                for call in backend.calls
+                for message in call.get("messages", [])
+                if message.get("role") == "user"
+            ]
+            self.assertTrue(any("tested_git_tree_oid" in item for item in reviewer_inputs))
+            self.assertEqual(index_path.read_bytes(), index_before)
+            self.assertEqual(index_path.stat().st_mtime_ns, index_mtime_before)
+
+    def test_测试期间工作树变化时不记录受测tree(self) -> None:
+        import subprocess
+
+        from icode.backends import FakeBackend
+        from icode.runner import run_task
+
+        with temp_workspace() as ws:
+            repo = ws / "repo"
+            repo.mkdir()
+            source = repo / "calc.py"
+            source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.name", "ICODE tests"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "icode-tests@example.invalid"],
+                check=True,
+            )
+            subprocess.run(["git", "-C", str(repo), "add", "calc.py"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "baseline"], check=True)
+
+            def mutate_during_test(workspace, *, sandbox):
+                (workspace / "calc.py").write_text(
+                    "def add(a, b):\n    return a + b + 1\n", encoding="utf-8",
+                )
+                return 0, "mocked test pass"
+
+            backend = FakeBackend([
+                "完成",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read", "name": "read_file",
+                    "arguments": {"path": "calc.py"},
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "review-submit", "name": "submit_review", "arguments": {
+                        "summary": "Reviewed the changed source.", "findings": [],
+                    },
+                }]},
+                "review submitted",
+            ])
+            with patch("icode.runner.run_unittest", side_effect=mutate_during_test):
+                report = run_task(require_skill(), backend=backend, workspace=repo)
+
+            self.assertIsNotNone(report.verification)
+            self.assertEqual(report.verification.tested_git_tree_oid, "")
+            self.assertEqual(
+                report.verification.tested_git_tree_status, "unstable_during_test",
+            )
+            self.assertFalse(
+                report.ok, "测试/审查不能在受测代码被测试改写后报告完成",
+            )
+
+    def test_Reviewer结束时tree锚点变化必须失败关闭(self) -> None:
+        import subprocess
+
+        import icode.runner as runner
+        from icode.backends import FakeBackend
+
+        with temp_workspace() as ws:
+            repo = ws / "repo"
+            repo.mkdir()
+            source = repo / "calc.py"
+            source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.name", "ICODE tests"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "icode-tests@example.invalid"],
+                check=True,
+            )
+            subprocess.run(["git", "-C", str(repo), "add", "calc.py"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-q", "-m", "baseline"],
+                check=True,
+            )
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit", "name": "write_file",
+                    "arguments": {"path": str(source), "content": (
+                        "def add(a, b):\n    return a + b\n\n# reviewed change\n"
+                    )},
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read", "name": "read_file",
+                    "arguments": {"path": "calc.py"},
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "review-submit", "name": "submit_review", "arguments": {
+                        "summary": "Reviewed the changed source.", "findings": [],
+                    },
+                }]},
+                "review submitted",
+            ])
+            original_capture = runner._capture_task_git_tree_oid
+            capture_count = 0
+
+            def change_final_tree(workspace, base_commit_sha):
+                nonlocal capture_count
+                capture_count += 1
+                oid, status = original_capture(workspace, base_commit_sha)
+                if capture_count == 3 and status == "captured":
+                    alternate = "f" * len(oid)
+                    if alternate == oid:
+                        alternate = "e" * len(oid)
+                    return alternate, status
+                return oid, status
+
+            with patch.object(runner, "_capture_task_git_tree_oid", change_final_tree):
+                report = runner.run_task(
+                    require_skill(), backend=backend, workspace=repo,
+                )
+
+            self.assertFalse(report.ok)
+            self.assertEqual(capture_count, 3)
+            self.assertIn("Git tree", report.review.error)
 
     def test_review对失败证据给blocking发现(self) -> None:
         from icode.backends import FakeBackend
