@@ -856,11 +856,82 @@ class BubblewrapSandbox:
         self, argv: Sequence[str], *, workspace: Path, network: bool = False,
     ) -> list[str]:
         """Wrap Reviewer commands with a read-only workspace bind."""
-        return self._wrap(argv, workspace=workspace, network=network, read_only=True)
+        return self._wrap(
+            argv, workspace=workspace, network=network, read_only=True,
+        )
+
+    def wrap_read_only_excluding(
+        self, argv: Sequence[str], *, workspace: Path, network: bool = False,
+        deny_read_roots: Sequence[Path],
+    ) -> list[str]:
+        """Wrap a read-only Reviewer and hide validated workspace subdirectories.
+
+        Each excluded directory is replaced by an empty tmpfs and remounted
+        read-only inside the same mount namespace as the workspace bind.
+        """
+        exclusions = self._validated_read_only_exclusions(workspace, deny_read_roots)
+        return self._wrap(
+            argv, workspace=workspace, network=network, read_only=True,
+            deny_read_roots=exclusions,
+        )
+
+    @staticmethod
+    def _validated_read_only_exclusions(
+        workspace: Path, deny_read_roots: Sequence[Path],
+    ) -> tuple[Path, ...]:
+        workspace_input = Path(workspace)
+        workspace_lexical = Path(os.path.abspath(workspace_input))
+        workspace_resolved = workspace_input.resolve(strict=True)
+        if not workspace_resolved.is_dir():
+            raise ValueError("Reviewer 工作区必须是已存在的目录")
+
+        validated: list[Path] = []
+        for denied in deny_read_roots:
+            denied_input = Path(denied)
+            candidate = (
+                denied_input if denied_input.is_absolute()
+                else workspace_lexical / denied_input
+            )
+            lexical = Path(os.path.abspath(candidate))
+            try:
+                relative = lexical.relative_to(workspace_lexical)
+            except ValueError as exc:
+                raise ValueError("Reviewer 排除目录必须严格位于工作区内") from exc
+            if not relative.parts:
+                raise ValueError("Reviewer 排除目录不能等于工作区根目录")
+
+            resolved = candidate.resolve(strict=True)
+            if not resolved.is_relative_to(workspace_resolved):
+                raise ValueError("Reviewer 排除目录解析后逃出工作区")
+
+            # Reject every symlink component, including aliases that resolve back
+            # inside the workspace; otherwise the mount target could be ambiguous.
+            current = workspace_resolved
+            for component in relative.parts:
+                current = current / component
+                info = os.lstat(current)
+                if stat.S_ISLNK(info.st_mode):
+                    raise ValueError("Reviewer 排除目录不能包含符号链接")
+                if not stat.S_ISDIR(info.st_mode):
+                    raise ValueError("Reviewer 排除路径必须是已存在的目录")
+            if current.resolve(strict=True) != resolved:
+                raise ValueError("Reviewer 排除目录的规范路径不匹配")
+            validated.append(current)
+
+        # An ancestor tmpfs already hides every nested exclusion. Keeping only
+        # the shallowest roots also avoids mounting below a now-empty overlay.
+        minimal: list[Path] = []
+        for path in sorted(set(validated), key=lambda item: (len(item.parts), str(item))):
+            if not any(path.is_relative_to(parent) for parent in minimal):
+                minimal.append(path)
+        return tuple(minimal)
 
     def _wrap(
         self, argv: Sequence[str], *, workspace: Path, network: bool, read_only: bool,
+        deny_read_roots: Sequence[Path] = (),
     ) -> list[str]:
+        if deny_read_roots and not read_only:
+            raise ValueError("排除只读目录只能用于 Reviewer 沙箱")
         ws = str(Path(workspace).resolve())
         out = [
             self.bwrap,
@@ -875,8 +946,10 @@ class BubblewrapSandbox:
             "--dev", "/dev",
             "--tmpfs", "/tmp",
             "--ro-bind" if read_only else "--bind", ws, ws,
-            "--chdir", ws,
         ]
+        for excluded in deny_read_roots:
+            excluded_path = str(excluded)
+            out += ["--tmpfs", excluded_path, "--remount-ro", excluded_path]
         if Path("/lib64").exists():
             out += ["--ro-bind", "/lib64", "/lib64"]
         # venv 中的 base interpreter 可能位于 /usr 之外（如 uv runtime）。
@@ -888,6 +961,7 @@ class BubblewrapSandbox:
             for root in standard_roots
         ):
             out += ["--ro-bind", str(python_prefix), str(python_prefix)]
+        out += ["--chdir", ws]
         if not network:
             out.append("--unshare-net")
         out += ["--", *argv]

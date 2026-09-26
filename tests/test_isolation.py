@@ -1298,6 +1298,68 @@ print("metadata-read-only-ok")
         self.assertNotIn("--bind", argv)
         self.assertIn("--unshare-net", argv)
 
+    def test_bwrap_只读审查将排除目录覆盖为空的只读挂载(self) -> None:
+        with temp_workspace() as workspace:
+            excluded = workspace / ".icode_output"
+            nested = excluded / "ticket-1" / "out"
+            nested.mkdir(parents=True)
+            wrap_excluding = getattr(BubblewrapSandbox(), "wrap_read_only_excluding", None)
+            self.assertTrue(callable(wrap_excluding), "Bubblewrap 缺少只读排除目录能力")
+            argv = wrap_excluding(
+                ["python", "-m", "unittest"], workspace=workspace,
+                deny_read_roots=(excluded, nested),
+            )
+
+        workspace_bind = next(
+            index for index, item in enumerate(argv[:-2])
+            if item == "--ro-bind"
+            and argv[index + 1:index + 3] == [str(workspace.resolve()), str(workspace.resolve())]
+        )
+        self.assertEqual(argv[workspace_bind + 1:workspace_bind + 3],
+                         [str(workspace.resolve()), str(workspace.resolve())])
+        mounts = [
+            tuple(argv[index + 1:index + 2])
+            for index, item in enumerate(argv[:-2]) if item == "--tmpfs"
+        ]
+        self.assertEqual(mounts.count((str(excluded.resolve()),)), 1)
+        self.assertIn("--remount-ro", argv)
+        self.assertEqual(argv[argv.index("--remount-ro") + 1], str(excluded.resolve()))
+        self.assertLess(workspace_bind, argv.index("--tmpfs", workspace_bind))
+        self.assertIn("--unshare-net", argv)
+
+    def test_bwrap_只读审查排除路径不存在或含符号链接时拒绝(self) -> None:
+        with temp_workspace() as temporary_root:
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            wrap_excluding = getattr(BubblewrapSandbox(), "wrap_read_only_excluding", None)
+            self.assertTrue(callable(wrap_excluding), "Bubblewrap 缺少只读排除目录能力")
+            missing = workspace / ".icode_output" / "missing"
+            with self.assertRaises((OSError, ValueError)):
+                wrap_excluding(
+                    ["/bin/true"], workspace=workspace,
+                    deny_read_roots=(missing,),
+                )
+
+            outside = workspace.parent / "outside-ledger"
+            outside.mkdir()
+            internal = workspace / "private-target"
+            internal.mkdir()
+            outside_link = workspace / "outside-alias"
+            outside_link.symlink_to(outside, target_is_directory=True)
+            inside_link = workspace / "inside-alias"
+            inside_link.symlink_to(internal, target_is_directory=True)
+            file_root = workspace / "ordinary-file"
+            file_root.write_text("not a directory", encoding="utf-8")
+            for invalid in (
+                workspace, workspace.parent, outside, workspace / ".." / "outside-ledger",
+                outside_link, inside_link, file_root,
+            ):
+                with self.subTest(invalid=invalid), self.assertRaises((OSError, ValueError)):
+                    wrap_excluding(
+                        ["/bin/true"], workspace=workspace,
+                        deny_read_roots=(invalid,),
+                    )
+
     @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"),
                          "需要 Linux bubblewrap")
     def test_bwrap_只读审查包装实际阻断工作区写入(self) -> None:
@@ -1312,6 +1374,61 @@ print("metadata-read-only-ok")
             result = subprocess.run(wrapped, capture_output=True, text=True, check=False)
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertEqual(target.read_text(encoding="utf-8"), "original\n")
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"),
+                         "需要 Linux bubblewrap")
+    def test_bwrap_只读Reviewer实际隐藏工单账本且阻断所有写入(self) -> None:
+        with temp_workspace() as temporary_root:
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            source = workspace / "reviewed.py"
+            source.write_text("source-original\n", encoding="utf-8")
+            output_root = workspace / ".icode_output"
+            ticket_dir = output_root / "ticket-1"
+            out_dir = ticket_dir / "review"
+            out_dir.mkdir(parents=True)
+            ledger = ticket_dir / "ledger.json"
+            ledger.write_text("private-ledger\n", encoding="utf-8")
+            outside_secret = workspace.parent / "outside-secret.txt"
+            outside_secret.write_text("outside-secret\n", encoding="utf-8")
+
+            code = (
+                "from pathlib import Path\n"
+                "source = Path('reviewed.py')\n"
+                "assert source.read_text() == 'source-original\\n'\n"
+                "ledger = Path('.icode_output/ticket-1/ledger.json')\n"
+                "assert not ledger.exists()\n"
+                "try: ledger.read_text()\n"
+                "except FileNotFoundError: pass\n"
+                "else: raise AssertionError('ledger was readable')\n"
+                "assert Path('.icode_output').is_dir()\n"
+                "assert not any(Path('.icode_output').iterdir())\n"
+                "for path in (source, Path('.icode_output/new.json')):\n"
+                "    try: path.write_text('tampered')\n"
+                "    except OSError: pass\n"
+                "    else: raise AssertionError(f'writable: {path}')\n"
+                f"outside = Path({str(outside_secret)!r})\n"
+                "try: outside.read_text()\n"
+                "except (FileNotFoundError, PermissionError): pass\n"
+                "else: raise AssertionError('outside workspace was readable')\n"
+                "print('review-boundary-ok')\n"
+            )
+            ctx = ToolContext(
+                root=workspace, sandbox=BubblewrapSandbox(), read_only_workspace=True,
+                deny_read_roots=(output_root, out_dir),
+            )
+            try:
+                python = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+                wrapped = ctx.wrap_command([python, "-c", code])
+            except IsolationUnavailable as exc:
+                self.fail(f"Bubblewrap 只读排除目录未能包装命令：{exc}")
+
+            result = subprocess.run(wrapped, capture_output=True, text=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            self.assertEqual(result.stdout.strip(), "review-boundary-ok")
+            self.assertEqual(source.read_text(encoding="utf-8"), "source-original\n")
+            self.assertEqual(ledger.read_text(encoding="utf-8"), "private-ledger\n")
+            self.assertEqual(outside_secret.read_text(encoding="utf-8"), "outside-secret\n")
 
     def test_bwrap_显式允许网络时不加_unshare_net(self) -> None:
         argv = BubblewrapSandbox().wrap(["curl"], workspace=Path("/tmp/ws"), network=True)
@@ -1685,7 +1802,7 @@ class TestContextIntegration(unittest.TestCase):
         with self.assertRaises(IsolationUnavailable):
             ctx.wrap_command(["python", "-m", "unittest"])
 
-    def test_Reviewer工作区内有排除工单根时命令拒绝执行(self) -> None:
+    def test_不支持排除目录的只读后端拒绝Reviewer命令(self) -> None:
         class _WouldExposeExcludedRoot:
             name = "test-read-only"
             is_real_isolation = True
@@ -1702,7 +1819,7 @@ class TestContextIntegration(unittest.TestCase):
             root=self.ws, sandbox=sandbox, read_only_workspace=True,
             deny_read_roots=(self.ws / ".icode_output",),
         )
-        with self.assertRaisesRegex(IsolationUnavailable, "排除目录"):
+        with self.assertRaises(IsolationUnavailable):
             ctx.wrap_command(["cat", ".icode_output/private.txt"])
         self.assertFalse(sandbox.called)
 
