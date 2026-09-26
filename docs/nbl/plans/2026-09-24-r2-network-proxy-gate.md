@@ -66,3 +66,10 @@
 - Linux x64/ARM64、macOS Intel/Apple Silicon、Windows x64/ARM64 的原生负例和干净 wheel 安装复测分别通过。
 
 本计划只固定安全门禁，不把 `PROXY_ALLOWLIST` 数据结构误报为已经支持临时联网。
+
+## 2026-09-27 上游网络到期路径复核
+
+- **Codex 当前源码：**观察 `main` 固定 SHA [`12de0e395d3313bc564190d983cb4f5acf0be713`](https://github.com/openai/codex/commit/12de0e395d3313bc564190d983cb4f5acf0be713)，Apache-2.0。Managed Seatbelt 可只放行本机代理端口；代理策略逐请求决策，scope shutdown 会关闭 HTTP keep-alive、CONNECT 与 SOCKS 活动连接。但这证明的是 scope 生命周期清理，不是租约 TTL 自动过期清理；缺少强制 managed 配置时也不能笼统声称缺代理必定断网。
+- **Gemini CLI 当前源码：**观察 `main` 固定 SHA [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，Apache-2.0。严格代理 Seatbelt 默认 deny，仅开放本机代理端口，代理退出可停止 sandbox 进程组；未发现按单一租约期限关闭 keep-alive 隧道的证据。
+- **ICODE 现状：**`NetworkLeaseAuthority` 仍只是授权数据与活跃连接登记接口；没有生产 socket caller、代理服务、周期 sweeper 或 OS “仅到代理”路由。macOS 不接受 `PROXY_ALLOWLIST`，Linux/Windows 也未形成租约到内核强制边界的生产路径。当前状态不得因上游机制或 lease 单测改变。
+- **采纳 / 暂缓：**采纳 OS 强制只到可信固定代理端点、代理逐请求检查精确授权、代理退出终止进程组作为故障兜底；暂缓把静态本机代理端口当成到期授权，禁止依赖 `HTTP_PROXY`/`NO_PROXY`。真正开放前还须证明过期/撤销同时关闭已建立连接并取消进行中的连接、过期后复用与新连接均拒绝，以及代理死亡无直连回退；DNS 私网/重绑定、IPv4/IPv6/UDP/loopback 绕过与两架构原生验证仍是门槛。上游仅作架构参考，未复制实现、无新增许可或依赖。详情见[持续竞品对照](../../agent-landscape-live.md)。

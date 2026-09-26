@@ -1609,8 +1609,10 @@ def _run_task_reviewer(
             ctx=finalizer_ctx,
             approver=DenyAllApprover(),
             budget=budget_tracker,
+            # 此处 registry 仅有 submit_review；required 避免兼容 API 对具名函数
+            # tool_choice 的实现差异，同时仍强制模型调用这唯一的只读输出端口。
             config=replace(
-                loop_config, tool_choice="submit_review", tool_choice_after_read=None,
+                loop_config, tool_choice="required", tool_choice_after_read=None,
             ),
         )
         finalizer_system = (

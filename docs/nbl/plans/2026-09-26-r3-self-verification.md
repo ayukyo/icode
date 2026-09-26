@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-27
-- 状态（2026-09-27 最新）：R3 自验证/有界修复核心、独立只读 Reviewer 及受控 MiniMax-M3 真模型修复闭环已有离线证据。验证证据绑定基线 SHA、初始/受测工作区指纹、稳定 raw Git tree OID、可选结果 commit tree、改动指纹和独立测试结果；`icode task --receipt-out` 可显式持久化失败或成功回执并导入证据包。测试空集稳定判失败，内部 unittest 用 `-B` 防止 verifier 写入 pyc 污染受测 tree。完整 preflight 三道守护通过，893 项测试通过、23 项跳过。当前改动推送后的 CI 尚待触发。上轮 [CI #216](https://github.com/ayukyo/icode/actions/runs/36259173063) 的 macOS Intel 原生隔离仍 `5/10`、`critical_passed=false`、`ready=false`；R2 继续 fail-closed。受测 tree 投影仅支持 POSIX 仓库根，最多 250,000 项、128 层和 256 MiB 文件字节；Python SHA-1 OID 不作签名或抗碰撞安全证明，commit 对象读取上限 1 MiB；子模块/嵌套 `.git`、Windows、attributes clean 转换、ACL/xattr、宿主环境与执行轨迹不在其证明范围。Reviewer 短上下文终结器仍缺真模型路径证据，工作流 Reviewer 的跨平台只读 OS 边界未闭合，`run_command` 继续 fail-closed 禁用。
+- 状态（2026-09-27 最新）：R3 自验证/有界修复核心、独立只读 Reviewer、受控 MiniMax-M3 真模型修复闭环，以及一次**强制触发的真实短上下文终结器**均有证据。验证证据绑定基线 SHA、初始/受测工作区指纹、稳定 raw Git tree OID、可选结果 commit tree、改动指纹和独立测试结果；`icode task --receipt-out` 可显式持久化失败或成功回执并导入证据包。测试空集稳定判失败，内部 unittest 用 `-B` 防止 verifier 写入 pyc 污染受测 tree。既有全量 preflight 为 893 项通过、23 项跳过；本轮终结器正负回归 2 项通过，完整 preflight 待本轮收尾复验。最新已验收代码 [CI #220](https://github.com/ayukyo/icode/actions/runs/36263513075) 的适用作业通过；R2 隔离能力仍未达标并继续 fail-closed。受测 tree 投影仅支持 POSIX 仓库根，最多 250,000 项、128 层和 256 MiB 文件字节；Python SHA-1 OID 不作签名或抗碰撞安全证明，commit 对象读取上限 1 MiB；子模块/嵌套 `.git`、Windows、attributes clean 转换、ACL/xattr、宿主环境与执行轨迹不在其证明范围。工作流 Reviewer 的跨平台只读 OS 边界未闭合，`run_command` 继续 fail-closed 禁用；真模型终结器证据仅覆盖合成靶场中的强制 fallback，不代表自然触发率或完整 Reviewer 能力。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 2026-09-26 UTC 当前联动状态
@@ -195,7 +195,7 @@ R3 核心能力（本切片）：
 1. **已实现的基础锚点：**`base_commit_sha` 只表示任务开始时的提交；`initial_worktree_fingerprint` 与 `tested_worktree_fingerprint` 覆盖包括预存脏改动在内的快照，`diff_fingerprint` 保留本轮改动语义。回执与 Reviewer 终态校验均覆盖这些字段；快照摘要现包含文件类型、符号链接目标及 POSIX Git 可执行位，相关行为先 RED 后 GREEN。该快照仍不等于 Git tree。
 2. **受测 tree 与结果 commit：**从 POSIX 仓库根以 no-follow 文件描述符只读扫描当前 Git 文件投影，用 Python 标准库按 Git object serialization 计算 tree OID；包含 staged/unstaged 当前工作树状态、未跟踪及 ignored 项，不触碰用户 index、不调用 `git add`/filters。以测试前后工作树 fingerprint 与 tree OID 一致作为可记录条件。现在可通过显式 `--result-commit` 与只读 commit/tree 查询比较；匹配只证明 tree 层路径/字节/模式一致，不认证来源/时序，也不含 ACL、xattr 或执行环境。Windows、子目录工作区、嵌套 `.git`/gitlink、特殊文件、路径竞态或不可读项一律不提供 OID。Attributes 不被读取或执行：其转换最多造成安全的不匹配，不能把 raw-worktree 哈希解释为 Git clean-filter 结果。
 3. 对工作流 review 步骤只读命令边界完成跨平台原生验收；策略化 Reviewer 的只读文件权限与拒读子路径仍需证明能由同一 OS profile 强制组合；
-4. 补足 Reviewer 短上下文终结器的真模型路径证据。Windows/其他平台门未过前继续 fail-closed，不能用本机 R3 回执锚定代替 R2 OS 沙箱验收。
+4. **短上下文终结器真模型路径（已补一条有限证据，2026-09-27）：**在合成临时靶场强制进入合法 fallback，再由真实 MiniMax-M3 执行终结器；记录见本计划末尾。此项不代表主 Reviewer 自然触发 fallback 的概率，也不替代 R2 或跨平台 OS 边界验收。
 
 ## 2026-09-27 UTC：受测 tree 证据方案复核
 
@@ -233,4 +233,12 @@ R3 核心能力（本切片）：
 - **竞品取舍：**固定 SHA 的 Codex RolloutRecorder 展示持久化屏障/写失败保留待重试后缀；OpenHands SDK 分离会话生命周期与持久事件 store；OpenCode 关联前后 Git 快照与差异。采纳明确持久化失败、证据与生命周期分离、快照便于审查等设计原则；暂缓完整 JSONL 事件流和可恢复会话 store，本片不重建 task 生命周期。源码/版本/许可与收益成本明细见[持续竞品对照](../../agent-landscape-live.md) 2026-09-27 记录；只借鉴机制，没有复制代码或新增依赖。
 - **验证器一致性修正（由 CI #216 揭示）：**其两个 Python job 的 R3 单测失败都与测试夹具没有测试模块有关：零测试在不同 Python minor release 下出现 0/5 不同退出码，导致修复分支和 tree 捕获次数依赖版本。现在 `run_unittest` 将 `Ran 0 tests` 稳定规范为失败，并以 `-B` 禁止 verifier 自身写入 pyc；两个 tree 绑定回归均加入真实最小测试。此改动保留原始 tree 全量投影语义，不把 `__pycache__` 从树证据里排除。
 - **验证：**新增测试覆盖 schema 输出与不覆盖、父目录边界、拒绝任意 duck-typed 回执、损坏证据序列化安全失败、文件发布失败临时清理、NUL 非法目标路径、证据包 CLI 导入、验证失败仍保存、回执保存失败返回独立退出码、零测试失败和 verifier 不污染 tree。完整 `.venv/bin/python -m unittest` 为 893 项通过、23 项跳过；`scripts/preflight.py` 三道守护、`compileall`、`git diff --check`、站点检查、治理检查和竞品对照检查通过。修正提交后的 Windows/macOS/Linux CI 尚待推送触发；`os.link` 对目标 runner/filesystem 的支持仍需在线 CI 结果确认。
-- **未关闭项：**R2 原生隔离门、Windows 自动模式、工作流 Reviewer 跨平台 OS 只读边界和 Reviewer 短上下文终结器真模型路径证据均继续 fail-closed；不得据本切片宣布 R2/R3 完成。
+- **未关闭项：**R2 原生隔离门、Windows 自动模式、工作流 Reviewer 跨平台 OS 只读边界仍继续 fail-closed；短上下文终结器仅通过本计划下方记录的强制触发真实模型路径，不据此宣称 R2/R3 全部完成。
+
+## 2026-09-27 UTC：短上下文 Reviewer 终结器真实模型强制路径
+
+- **测试构造与边界：**使用一次性 `pycalc` 副本及无秘密 README 变更；Bubblewrap 原生探针通过。Executor 与长上下文 Reviewer 由确定性测试后端驱动：Reviewer 确实调用 `read_file` 完整读取白名单文件，然后被刻意安排为连续未提交，从而只验证唯一合格的 fallback 分支。随后短上下文终结器调用真实 MiniMax-M3。没有把“强制进入”描述成真实模型自然触发，也未保留提示/响应正文或凭据。
+- **结果：**生产默认 `LoopConfig.max_output_tokens=2048` 下，终结器首先以 `tool_choice=required`、唯一工具 `submit_review` 发起真实调用，并通过宿主结构合同；随后以 `tool_choice=auto` 自然结束。最终 `TaskReport.ok=True`、`review.model_reviewed=True`、独立测试退出码为 0；两次真实 provider 调用共 3,967 tokens（prompt 3,176、completion 791、cached 1,536、reasoning 0）。两项聚焦 FakeBackend 正负回归通过，非法读取仍 fail-closed。
+- **失败探测的修正解释：**此前两次探测将每次输出上限设为 1,200 tokens，响应都用尽该限额；它们不能证明 `tool_choice=required` 或具名选择本身有缺陷。此次用生产默认 2,048 成功，但没有在同一上限下做 required/named A/B，因此不声称上限变化是唯一原因。保留唯一工具 `required` 作为执行策略，后续若调整还须重新做真实模型验证。
+- **上游刷新与取舍：**Codex `openai/codex` `main` 固定 SHA `12de0e395d3313bc564190d983cb4f5acf0be713`（Apache-2.0）把 Reviewer 作为独立 one-shot 流程，并另有 managed read-only runtime profile；review prompt/approval 设置不能替代显式 OS 权限。OpenHands Extensions SHA `976f3c9cb61b137d113cd48d6b264e06aa4af54a`（MIT）的 review skill 强调当前改动与证据支撑，但 PR 插件的工具/JSON 提示不证明 OS 只读。ICODE 采纳显式只读权限模型与可操作证据 findings；暂缓自由文本兜底、自动评论/修复和把工具配置当作 OS 隔离。只借鉴机制，未复制代码、未增加依赖；详情及链接见[持续竞品对照](../../agent-landscape-live.md)。
+- **退出边界：**这条真实模型路径不验证自然触发、任意任务成功率、敏感源代码发送风险上限之外的隐私承诺或跨平台权限。工作流 `step=review` 命令及策略化命令继续禁用；Windows/其他平台的 OS 边界未通过前不开放 `run_command`。

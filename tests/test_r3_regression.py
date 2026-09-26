@@ -1376,7 +1376,7 @@ class TestModelReviewerExecution(unittest.TestCase):
             and call["messages"][0].get("content", "").startswith("你是独立代码审查")
         ]
         self.assertEqual([call["tool_choice"] for call in reviewer_calls], [
-            "read_file", "submit_review", "submit_review", "submit_review", "auto",
+            "read_file", "submit_review", "submit_review", "required", "auto",
         ])
         self.assertEqual(
             [item["function"]["name"] for item in reviewer_calls[3]["tools"]],
