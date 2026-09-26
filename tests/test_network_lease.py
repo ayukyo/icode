@@ -138,6 +138,28 @@ class NetworkLeaseTestCase(unittest.TestCase):
                         current_generation=7,
                     )
 
+    def test_lease_request_rejects_non_ascii_before_case_normalization(self) -> None:
+        policy = self.make_deny_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("key.example",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.verify_request(
+                grant,
+                policy,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="Key.example",
+                port=443,
+                now_monotonic_ns=2_000_000_001,
+            )
+
     def test_legacy_lease_semantics_are_rejected_by_schema_version(self) -> None:
         with self.assertRaises(NetworkLeaseValidationError):
             self.make_lease(
@@ -315,6 +337,18 @@ class NetworkLeaseTestCase(unittest.TestCase):
                 now_monotonic_ns=2_000_000_000,
             )
         self.assertEqual(invalid_domain_approver.seen, [])
+
+        unicode_domain_approver = ScriptedApprover([True])
+        with self.assertRaises(NetworkLeaseValidationError):
+            authority.request_lease(
+                denied_policy,
+                approver=unicode_domain_approver,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("Key.example",),
+                ttl_seconds=60,
+                now_monotonic_ns=2_000_000_000,
+            )
+        self.assertEqual(unicode_domain_approver.seen, [])
 
         with self.assertRaises(NetworkLeaseValidationError):
             authority.request_lease(
@@ -1033,6 +1067,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
             ("lease_id", "not-a-random-id"),
             ("purpose", "unrestricted"),
             ("allowed_domains", ("*.pypi.org",)),
+            ("allowed_domains", ("Key.example",)),
             ("port", 80),
             ("generation", True),
             ("expires_at_monotonic_ns", 1_000_000_000),

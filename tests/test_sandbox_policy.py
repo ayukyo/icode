@@ -320,6 +320,7 @@ class SandboxPolicyTestCase(unittest.TestCase):
             "127.1",
             "0177.0.0.1",
             "0x7f.0.0.1",
+            "Key.example",
             " pypi.org",
             "pypi.org ",
             "pypi.org.",

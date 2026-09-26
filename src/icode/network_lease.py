@@ -94,7 +94,10 @@ class NetworkLease:
         object.__setattr__(
             self,
             "allowed_domains",
-            tuple(sorted({domain.lower() for domain in self.allowed_domains})),
+            tuple(sorted({
+                domain.lower() if is_exact_dns_hostname(domain) else domain
+                for domain in self.allowed_domains
+            })),
         )
         self.validate()
 
@@ -214,10 +217,7 @@ class NetworkLease:
             raise NetworkLeaseValidationError("network lease is bound to a different policy")
         if type(purpose) is not NetworkPurpose or purpose is not self.purpose:
             raise NetworkLeaseValidationError("request purpose differs from the lease")
-        if (
-            type(hostname) is not str
-            or not is_exact_dns_hostname(hostname.lower())
-        ):
+        if type(hostname) is not str or not is_exact_dns_hostname(hostname):
             raise NetworkLeaseValidationError("request hostname must be an exact DNS hostname")
         if hostname.lower() not in self.allowed_domains:
             raise NetworkLeaseValidationError("request hostname is not authorized by the lease")
@@ -344,13 +344,13 @@ class NetworkLeaseAuthority:
             type(domain) is not str for domain in allowed_domains
         ):
             raise NetworkLeaseValidationError("allowed_domains must be a tuple of strings")
-        normalized_domains = tuple(sorted({domain.lower() for domain in allowed_domains}))
-        if not normalized_domains or any(
-            not is_exact_dns_hostname(domain) for domain in normalized_domains
+        if not allowed_domains or any(
+            not is_exact_dns_hostname(domain) for domain in allowed_domains
         ):
             raise NetworkLeaseValidationError(
                 "requested domains must be exact ASCII DNS hostnames"
             )
+        normalized_domains = tuple(sorted({domain.lower() for domain in allowed_domains}))
         if len(normalized_domains) > MAX_NETWORK_LEASE_DOMAINS:
             raise NetworkLeaseValidationError(
                 f"a network lease may contain at most {MAX_NETWORK_LEASE_DOMAINS} domains"

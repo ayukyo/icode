@@ -129,7 +129,14 @@ def _is_exact_dns_hostname(domain: str) -> bool:
 def is_exact_dns_hostname(domain: str) -> bool:
     """Return whether *domain* is a canonicalizable exact ASCII DNS hostname."""
 
-    return _is_exact_dns_hostname(domain)
+    if type(domain) is not str:
+        return False
+    try:
+        domain.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    # Validate ASCII before lowercasing: some Unicode characters case-map to ASCII.
+    return _is_exact_dns_hostname(domain.lower())
 
 
 @dataclass(frozen=True)
@@ -173,7 +180,10 @@ class SandboxPolicy:
         object.__setattr__(
             self,
             "allowed_domains",
-            tuple(sorted({domain.lower() for domain in self.allowed_domains})),
+            tuple(sorted({
+                domain.lower() if is_exact_dns_hostname(domain) else domain
+                for domain in self.allowed_domains
+            })),
         )
         self.validate()
 
