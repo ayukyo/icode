@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
 from pathlib import Path
@@ -76,3 +77,28 @@ def snapshot_workspace(root: Path) -> dict[str, str]:
 def changed_files(before: dict[str, str], after: dict[str, str]) -> list[str]:
     names = set(before) | set(after)
     return sorted(name for name in names if before.get(name) != after.get(name))
+
+
+def diff_fingerprint(before: dict[str, str], after: dict[str, str]) -> str:
+    """把一次改动（相对基线）绑定成确定性指纹。
+
+    只依赖改动前后每条路径的 sha256（不含正文），用于把验证证据
+    绑定到「具体某次 diff」：同一结果文件在不同基线下的改动会得到
+    不同指纹；新增/删除/修改三种状态由前后哈希的缺失/变化区分。
+    未变化的路径不进入指纹（与 `changed_files` 的集合一致）。
+    """
+    entries: list[dict[str, str]] = []
+    for name in sorted(set(before) | set(after)):
+        old = before.get(name)
+        new = after.get(name)
+        if old == new:
+            continue
+        entries.append({
+            "path": name,
+            "status": "A" if old is None else "D" if new is None else "M",
+            "before": old or "",
+            "after": new or "",
+        })
+    payload = json.dumps(entries, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

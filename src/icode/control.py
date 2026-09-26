@@ -327,6 +327,50 @@ class ControlPlane:
             args += ["--append-json", json.dumps(append_json, ensure_ascii=False)]
         return self.run(*args, check=False)
 
+    # ---- 验证记录（R3：回归证据写入事件链） ----
+
+    def record_verification(
+        self,
+        out_dir: Path | str,
+        *,
+        ticket_id: str,
+        kind: str,
+        outcome: str,
+        evidence: str,
+        baseline: str = "",
+        layer: str | None = None,
+        scenario: str | None = None,
+        note: str = "",
+    ) -> ControlResult:
+        """原子记录一条验证 run 到事件链（`verification_recorded` 事件 + `verification_runs`）。
+
+        这是控制面**唯一**允许写 `verification_runs` 的入口；幂等键由
+        `ticket_id + kind + outcome + evidence + baseline` 派生，同一条验证
+        重放不会重复记录。`evidence` 应为验证证据指纹（不含输出正文/密钥），
+        `baseline` 为绑定的 diff 指纹（回归证据锚定到具体改动）。
+        """
+        args = [
+            "record-verification",
+            "--dir", str(out_dir),
+            "--kind", kind,
+            "--outcome", outcome,
+            "--evidence", evidence,
+            "--request-id", make_request(
+                ticket_id, "record-verification",
+                attempt="verify",
+                boundary="|".join([kind, outcome, evidence, baseline]),
+            ),
+        ]
+        if baseline:
+            args += ["--baseline", baseline]
+        if layer:
+            args += ["--layer", layer]
+        if scenario:
+            args += ["--scenario", scenario]
+        if note:
+            args += ["--note", note]
+        return self.run(*args, check=False)
+
     # ---- 只读查询 ----
 
     def trace(self, out_dir: Path | str, *, limit: int = 50) -> ControlResult:

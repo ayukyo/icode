@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-26
-- 状态：核心切片已实现并离线验收：失败分类、证据绑定、有界修复决策与 runner 补救回合证据门；独立 Reviewer 与回归证据打包到 commit/diff 尚未接线
+- 状态：核心切片已实现并离线验收：失败分类、证据绑定、有界修复决策、runner 补救回合证据门、独立 Reviewer（只读上下文 + 证据引用）、回归证据绑定到具体 diff（`diff_fingerprint`）、修复证据写入事件链（`verification_recorded`）并随证据包取证；R3 完整退出门槛（端到端真模型修复循环）尚未闭合
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 目标与范围
@@ -44,6 +44,28 @@ R3 核心能力（本切片）：
    产物哈希与失败分类，不含输出正文/敏感参数）；`build_evidence_pack` 直接
    接受 `VerificationEvidence` 并序列化进证据包。
 
+7. **独立 Reviewer 只读上下文**（`src/icode/reviewer.py`）
+   `reviewer_guard` 构造无任何写授权的审查上下文，`verify_read_only` 用真实
+   Guard 判定锁死；`IndependentReviewer.review` 针对改动文件与验证证据产出
+   带严重级别、失败分类、文件与证据指纹引用的结构化发现，且不能修改被审对象
+   （符号链接被审对象直接拒绝）。`run_task` 已接线：任务验证完成后用只读
+   上下文复核改动与证据，`TaskReport.review` 携带审查报告。
+
+8. **回归证据绑定到具体 diff**（`workspace_snapshot.diff_fingerprint`）
+   把一次改动（相对基线）绑定成确定性指纹：只依赖改动前后每条路径的 sha256，
+   增删改状态区分、同结果不同基线指纹不同。`run_task` 的独立测试回执把
+   `diff_fingerprint` 一并绑定进 `VerificationEvidence`（进指纹与回执），
+   证据锚定到「具体这一份 diff」而非仅结果内容。
+
+9. **修复证据写入事件链并随证据包取证**（`control.record_verification`）
+   控制面 `record-verification` 是唯一允许写 `verification_runs` 的入口；
+   `runner` 在补救回合（产物缺失）进入时把该条修复证据（指纹 + 缺失摘要 +
+   分类）写入事件链（`verification_recorded` 事件，幂等）。`build_evidence_pack`
+   自动把 `metadata.verification_runs` 一并纳入 `verifications.json`，回归证据
+   随包可取证。控制面验证域只有 build/deploy/listen/device_test 四类，R3 验证
+   按 `device_test + layer=unit` 如实记录，`evidence` 字段放指纹、`note` 注明
+   实际类别，不冒充设备实测。
+
 ## 六类失败定义
 
 | 类别 | 含义 | 证据信号（示例） |
@@ -83,8 +105,19 @@ R3 核心能力（本切片）：
   保持规则绑定 + 禁止自我委派。
 - 以上为机制层面结论，不代表已集成任何上游运行时依赖。
 
-## 下一片
+## 已完成（回归切片，2026-09-26）
 
-1. `workspace_changes` / 测试回执绑定到具体 commit/diff 与 artifact hash；
-2. 独立 Reviewer：与 Executor 隔离上下文，Reviewer 不能修改被审对象；
-3. 把修复证据（含命令退出码、环境指纹、产物哈希）写入事件链与证据包。
+1. `workspace_changes` / 测试回执绑定到具体 commit/diff 与 artifact hash：
+   `diff_fingerprint` 进 `VerificationEvidence`（指纹 + 回执）；
+2. 独立 Reviewer 接线：`run_task` 用只读上下文复核改动与证据，不能修改被审对象；
+3. 修复证据写入事件链与证据包：`record-verification` 记录 `verification_recorded`
+   + `verification_runs`，`build_evidence_pack` 自动纳入 `verifications.json`。
+
+## 下一片（尚未闭合）
+
+1. 端到端真模型修复循环：失败 → 分类 → 有界修复 → 回归 → 独立 Reviewer 全链路
+   在真模型下跑通并验收；
+2. 把独立 Reviewer 完整接入 review 步骤 / Reviewer 上下文（当前接线在 `run_task`
+   能力验证路径，review 步骤的对抗审查上下文仍需接入）；
+3. 证据指纹锚定到真实 commit（Git SHA）而非仅工作区 diff 快照（R2.4 Git broker
+   接通后可做）。

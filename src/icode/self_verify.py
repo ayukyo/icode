@@ -117,6 +117,7 @@ class VerificationEvidence:
     output: str = ""
     environment_fingerprint: str = ""
     artifact_hashes: Mapping[str, str] = field(default_factory=dict)
+    diff_fingerprint: str = ""
     category: str = FAILURE_SIDE_EFFECT_UNKNOWN
     captured_at: str = ""
     raw_error: str = ""
@@ -147,6 +148,7 @@ class VerificationEvidence:
             "environment_fingerprint": self.environment_fingerprint,
             "output_sha256": self.output_sha256,
             "artifact_hashes": dict(sorted(self.artifact_hashes.items())),
+            "diff_fingerprint": self.diff_fingerprint,
             "category": self.category,
             "passed": self.passed,
             "fingerprint": evidence_fingerprint(self),
@@ -210,6 +212,7 @@ def evidence_fingerprint(evidence: VerificationEvidence) -> str:
             "output_sha256": evidence.output_sha256,
             "environment_fingerprint": evidence.environment_fingerprint,
             "artifact_hashes": artifacts,
+            "diff_fingerprint": evidence.diff_fingerprint,
             "category": evidence.category,
         },
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),

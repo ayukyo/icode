@@ -51,6 +51,7 @@ from .self_verify import (
 )
 from .tools import ToolContext, default_registry
 from .workspace_snapshot import changed_files as _changed
+from .workspace_snapshot import diff_fingerprint as _diff_fingerprint
 from .workspace_snapshot import snapshot_workspace as _snapshot
 
 # 靶场默认位置（相对仓库根）
@@ -136,6 +137,7 @@ class TaskReport:
     changed_files: list[str] = field(default_factory=list)
     error: str = ""
     verification: object | None = None  # R3: VerificationEvidence
+    review: object | None = None        # R3: ReviewReport（只读独立 Reviewer）
 
     @property
     def ok(self) -> bool:
@@ -149,6 +151,8 @@ class TaskReport:
         ]
         if self.changed_files:
             lines.append("  改动文件：" + "、".join(self.changed_files))
+        if self.review is not None:
+            lines += ["", "  " + self.review.render().replace("\n", "\n  ")]
         if self.loop:
             lines += ["", "  " + self.loop.render().replace("\n", "\n  ")]
         if self.test_output:
@@ -359,6 +363,10 @@ def run_contract_step(
                             f"（missing={'、'.join(p.value for p in still_missing)}）"
                         )
                         break
+                    # R3：把这条修复证据（缺失产物 + 分类）写入事件链，供证据包取证；
+                    # 记录失败只是如实警告，不阻断步骤本身。
+                    if not _record_verification_evidence(cp, out_dir, ticket_id, evidence):
+                        report.warn("修复证据未能写入事件链（control 记录失败，不影响步骤）")
                     report.warn(
                         f"产物缺失，进入补救回合 {repair_round}："
                         + "、".join(p.value for p in still_missing)
@@ -417,6 +425,43 @@ def run_contract_step(
     except Exception as exc:  # noqa: BLE001
         report.error = f"{type(exc).__name__}: {exc}"
         return report
+
+
+def _record_verification_evidence(
+    cp, out_dir: Path, ticket_id: str, evidence: VerificationEvidence,
+) -> bool:
+    """把一条验证证据写入事件链（fail-safe：记录失败不阻断步骤）。
+
+    控制面验证域只有 build / deploy / listen / device_test 四类；这里把
+    R3 的验证证据（契约门禁 / 独立测试回执）按 `device_test + layer=unit`
+    如实记录：`evidence` 放证据指纹（不含正文/密钥），`baseline` 放 diff
+    指纹或缺失产物摘要，`note` 注明实际类别。幂等键由证据指纹派生，
+    同一条验证重放不会重复记录。
+    """
+    from .self_verify import evidence_fingerprint
+
+    try:
+        outcome = "pass" if evidence.passed else "fail"
+        baseline = evidence.diff_fingerprint or ""
+        if not baseline and evidence.kind == "gate":
+            missing = sorted(
+                str(k) for k in (evidence.artifact_hashes or {})) or ["missing"]
+            baseline = _sha256_text("|".join(missing))
+        res = cp.record_verification(
+            out_dir, ticket_id=ticket_id, kind="device_test", outcome=outcome,
+            evidence=evidence_fingerprint(evidence), baseline=baseline,
+            layer="unit", scenario=evidence.kind,
+            note=f"step={evidence.step} category={evidence.category or ''}",
+        )
+        return res.data.get("ok") is True
+    except Exception:  # noqa: BLE001 - 证据记录失败不阻断步骤
+        return False
+
+
+def _sha256_text(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _reset_artifact_checkpoints(report: StepReport) -> None:
@@ -1004,6 +1049,9 @@ def run_task(
         exit_code=exit_code,
         output=output,
         environment_fingerprint=environment_fingerprint(),
+        # 把证据绑定到「这一份具体 diff」：同一结果在不同基线下的改动
+        # 会得到不同指纹，避免证据被挪用到别的改动。
+        diff_fingerprint=_diff_fingerprint(before, after),
         # 分类只对失败有意义；通过时留空，不把成功误标成某类失败。
         category=(
             classify_failure(exit_code=exit_code, output=output, kind="test")
@@ -1011,8 +1059,16 @@ def run_task(
         ),
         artifact_hashes=artifact_hashes,
     )
+    # R3：独立 Reviewer 用只读上下文复核改动与验证证据；不能修改被审对象。
+    review = None
+    try:
+        from .reviewer import IndependentReviewer
+
+        review = IndependentReviewer(workspace=workspace).review(changed, evidence)
+    except Exception as exc:  # noqa: BLE001 - Reviewer 异常不冒充成功
+        review = None
     return TaskReport(
         task=task, workspace=str(workspace), exit_code=exit_code,
         test_output=output, loop=result, changed_files=changed,
-        error=result.error, verification=evidence,
+        error=result.error, verification=evidence, review=review,
     )

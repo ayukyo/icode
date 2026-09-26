@@ -438,9 +438,11 @@ CI [#109 x64](https://github.com/ayukyo/icode/actions/runs/36069030309/job/10786
 
 ### R3 —— 自验证与有界修复（实施中）
 
-R3 核心切片已合入 main（2026-09-26）：`src/icode/self_verify.py` 实现失败分类（六类）、证据绑定（`VerificationEvidence` + `evidence_fingerprint`）与有界修复决策（`VerificationLedger`）；`runner.run_contract_step` 的补救回合接入证据门——进入补救前先分类并绑定证据，无新证据或副作用不明时跳过并如实警告。离线测试覆盖分类、指纹稳定性/敏感性、同指纹拒绝、超界停止、副作用转人工与 runner 兼容既有离线链。计划与边界见 [R3 自验证与有界修复](./nbl/plans/2026-09-26-r3-self-verification.md)。
+R3 核心切片已合入 main（2026-09-26）：`src/icode/self_verify.py` 实现失败分类（六类）、证据绑定（`VerificationEvidence` + `evidence_fingerprint`）与有界修复决策（`VerificationLedger`）；`runner.run_contract_step` 的补救回合接入证据门——进入补救前先分类并绑定证据，无新证据或副作用不明时跳过并如实警告；`run_task` 把独立测试退出码/输出摘要/环境指纹/改动哈希绑进 `TaskReport.verification` 并可序列化进证据包；`src/icode/reviewer.py` 实现只读独立 Reviewer（无写授权、证据引用、符号链接被审对象拒绝）。离线测试覆盖分类、指纹稳定性/敏感性、同指纹拒绝、超界停止、副作用转人工、证据回执序列化与 reviewer 只读锁。计划与边界见 [R3 自验证与有界修复](./nbl/plans/2026-09-26-r3-self-verification.md)。
 
-**R3 仍未验收的部分（如实标注）**：独立 Reviewer 的隔离上下文、验证证据绑定到具体 commit/diff、回归证据打包到事件链与证据包，以及真实模型下的端到端修复循环。R3 完整退出门槛（架构 §13.7）未闭合。
+R3 回归切片已合入 main（2026-09-26，同批）：`workspace_snapshot.diff_fingerprint` 把改动绑定成确定性指纹（只依赖改动前后 sha256，增删改区分、同结果不同基线指纹不同），并绑进 `VerificationEvidence`（进指纹与回执）——测试回执锚定到「具体这一份 diff」；`run_task` 完成验证后用 `IndependentReviewer` 的只读上下文复核改动与证据（`TaskReport.review`，不能修改被审对象）；`control.record_verification` 把补救回合的修复证据原子写入事件链（`verification_recorded` 事件 + `verification_runs`，幂等），`build_evidence_pack` 自动把 `verification_runs` 纳入 `verifications.json` 随包取证。新增 `tests/test_r3_regression.py` 覆盖 diff 指纹、Reviewer 接线与事件链取证。
+
+**R3 仍未验收的部分（如实标注）**：端到端真模型修复循环（失败 → 分类 → 有界修复 → 回归 → 独立 Reviewer 全链路在真模型下跑通）尚未验收；独立 Reviewer 接入的是 `run_task` 能力验证路径，review 步骤的对抗审查上下文尚未完整接线；证据指纹锚定到真实 commit（Git SHA）需待 R2.4 Git broker 接通。R3 完整退出门槛（架构 §13.7）未闭合。
 
 ## 4. 为什么是这个顺序
 

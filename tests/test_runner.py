@@ -443,10 +443,6 @@ class TestBackendRetry(unittest.TestCase):
         self.assertEqual(b.usage.retries, 0)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestTaskVerificationEvidence(unittest.TestCase):
     """R3：run_task 的独立测试回执必须绑定到证据，模型自述不算。"""
 
@@ -503,3 +499,7 @@ class TestTaskVerificationEvidence(unittest.TestCase):
             self.assertIn("calc.py", evidence.artifact_hashes)
             self.assertEqual(len(evidence.artifact_hashes["calc.py"]), 64)
             self.assertTrue(evidence.environment_fingerprint)
+
+
+if __name__ == "__main__":
+    unittest.main()

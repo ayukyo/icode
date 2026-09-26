@@ -273,6 +273,22 @@ def build_evidence_pack(
             receipts.append(verification.to_receipt())
         else:
             receipts.append({"kind": "verification", "note": str(verification)})
+    # R3：事件链里通过 record-verification 登记过的验证 run（verification_recorded
+    # 事件 + metadata.verification_runs）也一并纳入回执，让回归证据随包可取证。
+    for run in (meta.get("verification_runs") or []):
+        if not isinstance(run, dict):
+            continue
+        receipts.append({
+            "kind": "verification_recorded",
+            "fingerprint": run.get("evidence", ""),
+            "baseline": run.get("baseline", ""),
+            "outcome": run.get("outcome", ""),
+            "layer": run.get("layer", ""),
+            "scenario": run.get("scenario", ""),
+            "note": run.get("note", ""),
+            "run_id": run.get("run_id", ""),
+            "recorded_at": run.get("at", ""),
+        })
     (dest / "verifications.json").write_text(
         json.dumps({"schema_version": PACK_SCHEMA_VERSION, "receipts": receipts},
                    ensure_ascii=False, indent=2) + "\n",
