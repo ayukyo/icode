@@ -105,7 +105,8 @@ class VerificationEvidence:
 
     语义：这条证据**只**对 `step` + `command`（摘要） + `exit_code` +
     `output_sha256` + `environment_fingerprint` + `artifact_hashes` +
-    `diff_fingerprint` 这些**可观察事实**成立。任一事实变化都应产生新的
+    `diff_fingerprint` + `base_commit_sha` + 初始/受测完整工作区指纹这些
+    **可观察事实**成立。任一事实变化都应产生新的
     证据，否则复用旧证据去推动状态前进会被视为「没有新证据」。`attempt`
     是**有界修复的账本标签**（回执中保留），但不参与「新证据」指纹：同一
     失败在不同 attempt 下应被识别为**同一证据**，否则任何重试都会因为
@@ -121,6 +122,9 @@ class VerificationEvidence:
     environment_fingerprint: str = ""
     artifact_hashes: Mapping[str, str] = field(default_factory=dict)
     diff_fingerprint: str = ""
+    base_commit_sha: str = ""
+    initial_worktree_fingerprint: str = ""
+    tested_worktree_fingerprint: str = ""
     category: str = FAILURE_SIDE_EFFECT_UNKNOWN
     captured_at: str = ""
     raw_error: str = ""
@@ -152,6 +156,9 @@ class VerificationEvidence:
             "output_sha256": self.output_sha256,
             "artifact_hashes": dict(sorted(self.artifact_hashes.items())),
             "diff_fingerprint": self.diff_fingerprint,
+            "base_commit_sha": self.base_commit_sha,
+            "initial_worktree_fingerprint": self.initial_worktree_fingerprint,
+            "tested_worktree_fingerprint": self.tested_worktree_fingerprint,
             "category": self.category,
             "passed": self.passed,
             "fingerprint": evidence_fingerprint(self),
@@ -217,6 +224,9 @@ def evidence_fingerprint(evidence: VerificationEvidence) -> str:
             "environment_fingerprint": evidence.environment_fingerprint,
             "artifact_hashes": artifacts,
             "diff_fingerprint": evidence.diff_fingerprint,
+            "base_commit_sha": evidence.base_commit_sha,
+            "initial_worktree_fingerprint": evidence.initial_worktree_fingerprint,
+            "tested_worktree_fingerprint": evidence.tested_worktree_fingerprint,
             "category": evidence.category,
         },
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -323,6 +333,9 @@ class VerificationLedger:
             or self.environment_fingerprint,
             artifact_hashes=dict(evidence.artifact_hashes),
             diff_fingerprint=evidence.diff_fingerprint,
+            base_commit_sha=evidence.base_commit_sha,
+            initial_worktree_fingerprint=evidence.initial_worktree_fingerprint,
+            tested_worktree_fingerprint=evidence.tested_worktree_fingerprint,
             category=evidence.category,
             captured_at=evidence.captured_at or _now(),
             raw_error=evidence.raw_error,

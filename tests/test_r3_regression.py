@@ -15,7 +15,12 @@ from unittest.mock import patch
 
 from tests._support import REPO_ROOT, make_finished_plan_ticket, require_skill, temp_workspace
 
-from icode.workspace_snapshot import changed_files, diff_fingerprint, snapshot_workspace
+from icode.workspace_snapshot import (
+    changed_files,
+    diff_fingerprint,
+    snapshot_fingerprint,
+    snapshot_workspace,
+)
 
 
 class TestDiffFingerprint(unittest.TestCase):
@@ -74,6 +79,14 @@ class TestDiffFingerprint(unittest.TestCase):
         # 指纹不含正文
         self.assertNotIn("h2b", fp_bc)
 
+    def test_完整工作区指纹包含未变化文件且不依赖映射顺序(self) -> None:
+        a = {"unchanged.py": "hash-a", "changed.py": "hash-b"}
+        b = {"changed.py": "hash-b", "unchanged.py": "hash-a"}
+        changed_unrelated = {"changed.py": "hash-b", "unchanged.py": "hash-c"}
+
+        self.assertEqual(snapshot_fingerprint(a), snapshot_fingerprint(b))
+        self.assertNotEqual(snapshot_fingerprint(a), snapshot_fingerprint(changed_unrelated))
+
 
 class TestEvidenceDiffBinding(unittest.TestCase):
     def test_diff_fingerprint进入指纹与回执(self) -> None:
@@ -105,13 +118,21 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
 
         with temp_workspace() as ws:
             dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
-            report = run_task(
-                self.settings, backend=FakeBackend(["完成"]), workspace=dst,
-            )
+            backend = FakeBackend(["完成"])
+            report = run_task(self.settings, backend=backend, workspace=dst)
             evidence = report.verification
             self.assertIsNotNone(evidence)
+            self.assertEqual(evidence.base_commit_sha, "")
+            self.assertEqual(
+                evidence.initial_worktree_fingerprint,
+                snapshot_fingerprint(snapshot_workspace(dst)),
+            )
             # 无改动 → diff 指纹仍为确定值（空 diff 的指纹）
             self.assertEqual(len(evidence.diff_fingerprint), 64)
+            self.assertEqual(
+                evidence.tested_worktree_fingerprint,
+                snapshot_fingerprint(snapshot_workspace(dst)),
+            )
             # 独立 Reviewer 已接线：只读自检通过，且不能修改被审对象
             self.assertIsNotNone(report.review)
             self.assertTrue(report.review.read_only_verified)
@@ -119,6 +140,45 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
                              "Reviewer 必须只读，不得写入被审对象")
             # 空 diff 的证据指纹不含任何文件正文
             self.assertNotIn(dst.name, evidence.diff_fingerprint)
+
+    def test_run_task证据锚定真实Git基线和含预存脏改动的快照(self) -> None:
+        import subprocess
+
+        from icode.backends import FakeBackend
+        from icode.runner import run_task
+
+        with temp_workspace() as ws:
+            repo = ws / "repo"
+            repo.mkdir()
+            (repo / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.name", "ICODE tests"], check=True)
+            subprocess.run(["git", "-C", str(repo), "config", "user.email", "icode-tests@example.invalid"], check=True)
+            subprocess.run(["git", "-C", str(repo), "add", "calc.py"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "baseline"], check=True)
+            expected_base = subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"],
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+            # 基线 SHA 不会冒充工作区状态；任务启动前已有的未提交文件也必须进入初始锚点。
+            (repo / "preexisting.txt").write_text("local dirty input\n", encoding="utf-8")
+            initial_snapshot = snapshot_workspace(repo)
+            report = run_task(
+                require_skill(), backend=FakeBackend(["完成"]), workspace=repo,
+            )
+
+            evidence = report.verification
+            self.assertIsNotNone(evidence)
+            self.assertEqual(evidence.base_commit_sha, expected_base)
+            self.assertEqual(
+                evidence.initial_worktree_fingerprint,
+                snapshot_fingerprint(initial_snapshot),
+            )
+            self.assertEqual(
+                evidence.tested_worktree_fingerprint,
+                snapshot_fingerprint(snapshot_workspace(repo)),
+            )
 
     def test_review对失败证据给blocking发现(self) -> None:
         from icode.backends import FakeBackend
@@ -150,6 +210,24 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
             before = snapshot_workspace(dst)
             report.review  # 已构造完毕，改动若有已在构造时发生
             self.assertEqual(snapshot_workspace(dst), before)
+
+
+class TestTaskGitAnchorAvailability(unittest.TestCase):
+    def test_no_git_binary_keeps_non_git_workspace_supported(self) -> None:
+        from icode.runner import _read_task_base_commit_sha
+
+        with temp_workspace() as ws:
+            with patch("icode.runner.shutil.which", return_value=None):
+                self.assertEqual(_read_task_base_commit_sha(ws), "")
+
+    def test_no_git_binary_with_git_metadata_fails_closed(self) -> None:
+        from icode.runner import _read_task_base_commit_sha
+
+        with temp_workspace() as ws:
+            (ws / ".git").mkdir()
+            with patch("icode.runner.shutil.which", return_value=None):
+                with self.assertRaisesRegex(ValueError, "workspace_git_identity_unavailable"):
+                    _read_task_base_commit_sha(ws)
 
 
 class TestModelReviewerExecution(unittest.TestCase):
@@ -203,6 +281,15 @@ class TestModelReviewerExecution(unittest.TestCase):
                 call for call in backend.calls
                 if call["messages"]
                 and call["messages"][0].get("content", "").startswith("你是独立代码审查代理")
+            )
+            reviewer_input = json.loads(reviewer_call["messages"][1]["content"])
+            self.assertEqual(
+                reviewer_input["verification"]["tested_worktree_fingerprint"],
+                report.verification.tested_worktree_fingerprint,
+            )
+            self.assertEqual(
+                reviewer_input["verification"]["initial_worktree_fingerprint"],
+                report.verification.initial_worktree_fingerprint,
             )
             reviewer_calls = [
                 call for call in backend.calls

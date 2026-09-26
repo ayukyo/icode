@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
 - 最近观察：2026-09-26；下次全量复核：不晚于 2026-10-25
-- 注：观察日期统一按 UTC 记录；本轮定向复核 R3 独立 Reviewer 与修复验证闭环；20 项观察名单最近全量复核为 2026-09-24。
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R3 独立 Reviewer、修复验证闭环与 commit/worktree 证据锚点；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -515,3 +515,10 @@
 - **Gemini CLI `2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`**：[gitUtils.ts](https://github.com/google-gemini/gemini-cli/blob/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18/packages/core/src/utils/gitUtils.ts) 展示清理继承 Git 环境，但未构成只读 OS 边界；后续修正 [`562f0361fe63952fcf2db793e3e9fc0ae69ec506`](https://github.com/google-gemini/gemini-cli/commit/562f0361fe63952fcf2db793e3e9fc0ae69ec506) 移除了危险且无关的空 `diff.external` 参数。ICODE **采纳**最小固定参数与恶意仓库回归；不复制实现。
 - **ICODE 现状 / 验收：**Linux x86_64 已安装 wheel 的 hostile-repository 原型有本机证据，但仍未接入模型工具入口；ARM64 wheel、并发身份/配置替换、超时/输出/子进程清理压力路径和 macOS/Windows 统一隔离未验收，故保持 `git_broker_unavailable`。此刷新只记录上游源码观察，不改变 R2 能力声明；来源 SHA、适配判断与当前状态详见 [R2 Git broker 闸门记录](./nbl/plans/2026-09-24-r2-git-broker-gate.md)。
 - **本轮实现反馈（2026-09-26）：**将 OS 权限边界落实到 Linux 内部 broker：精确允许固定 Git/ELF loader 执行，Landlock 对其他 helper 拒绝；注入到配置预检之后的 clean filter 不能启动。真实打包并安装的 x86_64 wheel 探针新增 `GIT_CONFIG_COUNT` filter、`GIT_DIR`、`GIT_WORK_TREE` 与错误 `GIT_INDEX_FILE` 污染；裸 Git 正向控制确实执行 filter，而已安装 broker 仍返回可信工作区状态且 marker 未出现。**采纳** OS 强制白名单与实际 wheel 环境毒化回归；不复制上游代码或增加依赖。ARM64/macOS/Windows 不因此验收，`ToolContext` 与自动模式仍关闭。
+
+### 2026-09-26 UTC 定向刷新：R3 commit 与工作区证据锚点
+
+- **OpenCode 固定源码：**commit [`0f549842ee746e400b1f72516b0b2e292e267e2c`](https://github.com/anomalyco/opencode/commit/0f549842ee746e400b1f72516b0b2e292e267e2c) 的 [`Snapshot.track()`](https://github.com/anomalyco/opencode/blob/0f549842ee746e400b1f72516b0b2e292e267e2c/packages/opencode/src/snapshot/index.ts) 使用独立 Git 快照索引生成 tree OID；[`Session Processor`](https://github.com/anomalyco/opencode/blob/0f549842ee746e400b1f72516b0b2e292e267e2c/packages/opencode/src/session/processor.ts) 记录任务前后快照差异。它是可追溯的未提交工作区快照，不等于 Git commit，也不等于测试结果认证；实现还需考虑忽略文件和大文件边界。
+- **Codex 固定源码：**commit [`1bf73324cadc72a53ed467edc7d3fd2b145a6166`](https://github.com/openai/codex/commit/1bf73324cadc72a53ed467edc7d3fd2b145a6166) 的 [`git-utils/src/info.rs`](https://github.com/openai/codex/blob/1bf73324cadc72a53ed467edc7d3fd2b145a6166/codex-rs/git-utils/src/info.rs) 分开处理 HEAD commit SHA、相对指定 SHA 的 diff 与未跟踪文件；所查路径未显示将这些 Git 信息写入测试结果回执。
+- **ICODE 现状与决定：**原有 `diff_fingerprint` 只锚定本次相对差异，不覆盖任务开始前已有的脏改动，也未写入实际 HEAD。**采纳并实现本地切片**：`base_commit_sha` 说明任务基线；`initial_worktree_fingerprint` 记录开始状态；`tested_worktree_fingerprint` 记录测试输入状态；`diff_fingerprint` 继续描述本轮增删改。摘要进入证据指纹、证据包回执和 Reviewer 上下文，并在 Reviewer 结束时重核受测工作区指纹。真实 Git 基线、预存未提交文件、无 Git 环境兼容、证据包与 Reviewer 上下文回归共 124 项通过，全量 preflight 通过；新 CI 待本地切片提交后运行。无 Git 的临时靶场明确留空 SHA，不伪造 commit。该 SHA 是基线，不是未提交结果的 commit。
+- **暂缓与验收边界：**暂不声明 `result_commit_sha`：只有将来证明提交 tree 与受测快照完全相同，才可称结果 commit 已验证。当前工作区快照记录文件内容与符号链接目标，但不包含 Git 可执行位、子模块 gitlink 语义；提交后 tree 匹配、测试期间状态漂移、模式位/子模块专项覆盖仍列为后续门槛。实现仅复用 Python 标准库和既有 Workspace Git 探测，不复制上游代码、无新增许可或安装依赖。观察日期：2026-09-26 UTC。

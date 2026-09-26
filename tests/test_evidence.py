@@ -80,6 +80,9 @@ class TestEvidencePack(unittest.TestCase):
                 output="AssertionError: boom",
                 environment_fingerprint="env-fp", category="code",
                 artifact_hashes={"calc.py": "abc"},
+                base_commit_sha="a" * 40,
+                initial_worktree_fingerprint="initial-tree",
+                tested_worktree_fingerprint="tested-tree",
             )
             _out, dest, report = self._build(
                 ws, workspace=ws / "work", verifications=[evidence],
@@ -93,6 +96,9 @@ class TestEvidencePack(unittest.TestCase):
             self.assertEqual(receipts[0]["kind"], "verification")
             self.assertEqual(receipts[0]["step"], "code")
             self.assertEqual(receipts[0]["exit_code"], 1)
+            self.assertEqual(receipts[0]["base_commit_sha"], "a" * 40)
+            self.assertEqual(receipts[0]["initial_worktree_fingerprint"], "initial-tree")
+            self.assertEqual(receipts[0]["tested_worktree_fingerprint"], "tested-tree")
             self.assertEqual(receipts[0]["artifact_hashes"], {"calc.py": "abc"})
             self.assertTrue(receipts[0]["fingerprint"])
             self.assertNotIn("AssertionError: boom", json.dumps(receipts[0]))

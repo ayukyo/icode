@@ -1,14 +1,14 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-26
-- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。`run_task` Reviewer 精确读取改动文件，并通过只读上下文的 `submit_review` JSON Schema 工具提交；长上下文在完整读取后仍漏提交时，新增受限短上下文终结器作为一次有界兼容路径，只接收完整读回的源码（合计最多 64 KiB）且只开放具名提交工具。宿主继续校验 findings、证据指纹和 diff；权限越界、未完整读取、合同错误、预算/回合耗尽都 fail-closed。MiniMax-M3 TDD 靶场现已真实触发 `repair_decisions=["allow"]`，修复回合改动 `calc.py`/`test_calc.py`，独立 20 项测试通过，Reviewer 完整读取并结构化提交，最终 `TaskReport.ok=True`（25 次调用 / 109,087 tokens；预算预期 180,000）。另一真模型单次任务通过 17 项测试 / 14 次调用 / 64,427 tokens，但未触发短上下文终结器；兜底仍由离线回归验证。最新手动 [CI #210](https://github.com/ayukyo/icode/actions/runs/36247565458) x64/ARM64 仍在真实 `CreateFileW` 返回 `ERROR_ACCESS_DENIED (5)`；同线程诊断回执进入 `token_process` 且只读 AccessCheck 为 allow，故 Windows pipe 根因仍未知。Linux/macOS conformance 继续 `5/10`、`critical_passed=false`、`ready=false`。本地 Linux Git broker 加入精确执行白名单和污染环境 wheel 负例后，全量 preflight 三道门通过、144 项相关测试通过（7 项平台跳过）；跨平台只读边界与真实 Git SHA 锚定仍未闭合。OS wrappers 仍不能证明 Reviewer 命令不可见排除树，因此工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
+- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。MiniMax-M3 TDD 靶场完成真实失败 → `allow` → 修复 → 独立测试 → Reviewer 合法提交（25 次调用 / 109,087 tokens）；Reviewer 短上下文终结器仍缺真模型路径证据。当前本地证据锚点把真实 `base_commit_sha`、初始/受测工作区完整内容指纹及相对 diff 纳入证据指纹、回执和 Reviewer 上下文，124 项相关测试、全量 preflight、文档一致性、网站和治理检查均通过；新 CI 待提交后运行。基线 SHA 不冒充未提交结果 commit；结果 commit/tree 匹配及文件模式/子模块边界仍未实现。最新常规 [CI #211](https://github.com/ayukyo/icode/actions/runs/36250208892) 成功，但标准用户 pipe 探针被跳过，Linux/macOS conformance 仍 `5/10`、`critical_passed=false`、`ready=false`；最新手动 [CI #210](https://github.com/ayukyo/icode/actions/runs/36247565458) x64/ARM64 的真实 `CreateFileW` 仍为 `ERROR_ACCESS_DENIED (5)`。跨平台只读边界未闭合，工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 2026-09-26 UTC 当前联动状态
 
-- R3 真模型修复闭环已在受控 MiniMax-M3 靶场完成，但这只证明该靶场链路；真实 Git SHA 锚点和 workflow Reviewer 跨平台只读边界仍未验收。工作流 Reviewer 的 `run_command` 保持 fail-closed。
-- R2 手动 [CI #200](https://github.com/ayukyo/icode/actions/runs/36240714328) 中 Windows x64/ARM64 标准用户探针都在子进程 `CreateFileW` 返回 `access_denied`；Linux/macOS conformance `passed=5/10`、`critical_passed=false`、`ready=false`。本地正在加入只读 DACL/实际客户端 primary token 诊断，尚无新 Windows 原生运行结果。
-- 本地回归新增验证必须选择被诊断的子进程 token，且无法打开时不能回退到父线程/进程 token；`test_windows_standard_user_token_probe` 29 项通过。该测试不调用 Windows API，不能替代 x64/ARM64 原生 CI。R2 自动模式与 Windows runner pipe 仍关闭。
+- R3 真模型修复闭环已在受控 MiniMax-M3 靶场完成；本地 `run_task` 当前将真实 Git 基线 SHA 与初始/受测工作区指纹纳入回执，124 项相关测试和全量 preflight 通过，新 CI 待提交后运行。Reviewer 跨平台只读命令边界、终结器真模型路径及结果 commit/tree 匹配仍未验收。
+- R2 常规 [CI #211](https://github.com/ayukyo/icode/actions/runs/36250208892) 成功，但 Windows 标准用户探针在 push 运行中跳过；Linux/macOS conformance 仍 `5/10`、`critical_passed=false`、`ready=false`。最新手动 [CI #210](https://github.com/ayukyo/icode/actions/runs/36247565458) 的 x64/ARM64 标准用户探针均在子进程 `CreateFileW` 返回 `access_denied`，自动模式保持关闭。
+- R2.4 Linux x86_64 Git broker 有精确 helper 白名单和污染环境的已安装 wheel 负例；不是跨平台 broker，尚未接入模型工具入口。#211 常规 CI 通过不验证手动 Windows pipe、R2 全部 10 项隔离门或 R3 Reviewer OS 边界。
 
 ## 2026-09-26 UTC：CI #202 回执过滤根因与修正
 
@@ -180,12 +180,13 @@ R3 核心能力（本切片）：
 
 ## 下一片（尚未闭合）
 
-1. 端到端真模型修复循环：通过受控、可复现的失败初态，验证真实失败分类 → 有界修复
-   → 回归 → 独立 Reviewer；当前真模型单次成功路径已验收，但未触发修复分支；
-2. 对本轮新接入的 review 步骤只读执行边界完成跨平台原生验收，并评估策略化
-   Reviewer 的只读文件与拒读子路径能否由同一 OS profile 可证明地组合；
-3. 证据指纹锚定到真实 commit（Git SHA）而非仅工作区 diff 快照（R2.4 Git broker
-   接通后可做）。
+1. 完成并发布基线/工作区证据锚点：`base_commit_sha` 只表示任务开始时的提交；
+   `initial_worktree_fingerprint` 与 `tested_worktree_fingerprint` 覆盖包括预存脏改动在内的文件内容快照，
+   `diff_fingerprint` 保留本轮改动语义。回执与 Reviewer 终态校验必须都覆盖这些字段；
+2. 后续若要声明某个**结果 commit** 已验证，必须先核对该 commit 的 tree 与测试输入快照完全相同，
+   并补齐 Git 可执行位、子模块 gitlink、符号链接、暂存/未暂存和测试期间漂移的回归；
+3. 对工作流 review 步骤只读命令边界完成跨平台原生验收；策略化 Reviewer 的只读文件权限与拒读子路径仍需证明能由同一 OS profile 强制组合；
+4. 补足 Reviewer 短上下文终结器的真模型路径证据。Windows/其他平台门未过前继续 fail-closed，不能用本机 R3 回执锚定代替 R2 OS 沙箱验收。
 
 ## 2026-09-26 UTC：CI #188 跨平台证据接线回归
 

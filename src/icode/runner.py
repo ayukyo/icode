@@ -53,6 +53,7 @@ from .self_verify import (
 from .tools import Tool, ToolContext, ToolRegistry, ToolResult, default_registry
 from .workspace_snapshot import changed_files as _changed
 from .workspace_snapshot import diff_fingerprint as _diff_fingerprint
+from .workspace_snapshot import snapshot_fingerprint as _snapshot_fingerprint
 from .workspace_snapshot import snapshot_workspace as _snapshot
 
 # 靶场默认位置（相对仓库根）
@@ -181,6 +182,17 @@ class TaskReport:
                 + " → ".join(str(d) for d in self.repair_decisions)
                 + f"（{len(self.repair_attempts)} 次尝试）"
             )
+        if self.verification is not None:
+            base_commit_sha = getattr(self.verification, "base_commit_sha", "")
+            if base_commit_sha:
+                lines.append(f"  Git 基线：{base_commit_sha[:12]}")
+            else:
+                lines.append("  Git 基线：无（非 Git 靶场）")
+            tested_worktree = getattr(
+                self.verification, "tested_worktree_fingerprint", "",
+            )
+            if tested_worktree:
+                lines.append(f"  受测工作区指纹：{tested_worktree[:12]}")
         if self.review is not None:
             lines += ["", "  " + self.review.render().replace("\n", "\n  ")]
         if self.reviewer_loop is not None:
@@ -1110,7 +1122,9 @@ def run_task(
     if type(max_repairs) is not int or max_repairs < 0:
         raise ValueError("max_repairs must be >= 0")
     workspace = Path(workspace).resolve()
+    base_commit_sha = _read_task_base_commit_sha(workspace)
     before = _snapshot(workspace)
+    initial_worktree_fingerprint = _snapshot_fingerprint(before)
 
     registry = default_registry()
     guard = Guard(Scope(workspace_root=workspace))
@@ -1142,6 +1156,8 @@ def run_task(
     attempt_no = 1
     changed, evidence = _bind_task_evidence(
         before, after, exit_code, output, workspace, attempt=str(attempt_no),
+        base_commit_sha=base_commit_sha,
+        initial_worktree_fingerprint=initial_worktree_fingerprint,
     )
     attempts: list[VerificationEvidence] = [evidence]
     decisions: list[str] = []
@@ -1173,6 +1189,8 @@ def run_task(
         exit_code, output = run_unittest(workspace, sandbox=task_sandbox)
         changed, evidence = _bind_task_evidence(
             before, after, exit_code, output, workspace, attempt=str(attempt_no),
+            base_commit_sha=base_commit_sha,
+            initial_worktree_fingerprint=initial_worktree_fingerprint,
         )
         attempts.append(evidence)
 
@@ -1421,6 +1439,9 @@ def _run_task_reviewer(
             "category": evidence.category,
             "evidence_fingerprint": evidence_fingerprint_value,
             "diff_fingerprint": evidence.diff_fingerprint,
+            "base_commit_sha": evidence.base_commit_sha,
+            "initial_worktree_fingerprint": evidence.initial_worktree_fingerprint,
+            "tested_worktree_fingerprint": evidence.tested_worktree_fingerprint,
             "artifact_hashes": artifact_hashes,
             "test_output_included": False,
         },
@@ -1506,6 +1527,9 @@ def _run_task_reviewer(
                 "category": evidence.category,
                 "evidence_fingerprint": evidence_fingerprint_value,
                 "diff_fingerprint": evidence.diff_fingerprint,
+                "base_commit_sha": evidence.base_commit_sha,
+                "initial_worktree_fingerprint": evidence.initial_worktree_fingerprint,
+                "tested_worktree_fingerprint": evidence.tested_worktree_fingerprint,
                 "artifact_hashes": artifact_hashes,
                 "test_output_included": False,
             },
@@ -1575,7 +1599,9 @@ def _run_task_reviewer(
             model_reviewed=False,
         ), review_loop
     if (_changed(baseline, after_review) != changed_files
-            or _diff_fingerprint(baseline, after_review) != evidence.diff_fingerprint):
+            or _diff_fingerprint(baseline, after_review) != evidence.diff_fingerprint
+            or _snapshot_fingerprint(after_review)
+            != evidence.tested_worktree_fingerprint):
         return ReviewReport(
             ok=False,
             findings=list(base_report.findings),
@@ -1755,8 +1781,10 @@ def _reviewer_read_changed_sources(
 def _bind_task_evidence(
     before: dict[str, str], after: dict[str, str],
     exit_code: int, output: str, workspace: Path, *, attempt: str = "1",
+    base_commit_sha: str = "",
+    initial_worktree_fingerprint: str = "",
 ) -> tuple[list[str], VerificationEvidence]:
-    """把一次独立测试结果绑定成证据（diff 指纹 + 改动哈希 + 环境指纹）。"""
+    """绑定提交基线、初始/受测快照、diff 与改动产物哈希。"""
     changed = _changed(before, after)
     artifact_hashes = {}
     for rel in changed:
@@ -1774,6 +1802,9 @@ def _bind_task_evidence(
         # 把证据绑定到「这一份具体 diff」：同一结果在不同基线下的改动
         # 会得到不同指纹，避免证据被挪用到别的改动。
         diff_fingerprint=_diff_fingerprint(before, after),
+        base_commit_sha=base_commit_sha,
+        initial_worktree_fingerprint=initial_worktree_fingerprint,
+        tested_worktree_fingerprint=_snapshot_fingerprint(after),
         # 分类只对失败有意义；通过时留空，不把成功误标成某类失败。
         category=(
             classify_failure(exit_code=exit_code, output=output, kind="test")
@@ -1782,6 +1813,35 @@ def _bind_task_evidence(
         artifact_hashes=artifact_hashes,
     )
     return changed, evidence
+
+
+def _read_task_base_commit_sha(workspace: Path) -> str:
+    """读取任务工作区真实 HEAD；非 Git 靶场返回空，异常 Git 身份失败关闭。"""
+    from .workspace import WorkspaceError, _detect_git
+
+    has_git_metadata = any(
+        (candidate / ".git").exists() or (candidate / ".git").is_symlink()
+        for candidate in (workspace, *workspace.parents)
+    )
+    if shutil.which("git") is None:
+        if has_git_metadata:
+            raise ValueError("workspace_git_identity_unavailable")
+        return ""
+    try:
+        identity = _detect_git(workspace)
+    except WorkspaceError:
+        raise ValueError("workspace_git_identity_unavailable") from None
+    if identity is None:
+        if has_git_metadata:
+            raise ValueError("workspace_git_identity_unavailable")
+        return ""
+    revision = identity.revision
+    if (
+        len(revision) not in (40, 64)
+        or any(character not in "0123456789abcdef" for character in revision)
+    ):
+        raise ValueError("workspace_git_revision_invalid")
+    return revision
 
 
 REPAIR_PROMPT = (

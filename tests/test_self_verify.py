@@ -143,6 +143,30 @@ class EvidenceFingerprintTestCase(unittest.TestCase):
             evidence_fingerprint(self.make(diff_fingerprint="diff-B")),
         )
 
+    def test提交基线和工作区快照锚点进入证据指纹与回执(self) -> None:
+        anchored = self.make(
+            base_commit_sha="a" * 40,
+            initial_worktree_fingerprint="initial-tree",
+            tested_worktree_fingerprint="tested-tree",
+        )
+        other_commit = self.make(
+            base_commit_sha="b" * 40,
+            initial_worktree_fingerprint="initial-tree",
+            tested_worktree_fingerprint="tested-tree",
+        )
+        other_tested_tree = self.make(
+            base_commit_sha="a" * 40,
+            initial_worktree_fingerprint="initial-tree",
+            tested_worktree_fingerprint="other-tested-tree",
+        )
+
+        self.assertNotEqual(evidence_fingerprint(anchored), evidence_fingerprint(other_commit))
+        self.assertNotEqual(evidence_fingerprint(anchored), evidence_fingerprint(other_tested_tree))
+        receipt = anchored.to_receipt()
+        self.assertEqual(receipt["base_commit_sha"], "a" * 40)
+        self.assertEqual(receipt["initial_worktree_fingerprint"], "initial-tree")
+        self.assertEqual(receipt["tested_worktree_fingerprint"], "tested-tree")
+
     def test_fingerprint_does_not_contain_secret_or_full_output(self) -> None:
         fp = evidence_fingerprint(self.make(output="secret-token-should-not-leak"))
         self.assertNotIn("secret-token-should-not-leak", fp)
@@ -239,6 +263,18 @@ class VerificationLedgerTestCase(unittest.TestCase):
             ledger.has_new_evidence(self.make(diff_fingerprint="diff-B")),
             "diff 变化才是新证据",
         )
+
+    def test_record_preserves_commit_and_snapshot_anchors(self) -> None:
+        ledger = VerificationLedger()
+        original = self.make(
+            base_commit_sha="a" * 40,
+            initial_worktree_fingerprint="initial-tree",
+            tested_worktree_fingerprint="tested-tree",
+        )
+        recorded = ledger.record(original)
+        self.assertEqual(recorded.base_commit_sha, "a" * 40)
+        self.assertEqual(recorded.initial_worktree_fingerprint, "initial-tree")
+        self.assertEqual(recorded.tested_worktree_fingerprint, "tested-tree")
 
     def test_invalid_max_attempts_rejected(self) -> None:
         with self.assertRaises(ValueError):

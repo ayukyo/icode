@@ -107,3 +107,14 @@ def diff_fingerprint(before: dict[str, str], after: dict[str, str]) -> str:
     payload = json.dumps(entries, ensure_ascii=False, sort_keys=True,
                          separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def snapshot_fingerprint(snapshot: dict[str, str]) -> str:
+    """为完整工作区内容快照生成稳定指纹，不只覆盖相对基线的改动项。"""
+    entries = [
+        {"path": path, "sha256": digest}
+        for path, digest in sorted(snapshot.items())
+    ]
+    payload = json.dumps(entries, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
