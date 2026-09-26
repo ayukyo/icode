@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-26
-- 状态：核心切片已实现并离线验收；2026-09-26 新增 `step=review` 的工具级只读边界与宿主 `ArtifactBroker` 通道。Reviewer 的 `read_file`、`grep`、`glob`、改动清单排除 `.icode_output` 与实际嵌套 `out_dir`，并检查 lexical 路径以阻断指向工作区外的链接别名；现有 OS wrappers 尚不能证明排除树对命令不可见，因此 Reviewer `run_command` fail-closed 禁用，策略化 Reviewer 命令也继续拒绝。bwrap 实际只读负例通过；最终全量验证及跨平台原生 CI 复验待完成。真模型端到端修复循环和真实 Git SHA 锚定尚未闭合。
+- 状态：核心切片及离线回归已完成。2026-09-26 的工作流 `step=review` 有独立只读上下文与宿主 `ArtifactBroker` 通道；任务级 `run_task` 新增真实模型 Reviewer 回合，Guard 使用精确改动文件白名单，仅暴露 `read_file`，拒绝工作区其它文件、工单账本、写工具和命令；要求完整读取改动文件、严格 JSON findings、证据指纹绑定与审查前后 diff 不变。无改动任务不能因为基线测试通过而报告成功。现有 OS wrappers 尚不能证明排除树对命令不可见，因此工作流 Reviewer 的 `run_command` fail-closed 禁用，策略化 Reviewer 命令也继续拒绝。Reviewer/Guard/runner 定向测试 57 项通过；真模型 MiniMax-M3 在独立靶场完成一次 `run_task`，`calc.py` 单文件改动、12 项 unittest、独立模型 Reviewer 合同及最终 TaskReport 均通过，10 次调用 / 37,276 tokens。该次没有触发自动修复，故真实模型有界修复分支尚未验收；全量预检与跨平台原生 CI、真实 Git SHA 锚定仍未闭合。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 目标与范围
@@ -47,9 +47,11 @@ R3 核心能力（本切片）：
 7. **独立 Reviewer 只读上下文**（`src/icode/reviewer.py`）
    `reviewer_guard` 构造无任何写授权的审查上下文，`verify_read_only` 用真实
    Guard 判定锁死；`IndependentReviewer.review` 针对改动文件与验证证据产出
-   带严重级别、失败分类、文件与证据指纹引用的结构化发现，且不能修改被审对象
-   （符号链接被审对象直接拒绝）。`run_task` 已接线：任务验证完成后用只读
-   上下文复核改动与证据，`TaskReport.review` 携带审查报告。
+   带严重级别、类别、文件/行号与证据指纹引用的结构化发现，且不能修改被审对象
+   （符号链接被审对象直接拒绝）。`run_task` 使用独立模型对话执行语义审查，工具
+   运行时通过 `Guard.allowed_read_files` 精确限制为本次改动文件，只开放 `read_file`；
+   需完整读取所有改动文件并以严格 JSON 返回，finding 绑定验证证据，审查结束重核
+   diff 指纹。任何越权、无效响应、文件快照漂移或 Reviewer 错误均失败关闭。
 
 8. **回归证据绑定到具体 diff**（`workspace_snapshot.diff_fingerprint`）
    把一次改动（相对基线）绑定成确定性指纹：只依赖改动前后每条路径的 sha256，
@@ -90,8 +92,8 @@ R3 核心能力（本切片）：
 
 ## 边界（不冒充）
 
-- 本切片**不是**完整 R3：独立 Reviewer 的隔离上下文、代码变更后验证证据
-  绑定到具体 commit/diff、回归证据打包仍未接线；
+- 本切片**不是**完整 R3：真实模型有界修复循环尚在验收，证据尚未绑定真实 commit SHA；
+  工作流 `step=review` 的原生跨平台命令边界仍 fail-closed；
 - 分类函数只消费已提供证据，不做无依据推断，也不代替控制面门禁；
 - 有界修复仍受既有预算、回合数、审批与副作用回执约束。
 
@@ -124,11 +126,18 @@ R3 核心能力（本切片）：
    sandbox，避免工作区测试代码经后置验证进程越过文件/网络边界。新增 Linux bwrap
    负例：测试代码尝试打开工作区外临时文件时被拒绝；密钥路径只验证 `open` 被拒，
    不读取内容。该修正已本地回归，跨平台 CI 与真模型调用待验证。
+6. **独立模型 Reviewer 的精确读权限**：Reviewer 使用新对话、仅 `read_file` 工具与
+   `allowed_read_files` 精确路径集，不获得 `glob`/`grep`/`workspace_changes`、写入或
+   命令执行能力；必须读全本次变更、合法 findings 仅能指向改动文件，finding 保存行号
+   并绑定 `evidence_fingerprint`。审查前后快照一致且任务确有改动才可能通过。
+   Guard、工具越权、账本保密、无改动任务、非法响应及阻断 finding 的回归均先 RED 后 GREEN；
+   本轮 57 项 Reviewer/Guard/runner 定向测试通过；真实模型单次执行 + 测试 + Reviewer 已通过，
+   但 `max_repairs=0` 且没有出现失败，未覆盖真实模型修复重试；全量预检与跨平台 CI 待完成。
 
 ## 下一片（尚未闭合）
 
-1. 端到端真模型修复循环：失败 → 分类 → 有界修复 → 回归 → 独立 Reviewer 全链路
-   在**真模型**下跑通并验收（机制已就绪，缺真模型验收）；
+1. 端到端真模型修复循环：通过受控、可复现的失败初态，验证真实失败分类 → 有界修复
+   → 回归 → 独立 Reviewer；当前真模型单次成功路径已验收，但未触发修复分支；
 2. 对本轮新接入的 review 步骤只读执行边界完成跨平台原生验收，并评估策略化
    Reviewer 的只读文件与拒读子路径能否由同一 OS profile 可证明地组合；
 3. 证据指纹锚定到真实 commit（Git SHA）而非仅工作区 diff 快照（R2.4 Git broker

@@ -152,6 +152,200 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
             self.assertEqual(snapshot_workspace(dst), before)
 
 
+class TestModelReviewerExecution(unittest.TestCase):
+    """R3：run_task 的独立 Reviewer 必须是真模型、独立上下文且只读。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.settings = require_skill()
+
+    def test_独立审查模型只获只读工具且不能读取工单或写源码(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            (dst / ".icode_output" / ".icode_output_1").mkdir(parents=True)
+            (dst / ".icode_output" / ".icode_output_1" / ".ico_metadata.json").write_text(
+                "PRIVATE_REVIEW_LEDGER", encoding="utf-8",
+            )
+            readme = dst / "README.md"
+            original = readme.read_text(encoding="utf-8")
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit", "name": "write_file",
+                    "arguments": {"path": str(readme), "content": original + "\n# reviewed change\n"},
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read", "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }]},
+                json.dumps({"summary": "Reviewed the changed documentation.", "findings": []}),
+            ])
+
+            report = run_task(self.settings, backend=backend, workspace=dst)
+
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(readme.read_text(encoding="utf-8"), original + "\n# reviewed change\n")
+            self.assertTrue(report.review.model_reviewed)
+            self.assertTrue(report.review.read_only_verified)
+            self.assertEqual(report.review.summary, "Reviewed the changed documentation.")
+            self.assertEqual(report.review.reviewed_files, ["README.md"])
+            self.assertIsNotNone(report.reviewer_loop)
+            self.assertNotIn("PRIVATE_REVIEW_LEDGER", str(report.reviewer_loop.messages))
+            reviewer_call = next(
+                call for call in backend.calls
+                if call["messages"]
+                and call["messages"][0].get("content", "").startswith("你是独立代码审查代理")
+            )
+            self.assertEqual(
+                [reviewer_call["messages"][0]["role"], reviewer_call["messages"][1]["role"]],
+                ["system", "user"],
+            )
+            self.assertNotIn(
+                "你是编码代理", reviewer_call["messages"][0]["content"],
+                "Reviewer 必须使用新的模型上下文，不继承 Executor system prompt",
+            )
+            self.assertIn(
+                '{"summary":"未发现可操作问题。","findings":[]}',
+                reviewer_call["messages"][0]["content"],
+            )
+            executor_call = next(
+                call for call in backend.calls
+                if call["messages"]
+                and call["messages"][0].get("content", "").startswith("你是编码代理")
+            )
+            self.assertIn(
+                '{"argv": ["python", "-m", "unittest"]}',
+                executor_call["messages"][0]["content"],
+            )
+            tool_names = {item["function"]["name"] for item in reviewer_call["tools"]}
+            self.assertEqual(tool_names, {"read_file"})
+            self.assertNotIn("executor finished", str(reviewer_call["messages"]))
+            self.assertTrue(report.reviewer_loop.turns[0].invocations[0].result.ok)
+
+    def test_审查模型请求读取工单或尝试写执行时失败关闭(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            (dst / ".icode_output" / ".icode_output_1").mkdir(parents=True)
+            secret = dst / ".icode_output" / ".icode_output_1" / ".ico_metadata.json"
+            secret.write_text("PRIVATE_REVIEW_LEDGER", encoding="utf-8")
+            readme = dst / "README.md"
+            original = readme.read_text(encoding="utf-8")
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit", "name": "write_file",
+                    "arguments": {"path": str(readme), "content": original + "\n# changed\n"},
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [
+                    {"id": "review-ledger", "name": "read_file",
+                     "arguments": {"path": ".icode_output/.icode_output_1/.ico_metadata.json"}},
+                    {"id": "review-unrelated", "name": "read_file",
+                     "arguments": {"path": "calc.py"}},
+                    {"id": "review-write", "name": "write_file",
+                     "arguments": {"path": "README.md", "content": "tampered"}},
+                    {"id": "review-command", "name": "run_command",
+                     "arguments": {"argv": ["python", "-c", "print('should not run')"]}},
+                ]},
+                json.dumps({"summary": "No findings.", "findings": []}),
+            ])
+
+            report = run_task(self.settings, backend=backend, workspace=dst)
+            self.assertFalse(report.ok)
+            self.assertFalse(report.review.model_reviewed)
+            self.assertIn("未授权", report.review.error)
+            self.assertEqual(readme.read_text(encoding="utf-8"), original + "\n# changed\n")
+            self.assertNotIn("PRIVATE_REVIEW_LEDGER", str(report.reviewer_loop.messages))
+            denied = report.reviewer_loop.turns[0].invocations
+            self.assertEqual([item.result.meta.get("error") for item in denied], [
+                "denied", "denied", "unknown_tool", "unknown_tool",
+            ])
+
+    def test_模型审查发现阻断问题时任务不得报告通过(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+        from icode.self_verify import evidence_fingerprint
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            readme = dst / "README.md"
+            body = readme.read_text(encoding="utf-8") + "\n# changed\n"
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit", "name": "write_file",
+                    "arguments": {"path": str(readme), "content": body},
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read", "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }]},
+                json.dumps({"summary": "A blocking issue remains.", "findings": [{
+                    "severity": "blocking", "category": "correctness",
+                    "file": "README.md", "line": 1,
+                    "message": "The required user-facing behavior is missing.",
+                }]}),
+            ])
+
+            report = run_task(self.settings, backend=backend, workspace=dst)
+
+        self.assertFalse(report.ok)
+        blocking = [finding for finding in report.review.findings
+                    if finding.severity == "blocking"]
+        self.assertEqual(len(blocking), 1)
+        self.assertEqual(blocking[0].line, 1)
+        self.assertEqual(blocking[0].evidence_ref, evidence_fingerprint(report.verification))
+
+    def test_无效审查响应或非改动文件发现必须失败关闭(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        responses = (
+            "not-json",
+            json.dumps({"summary": "unsupported finding", "findings": [{
+                "severity": "warning", "category": "correctness",
+                "file": "calc.py", "line": 1, "message": "This file was not changed.",
+            }]}),
+        )
+        for response in responses:
+            with self.subTest(response=response):
+                with temp_workspace() as ws:
+                    dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+                    report = run_task(
+                        self.settings, backend=FakeBackend(["executor done", response]),
+                        workspace=dst,
+                    )
+                self.assertFalse(report.ok)
+                self.assertFalse(report.review.model_reviewed)
+                self.assertTrue(report.review.error)
+
+    def test_没有任何代码或文件改动不得报告编码任务通过(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            report = run_task(
+                self.settings,
+                backend=FakeBackend([
+                    "No changes required.",
+                    json.dumps({"summary": "No findings.", "findings": []}),
+                ]),
+                workspace=dst,
+            )
+
+        self.assertEqual(report.exit_code, 0)
+        self.assertFalse(report.review.model_reviewed)
+        self.assertIn("没有改动", report.review.error)
+        self.assertEqual(report.changed_files, [])
+        self.assertFalse(report.ok, "仅因基线测试通过不能证明模型完成了编码任务")
+
+
 class TestRepairEvidenceIntoEventChain(unittest.TestCase):
     """run_contract_step 补救回合把修复证据写入事件链（verification_recorded）。"""
 

@@ -19,6 +19,30 @@ from icode.self_verify import FAILURE_CODE, VerificationEvidence
 
 
 class ReviewerGuardTestCase(unittest.TestCase):
+    def test_精确文件白名单不扩展到同目录文件或后代路径(self) -> None:
+        with _support.temp_workspace() as ws:
+            from icode.guard import Decision
+
+            changed = ws / "src" / "changed.py"
+            changed.parent.mkdir()
+            changed.write_text("value = 1\n", encoding="utf-8")
+            (changed.parent / "secret.txt").write_text("secret", encoding="utf-8")
+            guard = reviewer_guard(ws, allowed_read_files=(changed,))
+
+            self.assertIs(guard.check_read(changed).decision, Decision.ALLOW)
+            self.assertIs(
+                guard.check_read(changed.parent / "secret.txt").decision,
+                Decision.DENY,
+            )
+            self.assertIs(
+                guard.check_read(changed / "child.txt").decision,
+                Decision.DENY,
+            )
+            self.assertIs(
+                guard.check_read(ws / ".icode_output" / "ledger.json").decision,
+                Decision.DENY,
+            )
+
     def test_只读上下文拒绝写但允许读(self) -> None:
         with _support.temp_workspace() as ws:
             (ws / "readme.md").write_text("x", encoding="utf-8")

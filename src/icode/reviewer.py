@@ -23,8 +23,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .guard import Decision, Guard, Scope
@@ -34,6 +35,11 @@ SEVERITY_WARNING = "warning"
 SEVERITY_BLOCKING = "blocking"
 
 SEVERITIES = (SEVERITY_INFO, SEVERITY_WARNING, SEVERITY_BLOCKING)
+MODEL_REVIEW_CATEGORIES = frozenset({
+    "code", "compatibility", "contract", "correctness", "environment",
+    "model_capability", "performance", "reliability", "security",
+    "side_effect_unknown", "test", "other",
+})
 
 
 class ReviewError(RuntimeError):
@@ -47,12 +53,14 @@ class ReviewFinding:
     file: str
     message: str
     evidence_ref: str = ""
+    line: int | None = None
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, str | int | None]:
         return {
             "severity": self.severity,
             "category": self.category,
             "file": self.file,
+            "line": self.line,
             "message": self.message,
             "evidence_ref": self.evidence_ref,
         }
@@ -65,14 +73,19 @@ class ReviewReport:
     reviewed_files: list[str] = field(default_factory=list)
     read_only_verified: bool = False
     error: str = ""
+    model_reviewed: bool = False
+    summary: str = ""
 
     def render(self) -> str:
         lines = ["独立 Reviewer", f"  只读上下文：{'通过' if self.read_only_verified else '未通过'}",
                  f"  审查文件：{'、'.join(self.reviewed_files) or '无'}",
                  f"  发现：{len(self.findings)} 条"]
+        if self.model_reviewed and self.summary:
+            lines.append(f"  模型审查摘要：{self.summary}")
         for finding in self.findings:
+            location = f"{finding.file}:{finding.line}" if finding.line else finding.file
             lines.append(
-                f"  [{finding.severity}/{finding.category}] {finding.file}: "
+                f"  [{finding.severity}/{finding.category}] {location}: "
                 f"{finding.message}" + (f"（证据 {finding.evidence_ref[:8]}…）"
                                         if finding.evidence_ref else "")
             )
@@ -82,23 +95,32 @@ class ReviewReport:
         return "\n".join(lines)
 
 
-def reviewer_guard(workspace: Path) -> Guard:
+def reviewer_guard(
+    workspace: Path, *, allowed_read_files: tuple[Path, ...] | None = None,
+) -> Guard:
     """构造只读审查上下文：工作区内可读，但**没有任何写授权**。
 
-    `allowed_write_roots=()` 意味着 `check_write` 对任何路径都返回 DENY
-    （策略未授权写入），`deny_write_roots` 兜底工作区外。读路径仍放行。
+    `allowed_write_roots=()` 意味着 `check_write` 对任何路径都返回 DENY；
+    可选的 `allowed_read_files` 使用精确路径相等，不把单个文件扩大成目录前缀。
+    未指定时保留通用 Reviewer 的工作区只读范围。
     """
     root = Path(workspace).resolve()
     scope = Scope(
         workspace_root=root,
-        allowed_read_roots=(root,),
+        allowed_read_roots=(root,) if allowed_read_files is None else (),
+        allowed_read_files=(None if allowed_read_files is None else tuple(
+            path if path.is_absolute() else root / path for path in allowed_read_files
+        )),
         allowed_write_roots=(),
+        deny_read_roots=(root / ".icode_output",),
         deny_write_roots=(root,),
     )
     return Guard(scope)
 
 
-def is_review_read_only(guard: Guard, workspace: Path) -> bool:
+def is_review_read_only(
+    guard: Guard, workspace: Path, *, readable_path: Path | None = None,
+) -> bool:
     """用真实 Guard 判定锁死：任何写路径都必须被拒绝。
 
     被审对象（工作区内的文件）的 write_file / edit_file 都不得放行；
@@ -107,18 +129,23 @@ def is_review_read_only(guard: Guard, workspace: Path) -> bool:
     root = Path(workspace).resolve()
     if guard.check_write(str(root / "probe.md")).decision is not Decision.DENY:
         return False
-    read = guard.check_read(str(root / "readme.md"))
+    read_target = readable_path or root / "readme.md"
+    if not read_target.is_absolute():
+        read_target = root / read_target
+    read = guard.check_read(str(read_target))
     if read.decision not in (Decision.ALLOW, Decision.REQUIRE_APPROVAL):
         return False
     return True
 
 
-def verify_read_only(guard: Guard, workspace: Path) -> bool:
+def verify_read_only(
+    guard: Guard, workspace: Path, *, readable_path: Path | None = None,
+) -> bool:
     """审查前自检：工作区内写必须全部被拒；读必须放行。
 
     与 `is_review_read_only` 语义一致，显式区分「自检」用途，便于测试断言。
     """
-    return is_review_read_only(guard, workspace)
+    return is_review_read_only(guard, workspace, readable_path=readable_path)
 
 
 class IndependentReviewer:
@@ -137,13 +164,17 @@ class IndependentReviewer:
         self,
         changed_files: list[str],
         evidence: Any | None = None,
+        *,
+        read_probe: Path | None = None,
     ) -> ReviewReport:
         """针对改动文件与验证证据产出结构化发现。
 
         只读自检失败时拒绝产出结论（fail-safe）。发现必须引用
         验证证据指纹（`evidence_ref`），没有证据引用不算自验证结论。
         """
-        if not verify_read_only(self.guard, self.workspace):
+        if not verify_read_only(
+            self.guard, self.workspace, readable_path=read_probe,
+        ):
             return ReviewReport(
                 ok=False, reviewed_files=list(changed_files),
                 read_only_verified=False,
@@ -193,3 +224,107 @@ class IndependentReviewer:
             reviewed_files=list(changed_files),
             read_only_verified=True,
         )
+
+
+def merge_model_review(
+    base_report: ReviewReport,
+    response: str,
+    *,
+    changed_files: list[str],
+    evidence: Any,
+) -> ReviewReport:
+    """Validate an independent model review and bind every finding to current evidence.
+
+    The response is deliberately a small, strict JSON contract. Invalid or
+    unbound output is a failed review, never an implicit approval.
+    """
+    def failed(reason: str) -> ReviewReport:
+        return ReviewReport(
+            ok=False,
+            findings=list(base_report.findings),
+            reviewed_files=list(changed_files),
+            read_only_verified=base_report.read_only_verified,
+            error=reason,
+            model_reviewed=False,
+        )
+
+    if not base_report.read_only_verified:
+        return failed("只读上下文未通过自检")
+    if evidence is None:
+        return failed("缺少可绑定的独立验证证据")
+    if not isinstance(response, str):
+        return failed("模型审查响应类型非法")
+    try:
+        response_size = len(response.encode("utf-8"))
+    except UnicodeError:
+        return failed("模型审查响应包含非法 Unicode")
+    if response_size > 32 * 1024:
+        return failed("模型审查响应超过 32 KiB 上限")
+
+    body = response.strip()
+    if body.startswith("```json") and body.endswith("```"):
+        body = body[len("```json"): -len("```")].strip()
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return failed("模型审查响应不是有效 JSON")
+    if not isinstance(payload, dict) or set(payload) != {"summary", "findings"}:
+        return failed("模型审查响应字段不符合合同")
+
+    summary = payload.get("summary")
+    raw_findings = payload.get("findings")
+    if (not isinstance(summary, str) or not summary.strip() or len(summary) > 2000
+            or not isinstance(raw_findings, list) or len(raw_findings) > 100):
+        return failed("模型审查摘要或发现列表不符合合同")
+
+    try:
+        from .self_verify import evidence_fingerprint
+
+        evidence_ref = evidence_fingerprint(evidence)
+    except Exception:  # noqa: BLE001 - malformed evidence cannot authorize a review
+        return failed("验证证据指纹不可用")
+    changed = set(changed_files)
+    model_findings: list[ReviewFinding] = []
+    required_fields = {"severity", "category", "file", "line", "message"}
+    for item in raw_findings:
+        if not isinstance(item, dict) or set(item) != required_fields:
+            return failed("模型审查发现字段不符合合同")
+        severity = item.get("severity")
+        category = item.get("category")
+        file_name = item.get("file")
+        line = item.get("line")
+        message = item.get("message")
+        if not isinstance(severity, str) or severity not in SEVERITIES:
+            return failed("模型审查发现包含未知严重级别")
+        if not isinstance(category, str) or category not in MODEL_REVIEW_CATEGORIES:
+            return failed("模型审查发现包含未知类别")
+        if (not isinstance(file_name, str) or not file_name or "\\" in file_name
+                or PurePosixPath(file_name).is_absolute()
+                or PurePosixPath(file_name).as_posix() != file_name
+                or ".." in PurePosixPath(file_name).parts
+                or file_name not in changed):
+            return failed("模型审查发现未绑定到本次变更文件")
+        if line is not None and (type(line) is not int or line < 1):
+            return failed("模型审查发现行号非法")
+        if not isinstance(message, str) or not message.strip() or len(message) > 2000:
+            return failed("模型审查发现说明为空或过长")
+        model_findings.append(ReviewFinding(
+            severity=severity,
+            category=category,
+            file=file_name,
+            message=message.strip(),
+            evidence_ref=evidence_ref,
+            line=line,
+        ))
+
+    findings = [*base_report.findings, *model_findings]
+    return ReviewReport(
+        ok=base_report.ok and not any(
+            finding.severity == SEVERITY_BLOCKING for finding in model_findings
+        ),
+        findings=findings,
+        reviewed_files=list(changed_files),
+        read_only_verified=True,
+        model_reviewed=True,
+        summary=summary.strip(),
+    )

@@ -80,6 +80,7 @@ class Scope:
     workspace_root: Path
     readable_roots: tuple[Path, ...] = ()
     allowed_read_roots: tuple[Path, ...] | None = None
+    allowed_read_files: tuple[Path, ...] | None = None
     allowed_write_roots: tuple[Path, ...] | None = None
     deny_read_roots: tuple[Path, ...] = ()
     deny_write_roots: tuple[Path, ...] = ()
@@ -91,7 +92,7 @@ class Scope:
             self, "readable_roots", tuple(Path(p).resolve() for p in self.readable_roots)
         )
         for name in (
-            "allowed_read_roots", "allowed_write_roots",
+            "allowed_read_roots", "allowed_read_files", "allowed_write_roots",
             "deny_read_roots", "deny_write_roots",
         ):
             if getattr(self, name) is None:
@@ -122,6 +123,10 @@ class Guard:
         target = self._resolve(path)
         if any(_is_within(target, root) for root in self.scope.deny_read_roots):
             return Verdict(Decision.DENY, "受保护路径禁止读取")
+        if self.scope.allowed_read_files is not None:
+            if target in self.scope.allowed_read_files:
+                return Verdict(Decision.ALLOW, "精确文件白名单允许读取")
+            return Verdict(Decision.DENY, "策略未授权读取该文件")
         if self.scope.allowed_read_roots is not None:
             if any(_is_within(target, root) for root in self.scope.allowed_read_roots):
                 return Verdict(Decision.ALLOW, "策略允许读取")
