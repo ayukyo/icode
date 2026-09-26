@@ -190,10 +190,29 @@ def prepare_workspace(fixture: str, target: Path, *, repo_root: Path) -> Path:
     return dst
 
 
-def run_unittest(workspace: Path, *, timeout: int = 180) -> tuple[int, str]:
-    """**由运行时自己**跑测试取退出码（模型自述不算证据）。"""
+def run_unittest(
+    workspace: Path, *, timeout: int = 180, sandbox: Sandbox | None = None,
+) -> tuple[int, str]:
+    """**由运行时自己**跑测试取退出码（模型自述不算证据）。
+
+    调用方若正在执行隔离任务，必须传入同一 sandbox，避免测试代码借验证器
+    绕过工作区文件与网络边界。独立 CLI 验证等既有调用可继续不传 sandbox。
+    """
+    python = sys.executable
+    if sandbox is not None:
+        if sandbox.name in ("bwrap", "sandbox-exec"):
+            # venv 可执行文件可能位于沙箱标准系统目录之外。改用基础解释器；
+            # 两种后端仅只读开放该可信运行时，不开放 venv 或整个 home。
+            python = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+        elif sandbox.name == "container":
+            python = "python"
+        elif sandbox.name == "wsl":
+            python = "python3"
+    argv = [python, "-m", "unittest"]
+    if sandbox is not None:
+        argv = sandbox.wrap(argv, workspace=workspace, network=False)
     proc = subprocess.run(  # noqa: S603 - 参数列表 + shell=False
-        [sys.executable, "-m", "unittest"],
+        argv,
         cwd=str(workspace), capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=timeout, shell=False,
     )
@@ -1030,7 +1049,8 @@ def run_task(
 
     registry = default_registry()
     guard = Guard(Scope(workspace_root=workspace))
-    ctx = _make_ctx(workspace, sandbox)
+    task_sandbox = sandbox if sandbox is not None else select_sandbox()
+    ctx = _make_ctx(workspace, task_sandbox)
     loop = AgentLoop(
         backend=backend, registry=registry, guard=guard, ctx=ctx,
         approver=approver or DenyAllApprover(),
@@ -1049,7 +1069,7 @@ def run_task(
     ])
 
     after = _snapshot(workspace)
-    exit_code, output = run_unittest(workspace)
+    exit_code, output = run_unittest(workspace, sandbox=task_sandbox)
     attempt_no = 1
     changed, evidence = _bind_task_evidence(
         before, after, exit_code, output, workspace, attempt=str(attempt_no),
@@ -1081,7 +1101,7 @@ def run_task(
             {"role": "user", "content": repair_prompt},
         ])
         after = _snapshot(workspace)
-        exit_code, output = run_unittest(workspace)
+        exit_code, output = run_unittest(workspace, sandbox=task_sandbox)
         changed, evidence = _bind_task_evidence(
             before, after, exit_code, output, workspace, attempt=str(attempt_no),
         )

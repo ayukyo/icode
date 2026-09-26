@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import shutil
+import sys
 import unittest
 
 from tests._support import REPO_ROOT, require_skill, temp_workspace
@@ -107,6 +109,63 @@ class TestIndependentVerification(unittest.TestCase):
             (dst / "calc.py").write_text("raise RuntimeError('boom')\n", encoding="utf-8")
             code, _ = run_unittest(dst)
             self.assertNotEqual(code, 0, "独立验证必须能识别破坏性改动")
+
+    def test_指定沙箱会包裹独立测试命令(self) -> None:
+        from types import SimpleNamespace
+        from unittest import mock
+
+        class _RecordingSandbox:
+            name = "recording"
+            is_real_isolation = True
+
+            def __init__(self):
+                self.calls = []
+
+            def wrap(self, argv, *, workspace, network=False):
+                self.calls.append((list(argv), workspace, network))
+                return ["sandbox-wrapper", *argv]
+
+        sandbox = _RecordingSandbox()
+        with temp_workspace() as ws:
+            with mock.patch(
+                "icode.runner.subprocess.run",
+                return_value=SimpleNamespace(returncode=0, stdout="OK", stderr=""),
+            ) as run:
+                code, output = run_unittest(ws, sandbox=sandbox)
+
+        self.assertEqual((code, output), (0, "OK"))
+        self.assertEqual(len(sandbox.calls), 1)
+        argv, workspace, network = sandbox.calls[0]
+        self.assertEqual(argv, [sys.executable, "-m", "unittest"])
+        self.assertEqual(workspace, ws)
+        self.assertFalse(network)
+        self.assertEqual(run.call_args.args[0], ["sandbox-wrapper", *argv])
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux") and shutil.which("bwrap"),
+        "需要 Linux bubblewrap 原生隔离",
+    )
+    def test_bwrap验证器不能读取工作区外文件(self) -> None:
+        from icode.isolation import BubblewrapSandbox
+
+        with temp_workspace() as parent:
+            workspace = parent / "workspace"
+            workspace.mkdir()
+            private_file = parent / "private.txt"
+            private_file.write_text("outside-workspace-sentinel", encoding="utf-8")
+            (workspace / "test_boundary.py").write_text(
+                "import unittest\n"
+                "class BoundaryTest(unittest.TestCase):\n"
+                "    def test_private_file_is_unavailable(self):\n"
+                f"        with self.assertRaises(OSError): open({str(private_file)!r}, 'rb')\n",
+                encoding="utf-8",
+            )
+
+            code, output = run_unittest(workspace, sandbox=BubblewrapSandbox())
+
+        self.assertEqual(code, 0, output[-800:])
+        self.assertIn("OK", output)
+        self.assertNotIn("outside-workspace-sentinel", output)
 
 
 class TestAutoPersist(unittest.TestCase):
@@ -468,6 +527,25 @@ class TestTaskVerificationEvidence(unittest.TestCase):
             self.assertTrue(evidence.output_sha256)
             # 改动为空 → 无产物哈希，但仍绑定环境指纹
             self.assertEqual(dict(evidence.artifact_hashes), {})
+
+    def test_run_task把同一沙箱交给独立验证器(self) -> None:
+        from unittest import mock
+
+        from icode.backends import FakeBackend
+        from icode.isolation import NoIsolation
+        from icode.runner import run_task
+
+        settings = require_skill()
+        sandbox = NoIsolation(reason="测试显式沙箱传递")
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            with mock.patch("icode.runner.run_unittest", return_value=(0, "OK")) as verify:
+                run_task(
+                    settings, backend=FakeBackend(["完成"]), workspace=dst,
+                    sandbox=sandbox,
+                )
+
+        self.assertIs(verify.call_args.kwargs["sandbox"], sandbox)
 
     def test_破坏性改动产生带哈希与分类的证据(self) -> None:
         from icode.backends import FakeBackend

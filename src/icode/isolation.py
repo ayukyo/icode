@@ -618,6 +618,15 @@ class BubblewrapSandbox:
         ]
         if Path("/lib64").exists():
             out += ["--ro-bind", "/lib64", "/lib64"]
+        # venv 中的 base interpreter 可能位于 /usr 之外（如 uv runtime）。
+        # 只挂载该 Python 安装前缀为只读，不开放它的上级 home 目录。
+        python_prefix = Path(sys.base_prefix).resolve()
+        standard_roots = tuple(Path(path) for path in ("/usr", "/bin", "/lib", "/lib64"))
+        if python_prefix.is_dir() and not any(
+            python_prefix == root or root in python_prefix.parents
+            for root in standard_roots
+        ):
+            out += ["--ro-bind", str(python_prefix), str(python_prefix)]
         if not network:
             out.append("--unshare-net")
         out += ["--", *argv]
@@ -628,7 +637,10 @@ class BubblewrapSandbox:
             "backend": self.name,
             "is_real_isolation": True,
             "claim": "内核级隔离（bubblewrap 命名空间）",
-            "enforced": ["文件系统（除工作区外只读）", "网络（默认断网）", "PID/IPC/UTS"],
+            "enforced": [
+                "文件系统（除工作区外只读；非系统 Python 运行时前缀只读）",
+                "网络（默认断网）", "PID/IPC/UTS",
+            ],
             "not_enforced": ["同用户下的内核漏洞逃逸"],
         }
 
@@ -654,6 +666,10 @@ class MacSeatbeltSandbox:
         if any(ord(char) < 32 or ord(char) == 127 for char in ws):
             raise ValueError("Seatbelt workspace path contains control characters")
         escaped_ws = ws.replace("\\", "\\\\").replace('"', '\\"')
+        python_prefix = str(Path(sys.base_prefix).resolve())
+        if any(ord(char) < 32 or ord(char) == 127 for char in python_prefix):
+            raise ValueError("Seatbelt Python runtime path contains control characters")
+        escaped_python_prefix = python_prefix.replace("\\", "\\\\").replace('"', '\\"')
         net = "(allow network*)" if network else ""
         return (
             "(version 1)"
@@ -666,6 +682,7 @@ class MacSeatbeltSandbox:
             "(allow file-read* (subpath \"/usr\") (subpath \"/System\") (subpath \"/Library\")"
             ' (subpath \"/bin\") (subpath \"/sbin\")'
             ' (subpath \"/private/etc/ssl\"))'
+            f'(allow file-read* (subpath "{escaped_python_prefix}"))'
             f"{net}"
         )
 
