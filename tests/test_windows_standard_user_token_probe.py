@@ -394,6 +394,30 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             token_probe.runner_report_failure_detail("failed=Path C:\\private\\secret", 1),
             "unclassified",
         )
+        self.assertEqual(
+            token_probe.runner_report_failure_detail("failed=TimeoutError", 1),
+            "timeout_error",
+        )
+        self.assertEqual(
+            token_probe._safe_runner_child_exception_detail(TimeoutError()),
+            "timeout_error",
+        )
+        self.assertEqual(
+            token_probe._safe_runner_child_exception_detail(
+                TimeoutError("runner_pipe_connect_timeout"),
+            ),
+            "runner_pipe_connect_timeout",
+        )
+        self.assertEqual(
+            token_probe._safe_runner_child_exception_detail(
+                PermissionError(5, "runner_pipe_open_access_denied"),
+            ),
+            "client_open_access_denied",
+        )
+        self.assertEqual(
+            token_probe._safe_runner_child_exception_detail(TypeError("private path")),
+            "type_error",
+        )
 
     def test_runner_failure_report_is_read_only_after_child_exit(self) -> None:
         class FakeKernel:

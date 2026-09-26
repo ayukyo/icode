@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-26
-- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。`run_task` Reviewer 精确读取改动文件，并通过只读上下文的 `submit_review` JSON Schema 工具提交；长上下文在完整读取后仍漏提交时，新增受限短上下文终结器作为一次有界兼容路径，只接收完整读回的源码（合计最多 64 KiB）且只开放具名提交工具。宿主继续校验 findings、证据指纹和 diff；权限越界、未完整读取、合同错误、预算/回合耗尽都 fail-closed。MiniMax-M3 最新独立靶场任务修改两个文件，独立 17 项测试及常规结构化 Reviewer 通过（14 次调用 / 64,427 tokens），但未触发短上下文终结器或自动修复；此前真实 repair 分支测试由失败转通过，但最终因 Executor 回合耗尽与 Reviewer 合同失败而未通过 TaskReport。当前全量测试 830 项通过（23 skipped），`scripts/preflight.py` 三道门通过。R2 Windows runner-pipe 新诊断仍待双架构原生复测；R3 成功真实修复闭环、工作流 Reviewer 跨平台只读边界和真实 Git SHA 锚定尚未闭合。OS wrappers 仍不能证明 Reviewer 命令不可见排除树，因此工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
+- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。`run_task` Reviewer 精确读取改动文件，并通过只读上下文的 `submit_review` JSON Schema 工具提交；长上下文在完整读取后仍漏提交时，新增受限短上下文终结器作为一次有界兼容路径，只接收完整读回的源码（合计最多 64 KiB）且只开放具名提交工具。宿主继续校验 findings、证据指纹和 diff；权限越界、未完整读取、合同错误、预算/回合耗尽都 fail-closed。MiniMax-M3 TDD 靶场现已真实触发 `repair_decisions=["allow"]`，修复回合改动 `calc.py`/`test_calc.py`，独立 20 项测试通过，Reviewer 完整读取并结构化提交，最终 `TaskReport.ok=True`（25 次调用 / 109,087 tokens；预算预期 180,000）。另一真模型单次任务通过 17 项测试 / 14 次调用 / 64,427 tokens，但未触发短上下文终结器；兜底仍由离线回归验证。上一轮全量测试 830 项通过（23 skipped），`scripts/preflight.py` 三道门通过；本轮异常分类修正后门禁待重跑。R2 Windows runner-pipe 最新原生 [CI #198](https://github.com/ayukyo/icode/actions/runs/36239940582) x64/ARM64 都报告 `unclassified`，本地已修正异常类名分类、待下一次双架构复验；R3 工作流 Reviewer 跨平台只读边界和真实 Git SHA 锚定仍未闭合。OS wrappers 仍不能证明 Reviewer 命令不可见排除树，因此工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 目标与范围
@@ -165,3 +165,4 @@ R3 核心能力（本切片）：
 - **真模型复验：**MiniMax-M3 在 bubblewrap 临时靶场添加 `calc_clamp` 与测试，改动 `calc.py`、`test_calc.py`；独立 unittest 17 项通过，Reviewer 读取两个改动文件并提交有效 schema，TaskReport 通过（14 次调用 / 64,427 tokens）。本次没有进入 fallback 或 repair，因此只作为常规真模型链路证据；fallback 当前由离线回归验证。
 - **验证状态：**Reviewer/loop/runner/Windows token probe 聚焦测试 104 项通过；`./.venv/bin/python -m unittest`：830 项通过、23 项跳过；`scripts/preflight.py` 密钥扫描、子模块完整性、全量测试门均通过。真实修复 TaskReport 成功、R2 Windows 双架构 probe 和 Git SHA 锚点仍待完成。
 - **Windows 诊断边界：**父子握手都可能在 15 秒附近超时；父端失败后增加最多 2 秒退出宽限，再读取最多 512 字节的安全白名单报告。该改动只改善失败归因，不能让管道握手变成通过；当前 CI #196 使用旧 SHA，必须重跑双架构手动 probe。
+- **CI #198 结果与异常映射修正：**使用 `8dd40eb` 的 x64/ARM64 标准用户探针均完成但返回 `unclassified`；普通测试、workspace、Linux/macOS 原生探针、Windows Job 与 wheel 作业完成。`_run_child_mode` 曾把 `TimeoutError` 等类名直接写入回执，违反仅小写标签的 parser 契约。新增固定小写 label 映射、对既有异常类标签的有限兼容，并只在报告路径经固定 TEMP/文件名合同校验后回写；聚焦测试通过，双架构原生复验仍未完成，Windows pipe 不视为已验收。

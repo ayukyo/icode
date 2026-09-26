@@ -113,7 +113,21 @@ def runner_report_failure_detail(result: str, exit_code: int) -> str | None:
         return "unclassified"
     if exit_code == 0 and runner_probe_succeeded(result):
         return None
-    return restricted_child_failure_detail(result)
+    detail = restricted_child_failure_detail(result)
+    if detail != "unclassified":
+        return detail
+    # Older child builds wrote Python exception class names without normalizing
+    # case; recognize only these fixed labels, never arbitrary report text.
+    legacy_labels = {
+        "TimeoutError": "timeout_error",
+        "PermissionError": "permission_error",
+        "RuntimeError": "runtime_error",
+        "ValueError": "value_error",
+        "OSError": "os_error",
+    }
+    if result.startswith("failed="):
+        return legacy_labels.get(result.removeprefix("failed="), "unclassified")
+    return "unclassified"
 
 
 def _runner_child_failure_if_exited(
@@ -305,6 +319,21 @@ def _safe_pipe_client_permission_stage(exc: PermissionError) -> str:
         "runner_pipe_open_access_denied": "client_open_access_denied",
         "runner_pipe_server_pid_query": "client_server_pid_query_access_denied",
     }.get(stage, "client_access_denied")
+
+
+def _safe_runner_child_exception_detail(exc: Exception) -> str:
+    """Return a bounded stage or exception-class label; never include raw text."""
+    message = str(exc)
+    if re.fullmatch(r"[a-z_]+:winerror=\d+", message):
+        return message
+    if re.fullmatch(r"[a-z_]+", message):
+        return message
+    if isinstance(exc, PermissionError):
+        stage = _safe_pipe_client_permission_stage(exc)
+        if stage != "client_access_denied":
+            return stage
+    label = re.sub(r"(?<!^)(?=[A-Z])", "_", type(exc).__name__).lower()
+    return label if re.fullmatch(r"[a-z_]+", label) else "unclassified"
 
 
 def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
@@ -1328,6 +1357,7 @@ def _run_child_mode(
 ) -> int:
     if sys.platform != "win32":
         return 2
+    validated_report: Path | None = None
     try:
         report = Path(report_path)
         temp = os.environ.get("TEMP", "")
@@ -1339,6 +1369,7 @@ def _run_child_mode(
             or report.name != "result.txt"
         ):
             return 2
+        validated_report = report
         if not server_pid_text.isascii() or not server_pid_text.isdecimal():
             return 2
         server_pid = int(server_pid_text)
@@ -1369,14 +1400,15 @@ def _run_child_mode(
         )
         _write_report(report, result)
         return 0 if runner_probe_succeeded(result) else 1
-    except (OSError, RuntimeError, ValueError) as exc:
-        message = str(exc)
-        if not re.fullmatch(r"[a-z_]+:winerror=\d+", message):
-            message = type(exc).__name__
-        try:
-            _write_report(Path(report_path), "failed=" + message)
-        except OSError:
-            pass
+    except Exception as exc:  # noqa: BLE001 - child reports only a fixed safe label
+        if validated_report is not None:
+            try:
+                _write_report(
+                    validated_report,
+                    "failed=" + _safe_runner_child_exception_detail(exc),
+                )
+            except OSError:
+                pass
         return 1
 
 
