@@ -144,6 +144,11 @@ class NetworkLeaseTestCase(unittest.TestCase):
                 self.make_deny_policy(),
                 schema_version=1,
             )
+        with self.assertRaises(NetworkLeaseValidationError):
+            self.make_lease(
+                self.make_deny_policy(),
+                schema_version=True,
+            )
 
     def test_lease_is_bound_to_policy_identity_and_hash(self) -> None:
         policy = self.make_policy()

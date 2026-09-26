@@ -100,7 +100,7 @@ class NetworkLease:
 
     def _validate_declared_types(self) -> None:
         if type(self.schema_version) is not int:
-            raise NetworkLeaseValidationError("schema_version must be integer 1")
+            raise NetworkLeaseValidationError("schema_version must be an integer")
         if type(self.lease_id) is not str:
             raise NetworkLeaseValidationError("lease_id must be a string")
         if type(self.approval_id) is not str:
