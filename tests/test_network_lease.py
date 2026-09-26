@@ -46,6 +46,16 @@ class NetworkLeaseTestCase(unittest.TestCase):
         self.addCleanup(accepted.close)
         return peer, accepted
 
+    @staticmethod
+    def recv_exact(sock: socket.socket, size: int) -> bytes:
+        received = bytearray()
+        while len(received) < size:
+            chunk = sock.recv(size - len(received))
+            if not chunk:
+                break
+            received.extend(chunk)
+        return bytes(received)
+
     def make_policy(self, **overrides: object) -> SandboxPolicy:
         values: dict[str, object] = {
             "schema_version": 1,
@@ -393,9 +403,9 @@ class NetworkLeaseTestCase(unittest.TestCase):
             sockets=(proxy_client, proxy_upstream),
         )
         client_peer.sendall(b"client-alive")
-        self.assertEqual(proxy_client.recv(12), b"client-alive")
+        self.assertEqual(self.recv_exact(proxy_client, 12), b"client-alive")
         upstream_peer.sendall(b"upstream-alive")
-        self.assertEqual(proxy_upstream.recv(14), b"upstream-alive")
+        self.assertEqual(self.recv_exact(proxy_upstream, 14), b"upstream-alive")
 
         authority.revoke(policy)
 
@@ -460,7 +470,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
         detached_socket = socket.socket(fileno=proxy_socket.detach())
         self.addCleanup(detached_socket.close)
         detached_socket.sendall(b"still-active")
-        self.assertEqual(client_peer.recv(12), b"still-active")
+        self.assertEqual(self.recv_exact(client_peer, 12), b"still-active")
 
         authority.revoke(policy)
 
@@ -537,9 +547,9 @@ class NetworkLeaseTestCase(unittest.TestCase):
             sockets=(proxy_client, proxy_upstream),
         )
         client_peer.sendall(b"before-expiry")
-        self.assertEqual(proxy_client.recv(13), b"before-expiry")
+        self.assertEqual(self.recv_exact(proxy_client, 13), b"before-expiry")
         upstream_peer.sendall(b"before-expiry")
-        self.assertEqual(proxy_upstream.recv(13), b"before-expiry")
+        self.assertEqual(self.recv_exact(proxy_upstream, 13), b"before-expiry")
 
         self.assertEqual(authority.close_expired_connections(3_000_000_000), 1)
 
