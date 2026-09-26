@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- 最近观察：2026-09-27；下次全量复核：不晚于 2026-10-24
-- 注：观察日期统一按 UTC 记录；本轮定向复核 R2 HTTPS CONNECT 处理顺序与 Python 3.11 异步 DNS/连接取消语义；20 项观察名单最近全量复核为 2026-09-24。
+- 最近观察：2026-09-26；下次全量复核：不晚于 2026-10-24
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R2 HTTPS CONNECT 处理顺序与 Python 3.11 异步 DNS/连接取消语义；20 项观察名单最近全量复核为 2026-09-24。时区校正：本轮对应 Asia/Shanghai 2026-09-27，GitHub CI #230 的实际运行时间为 2026-09-26 UTC；本页在上海 2026-09-27 08:00 前写入但误标“2026-09-27 UTC”的近期条目，UTC 日期应为 2026-09-26。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -524,7 +524,7 @@
 - **ICODE 现状与决定：**继续**采纳并实现两层证据**：`base_commit_sha` 说明任务基线；初始/受测快照与 `diff_fingerprint` 说明内容差异。新快照摘要还纳入普通文件/符号链接类型和 POSIX Git 可执行位，防止同内容不同 tree 项得到同一指纹；相关回归先 RED 后 GREEN。**采纳研究方向、暂缓结果 tree OID**：未来用隔离的临时 Git 索引/目录构造受测 tree，绝不读取或改写用户 index；必须对照测试前后状态并拒绝未合并索引、未知属性/过滤器、子模块或 ignored 输入造成的歧义。当前 133 项聚焦测试、全量 preflight（861 项测试、23 项平台跳过）、CI #212 与网站 #123 通过；手动 CI #213 的 Windows 标准用户管道在 x64/ARM64 双端复现 `CreateFileW winerror=5`。普通 CI 成功不能替代未验证能力门槛。无 Git 的临时靶场明确留空 SHA，不伪造 commit；该 SHA 是基线，不是未提交结果的 commit。
 - **暂缓与验收边界：**当时仍无 `tested_git_tree_oid` / `result_commit_sha`；不能声称结果 commit 与测试对象完全一致。实现只用 Python 标准库与既有 Workspace Git 探测，不复制上游实现、无新增许可或安装依赖。观察日期：2026-09-26 UTC。
 
-### 2026-09-27 UTC 定向刷新：R3 受测 Git tree OID
+### 2026-09-26 UTC 定向刷新：R3 受测 Git tree OID
 
 - **OpenCode 固定源码：**观察 `dev` HEAD [`a42f393c850bec0c0f395fb91bf19b1ee8b31666`](https://github.com/anomalyco/opencode/commit/a42f393c850bec0c0f395fb91bf19b1ee8b31666)。[`Snapshot.track()`](https://github.com/anomalyco/opencode/blob/a42f393c850bec0c0f395fb91bf19b1ee8b31666/packages/opencode/src/snapshot/index.ts) 使用隔离 Git 目录/索引和 `write-tree`，以 source object store 作为只读 alternate；会按 ignore 规则筛掉文件，并对单文件大小设限。处理器将快照关联到会话变更，但这仍是撤销/会话快照，不是测试执行证明或最终 commit 认证。
 - **Codex 固定源码：**观察 `main` HEAD [`b334d5b3f2d9441b95286a8c2af8c2152737d977`](https://github.com/openai/codex/commit/b334d5b3f2d9441b95286a8c2af8c2152737d977)。[`git-utils/src/info.rs`](https://github.com/openai/codex/blob/b334d5b3f2d9441b95286a8c2af8c2152737d977/codex-rs/git-utils/src/info.rs)读取 HEAD 并计算 commit→worktree diff，另列未跟踪文件；本次所查实现没有把 Git tree OID 绑定到测试回执。
@@ -532,7 +532,7 @@
 - **ICODE 现状与取舍：采纳机制，调整实现。**不复用用户 index，也不为构造 tree 调用 `git add`、attributes 或 filter；以 Python 标准库按 Git canonical object serialization 只读散列当前文件系统的 Git 投影，只有测试前后投影与工作区指纹均稳定才记录 OID。初期只支持 POSIX 仓库根、普通文件/符号链接；包含未跟踪和 ignored 文件，因此结果 commit 若未包含完全相同投影就不会匹配。未知特殊文件、嵌套 `.git`/子模块、文件树竞态、平台不支持时不给 OID；为限制扫描资源，最多 250,000 项、128 层、总普通文件内容 256 MiB，超限 fail-closed。相较 OpenCode 的临时 index，此法避免索引/对象库副作用和任何用户配置 helper；代价是暂不支持 Windows tree 证明，且不应用 Git attributes 转换，因而可能产生安全的“不匹配/无 OID”而非正向误报。
 - **语义边界与验收：**tree OID 比对只证明 Git 记录的路径、文件字节、模式、链接目标与结果 commit tree 相同；不证明 ACL、xattr、所有权、空目录、宿主环境或整个进程执行轨迹相同。ignored 文件会进入本地投影，缺失于最终 commit 时比对必不相等。Git CLI 专用临时仓库交叉测试覆盖 SHA-1/SHA-256、类型/模式/排序/链接；并验证用户 index 字节与时间戳不变、测试中净漂移撤销 OID。Python 标准库 SHA-1 计算并未复用 Git 的碰撞检测实现，OID 只作 Git 兼容内容标识，不是签名或抗碰撞安全证明；结果 commit 核验不得仅把该 OID 当成安全认证。当前回归 43 项通过，全量 preflight 871 项通过、23 项跳过。未来仍需单独接入结果 commit `^{tree}` 比较及 receipt/reviewer 闭环；本切片不宣称某 commit 已验证。没有复制上游代码，不加运行依赖；日期/观察 SHA 固定为 2026-09-27。
 
-### 2026-09-27 UTC 定向刷新：R3 结果 commit tree 只读绑定
+### 2026-09-26 UTC 定向刷新：R3 结果 commit tree 只读绑定
 
 - **OpenCode 固定源码：**观察 `dev` HEAD [`a42f393c850bec0c0f395fb91bf19b1ee8b31666`](https://github.com/anomalyco/opencode/commit/a42f393c850bec0c0f395fb91bf19b1ee8b31666)。其 [`Snapshot.track()`](https://github.com/anomalyco/opencode/blob/a42f393c850bec0c0f395fb91bf19b1ee8b31666/packages/opencode/src/snapshot/index.ts) 使用隔离 Git 目录/index 生成会话快照；这不是测试结果证明，也不是最终 commit 认证。
 - **Codex 固定源码：**观察 `main` HEAD [`1a89aec960cd92e2c59ce49b7f3c3347a915e4a9`](https://github.com/openai/codex/commit/1a89aec960cd92e2c59ce49b7f3c3347a915e4a9)。[`baseline.rs`](https://github.com/openai/codex/blob/1a89aec960cd92e2c59ce49b7f3c3347a915e4a9/codex-rs/git-utils/src/baseline.rs) 的 synthetic baseline 仅服务 Codex 内部目录；注释指出 reset 对用户仓库 `.git` 具有破坏性。[`info.rs`](https://github.com/openai/codex/blob/1a89aec960cd92e2c59ce49b7f3c3347a915e4a9/codex-rs/git-utils/src/info.rs) 收集 HEAD/diff/untracked 状态，但未形成测试认证回执。采纳避免破坏用户仓库的原则；不移植 reset 或 synthetic baseline。
@@ -580,7 +580,7 @@
 - **验收与缺口：**测试验证受保护读取、写入/编辑拒绝有同一用户提示和稳定码、内部原因继续可见、目标内容未变化；普通命令退出码 13 不得带 `policy_denied`。这仅闭合 ICODE 受控文件工具路径，任意子进程遭 OS 拒绝后的 broker 收据仍未标准化，故 `uniform_violation` 评分继续为 false，macOS 仍未达到 9/10；不得开放自动模式。下阶段需解决或明确保持该执行链缺口，并按实际证据更新评分。观察/研究日期：2026-09-26 18:37 UTC。
 - **本切片本地结束：**受影响工具与执行器定向测试 42 项通过；全仓 preflight 的密钥扫描、子模块完整性和 unittest 三道守护全部通过。语法编译、站点、治理与竞品文档校验通过。该结果仅验收本地工具层收据，不代表 macOS/Linux/Windows 原生命令违规分类通过。
 
-### 2026-09-27 UTC 定向刷新：R2 网络租约到期与 R3 Reviewer 边界
+### 2026-09-26 UTC 定向刷新：R2 网络租约到期与 R3 Reviewer 边界
 
 - **Codex 网络隔离：**复核 `openai/codex` `main` SHA [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473)，Apache-2.0。Managed macOS Seatbelt 可以按策略只开放本机代理端口；HTTP 代理按请求执行策略，scope 生命周期清理覆盖 keep-alive、CONNECT 与 SOCKS。此为 OS 边界及整体 scope shutdown 机制，不是 per-lease TTL 到期证明；managed 模式未强制时也不能推断缺少代理必定断网。
 - **Gemini CLI 网络隔离：**观察 `main` SHA [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，Apache-2.0。strict-proxied Seatbelt 默认 deny，仅允许本机代理端口；代理退出时停止 sandbox 进程组。本次所查路径未证明租约到期会关闭已有 keep-alive 隧道。
@@ -590,47 +590,47 @@
 - **ICODE R3 本地验证：**本轮通过真实 MiniMax-M3 在 Bubblewrap 临时靶场中强制进入短上下文终结器：模型只见唯一 `submit_review` 工具，host schema 校验通过，任务测试退出码 0，TaskReport 成功；真实调用 2 次、3,967 tokens。之前 1,200-token 上限的失败探测无法单独判定工具选择协议故障；本次生产默认 2,048-token 上限成功，且未保存原始 prompt/response。证据只代表“确定性模拟长 Reviewer 漏交 → 真实模型终结器”这一窄分支，不代表自然触发率或跨平台只读 OS 验收。
 - **阶段采纳与风险：**采纳 Codex 显式 managed read-only 权限边界、OpenHands 证据化 findings；暂缓自由文本降级、自动修复审查发现及复制上游实现。真实 fallback 会将最多 64 KiB 已审改动再次发送到模型，虽受共享预算约束仍产生额外成本与数据披露，需向用户保持透明。未复制源码或新增第三方运行依赖；相应 Apache-2.0 / MIT 仓库仅作为架构研究来源。
 
-### 2026-09-27 UTC 复核：R2 网络租约与真实 socket 生命周期
+### 2026-09-26 UTC 复核：R2 网络租约与真实 socket 生命周期
 
 - **基线与源码链：**ICODE 主线 `17c7b95b8b565643ab61da63ca103076c72632de`。`NetworkLeaseAuthority` 仍无生产 `src` 调用方；点时 `verify_request()`、进程内连接登记和显式 sweep 都未连接代理/socket，回调返回 `True` 也不是底层 socket 关闭证据。`SandboxPolicy` 仍以 `DENY` 为基线，macOS 实验包装只接受 DENY，当前没有模型可用的网络授权路径。
 - **上游刷新：**Codex `main` 固定 SHA [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473)，Gemini CLI `main` 固定 SHA [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，观察日期 2026-09-27；根许可证均 Apache-2.0。Codex 的代理 scope 生命周期测试覆盖 HTTP keep-alive、CONNECT、SOCKS 两端关闭，但不证明单租约 TTL；Gemini strict-proxied Seatbelt 默认断网、只允许固定本机代理端口，并在代理退出时停止 sandbox 进程组，未见单租约过期关闭现存隧道证据。
 - **阶段采纳 / 暂缓：**下一片先做不向 Agent 开放的真实 socket 生命周期垂直测试：代理 scope 绑定 lease 后，以真实 TCP 对端验证 revoke/到期对已建立双向连接的关闭和新请求拒绝；保持候选策略 `DENY`、macOS/Windows 网络权限关闭，不宣称已实现 OS 网络强制。采纳真实连接生命周期、逐请求授权、代理故障终止 worker 的机制；暂缓可被 `NO_PROXY` 或直接 socket 绕过的环境变量方案。完成该语义后，仍需另做 Linux/macOS/Windows “OS 只到可信代理”门，覆盖 DNS/私网/重绑定、IPv4/IPv6/UDP/loopback 绕过、连接竞态与干净 wheel；不得用本片替代最终 R2 网络门。只借鉴机制，不复制代码、不新增依赖。详情见 [R2.4 计划](nbl/plans/2026-09-24-r2-network-proxy-gate.md)。
 
-### 2026-09-27 UTC 定向刷新：Linux Bubblewrap 工作流 Reviewer 账本拒读 carve-out
+### 2026-09-26 UTC 定向刷新：Linux Bubblewrap 工作流 Reviewer 账本拒读 carve-out
 
 - **Codex 固定源码：**观察 `openai/codex` commit [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473)，Apache-2.0。[Linux sandbox 设计](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/linux-sandbox/README.md)将只读文件系统与更具体的拒读/只读 carve-out 组合在一个 sandbox policy；[Bubblewrap 组装路径](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/linux-sandbox/src/bwrap.rs)对失败路径展开作显式处理。ICODE 采纳“同一 OS namespace 组合权限、无法证明时拒绝”，本阶段仅做精确目录，不采纳通用 glob，也不复制代码。
 - **OpenHands 固定源码：**同日核对 Extensions [`976f3c9cb61b137d113cd48d6b264e06aa4af54a`](https://github.com/OpenHands/extensions/commit/976f3c9cb61b137d113cd48d6b264e06aa4af54a)，MIT。其 [PR Reviewer 工具配置](https://github.com/OpenHands/extensions/blob/976f3c9cb61b137d113cd48d6b264e06aa4af54a/plugins/pr-review/scripts/agent_script.py)提供 terminal/file-editor 与基于提示/JSON 的 review 工作流；本次路径没有 OS mount 拒读嵌套账本的证据，因此不将应用层工具配置当作安全边界。
 - **ICODE 采纳 / 调整：**仅 Bubblewrap 暴露显式 `wrap_read_only_excluding`；在只读工作区 mount 后，以空 tmpfs 覆盖最浅排除目录并 remount-ro。只接收现存工作区内真实目录，严格拒绝链接、越界、根目录本身、文件叶子及缺失路径；命令无法包装即 fail-closed。ArtifactBroker 仍是宿主按合同交付产物的唯一路径。未复制上游实现、未加依赖，无新增许可证义务。
 - **本机证据与剩余风险：**真实 Bubblewrap 测试证明 reviewer 命令可读源文件、不可读取账本与 workspace 外 sentinel、不可写源文件或隐藏输出目录；静态链接别名/缺失/越界/文件路径为拒绝。隔离模块 59 项通过、7 项平台条件跳过。此处不证明有敌意的同用户进程在路径检查与 bwrap 启动间竞态替换目录；也不覆盖 macOS、Windows、WSL、容器及策略化 Reviewer。跨平台 OS 拒读边界和 R2 自动模式仍关闭。观察日期：2026-09-27 UTC。
 
-### 2026-09-27 UTC 定向刷新：macOS Seatbelt Reviewer 账本拒读 carve-out
+### 2026-09-26 UTC 定向刷新：macOS Seatbelt Reviewer 账本拒读 carve-out
 
 - **Codex 固定源码：**`openai/codex` SHA [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473)，Apache-2.0。[Seatbelt 规则构造](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/sandboxing/src/seatbelt.rs#L484-L588)把路径排除表达为读取授权条件的一部分，同时要求不匹配排除路径本身与其子树；这属于 Codex 源码的机制证据，不是 Apple 对所有 SBPL 冲突规则排序的承诺。
 - **Apple 文档边界：**[App Sandbox 官方文档](https://developer.apple.com/documentation/security/app_sandbox)描述 entitlement 型 App Sandbox；本次未找到 Apple 一手公开材料证明 `sandbox-exec` SBPL 的通用 deny-vs-allow 顺序。ICODE 因此不叠加一条可能与广泛授权冲突的 deny 来依赖优先级，而将 `require-not literal` 和 `require-not subpath` 直接合入 workspace read allow，并要求原生 macOS 负例验收。
 - **ICODE 采纳 / 拒绝：**采纳“carve-out 位于授权谓词本身”、拒绝不确定/带链接/越界/缺失目录，以及避免额外 Python/系统 read grant 重新开放账本的设计；也将 Reviewer 沙箱执行文件约束为 `/usr/bin/sandbox-exec`，不能由 PATH 同名程序替代。不复制上游实现、不加依赖；容器、Windows 与策略化 Reviewer 不因该实现而开放。
 - **当前验收状态：**本地 profile、路径拒绝、固定系统执行器与 ToolContext 调用链用例已过；隔离模块 73 项通过、8 项跳过。GitHub [CI #223](https://github.com/ayukyo/icode/actions/runs/36269281752) 中 macOS 实际 file-read/file-write/alias 负例在 ARM64 `macos-latest` 与 Intel `macos-15-intel` 均通过；runner 标签/架构映射见 [官方文档](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。这不外推为整个 R2 隔离就绪。观察日期：2026-09-27 UTC。
 
-### 2026-09-27 UTC 实施结果：R2 HTTPS 目标 DNS 校验原语
+### 2026-09-26 UTC 实施结果：R2 HTTPS 目标 DNS 校验原语
 
 - **上游刷新：**只读复核 Codex `main` [`06f97622f8529feef0d230fc37519c36c6bb2eeb`](https://github.com/openai/codex/commit/06f97622f8529feef0d230fc37519c36c6bb2eeb) 与 Gemini CLI `main` [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，二者根许可证均 Apache-2.0。沿用 Codex “解析后检查数值 socket 地址并按同一地址连接”的机制；Gemini 示例 CONNECT 不作为 IP 分类或 pinning 证据。只采纳机制，没有复制源码、增加依赖或产生新的许可义务。
 - **Python API 合同：**[Python `socket.getaddrinfo`](https://docs.python.org/3.11/library/socket.html#socket.getaddrinfo) 返回包含 family/type/proto/sockaddr 的连接参数，`sockaddr` 可直接交给 `socket.connect()`；[Python `ipaddress.is_global`](https://docs.python.org/3.11/library/ipaddress.html#ipaddress.IPv4Address.is_global) 基于 IANA special-purpose registry 判定全局可达。标准库分类曾有版本修正：3.11.10、3.12.4、3.13 起修正 `is_global`/`is_private` 误判（[3.12.4 发布说明](https://docs.python.org/3.12/whatsnew/3.12.html#notable-changes-in-3-12-4)、[3.11 API 说明](https://docs.python.org/3.11/library/ipaddress.html#ipaddress.IPv4Address.is_global)）；原语对更旧的 3.11/3.12 补丁版在发起 DNS 查询前拒绝运行。
 - **ICODE 实施与本机证据：**新增 `resolve_public_tcp_targets()`：先验证原始字符串为精确 ASCII DNS hostname，再转小写；raw IP、Unicode Kelvin sign、localhost、输入尾点名与非法端口在 resolver 前拒绝。仅 resolver 参数附加根尾点，避免系统 search suffix 改写域名；要求每条 DNS 结果都是有效 IPv4/IPv6 TCP sockaddr，凡混入非 global/保留/loopback/link-local/multicast/scoped/mapped 地址即拒绝整组；输出规范化数值 sockaddr 并去重。11 个目标解析单测通过，覆盖双栈、私网混合结果、malformed/UDP/空答案、作用域地址、旧 Python 分类表、resolver 默认分支 mock 与脱敏 DNS 错误。测试未访问真实 DNS 或外部连接。
 - **严格边界：**这是供可信宿主未来代理使用的验证原语，不验证 lease、不建立目标 TCP 连接、不启动 CONNECT listener，也不阻止第二次解析；默认系统 resolver 会产生宿主 DNS I/O，因此调用者必须先授权。未来连接端必须使用检查后返回的同一 numeric sockaddr，绝不可重新按 hostname 解析。本片没有处理异步 DNS executor 实际取消、pending connect 原子 revoke、TTL timer、隧道关闭或 OS “只到代理”强制；worker 和 Agent 仍无网络权限，R2 网络开放门保持关闭。观察日期：2026-09-27 UTC。
 
-### 2026-09-27 UTC 实施结果：R2 HTTPS CONNECT request-head parser
+### 2026-09-26 UTC 实施结果：R2 HTTPS CONNECT request-head parser
 
 - **上游刷新：**只读复核 Codex `main` [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473) 与 Gemini CLI `main` [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，均为 Apache-2.0。Codex 使用 Rama HTTP/1 parser 做 CONNECT 策略与 upgrade，但该 handler 未见 443 限制、CONNECT Host 等值或 CL/TE 专门检查；Gemini 示例限 CONNECT/443，但没有 Host/framing/IP pinning 检查且以 hostname 拨号。只采纳“独立 CONNECT 入口”结构，不复制源码；安全规则由 ICODE 自己的 lease/DNS 合同决定。
 - **协议参考：**[RFC 9110 §9.3.6](https://www.rfc-editor.org/rfc/rfc9110.html#section-9.3.6) 规定 CONNECT 使用 authority-form `host:port` 且请求无 content；[RFC 9112 §3.2.3](https://www.rfc-editor.org/rfc/rfc9112.html#section-3.2.3) 定义 authority-form、Host 与消息定界。ICODE 策略进一步只允许 HTTP/1.1、ASCII DNS `host:443`、唯一匹配的 Host；Host 可省略默认 HTTPS 端口或写明 `:443`。对任何其他头（包括 Content-Length、Transfer-Encoding、Proxy-Authorization）一律拒绝，是 ICODE 的更严格策略，不声称 RFC 单独要求每个字段都 MUST 拒绝。
 - **ICODE 实施与本机证据：**新增 `src/icode/connect_request.py`，仅解析完整、以 CRLFCRLF 结束且不超过 16 KiB 的原始 header block；只返回规范化 hostname 与 443。拒绝重复/缺失/不匹配 Host、raw IP、IPv6/zone、userinfo、Unicode、非规范端口、额外头、请求体/尾随数据、控制字符和错误版本；拒绝信息不回显输入。8 个 `tests.test_connect_request` 用例覆盖字节/头数上限边界，与 DNS/policy/lease 定向套件合计 100 项通过，所有输入均为内存构造字节，不运行 DNS/TCP/外网请求。Python 3.11.15 的 `scripts/preflight.py` 三道守护、治理、站点、20 项对照名单及 diff 检查通过；两次独立静态复审无 Critical/Important，针对上限与错误文本的 Minor 覆盖项已补测。
 - **严格边界与兼容性：**这是纯解析器，不读 socket、不验证 lease、不解析 DNS、不连接或启动 listener，也不检查 TCP reader 的超时、分段和 delimiter 后缓冲区。只允许 Host 可能拒绝带 User-Agent 或 Proxy-Connection 的通用代理客户端；后续如确需互操作，应以实测客户端建立显式安全 allowlist，并确保不把头转发给上游。当前 worker/Agent 网络仍关闭；解析通过不构成授权、代理可用或 OS “仅到代理”证据。观察日期：2026-09-27 UTC。
 
-### 2026-09-27 UTC 实施结果：R2 授权租约的真实 socket 关闭适配器
+### 2026-09-26 UTC 实施结果：R2 授权租约的真实 socket 关闭适配器
 
 - **相关上游结论：**Codex 固定源码 [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473) 与 Gemini CLI [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18) 的生命周期证据只用于借鉴关闭活跃连接与 fail-closed 机制；没有复制代码，也没有新增运行依赖。上游代理 scope shutdown 测试不证明 ICODE 单租约 TTL 或生产代理已接入。
 - **ICODE 改动与本地证据：**增加宿主侧 `register_active_sockets()`，只接收已连接的 IPv4/IPv6 TCP stream（排除监听/未连接 TCP 与 UDP），并将 socket 接到现有 authority revoke/expiry callback；authority 持有描述符副本，实测 revoke 与显式 expiry sweep 后真实 loopback TCP peer 收到 EOF，并拒绝不同 wrapper 共用同一 fd、验证调用方 detach 原 wrapper 仍不能绕过 revoke。25 项租约模块测试和 Python 3.11.15 完整 preflight 结果见对应阶段记录；TCP 测试使用读满循环，不假设单次 `recv(n)` 必须返回 n 字节。平台专用 CI 步骤已加，远端结果待验证。
 - **未通过/尚未覆盖：**适配器不创建代理、不转发 HTTP/TCP 流量、不连接 Agent 或 worker；没有后台 expiry sweeper，过期后复用/新请求、连接中撤销竞态、失败重试与 OS 级禁直连均不由本切片证明。调用方须是可信宿主，注册期间不可并发修改原 wrapper。工作策略继续 `DENY`，网络不开放；真实代理、DNS/私网/重绑定、IPv4/IPv6/UDP/loopback 旁路和干净 wheel 仍是 R2 门槛。观察日期：2026-09-27 UTC。
 
-### 2026-09-27 UTC 定向复核：默认 DENY 上的 host-only 网络租约 overlay
+### 2026-09-26 UTC 定向复核：默认 DENY 上的 host-only 网络租约 overlay
 
 - **基线与真实缺口：**ICODE `cbc56e0e071b01d2a980a4ceb604f67877476b87`。默认 `SandboxPolicy` 为 `DENY`，`tighten_policy()` 不允许候选把它扩大成 `PROXY_ALLOWLIST`；但原 lease authority 只接受静态 `PROXY_ALLOWLIST` 且要求租约域名是 policy 静态域名子集，因此普通 DENY 工单不能自然申请短租约。`OpenAICompatibleBackend` 的宿主模型 API 代理路径不是 worker 联网许可，也没有默认 HTTP/URL 抓取工具。
 - **上游刷新：**Codex `main` 快照 [`06f97622f8529feef0d230fc37519c36c6bb2eeb`](https://github.com/openai/codex/commit/06f97622f8529feef0d230fc37519c36c6bb2eeb)，Apache-2.0；CONNECT 前逐请求调用策略决策器，并把解析后检查过的 socket 地址用于连接，但 README 仍记录 DNS rebinding 的传输层限制。[CONNECT 授权](https://github.com/openai/codex/blob/06f97622f8529feef0d230fc37519c36c6bb2eeb/codex-rs/network-proxy/src/http_proxy.rs#L231-L249) · [IP 目标检查与连接](https://github.com/openai/codex/blob/06f97622f8529feef0d230fc37519c36c6bb2eeb/codex-rs/network-proxy/src/connect_policy.rs#L23-L89) · [限制说明](https://github.com/openai/codex/blob/06f97622f8529feef0d230fc37519c36c6bb2eeb/codex-rs/network-proxy/README.md#L248-L268)。Gemini CLI 快照 [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，Apache-2.0；strict Seatbelt 默认拒绝并仅开放本机代理端口，代理退出停止沙箱进程组，但其示例 CONNECT 未展示 IP 分类/pinning。[Seatbelt](https://github.com/google-gemini/gemini-cli/blob/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18/packages/cli/src/utils/sandbox-macos-strict-proxied.sb#L126-L132) · [示例代理](https://github.com/google-gemini/gemini-cli/blob/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18/docs/examples/proxy-script.md#L25-L59)。
@@ -638,14 +638,14 @@
 - **ICODE 实施与证据：**lease schema 升为 v2，授权只可叠加在 `DENY` 且无静态域名的基线，并仍绑定该完整 policy hash、run/ticket/step、用途、精确 ASCII DNS 名、443、单调期限和代次；静态 `tighten_policy()` 不变。无效域名在审批前拒绝。定向测试先 RED 后 GREEN，`tests.test_network_lease` 当时 28 项通过。GitHub [CI #226](https://github.com/ayukyo/icode/actions/runs/36271940621) 的 workspace 平台矩阵三项任务通过（含 socket 生命周期测试）；macOS native-probe 步骤先成功退出，随后 `Verify policy command broker` 失败。conformance 6/10 是评分而非 native-probe 失败证据；网络租约门仍待实际跨平台结果，不据此宣称 R2 通过。
 - **剩余门槛：**本片只修正审批授权契约；无 CONNECT 代理、DNS/IP 解析与 pinning、pending connect 取消、自动 TTL timer、新请求/隧道复用拒绝或 OS “只到代理”强制。CONNECT 对 TLS 加密内容无法证明 `WEB_READ` 是 GET-only；若需要只读网页，须另建宿主 fetch API 或 TLS MITM 设计，不从 purpose 名称推断只读行为。网络继续不向 Agent 暴露，Windows/macOS/Linux 全平台开放门保持关闭。观察日期：2026-09-27 UTC。
 
-### 2026-09-27 UTC 定向复核：CONNECT 响应顺序与 Python 3.11 取消语义
+### 2026-09-26 UTC 定向复核：CONNECT 响应顺序与 Python 3.11 取消语义
 
 - **Codex 固定源码：**复核 `openai/codex` 固定提交 [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473)，Apache-2.0。[CONNECT handler](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/network-proxy/src/http_proxy.rs#L177-L364) 在发出成功响应前等待逐请求策略决定；但实际上游拨号发生在升级后，[forward path](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/network-proxy/src/http_proxy.rs#L366-L529)，因此它不证明“上游 TCP 已连通才发送 CONNECT 200”。[目标 connector](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/network-proxy/src/connect_policy.rs#L62-L106) 接收已解析的 `SocketAddr`，检查限制地址后用同一数值地址建连，没有把 hostname 交回 resolver。[请求断开追踪](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/network-proxy/src/request_disconnect.rs#L7-L37) 记录策略 future 被丢弃的时长，并明确不取消审批 reviewer；不能把它当作连接取消或租约到期证据。
 - **Python 3.11 源码与文档：**ICODE 的最低支持版本为 Python 3.11。CPython [`v3.11.16 asyncio/base_events.py`](https://github.com/python/cpython/blob/v3.11.16/Lib/asyncio/base_events.py#L786-L797) 将 `loop.getaddrinfo()` 实现为对 `socket.getaddrinfo()` 的 `run_in_executor(None, ...)`；[Future.cancel()](https://github.com/python/cpython/blob/v3.11.16/Lib/concurrent/futures/_base.py#L335-L349) 对已运行任务返回失败，故取消等待任务不能证明底层同步解析已物理停止（这是由实现与取消契约得出的边界推论）。[官方事件循环文档](https://docs.python.org/3.11/library/asyncio-eventloop.html#asyncio.loop.sock_connect) 规定 `sock_connect()` 使用非阻塞 socket；Windows 默认 Proactor 连接需用预先解析的数值地址。asyncio 可将等待与 socket 状态交回事件循环管理，但不能撤回已经发出的 SYN；这不等于 DNS 查询被终止。
 - **ICODE 现状及候选取舍：**未提交的同步 host-only connector 草稿仅作试验，不存在 listener、relay、CONNECT 响应或 worker 接线。独立审查确认其关闭失败路径可能释放仍需重试的 registry handle，且当前竞态用例没有暂停真实的在途 `connect()`；因此不采纳这版同步并发模型。asyncio pending→active scope 是候选方案而非已批准设计：若后续采用，需明确为“逻辑取消 + 限并发 + 丢弃迟到 DNS 结果”，并在同一事件循环处理 connect 撤销；不能声称物理取消 libc 查询，也不能以测试桩在 `connect()` 前暂停冒充在途撤销证据。是否接受该 DNS 语义仍待产品设计确认。
 - **验收候选：**任何实施前先固定目标契约。候选测试至少应证明：撤销/到期后 DNS 迟到结果不能创建 socket 或拨号；resolver 并发有上限；已验证的 numeric sockaddr 被原样拨号且不会二次解析；真正挂起的非阻塞 connect 被同一 loop 的撤销取消、连接不会发布为可用；close 失败时 registry 保留并阻断 scope，后续可重试；scope 到期由生产 lifecycle owner 自动 sweep；Linux/macOS 与 Windows Proactor 均用真实平台作业验证。当前无 listener、relay、任务网络入口或 OS“只能到可信代理”的证据，网络继续关闭。观察日期：2026-09-27 UTC。
 
-### 2026-09-27 UTC macOS CI 失败链路与诊断输出边界
+### 2026-09-26 UTC macOS CI 失败链路与诊断输出边界
 
 - **最新线上证据：**GitHub [CI #226](https://github.com/ayukyo/icode/actions/runs/36271940621) 在 macOS `Verify policy command broker` 失败；[#228](https://github.com/ayukyo/icode/actions/runs/36274941264) 与 [#229](https://github.com/ayukyo/icode/actions/runs/36276572030) 则在 ARM64 `macos-latest` / Intel `macos-15-intel` 的 `Verify leased TCP socket lifecycle` 失败。按 workflow 顺序，这些 job 的 `Run actual native negative probes` 已先成功退出；因此 #229 不支持内嵌 protected-path probe 失败的结论。#229 conformance 6/10、`ready=false` 是十项评分，不能定位其缺项。排在 lease 步骤之后的独立 `Verify protected-path Seatbelt policy` 因前序失败未执行，故该项仍缺实际结果。
 - **测试注释边界：**#228/#229 的 Python 3.11/3.12 测试 job 确有 `sandbox-exec native probe failed: protected paths failed` 注释，但这不是 macOS native-probe job 的原生调用链；单靠公开摘要不能确定注释产生路径，也不能据此称 Seatbelt 实测失败。当前测试含模拟 protected-path 失败情形，需继续确认测试输出与 GHA workflow-command 注释之间的路径是否隔离。
@@ -653,3 +653,9 @@
 - **ICODE 实施与本地验证：**`scripts/run_native_probe_ci.py` 现在只按固定三项白名单输出 `workspace_write_allowed`、`protected_write_denied`、`protected_rename_denied` 的 GitHub notice；缺项按 `false` 报告，未知字段被忽略。TDD 负例先证明一个带换行的未知检查名可注入 `::error::` annotation，再验证修复后该字段不会进入输出；`tests.test_run_native_probe_ci` 4 项通过。此为诊断可观测性修正，不是 macOS 隔离修复。
 - **租约失败定位改动：**`.github/workflows/ci.yml` 三处平台 lease lifecycle 步骤改用 `scripts/run_network_lease_ci.py`；它仍执行同一个 `tests.test_network_lease` 并保持 unittest 日志和失败退出码，只额外输出经过 ASCII 白名单安全化的失败测试 ID/类型，不把 traceback、路径或测试值放进 Actions command。两个诊断测试验证固定名称和换行注入拒绝；本地 `tests.test_network_lease` 29 项通过。此改动令下一次 CI 能区分失败测试，但不修复或证明 macOS 生命周期。
 - **剩余验收：**新增三项固定 protected-path notice 可帮助未来实际 native probe 不通过时定位子项；lease reporter 可让下一轮 CI 给出具体失败测试名，两者都不是 macOS 隔离修复。独立 protected-path Seatbelt 测试仍需实际成功。原始 macOS 错误日志受登录限制，当前不能从本机 Linux 复现，因此 lease 跨平台根因仍未知；R2.1 lease 验收、R2.2 独立 Seatbelt 验收与自动模式继续关闭。观察日期：2026-09-27 UTC。
+
+### 2026-09-26 UTC：CI #230 缩小 macOS socket 生命周期失败项
+
+- **远端事实：**[CI #230](https://github.com/ayukyo/icode/actions/runs/36279299022) 在 `R2.1 workspace (macos-latest)` 与 `R2.2 native probe (macos-15-intel)` 都报告同一个测试断言失败：`tests.test_network_lease.NetworkLeaseTestCase.test_revoke_closes_socket_after_original_wrapper_detaches`；`R2.2 native probe (macos-latest)` 的 lease suite 通过。公开 annotation 给出测试 ID，但完整 traceback 需要登录才能查看。
+- **只读研究与假设：**测试当前在 revoke 后把 peer 设为 non-blocking，并仅调用一次 `recv(1)`；若 FIN/EOF 尚未变为可读会返回平台相关的“暂时不可用”错误。Python 官方文档说明非阻塞 socket 无法立即完成时会以平台相关错误失败，且可用 socket timeout 对阻塞操作设定上限；Apple `shutdown(2)` 文档说明 `SHUT_RDWR` 禁止本地后续收发，但不承诺 peer EOF 同步可见。因此“单次读取竞态”是优先候选，不是已由 traceback 确认的根因。[Python socket timeout/non-blocking](https://docs.python.org/3.11/library/socket.html#notes-on-socket-timeouts) · [Apple shutdown(2)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/shutdown.2.html)
+- **处理与边界：**测试现改为最多等待 5 秒读取 EOF；生产 `NetworkLeaseAuthority` 没有改动，本机该用例通过。下一轮跨平台 CI 才能复验候选是否成立；若仍失败，需基于完整 traceback 再定位。R2 网络与自动模式继续关闭，不因测试调整而开放。

@@ -602,11 +602,14 @@ class NetworkLeaseTestCase(unittest.TestCase):
 
         authority.revoke(policy)
 
-        client_peer.setblocking(False)
+        # revoke() closes the authority-owned descriptor synchronously, but
+        # remote TCP readability is delivered asynchronously by the kernel.
+        # Wait with a bound instead of making a one-shot nonblocking read.
+        client_peer.settimeout(5.0)
         try:
             observed = client_peer.recv(1)
-        except BlockingIOError:
-            observed = None
+        except socket.timeout:
+            self.fail("revoked peer did not observe EOF within five seconds")
         self.assertEqual(observed, b"")
         self.assertFalse(authority.release_active_connection(handle))
 
