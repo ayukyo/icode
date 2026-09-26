@@ -111,7 +111,8 @@ class VerificationEvidence:
     是**有界修复的账本标签**（回执中保留），但不参与「新证据」指纹：同一
     失败在不同 attempt 下应被识别为**同一证据**，否则任何重试都会因为
     attempt 递增而被误判为新证据（碰运气）。`tested_git_tree_oid` 仅在
-    POSIX 工作树 tree 投影于测试前后稳定时存在；它还没有与结果 commit 比对。
+    POSIX 工作树 tree 投影于测试前后稳定时存在；结果 commit 字段在后续显式绑定时
+    记录 tree 内容相等性与测试窗口 HEAD 观测，不以 commit 日期推断提交时序。
     """
 
     step: str
@@ -126,8 +127,17 @@ class VerificationEvidence:
     base_commit_sha: str = ""
     initial_worktree_fingerprint: str = ""
     tested_worktree_fingerprint: str = ""
+    git_object_format: str = ""
+    test_head_before_sha: str = ""
+    test_head_after_sha: str = ""
+    test_head_status: str = ""
     tested_git_tree_oid: str = ""
     tested_git_tree_status: str = ""
+    result_commit_sha: str = ""
+    result_commit_tree_oid: str = ""
+    result_commit_tree_status: str = ""
+    result_commit_timing_status: str = ""
+    result_commit_checked_at: str = ""
     category: str = FAILURE_SIDE_EFFECT_UNKNOWN
     captured_at: str = ""
     raw_error: str = ""
@@ -162,8 +172,17 @@ class VerificationEvidence:
             "base_commit_sha": self.base_commit_sha,
             "initial_worktree_fingerprint": self.initial_worktree_fingerprint,
             "tested_worktree_fingerprint": self.tested_worktree_fingerprint,
+            "git_object_format": self.git_object_format,
+            "test_head_before_sha": self.test_head_before_sha,
+            "test_head_after_sha": self.test_head_after_sha,
+            "test_head_status": self.test_head_status,
             "tested_git_tree_oid": self.tested_git_tree_oid,
             "tested_git_tree_status": self.tested_git_tree_status,
+            "result_commit_sha": self.result_commit_sha,
+            "result_commit_tree_oid": self.result_commit_tree_oid,
+            "result_commit_tree_status": self.result_commit_tree_status,
+            "result_commit_timing_status": self.result_commit_timing_status,
+            "result_commit_checked_at": self.result_commit_checked_at,
             "category": self.category,
             "passed": self.passed,
             "fingerprint": evidence_fingerprint(self),
@@ -232,8 +251,16 @@ def evidence_fingerprint(evidence: VerificationEvidence) -> str:
             "base_commit_sha": evidence.base_commit_sha,
             "initial_worktree_fingerprint": evidence.initial_worktree_fingerprint,
             "tested_worktree_fingerprint": evidence.tested_worktree_fingerprint,
+            "git_object_format": evidence.git_object_format,
+            "test_head_before_sha": evidence.test_head_before_sha,
+            "test_head_after_sha": evidence.test_head_after_sha,
+            "test_head_status": evidence.test_head_status,
             "tested_git_tree_oid": evidence.tested_git_tree_oid,
             "tested_git_tree_status": evidence.tested_git_tree_status,
+            "result_commit_sha": evidence.result_commit_sha,
+            "result_commit_tree_oid": evidence.result_commit_tree_oid,
+            "result_commit_tree_status": evidence.result_commit_tree_status,
+            "result_commit_timing_status": evidence.result_commit_timing_status,
             "category": evidence.category,
         },
         ensure_ascii=False, sort_keys=True, separators=(",", ":"),
@@ -343,8 +370,17 @@ class VerificationLedger:
             base_commit_sha=evidence.base_commit_sha,
             initial_worktree_fingerprint=evidence.initial_worktree_fingerprint,
             tested_worktree_fingerprint=evidence.tested_worktree_fingerprint,
+            git_object_format=evidence.git_object_format,
+            test_head_before_sha=evidence.test_head_before_sha,
+            test_head_after_sha=evidence.test_head_after_sha,
+            test_head_status=evidence.test_head_status,
             tested_git_tree_oid=evidence.tested_git_tree_oid,
             tested_git_tree_status=evidence.tested_git_tree_status,
+            result_commit_sha=evidence.result_commit_sha,
+            result_commit_tree_oid=evidence.result_commit_tree_oid,
+            result_commit_tree_status=evidence.result_commit_tree_status,
+            result_commit_timing_status=evidence.result_commit_timing_status,
+            result_commit_checked_at=evidence.result_commit_checked_at,
             category=evidence.category,
             captured_at=evidence.captured_at or _now(),
             raw_error=evidence.raw_error,

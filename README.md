@@ -104,6 +104,13 @@ icode task --fixture pycalc --backend openai-compatible
 
 The fixture is copied to a temporary workspace. The model may edit only that copy, and ICODE runs the acceptance tests again independently instead of trusting the model's claim.
 
+For a POSIX Git repository root, `--result-commit FULL_COMMIT_SHA` optionally compares the stable tested worktree projection with the selected commit tree using read-only Git object queries. This is content equality only; it does not authenticate the commit, its source, or when it was created.
+
+```bash
+icode task --workspace /path/to/repo --result-commit FULL_COMMIT_SHA \
+  --backend openai-compatible
+```
+
 ### A contract-governed step
 
 ```bash
@@ -163,7 +170,7 @@ Gate, approval, budget, and environment failures remain visible as
 | `icode steps` / `brief` / `outline` | Inspect the workflow contract progressively | No |
 | `icode handshake --workspace <dir>` | Exercise a full offline contract handshake | No |
 | `icode step-run --workspace <dir> --step plan` | Run one contract-governed model step | Yes |
-| `icode task --fixture pycalc` | Run a model task in an isolated fixture copy | Yes |
+| `icode task --fixture pycalc` | Run a model task in an isolated fixture copy; Git repositories can optionally compare a result commit tree | Yes |
 | `icode chain --workspace <dir> --requirement "..."` | Attempt the state-derived six-stage chain | Yes |
 | `icode evidence --ticket <dir> --dest <dir>` | Export an independently checkable evidence package | No |
 | `icode verify-pack <dir>` | Verify an exported evidence package | No |

@@ -87,6 +87,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task.add_argument("--task", default="", help="任务描述（默认新增 calc_gcd/calc_lcm）")
     p_task.add_argument("--max-repairs", type=_nonnegative_int, default=2,
                         help="R3 有界修复次数上限（默认 2；独立测试失败后最多重试这么多次）")
+    p_task.add_argument(
+        "--result-commit",
+        help="可选完整 commit SHA；只读比较其 tree 与受测工作树投影（不认证来源/时序）",
+    )
     _add_model_args(p_task)
     _add_loop_args(p_task)
 
@@ -434,6 +438,7 @@ def cmd_task(args: argparse.Namespace) -> int:
     report = run_task(
         settings, backend=backend, workspace=workspace,
         task=args.task or DEFAULT_TASK, approver=approver,
+        result_commit_sha=args.result_commit,
         loop_config=LoopConfig(max_turns=args.max_turns), budget=budget, on_event=on_event,
         sandbox=sandbox, max_repairs=args.max_repairs,
     )

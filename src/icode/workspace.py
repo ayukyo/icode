@@ -47,6 +47,7 @@ _WINDOWS_LOCK_VIOLATION = 33
 _GIT_COMMAND_TIMEOUT_SECONDS = 60
 _HASH_CHUNK_SIZE_BYTES = 1024 * 1024
 _MAX_GIT_SYMLINK_TARGET_BYTES = 4096
+_MAX_GIT_COMMIT_OBJECT_BYTES = 1024 * 1024
 
 
 def _validated_bytes(name: str, value: str) -> bytes:
@@ -669,27 +670,34 @@ def _run_git(
     input_data: bytes | None = None,
     text: bool = True,
     timeout_seconds: float | None = None,
+    no_replace_objects: bool = False,
+    no_lazy_fetch: bool = False,
 ) -> subprocess.CompletedProcess:
     environment = {
         key: value
         for key, value in os.environ.items()
         if not key.upper().startswith("GIT_")
     }
+    if no_lazy_fetch:
+        environment["GIT_NO_LAZY_FETCH"] = "1"
     try:
         with tempfile.TemporaryDirectory(prefix="icode-empty-hooks-") as hooks_dir:
+            command = ["git"]
+            if no_replace_objects:
+                command.append("--no-replace-objects")
+            command.extend((
+                "-c",
+                f"core.hooksPath={hooks_dir}",
+                "-c",
+                # Older Git releases execute the literal "false" as a
+                # helper path; an empty override disables helper selection.
+                "core.fsmonitor=",
+                "-C",
+                str(working_directory),
+                *arguments,
+            ))
             completed = subprocess.run(
-                [
-                    "git",
-                    "-c",
-                    f"core.hooksPath={hooks_dir}",
-                    "-c",
-                    # Older Git releases execute the literal "false" as a
-                    # helper path; an empty override disables helper selection.
-                    "core.fsmonitor=",
-                    "-C",
-                    str(working_directory),
-                    *arguments,
-                ],
+                command,
                 shell=False,
                 check=False,
                 capture_output=True,
@@ -717,6 +725,8 @@ def _run_git_bytes(
     input_data: bytes | None = None,
     check: bool = True,
     timeout_seconds: float | None = None,
+    no_replace_objects: bool = False,
+    no_lazy_fetch: bool = False,
 ) -> subprocess.CompletedProcess[bytes]:
     return cast(
         subprocess.CompletedProcess[bytes],
@@ -727,6 +737,8 @@ def _run_git_bytes(
             input_data=input_data,
             text=False,
             timeout_seconds=timeout_seconds,
+            no_replace_objects=no_replace_objects,
+            no_lazy_fetch=no_lazy_fetch,
         ),
     )
 
@@ -773,6 +785,115 @@ def _detect_git(source_root: Path) -> _GitIdentity | None:
         revision=revision,
         relative_source=relative_source,
     )
+
+
+def read_git_repository_state(
+    repository_path: Path, *, require_root: bool = False,
+) -> tuple[str, str]:
+    """读取仓库 storage object format 与当前 HEAD 的完整存储格式 OID。"""
+    root = _normalize_path(Path(repository_path))
+    top_level = _run_git_bytes(
+        root, ("rev-parse", "--show-toplevel"), check=False,
+        no_replace_objects=True, no_lazy_fetch=True,
+    )
+    if top_level.returncode != 0:
+        raise WorkspaceError("Git 仓库身份不可用")
+    try:
+        detected_root = _normalize_path(Path(top_level.stdout.decode("utf-8").strip()))
+    except (UnicodeDecodeError, OSError, ValueError):
+        raise WorkspaceError("Git 仓库身份无效") from None
+    if root != detected_root and detected_root not in root.parents:
+        raise WorkspaceError("工作区不在 Git 仓库内")
+    if require_root and detected_root != root:
+        raise WorkspaceError("工作区不是 Git 仓库根目录")
+
+    object_format_result = _run_git_bytes(
+        root, ("rev-parse", "--show-object-format=storage"), check=False,
+        no_replace_objects=True, no_lazy_fetch=True,
+    )
+    if object_format_result.returncode != 0:
+        raise WorkspaceError("Git storage object format 不可用")
+    object_format = object_format_result.stdout.strip().decode("ascii", errors="ignore")
+    if object_format not in ("sha1", "sha256"):
+        raise WorkspaceError("Git storage object format 不受支持")
+
+    head_result = _run_git_bytes(
+        root,
+        (
+            "rev-parse", "--verify", "--output-object-format=storage",
+            "--end-of-options", "HEAD",
+        ),
+        check=False, no_replace_objects=True, no_lazy_fetch=True,
+    )
+    if head_result.returncode != 0:
+        raise WorkspaceError("Git HEAD 不可用")
+    head_sha = head_result.stdout.strip().decode("ascii", errors="ignore")
+    expected_length = 40 if object_format == "sha1" else 64
+    if (
+        len(head_sha) != expected_length
+        or any(character not in "0123456789abcdef" for character in head_sha)
+    ):
+        raise WorkspaceError("Git HEAD OID 格式无效")
+    return object_format, head_sha
+
+
+def read_git_commit_tree_oid(repository_root: Path, commit_sha: str) -> str:
+    """只读读取完整 commit OID 指向的原始 tree，不解析 tag/表达式或替换引用。"""
+    if (
+        not isinstance(commit_sha, str)
+        or len(commit_sha) not in (40, 64)
+        or any(character not in "0123456789abcdef" for character in commit_sha)
+    ):
+        raise WorkspaceError("结果 commit OID 无效")
+
+    root = _normalize_path(Path(repository_root))
+    object_format, _head_sha = read_git_repository_state(root, require_root=True)
+    expected_length = 40 if object_format == "sha1" else 64
+    if len(commit_sha) != expected_length:
+        raise WorkspaceError("结果 commit OID 与 storage object format 不匹配")
+
+    def query(arguments: tuple[str, ...]) -> bytes:
+        result = _run_git_bytes(
+            root, ("cat-file", *arguments), check=False,
+            no_replace_objects=True, no_lazy_fetch=True,
+        )
+        if result.returncode != 0:
+            raise WorkspaceError("结果 commit 对象不可用")
+        return result.stdout
+
+    commit_type = query(("-t", commit_sha)).strip()
+    if commit_type != b"commit":
+        raise WorkspaceError("结果 OID 不是 commit 对象")
+
+    size_bytes = query(("-s", commit_sha)).strip()
+    if not size_bytes or not size_bytes.isdigit():
+        raise WorkspaceError("结果 commit 对象大小无效")
+    size = int(size_bytes)
+    if size <= 0 or size > _MAX_GIT_COMMIT_OBJECT_BYTES:
+        raise WorkspaceError("结果 commit 对象超出读取预算")
+
+    commit_data = query(("commit", commit_sha))
+    if len(commit_data) != size:
+        raise WorkspaceError("结果 commit 对象大小发生变化")
+    header, separator, _message = commit_data.partition(b"\n\n")
+    if not separator:
+        raise WorkspaceError("结果 commit header 无效")
+    header_lines = header.split(b"\n")
+    tree_headers = [line for line in header_lines if line.startswith(b"tree ")]
+    if len(tree_headers) != 1 or not header_lines or header_lines[0] != tree_headers[0]:
+        raise WorkspaceError("结果 commit tree header 无效")
+    tree_bytes = tree_headers[0][5:]
+    if (
+        len(tree_bytes) != expected_length
+        or any(byte not in b"0123456789abcdef" for byte in tree_bytes)
+    ):
+        raise WorkspaceError("结果 commit tree OID 无效")
+    tree_oid = tree_bytes.decode("ascii")
+
+    tree_type = query(("-t", tree_oid)).strip()
+    if tree_type != b"tree":
+        raise WorkspaceError("结果 commit tree 对象不可用")
+    return tree_oid
 
 
 @dataclass(frozen=True)

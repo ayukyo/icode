@@ -104,6 +104,13 @@ icode task --fixture pycalc --backend openai-compatible
 
 靶场会先复制到临时工作区。模型只能修改副本；结束后由 ICODE 再独立执行一次验收测试，不相信模型的自我声明。
 
+对 POSIX Git 仓库根目录，可额外用 `--result-commit FULL_COMMIT_SHA` 将稳定受测工作树投影与指定 commit 的 tree 做只读内容比对。它不验证 commit 签名、来源或创建时序；匹配只说明 tree 内容相同。
+
+```bash
+icode task --workspace /path/to/repo --result-commit FULL_COMMIT_SHA \
+  --backend openai-compatible
+```
+
 ### 执行一个受契约约束的步骤
 
 ```bash
@@ -155,7 +162,7 @@ ICODE-SKILL 控制面写入。
 | `icode steps` / `brief` / `outline` | 渐进查看工作流契约 | 否 |
 | `icode handshake --workspace <dir>` | 跑通完整离线契约握手 | 否 |
 | `icode step-run --workspace <dir> --step plan` | 执行一个受契约约束的模型步骤 | 是 |
-| `icode task --fixture pycalc` | 在靶场副本内执行模型编码任务 | 是 |
+| `icode task --fixture pycalc` | 在靶场副本内执行模型编码任务；Git 仓库可选比对结果 commit tree | 是 |
 | `icode chain --workspace <dir> --requirement "..."` | 尝试状态机派生的六阶段链路 | 是 |
 | `icode evidence --ticket <dir> --dest <dir>` | 导出可独立校验的证据包 | 否 |
 | `icode verify-pack <dir>` | 校验已导出的证据包 | 否 |

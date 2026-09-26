@@ -156,6 +156,9 @@ class TaskReport:
 
     @property
     def ok(self) -> bool:
+        result_commit_status = getattr(
+            self.verification, "result_commit_tree_status", "",
+        )
         return bool(
             not self.error
             and self.exit_code == 0
@@ -167,6 +170,7 @@ class TaskReport:
             and self.review is not None
             and getattr(self.review, "model_reviewed", False)
             and getattr(self.review, "ok", False)
+            and (not result_commit_status or result_commit_status == "matched")
         )
 
     def render(self) -> str:
@@ -191,6 +195,9 @@ class TaskReport:
                 lines.append(f"  Git 基线：{base_commit_sha[:12]}")
             else:
                 lines.append("  Git 基线：无（非 Git 靶场）")
+            object_format = getattr(self.verification, "git_object_format", "")
+            if object_format:
+                lines.append(f"  Git 存储对象格式：{object_format}")
             tested_worktree = getattr(
                 self.verification, "tested_worktree_fingerprint", "",
             )
@@ -199,11 +206,34 @@ class TaskReport:
             tested_tree = getattr(self.verification, "tested_git_tree_oid", "")
             tree_status = getattr(self.verification, "tested_git_tree_status", "")
             if tested_tree:
-                lines.append(
-                    f"  受测 Git tree：{tested_tree}（测试前后稳定；未比对结果提交）"
-                )
+                lines.append(f"  受测 Git tree：{tested_tree}（测试前后稳定）")
             elif tree_status:
                 lines.append(f"  受测 Git tree：未签发（{tree_status}）")
+            result_commit_status = getattr(
+                self.verification, "result_commit_tree_status", "",
+            )
+            if result_commit_status == "matched":
+                result_sha = getattr(self.verification, "result_commit_sha", "")
+                result_tree = getattr(self.verification, "result_commit_tree_oid", "")
+                timing_status = getattr(
+                    self.verification, "result_commit_timing_status", "unknown",
+                )
+                lines.append(
+                    "  结果提交 tree：与受测投影内容匹配"
+                    f"（commit={result_sha[:12]}，tree={result_tree[:12]}；"
+                    "仅内容匹配，不是安全认证）"
+                )
+                if timing_status == "head_observed_at_test_boundaries":
+                    lines.append("  测试时序：该 commit SHA 在测试前后均被观测为 HEAD")
+                elif timing_status == "not_head_at_test_boundaries":
+                    lines.append(
+                        "  测试时序：该 commit SHA 未在测试前后观测为 HEAD；"
+                        "tree 匹配不证明 commit 当时已存在"
+                    )
+                else:
+                    lines.append("  测试时序：未能判定该 commit 是否为测试窗口的 HEAD")
+            elif result_commit_status:
+                lines.append(f"  结果提交 tree：未通过绑定（{result_commit_status}）")
         if self.review is not None:
             lines += ["", "  " + self.review.render().replace("\n", "\n  ")]
         if self.reviewer_loop is not None:
@@ -1117,6 +1147,7 @@ def run_task(
     backend: Backend,
     workspace: Path,
     task: str = DEFAULT_TASK,
+    result_commit_sha: str | None = None,
     approver: Approver | None = None,
     loop_config: LoopConfig | None = None,
     budget: Budget | None = None,
@@ -1133,7 +1164,7 @@ def run_task(
     if type(max_repairs) is not int or max_repairs < 0:
         raise ValueError("max_repairs must be >= 0")
     workspace = Path(workspace).resolve()
-    base_commit_sha = _read_task_base_commit_sha(workspace)
+    git_object_format, base_commit_sha = _read_task_git_state(workspace)
     before = _snapshot(workspace)
     initial_worktree_fingerprint = _snapshot_fingerprint(before)
 
@@ -1163,23 +1194,34 @@ def run_task(
     ])
 
     after = _snapshot(workspace)
+    test_object_format_before, test_head_before_sha = _read_task_git_state(workspace)
     before_test_tree_oid, before_test_tree_status = _capture_task_git_tree_oid(
-        workspace, base_commit_sha,
+        workspace, base_commit_sha, object_format=test_object_format_before,
     )
     exit_code, output = run_unittest(workspace, sandbox=task_sandbox)
+    test_object_format_after, test_head_after_sha = _read_task_git_state(workspace)
     after_test_tree_oid, after_test_tree_status = _capture_task_git_tree_oid(
-        workspace, base_commit_sha,
+        workspace, base_commit_sha, object_format=test_object_format_after,
     )
     after_test = _snapshot(workspace)
     tested_git_tree_oid, tested_git_tree_status = _resolve_tested_git_tree(
         after, after_test, before_test_tree_oid, before_test_tree_status,
         after_test_tree_oid, after_test_tree_status,
+        test_object_format_before, test_object_format_after,
+    )
+    test_head_status = _resolve_test_head_status(
+        test_object_format_before, test_head_before_sha,
+        test_object_format_after, test_head_after_sha,
     )
     attempt_no = 1
     changed, evidence = _bind_task_evidence(
         before, after, exit_code, output, workspace, attempt=str(attempt_no),
         base_commit_sha=base_commit_sha,
         initial_worktree_fingerprint=initial_worktree_fingerprint,
+        git_object_format=git_object_format,
+        test_head_before_sha=test_head_before_sha,
+        test_head_after_sha=test_head_after_sha,
+        test_head_status=test_head_status,
         tested_git_tree_oid=tested_git_tree_oid,
         tested_git_tree_status=tested_git_tree_status,
     )
@@ -1210,22 +1252,33 @@ def run_task(
             {"role": "user", "content": repair_prompt},
         ])
         after = _snapshot(workspace)
+        test_object_format_before, test_head_before_sha = _read_task_git_state(workspace)
         before_test_tree_oid, before_test_tree_status = _capture_task_git_tree_oid(
-            workspace, base_commit_sha,
+            workspace, base_commit_sha, object_format=test_object_format_before,
         )
         exit_code, output = run_unittest(workspace, sandbox=task_sandbox)
+        test_object_format_after, test_head_after_sha = _read_task_git_state(workspace)
         after_test_tree_oid, after_test_tree_status = _capture_task_git_tree_oid(
-            workspace, base_commit_sha,
+            workspace, base_commit_sha, object_format=test_object_format_after,
         )
         after_test = _snapshot(workspace)
         tested_git_tree_oid, tested_git_tree_status = _resolve_tested_git_tree(
             after, after_test, before_test_tree_oid, before_test_tree_status,
             after_test_tree_oid, after_test_tree_status,
+            test_object_format_before, test_object_format_after,
+        )
+        test_head_status = _resolve_test_head_status(
+            test_object_format_before, test_head_before_sha,
+            test_object_format_after, test_head_after_sha,
         )
         changed, evidence = _bind_task_evidence(
             before, after, exit_code, output, workspace, attempt=str(attempt_no),
             base_commit_sha=base_commit_sha,
             initial_worktree_fingerprint=initial_worktree_fingerprint,
+            git_object_format=git_object_format,
+            test_head_before_sha=test_head_before_sha,
+            test_head_after_sha=test_head_after_sha,
+            test_head_status=test_head_status,
             tested_git_tree_oid=tested_git_tree_oid,
             tested_git_tree_status=tested_git_tree_status,
         )
@@ -1255,13 +1308,16 @@ def run_task(
             model_reviewed=False,
         )
         reviewer_loop = None
-    return TaskReport(
+    report = TaskReport(
         task=task, workspace=str(workspace), exit_code=exit_code,
         test_output=output, loop=result, reviewer_loop=reviewer_loop,
         changed_files=changed,
         error=result.error, verification=evidence, review=review,
         repair_attempts=attempts, repair_decisions=decisions,
     )
+    if result_commit_sha is not None:
+        report = bind_task_result_commit(report, result_commit_sha)
+    return report
 
 
 def _run_task_reviewer(
@@ -1658,6 +1714,7 @@ def _run_task_reviewer(
     if evidence.tested_git_tree_oid:
         current_tree_oid, current_tree_status = _capture_task_git_tree_oid(
             workspace, evidence.base_commit_sha,
+            object_format=evidence.git_object_format,
         )
         if (
             current_tree_status != "captured"
@@ -1840,7 +1897,7 @@ def _reviewer_read_changed_sources(
 
 
 def _capture_task_git_tree_oid(
-    workspace: Path, base_commit_sha: str,
+    workspace: Path, base_commit_sha: str, *, object_format: str | None = None,
 ) -> tuple[str, str]:
     """尝试获取仓库根工作树的原始 Git tree 投影，不运行 Git helper。"""
     if not base_commit_sha:
@@ -1858,11 +1915,12 @@ def _capture_task_git_tree_oid(
     if stat.S_ISLNK(metadata_status.st_mode) or not metadata_is_file_or_directory:
         return "", "git_metadata_unavailable"
 
-    if len(base_commit_sha) == 40:
-        object_format = "sha1"
-    elif len(base_commit_sha) == 64:
-        object_format = "sha256"
-    else:
+    if object_format is None:
+        try:
+            object_format, _head_sha = _read_task_git_state(workspace)
+        except ValueError:
+            return "", "git_object_format_unavailable"
+    if object_format not in ("sha1", "sha256"):
         return "", "unsupported_object_format"
 
     try:
@@ -1879,8 +1937,12 @@ def _resolve_tested_git_tree(
     before_status: str,
     after_oid: str,
     after_status: str,
+    before_object_format: str,
+    after_object_format: str,
 ) -> tuple[str, str]:
     """仅在测试前后工作区快照与原始 Git 投影都稳定时签发 tree OID。"""
+    if before_object_format != after_object_format:
+        return "", "object_format_changed_during_test"
     if before_status != "captured":
         return "", before_status
     if after_status != "captured":
@@ -1893,11 +1955,108 @@ def _resolve_tested_git_tree(
     return before_oid, "stable"
 
 
+def _resolve_test_head_status(
+    before_object_format: str,
+    before_head_sha: str,
+    after_object_format: str,
+    after_head_sha: str,
+) -> str:
+    if (
+        not before_object_format or not after_object_format
+        or not before_head_sha or not after_head_sha
+    ):
+        return "unavailable"
+    if before_object_format != after_object_format:
+        return "object_format_changed_during_test"
+    if before_head_sha == after_head_sha:
+        return "stable"
+    return "changed_during_test"
+
+
+def bind_task_result_commit(
+    report: TaskReport, result_commit_sha: str,
+) -> TaskReport:
+    """把已完成的任务报告与一个显式结果 commit 作只读 tree 内容比较。
+
+    此绑定发生在测试报告生成之后；它证明 tree 内容相等，不倒推 commit
+    对象何时创建，也不使用 author/committer 时间作为事件时钟。
+    """
+    evidence = report.verification
+    if not isinstance(evidence, VerificationEvidence):
+        raise ValueError("task_verification_unavailable")
+
+    from datetime import datetime
+
+    status = ""
+    canonical_sha = ""
+    result_tree_oid = ""
+    timing_status = ""
+    if (
+        not evidence.tested_git_tree_oid
+        or evidence.tested_git_tree_status != "stable"
+    ):
+        status = "tested_tree_unavailable"
+    elif (
+        not isinstance(result_commit_sha, str)
+        or len(result_commit_sha) not in (40, 64)
+        or any(character not in "0123456789abcdef" for character in result_commit_sha)
+    ):
+        status = "invalid_result_commit_oid"
+    elif evidence.git_object_format not in ("sha1", "sha256"):
+        status = "object_format_unavailable"
+    elif len(result_commit_sha) != (40 if evidence.git_object_format == "sha1" else 64):
+        status = "object_format_mismatch"
+    else:
+        from .workspace import WorkspaceError, read_git_commit_tree_oid
+
+        canonical_sha = result_commit_sha
+        try:
+            result_tree_oid = read_git_commit_tree_oid(
+                Path(report.workspace), result_commit_sha,
+            )
+        except WorkspaceError:
+            status = "result_commit_unavailable"
+        else:
+            status = (
+                "matched"
+                if result_tree_oid == evidence.tested_git_tree_oid
+                else "mismatch"
+            )
+            if (
+                evidence.test_head_status == "stable"
+                and evidence.test_head_before_sha == evidence.test_head_after_sha
+            ):
+                timing_status = (
+                    "head_observed_at_test_boundaries"
+                    if result_commit_sha == evidence.test_head_before_sha
+                    else "not_head_at_test_boundaries"
+                )
+            else:
+                timing_status = "unknown"
+
+    bound_evidence = replace(
+        evidence,
+        result_commit_sha=canonical_sha,
+        result_commit_tree_oid=result_tree_oid,
+        result_commit_tree_status=status,
+        result_commit_timing_status=timing_status,
+        result_commit_checked_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+    )
+    attempts = list(report.repair_attempts)
+    if attempts and attempts[-1] == evidence:
+        attempts[-1] = bound_evidence
+    return replace(report, verification=bound_evidence, repair_attempts=attempts)
+
+
 def _bind_task_evidence(
     before: dict[str, str], after: dict[str, str],
     exit_code: int, output: str, workspace: Path, *, attempt: str = "1",
     base_commit_sha: str = "",
     initial_worktree_fingerprint: str = "",
+    git_object_format: str = "",
+    test_head_before_sha: str = "",
+    test_head_after_sha: str = "",
+    test_head_status: str = "",
     tested_git_tree_oid: str = "",
     tested_git_tree_status: str = "",
 ) -> tuple[list[str], VerificationEvidence]:
@@ -1922,6 +2081,10 @@ def _bind_task_evidence(
         base_commit_sha=base_commit_sha,
         initial_worktree_fingerprint=initial_worktree_fingerprint,
         tested_worktree_fingerprint=_snapshot_fingerprint(after),
+        git_object_format=git_object_format,
+        test_head_before_sha=test_head_before_sha,
+        test_head_after_sha=test_head_after_sha,
+        test_head_status=test_head_status,
         tested_git_tree_oid=tested_git_tree_oid,
         tested_git_tree_status=tested_git_tree_status,
         # 分类只对失败有意义；通过时留空，不把成功误标成某类失败。
@@ -1934,9 +2097,9 @@ def _bind_task_evidence(
     return changed, evidence
 
 
-def _read_task_base_commit_sha(workspace: Path) -> str:
-    """读取任务工作区真实 HEAD；非 Git 靶场返回空，异常 Git 身份失败关闭。"""
-    from .workspace import WorkspaceError, _detect_git
+def _read_task_git_state(workspace: Path) -> tuple[str, str]:
+    """读取仓库根的 storage object format 和完整 HEAD OID；非 Git 靶场留空。"""
+    from .workspace import WorkspaceError, read_git_repository_state
 
     has_git_metadata = any(
         (candidate / ".git").exists() or (candidate / ".git").is_symlink()
@@ -1945,21 +2108,21 @@ def _read_task_base_commit_sha(workspace: Path) -> str:
     if shutil.which("git") is None:
         if has_git_metadata:
             raise ValueError("workspace_git_identity_unavailable")
-        return ""
+        return "", ""
     try:
-        identity = _detect_git(workspace)
+        object_format, revision = read_git_repository_state(workspace)
     except WorkspaceError:
-        raise ValueError("workspace_git_identity_unavailable") from None
-    if identity is None:
         if has_git_metadata:
-            raise ValueError("workspace_git_identity_unavailable")
-        return ""
-    revision = identity.revision
-    if (
-        len(revision) not in (40, 64)
-        or any(character not in "0123456789abcdef" for character in revision)
-    ):
-        raise ValueError("workspace_git_revision_invalid")
+            raise ValueError("workspace_git_identity_unavailable") from None
+        return "", ""
+    if object_format not in ("sha1", "sha256"):
+        raise ValueError("workspace_git_object_format_invalid")
+    return object_format, revision
+
+
+def _read_task_base_commit_sha(workspace: Path) -> str:
+    """读取任务工作区真实 HEAD；非 Git 靶场返回空，异常 Git 身份失败关闭。"""
+    _object_format, revision = _read_task_git_state(workspace)
     return revision
 
 

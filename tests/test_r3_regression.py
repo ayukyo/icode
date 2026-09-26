@@ -276,6 +276,353 @@ class TestWorktreeGitTreeOID(unittest.TestCase):
                 worktree_git_tree_oid(target, object_format="sha3")
 
 
+@unittest.skipUnless(os.name == "posix", "Git result-tree verification uses POSIX test repositories")
+class TestResultCommitTreeBinding(unittest.TestCase):
+    def _git(self, root, *arguments: str) -> str:
+        import subprocess
+
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            check=True, capture_output=True, text=True,
+        )
+        return result.stdout.strip()
+
+    def _new_repo(self, parent, *, sha256: bool = False):
+        import subprocess
+
+        repo = parent / "repo"
+        repo.mkdir()
+        init = ["git", "init", "-q"]
+        if sha256:
+            init.append("--object-format=sha256")
+        try:
+            subprocess.run([*init, str(repo)], check=True, capture_output=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            if sha256:
+                self.skipTest(f"installed Git lacks SHA-256 repository support: {exc}")
+            raise
+        self._git(repo, "config", "user.name", "ICODE tests")
+        self._git(repo, "config", "user.email", "icode-tests@example.invalid")
+        return repo
+
+    def _commit(self, repo, content: str, message: str) -> str:
+        (repo / "source.txt").write_text(content, encoding="utf-8")
+        self._git(repo, "add", "source.txt")
+        self._git(repo, "commit", "-q", "-m", message)
+        return self._git(repo, "rev-parse", "HEAD")
+
+    def test_commit_tree读取只读对象并且不改用户index(self) -> None:
+        from icode.workspace import read_git_commit_tree_oid
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            commit_sha = self._commit(repo, "tested\n", "tested result")
+            expected_tree = self._git(
+                repo, "--no-replace-objects", "rev-parse", "HEAD^{tree}",
+            )
+            index = repo / ".git" / "index"
+            index_bytes = index.read_bytes()
+            index_mtime = index.stat().st_mtime_ns
+
+            actual_tree = read_git_commit_tree_oid(repo, commit_sha)
+
+            self.assertEqual(actual_tree, expected_tree)
+            self.assertEqual(index.read_bytes(), index_bytes)
+            self.assertEqual(index.stat().st_mtime_ns, index_mtime)
+
+    def test_commit_tree读取忽略replace_refs(self) -> None:
+        from icode.workspace import read_git_commit_tree_oid
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            original_sha = self._commit(repo, "original\n", "original")
+            original_tree = self._git(
+                repo, "--no-replace-objects", "rev-parse", "HEAD^{tree}",
+            )
+            replacement_sha = self._commit(repo, "replacement\n", "replacement")
+            replacement_tree = self._git(
+                repo, "--no-replace-objects", "rev-parse", "HEAD^{tree}",
+            )
+            self.assertNotEqual(original_tree, replacement_tree)
+            self._git(repo, "replace", original_sha, replacement_sha)
+
+            self.assertEqual(
+                read_git_commit_tree_oid(repo, original_sha), original_tree,
+            )
+
+    def test_commit_tree读取支持SHA256对象格式(self) -> None:
+        from icode.workspace import (
+            WorkspaceError, read_git_commit_tree_oid, read_git_repository_state,
+        )
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws, sha256=True)
+            commit_sha = self._commit(repo, "sha256\n", "sha256 result")
+            expected_tree = self._git(
+                repo, "--no-replace-objects", "rev-parse", "HEAD^{tree}",
+            )
+
+            actual_tree = read_git_commit_tree_oid(repo, commit_sha)
+
+            self.assertEqual(actual_tree, expected_tree)
+            self.assertEqual(len(actual_tree), 64)
+            self.assertEqual(read_git_repository_state(repo)[0], "sha256")
+            with self.assertRaises(WorkspaceError):
+                read_git_commit_tree_oid(repo, "a" * 40)
+
+    def test_result_commit只接受完整commit对象SHA(self) -> None:
+        from icode.workspace import WorkspaceError, read_git_commit_tree_oid
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            commit_sha = self._commit(repo, "commit\n", "commit")
+            self._git(repo, "tag", "-a", "v1", "-m", "annotated tag")
+            tag_sha = self._git(repo, "rev-parse", "refs/tags/v1")
+
+            with self.assertRaises(WorkspaceError):
+                read_git_commit_tree_oid(repo, "HEAD")
+            with self.assertRaises(WorkspaceError):
+                read_git_commit_tree_oid(repo, tag_sha)
+            with self.assertRaises(WorkspaceError):
+                read_git_commit_tree_oid(repo, commit_sha[:12])
+
+    def test_git只读查询清除继承环境且禁止惰性网络取对象(self) -> None:
+        import subprocess
+
+        from icode.workspace import _run_git
+
+        with temp_workspace() as ws:
+            fake = subprocess.CompletedProcess(["git"], 0, b"commit\n", b"")
+            hostile = {
+                "GIT_DIR": "/untrusted/metadata",
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "alias.cat-file",
+                "GIT_CONFIG_VALUE_0": "!touch /tmp/should-not-run",
+                "GIT_NO_LAZY_FETCH": "0",
+            }
+            with patch.dict(os.environ, hostile, clear=False):
+                with patch("icode.workspace.subprocess.run", return_value=fake) as run:
+                    _run_git(
+                        ws, ("cat-file", "-t", "a" * 40), text=False,
+                        no_replace_objects=True, no_lazy_fetch=True,
+                    )
+
+            args = run.call_args.args[0]
+            environment = run.call_args.kwargs["env"]
+            self.assertEqual(args[0:2], ["git", "--no-replace-objects"])
+            self.assertNotIn("GIT_DIR", environment)
+            self.assertNotIn("GIT_CONFIG_COUNT", environment)
+            self.assertNotIn("GIT_CONFIG_KEY_0", environment)
+            self.assertEqual(environment.get("GIT_NO_LAZY_FETCH"), "1")
+
+    def test_result_commit绑定受测tree且纳入最终回执指纹(self) -> None:
+        from icode.runner import TaskReport, bind_task_result_commit
+        from icode.self_verify import VerificationEvidence, evidence_fingerprint
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            commit_sha = self._commit(repo, "tested result\n", "tested result")
+            tree_oid = self._git(
+                repo, "--no-replace-objects", "rev-parse", "HEAD^{tree}",
+            )
+            evidence = VerificationEvidence(
+                step="task", attempt="1", kind="test", exit_code=0,
+                git_object_format="sha1",
+                test_head_before_sha=commit_sha,
+                test_head_after_sha=commit_sha,
+                test_head_status="stable",
+                tested_git_tree_oid=tree_oid, tested_git_tree_status="stable",
+            )
+            report = TaskReport(
+                task="verify result", workspace=str(repo), exit_code=0,
+                test_output="", loop=SimpleNamespace(ok=True),
+                reviewer_loop=SimpleNamespace(ok=True), changed_files=["source.txt"],
+                verification=evidence,
+                review=SimpleNamespace(ok=True, model_reviewed=True),
+                repair_attempts=[evidence],
+            )
+
+            bound = bind_task_result_commit(report, commit_sha)
+
+            self.assertEqual(bound.verification.result_commit_sha, commit_sha)
+            self.assertEqual(bound.verification.result_commit_tree_oid, tree_oid)
+            self.assertEqual(bound.verification.result_commit_tree_status, "matched")
+            self.assertTrue(bound.ok)
+            self.assertEqual(
+                bound.verification.to_receipt()["result_commit_tree_status"], "matched",
+            )
+            self.assertNotEqual(
+                evidence_fingerprint(evidence), evidence_fingerprint(bound.verification),
+            )
+            self.assertEqual(
+                bound.repair_attempts[-1].result_commit_sha, commit_sha,
+            )
+
+    def test_result_commit树不匹配时报告失败关闭(self) -> None:
+        from icode.runner import TaskReport, bind_task_result_commit
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            first_sha = self._commit(repo, "tested\n", "tested")
+            tested_tree = self._git(
+                repo, "--no-replace-objects", "rev-parse", "HEAD^{tree}",
+            )
+            second_sha = self._commit(repo, "different\n", "different result")
+            evidence = VerificationEvidence(
+                step="task", attempt="1", kind="test", exit_code=0,
+                git_object_format="sha1",
+                test_head_before_sha=first_sha,
+                test_head_after_sha=first_sha,
+                test_head_status="stable",
+                tested_git_tree_oid=tested_tree, tested_git_tree_status="stable",
+            )
+            report = TaskReport(
+                task="verify result", workspace=str(repo), exit_code=0,
+                test_output="", loop=SimpleNamespace(ok=True),
+                reviewer_loop=SimpleNamespace(ok=True), changed_files=["source.txt"],
+                verification=evidence,
+                review=SimpleNamespace(ok=True, model_reviewed=True),
+                repair_attempts=[evidence],
+            )
+
+            bound = bind_task_result_commit(report, second_sha)
+
+            self.assertEqual(bound.verification.result_commit_sha, second_sha)
+            self.assertNotEqual(bound.verification.result_commit_tree_oid, tested_tree)
+            self.assertEqual(bound.verification.result_commit_tree_status, "mismatch")
+            self.assertFalse(bound.ok)
+
+    def test_不存在的结果commit对象失败关闭并保留请求SHA(self) -> None:
+        from icode.runner import TaskReport, bind_task_result_commit
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            self._commit(repo, "tested\n", "tested")
+            tested_tree = self._git(
+                repo, "--no-replace-objects", "rev-parse", "HEAD^{tree}",
+            )
+            missing_sha = "f" * 40
+            evidence = VerificationEvidence(
+                step="task", attempt="1", kind="test", exit_code=0,
+                git_object_format="sha1",
+                tested_git_tree_oid=tested_tree, tested_git_tree_status="stable",
+            )
+            report = TaskReport(
+                task="verify result", workspace=str(repo), exit_code=0,
+                test_output="", verification=evidence,
+            )
+
+            bound = bind_task_result_commit(report, missing_sha)
+
+            self.assertEqual(bound.verification.result_commit_sha, missing_sha)
+            self.assertEqual(
+                bound.verification.result_commit_tree_status, "result_commit_unavailable",
+            )
+            self.assertFalse(bound.ok)
+
+    def test_run_task显式参数自动绑定结果commit(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import run_task
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            commit_sha = self._commit(repo, "verified source\n", "verified source")
+
+            report = run_task(
+                require_skill(), backend=FakeBackend(["完成"]), workspace=repo,
+                result_commit_sha=commit_sha,
+            )
+
+            self.assertEqual(report.verification.result_commit_sha, commit_sha)
+            self.assertEqual(report.verification.result_commit_tree_status, "matched")
+            self.assertEqual(
+                report.verification.result_commit_timing_status,
+                "head_observed_at_test_boundaries",
+            )
+
+    def test无稳定受测tree时拒绝读取结果提交(self) -> None:
+        from icode.runner import TaskReport, bind_task_result_commit
+        from icode.self_verify import VerificationEvidence
+
+        evidence = VerificationEvidence(
+            step="task", attempt="1", kind="test", exit_code=0,
+            tested_git_tree_status="unstable_during_test",
+        )
+        report = TaskReport(
+            task="verify result", workspace="/unused", exit_code=0,
+            test_output="", verification=evidence,
+        )
+
+        with patch(
+            "icode.workspace.read_git_commit_tree_oid",
+            side_effect=AssertionError("must not inspect a commit without stable tested tree"),
+        ):
+            bound = bind_task_result_commit(report, "a" * 40)
+
+        self.assertEqual(
+            bound.verification.result_commit_tree_status, "tested_tree_unavailable",
+        )
+        self.assertFalse(bound.ok)
+
+    def test_same_tree的后测commit仅标记内容匹配不倒推测试时序(self) -> None:
+        import os
+        import subprocess
+
+        from icode.runner import TaskReport, bind_task_result_commit
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            tested_sha = self._commit(repo, "same tree\n", "tested commit")
+            tree_oid = self._git(
+                repo, "--no-replace-objects", "rev-parse", "HEAD^{tree}",
+            )
+            future_env = {
+                **os.environ,
+                "GIT_AUTHOR_DATE": "@4102444800 +0000",
+                "GIT_COMMITTER_DATE": "@4102444800 +0000",
+            }
+            result_sha = subprocess.run(
+                ["git", "-C", str(repo), "commit-tree", tree_oid, "-m", "later result"],
+                check=True, capture_output=True, text=True, env=future_env,
+            ).stdout.strip()
+            self._git(repo, "update-ref", "HEAD", result_sha)
+            evidence = VerificationEvidence(
+                step="task", attempt="1", kind="test", exit_code=0,
+                git_object_format="sha1",
+                test_head_before_sha=tested_sha,
+                test_head_after_sha=tested_sha,
+                test_head_status="stable",
+                tested_git_tree_oid=tree_oid, tested_git_tree_status="stable",
+            )
+            report = TaskReport(
+                task="verify result", workspace=str(repo), exit_code=0,
+                test_output="", loop=SimpleNamespace(
+                    ok=True, render=lambda: "loop",
+                ),
+                reviewer_loop=SimpleNamespace(
+                    ok=True, render=lambda: "reviewer",
+                ), changed_files=["source.txt"],
+                verification=evidence,
+                review=SimpleNamespace(
+                    ok=True, model_reviewed=True, render=lambda: "review",
+                ),
+                repair_attempts=[evidence],
+            )
+
+            bound = bind_task_result_commit(report, result_sha)
+
+            self.assertEqual(bound.verification.result_commit_tree_status, "matched")
+            self.assertEqual(
+                bound.verification.result_commit_timing_status,
+                "not_head_at_test_boundaries",
+            )
+            self.assertIn("tree 匹配不证明 commit 当时已存在", bound.render())
+            self.assertEqual(self._git(repo, "rev-parse", "HEAD"), result_sha)
+
+
 class TestEvidenceDiffBinding(unittest.TestCase):
     def test_diff_fingerprint进入指纹与回执(self) -> None:
         from icode.self_verify import VerificationEvidence, evidence_fingerprint
@@ -601,10 +948,12 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
             original_capture = runner._capture_task_git_tree_oid
             capture_count = 0
 
-            def change_final_tree(workspace, base_commit_sha):
+            def change_final_tree(workspace, base_commit_sha, *, object_format=None):
                 nonlocal capture_count
                 capture_count += 1
-                oid, status = original_capture(workspace, base_commit_sha)
+                oid, status = original_capture(
+                    workspace, base_commit_sha, object_format=object_format,
+                )
                 if capture_count == 3 and status == "captured":
                     alternate = "f" * len(oid)
                     if alternate == oid:
@@ -1341,6 +1690,30 @@ class TestMaxRepairsArgument(unittest.TestCase):
         with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
             parser.parse_args(["task", "--max-repairs", "-1"])
         self.assertEqual(raised.exception.code, 2)
+
+    def test_cli接受完整结果commit参数并传入task执行器(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from icode.cli import _build_parser, cmd_task
+
+        result_sha = "a" * 40
+        args = _build_parser().parse_args([
+            "task", "--workspace", ".", "--result-commit", result_sha,
+        ])
+        report = SimpleNamespace(render=lambda: "report", ok=False)
+        with (
+            patch("icode.cli.load_settings", return_value=object()),
+            patch("icode.cli._build_runner", return_value=(None, None, None, None, None)),
+            patch("icode.runner.run_task", return_value=report) as run_task,
+            redirect_stdout(StringIO()),
+        ):
+            exit_code = cmd_task(args)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(run_task.call_args.kwargs["result_commit_sha"], result_sha)
 
 
 class TestEvidencePackCollectsVerificationRuns(unittest.TestCase):

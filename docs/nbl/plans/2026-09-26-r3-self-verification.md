@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-27
-- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。MiniMax-M3 TDD 靶场完成真实失败 → `allow` → 修复 → 独立测试 → Reviewer 合法提交（25 次调用 / 109,087 tokens）；Reviewer 短上下文终结器仍缺真模型路径证据。本轮新增只读原始 Git tree 投影 OID，进入验证证据/回执/Reviewer 上下文，并在 Reviewer 后复核未漂移；目前仍未比对结果 commit 的 `^{tree}`，不宣称 commit 已验证。树投影仅支持 POSIX 仓库根，最多 250,000 项、128 层和 256 MiB 文件字节，Python SHA-1 OID 不构成签名或抗碰撞安全证明；子模块/嵌套 `.git`、Windows、attributes clean 转换、ACL/xattr、宿主环境与执行轨迹均不在该证明范围。43 项 R3 回归通过，全量 preflight 871 项通过、23 项跳过。常规 [CI #214](https://github.com/ayukyo/icode/actions/runs/36254293856) 成功，但 Linux 与 macOS 原生隔离均为 `5/10`、`critical_passed=false`、`ready=false`，Windows 标准用户 pipe 探针被跳过；前次手动 [CI #213](https://github.com/ayukyo/icode/actions/runs/36252440492) x64/ARM64 管道均在 `CreateFileW` 以 `winerror=5` 失败。跨平台只读边界未闭合，工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
+- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。MiniMax-M3 TDD 靶场完成真实失败 → `allow` → 修复 → 独立测试 → Reviewer 合法提交（25 次调用 / 109,087 tokens）；Reviewer 短上下文终结器仍缺真模型路径证据。本轮新增只读原始 Git tree 投影 OID及可选结果 commit tree 比对，并将绑定结果写入验证指纹/回执；`icode task --result-commit` 可显式启用。提交比对只证明 Git tree 内容相等，不认证来源或安全性，且时间字段只报告测试前后 HEAD 的观测关系，不按 author/committer date 推断。受测 tree 投影仅支持 POSIX 仓库根，最多 250,000 项、128 层和 256 MiB 文件字节，Python SHA-1 OID 不构成签名或抗碰撞安全证明；commit 对象读取上限 1 MiB；子模块/嵌套 `.git`、Windows、attributes clean 转换、ACL/xattr、宿主环境与执行轨迹均不在该证明范围。13 项定向回归通过；全仓 preflight 三道守护通过，unittest 883 项通过、23 项跳过。常规 [CI #214](https://github.com/ayukyo/icode/actions/runs/36254293856) 是此前提交的结果，成功但 Linux 与 macOS 原生隔离均为 `5/10`、`critical_passed=false`、`ready=false`，Windows 标准用户 pipe 探针被跳过；前次手动 [CI #213](https://github.com/ayukyo/icode/actions/runs/36252440492) x64/ARM64 管道均在 `CreateFileW` 以 `winerror=5` 失败。此代码切片 push 后的 CI 尚未出结果；跨平台只读边界未闭合，工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 2026-09-26 UTC 当前联动状态
@@ -19,7 +19,8 @@
 - **密码学边界：**Python 标准库 SHA-1 OID 与 Git 对象 ID 兼容，但没有复用 Git 的碰撞检测 SHA-1，因此 OID 不用作签名或抗碰撞安全根。Git 正在迁移/加固 SHA-1 的官方说明见 [hash-function transition](https://git-scm.com/docs/hash-function-transition/2.48.0) 与 [Git 2.48 highlights](https://github.blog/open-source/git/highlights-from-git-2-48/)；此处仅将 OID 用作本地相等性筛查，后续结果 commit 验证需保持这一风险边界，并结合已绑定证据，不得升级为安全认证声明。
 - **验证：**R3 聚焦回归 43 项通过；全量 `scripts/preflight.py` 三项保护门通过，独立全量 unittest 为 871 项通过、23 项平台跳过。专用临时 Git 仓库覆盖 SHA-1/SHA-256、staged/unstaged、untracked/ignored、模式、类型、链接、特殊文件与属性 helper 不执行；还核验用户 index 字节及时间戳未改变、测试期间变化撤销 OID。
 - **线上隔离状态：**push CI [#214](https://github.com/ayukyo/icode/actions/runs/36254293856) 总体成功；其中 Linux/macOS 原生隔离均 `5/10`、`critical_passed=false`、`ready=false`，Windows 标准用户管道 job 跳过。不得把常规 CI 成功写成 R2 通过；自动模式仍关闭。
-- **下一步：**另行设计并实现结果 commit `^{tree}` 与受测投影的精确匹配和 receipt/reviewer 后验闭环；在 commit 或 tree 格式、普通 commit/gitlink、staged/unstaged 与 ignored/attributes 等情形没有明确可验证合同前，不得输出 `result_commit_verified`。同时继续解决 R2 原生隔离红门、跨平台只读 Reviewer 命令边界和终结器真模型路径证据。
+- **结果 commit tree 比对（2026-09-27）：**新增只读 Git 对象读取：只接收完整 storage-format commit OID，禁用 replace refs 和 partial-clone lazy fetch，校验对象类型/大小/tree header 与 tree 对象，不读写用户 index；明确不接受 SHA-256 仓库的兼容格式 OID。`run_task(..., result_commit_sha=...)` 与 `icode task --result-commit <完整 SHA>` 可显式绑定；tree 不匹配或结果对象不可用时 `TaskReport.ok` 失败关闭，匹配结果进入 receipt/fingerprint。测试前后 HEAD SHA 分别记录；相同 tree 的非边界 HEAD commit 只标注“tree matched / not observed as HEAD”，不得声称 commit 当时存在。Git author/committer dates 不用于时序判断。
+- **后续验收：**对 partial clone 缺失对象的无网络读取、对象损坏、SHA-256 storage/compat OID 边界、CLI/receipt 的实际调用方闭环继续补足；当前 CLI 仅在标准输出显示比对结论，尚无 `task` 命令的持久化 receipt 导出。还需继续解决 R2 原生隔离红门、跨平台只读 Reviewer 命令边界和 Reviewer 短上下文终结器真模型路径证据；所有未验收项保持 fail-closed，不输出“R2/R3 已完成”。
 
 ## 2026-09-26 UTC：CI #202 回执过滤根因与修正
 
