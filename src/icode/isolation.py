@@ -23,6 +23,7 @@ import http.server
 import os
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
@@ -87,6 +88,15 @@ class ProcessGroupProbeResult:
 @dataclass(frozen=True)
 class MetadataReadRoot:
     """Trusted path plus creation-time identity for one read-only root."""
+
+    path: Path
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True)
+class ExecuteOnlyFile:
+    """Trusted exact-file execute exception for a fixed internal payload."""
 
     path: Path
     device: int
@@ -481,6 +491,108 @@ class LandlockSandbox:
                 validated.append(claim)
         return tuple(sorted(validated, key=lambda claim: str(claim.path)))
 
+    def _execute_only_file_claim(
+        self, executable: Path, *, allowed_roots: Sequence[str],
+    ) -> ExecuteOnlyFile:
+        if not isinstance(executable, Path) or not executable.is_absolute():
+            raise ValueError("execute-only file must be an absolute trusted path")
+        try:
+            path = executable.resolve(strict=True)
+            status = os.lstat(path)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise ValueError("execute-only file cannot be resolved") from exc
+        if (
+            path != executable
+            or not stat.S_ISREG(status.st_mode)
+            or not os.access(path, os.X_OK)
+            or not any(path.is_relative_to(Path(root)) for root in allowed_roots)
+        ):
+            raise ValueError("execute-only file must match a fixed system executable")
+        return ExecuteOnlyFile(path, status.st_dev, status.st_ino)
+
+    @staticmethod
+    def _elf_interpreter(executable: Path) -> Path | None:
+        """Return a validated ELF PT_INTERP path without running the binary."""
+        with executable.open("rb") as stream:
+            header = stream.read(64)
+            if len(header) < 52 or header[:4] != b"\x7fELF":
+                raise ValueError("execute-only payload is not a supported ELF file")
+            elf_class, elf_data = header[4], header[5]
+            if elf_class not in (1, 2) or elf_data not in (1, 2):
+                raise ValueError("execute-only ELF header is unsupported")
+            endian = "<" if elf_data == 1 else ">"
+            if elf_class == 2:
+                if len(header) < 64:
+                    raise ValueError("execute-only ELF header is truncated")
+                phoff = struct.unpack_from(endian + "Q", header, 32)[0]
+                phentsize, phnum = struct.unpack_from(endian + "HH", header, 54)
+                ph_format = endian + "IIQQQQQQ"
+                p_offset_index, p_filesz_index = 2, 5
+            else:
+                phoff = struct.unpack_from(endian + "I", header, 28)[0]
+                phentsize, phnum = struct.unpack_from(endian + "HH", header, 42)
+                ph_format = endian + "IIIIIIII"
+                p_offset_index, p_filesz_index = 1, 4
+            minimum_entry_size = struct.calcsize(ph_format)
+            if phentsize < minimum_entry_size or phnum > 1024:
+                raise ValueError("execute-only ELF program-header table is invalid")
+            executable_size = os.fstat(stream.fileno()).st_size
+            for index in range(phnum):
+                entry_offset = phoff + index * phentsize
+                if entry_offset + minimum_entry_size > executable_size:
+                    raise ValueError("execute-only ELF program-header table is truncated")
+                stream.seek(entry_offset)
+                entry_bytes = stream.read(minimum_entry_size)
+                if len(entry_bytes) != minimum_entry_size:
+                    raise ValueError("execute-only ELF program-header table is truncated")
+                entry = struct.unpack(ph_format, entry_bytes)
+                if entry[0] != 3:  # PT_INTERP
+                    continue
+                interpreter_offset = entry[p_offset_index]
+                interpreter_size = entry[p_filesz_index]
+                if (
+                    interpreter_size < 2
+                    or interpreter_size > 4096
+                    or interpreter_offset + interpreter_size > executable_size
+                ):
+                    raise ValueError("execute-only ELF interpreter is invalid")
+                stream.seek(interpreter_offset)
+                raw_path = stream.read(interpreter_size)
+                if (
+                    len(raw_path) != interpreter_size
+                    or raw_path[-1:] != b"\0"
+                    or b"\0" in raw_path[:-1]
+                ):
+                    raise ValueError("execute-only ELF interpreter is malformed")
+                try:
+                    interpreter = Path(raw_path[:-1].decode("ascii"))
+                except (UnicodeDecodeError, ValueError) as exc:
+                    raise ValueError("execute-only ELF interpreter is malformed") from exc
+                if not interpreter.is_absolute():
+                    raise ValueError("execute-only ELF interpreter must be absolute")
+                return interpreter
+            return None
+
+    def _validated_execute_only_files(
+        self, executable: Path, command: Sequence[str],
+    ) -> tuple[ExecuteOnlyFile, ...]:
+        """Bind payload and dynamic loader to exact system-file identities."""
+        payload = self._execute_only_file_claim(
+            executable, allowed_roots=("/usr/bin", "/bin"),
+        )
+        if not command or command[0] != str(payload.path):
+            raise ValueError("execute-only payload must match the fixed command")
+        claims = [payload]
+        interpreter = self._elf_interpreter(payload.path)
+        if interpreter is not None:
+            loader = interpreter.resolve(strict=True)
+            loader_claim = self._execute_only_file_claim(
+                loader, allowed_roots=("/lib", "/lib64", "/usr/lib", "/usr/lib64"),
+            )
+            if loader_claim.path not in {claim.path for claim in claims}:
+                claims.append(loader_claim)
+        return tuple(claims)
+
     def prepare_policy(self, policy: SandboxPolicy) -> None:
         """模型调用前的静态阻断；仅覆盖当前助手已实现的策略子集。"""
         self._checked_policy_workspace(policy)
@@ -501,7 +613,7 @@ class LandlockSandbox:
     def _wrap_policy_with_metadata_roots(
         self, argv: Sequence[str], *, policy: SandboxPolicy,
         metadata_roots: Sequence[MetadataReadRoot], network: bool = False,
-        workspace_read_only: bool = False,
+        workspace_read_only: bool = False, execute_only: Path | None = None,
     ) -> list[str]:
         """Wrap a trusted internal read-only query with extra file/directory roots.
 
@@ -516,9 +628,13 @@ class LandlockSandbox:
         validated_roots = self._validated_metadata_roots(
             policy.workspace_root, metadata_roots,
         )
+        execute_claims = (
+            self._validated_execute_only_files(execute_only, argv)
+            if execute_only is not None else None
+        )
         return self._wrap_with_metadata_roots(
             argv, workspace=policy.workspace_root, metadata_roots=validated_roots,
-            workspace_read_only=workspace_read_only,
+            workspace_read_only=workspace_read_only, execute_only=execute_claims,
         )
 
     def _validate_non_executable_workspace(self, workspace: Path) -> Path:
@@ -573,6 +689,7 @@ class LandlockSandbox:
     def _wrap_with_metadata_roots(
         self, argv: Sequence[str], *, workspace: Path,
         metadata_roots: Sequence[MetadataReadRoot], workspace_read_only: bool,
+        execute_only: Sequence[ExecuteOnlyFile] | None = None,
     ) -> list[str]:
         helper = Path(self.helper)
         if not helper.is_file():
@@ -595,6 +712,12 @@ class LandlockSandbox:
                 "--metadata-read",
                 str(root.path), str(root.device), str(root.inode),
             ))
+        if execute_only is not None:
+            for executable in execute_only:
+                wrapped.extend((
+                    "--execute-only",
+                    str(executable.path), str(executable.device), str(executable.inode),
+                ))
         return [*wrapped, "--", *argv]
 
     def describe(self) -> dict:

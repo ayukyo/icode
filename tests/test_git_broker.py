@@ -14,6 +14,7 @@ from unittest.mock import patch
 from icode.execution_broker import ExecutionResult
 from icode.git_broker import (
     GitStatusUnavailable,
+    execute_policy_command,
     execute_git_status,
     verify_git_workspace_identity,
 )
@@ -261,6 +262,9 @@ class TestGitStatusBrokerExecution(unittest.TestCase):
         self.assertFalse(
             any("diff.external=" in argument for command in commands for argument in command)
         )
+        arguments = [argument for command in commands for argument in command]
+        self.assertIn("core.fsmonitor=", arguments)
+        self.assertNotIn("core.fsmonitor=false", arguments)
 
     def test_status_reports_only_the_task_worktree_and_preserves_index(self) -> None:
         identity = self.session.git_status_identity
@@ -352,7 +356,7 @@ class TestGitStatusBrokerExecution(unittest.TestCase):
                         [
                             "/usr/bin/git", "--git-dir", str(identity.git_dir),
                             "--work-tree", str(identity.workspace_root),
-                            "-c", "core.fsmonitor=false", "--no-optional-locks",
+                            "-c", "core.fsmonitor=", "--no-optional-locks",
                             "status", "--porcelain=v2", "-z", "--no-branch", "--",
                         ],
                         cwd=identity.workspace_root,
@@ -375,6 +379,85 @@ class TestGitStatusBrokerExecution(unittest.TestCase):
                 self.assertEqual(unset.returncode, 0, unset.stderr)
 
         self.assertEqual(index.read_bytes(), index_before)
+
+    def test_config_added_after_preflight_cannot_launch_a_filter_helper(self) -> None:
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        (self.session.workspace_root / ".gitattributes").write_text(
+            "tracked.txt filter=late\n", encoding="ascii"
+        )
+        (self.session.workspace_root / "tracked.txt").write_text(
+            "modified\n", encoding="utf-8"
+        )
+        filter_command = (
+            "/usr/bin/python3 -c \"import sys;"
+            "sys.stderr.write('ICODE_LATE_FILTER_EXECUTED\\\\n');"
+            "sys.stdout.write(sys.stdin.read())\""
+        )
+        _git(self.repository, "config", "filter.late.clean", filter_command)
+        raw_environment = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": str(self.root),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_PAGER": "cat",
+        }
+        raw_status = subprocess.run(
+            [
+                "/usr/bin/git", "--git-dir", str(identity.git_dir),
+                "--work-tree", str(identity.workspace_root),
+                "--no-optional-locks", "status", "--porcelain=v2", "-z",
+                "--no-branch", "--",
+            ],
+            cwd=identity.workspace_root,
+            env=raw_environment,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(raw_status.returncode, 0, raw_status.stderr)
+        self.assertIn(b"ICODE_LATE_FILTER_EXECUTED", raw_status.stderr)
+        _git(self.repository, "config", "--unset", "filter.late.clean")
+
+        injected = False
+        results: list[ExecutionResult] = []
+
+        def inject_configuration_before_status(argv: list[str], **kwargs) -> ExecutionResult:
+            nonlocal injected
+            if not injected and "--porcelain=v2" in argv:
+                configured = subprocess.run(
+                    [
+                        "/usr/bin/git", "--git-dir", str(identity.git_dir),
+                        "--work-tree", str(identity.workspace_root), "config", "--local",
+                        "filter.late.clean", filter_command,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if configured.returncode != 0:
+                    raise AssertionError(configured.stderr)
+                injected = True
+            result = execute_policy_command(argv, **kwargs)
+            results.append(result)
+            return result
+
+        with patch(
+            "icode.git_broker.execute_policy_command",
+            side_effect=inject_configuration_before_status,
+        ):
+            with self.assertRaises(GitStatusUnavailable):
+                self._status()
+
+        self.assertTrue(injected, "the hostile config must arrive after preflight")
+        self.assertTrue(results, "Git subprocess results should be captured")
+        self.assertNotIn(
+            b"ICODE_LATE_FILTER_EXECUTED\n",
+            b"".join(result.raw_output for result in results),
+            "the fixed status query must not launch a late-configured helper",
+        )
 
     def test_gitlink_is_rejected_without_entering_submodule(self) -> None:
         identity = self.session.git_status_identity

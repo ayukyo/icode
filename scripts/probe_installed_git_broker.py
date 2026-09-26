@@ -181,21 +181,70 @@ def _probe() -> None:
             _run_git_for_identity(identity, "config", "core.fsmonitor", str(helper))
             _run_git_for_identity(identity, "config", "diff.external", str(helper))
 
+            attributes = workspace / ".gitattributes"
+            attributes.write_text("tracked.txt filter=envhostile\n", encoding="ascii")
+            filter_marker = root / "environment-clean-filter-ran"
+            clean_filter = root / "environment-clean-filter"
+            clean_filter.write_text(
+                "#!/bin/sh\n"
+                f"/usr/bin/touch {shlex.quote(str(filter_marker))}\n"
+                "exec /bin/cat\n",
+                encoding="utf-8",
+            )
+            clean_filter.chmod(0o755)
+            os.environ.update(
+                {
+                    "GIT_DIR": str(identity.common_dir),
+                    "GIT_WORK_TREE": str(source),
+                    "GIT_CONFIG_COUNT": "1",
+                    "GIT_CONFIG_KEY_0": "filter.envhostile.clean",
+                    "GIT_CONFIG_VALUE_0": shlex.quote(str(clean_filter)),
+                }
+            )
+            raw_control = subprocess.run(
+                [
+                    "/usr/bin/git", "--git-dir", str(identity.git_dir),
+                    "--work-tree", str(identity.workspace_root),
+                    "-c", "core.fsmonitor=", "--no-optional-locks",
+                    "status", "--porcelain=v2", "-z", "--no-branch", "--",
+                ],
+                cwd=workspace,
+                env=os.environ.copy(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+                timeout=15,
+            )
+            _require(raw_control.returncode == 0, "git_environment_control_failed")
+            _require(filter_marker.is_file(), "git_environment_control_not_triggered")
+            filter_marker.unlink()
+            # Poison Git's inherited index selection after the positive control.
+            # The installed broker must use its fixed environment and session identity.
+            os.environ["GIT_INDEX_FILE"] = str(root / "untrusted-index")
+
             policy = session.policy(
                 "review", wall_timeout_seconds=10, output_limit_bytes=1024 * 1024
             )
             _require(policy.network_mode is NetworkMode.DENY, "git_policy_not_offline")
             metadata_before = _git_tree_snapshot(identity)
             entries = execute_git_status(identity, sandbox=sandbox, policy=policy)
+            for name in tuple(os.environ):
+                if name.startswith("GIT_"):
+                    os.environ.pop(name, None)
             entry_paths = {entry.path for entry in entries}
-            if entry_paths != {b"tracked.txt", b"new file.txt"}:
+            if entry_paths != {
+                b".gitattributes", b"tracked.txt", b"new file.txt",
+            }:
                 raise ProbeFailure(
                     "git_status_result_mismatch "
                     f"tracked={b'tracked.txt' in entry_paths} "
                     f"new_file={b'new file.txt' in entry_paths} "
+                    f"attributes={b'.gitattributes' in entry_paths} "
                     f"count={len(entry_paths)}"
                 )
             _require(not helper_marker.exists(), "external_git_helper_ran")
+            _require(not filter_marker.exists(), "git_environment_clean_filter_ran")
             _require(
                 _git_tree_snapshot(identity) == metadata_before,
                 "git_metadata_changed",
@@ -206,7 +255,6 @@ def _probe() -> None:
                 "original_repository_changed",
             )
 
-            attributes = workspace / ".gitattributes"
             attributes.write_text("tracked.txt filter=hostile\n", encoding="ascii")
             filter_marker = root / "clean-filter-ran"
             clean_filter = root / "hostile-clean-filter"
@@ -225,7 +273,7 @@ def _probe() -> None:
                 [
                     "/usr/bin/git", "--git-dir", str(identity.git_dir),
                     "--work-tree", str(identity.workspace_root),
-                    "-c", "core.fsmonitor=false", "--no-optional-locks",
+                    "-c", "core.fsmonitor=", "--no-optional-locks",
                     "status", "--porcelain=v2", "-z", "--no-branch", "--",
                 ],
                 cwd=workspace,

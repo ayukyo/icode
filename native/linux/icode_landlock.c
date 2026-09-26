@@ -60,6 +60,12 @@ struct metadata_read_root {
     uint64_t inode;
 };
 
+struct execute_only_file {
+    const char *path;
+    uint64_t device;
+    uint64_t inode;
+};
+
 static int add_path(int ruleset, const char *path, uint64_t rights, int required) {
     int fd = open(path, O_PATH | O_CLOEXEC);
     if (fd < 0) {
@@ -171,6 +177,63 @@ static int add_metadata_path(int ruleset, const struct metadata_read_root *root)
     close(fd);
     if (result != 0) perror("metadata root rule");
     return result;
+}
+
+static int install_execute_only(const struct execute_only_file *allowed_files,
+                                size_t allowed_file_count) {
+    if (!allowed_files || allowed_file_count == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+    int ruleset = (int)syscall(
+        SYS_landlock_create_ruleset,
+        &(struct landlock_ruleset_attr){
+            .handled_access_fs = LANDLOCK_ACCESS_FS_EXECUTE,
+        },
+        sizeof(struct landlock_ruleset_attr), 0);
+    if (ruleset < 0) {
+        perror("execute-only ruleset");
+        return -1;
+    }
+
+    for (size_t i = 0; i < allowed_file_count; ++i) {
+        const struct execute_only_file *allowed_file = &allowed_files[i];
+        int file_fd = open_metadata_path(allowed_file->path);
+        if (file_fd < 0) {
+            fprintf(stderr, "execute-only file rejected\n");
+            close(ruleset);
+            return -1;
+        }
+        struct stat status;
+        if (fstat(file_fd, &status) != 0 || !S_ISREG(status.st_mode) ||
+            (uint64_t)status.st_dev != allowed_file->device ||
+            (uint64_t)status.st_ino != allowed_file->inode) {
+            fprintf(stderr, "execute-only file identity changed\n");
+            close(file_fd);
+            close(ruleset);
+            return -1;
+        }
+        struct landlock_path_beneath_attr rule = {
+            .allowed_access = LANDLOCK_ACCESS_FS_EXECUTE,
+            .parent_fd = file_fd,
+        };
+        int result = (int)syscall(SYS_landlock_add_rule, ruleset,
+                                  LANDLOCK_RULE_PATH_BENEATH, &rule, 0);
+        close(file_fd);
+        if (result != 0) {
+            perror("execute-only file rule");
+            close(ruleset);
+            return -1;
+        }
+    }
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
+        syscall(SYS_landlock_restrict_self, ruleset, 0) != 0) {
+        perror("execute-only restrict self");
+        close(ruleset);
+        return -1;
+    }
+    close(ruleset);
+    return 0;
 }
 
 static int install_filesystem(const char *workspace,
@@ -496,7 +559,10 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
                               const char *const *runtime_roots,
                               size_t runtime_root_count,
                               const struct metadata_read_root *metadata_roots,
-                              size_t metadata_root_count, char **command,
+                              size_t metadata_root_count,
+                              const struct execute_only_file *execute_only,
+                              size_t execute_only_count,
+                              char **command,
                               int workspace_read_only, int mapless) {
     /* Namespace PID 1 sees its parent as PID 0, so getppid cannot validate it. */
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
@@ -520,6 +586,8 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
             install_filesystem(workspace, runtime_roots, runtime_root_count,
                                metadata_roots, metadata_root_count,
                                workspace_read_only) != 0 ||
+            (execute_only && install_execute_only(
+                execute_only, execute_only_count) != 0) ||
             install_network_deny() != 0) _exit(1);
         execvp(command[0], command);
         perror("execvp");
@@ -546,7 +614,10 @@ static int supervise_task(pid_t host_parent, const char *workspace,
                           const char *const *runtime_roots,
                           size_t runtime_root_count,
                           const struct metadata_read_root *metadata_roots,
-                          size_t metadata_root_count, char **command,
+                          size_t metadata_root_count,
+                          const struct execute_only_file *execute_only,
+                          size_t execute_only_count,
+                          char **command,
                           int workspace_read_only,
                           const char *setgroups_path,
                           const char *uid_map_path) {
@@ -568,7 +639,8 @@ static int supervise_task(pid_t host_parent, const char *workspace,
         close(control[1]);
         int result = run_namespace_init(
             control[0], workspace, runtime_roots, runtime_root_count,
-            metadata_roots, metadata_root_count, command,
+            metadata_roots, metadata_root_count, execute_only,
+            execute_only_count, command,
             workspace_read_only, mapless);
         close(control[0]);
         _exit(result);
@@ -600,6 +672,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                 "usage: icode-landlock --workspace PATH --parent-pid PID "
                 "[--workspace-read-only] [--runtime-read PATH]... "
                 "[--metadata-read PATH DEVICE INODE]... "
+                "[--execute-only PATH DEVICE INODE] "
                 "-- COMMAND [ARG...]\n");
         return 2;
     }
@@ -614,14 +687,18 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     const char **runtime_roots = calloc((size_t)argc, sizeof(*runtime_roots));
     struct metadata_read_root *metadata_roots = calloc(
         (size_t)argc, sizeof(*metadata_roots));
-    if (!runtime_roots || !metadata_roots) {
+    struct execute_only_file *execute_only = calloc(
+        (size_t)argc, sizeof(*execute_only));
+    if (!runtime_roots || !metadata_roots || !execute_only) {
         perror("calloc");
         free(runtime_roots);
         free(metadata_roots);
+        free(execute_only);
         return 2;
     }
     size_t runtime_root_count = 0;
     size_t metadata_root_count = 0;
+    size_t execute_only_count = 0;
     int workspace_read_only = 0;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
@@ -630,6 +707,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                 fprintf(stderr, "duplicate workspace read-only option\n");
                 free(runtime_roots);
                 free(metadata_roots);
+                free(execute_only);
                 return 2;
             }
             workspace_read_only = 1;
@@ -639,6 +717,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                 fprintf(stderr, "invalid runtime root\n");
                 free(runtime_roots);
                 free(metadata_roots);
+                free(execute_only);
                 return 2;
             }
             runtime_roots[runtime_root_count++] = argv[command_index + 1];
@@ -648,6 +727,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                 fprintf(stderr, "invalid metadata root\n");
                 free(runtime_roots);
                 free(metadata_roots);
+                free(execute_only);
                 return 2;
             }
             struct metadata_read_root root = {.path = argv[command_index + 1]};
@@ -655,12 +735,14 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                 fprintf(stderr, "invalid metadata device identity\n");
                 free(runtime_roots);
                 free(metadata_roots);
+                free(execute_only);
                 return 2;
             }
             if (parse_u64_decimal(argv[command_index + 3], &root.inode) != 0) {
                 fprintf(stderr, "invalid metadata inode identity\n");
                 free(runtime_roots);
                 free(metadata_roots);
+                free(execute_only);
                 return 2;
             }
             for (size_t i = 0; i < metadata_root_count; ++i) {
@@ -668,15 +750,45 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                     fprintf(stderr, "duplicate metadata root\n");
                     free(runtime_roots);
                     free(metadata_roots);
+                    free(execute_only);
                     return 2;
                 }
             }
             metadata_roots[metadata_root_count++] = root;
             command_index += 4;
+        } else if (strcmp(argv[command_index], "--execute-only") == 0) {
+            if (command_index + 3 >= argc || argv[command_index + 1][0] != '/') {
+                fprintf(stderr, "invalid execute-only file\n");
+                free(runtime_roots);
+                free(metadata_roots);
+                free(execute_only);
+                return 2;
+            }
+            struct execute_only_file file = {.path = argv[command_index + 1]};
+            if (parse_u64_decimal(argv[command_index + 2], &file.device) != 0 ||
+                parse_u64_decimal(argv[command_index + 3], &file.inode) != 0) {
+                fprintf(stderr, "invalid execute-only identity\n");
+                free(runtime_roots);
+                free(metadata_roots);
+                free(execute_only);
+                return 2;
+            }
+            for (size_t i = 0; i < execute_only_count; ++i) {
+                if (strcmp(execute_only[i].path, file.path) == 0) {
+                    fprintf(stderr, "duplicate execute-only file\n");
+                    free(runtime_roots);
+                    free(metadata_roots);
+                    free(execute_only);
+                    return 2;
+                }
+            }
+            execute_only[execute_only_count++] = file;
+            command_index += 4;
         } else {
             fprintf(stderr, "unknown read-only root option\n");
             free(runtime_roots);
             free(metadata_roots);
+            free(execute_only);
             return 2;
         }
     }
@@ -684,6 +796,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         fprintf(stderr, "missing command\n");
         free(runtime_roots);
         free(metadata_roots);
+        free(execute_only);
         return 2;
     }
     ++command_index;
@@ -691,6 +804,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         restore_child_reaping() != 0) {
         free(runtime_roots);
         free(metadata_roots);
+        free(execute_only);
         return 1;
     }
     char *workspace = realpath(argv[2], NULL);
@@ -698,6 +812,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         perror("workspace realpath");
         free(runtime_roots);
         free(metadata_roots);
+        free(execute_only);
         return 2;
     }
     if (chdir(workspace) != 0) {
@@ -705,15 +820,19 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         free(workspace);
         free(runtime_roots);
         free(metadata_roots);
+        free(execute_only);
         return 1;
     }
     int result = supervise_task(
         (pid_t)parent_value, workspace, runtime_roots, runtime_root_count,
-        metadata_roots, metadata_root_count, argv + command_index,
+        metadata_roots, metadata_root_count,
+        execute_only_count > 0 ? execute_only : NULL, execute_only_count,
+        argv + command_index,
         workspace_read_only, setgroups_path, uid_map_path);
     free(workspace);
     free(runtime_roots);
     free(metadata_roots);
+    free(execute_only);
     return result;
 }
 

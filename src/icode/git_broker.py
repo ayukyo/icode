@@ -97,11 +97,14 @@ def execute_git_status(
         if not required_deny_roots.issubset(set(policy.deny_write_roots)):
             raise GitStatusUnavailable("metadata_write_protection_missing")
 
-        git = str(_trusted_git_executable())
+        git_executable = _trusted_git_executable()
+        git = str(git_executable)
         common = [
             git,
             "--no-pager",
-            "-c", "core.fsmonitor=false",
+            # Git <=2.35.1 treats the word "false" as a helper pathname.
+            # An empty override safely clears any repository-selected helper.
+            "-c", "core.fsmonitor=",
             "-c", "core.untrackedCache=false",
             "-c", "core.hooksPath=/dev/null",
             "-c", "core.excludesFile=/dev/null",
@@ -122,6 +125,7 @@ def execute_git_status(
                 metadata_roots=layout.metadata_roots,
                 network=False,
                 workspace_read_only=True,
+                execute_only=git_executable,
             )
             return execute_policy_command(
                 wrapped,

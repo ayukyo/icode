@@ -28,6 +28,7 @@ from icode.isolation import (
     BASELINE_CLAIM,
     PARTIAL_CLAIM,
     BubblewrapSandbox,
+    ExecuteOnlyFile,
     LandlockSandbox,
     MetadataReadRoot,
     ContainerSandbox,
@@ -844,6 +845,101 @@ class TestSandboxWrapping(unittest.TestCase):
             with self.subTest(root=root):
                 with self.assertRaises(ValueError):
                     sandbox._validate_non_executable_workspace(root)
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux") and shutil.which("cc"),
+        "需要 Linux Landlock 和 C 编译器验证精确执行授权",
+    )
+    def test_landlock_execute_only_authorizes_the_fixed_payload_binary(self) -> None:
+        python = Path(shutil.which("python3", path="/usr/bin:/bin") or "").resolve()
+        self.assertTrue(python.is_file())
+        source = Path(__file__).resolve().parents[1] / "native" / "linux" / "icode_landlock.c"
+
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [
+                    shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                    "-Werror", str(source), "-o", str(helper),
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            manifest = root / "icode-landlock.sha256"
+            manifest.write_text(
+                hashlib.sha256(helper.read_bytes()).hexdigest() + "\n", encoding="ascii"
+            )
+            workspace = root / "code"
+            workspace.mkdir()
+            policy = SandboxPolicy(
+                schema_version=1,
+                run_id="execute-only-test",
+                ticket_id="execute-only-test",
+                step="review",
+                workspace_root=workspace.resolve(),
+                read_roots=(workspace.resolve(),),
+                write_roots=(workspace.resolve(),),
+                deny_read_roots=(),
+                deny_write_roots=(),
+                network_mode=NetworkMode.DENY,
+                allowed_domains=(),
+                process_limit=8,
+                wall_timeout_seconds=10,
+                output_limit_bytes=1024,
+                protected_paths=(),
+            )
+            script = (
+                "import subprocess, sys\n"
+                "allowed = subprocess.run([sys.executable, '-c', \"print('allowed-child')\"], "
+                "capture_output=True, text=True, check=False)\n"
+                "assert allowed.returncode == 0, allowed.stderr\n"
+                "assert 'allowed-child' in allowed.stdout\n"
+                "try:\n"
+                "    subprocess.run(['/bin/sh', '-c', 'exit 0'], check=False)\n"
+                "except PermissionError:\n"
+                "    pass\n"
+                "else:\n"
+                "    raise AssertionError('unlisted executable was allowed')\n"
+                "print('execute-only-ok')\n"
+            )
+            sandbox = LandlockSandbox(helper=str(helper), manifest=str(manifest))
+            result = subprocess.run(
+                sandbox._wrap_policy_with_metadata_roots(
+                    [str(python), "-c", script],
+                    policy=policy,
+                    metadata_roots=(),
+                    execute_only=python,
+                ),
+                capture_output=True,
+                text=True,
+                timeout=6,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("execute-only-ok", result.stdout)
+
+            claims = sandbox._validated_execute_only_files(python, [str(python)])
+            stale_payload = ExecuteOnlyFile(
+                claims[0].path, claims[0].device, claims[0].inode + 1,
+            )
+            identity_mismatch = subprocess.run(
+                sandbox._wrap_with_metadata_roots(
+                    [str(python), "-c", "print('must-not-start')"],
+                    workspace=workspace,
+                    metadata_roots=(),
+                    workspace_read_only=False,
+                    execute_only=(stale_payload, *claims[1:]),
+                ),
+                capture_output=True,
+                text=True,
+                timeout=6,
+                check=False,
+            )
+            self.assertNotEqual(identity_mismatch.returncode, 0)
+            self.assertIn("execute-only file identity changed", identity_mismatch.stderr)
+            self.assertNotIn("must-not-start", identity_mismatch.stdout)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux Landlock read-only policy")
     def test_landlock_Git只读工作区允许缺失的可选系统路径(self) -> None:

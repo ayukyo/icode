@@ -683,7 +683,9 @@ def _run_git(
                     "-c",
                     f"core.hooksPath={hooks_dir}",
                     "-c",
-                    "core.fsmonitor=false",
+                    # Older Git releases execute the literal "false" as a
+                    # helper path; an empty override disables helper selection.
+                    "core.fsmonitor=",
                     "-C",
                     str(working_directory),
                     *arguments,
@@ -876,7 +878,7 @@ def _start_git_blob_batch(
                 "-c",
                 f"core.hooksPath={hooks_dir}",
                 "-c",
-                "core.fsmonitor=false",
+                "core.fsmonitor=",
                 "-C",
                 str(identity.top_level),
                 "cat-file",
