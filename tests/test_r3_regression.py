@@ -797,6 +797,14 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
             repo.mkdir()
             source = repo / "calc.py"
             source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            (repo / "test_calc.py").write_text(
+                "import unittest\n"
+                "from calc import add\n\n"
+                "class TestCalc(unittest.TestCase):\n"
+                "    def test_add(self):\n"
+                "        self.assertEqual(add(2, 3), 5)\n",
+                encoding="utf-8",
+            )
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
             subprocess.run(
                 ["git", "-C", str(repo), "config", "user.name", "ICODE tests"],
@@ -806,7 +814,9 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
                 ["git", "-C", str(repo), "config", "user.email", "icode-tests@example.invalid"],
                 check=True,
             )
-            subprocess.run(["git", "-C", str(repo), "add", "calc.py"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "add", "calc.py", "test_calc.py"], check=True,
+            )
             subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "baseline"], check=True)
             index_path = repo / ".git" / "index"
             index_before = index_path.read_bytes()
@@ -912,6 +922,14 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
             repo.mkdir()
             source = repo / "calc.py"
             source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+            (repo / "test_calc.py").write_text(
+                "import unittest\n"
+                "from calc import add\n\n"
+                "class TestCalc(unittest.TestCase):\n"
+                "    def test_add(self):\n"
+                "        self.assertEqual(add(2, 3), 5)\n",
+                encoding="utf-8",
+            )
             subprocess.run(["git", "init", "-q", str(repo)], check=True)
             subprocess.run(
                 ["git", "-C", str(repo), "config", "user.name", "ICODE tests"],
@@ -921,7 +939,9 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
                 ["git", "-C", str(repo), "config", "user.email", "icode-tests@example.invalid"],
                 check=True,
             )
-            subprocess.run(["git", "-C", str(repo), "add", "calc.py"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "add", "calc.py", "test_calc.py"], check=True,
+            )
             subprocess.run(
                 ["git", "-C", str(repo), "commit", "-q", "-m", "baseline"],
                 check=True,
@@ -1714,6 +1734,60 @@ class TestMaxRepairsArgument(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertEqual(run_task.call_args.kwargs["result_commit_sha"], result_sha)
+
+    def test_cli显式回执路径即使任务失败也保存验证回执(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from icode.cli import _build_parser, cmd_task
+
+        args = _build_parser().parse_args([
+            "task", "--workspace", ".", "--receipt-out", "receipt.json",
+        ])
+        verification = object()
+        report = SimpleNamespace(
+            render=lambda: "failed report", ok=False, verification=verification,
+        )
+        with (
+            patch("icode.cli.load_settings", return_value=object()),
+            patch("icode.cli._build_runner", return_value=(None, None, None, None, None)),
+            patch("icode.runner.run_task", return_value=report),
+            patch("icode.evidence.save_verification_receipt") as save_receipt,
+            redirect_stdout(StringIO()),
+        ):
+            exit_code = cmd_task(args)
+
+        self.assertEqual(exit_code, 1)
+        save_receipt.assert_called_once_with(verification, Path("receipt.json"))
+
+    def test_cli回执写入失败使用独立错误码(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from icode.cli import _build_parser, cmd_task
+        from icode.evidence import EvidenceError
+
+        args = _build_parser().parse_args([
+            "task", "--workspace", ".", "--receipt-out", "receipt.json",
+        ])
+        report = SimpleNamespace(render=lambda: "passed report", ok=True, verification=object())
+        with (
+            patch("icode.cli.load_settings", return_value=object()),
+            patch("icode.cli._build_runner", return_value=(None, None, None, None, None)),
+            patch("icode.runner.run_task", return_value=report),
+            patch("icode.evidence.save_verification_receipt", side_effect=EvidenceError("safe failure")),
+            redirect_stdout(StringIO()),
+            redirect_stderr(StringIO()) as stderr,
+        ):
+            exit_code = cmd_task(args)
+
+        self.assertEqual(exit_code, 2)
+        self.assertIn("验证回执未保存：safe failure", stderr.getvalue())
 
 
 class TestEvidencePackCollectsVerificationRuns(unittest.TestCase):

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import stat
 import subprocess
@@ -58,6 +59,8 @@ from .workspace_snapshot import WorktreeTreeUnavailable
 from .workspace_snapshot import snapshot_fingerprint as _snapshot_fingerprint
 from .workspace_snapshot import snapshot_workspace as _snapshot
 from .workspace_snapshot import worktree_git_tree_oid as _worktree_git_tree_oid
+
+_NO_TESTS_SUMMARY = re.compile(r"(?m)^Ran 0 tests? in\b")
 
 # 靶场默认位置（相对仓库根）
 FIXTURES_ROOT_REL = Path("tests") / "fixtures"
@@ -177,7 +180,7 @@ class TaskReport:
         lines = [
             "能力验证（隔离靶场）",
             f"  工作区：{self.workspace}",
-            f"  独立验证：python -m unittest 退出码 = {self.exit_code}",
+            f"  独立验证：python -B -m unittest 退出码 = {self.exit_code}",
         ]
         if self.changed_files:
             lines.append("  改动文件：" + "、".join(self.changed_files))
@@ -285,7 +288,7 @@ def run_unittest(
             python = "python"
         elif sandbox.name == "wsl":
             python = "python3"
-    argv = [python, "-m", "unittest"]
+    argv = [python, "-B", "-m", "unittest"]
     if sandbox is not None:
         argv = sandbox.wrap(argv, workspace=workspace, network=False)
     proc = subprocess.run(  # noqa: S603 - 参数列表 + shell=False
@@ -293,7 +296,12 @@ def run_unittest(
         cwd=str(workspace), capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=timeout, shell=False,
     )
-    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+    output = (proc.stdout or "") + (proc.stderr or "")
+    if _NO_TESTS_SUMMARY.search(output) and proc.returncode == 0:
+        # Python unittest releases differ on whether an empty discovery is exit 0 or 5.
+        # A zero-test run is never verification evidence, so normalize it to failure.
+        return 5, output + "\nICODE: no tests were discovered; treating verification as failed.\n"
+    return proc.returncode, output
 
 
 # ---------------------------------------------------------------------------
@@ -2071,7 +2079,7 @@ def _bind_task_evidence(
             artifact_hashes[rel] = _hashlib.sha256(path.read_bytes()).hexdigest()
     evidence = VerificationEvidence(
         step="task", attempt=attempt, kind="test",
-        command=("python", "-m", "unittest"),
+        command=("python", "-B", "-m", "unittest"),
         exit_code=exit_code,
         output=output,
         environment_fingerprint=environment_fingerprint(),

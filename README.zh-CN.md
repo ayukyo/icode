@@ -102,13 +102,27 @@ python scripts/preflight.py
 icode task --fixture pycalc --backend openai-compatible
 ```
 
-靶场会先复制到临时工作区。模型只能修改副本；结束后由 ICODE 再独立执行一次验收测试，不相信模型的自我声明。
+靶场会先复制到临时工作区。模型只能修改副本；结束后由 ICODE 再独立执行一次验收测试，不相信模型的自我声明。空测试集不算验证通过；独立运行使用 `python -B -m unittest`，避免验证器生成的 `.pyc` 改写受测 tree。
 
 对 POSIX Git 仓库根目录，可额外用 `--result-commit FULL_COMMIT_SHA` 将稳定受测工作树投影与指定 commit 的 tree 做只读内容比对。它不验证 commit 签名、来源或创建时序；匹配只说明 tree 内容相同。
 
 ```bash
 icode task --workspace /path/to/repo --result-commit FULL_COMMIT_SHA \
   --backend openai-compatible
+```
+
+如果需要保留这次验证结果，可显式指定一个尚不存在的 JSON 文件；父目录必须事先存在。回执含退出码、验证元数据（包括命令）、摘要和工作区/tree/commit 绑定信息，不包含完整测试输出。失败验证在验证证据可用时也会保留失败回执；若回执无法安全写入，命令以独立错误码退出。
+
+```bash
+icode task --fixture pycalc --receipt-out task-verification.json \
+  --backend openai-compatible
+```
+
+之后可将同一回执纳入可独立校验的工单证据包：
+
+```bash
+icode evidence --ticket /path/to/ticket --dest /path/to/evidence-pack \
+  --receipt task-verification.json
 ```
 
 ### 执行一个受契约约束的步骤

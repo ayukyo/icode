@@ -104,6 +104,13 @@ class TestIndependentVerification(unittest.TestCase):
             self.assertEqual(code, 0, output[-800:])
             self.assertIn("OK", output)
 
+    def test_没有发现测试不能被当成通过(self) -> None:
+        with temp_workspace() as ws:
+            code, output = run_unittest(ws)
+
+        self.assertNotEqual(code, 0, "空测试集不构成验证证据")
+        self.assertIn("Ran 0 tests", output)
+
     def test_改动导致失败时退出码非零(self) -> None:
         with temp_workspace() as ws:
             dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
@@ -137,7 +144,7 @@ class TestIndependentVerification(unittest.TestCase):
         self.assertEqual((code, output), (0, "OK"))
         self.assertEqual(len(sandbox.calls), 1)
         argv, workspace, network = sandbox.calls[0]
-        self.assertEqual(argv, [sys.executable, "-m", "unittest"])
+        self.assertEqual(argv, [sys.executable, "-B", "-m", "unittest"])
         self.assertEqual(workspace, ws)
         self.assertFalse(network)
         self.assertEqual(run.call_args.args[0], ["sandbox-wrapper", *argv])
@@ -565,7 +572,7 @@ class TestTaskVerificationEvidence(unittest.TestCase):
             evidence = report.verification
             self.assertEqual(evidence.step, "task")
             self.assertEqual(evidence.kind, "test")
-            self.assertEqual(evidence.command, ("python", "-m", "unittest"))
+            self.assertEqual(evidence.command, ("python", "-B", "-m", "unittest"))
             self.assertEqual(evidence.exit_code, 0)
             self.assertTrue(evidence.passed)
             self.assertTrue(evidence.environment_fingerprint)

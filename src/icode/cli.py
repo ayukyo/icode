@@ -91,6 +91,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--result-commit",
         help="可选完整 commit SHA；只读比较其 tree 与受测工作树投影（不认证来源/时序）",
     )
+    p_task.add_argument(
+        "--receipt-out",
+        help="显式保存独立验证回执 JSON；目标必须不存在，父目录需预先创建",
+    )
     _add_model_args(p_task)
     _add_loop_args(p_task)
 
@@ -99,7 +103,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ev = _add("evidence", help="把工单导出为可独立校验的证据包")
     p_ev.add_argument("--ticket", required=True, help="v3 工单目录")
     p_ev.add_argument("--dest", required=True, help="证据包输出目录")
-    p_ev.add_argument("--receipt-from", help="在该目录独立跑 python -m unittest 并把退出码写入回执")
+    p_ev.add_argument("--receipt-from", help="在该目录独立跑 python -B -m unittest 并把退出码写入回执")
     p_ev.add_argument("--receipt", action="append", default=[], help="额外回执 JSON 文件（可重复）")
 
     p_evv = _add("verify-pack", help="校验证据包（使用包内同一套逻辑）")
@@ -443,6 +447,18 @@ def cmd_task(args: argparse.Namespace) -> int:
         sandbox=sandbox, max_repairs=args.max_repairs,
     )
     print(report.render())
+    if args.receipt_out:
+        from .evidence import EvidenceError, save_verification_receipt
+
+        try:
+            receipt_path = save_verification_receipt(
+                report.verification, Path(args.receipt_out),
+            )
+        except EvidenceError as exc:
+            print(f"验证回执未保存：{exc}", file=sys.stderr)
+            print("成本：" + _budget_line(backend))
+            return 2
+        print(f"验证回执：{receipt_path}")
     print("成本：" + _budget_line(backend))
     return 0 if report.ok else 1
 
@@ -476,8 +492,8 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     if args.receipt_from:
         workdir = Path(args.receipt_from).resolve()
         code, output = run_unittest(workdir)
-        receipts.append(collect_verifications(code, [sys.executable, "-m", "unittest"], output))
-        print(f"  外部验证回执：python -m unittest @ {workdir} → 退出码 {code}")
+        receipts.append(collect_verifications(code, [sys.executable, "-B", "-m", "unittest"], output))
+        print(f"  外部验证回执：python -B -m unittest @ {workdir} → 退出码 {code}")
 
     report = build_evidence_pack(
         args.ticket, dest=args.dest, gates_json=settings.gates_json, verifications=receipts,

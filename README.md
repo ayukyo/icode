@@ -102,13 +102,27 @@ python scripts/preflight.py
 icode task --fixture pycalc --backend openai-compatible
 ```
 
-The fixture is copied to a temporary workspace. The model may edit only that copy, and ICODE runs the acceptance tests again independently instead of trusting the model's claim.
+The fixture is copied to a temporary workspace. The model may edit only that copy, and ICODE runs the acceptance tests again independently instead of trusting the model's claim. An empty test suite is not a pass; the independent run uses `python -B -m unittest` so verification itself does not create `.pyc` files that change the tested tree.
 
 For a POSIX Git repository root, `--result-commit FULL_COMMIT_SHA` optionally compares the stable tested worktree projection with the selected commit tree using read-only Git object queries. This is content equality only; it does not authenticate the commit, its source, or when it was created.
 
 ```bash
 icode task --workspace /path/to/repo --result-commit FULL_COMMIT_SHA \
   --backend openai-compatible
+```
+
+To keep the verification result, explicitly choose a new JSON file; its parent directory must already exist. The receipt stores the exit code, verification metadata (including the command), digests, and workspace/tree/commit bindings, not the full test output. A failed verification still produces a failure receipt when evidence is available; if the receipt cannot be written safely, the command exits with a separate error code.
+
+```bash
+icode task --fixture pycalc --receipt-out task-verification.json \
+  --backend openai-compatible
+```
+
+The receipt can later be included in a standalone-verifiable ticket evidence pack:
+
+```bash
+icode evidence --ticket /path/to/ticket --dest /path/to/evidence-pack \
+  --receipt task-verification.json
 ```
 
 ### A contract-governed step

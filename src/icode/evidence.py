@@ -19,7 +19,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -385,3 +387,65 @@ def collect_verifications(exit_code: int, argv: list[str], output: str) -> dict:
         "output_sha256": hashlib.sha256(output.encode("utf-8")).hexdigest(),
         "output_tail": "\n".join(output.strip().splitlines()[-8:]),
     }
+
+
+def save_verification_receipt(evidence: object, destination: Path | str) -> Path:
+    """原子创建一份独立验证回执；目标已存在或父目录缺失时绝不覆盖/创建。"""
+    from .self_verify import VerificationEvidence
+
+    if not isinstance(evidence, VerificationEvidence):
+        raise EvidenceError("验证证据不支持回执序列化")
+
+    try:
+        receipt = evidence.to_receipt()
+        if not isinstance(receipt, dict):
+            raise EvidenceError("验证回执必须是 JSON 对象")
+        payload = (
+            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+    except EvidenceError:
+        raise
+    except (AttributeError, OverflowError, RecursionError, TypeError, ValueError, UnicodeError):
+        raise EvidenceError("验证回执无法编码为 JSON") from None
+
+    try:
+        target = Path(destination)
+        target_value = os.fspath(target)
+    except (TypeError, ValueError):
+        raise EvidenceError("验证回执目标文件名无效") from None
+    if "\x00" in target_value or target.name in ("", ".", ".."):
+        raise EvidenceError("验证回执目标文件名无效")
+    if not target.parent.is_dir():
+        raise EvidenceError("验证回执父目录不存在")
+
+    descriptor = -1
+    temporary_path: Path | None = None
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{target.name}.", dir=target.parent,
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(descriptor, "wb") as stream:
+            descriptor = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        # Hard-link publication is atomic and fails if the destination exists.
+        # This keeps a partially written receipt from appearing at its final name.
+        os.link(temporary_path, target)
+        return target
+    except FileExistsError:
+        raise EvidenceError("验证回执目标已存在，拒绝覆盖") from None
+    except OSError:
+        raise EvidenceError("验证回执无法安全写入或发布") from None
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass

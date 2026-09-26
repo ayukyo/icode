@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-27
-- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。MiniMax-M3 TDD 靶场完成真实失败 → `allow` → 修复 → 独立测试 → Reviewer 合法提交（25 次调用 / 109,087 tokens）；Reviewer 短上下文终结器仍缺真模型路径证据。本轮新增只读原始 Git tree 投影 OID及可选结果 commit tree 比对，并将绑定结果写入验证指纹/回执；`icode task --result-commit` 可显式启用。提交比对只证明 Git tree 内容相等，不认证来源或安全性，且时间字段只报告测试前后 HEAD 的观测关系，不按 author/committer date 推断。受测 tree 投影仅支持 POSIX 仓库根，最多 250,000 项、128 层和 256 MiB 文件字节，Python SHA-1 OID 不构成签名或抗碰撞安全证明；commit 对象读取上限 1 MiB；子模块/嵌套 `.git`、Windows、attributes clean 转换、ACL/xattr、宿主环境与执行轨迹均不在该证明范围。13 项定向回归通过；全仓 preflight 三道守护通过，unittest 883 项通过、23 项跳过。常规 [CI #214](https://github.com/ayukyo/icode/actions/runs/36254293856) 是此前提交的结果，成功但 Linux 与 macOS 原生隔离均为 `5/10`、`critical_passed=false`、`ready=false`，Windows 标准用户 pipe 探针被跳过；前次手动 [CI #213](https://github.com/ayukyo/icode/actions/runs/36252440492) x64/ARM64 管道均在 `CreateFileW` 以 `winerror=5` 失败。此代码切片 push 后的 CI 尚未出结果；跨平台只读边界未闭合，工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
+- 状态（2026-09-27 最新）：R3 自验证/有界修复核心、独立只读 Reviewer 及受控 MiniMax-M3 真模型修复闭环已有离线证据。验证证据绑定基线 SHA、初始/受测工作区指纹、稳定 raw Git tree OID、可选结果 commit tree、改动指纹和独立测试结果；`icode task --receipt-out` 可显式持久化失败或成功回执并导入证据包。测试空集稳定判失败，内部 unittest 用 `-B` 防止 verifier 写入 pyc 污染受测 tree。完整 preflight 三道守护通过，893 项测试通过、23 项跳过。当前改动推送后的 CI 尚待触发。上轮 [CI #216](https://github.com/ayukyo/icode/actions/runs/36259173063) 的 macOS Intel 原生隔离仍 `5/10`、`critical_passed=false`、`ready=false`；R2 继续 fail-closed。受测 tree 投影仅支持 POSIX 仓库根，最多 250,000 项、128 层和 256 MiB 文件字节；Python SHA-1 OID 不作签名或抗碰撞安全证明，commit 对象读取上限 1 MiB；子模块/嵌套 `.git`、Windows、attributes clean 转换、ACL/xattr、宿主环境与执行轨迹不在其证明范围。Reviewer 短上下文终结器仍缺真模型路径证据，工作流 Reviewer 的跨平台只读 OS 边界未闭合，`run_command` 继续 fail-closed 禁用。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 2026-09-26 UTC 当前联动状态
@@ -20,7 +20,7 @@
 - **验证：**R3 聚焦回归 43 项通过；全量 `scripts/preflight.py` 三项保护门通过，独立全量 unittest 为 871 项通过、23 项平台跳过。专用临时 Git 仓库覆盖 SHA-1/SHA-256、staged/unstaged、untracked/ignored、模式、类型、链接、特殊文件与属性 helper 不执行；还核验用户 index 字节及时间戳未改变、测试期间变化撤销 OID。
 - **线上隔离状态：**push CI [#214](https://github.com/ayukyo/icode/actions/runs/36254293856) 总体成功；其中 Linux/macOS 原生隔离均 `5/10`、`critical_passed=false`、`ready=false`，Windows 标准用户管道 job 跳过。不得把常规 CI 成功写成 R2 通过；自动模式仍关闭。
 - **结果 commit tree 比对（2026-09-27）：**新增只读 Git 对象读取：只接收完整 storage-format commit OID，禁用 replace refs 和 partial-clone lazy fetch，校验对象类型/大小/tree header 与 tree 对象，不读写用户 index；明确不接受 SHA-256 仓库的兼容格式 OID。`run_task(..., result_commit_sha=...)` 与 `icode task --result-commit <完整 SHA>` 可显式绑定；tree 不匹配或结果对象不可用时 `TaskReport.ok` 失败关闭，匹配结果进入 receipt/fingerprint。测试前后 HEAD SHA 分别记录；相同 tree 的非边界 HEAD commit 只标注“tree matched / not observed as HEAD”，不得声称 commit 当时存在。Git author/committer dates 不用于时序判断。
-- **后续验收：**对 partial clone 缺失对象的无网络读取、对象损坏、SHA-256 storage/compat OID 边界、CLI/receipt 的实际调用方闭环继续补足；当前 CLI 仅在标准输出显示比对结论，尚无 `task` 命令的持久化 receipt 导出。还需继续解决 R2 原生隔离红门、跨平台只读 Reviewer 命令边界和 Reviewer 短上下文终结器真模型路径证据；所有未验收项保持 fail-closed，不输出“R2/R3 已完成”。
+- **当时的后续验收清单：**此 tree-binding 切片结束时，CLI 仅在标准输出显示比对结论，task 持久化回执尚未实现；partial clone 缺失对象的无网络读取与对象损坏路径也仍待专项验证。task 回执后续状态见本计划的“持久化验证回执”记录。R2 原生隔离红门、跨平台只读 Reviewer 命令边界和 Reviewer 短上下文终结器真模型路径证据仍需继续解决，不能据单一切片声称 R2/R3 完成。
 
 ## 2026-09-26 UTC：CI #202 回执过滤根因与修正
 
@@ -193,7 +193,7 @@ R3 核心能力（本切片）：
 ## 下一片（尚未闭合）
 
 1. **已实现的基础锚点：**`base_commit_sha` 只表示任务开始时的提交；`initial_worktree_fingerprint` 与 `tested_worktree_fingerprint` 覆盖包括预存脏改动在内的快照，`diff_fingerprint` 保留本轮改动语义。回执与 Reviewer 终态校验均覆盖这些字段；快照摘要现包含文件类型、符号链接目标及 POSIX Git 可执行位，相关行为先 RED 后 GREEN。该快照仍不等于 Git tree。
-2. **受测 tree 方案已收窄：**从 POSIX 仓库根以 no-follow 文件描述符只读扫描当前 Git 文件投影，用 Python 标准库按 Git object serialization 计算 tree OID；包含 staged/unstaged 当前工作树状态、未跟踪及 ignored 项，不触碰用户 index、不调用 `git add`/filters。以测试前后工作树 fingerprint 与 tree OID 一致作为可记录条件。结果 commit 需在后续切片与此 OID 精确比较；本切片不单独宣布 commit 已验证。Windows、子目录工作区、嵌套 `.git`/gitlink、特殊文件、路径竞态或不可读项一律不提供 OID。Attributes 不被读取或执行：其转换最多造成安全的不匹配，不能把 raw-worktree 哈希解释为 Git clean-filter 结果；commit tree 的相等只证明 tree 层路径/字节/模式一致，不含 ACL、xattr 或执行环境。
+2. **受测 tree 与结果 commit：**从 POSIX 仓库根以 no-follow 文件描述符只读扫描当前 Git 文件投影，用 Python 标准库按 Git object serialization 计算 tree OID；包含 staged/unstaged 当前工作树状态、未跟踪及 ignored 项，不触碰用户 index、不调用 `git add`/filters。以测试前后工作树 fingerprint 与 tree OID 一致作为可记录条件。现在可通过显式 `--result-commit` 与只读 commit/tree 查询比较；匹配只证明 tree 层路径/字节/模式一致，不认证来源/时序，也不含 ACL、xattr 或执行环境。Windows、子目录工作区、嵌套 `.git`/gitlink、特殊文件、路径竞态或不可读项一律不提供 OID。Attributes 不被读取或执行：其转换最多造成安全的不匹配，不能把 raw-worktree 哈希解释为 Git clean-filter 结果。
 3. 对工作流 review 步骤只读命令边界完成跨平台原生验收；策略化 Reviewer 的只读文件权限与拒读子路径仍需证明能由同一 OS profile 强制组合；
 4. 补足 Reviewer 短上下文终结器的真模型路径证据。Windows/其他平台门未过前继续 fail-closed，不能用本机 R3 回执锚定代替 R2 OS 沙箱验收。
 
@@ -225,3 +225,12 @@ R3 核心能力（本切片）：
 - **验证状态：**Reviewer/loop/runner/Windows token probe 聚焦测试 104 项通过；`./.venv/bin/python -m unittest`：830 项通过、23 项跳过；`scripts/preflight.py` 密钥扫描、子模块完整性、全量测试门均通过。真实修复 TaskReport 成功、R2 Windows 双架构 probe 和 Git SHA 锚点仍待完成。
 - **Windows 诊断边界：**父子握手都可能在 15 秒附近超时；父端失败后增加最多 2 秒退出宽限，再读取最多 512 字节的安全白名单报告。该改动只改善失败归因，不能让管道握手变成通过；当前 CI #196 使用旧 SHA，必须重跑双架构手动 probe。
 - **CI #198 结果与异常映射修正：**使用 `8dd40eb` 的 x64/ARM64 标准用户探针均完成但返回 `unclassified`；普通测试、workspace、Linux/macOS 原生探针、Windows Job 与 wheel 作业完成。`_run_child_mode` 曾把 `TimeoutError` 等类名直接写入回执，违反仅小写标签的 parser 契约。新增固定小写 label 映射、对既有异常类标签的有限兼容，并只在报告路径经固定 TEMP/文件名合同校验后回写；聚焦测试通过，双架构原生复验仍未完成，Windows pipe 不视为已验收。
+
+## 2026-09-26 UTC / 2026-09-27 Asia/Shanghai：task 验证回执持久化
+
+- **实现：**`icode task --receipt-out <新 JSON 文件>` 仅在显式提供时写出 `VerificationEvidence.to_receipt()`；目标存在、父目录不存在、类型不受支持或文件系统无法安全发布时拒绝落盘，不覆盖、不自动建目录。使用同目录临时文件完成序列化后以无覆盖方式发布，失败时清理临时文件。回执可传给 `icode evidence --receipt <JSON>` 并进入现有独立证据包。
+- **状态与隐私边界：**验证失败但证据对象可用时仍保存失败回执，`icode task` 保持失败退出码；收据写入失败用独立错误码 fail-closed。回执不含测试输出正文或 raw error，但保留既有 schema 中的命令/摘要与绑定字段。它是结果快照，不是 session/event 日志，不证明过程中没有未记录写入，也不代表完整测试证据或隔离能力。
+- **竞品取舍：**固定 SHA 的 Codex RolloutRecorder 展示持久化屏障/写失败保留待重试后缀；OpenHands SDK 分离会话生命周期与持久事件 store；OpenCode 关联前后 Git 快照与差异。采纳明确持久化失败、证据与生命周期分离、快照便于审查等设计原则；暂缓完整 JSONL 事件流和可恢复会话 store，本片不重建 task 生命周期。源码/版本/许可与收益成本明细见[持续竞品对照](../../agent-landscape-live.md) 2026-09-27 记录；只借鉴机制，没有复制代码或新增依赖。
+- **验证器一致性修正（由 CI #216 揭示）：**其两个 Python job 的 R3 单测失败都与测试夹具没有测试模块有关：零测试在不同 Python minor release 下出现 0/5 不同退出码，导致修复分支和 tree 捕获次数依赖版本。现在 `run_unittest` 将 `Ran 0 tests` 稳定规范为失败，并以 `-B` 禁止 verifier 自身写入 pyc；两个 tree 绑定回归均加入真实最小测试。此改动保留原始 tree 全量投影语义，不把 `__pycache__` 从树证据里排除。
+- **验证：**新增测试覆盖 schema 输出与不覆盖、父目录边界、拒绝任意 duck-typed 回执、损坏证据序列化安全失败、文件发布失败临时清理、NUL 非法目标路径、证据包 CLI 导入、验证失败仍保存、回执保存失败返回独立退出码、零测试失败和 verifier 不污染 tree。完整 `.venv/bin/python -m unittest` 为 893 项通过、23 项跳过；`scripts/preflight.py` 三道守护、`compileall`、`git diff --check`、站点检查、治理检查和竞品对照检查通过。修正提交后的 Windows/macOS/Linux CI 尚待推送触发；`os.link` 对目标 runner/filesystem 的支持仍需在线 CI 结果确认。
+- **未关闭项：**R2 原生隔离门、Windows 自动模式、工作流 Reviewer 跨平台 OS 只读边界和 Reviewer 短上下文终结器真模型路径证据均继续 fail-closed；不得据本切片宣布 R2/R3 完成。

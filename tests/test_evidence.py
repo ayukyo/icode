@@ -103,6 +103,146 @@ class TestEvidencePack(unittest.TestCase):
             self.assertTrue(receipts[0]["fingerprint"])
             self.assertNotIn("AssertionError: boom", json.dumps(receipts[0]))
 
+    def test_独立task回执写为JSON且不覆盖已有文件(self) -> None:
+        from icode.evidence import EvidenceError, save_verification_receipt
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            destination = ws / "receipts" / "task.json"
+            destination.parent.mkdir()
+            evidence = VerificationEvidence(
+                step="task", attempt="1", kind="test", exit_code=0,
+                output="private test output", raw_error="private detail",
+                result_commit_sha="a" * 40,
+                result_commit_tree_oid="b" * 40,
+                result_commit_tree_status="matched",
+            )
+
+            written = save_verification_receipt(evidence, destination)
+
+            self.assertEqual(written, destination)
+            payload = destination.read_bytes()
+            receipt = json.loads(payload)
+            self.assertEqual(receipt, evidence.to_receipt())
+            self.assertNotIn("private test output", payload.decode("utf-8"))
+            self.assertNotIn("private detail", payload.decode("utf-8"))
+            with self.assertRaises(EvidenceError):
+                save_verification_receipt(evidence, destination)
+            self.assertEqual(destination.read_bytes(), payload)
+            self.assertEqual([path.name for path in destination.parent.iterdir()], ["task.json"])
+
+    def test_task回执输出不自动创建父目录(self) -> None:
+        from icode.evidence import EvidenceError, save_verification_receipt
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            parent = ws / "not-created"
+            destination = parent / "task.json"
+            evidence = VerificationEvidence(step="task", attempt="1", exit_code=1)
+
+            with self.assertRaises(EvidenceError):
+                save_verification_receipt(evidence, destination)
+
+            self.assertFalse(parent.exists())
+
+    def test_task回执拒绝包含NUL的目标路径(self) -> None:
+        from icode.evidence import EvidenceError, save_verification_receipt
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            destination = ws / "bad\x00name.json"
+            evidence = VerificationEvidence(step="task", attempt="1", exit_code=0)
+
+            with self.assertRaisesRegex(EvidenceError, "目标文件名无效"):
+                save_verification_receipt(evidence, destination)
+
+            self.assertEqual(list(ws.iterdir()), [])
+
+    def test_task回执拒绝非验证证据类型(self) -> None:
+        from icode.evidence import EvidenceError, save_verification_receipt
+
+        class ForeignReceipt:
+            def to_receipt(self) -> dict[str, str]:
+                return {"kind": "verification", "arbitrary": "value"}
+
+        with temp_workspace() as ws:
+            destination = ws / "receipt.json"
+            with self.assertRaises(EvidenceError):
+                save_verification_receipt(ForeignReceipt(), destination)
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(ws.iterdir()), [])
+
+    def test_task回执发布失败清理临时文件(self) -> None:
+        from unittest.mock import patch
+
+        from icode.evidence import EvidenceError, save_verification_receipt
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            destination = ws / "receipt.json"
+            evidence = VerificationEvidence(step="task", attempt="1", exit_code=0)
+            with patch("icode.evidence.os.link", side_effect=OSError("private path")):
+                with self.assertRaisesRegex(EvidenceError, "无法安全写入或发布"):
+                    save_verification_receipt(evidence, destination)
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(ws.iterdir()), [])
+
+    def test_task回执内容类型损坏时返回安全错误(self) -> None:
+        from icode.evidence import EvidenceError, save_verification_receipt
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            destination = ws / "receipt.json"
+            malformed = VerificationEvidence(
+                step="task", attempt="1", output=object(),  # type: ignore[arg-type]
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "无法编码为 JSON"):
+                save_verification_receipt(malformed, destination)
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(ws.iterdir()), [])
+
+    def test_task回执可直接导入证据包CLI(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        from icode.cli import _build_parser, cmd_evidence
+        from icode.evidence import save_verification_receipt
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            ticket = make_finished_plan_ticket(self.settings, ws / "work")
+            receipt_path = ws / "task-verification.json"
+            evidence = VerificationEvidence(
+                step="task", attempt="1", kind="test", exit_code=0,
+                result_commit_sha="a" * 40,
+                result_commit_tree_oid="b" * 40,
+                result_commit_tree_status="matched",
+            )
+            save_verification_receipt(evidence, receipt_path)
+            pack_path = ws / "pack"
+            args = _build_parser().parse_args([
+                "evidence", "--ticket", str(ticket), "--dest", str(pack_path),
+                "--receipt", str(receipt_path),
+            ])
+
+            with patch("icode.cli.load_settings", return_value=self.settings):
+                with redirect_stdout(StringIO()):
+                    exit_code = cmd_evidence(args)
+
+            self.assertEqual(exit_code, 0)
+            packed = json.loads(
+                (pack_path / "verifications.json").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(
+                packed["receipts"][0]["result_commit_tree_status"], "matched",
+            )
+            self.assertEqual(verify_pack(pack_path), [])
+
     def test_清单列出所有文件且摘要自洽(self) -> None:
         with temp_workspace() as ws:
             _out, dest, report = self._build(ws, workspace=ws / "work")
