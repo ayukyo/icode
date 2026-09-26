@@ -32,7 +32,6 @@ from icode.windows_runner_pipe import (
     new_runner_pipe_name,
     open_runner_pipe_client,
     runner_process_logon_sid,
-    runner_process_user_sid,
     validate_runner_pipe_name,
 )
 
@@ -250,9 +249,11 @@ def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
         process_handle = kernel.GetCurrentProcess()
         current_pid = int(kernel.GetCurrentProcessId())
         wrong_pid = current_pid + 1 if current_pid < 0xFFFFFFFF else 1
-        user_sid = runner_process_user_sid(process_handle)
+        # Match the pipe factory contract and the production runner ACL: scope
+        # the test pipe to this logon session, not the account across sessions.
+        logon_sid = runner_process_logon_sid(process_handle)
         failures: list[str] = []
-        with create_runner_pipe_server(user_sid) as pipe:
+        with create_runner_pipe_server(logon_sid) as pipe:
             def accept_once() -> None:
                 try:
                     pipe._connect(5_000)

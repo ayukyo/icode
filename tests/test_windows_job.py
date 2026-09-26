@@ -355,7 +355,12 @@ class TestWindowsJob(unittest.TestCase):
         self.assertTrue(probe["executed"])
         self.assertEqual(probe["checks"], {"normal_exit": True, "timeout": True})
         self.assertTrue(probe["passed"], probe["detail"])
-        self.assertFalse(report["conformance_contract"]["executed"])
+        # Scoring is executed, but a Job-only cleanup probe is not a complete
+        # backend self-test or process-tree cleanup proof.
+        contract = report["conformance_contract"]
+        self.assertTrue(contract["executed"])
+        self.assertFalse(contract["outcomes"]["doctor_self_test"])
+        self.assertFalse(contract["outcomes"]["process_tree_cleanup"])
 
     @unittest.skipUnless(sys.platform == "win32", "需 Windows Job Object 崩溃实测")
     def test_宿主崩溃关闭job句柄也回收后代(self) -> None:

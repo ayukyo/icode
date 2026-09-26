@@ -9,7 +9,12 @@ import tempfile
 from pathlib import Path
 
 from icode.conformance_evidence import score_probe_evidence
-from icode.isolation import LandlockSandbox, MacSeatbeltSandbox, probe_native_sandbox
+from icode.isolation import (
+    LandlockSandbox,
+    MacSeatbeltSandbox,
+    probe_macos_process_group_cleanup,
+    probe_native_sandbox,
+)
 
 
 def _emit_conformance_score(
@@ -17,6 +22,7 @@ def _emit_conformance_score(
     *,
     platform: str,
     doctor_self_test: bool,
+    process_group_cleanup: bool | None = None,
 ) -> None:
     """把本次原生探针证据映射到十项一致性合同并打印评分。
 
@@ -24,7 +30,10 @@ def _emit_conformance_score(
     因此该分数反映「当前探针矩阵已直接证明的能力」，不冒充完整验收。
     """
     report = score_probe_evidence(
-        checks, platform=platform, doctor_self_test=doctor_self_test,
+        checks,
+        platform=platform,
+        doctor_self_test=doctor_self_test,
+        process_group_cleanup=process_group_cleanup,
     )
     score = report["score"]
     print(
@@ -35,7 +44,9 @@ def _emit_conformance_score(
     )
     for capability_id, passed in sorted(report["outcomes"].items()):
         mark = "PASS" if passed else "UNVERIFIED"
-        source = ",".join(report["evidence"][capability_id]) or "-"
+        raw_source = report["evidence"][capability_id]
+        source = ",".join(raw_source) if isinstance(raw_source, list) else str(raw_source)
+        source = source or "-"
         print(f"conformance {platform} {capability_id}: {mark} ({source})")
 
 
@@ -73,10 +84,22 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     for name, passed in result.checks.items():
         print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
     platform = "linux" if sys.platform.startswith("linux") else "macos"
+    group_result = None
+    if platform == "macos":
+        group_result = probe_macos_process_group_cleanup(backend)
+        for name, passed in group_result.checks.items():
+            print(f"{backend.name} process_group_{name}: {'PASS' if passed else 'FAIL'}")
     _emit_conformance_score(result.checks, platform=platform,
-                            doctor_self_test=result.ready)
-    if not result.ready:
-        if isinstance(backend, MacSeatbeltSandbox):
+                            doctor_self_test=(
+                                result.ready
+                                and (group_result is None or group_result.passed)
+                            ),
+                            process_group_cleanup=(
+                                group_result.passed if group_result is not None else None
+                            ))
+    group_failed = group_result is not None and not group_result.passed
+    if not result.ready or group_failed:
+        if not result.ready and isinstance(backend, MacSeatbeltSandbox):
             true_path = shutil.which("true")
             if true_path is not None:
                 for name, profile in (
@@ -97,7 +120,12 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
                         )
                     except (OSError, subprocess.TimeoutExpired) as exc:
                         print(f"::warning::macOS diagnostic {name}: {type(exc).__name__}")
-        print(f"::error::{backend.name} native probe failed: {result.detail}")
+        failures = []
+        if not result.ready:
+            failures.append(f"native probe: {result.detail}")
+        if group_failed:
+            failures.append(f"process-group cleanup: {group_result.detail}")
+        print(f"::error::{backend.name} native probe failed: {'; '.join(failures)}")
         return 1
     return 0
 

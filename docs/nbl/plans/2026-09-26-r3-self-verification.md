@@ -129,3 +129,10 @@ R3 核心能力（本切片）：
    能力验证路径，review 步骤的对抗审查上下文仍需接入）；
 3. 证据指纹锚定到真实 commit（Git SHA）而非仅工作区 diff 快照（R2.4 Git broker
    接通后可做）。
+
+## 2026-09-26 UTC：CI #188 跨平台证据接线回归
+
+- [CI #188](https://github.com/ayukyo/icode/actions/runs/36222709957) 的 Python 3.11/3.12、Windows x64/ARM64 wheel、Linux 原生探针通过；Windows 两架构的 `test_局部自检不冒充完整沙箱` 失败，macOS Intel/ARM 因评分调用没有提供 `process_group_cleanup` 布尔证据而异常退出。
+- **根因区分：**Windows `capability_report()` 把 Job 的正常退出/超时回收局部探针作为 `doctor_self_test`，并把 Windows Job 清理错传成 macOS 专用 `process_group_cleanup`；评分因此回退到空证据。macOS 原生 CI 的 `scripts/run_native_probe_ci.py` 评分前只运行六项文件/网络探针，没有运行真实同组清理探针，而 evaluator 按设计拒绝缺失证据。
+- **修正与本地回归：**先新增跨平台 capability-report 与 macOS 原生 CI 编排测试并观测 RED，再修为：仅 Linux 已完成的内核沙箱最小探针可点亮 doctor `doctor_self_test`；Windows Job/macOS 同组清理只保留其局部证据；macOS 原生 CI 评分前运行真实组清理，把通过或失败的布尔值写入评分，失败仍令作业非零。额外发现 CI evidence 的来源字段可能是字符串或数组；补上输出格式回归，避免把字符串逐字符 join。当前 focused tests 与 Linux 原生探针通过；Windows、Intel macOS、Apple Silicon 的真实 runner 复验尚待后续 workflow。
+- **状态边界：**CI #188 原始失败保留为历史证据。上述本地修正不等同原生复验，不关闭 R2；R3 的真模型端到端有界修复与 review 步骤接线仍是独立未闭门项。

@@ -387,9 +387,17 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 
 - **原生结果：**手动 CI [#180](https://github.com/ayukyo/icode/actions/runs/36195160595) 的 Windows x64 与 ARM64 标准用户 probe 都在 `runner_pipe_wrong_server_pid_rejection_failed` 失败，安全摘要均为 `server_accept_timeout`；其余 #180 作业成功。原探针先启动 `ConnectNamedPipe` 线程，固定 sleep 25 ms 后运行预期被错误 server PID 拒绝的客户端；服务器超时分支优先返回，因此客户端阶段码被覆盖。现有日志无法区分客户端访问拒绝、客户端等待/打开失败或“已打开后迅速关闭、服务端尚未开始接受”的时序竞态，不据此认定根因。
 - **TDD 补强：**先添加回归测试，模拟客户端观察到预期 PID 不匹配、服务端随后 accept 超时；确认旧逻辑错误地仅返回 `server_accept_timeout`（RED）。修正为在失败摘要中并列返回安全白名单客户端阶段与服务器 accept 阶段；16 项标准用户 probe 定向测试及完整 `scripts/preflight.py` 三道守护（密钥扫描、子模块完整性、全量单测）均通过。
-- **第二轮原生结果：**手动 CI [#182](https://github.com/ayukyo/icode/actions/runs/36196277700) 的 x64 与 ARM64 都返回 `client_access_denied+server_accept_timeout`；该摘要证明客户端路径遇到 PermissionError，但仍把 `WaitNamedPipeW`、`CreateFileW` 与 `GetNamedPipeServerProcessId` 的拒绝合并，尚不知具体 Win32 API 阶段。
-- **相关 API 契约疑点：**Microsoft 对 [`GetNamedPipeServerProcessId`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid) 的 `Pipe` 参数描述为由 `CreateNamedPipe` 创建的句柄；ICODE 当前却从客户端 `CreateFileW` 取得句柄后调用它。这是需要原生错误码/阶段确认的契约疑点，不据文档一句话断言就是本次 `PermissionError` 根因。固定 Codex runner pipe 源码的父端创建管道并用 `GetNamedPipeClientProcessId` 核验 runner PID，没有为 ICODE 当前的客户端 server-PID 查询调用提供先例。[Codex fixed source](https://github.com/openai/codex/blob/c7e80f873f67dbef58206b9d4f3c60e9d556eb16/codex-rs/windows-sandbox-rs/src/elevated/runner_pipe.rs)
-- **下一诊断：**已先写三种阶段码的回归断言，再为 `WaitNamedPipeW`、`CreateFileW` 和 server-PID 查询增加固定标签映射；测试不可将原始异常/用户名/SID/路径写入日志。该改动通过 16 项定向测试，待完整守护、主 CI 与下一次双架构 Windows 原生 probe。若确认 server-PID 查询端点不合 API 合同，需按父端身份认证与 first-instance 的安全设计重新评估，而不是仅删除身份门；若 CreateFile 的 DACL 被拒，也不得盲目扩权。Windows 自动模式仍关闭。
+- **第二轮原生结果：**手动 CI [#182](https://github.com/ayukyo/icode/actions/runs/36196277700) 的 x64 与 ARM64 都返回 `client_access_denied+server_accept_timeout`；按当时代码，server PID 查询失败走的是 `OSError`/WinError 分类，因此该 PermissionError 摘要对应 `WaitNamedPipeW` 或 `CreateFileW`，并非 PID 查询阶段。两处仍未区分，尚不能判定具体 Win32 API 阶段。
+- **相关 API 契约疑点：**Microsoft 对 [`GetNamedPipeServerProcessId`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getnamedpipeserverprocessid) 的 `Pipe` 参数描述为由 `CreateNamedPipe` 创建的句柄；ICODE 当前却从客户端 `CreateFileW` 取得句柄后调用它。此疑点与尚未打开管道的 #182/#184 拒绝不能建立因果。Codex 的 elevated runner pipe 在服务端调用 `GetNamedPipeClientProcessId`；另有 TUI 和 provisioning client 客户端在 `CreateFileW` 后调用 `GetNamedPipeServerProcessId`，见 2026-09-26 上游刷新记录。
+- **阶段码改动：**先写三种阶段码的回归断言，再为 `WaitNamedPipeW`、`CreateFileW` 和 server-PID 查询增加固定标签映射；日志不可输出原始异常/用户名/SID/路径。定向测试、完整预检及主 CI #183 均通过。
+
+### 2026-09-26 UTC：CI #184 明确 CreateFileW 拒绝
+
+- **双架构原生结果：**手动 CI [#184](https://github.com/ayukyo/icode/actions/runs/36197559399) 的 x64 与 ARM64 都在 `CreateFileW` 阶段返回 `client_open_access_denied+server_accept_timeout`；两个标准用户 probe job 是该 workflow 唯一失败项。客户端未取得 pipe handle，因此本轮尚未调用 `GetNamedPipeServerProcessId`；server accept timeout 是后续结果，不是独立根因。
+- **代码差异 / 诊断假设：**负例 probe 创建自连测试管道时传入当前进程 User SID；产品 runner pipe 的合同与实际 `CreateProcessWithLogonW` 路径使用 runner logon SID。Microsoft 说明客户端 `CreateFile` 会依据有效线程令牌和 pipe DACL 做 access check，并建议用 logon SID 限定 logon/session。这个身份差异证明测试路径与生产路径不完全相同，但尚不能单独解释 #184 拒绝。
+- **下一受控验证：**将负例 probe 的 DACL principal 收敛为同一进程的 logon SID，保持 `0x00100003` 请求与 ACE 掩码、first-instance、拒绝远端和 PID 校验不变。此改动只修正诊断路径与生产合同的一致性，不把它预先写成根因；须在下一次 x64/ARM64 原生运行看结果。若仍拒绝，下一步读取 pipe 实际 DACL 与有效线程令牌并对该精确掩码运行 `AccessCheck`；不扩大 DACL、不改 generic rights、不移除 PID 门。Windows 自动模式继续关闭。
+- **证据来源：**[Microsoft named-pipe DACL / logon SID 文档](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)、[Microsoft access-check 令牌规则](https://learn.microsoft.com/en-us/windows/win32/secauthz/how-dacls-control-access-to-an-object)。
+- **本地诊断变化（待原生复验）：**错误 server-PID probe 的测试 pipe 现改用 runner logon SID，与生产 ACL principal 对齐；原访问掩码、first-instance、拒绝远端和 PID 负例均未放宽。Windows pipe/标准用户 probe 26 项单测通过。该差分尚未证明 #184 根因，x64 与 ARM64 原生 CI 复验未完成；若仍是 `CreateFileW` 拒绝，按计划采集 DACL 与有效线程 token 并对精确 `0x00100003` 执行 `AccessCheck`。
 
 ### 2026-09-25 UTC：Windows token 修正版前的 macOS CI 复跑
 

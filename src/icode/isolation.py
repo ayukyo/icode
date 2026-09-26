@@ -1077,7 +1077,6 @@ def capability_report() -> dict:
             "detail": job_result.detail,
         }
         native_checks = dict(job_result.checks)
-        process_group_cleanup = job_result.passed
 
     platform = ("linux" if sys.platform.startswith("linux")
                 else "macos" if sys.platform == "darwin"
@@ -1090,9 +1089,11 @@ def capability_report() -> dict:
         process_group_cleanup=process_group_cleanup,
         resource_limits=None,        # doctor 不跑独立资源限制探针，保守不计
         uniform_violation=None,      # doctor 不跑独立违规回执探针，保守不计
+        # Only Linux currently runs a native sandbox self-test here. macOS
+        # group cleanup and Windows Job cleanup are narrower probes; neither
+        # proves the backend's complete filesystem/network contract.
         doctor_self_test=(
-            bool(bundled.get("minimal_probe_passed"))
-            if platform == "linux" else bool(native_checks)
+            bool(bundled.get("minimal_probe_passed")) if platform == "linux" else False
         ),
     )
     return {

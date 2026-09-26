@@ -22,6 +22,52 @@ from scripts.windows_standard_user_token_probe import (
 
 
 class TestWindowsStandardUserTokenProbe(unittest.TestCase):
+    def test_wrong_server_pid_probe_builds_acl_for_runner_logon_sid(self) -> None:
+        class FakePipe:
+            name = r"\\.\pipe\icode-runner-" + "d" * 32
+            _connected = True
+
+            def _connect(self, timeout_ms: int) -> None:
+                self._connected = True
+
+            def __enter__(self) -> "FakePipe":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        kernel = mock.Mock()
+        kernel.GetCurrentProcess.return_value = 123
+        kernel.GetCurrentProcessId.return_value = 100
+        pipe = FakePipe()
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.ctypes.WinDLL",
+                return_value=kernel,
+                create=True,
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.runner_process_logon_sid",
+                return_value="S-1-5-5-123-456",
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
+                return_value=pipe,
+            ) as create_server,
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
+                side_effect=PermissionError("runner_pipe_server_pid_mismatch"),
+            ),
+        ):
+            result = runner_pipe_wrong_server_pid_probe()
+
+        self.assertEqual(result, (True, "server_pid_mismatch_rejected"))
+        create_server.assert_called_once_with("S-1-5-5-123-456")
+
     def test_wrong_server_pid_probe_confirms_only_the_expected_pid_mismatch(self) -> None:
         class FakePipe:
             name = r"\\.\pipe\icode-runner-" + "b" * 32
@@ -53,8 +99,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 create=True,
             ),
             mock.patch(
-                "scripts.windows_standard_user_token_probe.runner_process_user_sid",
-                return_value="S-1-5-21-1-2-3-1001",
+                "scripts.windows_standard_user_token_probe.runner_process_logon_sid",
+                return_value="S-1-5-5-123-456",
             ),
             mock.patch(
                 "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
@@ -100,8 +146,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 create=True,
             ),
             mock.patch(
-                "scripts.windows_standard_user_token_probe.runner_process_user_sid",
-                return_value="S-1-5-21-1-2-3-1001",
+                "scripts.windows_standard_user_token_probe.runner_process_logon_sid",
+                return_value="S-1-5-5-123-456",
             ),
             mock.patch(
                 "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
@@ -154,8 +200,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                         create=True,
                     ),
                     mock.patch(
-                        "scripts.windows_standard_user_token_probe.runner_process_user_sid",
-                        return_value="S-1-5-21-1-2-3-1001",
+                        "scripts.windows_standard_user_token_probe.runner_process_logon_sid",
+                        return_value="S-1-5-5-123-456",
                     ),
                     mock.patch(
                         "scripts.windows_standard_user_token_probe.create_runner_pipe_server",

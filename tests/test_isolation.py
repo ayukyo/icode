@@ -71,6 +71,37 @@ class TestProbe(unittest.TestCase):
             self.assertFalse(group["executed"])
             self.assertFalse(group["passed"])
 
+    def test_局部进程清理探针不计作完整后端自检(self) -> None:
+        from types import SimpleNamespace
+
+        cases = (
+            ("win32", "icode.windows_job.probe_windows_job_cleanup", {
+                "executed": True,
+                "passed": True,
+                "checks": {"normal_exit": True, "timeout": True},
+                "detail": "ok",
+            }),
+            ("darwin", "icode.isolation.probe_macos_process_group_cleanup", {
+                "executed": True,
+                "passed": True,
+                "checks": {"normal_exit": True, "timeout": True},
+                "detail": "ok",
+            }),
+        )
+        for platform, probe_path, probe_result in cases:
+            with self.subTest(platform=platform), \
+                 mock.patch("icode.isolation.sys.platform", platform), \
+                 mock.patch("icode.isolation.probe_capabilities", return_value=()), \
+                 mock.patch("icode.isolation.select_sandbox", return_value=NoIsolation()), \
+                 mock.patch(probe_path, return_value=SimpleNamespace(**probe_result)):
+                report = capability_report()
+
+            contract = report["conformance_contract"]
+            self.assertTrue(contract["executed"])
+            self.assertEqual(len(contract["outcomes"]), 10)
+            self.assertFalse(contract["outcomes"]["doctor_self_test"])
+            self.assertFalse(contract["outcomes"]["process_tree_cleanup"])
+
     def test_macos_同组清理启动异常按失败报告(self) -> None:
         with mock.patch("icode.isolation.sys.platform", "darwin"), \
              mock.patch("icode.isolation.shutil.which", return_value="/fake/sandbox-exec"), \
