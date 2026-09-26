@@ -10,7 +10,11 @@ from pathlib import Path
 
 
 def snapshot_workspace(root: Path) -> dict[str, str]:
-    """仅散列工作区实体；链接记录目标文本，绝不由宿主跟随读取。"""
+    """仅散列工作区实体；链接记录目标文本，绝不由宿主跟随读取。
+
+    跳过 `.icode_output` 与 `__pycache__`：前者是工单账本，后者是宿主
+    Python 编译产物——两者都不是模型改动，不能进入 diff 证据。
+    """
     root = Path(root)
     out: dict[str, str] = {}
     if os.name == "posix":
@@ -20,7 +24,7 @@ def snapshot_workspace(root: Path) -> dict[str, str]:
             # 所有子路径相对已经打开的目录 fd，防止检查后把祖先换成链接。
             with os.scandir(directory_fd) as entries:
                 for entry in sorted(entries, key=lambda item: item.name):
-                    if entry.name == ".icode_output":
+                    if entry.name == ".icode_output" or entry.name == "__pycache__":
                         continue
                     child_parts = (*parts, entry.name)
                     mode = entry.stat(follow_symlinks=False).st_mode
@@ -61,7 +65,8 @@ def snapshot_workspace(root: Path) -> dict[str, str]:
         raise OSError("snapshot root must be a real directory")
     anchor = root.resolve(strict=True)
     for path in sorted(root.rglob("*")):
-        if ".icode_output" in path.relative_to(root).parts:
+        rel_parts = path.relative_to(root).parts
+        if ".icode_output" in rel_parts or "__pycache__" in rel_parts:
             continue
         relative = path.relative_to(root).as_posix()
         if path.is_symlink():

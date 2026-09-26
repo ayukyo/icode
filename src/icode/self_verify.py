@@ -103,10 +103,13 @@ _MODEL_CAPABILITY_PATTERNS = (
 class VerificationEvidence:
     """一次验证结果及其绑定信息。
 
-    语义：这条证据**只**对 `step` + `attempt` + `command`（摘要） +
-    `exit_code` + `output_sha256` + `environment_fingerprint` +
-    `artifact_hashes` 这些事实成立。任一事实变化都应产生新的证据，
-    否则复用旧证据去推动状态前进会被视为「没有新证据」。
+    语义：这条证据**只**对 `step` + `command`（摘要） + `exit_code` +
+    `output_sha256` + `environment_fingerprint` + `artifact_hashes` +
+    `diff_fingerprint` 这些**可观察事实**成立。任一事实变化都应产生新的
+    证据，否则复用旧证据去推动状态前进会被视为「没有新证据」。`attempt`
+    是**有界修复的账本标签**（回执中保留），但不参与「新证据」指纹：同一
+    失败在不同 attempt 下应被识别为**同一证据**，否则任何重试都会因为
+    attempt 递增而被误判为新证据（碰运气）。
     """
 
     step: str
@@ -193,10 +196,12 @@ def environment_fingerprint() -> str:
 
 
 def evidence_fingerprint(evidence: VerificationEvidence) -> str:
-    """把一次验证绑定成确定性指纹；任何绑定事实变化都会改变指纹。
+    """把一次验证绑定成确定性指纹；**可观察事实**变化都会改变指纹。
 
     指纹只依赖**去重、确定性**的事实；输出正文不直接进指纹，
-    只用其 sha256，避免把大输出或敏感内容写进指纹。
+    只用其 sha256，避免把大输出或敏感内容写进指纹。`attempt` 是有界修复
+    的账本标签，不进入指纹——同一失败被再次观测（不同 attempt）仍视为
+    「无新证据」，避免重试因 attempt 递增而被误判为新证据。
     """
     artifacts = {
         str(key): str(value)
@@ -205,7 +210,6 @@ def evidence_fingerprint(evidence: VerificationEvidence) -> str:
     payload = json.dumps(
         {
             "step": evidence.step,
-            "attempt": evidence.attempt,
             "kind": evidence.kind,
             "command": list(evidence.command),
             "exit_code": evidence.exit_code,
@@ -318,6 +322,7 @@ class VerificationLedger:
             environment_fingerprint=evidence.environment_fingerprint
             or self.environment_fingerprint,
             artifact_hashes=dict(evidence.artifact_hashes),
+            diff_fingerprint=evidence.diff_fingerprint,
             category=evidence.category,
             captured_at=evidence.captured_at or _now(),
             raw_error=evidence.raw_error,

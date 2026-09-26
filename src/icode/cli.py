@@ -29,6 +29,16 @@ from .handshake import run_handshake
 REPO_ROOT = repo_root()
 
 
+def _nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("must be an integer >= 0") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be an integer >= 0")
+    return parsed
+
+
 def _build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     _add_common_args(common)
@@ -75,6 +85,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_task.add_argument("--fixture", default="pycalc", help="tests/fixtures 下的靶场名")
     p_task.add_argument("--workspace", help="指定工作区（默认自动建临时隔离副本）")
     p_task.add_argument("--task", default="", help="任务描述（默认新增 calc_gcd/calc_lcm）")
+    p_task.add_argument("--max-repairs", type=_nonnegative_int, default=2,
+                        help="R3 有界修复次数上限（默认 2；独立测试失败后最多重试这么多次）")
     _add_model_args(p_task)
     _add_loop_args(p_task)
 
@@ -423,7 +435,7 @@ def cmd_task(args: argparse.Namespace) -> int:
         settings, backend=backend, workspace=workspace,
         task=args.task or DEFAULT_TASK, approver=approver,
         loop_config=LoopConfig(max_turns=args.max_turns), budget=budget, on_event=on_event,
-        sandbox=sandbox,
+        sandbox=sandbox, max_repairs=args.max_repairs,
     )
     print(report.render())
     print("成本：" + _budget_line(backend))

@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-26
-- 状态：核心切片已实现并离线验收：失败分类、证据绑定、有界修复决策、runner 补救回合证据门、独立 Reviewer（只读上下文 + 证据引用）、回归证据绑定到具体 diff（`diff_fingerprint`）、修复证据写入事件链（`verification_recorded`）并随证据包取证；R3 完整退出门槛（端到端真模型修复循环）尚未闭合
+- 状态：核心切片已实现并离线验收：失败分类、证据绑定、有界修复决策、runner 补救回合证据门、独立 Reviewer（只读上下文 + 证据引用）、回归证据绑定到具体 diff（`diff_fingerprint`）、修复证据写入事件链（`verification_recorded`）并随证据包取证；`run_task` 已具备有界修复循环（失败 → 分类 → 有界修复 → 回归 → 独立 Reviewer）的机制并以 FakeBackend 离线验收；R3 完整退出门槛（真模型端到端跑通）尚未闭合
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 目标与范围
@@ -109,14 +109,22 @@ R3 核心能力（本切片）：
 
 1. `workspace_changes` / 测试回执绑定到具体 commit/diff 与 artifact hash：
    `diff_fingerprint` 进 `VerificationEvidence`（指纹 + 回执）；
+   工作区快照排除 `__pycache__` 编译产物（不是模型改动，不进 diff 证据）；
 2. 独立 Reviewer 接线：`run_task` 用只读上下文复核改动与证据，不能修改被审对象；
 3. 修复证据写入事件链与证据包：`record-verification` 记录 `verification_recorded`
-   + `verification_runs`，`build_evidence_pack` 自动纳入 `verifications.json`。
+   + `verification_runs`，`build_evidence_pack` 自动纳入 `verifications.json`；
+4. **`run_task` 有界修复循环**：独立测试失败后，若类别可自动修复，在
+   `max_repairs` 有界次数内重新让模型改动并复测；每次必须有**新的失败证据**
+   （diff 或退出码/类别变化），同 diff 无新证据即停止，不碰运气；
+   `TaskReport.repair_attempts` / `repair_decisions` 记录全部尝试与决策。
+   指纹语义修正：`attempt` 是账本标签不进指纹（同一失败再次观测=无新证据），
+   `record` 保留 `diff_fingerprint`；离线用 FakeBackend 覆盖修复成功、
+   无新证据停止、次数有界三种路径。
 
 ## 下一片（尚未闭合）
 
 1. 端到端真模型修复循环：失败 → 分类 → 有界修复 → 回归 → 独立 Reviewer 全链路
-   在真模型下跑通并验收；
+   在**真模型**下跑通并验收（机制已就绪，缺真模型验收）；
 2. 把独立 Reviewer 完整接入 review 步骤 / Reviewer 上下文（当前接线在 `run_task`
    能力验证路径，review 步骤的对抗审查上下文仍需接入）；
 3. 证据指纹锚定到真实 commit（Git SHA）而非仅工作区 diff 快照（R2.4 Git broker

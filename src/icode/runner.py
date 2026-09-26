@@ -44,6 +44,7 @@ from .reasoning import ReasoningGate, TraceRow, append_trace, run_deliberation
 from .recovery import Recoverer
 from .sandbox_policy import SandboxPolicy
 from .self_verify import (
+    AUTO_REPAIRABLE_CATEGORIES,
     VerificationEvidence,
     VerificationLedger,
     classify_failure,
@@ -138,6 +139,8 @@ class TaskReport:
     error: str = ""
     verification: object | None = None  # R3: VerificationEvidence
     review: object | None = None        # R3: ReviewReport（只读独立 Reviewer）
+    repair_attempts: list = field(default_factory=list)   # R3: 每次修复的 VerificationEvidence
+    repair_decisions: list = field(default_factory=list)  # R3: 每次修复决策 action
 
     @property
     def ok(self) -> bool:
@@ -151,6 +154,12 @@ class TaskReport:
         ]
         if self.changed_files:
             lines.append("  改动文件：" + "、".join(self.changed_files))
+        if self.repair_decisions:
+            lines.append(
+                "  有界修复："
+                + " → ".join(str(d) for d in self.repair_decisions)
+                + f"（{len(self.repair_attempts)} 次尝试）"
+            )
         if self.review is not None:
             lines += ["", "  " + self.review.render().replace("\n", "\n  ")]
         if self.loop:
@@ -1006,8 +1015,16 @@ def run_task(
     budget: Budget | None = None,
     on_event=None,
     sandbox: Sandbox | None = None,
+    max_repairs: int = 2,
 ) -> TaskReport:
-    """在隔离工作区用真模型完成一个编码任务，并用**独立跑测试**的退出码验收。"""
+    """在隔离工作区用真模型完成一个编码任务，并用**独立跑测试**的退出码验收。
+
+    R3 有界修复：首次独立测试失败后，若失败类别可自动修复，允许在**有界次数**内
+    重新让模型改动并复测；每次都必须出现**新的失败证据**（diff/输出/退出码变化），
+    否则按 no_new_evidence 停止，不碰运气。模型自述不算证据。
+    """
+    if type(max_repairs) is not int or max_repairs < 0:
+        raise ValueError("max_repairs must be >= 0")
     workspace = Path(workspace).resolve()
     before = _snapshot(workspace)
 
@@ -1032,10 +1049,66 @@ def run_task(
     ])
 
     after = _snapshot(workspace)
-    changed = _changed(before, after)
     exit_code, output = run_unittest(workspace)
-    # R3 证据绑定：独立测试的退出码 + 输出摘要 + 环境指纹 + 改动文件哈希，
-    # 全部绑定成一条 VerificationEvidence；模型自述不算证据。
+    attempt_no = 1
+    changed, evidence = _bind_task_evidence(
+        before, after, exit_code, output, workspace, attempt=str(attempt_no),
+    )
+    attempts: list[VerificationEvidence] = [evidence]
+    decisions: list[str] = []
+
+    # R3 有界修复循环：只在「可自动修复类别 + 新证据 + 未超界」时继续。
+    # Zero is a valid way to disable repairs. The ledger still requires a
+    # positive evidence-attempt limit, and is unused when max_repairs is zero.
+    ledger = VerificationLedger(max_attempts=max(1, max_repairs))
+    repair_round = 0
+    while (
+        exit_code != 0
+        and evidence.category in AUTO_REPAIRABLE_CATEGORIES
+        and repair_round < max_repairs
+    ):
+        decision = ledger.decide_repair(
+            evidence, has_new_evidence=ledger.has_new_evidence(evidence),
+        )
+        decisions.append(decision.action)
+        if decision.action != "allow":
+            break
+        repair_round += 1
+        attempt_no += 1
+        repair_prompt = _repair_prompt(evidence, changed)
+        result = loop.run([
+            {"role": "system", "content": system},
+            {"role": "user", "content": repair_prompt},
+        ])
+        after = _snapshot(workspace)
+        exit_code, output = run_unittest(workspace)
+        changed, evidence = _bind_task_evidence(
+            before, after, exit_code, output, workspace, attempt=str(attempt_no),
+        )
+        attempts.append(evidence)
+
+    # R3：独立 Reviewer 用只读上下文复核改动与验证证据；不能修改被审对象。
+    review = None
+    try:
+        from .reviewer import IndependentReviewer
+
+        review = IndependentReviewer(workspace=workspace).review(changed, evidence)
+    except Exception as exc:  # noqa: BLE001 - Reviewer 异常不冒充成功
+        review = None
+    return TaskReport(
+        task=task, workspace=str(workspace), exit_code=exit_code,
+        test_output=output, loop=result, changed_files=changed,
+        error=result.error, verification=evidence, review=review,
+        repair_attempts=attempts, repair_decisions=decisions,
+    )
+
+
+def _bind_task_evidence(
+    before: dict[str, str], after: dict[str, str],
+    exit_code: int, output: str, workspace: Path, *, attempt: str = "1",
+) -> tuple[list[str], VerificationEvidence]:
+    """把一次独立测试结果绑定成证据（diff 指纹 + 改动哈希 + 环境指纹）。"""
+    changed = _changed(before, after)
     artifact_hashes = {}
     for rel in changed:
         path = workspace / rel
@@ -1044,7 +1117,7 @@ def run_task(
 
             artifact_hashes[rel] = _hashlib.sha256(path.read_bytes()).hexdigest()
     evidence = VerificationEvidence(
-        step="task", attempt="1", kind="test",
+        step="task", attempt=attempt, kind="test",
         command=("python", "-m", "unittest"),
         exit_code=exit_code,
         output=output,
@@ -1059,16 +1132,29 @@ def run_task(
         ),
         artifact_hashes=artifact_hashes,
     )
-    # R3：独立 Reviewer 用只读上下文复核改动与验证证据；不能修改被审对象。
-    review = None
-    try:
-        from .reviewer import IndependentReviewer
+    return changed, evidence
 
-        review = IndependentReviewer(workspace=workspace).review(changed, evidence)
-    except Exception as exc:  # noqa: BLE001 - Reviewer 异常不冒充成功
-        review = None
-    return TaskReport(
-        task=task, workspace=str(workspace), exit_code=exit_code,
-        test_output=output, loop=result, changed_files=changed,
-        error=result.error, verification=evidence, review=review,
+
+REPAIR_PROMPT = (
+    "【独立测试失败 · 需要修复】\n"
+    "上一次 `python -m unittest` 失败（退出码 {exit_code}，失败类别：{category}）。\n"
+    "测试输出末尾：\n{tail}\n\n"
+    "请检查你刚才的改动，找出导致失败的原因并修复。\n"
+    "要求：\n"
+    "  1. 必须产生**新的实际改动**（diff 发生变化），只换说法不算；\n"
+    "  2. 修改后用 read_file 回读确认，最后运行 `python -m unittest`；\n"
+    "  3. 若你判断这是环境/测试架子问题而非你的代码，明确说明并停止，不要反复碰运气。\n"
+)
+
+
+def _repair_prompt(evidence: VerificationEvidence, changed: list[str]) -> str:
+    tail = "\n".join((evidence.output or "").strip().splitlines()[-12:]) or "（无输出）"
+    changed_line = "、".join(changed) if changed else "（无改动）"
+    return (
+        REPAIR_PROMPT.format(
+            exit_code=evidence.exit_code if evidence.exit_code is not None else "?",
+            category=evidence.category or "unknown",
+            tail=tail,
+        )
+        + f"\n当前改动文件：{changed_line}\n"
     )

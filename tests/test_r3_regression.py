@@ -8,10 +8,8 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import unittest
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -50,6 +48,21 @@ class TestDiffFingerprint(unittest.TestCase):
         deleted = diff_fingerprint({"a.py": "h", "b.py": "x"}, base)
         self.assertNotEqual(added, deleted)
         self.assertNotEqual(added, diff_fingerprint(base, {"a.py": "h2"}))
+
+    def test___pycache__编译产物不进入diff(self) -> None:
+        with temp_workspace() as ws:
+            (ws / "a.py").write_text("x = 1\n", encoding="utf-8")
+            before = snapshot_workspace(ws)
+            pyc = ws / "__pycache__" / "a.cpython-311.pyc"
+            pyc.parent.mkdir()
+            pyc.write_bytes(b"pyc-artifact")
+            self.assertNotIn("__pycache__/a.cpython-311.pyc", snapshot_workspace(ws))
+            # 宿主编译产物不是模型改动，不产生 diff 证据
+            self.assertEqual(changed_files(before, snapshot_workspace(ws)), [])
+            self.assertEqual(
+                diff_fingerprint(before, snapshot_workspace(ws)),
+                diff_fingerprint(before, before),
+            )
 
     def test_与changed_files集合一致(self) -> None:
         before = {"a.py": "h1", "b.py": "h2"}
@@ -214,6 +227,151 @@ class TestRepairEvidenceIntoEventChain(unittest.TestCase):
             self.assertTrue(recorded_receipts)
             self.assertTrue(recorded_receipts[0]["fingerprint"])
             self.assertTrue(recorded_receipts[0]["baseline"])
+
+
+class TestBoundedRepairLoop(unittest.TestCase):
+    """run_task 有界修复循环：失败 → 分类 → 有界修复 → 回归 → 独立 Reviewer。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.settings = require_skill()
+
+    def test_zero_repairs_disables_retry_without_rejecting_task(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            calc_path = str(dst / "calc.py")
+            script = [
+                {"content": "", "tool_calls": [
+                    {"id": "break", "name": "write_file",
+                     "arguments": {"path": calc_path, "content": "raise RuntimeError('boom')\n"}}
+                ]},
+                "完成",
+            ]
+            report = run_task(
+                self.settings, backend=FakeBackend(script), workspace=dst,
+                max_repairs=0,
+            )
+
+        self.assertNotEqual(report.exit_code, 0)
+        self.assertEqual(report.repair_attempts, [report.verification])
+        self.assertEqual(report.repair_decisions, [])
+
+    def test_negative_repairs_is_rejected_before_model_turn(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            with self.assertRaisesRegex(ValueError, "max_repairs must be >= 0"):
+                run_task(
+                    self.settings, backend=FakeBackend([]), workspace=dst,
+                    max_repairs=-1,
+                )
+
+
+    def test_修复成功后回归通过并记录决策(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+        from icode.self_verify import FAILURE_CODE
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            calc_path = str(dst / "calc.py")
+            original = (dst / "calc.py").read_text(encoding="utf-8")
+            script = [
+                # 第一次运行：破坏 calc.py 后自然结束 → 独立测试失败
+                {"content": "", "tool_calls": [
+                    {"id": "break", "name": "write_file",
+                     "arguments": {"path": calc_path, "content": "raise RuntimeError('boom')\n"}}
+                ]},
+                "完成",
+                # 第二次运行（修复回合）：恢复 calc.py → 回归通过
+                {"content": "", "tool_calls": [
+                    {"id": "fix", "name": "write_file",
+                     "arguments": {"path": calc_path, "content": original}}
+                ]},
+                "完成",
+            ]
+            report = run_task(
+                self.settings, backend=FakeBackend(script), workspace=dst,
+            )
+            # 第一次破坏 → code 类失败 → 允许修复 → 第二次恢复 → 回归通过
+            self.assertEqual(report.repair_decisions, ["allow"])
+            self.assertEqual(len(report.repair_attempts), 2)
+            self.assertEqual(report.exit_code, 0)
+            self.assertTrue(report.verification.passed)
+            self.assertEqual(report.repair_attempts[0].category, FAILURE_CODE)
+            self.assertNotEqual(
+                report.repair_attempts[0].diff_fingerprint,
+                report.repair_attempts[1].diff_fingerprint,
+                "修复后的 diff 必须与失败时不同（新证据）",
+            )
+            self.assertIsNotNone(report.review)
+            self.assertTrue(report.review.read_only_verified)
+
+    def test_无新证据时停止不碰运气(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            calc_path = str(dst / "calc.py")
+            script = [
+                {"content": "", "tool_calls": [
+                    {"id": "break", "name": "write_file",
+                     "arguments": {"path": calc_path, "content": "raise RuntimeError('boom')\n"}}
+                ]},
+                "完成",  # 第二次不改动 → 无新证据 → 停止
+            ]
+            report = run_task(
+                self.settings, backend=FakeBackend(script), workspace=dst,
+            )
+            self.assertEqual(report.repair_decisions, ["allow", "no_new_evidence"])
+            self.assertEqual(len(report.repair_attempts), 2)
+            self.assertNotEqual(report.exit_code, 0)
+
+    def test_修复次数受max_repairs有界(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            calc_path = str(dst / "calc.py")
+            # 每次调用都产生新的破坏（新 diff + 新输出 → 每次都是新证据）
+            script = []
+            for version in ("v1", "v2", "v3"):
+                script.append({"content": "", "tool_calls": [
+                    {"id": f"break-{version}", "name": "write_file",
+                     "arguments": {"path": calc_path,
+                                   "content": f"raise RuntimeError('{version}')\n"}}
+                ]})
+            report = run_task(
+                self.settings, backend=FakeBackend(script), workspace=dst,
+                max_repairs=1,
+            )
+            # 首次失败 + 1 次修复后即停止，即便每次都有新证据
+            self.assertEqual(len(report.repair_attempts), 2)
+            self.assertLessEqual(len(report.repair_decisions), 1)
+            self.assertNotEqual(report.exit_code, 0)
+
+
+class TestMaxRepairsArgument(unittest.TestCase):
+    def test_cli_accepts_zero_but_rejects_negative_max_repairs(self) -> None:
+        from contextlib import redirect_stderr
+        from io import StringIO
+        from icode.cli import _build_parser
+
+        parser = _build_parser()
+        self.assertEqual(
+            parser.parse_args(["task", "--max-repairs", "0"]).max_repairs,
+            0,
+        )
+        with redirect_stderr(StringIO()), self.assertRaises(SystemExit) as raised:
+            parser.parse_args(["task", "--max-repairs", "-1"])
+        self.assertEqual(raised.exception.code, 2)
 
 
 class TestEvidencePackCollectsVerificationRuns(unittest.TestCase):

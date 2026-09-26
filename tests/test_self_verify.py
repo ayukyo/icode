@@ -129,6 +129,20 @@ class EvidenceFingerprintTestCase(unittest.TestCase):
             evidence_fingerprint(self.make(artifact_hashes={"calc.py": "def"})),
         )
 
+    def test_attempt标签不进入指纹(self) -> None:
+        # attempt 是有界修复的账本标签：同一失败在不同 attempt 下指纹必须相同，
+        # 否则任何重试都会被误判为新证据（碰运气）。
+        self.assertEqual(
+            evidence_fingerprint(self.make(attempt="1")),
+            evidence_fingerprint(self.make(attempt="2")),
+        )
+
+    def test_diff_fingerprint变化改变指纹(self) -> None:
+        self.assertNotEqual(
+            evidence_fingerprint(self.make(diff_fingerprint="diff-A")),
+            evidence_fingerprint(self.make(diff_fingerprint="diff-B")),
+        )
+
     def test_fingerprint_does_not_contain_secret_or_full_output(self) -> None:
         fp = evidence_fingerprint(self.make(output="secret-token-should-not-leak"))
         self.assertNotIn("secret-token-should-not-leak", fp)
@@ -210,6 +224,21 @@ class VerificationLedgerTestCase(unittest.TestCase):
         ledger.record(self.make())
         ledger.record(self.make(output="B"))
         self.assertEqual([e.attempt for e in ledger._entries], ["1", "2"])
+
+    def test_record_preserves_diff_fingerprint(self) -> None:
+        # record 重建 bound 时必须保留 diff_fingerprint，否则 seen 指纹与
+        # 原证据不一致，导致「无新证据」检测失效。
+        ledger = VerificationLedger()
+        original = self.make(diff_fingerprint="diff-A")
+        ledger.record(original)
+        self.assertFalse(
+            ledger.has_new_evidence(self.make(diff_fingerprint="diff-A")),
+            "同 diff 的重复证据必须被识别为无新证据",
+        )
+        self.assertTrue(
+            ledger.has_new_evidence(self.make(diff_fingerprint="diff-B")),
+            "diff 变化才是新证据",
+        )
 
     def test_invalid_max_attempts_rejected(self) -> None:
         with self.assertRaises(ValueError):
