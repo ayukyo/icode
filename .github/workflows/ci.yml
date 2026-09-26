@@ -76,7 +76,7 @@ jobs:
       - name: Verify workspace and autonomous lifecycle
         run: python scripts/run_workspace_ci.py
       - name: Verify leased TCP socket lifecycle
-        run: python -m unittest tests.test_network_lease -v
+        run: python scripts/run_network_lease_ci.py
 
   native-probe:
     name: R2.2 native probe (${{ matrix.os }})
@@ -125,7 +125,7 @@ jobs:
       - name: Verify policy command broker
         run: python -m unittest tests.test_execution_broker -v
       - name: Verify leased TCP socket lifecycle
-        run: python -m unittest tests.test_network_lease -v
+        run: python scripts/run_network_lease_ci.py
       - name: Verify protected-path Seatbelt policy
         if: runner.os == 'macOS'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_策略profile真实阻断受保护文件与外部路径 -v
@@ -172,7 +172,7 @@ jobs:
       - name: Verify normal and timeout descendant cleanup
         run: python -m unittest tests.test_windows_job -v
       - name: Verify leased TCP socket lifecycle
-        run: python -m unittest tests.test_network_lease -v
+        run: python scripts/run_network_lease_ci.py
 
   windows-standard-user-token-probe:
     if: github.event_name == 'workflow_dispatch' && inputs.run_windows_standard_user_token_probe

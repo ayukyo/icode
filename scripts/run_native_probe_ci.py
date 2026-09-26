@@ -17,6 +17,12 @@ from icode.isolation import (
     probe_native_sandbox,
 )
 
+MACOS_PROTECTED_PATH_CHECKS = (
+    "workspace_write_allowed",
+    "protected_write_denied",
+    "protected_rename_denied",
+)
+
 
 def _emit_conformance_score(
     checks: dict[str, bool],
@@ -88,7 +94,12 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     if platform == "macos":
         protected_result = probe_macos_protected_paths(backend)
         group_result = probe_macos_process_group_cleanup(backend)
-        for name, passed in protected_result.checks.items():
+        for name in MACOS_PROTECTED_PATH_CHECKS:
+            passed = protected_result.checks.get(name) is True
+            print(
+                f"::notice::macos-protected-path {name}="
+                f"{str(passed).lower()}"
+            )
             print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
         for name, passed in group_result.checks.items():
             print(f"{backend.name} process_group_{name}: {'PASS' if passed else 'FAIL'}")

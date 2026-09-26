@@ -92,7 +92,7 @@
 
 - **问题与设计：**原 schema v1 要求静态 `PROXY_ALLOWLIST` 并把 lease 域名约束到候选 `SandboxPolicy.allowed_domains`；普通工单基线为 `DENY`，而 `tighten_policy()` 正确拒绝普通候选扩大权限。改为 schema v2 的宿主授权 overlay：仍绑定原始 deny-only policy hash、run/ticket/step；租约自身持有经审批的精确 ASCII DNS 域名、用途、443、单调期限与代次，不写入或改写候选策略。仅允许 `network_mode=DENY` 且 `allowed_domains=()` 的策略签发/校验 overlay，其他 mode/静态域名组合 fail-closed。无效 IP literal/hostname 在审批 UI 调用之前拒绝。策略收紧逻辑未修改。
 - **本机证据：**对“DENY 工单可申请指定域名租约”和“非法目标/非 DENY 策略拒绝”新增两项先红后绿测试；`tests.test_network_lease` 28 项在 Python 3.11.15 通过。还覆盖租约 schema v1 语义被拒绝、policy hash/身份绑定、撤销代次、真实双端关闭和已知负例。文档更新后 `scripts/preflight.py` 的密钥、子模块与全量 unittest 三道守护通过；`check_governance.py`、`check_site.py`、`check_agent_landscape.py` 与 `git diff --check` 均通过。
-- **远端边界：**GitHub [CI #226](https://github.com/ayukyo/icode/actions/runs/36271940621) workspace-platforms 3 项 job 均完成成功，含 `tests.test_network_lease`；整轮 CI 因另行 macOS R2.2 protected-paths/native probe 失败而非 workspace 测试失败，详细日志受匿名访问限制，不能据摘要解释断言。新 overlay 尚需随主线下一轮 CI 验证。
+- **远端边界：**GitHub [CI #226](https://github.com/ayukyo/icode/actions/runs/36271940621) workspace-platforms 3 项 job 均完成成功，含 `tests.test_network_lease`；整轮 CI 的 macOS native-probe 步骤已先成功退出，之后 `Verify policy command broker` 步骤失败。conformance `6/10` 是评分、不是此处失败根因；详细日志受匿名访问限制，不能据摘要解释断言。新 overlay 尚需随主线下一轮 CI 验证。
 - **严格边界与后续：**overlay 不是 sandbox permission，不会令 DENY 命令联网。还没有 HTTPS CONNECT handler、可信 DNS 解析和数值 IP pinning、pending DNS/connect 的原子撤销、周期 TTL timer、隧道 idle reuse 拒绝、worker 停止机制或任意 OS 网络强制；没有向 Agent 暴露 localhost listener。下一垂直切片只能先实现宿主拥有的本机 fake-upstream CONNECT scope，覆盖批准/拒绝、IP 分类/pinning、建立中撤销、TTL 与双端 EOF；OS “仅到代理”门独立验证后才可能接线，R2 网络合同和自动模式继续关闭。
 
 ### 2026-09-27 HTTPS 目标 DNS 校验原语

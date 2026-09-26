@@ -115,6 +115,7 @@ class TestNativeProbeCi(unittest.TestCase):
                 "workspace_write_allowed": True,
                 "protected_write_denied": False,
                 "protected_rename_denied": True,
+                "\n::error::injected=true": True,
             },
             detail="protected paths failed",
         )
@@ -122,13 +123,14 @@ class TestNativeProbeCi(unittest.TestCase):
             executed=True, passed=True,
             checks={"normal_exit": True, "timeout": True}, detail="group cleanup ok",
         )
+        output = StringIO()
 
         with mock.patch.object(run_native_probe_ci.sys, "platform", "darwin"), \
              mock.patch.object(run_native_probe_ci, "probe_native_sandbox", return_value=native), \
              mock.patch.object(run_native_probe_ci, "probe_macos_protected_paths",
                                return_value=protected), \
              mock.patch.object(run_native_probe_ci, "probe_macos_process_group_cleanup",
-                               return_value=group), \
+                               return_value=group), redirect_stdout(output), \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
             result = run_native_probe_ci._check(sandbox, "/bin/true")
 
@@ -136,6 +138,11 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertFalse(checks["protected_write_denied"])
         self.assertFalse(score.call_args.kwargs["doctor_self_test"])
         self.assertEqual(result, 1)
+        self.assertIn(
+            "::notice::macos-protected-path protected_write_denied=false",
+            output.getvalue(),
+        )
+        self.assertNotIn("::error::injected=true", output.getvalue())
 
 
 if __name__ == "__main__":
