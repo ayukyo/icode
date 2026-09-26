@@ -128,6 +128,63 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
 
         load_api.assert_not_called()
 
+    def test_client_open_observer_runs_immediately_before_create_file(self) -> None:
+        events: list[str] = []
+        create_file_arguments: list[tuple[object, ...]] = []
+
+        class FakeKernel:
+            def WaitNamedPipeW(self, *_args) -> int:
+                events.append("wait")
+                return 1
+
+            def CreateFileW(self, *_args) -> int:
+                events.append("create_file")
+                create_file_arguments.append(_args)
+                return windows_runner_pipe._INVALID_HANDLE_VALUE
+
+        api = windows_runner_pipe._Win32Api(kernel=FakeKernel(), advapi=None)
+
+        def observe_open_attempt() -> None:
+            events.append("observe")
+            raise RuntimeError("private diagnostic failure")
+
+        with (
+            mock.patch.object(windows_runner_pipe.sys, "platform", "win32"),
+            mock.patch.object(windows_runner_pipe, "_load_win32_api", return_value=api),
+            mock.patch.object(
+                windows_runner_pipe.ctypes,
+                "get_last_error",
+                return_value=5,
+                create=True,
+            ),
+        ):
+            with self.assertRaises(PermissionError) as raised:
+                windows_runner_pipe._open_runner_pipe_client_with_observer(
+                    r"\\.\pipe\icode-runner-" + "a" * 32,
+                    1234,
+                    timeout_ms=100,
+                    observer=observe_open_attempt,
+                )
+
+        self.assertEqual(events, ["wait", "observe", "create_file"])
+        self.assertEqual(raised.exception.errno, 5)
+        self.assertEqual(raised.exception.strerror, "runner_pipe_open_access_denied")
+        self.assertEqual(len(create_file_arguments), 1)
+        _name, desired_access, share_mode, security, disposition, flags, template = (
+            create_file_arguments[0]
+        )
+        self.assertEqual(desired_access, PIPE_CLIENT_ACCESS_MASK)
+        self.assertEqual(share_mode, 0)
+        self.assertIsNone(security)
+        self.assertEqual(disposition, windows_runner_pipe._OPEN_EXISTING)
+        self.assertEqual(
+            flags,
+            FILE_FLAG_OVERLAPPED
+            | windows_runner_pipe._SECURITY_SQOS_PRESENT
+            | windows_runner_pipe._SECURITY_IMPERSONATION,
+        )
+        self.assertIsNone(template)
+
 
 if __name__ == "__main__":
     unittest.main()

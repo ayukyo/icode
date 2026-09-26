@@ -318,6 +318,62 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             client_process_handle=12,
         )
 
+    def test_exited_child_access_denial_preserves_in_call_effective_token_detail(self) -> None:
+        class FakeKernel:
+            def WaitForSingleObject(self, _handle: int, _timeout_ms: int) -> int:
+                return token_probe._WAIT_OBJECT_0
+
+            def GetExitCodeProcess(self, _handle: int, output) -> bool:
+                output._obj.value = 1
+                return True
+
+        effective = (
+            "token_thread+il_medium+restricted_no+logon_enabled+"
+            "nwu_yes+npm_yes+open_winerror_5"
+        )
+        parent = token_probe._format_runner_pipe_access_diagnostic(
+            dacl="present",
+            ace="match",
+            token="child_process",
+            logon_sid="enabled",
+            restricted="no",
+            access="allow",
+            client_integrity="medium",
+            pipe_integrity="absent",
+            pipe_no_write_up="unavailable",
+            client_no_write_up="yes",
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "result.txt"
+            report.write_text(
+                "failed=client_open_access_denied;detail=" + effective,
+                encoding="ascii",
+            )
+            with mock.patch(
+                "scripts.windows_standard_user_token_probe._diagnose_runner_pipe_access",
+                return_value=parent,
+            ):
+                detail = token_probe._runner_child_failure_if_exited(
+                    kernel=FakeKernel(),
+                    process_handle=12,
+                    report_path=report,
+                    server_pipe_handle=34,
+                    expected_logon_sid="S-1-5-5-1-2",
+                )
+
+        self.assertEqual(
+            detail,
+            "client_open_access_denied+"
+            + effective.removesuffix("+open_winerror_5")
+            + "+" + parent + ":winerror=5",
+        )
+        exposed = "standard_user_restricted_child_failed:" + detail
+        self.assertLessEqual(len(exposed), 400)
+        self.assertEqual(
+            token_probe._safe_standard_user_probe_error(RuntimeError(exposed)),
+            exposed,
+        )
+
     def test_pipe_diagnostic_token_opener_uses_only_target_child(self) -> None:
         opener = getattr(token_probe, "_open_pipe_diagnostic_token", None)
         self.assertTrue(callable(opener))
@@ -350,6 +406,240 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             FakeApi.advapi.requested_access,
             token_probe._TOKEN_QUERY | token_probe._TOKEN_DUPLICATE,
         )
+
+    def test_effective_token_opener_requests_only_query_access(self) -> None:
+        class FakeAdvapi:
+            def __init__(self) -> None:
+                self.requested_access = None
+
+            def OpenThreadToken(
+                self, _thread, access: int, _open_as_self: int, token_pointer,
+            ) -> int:
+                self.requested_access = access
+                ctypes.cast(
+                    token_pointer, ctypes.POINTER(ctypes.c_void_p),
+                ).contents.value = 456
+                return 1
+
+            def OpenProcessToken(self, *_args) -> int:
+                raise AssertionError("thread-token lookup should succeed")
+
+        class FakeKernel:
+            def GetCurrentThread(self) -> int:
+                return 123
+
+        class FakeApi:
+            kernel = FakeKernel()
+            advapi = FakeAdvapi()
+
+        token, source = token_probe._open_pipe_diagnostic_token(
+            FakeApi(), token_access=token_probe._TOKEN_QUERY,
+        )
+
+        self.assertEqual(source, "thread")
+        self.assertEqual(token.value, 456)
+        self.assertEqual(FakeApi.advapi.requested_access, token_probe._TOKEN_QUERY)
+
+    def test_effective_token_opener_falls_back_only_when_thread_has_no_token(self) -> None:
+        class FakeAdvapi:
+            def __init__(self) -> None:
+                self.process_access = None
+
+            def OpenThreadToken(self, *_args) -> int:
+                return 0
+
+            def OpenProcessToken(
+                self, _process, access: int, token_pointer,
+            ) -> int:
+                self.process_access = access
+                ctypes.cast(
+                    token_pointer, ctypes.POINTER(ctypes.c_void_p),
+                ).contents.value = 789
+                return 1
+
+        class FakeKernel:
+            def GetCurrentThread(self) -> int:
+                return 123
+
+            def GetCurrentProcess(self) -> int:
+                return 456
+
+        class FakeApi:
+            kernel = FakeKernel()
+            advapi = FakeAdvapi()
+
+        with mock.patch.object(
+            token_probe.ctypes, "get_last_error", return_value=token_probe._ERROR_NO_TOKEN,
+            create=True,
+        ):
+            token, source = token_probe._open_pipe_diagnostic_token(
+                FakeApi(), token_access=token_probe._TOKEN_QUERY,
+            )
+
+        self.assertEqual(source, "process")
+        self.assertEqual(token.value, 789)
+        self.assertEqual(FakeApi.advapi.process_access, token_probe._TOKEN_QUERY)
+
+    def test_effective_token_opener_does_not_mask_thread_token_query_errors(self) -> None:
+        class FakeAdvapi:
+            def OpenThreadToken(self, *_args) -> int:
+                return 0
+
+            def OpenProcessToken(self, *_args) -> int:
+                raise AssertionError("unexpected process-token fallback")
+
+        class FakeKernel:
+            def GetCurrentThread(self) -> int:
+                return 123
+
+        class FakeApi:
+            kernel = FakeKernel()
+            advapi = FakeAdvapi()
+
+        with mock.patch.object(
+            token_probe.ctypes, "get_last_error", return_value=5, create=True,
+        ):
+            token, source = token_probe._open_pipe_diagnostic_token(
+                FakeApi(), token_access=token_probe._TOKEN_QUERY,
+            )
+
+        self.assertIsNone(token)
+        self.assertEqual(source, "unavailable")
+
+    def test_effective_token_diagnostic_uses_fixed_non_sensitive_labels(self) -> None:
+        formatter = getattr(
+            token_probe, "_format_runner_effective_token_diagnostic", None,
+        )
+        self.assertTrue(callable(formatter))
+
+        summary = formatter(
+            token="thread",
+            logon_sid="enabled",
+            restricted="no",
+            integrity="medium",
+            no_write_up="yes",
+            new_process_min="no",
+        )
+
+        self.assertEqual(
+            summary,
+            "token_thread+il_medium+restricted_no+logon_enabled+nwu_yes+npm_no",
+        )
+        self.assertLessEqual(len(summary), 120)
+        self.assertNotIn("S-1-5-", summary)
+        unavailable = formatter(
+            token="unavailable",
+            logon_sid="unavailable",
+            restricted="unavailable",
+            integrity="unavailable",
+            no_write_up="unavailable",
+            new_process_min="unavailable",
+        )
+        self.assertEqual(
+            unavailable,
+            "token_unavailable+il_unavailable+restricted_unavailable+"
+            "logon_unavailable+nwu_unavailable+npm_unavailable",
+        )
+        self.assertLessEqual(len(unavailable), 120)
+        with self.assertRaises(ValueError):
+            formatter(
+                token="S-1-5-21-secret",
+                logon_sid="enabled",
+                restricted="no",
+                integrity="medium",
+                no_write_up="yes",
+                new_process_min="no",
+            )
+
+    def test_effective_token_diagnostic_reads_current_thread_facts_and_closes_handle(self) -> None:
+        capture = getattr(token_probe, "_runner_effective_token_diagnostic", None)
+        self.assertTrue(callable(capture))
+        closed: list[int] = []
+
+        class FakeAdvapi:
+            IsTokenRestricted = mock.Mock(return_value=0)
+
+            def OpenThreadToken(
+                self, _thread, _access: int, _open_as_self: int, token_pointer,
+            ) -> int:
+                ctypes.cast(
+                    token_pointer, ctypes.POINTER(ctypes.c_void_p),
+                ).contents.value = 456
+                return 1
+
+        class FakeKernel:
+            def GetCurrentThread(self) -> int:
+                return 123
+
+            def CloseHandle(self, handle: int) -> int:
+                closed.append(handle)
+                return 1
+
+        api = token_probe._runner_pipe._Win32Api(
+            kernel=FakeKernel(), advapi=FakeAdvapi(),
+        )
+        with (
+            mock.patch(
+                "scripts.windows_standard_user_token_probe._runner_pipe._load_win32_api",
+                return_value=api,
+            ),
+            mock.patch.object(
+                token_probe, "_token_integrity_level", return_value="low",
+            ),
+            mock.patch.object(
+                token_probe, "_token_mandatory_policy_state",
+                return_value=("yes", "yes"),
+            ),
+            mock.patch.object(
+                token_probe._runner_pipe, "_get_token_information",
+                return_value=object(),
+            ),
+            mock.patch.object(
+                token_probe._runner_pipe, "_token_group_entries",
+                return_value=(object(), [
+                    (789, token_probe._SE_GROUP_LOGON_ID | token_probe._SE_GROUP_ENABLED),
+                ]),
+            ),
+            mock.patch.object(token_probe.sys, "platform", "win32"),
+        ):
+            summary = capture()
+
+        self.assertEqual(
+            summary,
+            "token_thread+il_low+restricted_no+logon_enabled+nwu_yes+npm_yes",
+        )
+        self.assertEqual([handle.value for handle in closed], [456])
+
+    def test_token_mandatory_policy_state_reports_both_defined_policy_bits(self) -> None:
+        reader = getattr(token_probe, "_token_mandatory_policy_state", None)
+        policy_type = token_probe._TOKEN_MANDATORY_POLICY
+        self.assertTrue(callable(reader))
+        policy_buffer = ctypes.create_string_buffer(ctypes.sizeof(policy_type))
+        policy = ctypes.cast(
+            policy_buffer, ctypes.POINTER(policy_type),
+        ).contents
+
+        class FakeApi:
+            advapi = mock.Mock()
+
+        policy.Policy = 0x3
+        with mock.patch.object(
+            token_probe._runner_pipe,
+            "_get_token_information",
+            return_value=policy_buffer,
+        ) as get_information:
+            self.assertEqual(reader(FakeApi(), 456), ("yes", "yes"))
+        get_information.assert_called_once_with(
+            mock.ANY, 456, token_probe._TOKEN_MANDATORY_POLICY_CLASS,
+        )
+
+        policy.Policy = 0
+        with mock.patch.object(
+            token_probe._runner_pipe,
+            "_get_token_information",
+            return_value=policy_buffer,
+        ):
+            self.assertEqual(reader(FakeApi(), 456), ("no", "no"))
 
     def test_pipe_diagnostic_does_not_fall_back_when_child_token_is_unavailable(self) -> None:
         class FakeAdvapi:
@@ -837,7 +1127,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                     return_value=(False, "client_open_access_denied"),
                 ) as wrong_pid_probe,
                 mock.patch(
-                    "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
+                    "scripts.windows_standard_user_token_probe._runner_pipe."
+                    "_open_runner_pipe_client_with_observer",
                     return_value=pipe,
                 ) as open_parent_pipe,
                 mock.patch(
@@ -859,6 +1150,56 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         write_report.assert_called_once_with(
             report,
             "failed=runner_pipe_server_pid_mismatch;detail=client_open_access_denied",
+        )
+
+    def test_runner_pipe_open_failure_reports_same_thread_token_and_winerror(self) -> None:
+        effective_token = (
+            "token_thread+il_low+restricted_no+logon_enabled+nwu_yes+npm_yes"
+        )
+
+        def deny_pipe_open(*_args, **kwargs):
+            observer = kwargs.get("observer")
+            self.assertTrue(callable(observer))
+            observer()
+            raise PermissionError(5, "runner_pipe_open_access_denied")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "result.txt"
+            with (
+                mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+                mock.patch.dict(os.environ, {
+                    "TEMP": temporary_directory,
+                    "ICODE_R2_PROBE_MODE": "runner",
+                }),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe.runner_pipe_wrong_server_pid_probe",
+                    return_value=(True, "server_pid_mismatch_rejected"),
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._runner_pipe."
+                    "_open_runner_pipe_client_with_observer",
+                    side_effect=deny_pipe_open,
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._runner_effective_token_diagnostic",
+                    return_value=effective_token,
+                ) as capture_token,
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._write_report",
+                ) as write_report,
+            ):
+                result = _run_child_mode(
+                    str(report), r"\\.\pipe\icode-runner-" + "e" * 32,
+                    "1234", "f" * 32,
+                )
+
+        self.assertEqual(result, 1)
+        capture_token.assert_called_once_with()
+        write_report.assert_called_once_with(
+            report,
+            "failed=client_open_access_denied;detail="
+            + effective_token
+            + "+open_winerror_5",
         )
 
     def test_wrong_pid_success_is_required_before_standard_user_probe_passes(self) -> None:
@@ -890,7 +1231,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                     return_value=(True, "server_pid_mismatch_rejected"),
                 ),
                 mock.patch(
-                    "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
+                    "scripts.windows_standard_user_token_probe._runner_pipe."
+                    "_open_runner_pipe_client_with_observer",
                     return_value=FakePipe(),
                 ),
                 mock.patch(

@@ -67,6 +67,7 @@ _SYSTEM_MANDATORY_LABEL_ACE_TYPE = 0x11
 _SYSTEM_MANDATORY_LABEL_NO_WRITE_UP = 0x00000001
 _SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010
 _SE_GROUP_ENABLED = 0x00000004
+_SE_GROUP_LOGON_ID = 0xC0000000
 _SECURITY_IMPERSONATION_LEVEL = 2
 _DIAGNOSTIC_MAX_ACE_COUNT = 256
 _DIAGNOSTIC_PRIVILEGE_BUFFER_BYTES = 4096
@@ -80,6 +81,7 @@ _TOKEN_QUERY = 0x0008
 _TOKEN_INTEGRITY_LEVEL_CLASS = 25
 _TOKEN_MANDATORY_POLICY_CLASS = 27
 _TOKEN_MANDATORY_POLICY_NO_WRITE_UP = 0x00000001
+_TOKEN_MANDATORY_POLICY_NEW_PROCESS_MIN = 0x00000002
 _SECURITY_MANDATORY_LABEL_AUTHORITY = bytes((0, 0, 0, 0, 0, 16))
 _SECURITY_MANDATORY_UNTRUSTED_RID = 0x0000
 _SECURITY_MANDATORY_LOW_RID = 0x1000
@@ -178,17 +180,24 @@ def _runner_child_failure_if_exited(
     except UnicodeError:
         return "unclassified"
     detail = runner_report_failure_detail(report.strip(), int(exit_code.value))
+    child_stage, separator, child_context = (detail or "").partition(":")
     if (
-        detail == "client_open_access_denied"
+        child_stage == "client_open_access_denied"
         and server_pipe_handle
         and expected_logon_sid
     ):
+        error_suffix = ""
+        error_match = re.search(r"(?:^|\+)open_winerror_(\d+)\Z", child_context)
+        if error_match:
+            child_context = child_context[:error_match.start()].rstrip("+")
+            error_suffix = f":winerror={error_match.group(1)}"
         access = _diagnose_runner_pipe_access(
             server_pipe_handle,
             expected_logon_sid,
             client_process_handle=process_handle,
         )
-        return f"{detail}+{access}"
+        context = f"+{child_context}" if separator and child_context else ""
+        return f"{child_stage}{context}+{access}{error_suffix}"
     return detail
 
 
@@ -369,7 +378,7 @@ def _safe_standard_user_probe_error(exc: Exception) -> str:
         return safe
     if re.fullmatch(r"[a-z_]+:winerror=\d+", safe):
         return safe
-    if len(safe) <= 300 and re.fullmatch(
+    if len(safe) <= 400 and re.fullmatch(
         r"standard_user_restricted_child_failed:[a-z_+]+"
         r"(?::winerror=\d+)?(?::[A-Za-z0-9_+.-]{1,120})?",
         safe,
@@ -658,8 +667,15 @@ def _token_mandatory_no_write_up(
     api: object, token: int | ctypes.c_void_p | None,
 ) -> str:
     """Report only the token's mandatory NO_WRITE_UP policy bit."""
+    return _token_mandatory_policy_state(api, token)[0]
+
+
+def _token_mandatory_policy_state(
+    api: object, token: int | ctypes.c_void_p | None,
+) -> tuple[str, str]:
+    """Report the defined NO_WRITE_UP and NEW_PROCESS_MIN policy bits."""
     if not token:
-        return "unavailable"
+        return "unavailable", "unavailable"
     try:
         buffer = _runner_pipe._get_token_information(
             api, token, _TOKEN_MANDATORY_POLICY_CLASS,
@@ -668,12 +684,11 @@ def _token_mandatory_no_write_up(
             buffer, ctypes.POINTER(_TOKEN_MANDATORY_POLICY),
         ).contents
         return (
-            "yes"
-            if policy.Policy & _TOKEN_MANDATORY_POLICY_NO_WRITE_UP
-            else "no"
+            "yes" if policy.Policy & _TOKEN_MANDATORY_POLICY_NO_WRITE_UP else "no",
+            "yes" if policy.Policy & _TOKEN_MANDATORY_POLICY_NEW_PROCESS_MIN else "no",
         )
     except Exception:
-        return "unavailable"
+        return "unavailable", "unavailable"
 
 
 def _pipe_integrity_details(
@@ -739,10 +754,14 @@ def _open_pipe_diagnostic_token(
     api: object,
     *,
     client_process_handle: int | None = None,
+    token_access: int | None = None,
 ) -> tuple[ctypes.c_void_p | None, str]:
     """Open only the token whose access to the pipe is under investigation."""
     token = ctypes.c_void_p()
-    token_access = _TOKEN_QUERY | _TOKEN_DUPLICATE
+    if token_access is None:
+        token_access = _TOKEN_QUERY | _TOKEN_DUPLICATE
+    if type(token_access) is not int or token_access <= 0:
+        raise ValueError("invalid_diagnostic_token_access")
     advapi = api.advapi
     if client_process_handle is not None:
         if advapi.OpenProcessToken(
@@ -762,6 +781,107 @@ def _open_pipe_diagnostic_token(
     ) and token:
         return token, "process"
     return None, "unavailable"
+
+
+def _format_runner_effective_token_diagnostic(
+    *, token: str, logon_sid: str, restricted: str,
+    integrity: str, no_write_up: str, new_process_min: str,
+) -> str:
+    """Serialize a compact effective-token snapshot using fixed labels only."""
+    choices = {
+        "token": {"thread", "process", "unavailable"},
+        "logon_sid": {"enabled", "disabled", "deny_only", "absent", "unavailable"},
+        "restricted": {"yes", "no", "unavailable"},
+        "integrity": {
+            "untrusted", "low", "medium", "medium_plus", "high", "system",
+            "protected_process", "other", "unavailable",
+        },
+        "no_write_up": {"yes", "no", "unavailable"},
+        "new_process_min": {"yes", "no", "unavailable"},
+    }
+    values = {
+        "token": token,
+        "logon_sid": logon_sid,
+        "restricted": restricted,
+        "integrity": integrity,
+        "no_write_up": no_write_up,
+        "new_process_min": new_process_min,
+    }
+    if any(value not in choices[key] for key, value in values.items()):
+        raise ValueError("invalid_effective_token_diagnostic")
+    summary = "+".join((
+        f"token_{token}",
+        f"il_{integrity}",
+        f"restricted_{restricted}",
+        f"logon_{logon_sid}",
+        f"nwu_{no_write_up}",
+        f"npm_{new_process_min}",
+    ))
+    if len(summary) > 120:
+        raise ValueError("effective_token_diagnostic_too_long")
+    return summary
+
+
+def _runner_effective_token_diagnostic() -> str:
+    """Observe the current thread token immediately before the pipe open."""
+    token_source = logon_state = restricted_state = "unavailable"
+    integrity_state = no_write_up_state = new_process_min_state = "unavailable"
+    api = None
+    effective_token = None
+    try:
+        if sys.platform != "win32":
+            return _format_runner_effective_token_diagnostic(
+                token=token_source, logon_sid=logon_state,
+                restricted=restricted_state, integrity=integrity_state,
+                no_write_up=no_write_up_state,
+                new_process_min=new_process_min_state,
+            )
+        api = _runner_pipe._load_win32_api()
+        effective_token, token_source = _open_pipe_diagnostic_token(
+            api, token_access=_TOKEN_QUERY,
+        )
+        if effective_token:
+            integrity_state = _token_integrity_level(api, effective_token)
+            no_write_up_state, new_process_min_state = _token_mandatory_policy_state(
+                api, effective_token,
+            )
+            api.advapi.IsTokenRestricted.argtypes = [ctypes.c_void_p]
+            api.advapi.IsTokenRestricted.restype = wintypes.BOOL
+            restricted_state = (
+                "yes" if api.advapi.IsTokenRestricted(effective_token) else "no"
+            )
+            groups_buffer, groups = _runner_pipe._token_group_entries(
+                _runner_pipe._get_token_information(
+                    api, effective_token, _runner_pipe._TOKEN_GROUPS_CLASS,
+                ),
+            )
+            _ = groups_buffer
+            logon_state = "absent"
+            for _sid_pointer, attributes in groups:
+                if attributes & _SE_GROUP_LOGON_ID != _SE_GROUP_LOGON_ID:
+                    continue
+                if attributes & _SE_GROUP_USE_FOR_DENY_ONLY:
+                    logon_state = "deny_only"
+                elif attributes & _SE_GROUP_ENABLED:
+                    logon_state = "enabled"
+                else:
+                    logon_state = "disabled"
+                break
+    except Exception:
+        # This observation is deliberately non-authoritative and best-effort.
+        pass
+    finally:
+        if api is not None and effective_token:
+            try:
+                api.kernel.CloseHandle(effective_token)
+            except Exception:
+                pass
+    return _format_runner_effective_token_diagnostic(
+        token=token_source, logon_sid=logon_state,
+        restricted=restricted_state, integrity=integrity_state,
+        no_write_up=no_write_up_state,
+        new_process_min=new_process_min_state,
+    )
 
 
 def _diagnose_runner_pipe_access(
@@ -1641,6 +1761,7 @@ def _run_child_mode(
     if sys.platform != "win32":
         return 2
     validated_report: Path | None = None
+    effective_token_diagnostic: str | None = None
     try:
         report = Path(report_path)
         temp = os.environ.get("TEMP", "")
@@ -1666,8 +1787,14 @@ def _run_child_mode(
         # used by this probe. Always continue the real parent handshake so a
         # failed negative probe becomes a bounded report instead of a timeout.
         pipe_rejected, _pipe_detail = runner_pipe_wrong_server_pid_probe()
-        with open_runner_pipe_client(
+
+        def capture_effective_token() -> None:
+            nonlocal effective_token_diagnostic
+            effective_token_diagnostic = _runner_effective_token_diagnostic()
+
+        with _runner_pipe._open_runner_pipe_client_with_observer(
             pipe_name, server_pid, timeout_ms=15_000,
+            observer=capture_effective_token,
         ) as pipe:
             pipe.send_message({
                 "version": 1,
@@ -1686,9 +1813,20 @@ def _run_child_mode(
     except Exception as exc:  # noqa: BLE001 - child reports only a fixed safe label
         if validated_report is not None:
             try:
+                failure_detail = _safe_runner_child_exception_detail(exc)
+                if failure_detail == "client_open_access_denied":
+                    diagnostic = effective_token_diagnostic or "token_unavailable"
+                    error_code = _safe_windows_error_code(exc)
+                    context = diagnostic + f"+open_winerror_{error_code}"
+                    if (
+                        len(context) > 120
+                        or re.fullmatch(r"[A-Za-z0-9_+.-]+", context) is None
+                    ):
+                        context = f"token_unavailable+open_winerror_{error_code}"
+                    failure_detail += ";detail=" + context
                 _write_report(
                     validated_report,
-                    "failed=" + _safe_runner_child_exception_detail(exc),
+                    "failed=" + failure_detail,
                 )
             except OSError:
                 pass

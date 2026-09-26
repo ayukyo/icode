@@ -14,7 +14,7 @@ import secrets
 import struct
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 from .windows_runner_protocol import (
     MAX_FRAME_BYTES,
@@ -770,6 +770,41 @@ def open_runner_pipe_client(
     timeout_ms: int = 15_000,
 ) -> RunnerPipeClient:
     """Open a local runner pipe and reject a server other than the expected parent."""
+    return _open_runner_pipe_client_impl(
+        name, expected_server_pid, timeout_ms=timeout_ms,
+    )
+
+
+def _open_runner_pipe_client_with_observer(
+    name: str,
+    expected_server_pid: int,
+    *,
+    timeout_ms: int = 15_000,
+    observer: Callable[[], None],
+) -> RunnerPipeClient:
+    """Open a pipe with an internal, read-only CI diagnostic observer.
+
+    The observer runs after a pipe instance is available and immediately before
+    each ``CreateFileW`` attempt. It must not mutate the current thread token;
+    observer failures do not change connection behavior. This private entry
+    point is reserved for the standard-user Windows probe.
+    """
+    return _open_runner_pipe_client_impl(
+        name,
+        expected_server_pid,
+        timeout_ms=timeout_ms,
+        before_create_file=observer,
+    )
+
+
+def _open_runner_pipe_client_impl(
+    name: str,
+    expected_server_pid: int,
+    *,
+    timeout_ms: int = 15_000,
+    before_create_file: Callable[[], None] | None = None,
+) -> RunnerPipeClient:
+    """Shared client implementation; the observer is reserved for CI diagnostics."""
     pipe_name = validate_runner_pipe_name(name)
     timeout = _validate_timeout(timeout_ms)
     if type(expected_server_pid) is not int or not 1 <= expected_server_pid <= 0xFFFFFFFF:
@@ -791,6 +826,12 @@ def open_runner_pipe_client(
             if error == _ERROR_ACCESS_DENIED:
                 raise PermissionError(error, "runner_pipe_wait_access_denied")
             raise OSError(error, "runner_pipe_wait")
+        if before_create_file is not None:
+            try:
+                before_create_file()
+            except Exception:
+                # Diagnostics must never suppress or replace the pipe open.
+                pass
         handle = api.kernel.CreateFileW(
             pipe_name, PIPE_CLIENT_ACCESS_MASK, 0, None, _OPEN_EXISTING,
             FILE_FLAG_OVERLAPPED | _SECURITY_SQOS_PRESENT | _SECURITY_IMPERSONATION,
