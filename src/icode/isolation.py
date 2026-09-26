@@ -86,6 +86,16 @@ class ProcessGroupProbeResult:
 
 
 @dataclass(frozen=True)
+class MacProtectedPathProbeResult:
+    """macOS 保护路径策略的独立实测；不代表生产策略合同已就绪。"""
+
+    executed: bool
+    passed: bool
+    checks: dict[str, bool]
+    detail: str
+
+
+@dataclass(frozen=True)
 class MetadataReadRoot:
     """Trusted path plus creation-time identity for one read-only root."""
 
@@ -273,6 +283,104 @@ def probe_macos_process_group_cleanup(
         True, not failed, checks,
         "同组清理局部探测通过；不覆盖主动脱组后代" if not failed
         else "同组清理未通过：" + " | ".join(diagnostics),
+    )
+
+
+def probe_macos_protected_paths(
+    sandbox: MacSeatbeltSandbox,
+) -> MacProtectedPathProbeResult:
+    """用统一命令 broker 实测 Seatbelt 对策略保护路径的写入/重命名拒绝。
+
+    本探针仅验证当前实验性策略 profile 的这项能力。Seatbelt 仍没有生产
+    ``wrap_policy``，因此此结果不能把 ``policy_contract_ready`` 提升为真。
+    """
+    checks = {
+        "workspace_write_allowed": False,
+        "protected_write_denied": False,
+        "protected_rename_denied": False,
+    }
+    if sys.platform != "darwin":
+        return MacProtectedPathProbeResult(
+            False, False, checks, "仅适用于 macOS Seatbelt",
+        )
+    if shutil.which(sandbox.sandbox_exec) is None:
+        return MacProtectedPathProbeResult(
+            False, False, checks, "sandbox-exec 不可用",
+        )
+
+    from .execution_broker import execute_policy_command
+
+    stage = "setup"
+    try:
+        with tempfile.TemporaryDirectory(prefix="icode-mac-protected-probe-") as raw:
+            workspace = (Path(raw) / "workspace").resolve()
+            workspace.mkdir()
+            protected = workspace / ".git"
+            protected.mkdir()
+            protected_file = protected / "probe"
+            protected_file.write_text("protected", encoding="utf-8")
+            allowed_file = workspace / "allowed"
+            policy = SandboxPolicy(
+                schema_version=1, run_id="mac-protected-path-probe",
+                ticket_id="mac-protected-path-probe", step="code",
+                workspace_root=workspace, read_roots=(workspace,),
+                write_roots=(workspace,), deny_read_roots=(),
+                deny_write_roots=(protected,), network_mode=NetworkMode.DENY,
+                allowed_domains=(), process_limit=8, wall_timeout_seconds=5,
+                output_limit_bytes=2048, protected_paths=(protected,),
+            )
+
+            def execute(code: str):
+                return execute_policy_command(
+                    sandbox.experimental_wrap_policy(
+                        [sys.executable, "-c", code], policy=policy,
+                    ),
+                    cwd=workspace, policy=policy, timeout=5,
+                )
+
+            stage = "workspace_write_allowed"
+            allowed = execute(
+                "from pathlib import Path; Path('allowed').write_text('ok')"
+            )
+            checks["workspace_write_allowed"] = (
+                allowed.exit_code == 0 and allowed.error is None
+                and allowed.cleanup_ok
+                and allowed_file.is_file()
+                and allowed_file.read_text(encoding="utf-8") == "ok"
+            )
+
+            stage = "protected_write_denied"
+            write = execute(
+                "from pathlib import Path; Path('.git/probe').write_text('changed')"
+            )
+            checks["protected_write_denied"] = (
+                checks["workspace_write_allowed"]
+                and write.exit_code not in (None, 0)
+                and write.error is None and write.cleanup_ok
+                and protected_file.read_text(encoding="utf-8") == "protected"
+            )
+
+            stage = "protected_rename_denied"
+            rename = execute(
+                "from pathlib import Path; Path('.git').rename('git-moved')"
+            )
+            checks["protected_rename_denied"] = (
+                checks["workspace_write_allowed"]
+                and rename.exit_code not in (None, 0)
+                and rename.error is None and rename.cleanup_ok
+                and protected.is_dir() and not (workspace / "git-moved").exists()
+                and protected_file.read_text(encoding="utf-8") == "protected"
+            )
+    except Exception:  # noqa: BLE001 - 原生探针异常必须 fail-closed。
+        return MacProtectedPathProbeResult(
+            True, False, checks, f"保护路径探测异常：{stage}",
+        )
+
+    failed = [name for name, passed in checks.items() if not passed]
+    return MacProtectedPathProbeResult(
+        True, not failed, checks,
+        "保护路径策略探测通过" if not failed
+        else "保护路径策略未通过：" + ", ".join(failed),
     )
 
 

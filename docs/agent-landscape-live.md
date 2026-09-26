@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- 最近观察：2026-09-26；下次全量复核：不晚于 2026-10-25
-- 注：观察日期统一按 UTC 记录；本轮定向复核 R3 独立 Reviewer、修复验证闭环与 commit/worktree 证据锚点；20 项观察名单最近全量复核为 2026-09-24。
+- 最近观察：2026-09-26；下次全量复核：不晚于 2026-10-26
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R2 macOS Seatbelt 保护路径证据；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -563,3 +563,11 @@
 - **源码与微软合同：**`src/icode/windows_runner_pipe.py` 的客户端请求掩码与 pipe SDDL 显式 ACE 都是 `0x00100003`（`FILE_READ_DATA | FILE_WRITE_DATA | SYNCHRONIZE`），不含 GENERIC 位。微软[命名管道安全与访问权](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)说明 `FILE_CREATE_PIPE_INSTANCE` 是 `CreateNamedPipe` 打开现有管道实例时服务端需有的权限，并说明 `FILE_GENERIC_WRITE` 会因 `FILE_APPEND_DATA` 同位而带入该权限；这解释了为何实现刻意使用具体位，但不是当前客户端 `CreateFileW` 请求已证实的拒绝原因。
 - **候选判断：**摘要报告 DACL `ace_match+access_allow`，但只读 [`AccessCheck`](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-accesscheck) 只反映给定安全描述符、token 与请求掩码下的 DACL 判定，不等于实际 `CreateFileW` 成功。`token_process` 标签尚不足以证明检查时使用了 CreateFile 同一线程的有效 token。`pipe_il_absent` / `pipe_nwu_unavailable` 只表明本次 pipe 强制完整性标签读取不可用，不能据此断言对象没有默认完整性策略；微软 [MIC 文档](https://learn.microsoft.com/en-us/windows/win32/secauthz/mandatory-integrity-control)说明未标记对象按 medium 处理，但当前摘要没有给出足以核实 pipe 实际标签/策略的完整描述符，因此既不把 MIC 定为根因，也不宣称已排除。
 - **采纳 / 暂缓：**采纳只读下一步：在即将调用 `CreateFileW` 的同一线程确认有效 token；安全描述符采样仅记录控制标志、ACE 类型/掩码/标志；补齐服务端 `ConnectNamedPipe` 结果与句柄状态。暂缓任何 DACL、请求掩码或 token 修改，禁止为“让探针通过”扩大权限。双架构管道验收未过前，Windows 自动模式继续关闭。研究日期：2026-09-26 UTC。
+
+### 2026-09-26 UTC 定向复核：R2 macOS Seatbelt 保护路径
+
+- **观察锚点：**ICODE 当前基线 `af487dfeedcd8bcef029146a582c1f7f7d20f8ac`；相关 R2 源码自先前原生矩阵提交以来未变。[CI #216](https://github.com/ayukyo/icode/actions/runs/36259173063) 的 macOS Intel 与 Apple Silicon 原生探针均为 5/10。旧探针实际验证工作区写入边界、敏感路径拒读、默认网络拒绝、子进程继承与自检执行；没有将单独的 `protected_paths` 负向操作送入十项评分。
+- **Codex 固定源码：**观察 commit [`a6bd19261c30ce0a0225fe90e646822d29916f11`](https://github.com/openai/codex/commit/a6bd19261c30ce0a0225fe90e646822d29916f11)。其 [Seatbelt profile](https://github.com/openai/codex/blob/a6bd19261c30ce0a0225fe90e646822d29916f11/codex-rs/sandboxing/src/seatbelt.rs#L876-L1102) 由受控读写根与只读保护 carveout 组合；[基础 profile](https://github.com/openai/codex/blob/a6bd19261c30ce0a0225fe90e646822d29916f11/codex-rs/sandboxing/src/seatbelt_base_policy.sbpl#L7-L17) 采用默认拒绝。具体规则含祖先 rename 防护及受限信号目标。本次仅核对这些边界设计，不据此宣称 ICODE 全策略等价或其失败原因。
+- **ICODE 现状：**`MacSeatbeltSandbox._policy_profile()` 已通过实验性包装与命令 broker 联测 `.git` 写入拒绝；该用例不进入现有 10 项 score，且后端仍无生产 `wrap_policy`、`policy_contract_ready=False`。单独文件写入不是 rename/删除证据；CI #216 的 Intel policy-broker step 另失败，但公开结果不足以将失败归因到保护路径。
+- **采纳 / 暂缓：**采纳“负向写入必须配正向工作区写入控制”“保护目标还需测 rename，避免只检查文件内容”“OS profile 证据与生产自动开放分开记账”；将用 broker 对实验 profile 做独立保护路径探针并送入保守评分。暂缓复制 Codex Rust/Seatbelt 实现，也不增加通用读写 carveout、网络例外或依赖。只记录设计机制，不复制其 Apache-2.0 代码，因此无新增许可证义务；若未来复制，必须保留许可与版权声明并单独做合规审查。
+- **本阶段验收：**本机 RED/GREEN、macOS Intel/Apple Silicon 真实 Seatbelt + broker 验收。该单项通过最多补齐一项直接证据，不能单独满足 9/10，也不改变 `policy_contract_ready=False`。阶段结束后记录 CI run 和实际评分；未取得双架构结果前仅称实现/本机测试通过，不宣称线上通过。

@@ -13,6 +13,7 @@ from icode.isolation import (
     LandlockSandbox,
     MacSeatbeltSandbox,
     probe_macos_process_group_cleanup,
+    probe_macos_protected_paths,
     probe_native_sandbox,
 )
 
@@ -81,25 +82,35 @@ def main() -> int:
 
 def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> int:
     result = probe_native_sandbox(backend)
-    for name, passed in result.checks.items():
-        print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
     platform = "linux" if sys.platform.startswith("linux") else "macos"
     group_result = None
+    protected_result = None
     if platform == "macos":
+        protected_result = probe_macos_protected_paths(backend)
         group_result = probe_macos_process_group_cleanup(backend)
+        for name, passed in protected_result.checks.items():
+            print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
         for name, passed in group_result.checks.items():
             print(f"{backend.name} process_group_{name}: {'PASS' if passed else 'FAIL'}")
-    _emit_conformance_score(result.checks, platform=platform,
+    checks = dict(result.checks)
+    if protected_result is not None:
+        checks.update(protected_result.checks)
+    for name, passed in result.checks.items():
+        print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
+    _emit_conformance_score(checks, platform=platform,
                             doctor_self_test=(
                                 result.ready
+                                and (protected_result is None or protected_result.passed)
                                 and (group_result is None or group_result.passed)
                             ),
                             process_group_cleanup=(
                                 group_result.passed if group_result is not None else None
                             ))
     group_failed = group_result is not None and not group_result.passed
-    if not result.ready or group_failed:
-        if not result.ready and isinstance(backend, MacSeatbeltSandbox):
+    protected_failed = protected_result is not None and not protected_result.passed
+    native_ready = result.ready and not protected_failed
+    if not native_ready or group_failed:
+        if not native_ready and isinstance(backend, MacSeatbeltSandbox):
             true_path = shutil.which("true")
             if true_path is not None:
                 for name, profile in (
@@ -123,6 +134,8 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         failures = []
         if not result.ready:
             failures.append(f"native probe: {result.detail}")
+        if protected_failed:
+            failures.append(f"protected paths: {protected_result.detail}")
         if group_failed:
             failures.append(f"process-group cleanup: {group_result.detail}")
         print(f"::error::{backend.name} native probe failed: {'; '.join(failures)}")

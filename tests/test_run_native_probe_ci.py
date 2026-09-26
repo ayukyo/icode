@@ -9,7 +9,12 @@ from unittest import mock
 
 from tests import _support  # noqa: F401
 
-from icode.isolation import MacSeatbeltSandbox, NativeProbeResult, ProcessGroupProbeResult
+from icode.isolation import (
+    MacProtectedPathProbeResult,
+    MacSeatbeltSandbox,
+    NativeProbeResult,
+    ProcessGroupProbeResult,
+)
 from scripts import run_native_probe_ci
 
 
@@ -41,10 +46,21 @@ class TestNativeProbeCi(unittest.TestCase):
             checks={"normal_exit": True, "timeout": False},
             detail="timeout cleanup failed",
         )
+        protected = MacProtectedPathProbeResult(
+            executed=True, passed=True,
+            checks={
+                "workspace_write_allowed": True,
+                "protected_write_denied": True,
+                "protected_rename_denied": True,
+            },
+            detail="protected paths ok",
+        )
         output = StringIO()
 
         with mock.patch.object(run_native_probe_ci.sys, "platform", "darwin"), \
              mock.patch.object(run_native_probe_ci, "probe_native_sandbox", return_value=native), \
+             mock.patch.object(run_native_probe_ci, "probe_macos_protected_paths",
+                               return_value=protected), \
              mock.patch.object(run_native_probe_ci, "probe_macos_process_group_cleanup",
                                return_value=group, create=True) as cleanup_probe, \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
@@ -66,9 +82,20 @@ class TestNativeProbeCi(unittest.TestCase):
             checks={"normal_exit": True, "timeout": True},
             detail="group cleanup ok",
         )
+        protected = MacProtectedPathProbeResult(
+            executed=True, passed=True,
+            checks={
+                "workspace_write_allowed": True,
+                "protected_write_denied": True,
+                "protected_rename_denied": True,
+            },
+            detail="protected paths ok",
+        )
 
         with mock.patch.object(run_native_probe_ci.sys, "platform", "darwin"), \
              mock.patch.object(run_native_probe_ci, "probe_native_sandbox", return_value=native), \
+             mock.patch.object(run_native_probe_ci, "probe_macos_protected_paths",
+                               return_value=protected), \
              mock.patch.object(run_native_probe_ci, "probe_macos_process_group_cleanup",
                                return_value=group, create=True), \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
@@ -76,7 +103,39 @@ class TestNativeProbeCi(unittest.TestCase):
 
         self.assertIs(score.call_args.kwargs.get("process_group_cleanup"), True)
         self.assertIs(score.call_args.kwargs["doctor_self_test"], True)
+        self.assertTrue(score.call_args.args[0]["protected_write_denied"])
         self.assertEqual(result, 0)
+
+    def test_macos保护路径探针失败时原生作业失败且评分保留负证据(self) -> None:
+        sandbox = MacSeatbeltSandbox(sandbox_exec="/bin/true")
+        native = NativeProbeResult(True, {"workspace_write": True}, "native ok")
+        protected = MacProtectedPathProbeResult(
+            executed=True, passed=False,
+            checks={
+                "workspace_write_allowed": True,
+                "protected_write_denied": False,
+                "protected_rename_denied": True,
+            },
+            detail="protected paths failed",
+        )
+        group = ProcessGroupProbeResult(
+            executed=True, passed=True,
+            checks={"normal_exit": True, "timeout": True}, detail="group cleanup ok",
+        )
+
+        with mock.patch.object(run_native_probe_ci.sys, "platform", "darwin"), \
+             mock.patch.object(run_native_probe_ci, "probe_native_sandbox", return_value=native), \
+             mock.patch.object(run_native_probe_ci, "probe_macos_protected_paths",
+                               return_value=protected), \
+             mock.patch.object(run_native_probe_ci, "probe_macos_process_group_cleanup",
+                               return_value=group), \
+             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
+            result = run_native_probe_ci._check(sandbox, "/bin/true")
+
+        checks = score.call_args.args[0]
+        self.assertFalse(checks["protected_write_denied"])
+        self.assertFalse(score.call_args.kwargs["doctor_self_test"])
+        self.assertEqual(result, 1)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ from icode.isolation import (
     capability_report,
     probe_capabilities,
     probe_macos_process_group_cleanup,
+    probe_macos_protected_paths,
     probe_native_sandbox,
     select_sandbox,
 )
@@ -55,6 +56,74 @@ def _metadata_read_root(path: Path) -> MetadataReadRoot:
 
 
 class TestProbe(unittest.TestCase):
+    def test_macos保护路径探针只在macOS上运行(self) -> None:
+        sandbox = MacSeatbeltSandbox(sandbox_exec="/bin/true")
+        with mock.patch("icode.isolation.sys.platform", "linux"):
+            result = probe_macos_protected_paths(sandbox)
+
+        self.assertFalse(result.executed)
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.checks,
+            {
+                "workspace_write_allowed": False,
+                "protected_write_denied": False,
+                "protected_rename_denied": False,
+            },
+        )
+
+    def test_macos保护路径探针使用正向控制并核验写入和重命名拒绝(self) -> None:
+        sandbox = MacSeatbeltSandbox(sandbox_exec="/bin/true")
+        executions = [
+            mock.Mock(exit_code=0, error=None, cleanup_ok=True),
+            mock.Mock(exit_code=1, error=None, cleanup_ok=True),
+            mock.Mock(exit_code=1, error=None, cleanup_ok=True),
+        ]
+
+        def simulate_broker(argv, *, cwd, policy, timeout):
+            if "Path('allowed')" in argv[-1]:
+                (policy.workspace_root / "allowed").write_text("ok", encoding="utf-8")
+            return executions.pop(0)
+
+        with mock.patch("icode.isolation.sys.platform", "darwin"), \
+             mock.patch("icode.execution_broker.execute_policy_command",
+                        side_effect=simulate_broker) as execute:
+            result = probe_macos_protected_paths(sandbox)
+
+        self.assertTrue(result.executed)
+        self.assertTrue(result.passed, result.detail)
+        self.assertEqual(
+            result.checks,
+            {
+                "workspace_write_allowed": True,
+                "protected_write_denied": True,
+                "protected_rename_denied": True,
+            },
+        )
+        self.assertEqual(execute.call_count, 3)
+        for call in execute.call_args_list:
+            argv = call.args[0]
+            policy = call.kwargs["policy"]
+            self.assertEqual(argv[0], "/bin/true")
+            self.assertEqual(policy.deny_write_roots, policy.protected_paths)
+            self.assertEqual(policy.network_mode, NetworkMode.DENY)
+
+    def test_macos保护路径探针正向控制失败时不能记保护路径通过(self) -> None:
+        sandbox = MacSeatbeltSandbox(sandbox_exec="/bin/true")
+        executions = [
+            mock.Mock(exit_code=1, error=None, cleanup_ok=True),
+            mock.Mock(exit_code=1, error=None, cleanup_ok=True),
+            mock.Mock(exit_code=1, error=None, cleanup_ok=True),
+        ]
+        with mock.patch("icode.isolation.sys.platform", "darwin"), \
+             mock.patch("icode.execution_broker.execute_policy_command",
+                        side_effect=executions):
+            result = probe_macos_protected_paths(sandbox)
+
+        self.assertFalse(result.passed)
+        self.assertFalse(result.checks["protected_write_denied"])
+        self.assertFalse(result.checks["protected_rename_denied"])
+
     def test_报告区分mac同组清理与完整一致性(self) -> None:
         report = capability_report()
         group = report["macos_group_cleanup"]
