@@ -26,6 +26,7 @@ from icode.runner import StepReport
 from icode.isolation import NoIsolation
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.tools import default_registry
+from icode.workspace_snapshot import snapshot_workspace
 
 # 各步骤的模拟产物内容（模型"应该"写的内容）
 PLAN_TEXT = "# 实施计划\n\n## 需求理解\n为 calc.py 新增 gcd/lcm。\n"
@@ -94,6 +95,7 @@ class TestChainOffline(unittest.TestCase):
             from icode.handshake import next_out_dir
 
             (workspace / "code.py").write_text("before = True\n", encoding="utf-8")
+            expected_code_snapshot = snapshot_workspace(workspace)["code.py"]
             existing_ticket = next_out_dir(workspace)
             ticket_id = "OFFLINE-EXISTING-1"
             ControlPlane(self.settings).create(
@@ -130,7 +132,7 @@ class TestChainOffline(unittest.TestCase):
             self.assertIs(invoked.call_args.kwargs["policy"], policy)
             self.assertEqual(
                 invoked.call_args.kwargs["change_baseline"]["code.py"],
-                hashlib.sha256(b"before = True\n").hexdigest(),
+                expected_code_snapshot,
             )
 
     def test_run_chain拒绝非工单目录与身份不匹配目录(self) -> None:

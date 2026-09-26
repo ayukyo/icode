@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 def snapshot_workspace(root: Path) -> dict[str, str]:
-    """仅散列工作区实体；链接记录目标文本，绝不由宿主跟随读取。
+    """散列工作区实体与 Git 相关类型/模式；绝不由宿主跟随读取链接。
 
     跳过 `.icode_output` 与 `__pycache__`：前者是工单账本，后者是宿主
     Python 编译产物——两者都不是模型改动，不能进入 diff 证据。
@@ -36,18 +36,23 @@ def snapshot_workspace(root: Path) -> dict[str, str]:
                             os.close(child_fd)
                     elif stat.S_ISLNK(mode):
                         target = os.readlink(entry.name, dir_fd=directory_fd)
-                        out[Path(*child_parts).as_posix()] = hashlib.sha256(
-                            os.fsencode(target)
-                        ).hexdigest()
+                        out[Path(*child_parts).as_posix()] = _entry_hash(
+                            "symlink", "120000", os.fsencode(target),
+                        )
                     elif stat.S_ISREG(mode):
                         file_fd = os.open(
                             entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                             dir_fd=directory_fd,
                         )
                         with os.fdopen(file_fd, "rb") as stream:
-                            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                            opened_mode = os.fstat(stream.fileno()).st_mode
+                            if not stat.S_ISREG(opened_mode):
                                 raise OSError("snapshot file type changed during scan")
-                            digest = hashlib.sha256()
+                            executable = opened_mode & (
+                                stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+                            )
+                            git_mode = "100755" if executable else "100644"
+                            digest = hashlib.sha256(_entry_hash_prefix("file", git_mode))
                             for chunk in iter(lambda: stream.read(64 * 1024), b""):
                                 digest.update(chunk)
                             out[Path(*child_parts).as_posix()] = digest.hexdigest()
@@ -70,13 +75,26 @@ def snapshot_workspace(root: Path) -> dict[str, str]:
             continue
         relative = path.relative_to(root).as_posix()
         if path.is_symlink():
-            out[relative] = hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest()
+            out[relative] = _entry_hash(
+                "symlink", "120000", os.fsencode(os.readlink(path)),
+            )
         elif getattr(path, "is_junction", lambda: False)():
             continue
         elif path.is_file():
             path.resolve(strict=True).relative_to(anchor)
-            out[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+            out[relative] = _entry_hash("file", "100644", path.read_bytes())
     return out
+
+
+def _entry_hash_prefix(entry_type: str, git_mode: str) -> bytes:
+    """版本化地分隔文件类型/模式，避免相同字节产生不同 Git 项的碰撞。"""
+    return f"icode-workspace-entry-v2\0{entry_type}\0{git_mode}\0".encode("ascii")
+
+
+def _entry_hash(entry_type: str, git_mode: str, content: bytes) -> str:
+    digest = hashlib.sha256(_entry_hash_prefix(entry_type, git_mode))
+    digest.update(content)
+    return digest.hexdigest()
 
 
 def changed_files(before: dict[str, str], after: dict[str, str]) -> list[str]:

@@ -1,14 +1,16 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-26
-- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。MiniMax-M3 TDD 靶场完成真实失败 → `allow` → 修复 → 独立测试 → Reviewer 合法提交（25 次调用 / 109,087 tokens）；Reviewer 短上下文终结器仍缺真模型路径证据。当前本地证据锚点把真实 `base_commit_sha`、初始/受测工作区完整内容指纹及相对 diff 纳入证据指纹、回执和 Reviewer 上下文，124 项相关测试、全量 preflight、文档一致性、网站和治理检查均通过；新 CI 待提交后运行。基线 SHA 不冒充未提交结果 commit；结果 commit/tree 匹配及文件模式/子模块边界仍未实现。最新常规 [CI #211](https://github.com/ayukyo/icode/actions/runs/36250208892) 成功，但标准用户 pipe 探针被跳过，Linux/macOS conformance 仍 `5/10`、`critical_passed=false`、`ready=false`；最新手动 [CI #210](https://github.com/ayukyo/icode/actions/runs/36247565458) x64/ARM64 的真实 `CreateFileW` 仍为 `ERROR_ACCESS_DENIED (5)`。跨平台只读边界未闭合，工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
+- 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。MiniMax-M3 TDD 靶场完成真实失败 → `allow` → 修复 → 独立测试 → Reviewer 合法提交（25 次调用 / 109,087 tokens）；Reviewer 短上下文终结器仍缺真模型路径证据。当前本地证据锚点把真实 `base_commit_sha`、初始/受测工作区指纹及相对 diff 纳入证据指纹、回执和 Reviewer 上下文；工作区指纹现区分普通文件/符号链接类型及 POSIX Git 可执行位，133 项聚焦测试与全量 preflight（861 项测试、23 skipped）通过。基线 SHA 不冒充未提交结果 commit；结果 commit/tree 匹配与子模块/ignored/attributes 语义仍未实现。常规 [CI #212](https://github.com/ayukyo/icode/actions/runs/36252023822) 与网站 [#123](https://github.com/ayukyo/icode/actions/runs/36252023817) 通过，但标准用户 pipe 探针被跳过，Linux/macOS conformance 仍 `5/10`、`critical_passed=false`、`ready=false`；手动 [CI #213](https://github.com/ayukyo/icode/actions/runs/36252440492) 已完成但 x64/ARM64 标准用户管道均在 `CreateFileW` 以 `winerror=5` 失败。跨平台只读边界未闭合，工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 2026-09-26 UTC 当前联动状态
 
-- R3 真模型修复闭环已在受控 MiniMax-M3 靶场完成；本地 `run_task` 当前将真实 Git 基线 SHA 与初始/受测工作区指纹纳入回执，124 项相关测试和全量 preflight 通过，新 CI 待提交后运行。Reviewer 跨平台只读命令边界、终结器真模型路径及结果 commit/tree 匹配仍未验收。
-- R2 常规 [CI #211](https://github.com/ayukyo/icode/actions/runs/36250208892) 成功，但 Windows 标准用户探针在 push 运行中跳过；Linux/macOS conformance 仍 `5/10`、`critical_passed=false`、`ready=false`。最新手动 [CI #210](https://github.com/ayukyo/icode/actions/runs/36247565458) 的 x64/ARM64 标准用户探针均在子进程 `CreateFileW` 返回 `access_denied`，自动模式保持关闭。
-- R2.4 Linux x86_64 Git broker 有精确 helper 白名单和污染环境的已安装 wheel 负例；不是跨平台 broker，尚未接入模型工具入口。#211 常规 CI 通过不验证手动 Windows pipe、R2 全部 10 项隔离门或 R3 Reviewer OS 边界。
+- **测试计数补记：**首轮聚焦批次为 126 项；随后纳入离线链路快照基准断言并加严回归，最新聚焦批次为 133 项通过；全量 preflight 为 861 项通过、23 项平台跳过。路线图与持续对照已按最新计数刷新。
+
+- R3 真模型修复闭环已在受控 MiniMax-M3 靶场完成；本地 `run_task` 将真实 Git 基线 SHA 与初始/受测工作区指纹纳入回执，快照进一步区分文件类型与 POSIX 可执行位。133 项聚焦测试和全量 preflight（861 项测试、23 skipped）通过。Reviewer 跨平台只读命令边界、终结器真模型路径及结果 commit/tree 匹配仍未验收。
+- R2 常规 [CI #212](https://github.com/ayukyo/icode/actions/runs/36252023822) 成功，但 Windows 标准用户探针在 push 运行中跳过；Linux/macOS conformance 仍 `5/10`、`critical_passed=false`、`ready=false`。手动 [CI #213](https://github.com/ayukyo/icode/actions/runs/36252440492) 同 SHA x64/ARM64 标准用户管道均在子进程 `CreateFileW` 返回 `access_denied`，自动模式保持关闭。
+- R2.4 Linux x86_64 Git broker 有精确 helper 白名单和污染环境的已安装 wheel 负例；不是跨平台 broker，尚未接入模型工具入口。#212 常规 CI 通过不验证手动 Windows pipe、R2 全部 10 项隔离门或 R3 Reviewer OS 边界。
 
 ## 2026-09-26 UTC：CI #202 回执过滤根因与修正
 
@@ -180,11 +182,8 @@ R3 核心能力（本切片）：
 
 ## 下一片（尚未闭合）
 
-1. 完成并发布基线/工作区证据锚点：`base_commit_sha` 只表示任务开始时的提交；
-   `initial_worktree_fingerprint` 与 `tested_worktree_fingerprint` 覆盖包括预存脏改动在内的文件内容快照，
-   `diff_fingerprint` 保留本轮改动语义。回执与 Reviewer 终态校验必须都覆盖这些字段；
-2. 后续若要声明某个**结果 commit** 已验证，必须先核对该 commit 的 tree 与测试输入快照完全相同，
-   并补齐 Git 可执行位、子模块 gitlink、符号链接、暂存/未暂存和测试期间漂移的回归；
+1. **已实现的基础锚点：**`base_commit_sha` 只表示任务开始时的提交；`initial_worktree_fingerprint` 与 `tested_worktree_fingerprint` 覆盖包括预存脏改动在内的快照，`diff_fingerprint` 保留本轮改动语义。回执与 Reviewer 终态校验均覆盖这些字段；快照摘要现包含文件类型、符号链接目标及 POSIX Git 可执行位，相关行为先 RED 后 GREEN。该快照仍不等于 Git tree。
+2. 后续若要声明某个**结果 commit** 已验证，须使用隔离临时 Git 目录/index 把受测工作区序列化为 tree OID，并确认结果 commit 的 tree OID 与其一致；不得碰用户 index。需覆盖 staged/unstaged、未跟踪与 ignored 文件、特殊路径、symlink、Git attributes/filter、子模块 gitlink 与脏子模块，以及测试期间文件/模式漂移。遇未合并 index、未知转换或无法完整表示的输入时必须不给 tree 等价结论。
 3. 对工作流 review 步骤只读命令边界完成跨平台原生验收；策略化 Reviewer 的只读文件权限与拒读子路径仍需证明能由同一 OS profile 强制组合；
 4. 补足 Reviewer 短上下文终结器的真模型路径证据。Windows/其他平台门未过前继续 fail-closed，不能用本机 R3 回执锚定代替 R2 OS 沙箱验收。
 

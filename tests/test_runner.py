@@ -75,7 +75,8 @@ class TestSnapshot(unittest.TestCase):
             expected = hashlib.sha256(os.fsencode(str(secret))).hexdigest()
 
             before = _snapshot(workspace)
-            self.assertEqual(before, {"alias": expected})
+            self.assertIn("alias", before)
+            self.assertNotEqual(before["alias"], expected)
             secret.write_text("changed-outside-secret", encoding="utf-8")
             self.assertEqual(_snapshot(workspace), before)
 

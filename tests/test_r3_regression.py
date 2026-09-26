@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -86,6 +87,44 @@ class TestDiffFingerprint(unittest.TestCase):
 
         self.assertEqual(snapshot_fingerprint(a), snapshot_fingerprint(b))
         self.assertNotEqual(snapshot_fingerprint(a), snapshot_fingerprint(changed_unrelated))
+
+
+class TestSnapshotGitFileSemantics(unittest.TestCase):
+    def test_普通文件与相同目标文本的符号链接指纹不同(self) -> None:
+        with temp_workspace() as ws:
+            entry = ws / "entry"
+            entry.write_text("target", encoding="utf-8")
+            regular_file = snapshot_workspace(ws)
+            try:
+                entry.unlink()
+                entry.symlink_to("target")
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"symlink creation unavailable: {exc}")
+
+            link_file = snapshot_workspace(ws)
+            self.assertNotEqual(
+                snapshot_fingerprint(regular_file),
+                snapshot_fingerprint(link_file),
+            )
+            self.assertEqual(changed_files(regular_file, link_file), ["entry"])
+
+    @unittest.skipUnless(os.name == "posix", "Git executable mode is POSIX-only")
+    def test_仅切换Git可执行位也改变快照指纹(self) -> None:
+        with temp_workspace() as ws:
+            script = ws / "run.sh"
+            script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            script.chmod(0o644)
+            non_executable = snapshot_workspace(ws)
+            non_executable_fingerprint = snapshot_fingerprint(non_executable)
+
+            script.chmod(0o755)
+            executable = snapshot_workspace(ws)
+
+            self.assertNotEqual(
+                non_executable_fingerprint,
+                snapshot_fingerprint(executable),
+            )
+            self.assertEqual(changed_files(non_executable, executable), ["run.sh"])
 
 
 class TestEvidenceDiffBinding(unittest.TestCase):
