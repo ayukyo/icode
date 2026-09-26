@@ -1090,6 +1090,18 @@ print("metadata-read-only-ok")
         self.assertEqual(argv[argv.index("--bind") + 1], str(Path("/tmp/ws").resolve()))
         self.assertEqual(argv[-2:], ["ls", "-la"])
         self.assertLess(argv.index("--tmpfs"), argv.index("--bind"))
+        runtime_prefix = Path(sys.base_prefix).resolve()
+        standard_roots = tuple(Path(path) for path in ("/usr", "/bin", "/lib", "/lib64"))
+        if runtime_prefix.is_dir() and not any(
+            runtime_prefix == root or root in runtime_prefix.parents
+            for root in standard_roots
+        ):
+            mounts = [
+                tuple(argv[index + 1:index + 3])
+                for index, item in enumerate(argv[:-2]) if item == "--ro-bind"
+            ]
+            self.assertIn((str(runtime_prefix), str(runtime_prefix)), mounts)
+            self.assertNotIn((str(runtime_prefix.parent), str(runtime_prefix.parent)), mounts)
 
     def test_bwrap_显式允许网络时不加_unshare_net(self) -> None:
         argv = BubblewrapSandbox().wrap(["curl"], workspace=Path("/tmp/ws"), network=True)
@@ -1105,6 +1117,9 @@ print("metadata-read-only-ok")
         self.assertIn('(path-ancestors "', profile)
         self.assertIn('(literal "/")', profile)
         self.assertIn('(subpath "/private/etc/ssl")', profile)
+        runtime_prefix = str(Path(sys.base_prefix).resolve())
+        self.assertIn(f'(subpath "{runtime_prefix}")', profile)
+        self.assertNotIn(f'(subpath "{Path(runtime_prefix).parent}")', profile)
         self.assertNotIn('(subpath "/private/tmp")', profile)
         self.assertNotIn("(allow network*)", profile)
         self.assertNotIn("(allow process*)", profile)
