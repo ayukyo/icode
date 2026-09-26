@@ -399,6 +399,16 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - **证据来源：**[Microsoft named-pipe DACL / logon SID 文档](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)、[Microsoft access-check 令牌规则](https://learn.microsoft.com/en-us/windows/win32/secauthz/how-dacls-control-access-to-an-object)。
 - **本地诊断变化（待原生复验）：**错误 server-PID probe 的测试 pipe 现改用 runner logon SID，与生产 ACL principal 对齐；原访问掩码、first-instance、拒绝远端和 PID 负例均未放宽。Windows pipe/标准用户 probe 26 项单测通过。该差分尚未证明 #184 根因，x64 与 ARM64 原生 CI 复验未完成；若仍是 `CreateFileW` 拒绝，按计划采集 DACL 与有效线程 token 并对精确 `0x00100003` 执行 `AccessCheck`。
 
+### 2026-09-26 UTC：CI #184 的同线程访问诊断
+
+- **调用链复核：**#184 的失败来自临时标准用户 runner 内的自连 PID 负例。它在 `_run_child_mode` 中先运行，之后才创建 `_runner_probe` 使用的 restricted token 子进程；因此在 restricted child 的 `CreateRestrictedToken` SID 清单上做实验不会触及失败调用链。本轮短暂形成的候选改动已撤销，未进入代码提交或生产路径。
+- **现有证据与未知项：**x64/ARM64 均只证明 `CreateFileW` 返回 `ERROR_ACCESS_DENIED`，没有 pipe 实际安全描述符或同一调用线程有效 token 的快照。Microsoft 文档说明 named-pipe 客户端打开时按线程有效令牌与实际 DACL 做 access check；若线程模拟则使用 impersonation token，禁用 group SID 不参与 allow 检查。静态 SDDL ACE 和请求掩码文本一致（精确 `0x00100003`），但不能代替对象/令牌的原生观测。
+- **采纳的诊断：**只在手动标准用户负例探针中、同一客户端线程尝试 CreateFile 前读取 pipe DACL，比较预期 logon SID ACE 与请求权限；读取 thread token（若无则 process primary token）、该 SID 的 enabled/deny-only 状态及 restricted 标志；将有效 token 复制为 impersonation token 后对精确 `0x00100003` 执行 `AccessCheck`。回执只保留固定状态标签，不记录 SID、用户名、ACL 内容、原始异常或路径。诊断失败不阻止原负例继续执行。`AccessCheck` 仅交叉计算 DACL/令牌授权，不代表完整 CreateFile 内核路径结果。
+- **明确暂缓：**不扩大 DACL、不使用 `GENERIC_ALL`、不加入 `FILE_CREATE_PIPE_INSTANCE`、不降低/更换 client desired access、不移除 PID 校验。下一次 x64/ARM64 原生工作流给出 DACL/令牌/AccessCheck 结果后，再选择最小根因修复；Windows 自动模式仍关闭。
+- **上游取舍：**Codex `e72da2b53805894878023d01949a25a082e0a5cb` 的 legacy parent runner pipe 与 ICODE 都采用本地管道和 PID 核验，但其 sandbox-user SID / `GENERIC_ALL` ACE、双单向管道与 ICODE per-logon SID / 精确 mask / duplex 管道不同；只采纳机制对照，不以其权限结构解释 #184，也不复制代码。[Codex runner pipe](https://github.com/openai/codex/blob/e72da2b53805894878023d01949a25a082e0a5cb/codex-rs/windows-sandbox-rs/src/elevated/runner_pipe.rs)
+- **本机验证：**诊断摘要的脱敏/长度、Win32 结构偏移、非 Windows fail-safe 与失败阶段串接测试先 RED 后 GREEN；Windows pipe + 标准用户探针 32 项通过，Python compileall 与 `git diff --check` 通过。以上是本机模拟/纯逻辑证据，尚非 Windows 原生证据；需手动 workflow_dispatch 验收。
+- **官方依据：**[named-pipe DACL / logon SID](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights)、[DACL access check 的线程令牌规则](https://learn.microsoft.com/en-us/windows/win32/secauthz/how-dacls-control-access-to-an-object)、[GetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-getsecurityinfo)、[restricted token 双重检查](https://learn.microsoft.com/en-us/windows/win32/secauthz/restricted-tokens)。
+
 ### 2026-09-25 UTC：Windows token 修正版前的 macOS CI 复跑
 
 - CI [#167 首次尝试](https://github.com/ayukyo/icode/actions/runs/36181786438) 的测试、wheel、workspace、Linux、Apple Silicon 与 Windows Job/打包子项均通过；仅 macOS Intel broker 测试断言 `cleanup_failed`，另有研究对照日期误标 UTC 的提示。失败作业 attempt 2 通过，说明本次没有复现；没有采集到 `cleanup_errno`，因此不判定为系统行为或回收器根因。

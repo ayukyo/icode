@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import unittest
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import sys
 import tempfile
 from unittest import mock
 
+from scripts import windows_standard_user_token_probe as token_probe
 from scripts.windows_standard_user_token_probe import (
     _run_child_mode,
     _make_environment_buffer,
@@ -24,6 +26,51 @@ from scripts.windows_standard_user_token_probe import (
 
 
 class TestWindowsStandardUserTokenProbe(unittest.TestCase):
+    def test_pipe_access_diagnostic_summary_is_redacted_and_bounded(self) -> None:
+        summary = token_probe._format_runner_pipe_access_diagnostic(
+            dacl="present",
+            ace="match",
+            token="thread",
+            logon_sid="enabled",
+            restricted="no",
+            access="deny",
+        )
+
+        self.assertEqual(
+            summary,
+            "dacl_present+ace_match+token_thread+logon_enabled+restricted_no+access_deny",
+        )
+        self.assertLessEqual(len(summary), 120)
+        self.assertNotIn("S-1-5-", summary)
+        with self.assertRaises(ValueError):
+            token_probe._format_runner_pipe_access_diagnostic(
+                dacl="S-1-5-21-secret",
+                ace="match",
+                token="thread",
+                logon_sid="enabled",
+                restricted="no",
+                access="deny",
+            )
+
+    def test_pipe_access_diagnostic_is_unavailable_off_windows(self) -> None:
+        with mock.patch.object(
+            token_probe._runner_pipe, "_load_win32_api",
+            side_effect=AssertionError("native API must not load"),
+        ):
+            summary = token_probe._diagnose_runner_pipe_access(123, "not-logged")
+
+        self.assertEqual(
+            summary,
+            "dacl_unavailable+ace_unavailable+token_unavailable+"
+            "logon_unavailable+restricted_unavailable+access_unavailable",
+        )
+        self.assertNotIn("not-logged", summary)
+
+    def test_pipe_access_diagnostic_structures_match_windows_layout(self) -> None:
+        self.assertEqual(token_probe._ACL_HEADER.AceCount.offset, 4)
+        self.assertEqual(token_probe._ACCESS_ALLOWED_ACE.SidStart.offset, 8)
+        self.assertEqual(ctypes.sizeof(token_probe._ACCESS_ALLOWED_ACE), 12)
+
     def test_wrong_server_pid_probe_builds_acl_for_runner_logon_sid(self) -> None:
         class FakePipe:
             name = r"\\.\pipe\icode-runner-" + "d" * 32
@@ -213,13 +260,42 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                         "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
                         side_effect=PermissionError(5, error_stage),
                     ),
+                    mock.patch(
+                        "scripts.windows_standard_user_token_probe._diagnose_runner_pipe_access",
+                        return_value=(
+                            "dacl_present+ace_match+token_process+logon_enabled+"
+                            "restricted_no+access_allow"
+                        ),
+                    ) as access_diagnostic,
                 ):
                     result = runner_pipe_wrong_server_pid_probe()
 
+                access_diagnostic.assert_called_once_with(
+                    getattr(pipe, "_handle", 0), "S-1-5-5-123-456",
+                )
+
+                expected_result = (
+                    (False,
+                     "client_open_access_denied+dacl_present+ace_match+token_process+"
+                     "logon_enabled+restricted_no+access_allow")
+                    if expected_stage == "client_open_access_denied"
+                    else (False, f"{expected_stage}+server_accept_timeout")
+                )
                 self.assertEqual(
                     result,
-                    (False, f"{expected_stage}+server_accept_timeout"),
+                    expected_result,
                 )
+                if expected_stage == "client_open_access_denied":
+                    diagnostic_detail = expected_result[1].removeprefix(
+                        "client_open_access_denied+",
+                    )
+                    self.assertNotEqual(
+                        restricted_child_failure_detail(
+                            "failed=runner_pipe_server_pid_mismatch;detail="
+                            + diagnostic_detail
+                        ),
+                        "unclassified",
+                    )
 
     def test_checkout_script_imports_package_without_pythonpath(self) -> None:
         repository = Path(__file__).resolve().parents[1]

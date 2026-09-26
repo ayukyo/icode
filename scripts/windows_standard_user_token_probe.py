@@ -27,7 +27,9 @@ if (_SOURCE_PACKAGE_ROOT / "icode").is_dir():
     # repository's src/ tree; Windows CI intentionally has no PYTHONPATH.
     sys.path.insert(0, str(_SOURCE_PACKAGE_ROOT))
 
+import icode.windows_runner_pipe as _runner_pipe
 from icode.windows_runner_pipe import (
+    PIPE_CLIENT_ACCESS_MASK,
     create_runner_pipe_server,
     new_runner_pipe_name,
     open_runner_pipe_client,
@@ -47,6 +49,19 @@ _INFINITE = 0xFFFFFFFF
 _ERROR_NO_SUCH_USER = 1317
 _ERROR_LOGON_FAILURE = 1326
 _ERROR_ACCESS_DENIED = 5
+_ERROR_NO_TOKEN = 1008
+_SE_KERNEL_OBJECT = 6
+_DACL_SECURITY_INFORMATION = 0x00000004
+_ACCESS_ALLOWED_ACE_TYPE = 0
+_SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010
+_SE_GROUP_ENABLED = 0x00000004
+_SECURITY_IMPERSONATION_LEVEL = 2
+_DIAGNOSTIC_MAX_ACE_COUNT = 256
+_DIAGNOSTIC_PRIVILEGE_BUFFER_BYTES = 4096
+_FILE_GENERIC_READ = 0x00120089
+_FILE_GENERIC_WRITE = 0x00120116
+_FILE_GENERIC_EXECUTE = 0x001200A0
+_FILE_ALL_ACCESS = 0x001F01FF
 _TOKEN_DUPLICATE = 0x0002
 _TOKEN_QUERY = 0x0008
 _TOKEN_ASSIGN_PRIMARY = 0x0001
@@ -270,6 +285,10 @@ def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
         logon_sid = runner_process_logon_sid(process_handle)
         failures: list[str] = []
         with create_runner_pipe_server(logon_sid) as pipe:
+            access_diagnostic = _diagnose_runner_pipe_access(
+                getattr(pipe, "_handle", 0), logon_sid,
+            )
+
             def accept_once() -> None:
                 try:
                     pipe._connect(5_000)
@@ -304,10 +323,14 @@ def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
             if worker.is_alive():
                 return False, "server_thread_timeout"
             if failures:
+                if client_result == "client_open_access_denied":
+                    return False, f"{client_result}+{access_diagnostic}"
                 return False, f"{client_result}+server_accept_{failures[0]}"
             if not pipe._connected:
                 return False, f"{client_result}+server_not_connected"
             if client_result != "server_pid_mismatch_rejected":
+                if client_result == "client_open_access_denied":
+                    return False, f"{client_result}+{access_diagnostic}"
                 return False, client_result
             return True, "server_pid_mismatch_rejected"
     except PermissionError:
@@ -326,6 +349,254 @@ class _SID_AND_ATTRIBUTES(ctypes.Structure):
 
 class _TOKEN_USER(ctypes.Structure):
     _fields_ = [("User", _SID_AND_ATTRIBUTES)]
+
+
+class _ACL_HEADER(ctypes.Structure):
+    _fields_ = [
+        ("AclRevision", ctypes.c_ubyte),
+        ("Sbz1", ctypes.c_ubyte),
+        ("AclSize", ctypes.c_uint16),
+        ("AceCount", ctypes.c_uint16),
+        ("Sbz2", ctypes.c_uint16),
+    ]
+
+
+class _ACE_HEADER(ctypes.Structure):
+    _fields_ = [
+        ("AceType", ctypes.c_ubyte),
+        ("AceFlags", ctypes.c_ubyte),
+        ("AceSize", ctypes.c_uint16),
+    ]
+
+
+class _ACCESS_ALLOWED_ACE(ctypes.Structure):
+    _fields_ = [
+        ("Header", _ACE_HEADER),
+        ("Mask", ctypes.c_uint32),
+        ("SidStart", ctypes.c_uint32),
+    ]
+
+
+class _GENERIC_MAPPING(ctypes.Structure):
+    _fields_ = [
+        ("GenericRead", ctypes.c_uint32),
+        ("GenericWrite", ctypes.c_uint32),
+        ("GenericExecute", ctypes.c_uint32),
+        ("GenericAll", ctypes.c_uint32),
+    ]
+
+
+def _format_runner_pipe_access_diagnostic(
+    *, dacl: str, ace: str, token: str, logon_sid: str,
+    restricted: str, access: str,
+) -> str:
+    """Serialize only fixed diagnostic states, never SID or ACL contents."""
+    choices = {
+        "dacl": {"present", "absent", "unavailable"},
+        "ace": {"match", "missing", "unavailable"},
+        "token": {"thread", "process", "unavailable"},
+        "logon_sid": {"enabled", "disabled", "deny_only", "absent", "unavailable"},
+        "restricted": {"yes", "no", "unavailable"},
+        "access": {"allow", "deny", "unavailable"},
+    }
+    values = {
+        "dacl": dacl,
+        "ace": ace,
+        "token": token,
+        "logon_sid": logon_sid,
+        "restricted": restricted,
+        "access": access,
+    }
+    if any(value not in choices[key] for key, value in values.items()):
+        raise ValueError("invalid_pipe_access_diagnostic")
+    labels = {"logon_sid": "logon"}
+    return "+".join(
+        f"{labels.get(key, key)}_{value}" for key, value in values.items()
+    )
+
+
+def _diagnose_runner_pipe_access(pipe_handle: int, logon_sid: str) -> str:
+    """Snapshot the test pipe DACL and this thread's effective token read-only."""
+    dacl_state = ace_state = token_source = logon_state = "unavailable"
+    restricted_state = access_state = "unavailable"
+    api = None
+    security_descriptor = ctypes.c_void_p()
+    expected_sid = ctypes.c_void_p()
+    effective_token = ctypes.c_void_p()
+    impersonation_token = ctypes.c_void_p()
+    try:
+        if sys.platform != "win32" or not pipe_handle:
+            return _format_runner_pipe_access_diagnostic(
+                dacl=dacl_state, ace=ace_state, token=token_source,
+                logon_sid=logon_state, restricted=restricted_state,
+                access=access_state,
+            )
+        api = _runner_pipe._load_win32_api()
+        advapi = api.advapi
+        advapi.GetSecurityInfo.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, wintypes.DWORD,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi.GetSecurityInfo.restype = wintypes.DWORD
+        advapi.GetSecurityDescriptorDacl.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL),
+        ]
+        advapi.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+        advapi.GetAce.argtypes = [
+            ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi.GetAce.restype = wintypes.BOOL
+        advapi.DuplicateToken.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi.DuplicateToken.restype = wintypes.BOOL
+        advapi.IsTokenRestricted.argtypes = [ctypes.c_void_p]
+        advapi.IsTokenRestricted.restype = wintypes.BOOL
+        advapi.AccessCheck.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD,
+            ctypes.POINTER(_GENERIC_MAPPING), ctypes.c_void_p,
+            ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        advapi.AccessCheck.restype = wintypes.BOOL
+        advapi.ConvertStringSidToSidW.argtypes = [
+            wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi.ConvertStringSidToSidW.restype = wintypes.BOOL
+
+        if not advapi.ConvertStringSidToSidW(
+            logon_sid, ctypes.byref(expected_sid),
+        ):
+            expected_sid = ctypes.c_void_p()
+
+        status = advapi.GetSecurityInfo(
+            pipe_handle, _SE_KERNEL_OBJECT, _DACL_SECURITY_INFORMATION,
+            None, None, None, None, ctypes.byref(security_descriptor),
+        )
+        if status == 0 and security_descriptor:
+            dacl_present = wintypes.BOOL()
+            dacl_pointer = ctypes.c_void_p()
+            dacl_defaulted = wintypes.BOOL()
+            if advapi.GetSecurityDescriptorDacl(
+                security_descriptor, ctypes.byref(dacl_present),
+                ctypes.byref(dacl_pointer), ctypes.byref(dacl_defaulted),
+            ):
+                dacl_state = "present" if dacl_present.value else "absent"
+                if dacl_present.value and dacl_pointer and expected_sid:
+                    header = ctypes.cast(
+                        dacl_pointer, ctypes.POINTER(_ACL_HEADER),
+                    ).contents
+                    if header.AceCount <= _DIAGNOSTIC_MAX_ACE_COUNT:
+                        ace_state = "missing"
+                        for index in range(int(header.AceCount)):
+                            ace_pointer = ctypes.c_void_p()
+                            if not advapi.GetAce(
+                                dacl_pointer, index, ctypes.byref(ace_pointer),
+                            ) or not ace_pointer:
+                                ace_state = "unavailable"
+                                break
+                            ace_header = ctypes.cast(
+                                ace_pointer, ctypes.POINTER(_ACE_HEADER),
+                            ).contents
+                            if ace_header.AceType != _ACCESS_ALLOWED_ACE_TYPE:
+                                continue
+                            allowed = ctypes.cast(
+                                ace_pointer, ctypes.POINTER(_ACCESS_ALLOWED_ACE),
+                            ).contents
+                            sid_offset = _ACCESS_ALLOWED_ACE.SidStart.offset
+                            ace_sid = ctypes.c_void_p(ace_pointer.value + sid_offset)
+                            if (
+                                allowed.Mask & PIPE_CLIENT_ACCESS_MASK
+                                == PIPE_CLIENT_ACCESS_MASK
+                                and advapi.EqualSid(ace_sid, expected_sid)
+                            ):
+                                ace_state = "match"
+                                break
+                    else:
+                        ace_state = "unavailable"
+            else:
+                dacl_state = "unavailable"
+        elif status != 0:
+            dacl_state = "unavailable"
+
+        token_access = _TOKEN_QUERY | _TOKEN_DUPLICATE
+        effective_token = ctypes.c_void_p()
+        if advapi.OpenThreadToken(
+            api.kernel.GetCurrentThread(), token_access, 1,
+            ctypes.byref(effective_token),
+        ):
+            token_source = "thread"
+        elif ctypes.get_last_error() == _ERROR_NO_TOKEN:
+            if advapi.OpenProcessToken(
+                api.kernel.GetCurrentProcess(), token_access,
+                ctypes.byref(effective_token),
+            ):
+                token_source = "process"
+        if effective_token:
+            groups_buffer, groups = _runner_pipe._token_group_entries(
+                _runner_pipe._get_token_information(
+                    api, effective_token, _runner_pipe._TOKEN_GROUPS_CLASS,
+                ),
+            )
+            _ = groups_buffer
+            restricted_state = (
+                "yes" if advapi.IsTokenRestricted(effective_token) else "no"
+            )
+            logon_state = "absent"
+            if expected_sid:
+                for sid_pointer, attributes in groups:
+                    if not advapi.EqualSid(sid_pointer, expected_sid):
+                        continue
+                    if attributes & _SE_GROUP_USE_FOR_DENY_ONLY:
+                        logon_state = "deny_only"
+                    elif attributes & _SE_GROUP_ENABLED:
+                        logon_state = "enabled"
+                    else:
+                        logon_state = "disabled"
+                    break
+            if advapi.DuplicateToken(
+                effective_token, _SECURITY_IMPERSONATION_LEVEL,
+                ctypes.byref(impersonation_token),
+            ):
+                if security_descriptor:
+                    mapping = _GENERIC_MAPPING(
+                        _FILE_GENERIC_READ, _FILE_GENERIC_WRITE,
+                        _FILE_GENERIC_EXECUTE, _FILE_ALL_ACCESS,
+                    )
+                    privileges = ctypes.create_string_buffer(
+                        _DIAGNOSTIC_PRIVILEGE_BUFFER_BYTES,
+                    )
+                    privilege_length = wintypes.DWORD(ctypes.sizeof(privileges))
+                    granted_access = wintypes.DWORD()
+                    access_granted = wintypes.BOOL()
+                    if advapi.AccessCheck(
+                        security_descriptor, impersonation_token,
+                        PIPE_CLIENT_ACCESS_MASK, ctypes.byref(mapping),
+                        privileges, ctypes.byref(privilege_length),
+                        ctypes.byref(granted_access), ctypes.byref(access_granted),
+                    ):
+                        access_state = "allow" if access_granted.value else "deny"
+    except Exception:
+        # This is an observational probe. A diagnostic error must not change
+        # whether the original CreateFileW negative test is attempted.
+        pass
+    finally:
+        if api is not None:
+            if impersonation_token:
+                api.kernel.CloseHandle(impersonation_token)
+            if effective_token:
+                api.kernel.CloseHandle(effective_token)
+            if expected_sid:
+                api.kernel.LocalFree(expected_sid)
+            if security_descriptor:
+                api.kernel.LocalFree(security_descriptor)
+    return _format_runner_pipe_access_diagnostic(
+        dacl=dacl_state, ace=ace_state, token=token_source,
+        logon_sid=logon_state, restricted=restricted_state,
+        access=access_state,
+    )
 
 
 class _IO_COUNTERS(ctypes.Structure):
