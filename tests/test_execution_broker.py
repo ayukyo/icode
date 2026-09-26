@@ -41,6 +41,17 @@ def _context(root: Path, *, wall_timeout: int = 5, output_limit: int = 1024) -> 
 
 @unittest.skipUnless(os.name == "posix", "R2.2 仅覆盖 POSIX 策略命令")
 class TestPolicyCommandBroker(unittest.TestCase):
+    def test_普通命令非零退出不伪报策略拒绝(self) -> None:
+        with temp_workspace() as root:
+            context = _context(root.resolve())
+            result = default_registry().invoke("run_command", context, {
+                "argv": [sys.executable, "-c", "raise SystemExit(13)"],
+            })
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta["exit_code"], 13)
+        self.assertNotIn("error_code", result.meta)
+
     def test_policy_command_preserves_raw_bytes_for_binary_protocols(self) -> None:
         with temp_workspace() as root:
             root = root.resolve()

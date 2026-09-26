@@ -25,6 +25,9 @@ OPCLASS_MANAGED_WRITE = "managed_write"
 OPCLASS_EXTERNAL = "external_side_effect"
 OPCLASS_DESTRUCTIVE = "destructive_hardware"
 
+_POLICY_DENIAL_ERRORS = frozenset({"read_denied", "write_denied"})
+_POLICY_DENIED_USER_MESSAGE = "此操作超出当前任务范围，已阻止。"
+
 
 @dataclass
 class ToolContext:
@@ -207,7 +210,15 @@ class ToolRegistry:
                 meta={"error": "unknown_tool"},
             )
         try:
-            return tool.run(ctx, arguments)
+            result = tool.run(ctx, arguments)
+            if not result.ok and result.meta.get("error") in _POLICY_DENIAL_ERRORS:
+                # 稳定的用户提示与机器码统一；保留 error 作为调用方兼容的细分原因。
+                meta = dict(result.meta)
+                meta["error_code"] = "policy_denied"
+                return ToolResult(
+                    False, _POLICY_DENIED_USER_MESSAGE, meta, opclass=result.opclass,
+                )
+            return result
         except TypeError as exc:
             return ToolResult(
                 ok=False,

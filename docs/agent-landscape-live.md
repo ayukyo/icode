@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
 - 最近观察：2026-09-26；下次全量复核：不晚于 2026-10-26
-- 注：观察日期统一按 UTC 记录；本轮定向复核 R2 macOS Seatbelt 保护路径证据；20 项观察名单最近全量复核为 2026-09-24。
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R2 macOS Seatbelt 保护路径与策略拒绝回执；20 项观察名单最近全量复核为 2026-09-24。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -571,3 +571,11 @@
 - **ICODE 现状：**`MacSeatbeltSandbox._policy_profile()` 已通过实验性包装与命令 broker 联测 `.git` 写入拒绝；该用例不进入现有 10 项 score，且后端仍无生产 `wrap_policy`、`policy_contract_ready=False`。单独文件写入不是 rename/删除证据；CI #216 的 Intel policy-broker step 另失败，但公开结果不足以将失败归因到保护路径。
 - **采纳 / 暂缓：**采纳“负向写入必须配正向工作区写入控制”“保护目标还需测 rename，避免只检查文件内容”“OS profile 证据与生产自动开放分开记账”；将用 broker 对实验 profile 做独立保护路径探针并送入保守评分。暂缓复制 Codex Rust/Seatbelt 实现，也不增加通用读写 carveout、网络例外或依赖。只记录设计机制，不复制其 Apache-2.0 代码，因此无新增许可证义务；若未来复制，必须保留许可与版权声明并单独做合规审查。
 - **本阶段结束 / CI #218：**提交 `34e5b03` 的整轮 [GitHub Actions](https://github.com/ayukyo/icode/actions/runs/36262348023) 已完成；Linux x64/ARM64 四项、Windows wheel/Job、Python 3.11/3.12、macOS Intel/Apple Silicon 原生作业均成功，只有已标注退休/手动的探针步骤跳过。macOS 原生探针和保护路径 broker 步骤均成功。由 CI 通过结果及 `score_probe_evidence()` 的直接映射可计算本轮 6/10（在原五项上新增 `protected_paths` 一项）；由于公开 job 摘要不展示日志正文，分数是源码映射推导值，不伪称从日志逐字读得。**其余未验证项：**临时网络白名单、资源限制、统一违规回执；脱组后代清理按用户批准的同组边界例外处理，严格十项 `process_tree_cleanup` 仍为 false。该切片不改变 `policy_contract_ready=False`，自动模式仍阻断。观察/验收日期：2026-09-26 UTC。
+
+### 2026-09-26 18:37 UTC 定向复核：R2 策略拒绝回执
+
+- **Codex 固定源码：**观察 commit [`0fbf0bedc25d0effec4b758030772468339d315c`](https://github.com/openai/codex/commit/0fbf0bedc25d0effec4b758030772468339d315c)，许可证 Apache-2.0。[Seatbelt 网络规则](https://github.com/openai/codex/blob/0fbf0bedc25d0effec4b758030772468339d315c/codex-rs/sandboxing/src/seatbelt.rs#L316-L344)展示动态策略如何限制本机代理端口；[进程组终止](https://github.com/openai/codex/blob/0fbf0bedc25d0effec4b758030772468339d315c/codex-rs/utils/pty/src/process_group.rs#L273-L288)明确是组级清理；[命令执行接口](https://github.com/openai/codex/blob/0fbf0bedc25d0effec4b758030772468339d315c/codex-rs/core/src/exec.rs#L150-L168)将执行/取消状态结构化。本次所查路径未发现可把任意子进程的 OS `EACCES` 与普通程序失败区分开的通用违规回执，也未发现单工单 PID 上限；不将上游能力记作 ICODE 证据。
+- **OpenHands 运行时文档：**固定文档提交 [`89696a228c6444d69fdd4689760c7fe2f2efa987`](https://github.com/OpenHands/docs/commit/89696a228c6444d69fdd4689760c7fe2f2efa987) 的[运行时架构说明](https://github.com/OpenHands/docs/blob/89696a228c6444d69fdd4689760c7fe2f2efa987/openhands/usage/architecture/runtime.mdx#L198-L206)把隔离和资源边界放在 Docker runtime。它不能证明本机 Seatbelt 下的统一拒绝分类；Docker 也不符合 ICODE 的 pip-only 默认安装边界。
+- **ICODE 现状与阶段选择：**受控文件工具已有 `read_denied` / `write_denied` 内部细分，但用户提示和通用错误码未统一。采纳在 `ToolRegistry` 出口为这两类拒绝增加共同的稳定 `policy_denied` 错误码/提示，并保留旧 `error` 元数据以兼容调用方；明确不将任意命令非零退出分类为策略拒绝。实现不复制上游代码、不增加依赖，无新增许可证义务。
+- **验收与缺口：**测试验证受保护读取、写入/编辑拒绝有同一用户提示和稳定码、内部原因继续可见、目标内容未变化；普通命令退出码 13 不得带 `policy_denied`。这仅闭合 ICODE 受控文件工具路径，任意子进程遭 OS 拒绝后的 broker 收据仍未标准化，故 `uniform_violation` 评分继续为 false，macOS 仍未达到 9/10；不得开放自动模式。下阶段需解决或明确保持该执行链缺口，并按实际证据更新评分。观察/研究日期：2026-09-26 18:37 UTC。
+- **本切片本地结束：**受影响工具与执行器定向测试 42 项通过；全仓 preflight 的密钥扫描、子模块完整性和 unittest 三道守护全部通过。语法编译、站点、治理与竞品文档校验通过。该结果仅验收本地工具层收据，不代表 macOS/Linux/Windows 原生命令违规分类通过。

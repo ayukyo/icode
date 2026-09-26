@@ -279,6 +279,44 @@ class TestFileTools(unittest.TestCase):
                 result = self.reg.invoke(tool, context, arguments)
                 self.assertFalse(result.ok)
                 self.assertEqual(result.meta["error"], "write_denied")
+                self.assertEqual(result.meta["error_code"], "policy_denied")
+                self.assertEqual(result.content, "此操作超出当前任务范围，已阻止。")
+        self.assertEqual(config.read_text(encoding="utf-8"), "before\n")
+
+    def test_策略读取与写入拒绝使用统一用户回执并保留内部分类(self) -> None:
+        from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+        private = self.root / "private"
+        private.mkdir()
+        secret = private / "secret.txt"
+        secret.write_text("PRIVATE_MARKER\n", encoding="utf-8")
+        protected = self.root / ".git"
+        protected.mkdir()
+        config = protected / "config"
+        config.write_text("before\n", encoding="utf-8")
+        policy = SandboxPolicy(
+            schema_version=1, run_id="run", ticket_id="ticket", step="code",
+            workspace_root=self.root, read_roots=(self.root,), write_roots=(self.root,),
+            deny_read_roots=(private,), deny_write_roots=(protected,),
+            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+            wall_timeout_seconds=10, output_limit_bytes=1024,
+            protected_paths=(protected,),
+        )
+        context = ToolContext(root=self.root, policy=policy)
+
+        denied = (
+            self.reg.invoke("read_file", context, {"path": "private/secret.txt"}),
+            self.reg.invoke("write_file", context, {
+                "path": ".git/config", "content": "after\n",
+            }),
+        )
+
+        self.assertEqual([result.meta["error"] for result in denied],
+                         ["read_denied", "write_denied"])
+        self.assertTrue(all(result.meta["error_code"] == "policy_denied" for result in denied))
+        self.assertEqual({result.content for result in denied},
+                         {"此操作超出当前任务范围，已阻止。"})
+        self.assertNotIn("PRIVATE_MARKER", denied[0].content)
         self.assertEqual(config.read_text(encoding="utf-8"), "before\n")
 
     def test_策略编辑必须同时有读取权限(self) -> None:
