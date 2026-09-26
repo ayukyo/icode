@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import inspect
 import unittest
 import os
 from pathlib import Path
@@ -52,6 +53,17 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 access="deny",
             )
 
+        child_summary = token_probe._format_runner_pipe_access_diagnostic(
+            dacl="present",
+            ace="match",
+            token="child_process",
+            logon_sid="enabled",
+            restricted="no",
+            access="allow",
+        )
+        self.assertIn("token_child_process", child_summary)
+        self.assertLessEqual(len(child_summary), 120)
+
     def test_pipe_access_diagnostic_is_unavailable_off_windows(self) -> None:
         with mock.patch.object(
             token_probe._runner_pipe, "_load_win32_api",
@@ -70,6 +82,113 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(token_probe._ACL_HEADER.AceCount.offset, 4)
         self.assertEqual(token_probe._ACCESS_ALLOWED_ACE.SidStart.offset, 8)
         self.assertEqual(ctypes.sizeof(token_probe._ACCESS_ALLOWED_ACE), 12)
+
+    def test_pipe_diagnostic_can_target_the_exited_child_token(self) -> None:
+        diagnostic_parameters = inspect.signature(
+            token_probe._diagnose_runner_pipe_access,
+        ).parameters
+
+        self.assertIn("client_process_handle", diagnostic_parameters)
+
+    def test_exited_child_access_denial_includes_child_token_diagnostic(self) -> None:
+        failure_parameters = inspect.signature(
+            token_probe._runner_child_failure_if_exited,
+        ).parameters
+        self.assertIn("server_pipe_handle", failure_parameters)
+        self.assertIn("expected_logon_sid", failure_parameters)
+
+        class FakeKernel:
+            def WaitForSingleObject(self, _handle: int, _timeout_ms: int) -> int:
+                return token_probe._WAIT_OBJECT_0
+
+            def GetExitCodeProcess(self, _handle: int, output) -> bool:
+                output._obj.value = 1
+                return True
+
+        diagnostic = (
+            "dacl_present+ace_match+token_child_process+logon_enabled+"
+            "restricted_no+access_allow"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "result.txt"
+            report.write_text("failed=client_open_access_denied\n", encoding="ascii")
+            with mock.patch(
+                "scripts.windows_standard_user_token_probe._diagnose_runner_pipe_access",
+                return_value=diagnostic,
+            ) as diagnose:
+                detail = token_probe._runner_child_failure_if_exited(
+                    kernel=FakeKernel(),
+                    process_handle=12,
+                    report_path=report,
+                    server_pipe_handle=34,
+                    expected_logon_sid="S-1-5-5-1-2",
+                )
+
+        self.assertEqual(detail, "client_open_access_denied+" + diagnostic)
+        report_detail = token_probe.runner_report_failure_detail(
+            "failed=client_open_access_denied;detail=" + diagnostic,
+            1,
+        )
+        self.assertEqual(
+            report_detail,
+            "client_open_access_denied:" + diagnostic,
+        )
+        diagnose.assert_called_once_with(
+            34,
+            "S-1-5-5-1-2",
+            client_process_handle=12,
+        )
+
+    def test_pipe_diagnostic_token_opener_uses_only_target_child(self) -> None:
+        opener = getattr(token_probe, "_open_pipe_diagnostic_token", None)
+        self.assertTrue(callable(opener))
+
+        class FakeAdvapi:
+            def __init__(self) -> None:
+                self.process_handle = None
+                self.requested_access = None
+
+            def OpenProcessToken(self, process_handle, access: int, token_pointer) -> int:
+                self.process_handle = process_handle
+                self.requested_access = access
+                ctypes.cast(
+                    token_pointer, ctypes.POINTER(ctypes.c_void_p),
+                ).contents.value = 456
+                return 1
+
+            def OpenThreadToken(self, *_args) -> int:
+                raise AssertionError("child diagnostic must not fall back to the host thread")
+
+        class FakeApi:
+            advapi = FakeAdvapi()
+
+        token, source = opener(FakeApi(), client_process_handle=123)
+
+        self.assertEqual(source, "child_process")
+        self.assertEqual(token.value, 456)
+        self.assertEqual(FakeApi.advapi.process_handle, 123)
+        self.assertEqual(
+            FakeApi.advapi.requested_access,
+            token_probe._TOKEN_QUERY | token_probe._TOKEN_DUPLICATE,
+        )
+
+    def test_pipe_diagnostic_does_not_fall_back_when_child_token_is_unavailable(self) -> None:
+        class FakeAdvapi:
+            def OpenProcessToken(self, *_args) -> int:
+                return 0
+
+            def OpenThreadToken(self, *_args) -> int:
+                raise AssertionError("must not inspect the host thread token")
+
+        class FakeApi:
+            advapi = FakeAdvapi()
+
+        token, source = token_probe._open_pipe_diagnostic_token(
+            FakeApi(), client_process_handle=123,
+        )
+
+        self.assertIsNone(token)
+        self.assertEqual(source, "unavailable")
 
     def test_wrong_server_pid_probe_builds_acl_for_runner_logon_sid(self) -> None:
         class FakePipe:

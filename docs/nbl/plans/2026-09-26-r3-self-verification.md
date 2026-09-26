@@ -4,6 +4,12 @@
 - 状态：R3 自验证/有界修复核心和独立只读 Reviewer 已有离线实现。`run_task` Reviewer 精确读取改动文件，并通过只读上下文的 `submit_review` JSON Schema 工具提交；长上下文在完整读取后仍漏提交时，新增受限短上下文终结器作为一次有界兼容路径，只接收完整读回的源码（合计最多 64 KiB）且只开放具名提交工具。宿主继续校验 findings、证据指纹和 diff；权限越界、未完整读取、合同错误、预算/回合耗尽都 fail-closed。MiniMax-M3 TDD 靶场现已真实触发 `repair_decisions=["allow"]`，修复回合改动 `calc.py`/`test_calc.py`，独立 20 项测试通过，Reviewer 完整读取并结构化提交，最终 `TaskReport.ok=True`（25 次调用 / 109,087 tokens；预算预期 180,000）。另一真模型单次任务通过 17 项测试 / 14 次调用 / 64,427 tokens，但未触发短上下文终结器；兜底仍由离线回归验证。上一轮全量测试 830 项通过（23 skipped），`scripts/preflight.py` 三道门通过；本轮异常分类修正后门禁待重跑。R2 Windows runner-pipe 最新原生 [CI #198](https://github.com/ayukyo/icode/actions/runs/36239940582) x64/ARM64 都报告 `unclassified`，本地已修正异常类名分类、待下一次双架构复验；R3 工作流 Reviewer 跨平台只读边界和真实 Git SHA 锚定仍未闭合。OS wrappers 仍不能证明 Reviewer 命令不可见排除树，因此工作流 Reviewer 的 `run_command` 继续 fail-closed 禁用。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
+## 2026-09-26 UTC 当前联动状态
+
+- R3 真模型修复闭环已在受控 MiniMax-M3 靶场完成，但这只证明该靶场链路；真实 Git SHA 锚点和 workflow Reviewer 跨平台只读边界仍未验收。工作流 Reviewer 的 `run_command` 保持 fail-closed。
+- R2 手动 [CI #200](https://github.com/ayukyo/icode/actions/runs/36240714328) 中 Windows x64/ARM64 标准用户探针都在子进程 `CreateFileW` 返回 `access_denied`；Linux/macOS conformance `passed=5/10`、`critical_passed=false`、`ready=false`。本地正在加入只读 DACL/实际客户端 primary token 诊断，尚无新 Windows 原生运行结果。
+- 本地回归新增验证必须选择被诊断的子进程 token，且无法打开时不能回退到父线程/进程 token；`test_windows_standard_user_token_probe` 29 项通过。该测试不调用 Windows API，不能替代 x64/ARM64 原生 CI。R2 自动模式与 Windows runner pipe 仍关闭。
+
 ## 目标与范围
 
 从「能修改」升级到「能根据真实失败证据验证和修复」：

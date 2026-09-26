@@ -132,8 +132,10 @@ def runner_report_failure_detail(result: str, exit_code: int) -> str | None:
 
 def _runner_child_failure_if_exited(
     *, kernel, process_handle: int, report_path: Path,
+    server_pipe_handle: int | None = None,
+    expected_logon_sid: str = "",
 ) -> str | None:
-    """Wait briefly for a timed-out peer to report, then read only after exit."""
+    """Read a child report after exit and diagnose pipe denial from its token."""
     if kernel.WaitForSingleObject(
         process_handle, _CHILD_REPORT_EXIT_GRACE_MS,
     ) != _WAIT_OBJECT_0:
@@ -152,7 +154,19 @@ def _runner_child_failure_if_exited(
         report = raw_report.decode("ascii")
     except UnicodeError:
         return "unclassified"
-    return runner_report_failure_detail(report.strip(), int(exit_code.value))
+    detail = runner_report_failure_detail(report.strip(), int(exit_code.value))
+    if (
+        detail == "client_open_access_denied"
+        and server_pipe_handle
+        and expected_logon_sid
+    ):
+        access = _diagnose_runner_pipe_access(
+            server_pipe_handle,
+            expected_logon_sid,
+            client_process_handle=process_handle,
+        )
+        return f"{detail}+{access}"
+    return detail
 
 
 def logon_rejection_succeeded(
@@ -463,7 +477,7 @@ def _format_runner_pipe_access_diagnostic(
     choices = {
         "dacl": {"present", "absent", "unavailable"},
         "ace": {"match", "missing", "unavailable"},
-        "token": {"thread", "process", "unavailable"},
+        "token": {"thread", "process", "child_process", "unavailable"},
         "logon_sid": {"enabled", "disabled", "deny_only", "absent", "unavailable"},
         "restricted": {"yes", "no", "unavailable"},
         "access": {"allow", "deny", "unavailable"},
@@ -484,8 +498,42 @@ def _format_runner_pipe_access_diagnostic(
     )
 
 
-def _diagnose_runner_pipe_access(pipe_handle: int, logon_sid: str) -> str:
-    """Snapshot the test pipe DACL and this thread's effective token read-only."""
+def _open_pipe_diagnostic_token(
+    api: object,
+    *,
+    client_process_handle: int | None = None,
+) -> tuple[ctypes.c_void_p | None, str]:
+    """Open only the token whose access to the pipe is under investigation."""
+    token = ctypes.c_void_p()
+    token_access = _TOKEN_QUERY | _TOKEN_DUPLICATE
+    advapi = api.advapi
+    if client_process_handle is not None:
+        if advapi.OpenProcessToken(
+            client_process_handle, token_access, ctypes.byref(token),
+        ) and token:
+            return token, "child_process"
+        return None, "unavailable"
+
+    if advapi.OpenThreadToken(
+        api.kernel.GetCurrentThread(), token_access, 1, ctypes.byref(token),
+    ) and token:
+        return token, "thread"
+    if ctypes.get_last_error() != _ERROR_NO_TOKEN:
+        return None, "unavailable"
+    if advapi.OpenProcessToken(
+        api.kernel.GetCurrentProcess(), token_access, ctypes.byref(token),
+    ) and token:
+        return token, "process"
+    return None, "unavailable"
+
+
+def _diagnose_runner_pipe_access(
+    pipe_handle: int,
+    logon_sid: str,
+    *,
+    client_process_handle: int | None = None,
+) -> str:
+    """Read the pipe DACL and the actual client token without changing either."""
     dacl_state = ace_state = token_source = logon_state = "unavailable"
     restricted_state = access_state = "unavailable"
     api = None
@@ -590,19 +638,9 @@ def _diagnose_runner_pipe_access(pipe_handle: int, logon_sid: str) -> str:
         elif status != 0:
             dacl_state = "unavailable"
 
-        token_access = _TOKEN_QUERY | _TOKEN_DUPLICATE
-        effective_token = ctypes.c_void_p()
-        if advapi.OpenThreadToken(
-            api.kernel.GetCurrentThread(), token_access, 1,
-            ctypes.byref(effective_token),
-        ):
-            token_source = "thread"
-        elif ctypes.get_last_error() == _ERROR_NO_TOKEN:
-            if advapi.OpenProcessToken(
-                api.kernel.GetCurrentProcess(), token_access,
-                ctypes.byref(effective_token),
-            ):
-                token_source = "process"
+        effective_token, token_source = _open_pipe_diagnostic_token(
+            api, client_process_handle=client_process_handle,
+        )
         if effective_token:
             groups_buffer, groups = _runner_pipe._token_group_entries(
                 _runner_pipe._get_token_information(
@@ -1224,6 +1262,8 @@ def _run_as_standard_user() -> int:
                         kernel=kernel,
                         process_handle=process.hProcess,
                         report_path=report,
+                        server_pipe_handle=pipe._handle,
+                        expected_logon_sid=logon_sid,
                     )
                     if detail is not None:
                         raise RuntimeError(
