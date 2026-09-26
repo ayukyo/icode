@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -39,6 +40,8 @@ class ToolContext:
     policy: SandboxPolicy | None = None
     artifact_broker: ArtifactBroker | None = None
     change_baseline: dict[str, str] | None = None
+    read_only_workspace: bool = False
+    deny_read_roots: tuple[Path, ...] = ()
 
     def resolve(self, path: str) -> Path:
         p = Path(path)
@@ -59,6 +62,45 @@ class ToolContext:
 
     def wrap_command(self, argv: list[str], *, network: bool = False) -> list[str]:
         """把命令包进沙箱（没有后端时原样返回）。"""
+        if self.read_only_workspace:
+            workspace = self.root.resolve(strict=False)
+            workspace_lexical = Path(os.path.abspath(self.root))
+
+            def overlaps(left: Path, right: Path) -> bool:
+                return left.is_relative_to(right) or right.is_relative_to(left)
+
+            excluded_lexical: list[Path] = []
+            excluded_resolved: list[Path] = []
+            for root in self.deny_read_roots:
+                path = Path(root)
+                if not path.is_absolute():
+                    path = self.root / path
+                # Compare both lexical and resolved paths: resolve() alone would
+                # let an in-workspace exclusion symlink escape this fail-closed gate.
+                excluded_lexical.append(Path(os.path.abspath(path)))
+                excluded_resolved.append(path.resolve(strict=False))
+            if any(
+                overlaps(path, workspace_lexical) for path in excluded_lexical
+            ) or any(overlaps(path, workspace) for path in excluded_resolved):
+                # 当前各平台只读 wrapper 尚不能统一证明会隐藏嵌套工单目录；
+                # 只读挂载仍可读取其中的账本，故拒绝 Reviewer 命令。
+                raise IsolationUnavailable(
+                    "Reviewer 命令暂不可用：只读隔离尚不能证明隐藏工作区内的排除目录"
+                )
+            # Review 命令必须由操作系统强制只读。策略化 Reviewer 需要同时
+            # 绑定策略拒读路径；当前后端接口不能证明这两种限制的交集，因此拒绝。
+            if self.policy is not None:
+                raise IsolationUnavailable("策略化 Reviewer 命令尚无可验证的只读策略绑定")
+            wrap_read_only = getattr(self.sandbox, "wrap_read_only", None)
+            if not self.needs_real_isolation() or not callable(wrap_read_only):
+                raise IsolationUnavailable("Reviewer 命令要求真实只读沙箱，已拒绝执行")
+            try:
+                return list(wrap_read_only(argv, workspace=self.root, network=network))
+            except Exception:  # noqa: BLE001 - 只读边界失败时不允许降级执行
+                raise IsolationUnavailable(
+                    f"隔离后端 {getattr(self.sandbox, 'name', '?')} 无法绑定只读 Reviewer；"
+                    "命令已拒绝"
+                ) from None
         if self.policy is not None:
             # 自主会话的策略必须由后端完整绑定；普通 wrap 只证明最小探针，
             # 无法保护可写工作区内的 .git 等例外路径。

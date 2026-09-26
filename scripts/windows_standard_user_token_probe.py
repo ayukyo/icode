@@ -59,7 +59,8 @@ _WRITE_RESTRICTED = 0x0008
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _RUNNER_SUCCESS_RESULT = (
-    "runner_standard_user=PASS;child_restricted=PASS;child_non_admin=PASS;"
+    "runner_standard_user=PASS;server_pid_mismatch=PASS;"
+    "child_restricted=PASS;child_non_admin=PASS;"
     "child_identity=PASS;"
     "job_assignment=PASS;exit=PASS"
 )
@@ -68,6 +69,21 @@ _RUNNER_SUCCESS_RESULT = (
 def runner_probe_succeeded(result: str) -> bool:
     """Accept only the complete, versioned success record emitted by the probe."""
     return result == _RUNNER_SUCCESS_RESULT
+
+
+def restricted_child_failure_detail(result: str) -> str:
+    """Parse a bounded child failure record without accepting arbitrary output."""
+    if not result.startswith("failed="):
+        return "unclassified"
+    candidate = result.removeprefix("failed=")
+    stage, separator, detail = candidate.partition(";detail=")
+    if not re.fullmatch(r"[a-z_]+:winerror=\d+|[a-z_]+", stage):
+        return "unclassified"
+    if not separator:
+        return stage
+    if not detail or len(detail) > 120 or not re.fullmatch(r"[A-Za-z0-9_+.-]+", detail):
+        return "unclassified"
+    return f"{stage}:{detail}"
 
 
 def logon_rejection_succeeded(
@@ -753,14 +769,6 @@ def _run_as_standard_user() -> int:
         print("::error::restricted_token_probe_credentials_invalid")
         return 2
 
-    pipe_rejected, pipe_detail = runner_pipe_wrong_server_pid_probe()
-    if not pipe_rejected:
-        print(
-            "::error::runner_pipe_wrong_server_pid_rejection_failed "
-            f"detail={pipe_detail}"
-        )
-        return 1
-
     system_root = os.environ.get("SystemRoot", r"C:\Windows")
     public_dir = Path(os.environ.get("PUBLIC", r"C:\Users\Public"))
     if not public_dir.is_dir():
@@ -890,11 +898,7 @@ def _run_as_standard_user() -> int:
             raise RuntimeError("standard_user_runner_report_missing")
         result = report.read_text(encoding="ascii").strip()
         if exit_code.value != 0 or not runner_probe_succeeded(result):
-            detail = "unclassified"
-            if result.startswith("failed="):
-                candidate = result.removeprefix("failed=")
-                if re.fullmatch(r"[a-z_]+:winerror=\d+|[a-z_]+", candidate):
-                    detail = candidate
+            detail = restricted_child_failure_detail(result)
             raise RuntimeError(f"standard_user_restricted_child_failed:{detail}")
 
         advapi = ctypes.WinDLL("advapi32", use_last_error=True)
@@ -976,7 +980,8 @@ def _run_as_standard_user() -> int:
             "standard_user_runner_report_missing",
         }:
             if not re.fullmatch(
-                r"standard_user_restricted_child_failed:[a-z_]+", safe,
+                r"standard_user_restricted_child_failed:[a-z_]+"
+                r"(?::winerror=\d+)?(?::[A-Za-z0-9_+.-]{1,120})?", safe,
             ):
                 safe = type(exc).__name__
         print(f"::error::standard_user_token_probe_failed {safe}")
@@ -1018,6 +1023,12 @@ def _run_child_mode(
             return 2
         if re.fullmatch(r"[0-9a-f]{32}", request_id) is None:
             return 2
+        # Exercise PID mismatch from the temporary standard-user logon itself.
+        # Hosted Actions job tokens may be restricted and unable to self-open a
+        # pipe scoped only to their own logon SID; that is not the target token
+        # used by this probe. Always continue the real parent handshake so a
+        # failed negative probe becomes a bounded report instead of a timeout.
+        pipe_rejected, _pipe_detail = runner_pipe_wrong_server_pid_probe()
         with open_runner_pipe_client(
             pipe_name, server_pid, timeout_ms=15_000,
         ) as pipe:
@@ -1026,7 +1037,13 @@ def _run_child_mode(
                 "type": "spawn_ready",
                 "request_id": request_id,
             }, timeout_ms=15_000)
-        result = _runner_probe(report)
+        safe_pipe_detail = re.sub(
+            r"[^A-Za-z0-9_+.-]", "_", str(_pipe_detail),
+        )[:120] or "unknown"
+        result = (
+            _runner_probe(report) if pipe_rejected else
+            "failed=runner_pipe_server_pid_mismatch;detail=" + safe_pipe_detail
+        )
         _write_report(report, result)
         return 0 if runner_probe_succeeded(result) else 1
     except (OSError, RuntimeError, ValueError) as exc:

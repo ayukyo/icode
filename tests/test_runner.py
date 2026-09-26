@@ -579,5 +579,145 @@ class TestTaskVerificationEvidence(unittest.TestCase):
             self.assertTrue(evidence.environment_fingerprint)
 
 
+class TestReviewStepReadOnlyContext(unittest.TestCase):
+    """R3 Reviewer 在独立上下文中只能读源码、提交审查产物。"""
+
+    def test_review阶段源码写入被拒绝且审查产物仍可提交(self) -> None:
+        from types import SimpleNamespace
+
+        from icode.backends import FakeBackend
+        from icode.contracts import ContractSet
+        from icode.handshake import next_out_dir
+        from icode.isolation import NoIsolation
+        from icode.runner import _run_agent
+
+        settings = require_skill()
+        with temp_workspace() as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = workspace / "calc.py"
+            source.write_text("ORIGINAL = True\n", encoding="utf-8")
+            out_dir = next_out_dir(workspace)
+            (out_dir / "01_plan.md").write_text("Plan input\n", encoding="utf-8")
+            private_ledger = out_dir / ".ico_metadata.json"
+            private_ledger.write_text("REVIEW_LEDGER_SECRET\n", encoding="utf-8")
+            contract = ContractSet.load(settings.gates_json).step("review")
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [
+                    {"id": "modify-source", "name": "write_file",
+                     "arguments": {"path": str(source), "content": "ORIGINAL = False\n"}},
+                    {"id": "read-ledger", "name": "read_file",
+                     "arguments": {"path": str(private_ledger)}},
+                    {"id": "read-approved-plan", "name": "read_artifact",
+                     "arguments": {"name": "01_plan.md"}},
+                    {"id": "glob-ledger", "name": "glob",
+                     "arguments": {"pattern": ".icode_output/**/*"}},
+                    {"id": "grep-ledger", "name": "grep",
+                     "arguments": {"pattern": "REVIEW_LEDGER_SECRET", "path": "."}},
+                    {"id": "submit-review", "name": "submit_artifact",
+                     "arguments": {"name": "02_review.md", "content": "# Review\n\nNo findings.\n"}},
+                ]},
+                "审查产物已提交",
+            ])
+
+            class _Operations:
+                def start(self, **_kwargs):
+                    return SimpleNamespace(can_execute=True, attempt="attempt-1", detail="")
+
+                def finish(self, *_args, **_kwargs):
+                    return True
+
+            report = _run_agent(
+                backend=backend, workspace=workspace, out_dir=out_dir,
+                ticket_id="REVIEW-READONLY-1", step="review", brief="Review the plan.",
+                contract=contract, requirement="Review without modifying source.",
+                approver=None, loop_config=None, budget=None, on_event=None,
+                sandbox=NoIsolation(), operations=_Operations(),
+            )
+            self.assertEqual(source.read_text(encoding="utf-8"), "ORIGINAL = True\n")
+            self.assertEqual((out_dir / "02_review.md").read_text(encoding="utf-8"),
+                             "# Review\n\nNo findings.\n")
+
+        invocations = report.turns[0].invocations
+        self.assertEqual(invocations[0].decision, "deny")
+        self.assertEqual(invocations[0].result.meta.get("error"), "denied")
+        self.assertEqual(invocations[1].decision, "deny")
+        self.assertNotIn("REVIEW_LEDGER_SECRET", invocations[1].result.content)
+        self.assertTrue(invocations[2].result.ok, invocations[2].result.content)
+        self.assertIn("Plan input", invocations[2].result.content)
+        self.assertTrue(invocations[3].result.ok)
+        self.assertNotIn(".ico_metadata.json", invocations[3].result.content)
+        self.assertTrue(invocations[4].result.ok)
+        self.assertEqual(invocations[4].result.meta.get("hits"), 0)
+        self.assertNotIn(":1: REVIEW_LEDGER_SECRET", invocations[4].result.content)
+        self.assertTrue(invocations[5].result.ok, invocations[5].result.content)
+        system_prompt = backend.calls[0]["messages"][0]["content"]
+        self.assertIn("只读独立审查", system_prompt)
+        self.assertIn("run_command", system_prompt)
+
+    def test_策略化review也拒绝源码写入(self) -> None:
+        from types import SimpleNamespace
+
+        from icode.backends import FakeBackend
+        from icode.contracts import ContractSet
+        from icode.isolation import NoIsolation
+        from icode.runner import _run_agent
+        from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+        settings = require_skill()
+        with temp_workspace() as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = workspace / "calc.py"
+            source.write_text("ORIGINAL = True\n", encoding="utf-8")
+            out_dir = workspace / "alternate-tickets" / "REVIEW-READONLY-2"
+            out_dir.mkdir(parents=True)
+            private_ledger = out_dir / ".ico_metadata.json"
+            private_ledger.write_text("REVIEW_POLICY_LEDGER_SECRET\n", encoding="utf-8")
+            contract = ContractSet.load(settings.gates_json).step("review")
+            policy = SandboxPolicy(
+                schema_version=1, run_id="review-policy", ticket_id="REVIEW-READONLY-2",
+                step="review", workspace_root=workspace,
+                read_roots=(workspace,), write_roots=(workspace,),
+                deny_read_roots=(), deny_write_roots=(),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=10, output_limit_bytes=4096, protected_paths=(),
+            )
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [
+                    {"id": "modify-source", "name": "write_file",
+                     "arguments": {"path": str(source), "content": "ORIGINAL = False\n"}},
+                    {"id": "read-ledger", "name": "read_file",
+                     "arguments": {"path": str(private_ledger)}},
+                    {"id": "submit-review", "name": "submit_artifact",
+                     "arguments": {"name": "02_review.md", "content": "# Review\n\nNo findings.\n"}},
+                ]},
+                "审查产物已提交",
+            ])
+
+            class _Operations:
+                def start(self, **_kwargs):
+                    return SimpleNamespace(can_execute=True, attempt="attempt-1", detail="")
+
+                def finish(self, *_args, **_kwargs):
+                    return True
+
+            report = _run_agent(
+                backend=backend, workspace=workspace, out_dir=out_dir,
+                ticket_id="REVIEW-READONLY-2", step="review", brief="Review the plan.",
+                contract=contract, requirement="Review without modifying source.",
+                approver=None, loop_config=None, budget=None, on_event=None,
+                sandbox=NoIsolation(), operations=_Operations(), policy=policy,
+            )
+            self.assertEqual(source.read_text(encoding="utf-8"), "ORIGINAL = True\n")
+            self.assertTrue((out_dir / "02_review.md").is_file())
+
+        self.assertEqual(report.turns[0].invocations[0].decision, "deny")
+        self.assertEqual(report.turns[0].invocations[1].decision, "deny")
+        self.assertNotIn("REVIEW_POLICY_LEDGER_SECRET",
+                         report.turns[0].invocations[1].result.content)
+        self.assertTrue(report.turns[0].invocations[2].result.ok)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,8 +9,10 @@ import tempfile
 from unittest import mock
 
 from scripts.windows_standard_user_token_probe import (
+    _run_child_mode,
     _make_environment_buffer,
     logon_rejection_succeeded,
+    restricted_child_failure_detail,
     runner_probe_succeeded,
     stage_runner_script,
     build_system_tool_environment,
@@ -272,14 +274,137 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
 
     def test_runner_success_classifier_requires_all_gate_results(self) -> None:
         self.assertTrue(runner_probe_succeeded(
-            "runner_standard_user=PASS;child_restricted=PASS;child_non_admin=PASS;"
+            "runner_standard_user=PASS;server_pid_mismatch=PASS;"
+            "child_restricted=PASS;child_non_admin=PASS;"
             "child_identity=PASS;job_assignment=PASS;exit=PASS",
         ))
         self.assertFalse(runner_probe_succeeded(
-            "runner_standard_user=PASS;child_restricted=PASS;child_non_admin=FAIL;"
+            "runner_standard_user=PASS;server_pid_mismatch=PASS;"
+            "child_restricted=PASS;child_non_admin=FAIL;"
             "child_identity=PASS;job_assignment=PASS;exit=PASS",
         ))
+        self.assertFalse(runner_probe_succeeded(
+            "runner_standard_user=PASS;server_pid_mismatch=FAIL;"
+            "child_restricted=PASS;child_non_admin=PASS;child_identity=PASS;"
+            "job_assignment=PASS;exit=PASS",
+        ))
         self.assertFalse(runner_probe_succeeded("unsupported_platform"))
+
+    def test_restricted_child_failure_detail_preserves_only_sanitized_diagnostics(self) -> None:
+        self.assertEqual(
+            restricted_child_failure_detail(
+                "failed=runner_pipe_server_pid_mismatch;detail=client_open_access_denied"
+            ),
+            "runner_pipe_server_pid_mismatch:client_open_access_denied",
+        )
+        self.assertEqual(restricted_child_failure_detail("failed=old_failure"), "old_failure")
+        self.assertEqual(
+            restricted_child_failure_detail("failed=stage;detail=bad value"),
+            "unclassified",
+        )
+        self.assertEqual(
+            restricted_child_failure_detail("failed=stage;detail=" + "x" * 121),
+            "unclassified",
+        )
+
+    def test_wrong_pid_probe_runs_in_standard_user_context_and_still_handshakes(self) -> None:
+        class FakePipe:
+            def __init__(self) -> None:
+                self.messages: list[dict[str, object]] = []
+
+            def __enter__(self) -> "FakePipe":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            def send_message(self, message: dict[str, object], *, timeout_ms: int) -> None:
+                self.messages.append(message)
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "result.txt"
+            pipe = FakePipe()
+            with (
+                mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+                mock.patch.dict(os.environ, {
+                    "TEMP": temporary_directory,
+                    "ICODE_R2_PROBE_MODE": "runner",
+                }),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe.runner_pipe_wrong_server_pid_probe",
+                    return_value=(False, "client_open_access_denied"),
+                ) as wrong_pid_probe,
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
+                    return_value=pipe,
+                ) as open_parent_pipe,
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._runner_probe",
+                    return_value="unused",
+                ) as runner_probe,
+                mock.patch("scripts.windows_standard_user_token_probe._write_report") as write_report,
+            ):
+                result = _run_child_mode(
+                    str(report), r"\\.\pipe\icode-runner-" + "a" * 32,
+                    "1234", "b" * 32,
+                )
+
+        self.assertEqual(result, 1)
+        wrong_pid_probe.assert_called_once_with()
+        open_parent_pipe.assert_called_once()
+        self.assertEqual(pipe.messages[0]["type"], "spawn_ready")
+        runner_probe.assert_not_called()
+        write_report.assert_called_once_with(
+            report,
+            "failed=runner_pipe_server_pid_mismatch;detail=client_open_access_denied",
+        )
+
+    def test_wrong_pid_success_is_required_before_standard_user_probe_passes(self) -> None:
+        class FakePipe:
+            def __enter__(self) -> "FakePipe":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            def send_message(self, _message: dict[str, object], *, timeout_ms: int) -> None:
+                return None
+
+        success = (
+            "runner_standard_user=PASS;server_pid_mismatch=PASS;"
+            "child_restricted=PASS;child_non_admin=PASS;child_identity=PASS;"
+            "job_assignment=PASS;exit=PASS"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "result.txt"
+            with (
+                mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+                mock.patch.dict(os.environ, {
+                    "TEMP": temporary_directory,
+                    "ICODE_R2_PROBE_MODE": "runner",
+                }),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe.runner_pipe_wrong_server_pid_probe",
+                    return_value=(True, "server_pid_mismatch_rejected"),
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
+                    return_value=FakePipe(),
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._runner_probe",
+                    return_value=success,
+                ) as runner_probe,
+                mock.patch("scripts.windows_standard_user_token_probe._write_report") as write_report,
+            ):
+                result = _run_child_mode(
+                    str(report), r"\\.\pipe\icode-runner-" + "c" * 32,
+                    "1234", "d" * 32,
+                )
+
+        self.assertEqual(result, 0)
+        runner_probe.assert_called_once_with(report)
+        write_report.assert_called_once_with(report, success)
 
     def test_logon_rejection_requires_expected_error_and_no_side_effects(self) -> None:
         expected = {

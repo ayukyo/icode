@@ -551,6 +551,25 @@ class LandlockSandbox:
             argv, workspace=workspace, metadata_roots=(), workspace_read_only=False,
         )
 
+    def wrap_read_only(
+        self, argv: Sequence[str], *, workspace: Path, network: bool = False,
+    ) -> list[str]:
+        """Wrap Reviewer commands with an OS-enforced read-only workspace."""
+        if network:
+            raise RuntimeError("Landlock helper does not support network grants")
+        workspace = self._validate_non_executable_workspace(workspace)
+        helper = Path(self.helper)
+        if not helper.is_file():
+            raise RuntimeError("Landlock helper is unavailable")
+        if self.manifest is not None:
+            from .native_helper import verify_native_helper
+
+            if not verify_native_helper(helper, Path(self.manifest)):
+                raise RuntimeError("Landlock helper integrity check failed")
+        return self._wrap_with_metadata_roots(
+            argv, workspace=workspace, metadata_roots=(), workspace_read_only=True,
+        )
+
     def _wrap_with_metadata_roots(
         self, argv: Sequence[str], *, workspace: Path,
         metadata_roots: Sequence[MetadataReadRoot], workspace_read_only: bool,
@@ -600,6 +619,17 @@ class BubblewrapSandbox:
         return True
 
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
+        return self._wrap(argv, workspace=workspace, network=network, read_only=False)
+
+    def wrap_read_only(
+        self, argv: Sequence[str], *, workspace: Path, network: bool = False,
+    ) -> list[str]:
+        """Wrap Reviewer commands with a read-only workspace bind."""
+        return self._wrap(argv, workspace=workspace, network=network, read_only=True)
+
+    def _wrap(
+        self, argv: Sequence[str], *, workspace: Path, network: bool, read_only: bool,
+    ) -> list[str]:
         ws = str(Path(workspace).resolve())
         out = [
             self.bwrap,
@@ -613,7 +643,7 @@ class BubblewrapSandbox:
             "--proc", "/proc",
             "--dev", "/dev",
             "--tmpfs", "/tmp",
-            "--bind", ws, ws,          # 工作区可写
+            "--ro-bind" if read_only else "--bind", ws, ws,
             "--chdir", ws,
         ]
         if Path("/lib64").exists():
@@ -661,7 +691,9 @@ class MacSeatbeltSandbox:
         """组级清理探测不代表完整 R2 策略已可用于自动工单。"""
         return False
 
-    def _profile(self, workspace: Path, network: bool) -> str:
+    def _profile(
+        self, workspace: Path, network: bool, *, read_only: bool = False,
+    ) -> str:
         ws = str(Path(workspace).resolve())
         if any(ord(char) < 32 or ord(char) == 127 for char in ws):
             raise ValueError("Seatbelt workspace path contains control characters")
@@ -671,6 +703,7 @@ class MacSeatbeltSandbox:
             raise ValueError("Seatbelt Python runtime path contains control characters")
         escaped_python_prefix = python_prefix.replace("\\", "\\\\").replace('"', '\\"')
         net = "(allow network*)" if network else ""
+        workspace_write = "" if read_only else f'(allow file-write* (subpath "{escaped_ws}"))'
         return (
             "(version 1)"
             "(deny default)"
@@ -678,7 +711,8 @@ class MacSeatbeltSandbox:
             + "(allow sysctl-read)"
             f'(allow file-read-metadata file-test-existence (path-ancestors "{escaped_ws}"))'
             '(allow file-read* file-test-existence (literal "/"))'
-            f'(allow file-read* file-write* (subpath "{escaped_ws}"))'
+            f'(allow file-read* (subpath "{escaped_ws}"))'
+            f"{workspace_write}"
             "(allow file-read* (subpath \"/usr\") (subpath \"/System\") (subpath \"/Library\")"
             ' (subpath \"/bin\") (subpath \"/sbin\")'
             ' (subpath \"/private/etc/ssl\"))'
@@ -751,6 +785,12 @@ class MacSeatbeltSandbox:
 
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         return [self.sandbox_exec, "-p", self._profile(workspace, network), *argv]
+
+    def wrap_read_only(
+        self, argv: Sequence[str], *, workspace: Path, network: bool = False,
+    ) -> list[str]:
+        """Wrap Reviewer commands with no workspace file-write grant."""
+        return [self.sandbox_exec, "-p", self._profile(workspace, network, read_only=True), *argv]
 
     def describe(self) -> dict:
         return {
@@ -827,6 +867,20 @@ class ContainerSandbox:
         out = [
             self.runtime, "run", "--rm",
             "-v", f"{ws}:{ws}", "-w", ws,
+        ]
+        if not network:
+            out += ["--network", "none"]
+        out += [self.image, *argv]
+        return out
+
+    def wrap_read_only(
+        self, argv: Sequence[str], *, workspace: Path, network: bool = False,
+    ) -> list[str]:
+        """Mount the reviewed workspace read-only inside the disposable container."""
+        ws = str(Path(workspace).resolve())
+        out = [
+            self.runtime, "run", "--rm",
+            "-v", f"{ws}:{ws}:ro", "-w", ws,
         ]
         if not network:
             out += ["--network", "none"]

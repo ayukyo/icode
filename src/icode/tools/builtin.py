@@ -179,6 +179,15 @@ def _safe_workspace_entries(ctx: ToolContext) -> Iterator[Path]:
 
 
 def _policy_allows_read(ctx: ToolContext, target: Path) -> bool:
+    try:
+        target = Path(target).resolve(strict=False)
+        denied_roots = tuple(
+            Path(root).resolve(strict=False) for root in ctx.deny_read_roots
+        )
+    except (OSError, RuntimeError):
+        return False
+    if any(target.is_relative_to(root) for root in denied_roots):
+        return False
     if ctx.policy is None:
         return True
     return (
@@ -273,7 +282,9 @@ def grep_files(
         root = base.resolve(strict=True)
         if not _policy_allows_read(ctx, root):
             return ToolResult(False, "策略禁止读取该目录", {"error": "read_denied"})
-        scan_ctx = ToolContext(root=root, policy=ctx.policy)
+        scan_ctx = ToolContext(
+            root=root, policy=ctx.policy, deny_read_roots=ctx.deny_read_roots,
+        )
         try:
             entries = _safe_workspace_entries(scan_ctx)
             try:
@@ -540,6 +551,10 @@ def workspace_changes(ctx: ToolContext) -> ToolResult:
         return ToolResult(False, "工作区快照失败，已停止改动查询",
                           {"error": "snapshot_unavailable"})
     names = changed_files(ctx.change_baseline, current)
+    names = [
+        name for name in names
+        if _policy_allows_read(ctx, ctx.root / Path(name))
+    ]
     lines = [
         f"{'A' if name not in ctx.change_baseline else 'D' if name not in current else 'M'} {name}"
         for name in names[:300]

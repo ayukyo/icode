@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-26
-- 状态：核心切片已实现并离线验收：失败分类、证据绑定、有界修复决策、runner 补救回合证据门、独立 Reviewer（只读上下文 + 证据引用）、回归证据绑定到具体 diff（`diff_fingerprint`）、修复证据写入事件链（`verification_recorded`）并随证据包取证；`run_task` 已具备有界修复循环（失败 → 分类 → 有界修复 → 回归 → 独立 Reviewer）的机制并以 FakeBackend 离线验收；R3 完整退出门槛（真模型端到端跑通）尚未闭合
+- 状态：核心切片已实现并离线验收；2026-09-26 新增 `step=review` 的工具级只读边界与宿主 `ArtifactBroker` 通道。Reviewer 的 `read_file`、`grep`、`glob`、改动清单排除 `.icode_output` 与实际嵌套 `out_dir`，并检查 lexical 路径以阻断指向工作区外的链接别名；现有 OS wrappers 尚不能证明排除树对命令不可见，因此 Reviewer `run_command` fail-closed 禁用，策略化 Reviewer 命令也继续拒绝。bwrap 实际只读负例通过；最终全量验证及跨平台原生 CI 复验待完成。真模型端到端修复循环和真实 Git SHA 锚定尚未闭合。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 目标与范围
@@ -129,8 +129,8 @@ R3 核心能力（本切片）：
 
 1. 端到端真模型修复循环：失败 → 分类 → 有界修复 → 回归 → 独立 Reviewer 全链路
    在**真模型**下跑通并验收（机制已就绪，缺真模型验收）；
-2. 把独立 Reviewer 完整接入 review 步骤 / Reviewer 上下文（当前接线在 `run_task`
-   能力验证路径，review 步骤的对抗审查上下文仍需接入）；
+2. 对本轮新接入的 review 步骤只读执行边界完成跨平台原生验收，并评估策略化
+   Reviewer 的只读文件与拒读子路径能否由同一 OS profile 可证明地组合；
 3. 证据指纹锚定到真实 commit（Git SHA）而非仅工作区 diff 快照（R2.4 Git broker
    接通后可做）。
 

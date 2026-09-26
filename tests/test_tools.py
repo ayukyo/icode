@@ -35,6 +35,44 @@ class TestFileTools(unittest.TestCase):
         self.assertIn("1| def add", r.content)
         self.assertEqual(r.meta["total_lines"], 6)
 
+    def test_受保护读取根拒绝直读并过滤递归工具(self) -> None:
+        private = self.root / ".icode_output" / "ticket-1"
+        private.mkdir(parents=True)
+        secret = private / ".ico_metadata.json"
+        secret.write_text("REVIEW_PRIVATE_MARKER\n", encoding="utf-8")
+        context = ToolContext(root=self.root, deny_read_roots=(self.root / ".icode_output",))
+
+        direct = self.reg.invoke("read_file", context, {"path": str(secret)})
+        self.assertFalse(direct.ok)
+        self.assertEqual(direct.meta.get("error"), "read_denied")
+        self.assertNotIn("REVIEW_PRIVATE_MARKER", direct.content)
+
+        listing = self.reg.invoke("glob", context, {"pattern": "**/*"})
+        self.assertTrue(listing.ok)
+        self.assertNotIn(".icode_output", listing.content)
+
+        search = self.reg.invoke("grep", context, {
+            "pattern": "REVIEW_PRIVATE_MARKER", "path": ".",
+        })
+        self.assertTrue(search.ok)
+        self.assertEqual(search.meta.get("hits"), 0)
+        self.assertNotIn(":1: REVIEW_PRIVATE_MARKER", search.content)
+
+    def test_工作区改动清单不泄露受保护工单路径(self) -> None:
+        private = self.root / ".icode_output" / "ticket-1"
+        private.mkdir(parents=True)
+        (private / ".ico_metadata.json").write_text("ledger\n", encoding="utf-8")
+        registry = default_registry(include_changes=True)
+        context = ToolContext(
+            root=self.root, deny_read_roots=(self.root / ".icode_output",),
+            change_baseline={},
+        )
+
+        result = registry.invoke("workspace_changes", context, {})
+        self.assertTrue(result.ok)
+        self.assertNotIn(".icode_output", result.content)
+        self.assertNotIn(".ico_metadata.json", result.content)
+
     def test_分段读(self) -> None:
         r = self.reg.invoke("read_file", self.ctx, {"path": "pkg/m.py", "offset": 5, "limit": 2})
         self.assertTrue(r.ok)

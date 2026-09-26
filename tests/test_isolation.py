@@ -684,6 +684,22 @@ class TestWslAndJobLimits(unittest.TestCase):
 
 
 class TestSandboxWrapping(unittest.TestCase):
+    def test_landlock_Reviewer包装显式传入工作区只读标记(self) -> None:
+        with temp_workspace() as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            helper = root / "fake-landlock-helper"
+            helper.write_text("probe", encoding="ascii")
+            sandbox = LandlockSandbox(helper=str(helper))
+
+            argv = sandbox.wrap_read_only(["/bin/true"], workspace=workspace)
+
+        self.assertEqual(argv[0], str(helper))
+        self.assertIn("--workspace-read-only", argv)
+        self.assertNotIn("--metadata-read", argv)
+        with self.assertRaisesRegex(RuntimeError, "network grants"):
+            sandbox.wrap_read_only(["/bin/true"], workspace=workspace, network=True)
+
     @unittest.skipUnless(sys.platform == "darwin", "需 macOS launchd 真实作业")
     def test_launchd_独立作业仍未回收脱组后代(self) -> None:
         # 锁定双架构实测缺口：bootout 不能证明整树清理，生产入口必须保持关闭。
@@ -1103,6 +1119,35 @@ print("metadata-read-only-ok")
             self.assertIn((str(runtime_prefix), str(runtime_prefix)), mounts)
             self.assertNotIn((str(runtime_prefix.parent), str(runtime_prefix.parent)), mounts)
 
+    def test_bwrap_只读审查包装使用只读工作区绑定(self) -> None:
+        workspace = Path("/tmp/review-ws").resolve()
+        argv = BubblewrapSandbox().wrap_read_only(
+            ["python", "-m", "unittest"], workspace=workspace,
+        )
+        self.assertIn("--ro-bind", argv)
+        mounts = [
+            tuple(argv[index + 1:index + 3])
+            for index, item in enumerate(argv[:-2]) if item == "--ro-bind"
+        ]
+        self.assertIn((str(workspace), str(workspace)), mounts)
+        self.assertNotIn("--bind", argv)
+        self.assertIn("--unshare-net", argv)
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"),
+                         "需要 Linux bubblewrap")
+    def test_bwrap_只读审查包装实际阻断工作区写入(self) -> None:
+        with temp_workspace() as workspace:
+            target = workspace / "reviewed.py"
+            target.write_text("original\n", encoding="utf-8")
+            python = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+            wrapped = BubblewrapSandbox().wrap_read_only(
+                [python, "-c", "from pathlib import Path; Path('reviewed.py').write_text('changed')"],
+                workspace=workspace,
+            )
+            result = subprocess.run(wrapped, capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(target.read_text(encoding="utf-8"), "original\n")
+
     def test_bwrap_显式允许网络时不加_unshare_net(self) -> None:
         argv = BubblewrapSandbox().wrap(["curl"], workspace=Path("/tmp/ws"), network=True)
         self.assertNotIn("--unshare-net", argv)
@@ -1126,6 +1171,15 @@ print("metadata-read-only-ok")
         self.assertIn("(allow process-exec)", profile)
         self.assertIn("(allow process-fork)", profile)
         self.assertIn("(allow signal (target same-sandbox))", profile)
+
+    def test_seatbelt_只读审查profile不给工作区写权限(self) -> None:
+        workspace = Path("/tmp/review-ws").resolve()
+        argv = MacSeatbeltSandbox().wrap_read_only(["python", "-m", "unittest"],
+                                                   workspace=workspace)
+        profile = argv[argv.index("-p") + 1]
+        quoted_workspace = str(workspace).replace("\\", "\\\\").replace('"', '\\"')
+        self.assertIn(f'(allow file-read* (subpath "{quoted_workspace}"))', profile)
+        self.assertNotIn(f'(allow file-write* (subpath "{quoted_workspace}"))', profile)
 
     def test_seatbelt_工作区路径不能注入_profile(self) -> None:
         sb = MacSeatbeltSandbox()
@@ -1390,6 +1444,14 @@ print("metadata-read-only-ok")
         self.assertEqual(argv[argv.index("--network") + 1], "none")
         self.assertIn("-v", argv)
 
+    def test_容器_Reviewer工作区挂载为只读(self) -> None:
+        workspace = Path("/tmp/review-ws").resolve()
+        argv = ContainerSandbox(runtime="podman").wrap_read_only(
+            ["python", "-m", "unittest"], workspace=workspace,
+        )
+        self.assertEqual(argv[argv.index("-v") + 1], f"{workspace}:{workspace}:ro")
+        self.assertEqual(argv[argv.index("--network") + 1], "none")
+
 
 class TestContextIntegration(unittest.TestCase):
     def setUp(self) -> None:
@@ -1436,6 +1498,72 @@ class TestContextIntegration(unittest.TestCase):
         result = default_registry().invoke("run_command", ctx, {"argv": ["ls"]})
         self.assertFalse(result.ok)
         self.assertEqual(result.meta.get("error"), "isolation_unavailable")
+
+    def test_只读审查无真实只读沙箱时拒绝命令(self) -> None:
+        ctx = ToolContext(root=self.ws, sandbox=NoIsolation(), read_only_workspace=True)
+        with self.assertRaises(IsolationUnavailable):
+            ctx.wrap_command(["python", "-m", "unittest"])
+
+    def test_策略化Reviewer命令因缺少可证明的只读策略交集而拒绝(self) -> None:
+        policy = SandboxPolicy(
+            schema_version=1, run_id="review-policy", ticket_id="review-policy",
+            step="review", workspace_root=self.ws,
+            read_roots=(self.ws,), write_roots=(self.ws,),
+            deny_read_roots=(), deny_write_roots=(),
+            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+            wall_timeout_seconds=10, output_limit_bytes=4096, protected_paths=(),
+        )
+        ctx = ToolContext(
+            root=self.ws, sandbox=BubblewrapSandbox(), policy=policy,
+            read_only_workspace=True,
+        )
+        with self.assertRaises(IsolationUnavailable):
+            ctx.wrap_command(["python", "-m", "unittest"])
+
+    def test_Reviewer工作区内有排除工单根时命令拒绝执行(self) -> None:
+        class _WouldExposeExcludedRoot:
+            name = "test-read-only"
+            is_real_isolation = True
+
+            def __init__(self) -> None:
+                self.called = False
+
+            def wrap_read_only(self, argv, *, workspace, network=False):
+                self.called = True
+                return list(argv)
+
+        sandbox = _WouldExposeExcludedRoot()
+        ctx = ToolContext(
+            root=self.ws, sandbox=sandbox, read_only_workspace=True,
+            deny_read_roots=(self.ws / ".icode_output",),
+        )
+        with self.assertRaisesRegex(IsolationUnavailable, "排除目录"):
+            ctx.wrap_command(["cat", ".icode_output/private.txt"])
+        self.assertFalse(sandbox.called)
+
+    @unittest.skipUnless(os.name == "posix", "需要 POSIX 符号链接语义")
+    def test_Reviewer命令对指向Python运行时的工单排除链接仍拒绝(self) -> None:
+        class _WouldExposeExcludedRoot:
+            name = "test-read-only"
+            is_real_isolation = True
+
+            def __init__(self) -> None:
+                self.called = False
+
+            def wrap_read_only(self, argv, *, workspace, network=False):
+                self.called = True
+                return list(argv)
+
+        excluded = self.ws / ".icode_output"
+        excluded.symlink_to(Path(sys.prefix).resolve(), target_is_directory=True)
+        sandbox = _WouldExposeExcludedRoot()
+        ctx = ToolContext(
+            root=self.ws, sandbox=sandbox, read_only_workspace=True,
+            deny_read_roots=(excluded,),
+        )
+        with self.assertRaisesRegex(IsolationUnavailable, "排除目录"):
+            ctx.wrap_command(["cat", ".icode_output/should-not-read.txt"])
+        self.assertFalse(sandbox.called)
 
     def test_执行结果如实标注隔离情况(self) -> None:
         import sys

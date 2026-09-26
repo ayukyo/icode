@@ -66,6 +66,10 @@ DEFAULT_TASK = (
     "最后运行 `python -m unittest` 确认全部通过。"
 )
 
+# Review outputs may contain multi-round structured findings; keep a named host-side cap
+# for the non-policy read-only review path, matching the bounded artifact-broker contract.
+DEFAULT_REVIEW_ARTIFACT_LIMIT_BYTES = 2 * 1024 * 1024
+
 
 @dataclass
 class StepReport:
@@ -432,8 +436,7 @@ def run_contract_step(
                     last_text = m["content"]
                     break
             broker = (
-                ArtifactBroker(out_dir, contract, max_bytes=policy.output_limit_bytes)
-                if policy is not None else None
+                _artifact_broker_for_step(out_dir, contract, step, policy)
             )
             persisted = _persist_missing_from_response(
                 out_dir, contract, report, last_text, artifact_broker=broker,
@@ -562,13 +565,29 @@ def _make_ctx(
     workspace: Path, sandbox: Sandbox | None, policy: SandboxPolicy | None = None,
     artifact_broker: ArtifactBroker | None = None,
     change_baseline: dict[str, str] | None = None,
+    *, read_only_workspace: bool = False,
+    deny_read_roots: tuple[Path, ...] = (),
 ) -> ToolContext:
     """构造工具上下文；未显式指定时按本机实测能力自动选隔离后端。"""
     return ToolContext(
         root=workspace, sandbox=sandbox if sandbox is not None else select_sandbox(),
         policy=policy, artifact_broker=artifact_broker,
-        change_baseline=change_baseline,
+        change_baseline=change_baseline, read_only_workspace=read_only_workspace,
+        deny_read_roots=deny_read_roots,
     )
+
+
+def _artifact_broker_for_step(
+    out_dir: Path, contract, step: str, policy: SandboxPolicy | None,
+) -> ArtifactBroker | None:
+    """Use host-mediated artifacts for policy sessions and the read-only review step."""
+    if policy is not None:
+        return ArtifactBroker(out_dir, contract, max_bytes=policy.output_limit_bytes)
+    if step == "review":
+        return ArtifactBroker(
+            out_dir, contract, max_bytes=DEFAULT_REVIEW_ARTIFACT_LIMIT_BYTES,
+        )
+    return None
 
 
 REPAIR_INSTRUCTIONS = (
@@ -702,23 +721,38 @@ def _run_agent(
     change_baseline: dict[str, str] | None = None,
     operations: OperationRecorder | None = None,
 ) -> LoopResult:
-    artifact_broker = (
-        ArtifactBroker(out_dir, contract, max_bytes=policy.output_limit_bytes)
-        if policy is not None else None
-    )
+    read_only_workspace = step == "review"
+    artifact_broker = _artifact_broker_for_step(out_dir, contract, step, policy)
     registry = default_registry(
         include_artifacts=artifact_broker is not None,
         include_changes=change_baseline is not None,
     )
+    deny_read_roots = list(policy.deny_read_roots if policy is not None else ())
+    if read_only_workspace:
+        # next_out_dir() creates host-controlled ticket data below this root.
+        # Reviewers receive only contract-approved files through ArtifactBroker.
+        deny_read_roots.append(Path(workspace) / ".icode_output")
+        output_root = Path(out_dir)
+        if not output_root.is_absolute():
+            output_root = Path(workspace) / output_root
+        deny_read_roots.append(output_root)
     scope = Scope(
         workspace_root=workspace,
         allowed_read_roots=policy.read_roots if policy is not None else None,
-        allowed_write_roots=policy.write_roots if policy is not None else None,
-        deny_read_roots=policy.deny_read_roots if policy is not None else (),
+        allowed_write_roots=(
+            () if read_only_workspace
+            else policy.write_roots if policy is not None
+            else None
+        ),
+        deny_read_roots=tuple(deny_read_roots),
         deny_write_roots=policy.deny_write_roots if policy is not None else (),
     )
     guard = Guard(scope)
-    ctx = _make_ctx(workspace, sandbox, policy, artifact_broker, change_baseline)
+    ctx = _make_ctx(
+        workspace, sandbox, policy, artifact_broker, change_baseline,
+        read_only_workspace=read_only_workspace,
+        deny_read_roots=tuple(deny_read_roots),
+    )
     on_turn = None
     if checkpointer is not None:
         def on_turn(turn_index: int, total_tool_calls: int, history: list[dict]) -> None:
@@ -783,8 +817,9 @@ def _run_agent(
                     if path.is_file() and not path.is_symlink()
                 )
         system = (
-            "你是 ICODE 工作流中的执行代理，工程源码位于隔离工作区。"
-            "工单账本位于宿主，不属于工作区，模型命令不可直接读写。\n\n"
+            ("你是 ICODE 工作流中的只读独立审查代理，工程源码位于受限工作区。"
+             if read_only_workspace else "你是 ICODE 工作流中的执行代理，工程源码位于隔离工作区。")
+            + "工单账本位于宿主，不属于工作区，模型命令不可直接读写。\n\n"
             "【门禁要求（必须遵守）】\n" + brief + "\n\n"
             "【本次实际提供的输入】\n"
             "  - 需求已在下方给出。\n"
@@ -800,6 +835,14 @@ def _run_agent(
             "需要查看本次任务修改了哪些文件时，调用 workspace_changes；"
             "它不是 Git 暂存或提交状态。\n"
         )
+        if read_only_workspace:
+            system += (
+                "\n【Reviewer 只读硬边界】\n"
+                "  - 这是独立审查上下文，不得修改源码、测试、配置或任何被审对象。\n"
+                "  - write_file/edit_file 对工作区一律拒绝；只用 submit_artifact 提交审查产物。\n"
+                "  - .icode_output 工单账本不属于本次审查输入；只可通过 read_artifact 读取合同已声明文件。\n"
+                "  - 当前平台无法证明 run_command 会隐藏嵌套工单账本，因此该步骤的 run_command 会被拒绝；不要尝试绕过。\n"
+            )
     if requirement:
         system += f"\n【本次需求】\n{requirement}\n"
     if extra_instructions:
