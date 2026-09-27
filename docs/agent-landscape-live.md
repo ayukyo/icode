@@ -1,6 +1,6 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- 最近观察：2026-09-27；下次全量复核：不晚于 2026-10-24
+- 最近观察：2026-09-28；下次全量复核：不晚于 2026-10-27
 - 2026-09-27 UTC Git 状态工具定向复核：Codex [`121f91fd5d9dc66017866ce9bdc49f1e182721df`](https://github.com/openai/codex/commit/121f91fd5d9dc66017866ce9bdc49f1e182721df)（MIT）内部 branch summary 用于 UI，未证明模型安全工具；Gemini CLI [`46e7b41c6ae3b0435e9a7dc85fe8b09032f1b387`](https://github.com/google-gemini/gemini-cli/commit/46e7b41c6ae3b0435e9a7dc85fe8b09032f1b387)（Apache-2.0）通用 shell 回执包含命令、目录、退出码、stdout/stderr，依赖其执行策略。ICODE **采纳**窄、只读、结构化 broker 与显式失败，**不适配**把 UI helper 或通用 shell 当作最小权限 Git 端口；已受门控接线但自动模式仍关闭。本机 Linux x86_64 原生及安装式 wheel 新工具入口通过，ARM64/跨平台等价待验；无源码复制或新依赖。
 - 注：观察日期统一按 UTC 记录；本轮定向复核 R2 HTTPS CONNECT 处理顺序、Python 3.11 异步 DNS/连接取消语义及命令输出/子进程生命周期；20 项观察名单最近全量复核为 2026-09-24。时区校正：本轮对应 Asia/Shanghai 2026-09-27，GitHub CI #230 的实际运行时间为 2026-09-26 UTC；本页在上海 2026-09-27 08:00 前写入但误标“2026-09-27 UTC”的近期条目，UTC 日期应为 2026-09-26。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
@@ -878,6 +878,15 @@
 
 - **固定来源 / 版本：**Codex `openai/codex@21eb35513df478a2a090bfc2c0293caaf435b36d`（Apache-2.0，沿用 04:50 核验快照）；[managed proxy 测试](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/linux-sandbox/tests/suite/managed_proxy.rs#L2265-L2428)列出 bubblewrap/namespace 的特定权限错误分类；部分 Linux 测试在缺 bwrap 或 namespaced `/proc` 时打印 skipping 后普通 `return`（[managed proxy paths](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/linux-sandbox/tests/suite/managed_proxy.rs#L2518-L2557)）。Rust 官方测试参考把测试 harness 的显式 ignore 标注定义为不执行该测试（[ignore attribute](https://doc.rust-lang.org/reference/attributes/testing.html#the-ignore-attribute)）；因此正常返回的能力不足路径可能仍表现为通过测试，这是按源码与 harness 语义作出的推断，不是 Codex 对该测试的 readiness 承诺。
 - **采纳 / 暂缓：**采纳“只对已识别权限错误归类环境不可用”的窄分类思路；不照搬把 skip 条件普通 `return` 的表现。ICODE native runner 用 unittest 结构化结果区分 PASS/SKIP/FAIL：只有实际 TTL E2E PASS 才把 `network_allowlist_expiry` 送入评分；SKIP 记为未验证且不加分，断言/未知执行错误使 Linux native job 失败。此为仅供开发 CI 的测试编排，不新增运行依赖、不复制上游实现、不改变产品策略；成本是一项 Linux 候选用例被 runner 直接复用。单测覆盖三态，本机真实 runner PASS；该单项评分仍不能证明 OS 网络独占或产品 ready。提交后远端 CI 待验证。
+
+### 2026-09-28 Asia/Shanghai 刷新：资源限制与原生违规回执
+
+- **固定来源 / 许可证：**Codex `openai/codex@21eb35513df478a2a090bfc2c0293caaf435b36d`，Apache-2.0；沿用当天固定快照，不声称它是后续 upstream HEAD。
+- **资源限制源码事实：**Codex 的 [`exec.rs`](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/core/src/exec.rs) 与 [`unified_exec`](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/core/src/unified_exec/mod.rs) 提供宿主侧 deadline、进程组终止及有界输出保留机制；同一 `unified_exec` 中的 `MAX_UNIFIED_EXEC_PROCESSES=64` 限制被跟踪的执行会话数，不是每个任务可创建的 OS 子进程数。Linux PID namespace、macOS Seatbelt 进程派生规则也不等于数字进程配额；这是对固定源码的检索结论。Windows [`Job` helper](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/utils/pty/src/win/job.rs) 与 [legacy runner](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/windows-sandbox-rs/src/unified_exec/backends/legacy.rs) 覆盖 Job 生命周期/超时；未发现 ActiveProcessLimit 配置证据。
+- **ICODE 现状与本机机制实验：**`execution_broker` 已按策略做墙钟 deadline 与输出上限，但 `process_limit` 尚未进入通用 `run_command`/Linux helper 执行链。Windows Job 有诊断组件测试，Windows runner protocol 的 spawn 请求尚未传该上限。只读实验在当前 Linux user-systemd transient scope 中用 `TasksMax=1` 运行同一 Python 子进程正反对照：cap=1 下子进程 fork 被内核以 `EAGAIN` 拒绝，cap=2 下子进程退出 0。另验证根 cgroup 不可直接写，且脱离进程组的后代可在 scope 客户端返回后继续存活；按 unit 执行 `systemctl --user stop` 后 scope 转为 inactive。该实验使用宿主 `/usr/bin/python3`，未改 ICODE 源码，也不证明其他发行版、产品 broker 接线、超时回收或三平台一致性。
+- **采纳 / 暂缓：**采纳 Codex 宿主 deadline、输出缓冲与进程组回收的验收思路；ICODE 已有对应 deadline/output 逻辑，可复用测试结构。暂缓把会话数上限当作任务进程配额，也不使用宿主全局 `RLIMIT_NPROC`。Linux per-task cgroup/systemd 是候选；只有启动前确认限制已生效、正常和超时清理会停止整个 unit、脱组后代确实消失，才进入资源限制评分。`pids.max` 计数包含线程，而 Windows Job ActiveProcessLimit 计数口径不同；语义决定仍待用户确认。若 macOS 没有任务级机制，该项继续未验证，不用进程组清理代替。
+- **违规回执源码事实：**Codex 固定快照有内部 [`SandboxViolationEvent` 分类](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/sandboxing/src/violation.rs)及[分类测试](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/sandboxing/src/violation_tests.rs)，但执行 handler 最终仍将拒绝映射为聚合输出与退出码，[未发现稳定机器错误码或 CLI/MCP parity 断言](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs)。ICODE `ToolRegistry` 的统一 `policy_denied` 目前仅覆盖应用层 `read_denied`/`write_denied`；不能据此关闭 R2 原生 OS DENY 回执合同。
+- **ICODE 取舍与验收：**采纳内部拒绝分类、脱敏及真实负例对照的测试形式，不复制上游代码，不新增运行依赖；暂缓将应用层拒绝单测或普通非零退出码计为 `uniform_violation`。达标探针必须穿过真实 OS 后端和执行 broker，加入允许路径正对照与普通 `exit 13` 误分类反对照，再核 CLI/MCP 稳定错误码、相同用户提示和隔离违规摘要。两个缺口均保持未验证，不能改分。
 
 ### 2026-09-28 刷新：macOS Seatbelt 动态代理端口边界
 
