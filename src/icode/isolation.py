@@ -19,8 +19,11 @@
 
 from __future__ import annotations
 
+import ctypes
 import http.server
 import os
+import select
+import signal
 import shutil
 import stat
 import struct
@@ -100,6 +103,16 @@ class MacProtectedPathProbeResult:
 @dataclass(frozen=True)
 class LinuxProtectedPathProbeResult:
     """Linux 分层工作区保护路径的真实实测；不代表完整 R2 就绪。"""
+
+    executed: bool
+    passed: bool
+    checks: dict[str, bool]
+    detail: str
+
+
+@dataclass(frozen=True)
+class LinuxProcessTreeCleanupProbeResult:
+    """Linux PID namespace 宿主崩溃清理实测，不代表完整 R2 ready。"""
 
     executed: bool
     passed: bool
@@ -323,6 +336,202 @@ def probe_linux_protected_paths(
         True, not failed, checks,
         "分层 checkout 保护路径探测通过" if not failed
         else "Linux 保护路径未通过：" + ", ".join(failed),
+    )
+
+
+def _open_verified_descendant_pidfd(namespace_pid: int, unique_path: Path) -> int:
+    """按 NSpid、唯一命令参数和 start-time 锚定后代，不向数值 PID 发信号。"""
+    token = os.fsencode(str(unique_path))
+    for process in Path("/proc").iterdir():
+        if not process.name.isdecimal():
+            continue
+        try:
+            status = (process / "status").read_text(encoding="ascii")
+            nspid_line = next(
+                line for line in status.splitlines() if line.startswith("NSpid:")
+            )
+            if int(nspid_line.split()[-1]) != namespace_pid:
+                continue
+            if token not in (process / "cmdline").read_bytes():
+                continue
+            before = (process / "stat").read_text(encoding="ascii").rsplit(")", 1)[1]
+            start_time = before.split()[19]  # /proc/<pid>/stat field 22
+            if hasattr(os, "pidfd_open"):
+                pidfd = os.pidfd_open(int(process.name))
+            else:
+                # pidfd_open 使用的系统调用号在本项目 Linux x64/ARM64 上均为 434。
+                pidfd = ctypes.CDLL(None, use_errno=True).syscall(
+                    434, int(process.name), 0,
+                )
+                if pidfd < 0:
+                    raise OSError(ctypes.get_errno(), "pidfd_open failed")
+            try:
+                after = (process / "stat").read_text(encoding="ascii").rsplit(")", 1)[1]
+                if (
+                    after.split()[19] == start_time
+                    and token in (process / "cmdline").read_bytes()
+                ):
+                    return pidfd
+            except (OSError, ValueError, IndexError):
+                pass
+            os.close(pidfd)
+        except (OSError, StopIteration, ValueError, IndexError):
+            continue
+    raise RuntimeError("descendant_identity_not_found")
+
+
+def probe_linux_process_tree_cleanup(
+    sandbox: LandlockSandbox,
+) -> LinuxProcessTreeCleanupProbeResult:
+    """实测宿主被 SIGKILL 后，主动 setsid 的 PID namespace 后代也会退出。
+
+    这是 CI/显式诊断探针，不由 ``icode doctor`` 自动运行。它核对传入 helper
+    的摘要，使用 pidfd 观察由 NSpid 与唯一命令参数确认的测试后代，并验证
+    延迟写入哨兵没有出现；不会向扫描到的普通数值 PID 发送信号。
+    """
+    checks = {
+        "descendant_started": False,
+        "descendant_detached": False,
+        "descendant_exited": False,
+        "no_delayed_write": False,
+    }
+    if not sys.platform.startswith("linux"):
+        return LinuxProcessTreeCleanupProbeResult(
+            False, False, checks, "仅适用于 Linux PID namespace",
+        )
+    if not isinstance(sandbox, LandlockSandbox) or sandbox.manifest is None:
+        return LinuxProcessTreeCleanupProbeResult(
+            False, False, checks, "Landlock helper 或完整性清单不可用",
+        )
+
+    from .native_helper import verify_native_helper
+
+    helper = Path(sandbox.helper)
+    manifest = Path(sandbox.manifest)
+    try:
+        helper_verified = verify_native_helper(helper, manifest)
+    except Exception:  # noqa: BLE001 - 摘要校验异常一律失败关闭。
+        helper_verified = False
+    if not helper_verified:
+        return LinuxProcessTreeCleanupProbeResult(
+            False, False, checks, "Landlock helper 完整性校验失败",
+        )
+    system_python = Path("/usr/bin/python3")
+    if not system_python.is_file():
+        return LinuxProcessTreeCleanupProbeResult(
+            False, False, checks, "系统 Python 3 不可用",
+        )
+
+    stage = "setup"
+    pidfd: int | None = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="icode-linux-tree-cleanup-") as raw:
+            root = Path(raw).resolve()
+            workspace = root / "workspace"
+            workspace.mkdir()
+            started = workspace / "descendant-started"
+            survived = workspace / "descendant-survived"
+            grandchild = (
+                "import os, time\nfrom pathlib import Path\n"
+                "try:\n    os.setsid()\n    detached = os.getsid(0) == os.getpid()\n"
+                "except PermissionError:\n    detached = False\n"
+                f"Path({str(started)!r}).write_text(('detached:' if detached else "
+                "'denied:') + str(os.getpid()))\n"
+                "time.sleep(1.2)\n"
+                f"Path({str(survived)!r}).write_text('escaped')\n"
+            )
+            child = (
+                "import subprocess, sys, time\n"
+                f"subprocess.Popen([sys.executable, '-c', {grandchild!r}], "
+                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                "stderr=subprocess.DEVNULL)\n"
+                "time.sleep(3)\n"
+            )
+            host = (
+                "import os, subprocess, time\n"
+                f"subprocess.Popen([{str(helper)!r}, '--workspace', {str(workspace)!r}, "
+                f"'--parent-pid', str(os.getpid()), '--', {str(system_python)!r}, '-c', "
+                f"{child!r}], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                "stderr=subprocess.DEVNULL)\n"
+                "time.sleep(10)\n"
+            )
+            parent: subprocess.Popen[bytes] | None = None
+            try:
+                parent = subprocess.Popen(
+                    [sys.executable, "-c", host],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                stage = "descendant_started"
+                for _ in range(400):
+                    if started.exists() or parent.poll() is not None:
+                        break
+                    time.sleep(0.01)
+                if not started.is_file():
+                    return LinuxProcessTreeCleanupProbeResult(
+                        True, False, checks, "descendant_did_not_start",
+                    )
+                checks["descendant_started"] = True
+                marker = started.read_text(encoding="ascii")
+                if not marker.startswith("detached:"):
+                    return LinuxProcessTreeCleanupProbeResult(
+                        True, False, checks, "descendant_did_not_detach",
+                    )
+                namespace_pid_text = marker.partition(":")[2]
+                if not namespace_pid_text.isdecimal():
+                    return LinuxProcessTreeCleanupProbeResult(
+                        True, False, checks, "descendant_namespace_pid_invalid",
+                    )
+                checks["descendant_detached"] = True
+
+                stage = "descendant_identity"
+                pidfd = _open_verified_descendant_pidfd(
+                    int(namespace_pid_text), survived,
+                )
+                if parent.poll() is not None:
+                    return LinuxProcessTreeCleanupProbeResult(
+                        True, False, checks, "host_parent_exited_before_kill",
+                    )
+
+                stage = "host_kill"
+                os.kill(parent.pid, signal.SIGKILL)
+                parent.wait(timeout=3)
+
+                stage = "descendant_exit"
+                exit_events = select.poll()
+                exit_events.register(pidfd, select.POLLIN)
+                checks["descendant_exited"] = bool(exit_events.poll(2000))
+                if not checks["descendant_exited"]:
+                    return LinuxProcessTreeCleanupProbeResult(
+                        True, False, checks, "detached_descendant_still_running",
+                    )
+
+                stage = "delayed_write"
+                time.sleep(1.45)
+                checks["no_delayed_write"] = not survived.exists()
+                if not checks["no_delayed_write"]:
+                    return LinuxProcessTreeCleanupProbeResult(
+                        True, False, checks,
+                        "detached_descendant_wrote_after_host_death",
+                    )
+            finally:
+                if parent is not None and parent.poll() is None:
+                    parent.kill()
+                    parent.wait(timeout=3)
+    except (OSError, RuntimeError, ValueError, UnicodeError, subprocess.TimeoutExpired):
+        return LinuxProcessTreeCleanupProbeResult(
+            True, False, checks, f"Linux process-tree cleanup probe failed: {stage}",
+        )
+    finally:
+        if pidfd is not None:
+            os.close(pidfd)
+
+    failed = [name for name, passed in checks.items() if not passed]
+    return LinuxProcessTreeCleanupProbeResult(
+        True, not failed, checks,
+        "宿主强杀后主动脱组后代已退出且无延迟写入"
+        if not failed else "Linux process-tree cleanup probe failed: " + ", ".join(failed),
     )
 
 

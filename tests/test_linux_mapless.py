@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 
 from tests._support import temp_workspace
-from tests.test_linux_pidns_cleanup import _open_verified_descendant_pidfd
+from icode.isolation import _open_verified_descendant_pidfd
 
 
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc"),

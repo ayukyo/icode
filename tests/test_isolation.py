@@ -39,6 +39,7 @@ from icode.isolation import (
     capability_report,
     probe_capabilities,
     probe_linux_protected_paths,
+    probe_linux_process_tree_cleanup,
     probe_macos_process_group_cleanup,
     probe_macos_protected_paths,
     probe_native_sandbox,
@@ -57,6 +58,41 @@ def _metadata_read_root(path: Path) -> MetadataReadRoot:
 
 
 class TestProbe(unittest.TestCase):
+    def test_linux后代清理探针在非Linux平台明确不执行(self) -> None:
+        with mock.patch("icode.isolation.sys.platform", "darwin"):
+            result = probe_linux_process_tree_cleanup(
+                LandlockSandbox(helper="/bin/true", manifest="/bin/true.sha256")
+            )
+
+        self.assertFalse(result.executed)
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.checks,
+            {
+                "descendant_started": False,
+                "descendant_detached": False,
+                "descendant_exited": False,
+                "no_delayed_write": False,
+            },
+        )
+        self.assertIn("仅适用于 Linux", result.detail)
+
+    def test_linux后代清理探针在helper完整性失败时关闭执行(self) -> None:
+        with temp_workspace() as root:
+            helper = root / "helper"
+            helper.write_text("not an executable helper", encoding="ascii")
+            helper.chmod(0o755)
+            manifest = root / "helper.sha256"
+            manifest.write_text("0" * 64 + "\n", encoding="ascii")
+            sandbox = LandlockSandbox(helper=str(helper), manifest=str(manifest))
+
+            with mock.patch("icode.isolation.sys.platform", "linux"):
+                result = probe_linux_process_tree_cleanup(sandbox)
+
+        self.assertFalse(result.executed)
+        self.assertFalse(result.passed)
+        self.assertIn("完整性校验失败", result.detail)
+
     def test_linux保护路径探针只在Linux上运行(self) -> None:
         sandbox = LandlockSandbox(helper="/bin/true")
         with mock.patch("icode.isolation.sys.platform", "darwin"):

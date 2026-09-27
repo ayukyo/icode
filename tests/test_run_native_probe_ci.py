@@ -12,6 +12,7 @@ from tests import _support  # noqa: F401
 from icode.isolation import (
     LandlockSandbox,
     LinuxProtectedPathProbeResult,
+    LinuxProcessTreeCleanupProbeResult,
     MacProtectedPathProbeResult,
     MacSeatbeltSandbox,
     NativeProbeResult,
@@ -54,16 +55,29 @@ class TestNativeProbeCi(unittest.TestCase):
             },
             detail="protected paths ok",
         )
+        cleanup = LinuxProcessTreeCleanupProbeResult(
+            executed=True, passed=True,
+            checks={
+                "descendant_started": True,
+                "descendant_detached": True,
+                "descendant_exited": True,
+                "no_delayed_write": True,
+            },
+            detail="tree cleanup ok",
+        )
 
         with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
              mock.patch.object(run_native_probe_ci, "probe_native_sandbox",
                                return_value=native), \
              mock.patch.object(run_native_probe_ci, "probe_linux_protected_paths",
                                return_value=protected), \
+             mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
+                               return_value=cleanup), \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
             result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
 
         self.assertTrue(score.call_args.args[0]["protected_write_denied"])
+        self.assertIs(score.call_args.kwargs["process_tree_cleanup"], True)
         self.assertTrue(score.call_args.kwargs["doctor_self_test"])
         self.assertEqual(result, 0)
 
@@ -82,10 +96,49 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=native), \
              mock.patch.object(run_native_probe_ci, "probe_linux_protected_paths",
                                return_value=failed), \
+             mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
+                               return_value=cleanup), \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
             result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
 
         self.assertFalse(score.call_args.args[0]["protected_write_denied"])
+        self.assertFalse(score.call_args.kwargs["doctor_self_test"])
+        self.assertEqual(result, 1)
+
+    def test_linux脱组后代未回收时证据为负且原生作业失败(self) -> None:
+        sandbox = LandlockSandbox(helper="/tmp/icode-landlock")
+        native = NativeProbeResult(True, {"workspace_write": True}, "native ok")
+        protected = LinuxProtectedPathProbeResult(
+            executed=True, passed=True,
+            checks={
+                "workspace_write_allowed": True,
+                "protected_write_denied": True,
+                "protected_rename_denied": True,
+            },
+            detail="protected paths ok",
+        )
+        cleanup = LinuxProcessTreeCleanupProbeResult(
+            executed=True, passed=False,
+            checks={
+                "descendant_started": True,
+                "descendant_detached": True,
+                "descendant_exited": False,
+                "no_delayed_write": False,
+            },
+            detail="detached_descendant_still_running",
+        )
+
+        with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
+             mock.patch.object(run_native_probe_ci, "probe_native_sandbox",
+                               return_value=native), \
+             mock.patch.object(run_native_probe_ci, "probe_linux_protected_paths",
+                               return_value=protected), \
+             mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
+                               return_value=cleanup), \
+             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
+            result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
+
+        self.assertIs(score.call_args.kwargs["process_tree_cleanup"], False)
         self.assertFalse(score.call_args.kwargs["doctor_self_test"])
         self.assertEqual(result, 1)
 

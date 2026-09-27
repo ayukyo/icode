@@ -16,6 +16,7 @@ from icode.isolation import (
     probe_macos_process_group_cleanup,
     probe_macos_protected_paths,
     probe_linux_protected_paths,
+    probe_linux_process_tree_cleanup,
     probe_native_sandbox,
 )
 
@@ -36,6 +37,7 @@ def _emit_conformance_score(
     *,
     platform: str,
     doctor_self_test: bool,
+    process_tree_cleanup: bool | None = None,
     process_group_cleanup: bool | None = None,
 ) -> None:
     """把本次原生探针证据映射到十项一致性合同并打印评分。
@@ -46,6 +48,7 @@ def _emit_conformance_score(
     report = score_probe_evidence(
         checks,
         platform=platform,
+        process_tree_cleanup=process_tree_cleanup,
         doctor_self_test=doctor_self_test,
         process_group_cleanup=process_group_cleanup,
     )
@@ -106,12 +109,14 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     platform = "linux" if sys.platform.startswith("linux") else "macos"
     group_result = None
     protected_result = None
+    process_tree_result = None
     if platform == "macos":
         protected_result = probe_macos_protected_paths(backend)
         group_result = probe_macos_process_group_cleanup(backend)
         protected_checks = MACOS_PROTECTED_PATH_CHECKS
     elif platform == "linux":
         protected_result = probe_linux_protected_paths(backend)
+        process_tree_result = probe_linux_process_tree_cleanup(backend)
         protected_checks = LINUX_PROTECTED_PATH_CHECKS
     else:
         protected_checks = ()
@@ -126,6 +131,15 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     if group_result is not None:
         for name, passed in group_result.checks.items():
             print(f"{backend.name} process_group_{name}: {'PASS' if passed else 'FAIL'}")
+    if process_tree_result is not None:
+        for name, passed in process_tree_result.checks.items():
+            print(f"{backend.name} process_tree_{name}: {'PASS' if passed else 'FAIL'}")
+        print(
+            "::notice::linux-process-tree-cleanup "
+            f"executed={str(process_tree_result.executed).lower()} "
+            f"passed={str(process_tree_result.passed).lower()} "
+            f"detail={process_tree_result.detail}"
+        )
     checks = dict(result.checks)
     if protected_result is not None:
         checks.update(protected_result.checks)
@@ -135,14 +149,24 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
                             doctor_self_test=(
                                 result.ready
                                 and (protected_result is None or protected_result.passed)
+                                and (process_tree_result is None or process_tree_result.passed)
                                 and (group_result is None or group_result.passed)
+                            ),
+                            process_tree_cleanup=(
+                                process_tree_result.passed
+                                if process_tree_result is not None
+                                and process_tree_result.executed else None
                             ),
                             process_group_cleanup=(
                                 group_result.passed if group_result is not None else None
                             ))
     group_failed = group_result is not None and not group_result.passed
     protected_failed = protected_result is not None and not protected_result.passed
-    native_ready = result.ready and not protected_failed
+    process_tree_failed = (
+        process_tree_result is not None
+        and (not process_tree_result.executed or not process_tree_result.passed)
+    )
+    native_ready = result.ready and not protected_failed and not process_tree_failed
     if not native_ready or group_failed:
         if not native_ready and isinstance(backend, MacSeatbeltSandbox):
             true_path = shutil.which("true")
@@ -170,6 +194,8 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
             failures.append(f"native probe: {result.detail}")
         if protected_failed:
             failures.append(f"protected paths: {protected_result.detail}")
+        if process_tree_failed:
+            failures.append(f"process-tree cleanup: {process_tree_result.detail}")
         if group_failed:
             failures.append(f"process-group cleanup: {group_result.detail}")
         print(f"::error::{backend.name} native probe failed: {'; '.join(failures)}")

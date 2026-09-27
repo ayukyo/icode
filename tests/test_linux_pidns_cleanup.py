@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import ctypes
 import os
-import select
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -15,44 +12,8 @@ from pathlib import Path
 
 from tests._support import temp_workspace
 from icode.execution_broker import execute_policy_command
-from icode.isolation import LandlockSandbox
+from icode.isolation import LandlockSandbox, probe_linux_process_tree_cleanup
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
-
-
-def _open_verified_descendant_pidfd(namespace_pid: int, unique_path: Path) -> int:
-    """仅按 NSpid + 唯一命令参数定位宿主进程；不向数值 PID 发信号。"""
-    token = os.fsencode(str(unique_path))
-    for process in Path("/proc").iterdir():
-        if not process.name.isdecimal():
-            continue
-        try:
-            status = (process / "status").read_text(encoding="ascii")
-            nspid_line = next(line for line in status.splitlines()
-                              if line.startswith("NSpid:"))
-            if int(nspid_line.split()[-1]) != namespace_pid:
-                continue
-            if token not in (process / "cmdline").read_bytes():
-                continue
-            before = (process / "stat").read_text(encoding="ascii").rsplit(")", 1)[1]
-            start_time = before.split()[19]  # /proc/<pid>/stat field 22
-            if hasattr(os, "pidfd_open"):
-                pidfd = os.pidfd_open(int(process.name))
-            else:
-                # 部分 Python 构建未暴露 os.pidfd_open，Linux 两目标架构
-                # 均使用 asm-generic 的 pidfd_open syscall 号 434。
-                pidfd = ctypes.CDLL(None, use_errno=True).syscall(434, int(process.name), 0)
-                if pidfd < 0:
-                    raise OSError(ctypes.get_errno(), "pidfd_open failed")
-            try:
-                after = (process / "stat").read_text(encoding="ascii").rsplit(")", 1)[1]
-                if after.split()[19] == start_time and token in (process / "cmdline").read_bytes():
-                    return pidfd
-            except (OSError, ValueError, IndexError):
-                pass
-            os.close(pidfd)
-        except (OSError, StopIteration, ValueError, IndexError):
-            continue
-    raise AssertionError("无法安全匹配宿主视角的测试后代")
 
 
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc"),
@@ -360,8 +321,6 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
 
     def test_宿主强杀后主动脱组的多层后代不能残留(self) -> None:
         source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
-        system_python = Path("/usr/bin/python3")
-        self.assertTrue(system_python.is_file())
         with temp_workspace() as root:
             helper = root / "icode-landlock"
             subprocess.run(
@@ -369,64 +328,28 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                  "-Werror", str(source), "-o", str(helper)],
                 check=True, capture_output=True, text=True,
             )
-            started = root / "started"
-            survived = root / "survived"
-            grandchild = (
-                "import os, time\nfrom pathlib import Path\n"
-                "try:\n    os.setsid()\n    detached = os.getsid(0) == os.getpid()\n"
-                "except PermissionError:\n    detached = False\n"
-                f"Path({str(started)!r}).write_text(('detached:' if detached else "
-                "'denied:') + str(os.getpid()))\n"
-                "time.sleep(1.2)\n"
-                f"Path({str(survived)!r}).write_text('escaped')\n"
+            import hashlib
+
+            manifest = root / "icode-landlock.sha256"
+            manifest.write_text(
+                hashlib.sha256(helper.read_bytes()).hexdigest() + "\n",
+                encoding="ascii",
             )
-            child = (
-                "import subprocess, sys, time\n"
-                f"subprocess.Popen([sys.executable, '-c', {grandchild!r}], "
-                "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
-                "stderr=subprocess.DEVNULL)\n"
-                "time.sleep(3)\n"
+            result = probe_linux_process_tree_cleanup(
+                LandlockSandbox(helper=str(helper), manifest=str(manifest))
             )
-            host = (
-                "import os, subprocess, sys, time\n"
-                f"subprocess.Popen([{str(helper)!r}, '--workspace', {str(root)!r}, "
-                f"'--parent-pid', str(os.getpid()), '--', {str(system_python)!r}, '-c', "
-                f"{child!r}], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
-                "stderr=subprocess.DEVNULL)\n"
-                "time.sleep(10)\n"
-            )
-            parent = subprocess.Popen([sys.executable, "-c", host],
-                                      stdin=subprocess.DEVNULL,
-                                      stdout=subprocess.DEVNULL,
-                                      stderr=subprocess.DEVNULL)
-            pidfd: int | None = None
-            try:
-                for _ in range(400):
-                    if started.exists():
-                        break
-                    if parent.poll() is not None:
-                        break
-                    time.sleep(0.01)
-                self.assertTrue(started.exists(), "原生助手未启动后代")
-                marker = started.read_text(encoding="ascii")
-                self.assertTrue(marker.startswith("detached:"),
-                                "必须真实覆盖已主动 setsid 脱组的后代")
-                pidfd = _open_verified_descendant_pidfd(int(marker.split(":", 1)[1]),
-                                                          survived)
-                os.kill(parent.pid, signal.SIGKILL)
-                parent.wait(timeout=3)
-                exit_events = select.poll()
-                exit_events.register(pidfd, select.POLLIN)
-                self.assertTrue(exit_events.poll(1000),
-                                "宿主视角的已脱组后代仍在运行")
-                time.sleep(1.45)
-                self.assertFalse(survived.exists(), "宿主已死，但原生助手后代仍可写入")
-            finally:
-                if pidfd is not None:
-                    os.close(pidfd)
-                if parent.poll() is None:
-                    parent.kill()
-                    parent.wait(timeout=3)
+
+        self.assertTrue(result.executed, result.detail)
+        self.assertTrue(result.passed, result.detail)
+        self.assertEqual(
+            result.checks,
+            {
+                "descendant_started": True,
+                "descendant_detached": True,
+                "descendant_exited": True,
+                "no_delayed_write": True,
+            },
+        )
 
 
 if __name__ == "__main__":
