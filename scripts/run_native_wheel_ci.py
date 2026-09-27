@@ -142,6 +142,21 @@ def main() -> int:
                 print('installed wheel helper: namespace, Python and cleanup PASS')
             """)
             _run("probe installed wheel", [str(python), "-c", code], cwd=root, env=clean_env)
+            cleanup_code = textwrap.dedent("""\
+                from icode.isolation import LandlockSandbox, probe_linux_process_tree_cleanup
+
+                sandbox = LandlockSandbox.from_bundle()
+                assert sandbox is not None, 'wheel sandbox missing'
+                cleanup = probe_linux_process_tree_cleanup(sandbox)
+                assert cleanup.executed, cleanup.detail
+                assert cleanup.passed, cleanup.detail
+                assert cleanup.checks.get('descendant_alive_before_host_kill') is True, cleanup.checks
+                assert cleanup.checks.get('host_killed') is True, cleanup.checks
+            """)
+            _run(
+                "probe installed wheel host-crash process-tree cleanup",
+                [str(python), "-c", cleanup_code], cwd=root, env=clean_env,
+            )
             _run(
                 "probe installed Git status broker",
                 [str(python), str(repository / "scripts" / "probe_installed_git_broker.py")],

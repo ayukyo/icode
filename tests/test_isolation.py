@@ -71,6 +71,8 @@ class TestProbe(unittest.TestCase):
             {
                 "descendant_started": False,
                 "descendant_detached": False,
+                "descendant_alive_before_host_kill": False,
+                "host_killed": False,
                 "descendant_exited": False,
                 "no_delayed_write": False,
             },

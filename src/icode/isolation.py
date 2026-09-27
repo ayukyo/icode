@@ -392,6 +392,8 @@ def probe_linux_process_tree_cleanup(
     checks = {
         "descendant_started": False,
         "descendant_detached": False,
+        "descendant_alive_before_host_kill": False,
+        "host_killed": False,
         "descendant_exited": False,
         "no_delayed_write": False,
     }
@@ -493,14 +495,24 @@ def probe_linux_process_tree_cleanup(
                     return LinuxProcessTreeCleanupProbeResult(
                         True, False, checks, "host_parent_exited_before_kill",
                     )
+                exit_events = select.poll()
+                exit_events.register(pidfd, select.POLLIN)
+                if exit_events.poll(0):
+                    return LinuxProcessTreeCleanupProbeResult(
+                        True, False, checks, "descendant_exited_before_host_kill",
+                    )
+                checks["descendant_alive_before_host_kill"] = True
 
                 stage = "host_kill"
                 os.kill(parent.pid, signal.SIGKILL)
                 parent.wait(timeout=3)
+                checks["host_killed"] = parent.returncode == -signal.SIGKILL
+                if not checks["host_killed"]:
+                    return LinuxProcessTreeCleanupProbeResult(
+                        True, False, checks, "host_parent_not_killed_by_sigkill",
+                    )
 
                 stage = "descendant_exit"
-                exit_events = select.poll()
-                exit_events.register(pidfd, select.POLLIN)
                 checks["descendant_exited"] = bool(exit_events.poll(2000))
                 if not checks["descendant_exited"]:
                     return LinuxProcessTreeCleanupProbeResult(

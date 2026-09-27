@@ -9,6 +9,7 @@ import sys
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests._support import temp_workspace
 from icode.execution_broker import execute_policy_command
@@ -346,10 +347,49 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             {
                 "descendant_started": True,
                 "descendant_detached": True,
+                "descendant_alive_before_host_kill": True,
+                "host_killed": True,
                 "descendant_exited": True,
                 "no_delayed_write": True,
             },
         )
+
+    def test_后代退出FD在宿主被杀前就绪时拒绝错误归因(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                 "-Werror", str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            import hashlib
+
+            manifest = root / "icode-landlock.sha256"
+            manifest.write_text(
+                hashlib.sha256(helper.read_bytes()).hexdigest() + "\n",
+                encoding="ascii",
+            )
+            sandbox = LandlockSandbox(helper=str(helper), manifest=str(manifest))
+            read_fd, write_fd = os.pipe()
+            os.close(write_fd)
+            try:
+                # Pipe HUP 作为已就绪 FD 替身，锁住探针对任何退出事件的拒绝路径。
+                with mock.patch(
+                    "icode.isolation._open_verified_descendant_pidfd",
+                    return_value=os.dup(read_fd),
+                ):
+                    result = probe_linux_process_tree_cleanup(sandbox)
+            finally:
+                os.close(read_fd)
+
+        self.assertTrue(result.executed, result.detail)
+        self.assertFalse(result.passed, result.detail)
+        self.assertEqual(result.detail, "descendant_exited_before_host_kill")
+        self.assertTrue(result.checks["descendant_started"])
+        self.assertTrue(result.checks["descendant_detached"])
+        self.assertFalse(result.checks["descendant_alive_before_host_kill"])
+        self.assertFalse(result.checks["host_killed"])
 
 
 if __name__ == "__main__":
