@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import errno
+import selectors
 import socket
 import threading
+import time
 import unittest
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
@@ -56,6 +59,185 @@ class NetworkLeaseTestCase(unittest.TestCase):
                 break
             received.extend(chunk)
         return bytes(received)
+
+    def make_loopback_backlog(
+        self,
+    ) -> tuple[socket.socket, list[socket.socket]]:
+        """Fill a loopback accept queue until a nonblocking connect stays pending."""
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        self.addCleanup(listener.close)
+        clients: list[socket.socket] = []
+        address = listener.getsockname()
+        pending_errors = {
+            errno.EINPROGRESS,
+            errno.EWOULDBLOCK,
+            errno.EALREADY,
+        }
+
+        for _ in range(32):
+            candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            candidate.setblocking(False)
+            error = candidate.connect_ex(address)
+            if error not in (0, *pending_errors):
+                candidate.close()
+                break
+
+            with selectors.DefaultSelector() as selector:
+                selector.register(candidate, selectors.EVENT_WRITE)
+                ready = bool(selector.select(timeout=0.03))
+            socket_error = candidate.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+            if ready and socket_error == 0:
+                clients.append(candidate)
+                self.addCleanup(candidate.close)
+                continue
+            if not ready and error in pending_errors:
+                candidate.close()
+                return listener, clients
+            candidate.close()
+            break
+
+        self.skipTest(
+            "host TCP stack did not provide a pending loopback connect with backlog 1"
+        )
+
+    @staticmethod
+    def _close_socket_and_signal(
+        sock: socket.socket,
+        closed: threading.Event,
+    ) -> bool:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            sock.close()
+        except OSError:
+            pass
+        closed.set()
+        return sock.fileno() < 0
+
+    def _assert_pending_loopback_connect_cancelled(self, *, expire: bool) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        started_at = time.monotonic_ns()
+        ttl_seconds = 1 if expire else 60
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=ttl_seconds,
+            now_monotonic_ns=started_at,
+        )
+        listener, _held_clients = self.make_loopback_backlog()
+        candidate = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        candidate.setblocking(False)
+        self.addCleanup(candidate.close)
+        wake_reader, wake_writer = socket.socketpair()
+        self.addCleanup(wake_reader.close)
+        self.addCleanup(wake_writer.close)
+        owner_closed = threading.Event()
+        owner_waiting = threading.Event()
+        publication_gate = threading.Event()
+        wake_observed: list[bool] = []
+        promotion_results: list[bool] = []
+        owner_errors: list[str] = []
+
+        def cancel_pending_connect() -> bool:
+            try:
+                wake_writer.send(b"x")
+            except OSError:
+                pass
+            return owner_closed.wait(timeout=4.0) and candidate.fileno() < 0
+
+        handle = authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=started_at + 1,
+            close=cancel_pending_connect,
+            pending=True,
+        )
+
+        pending_errors = {
+            errno.EINPROGRESS,
+            errno.EWOULDBLOCK,
+            errno.EALREADY,
+        }
+        connect_error = candidate.connect_ex(listener.getsockname())
+        if connect_error not in pending_errors:
+            candidate.close()
+            authority.release_active_connection(handle)
+            self.skipTest("loopback connect did not enter a pending state")
+        with selectors.DefaultSelector() as selector:
+            selector.register(candidate, selectors.EVENT_WRITE)
+            became_ready = bool(selector.select(timeout=0.05))
+        if became_ready:
+            candidate.close()
+            authority.release_active_connection(handle)
+            self.skipTest("loopback connect completed before cancellation test setup")
+
+        def connection_owner() -> None:
+            try:
+                with selectors.DefaultSelector() as selector:
+                    selector.register(candidate, selectors.EVENT_WRITE, "socket")
+                    selector.register(wake_reader, selectors.EVENT_READ, "cancel")
+                    owner_waiting.set()
+                    events = selector.select(timeout=4.0)
+                wake_received = any(key.data == "cancel" for key, _ in events)
+                wake_observed.append(wake_received)
+                if wake_received:
+                    try:
+                        wake_reader.recv(1)
+                    except OSError:
+                        pass
+                if not events:
+                    owner_errors.append("pending connect did not wake")
+                candidate.close()
+                owner_closed.set()
+                if not publication_gate.wait(timeout=2.0):
+                    owner_errors.append("promotion gate was not released")
+                    return
+                promotion_results.append(
+                    authority.promote_active_connection(
+                        handle,
+                        now_monotonic_ns=time.monotonic_ns(),
+                        close=lambda: self._close_socket_and_signal(
+                            candidate, owner_closed,
+                        ),
+                    )
+                )
+            except OSError as error:
+                owner_errors.append(type(error).__name__)
+                candidate.close()
+                owner_closed.set()
+
+        owner = threading.Thread(target=connection_owner, daemon=True)
+        owner.start()
+        try:
+            self.assertTrue(owner_waiting.wait(timeout=1.0))
+            if expire:
+                result = authority.close_expired_connections(
+                    grant.lease.expires_at_monotonic_ns,
+                )
+                self.assertEqual(result, 1)
+            else:
+                self.assertEqual(authority.revoke(policy), 2)
+        finally:
+            publication_gate.set()
+        owner.join(timeout=5.0)
+
+        self.assertFalse(owner.is_alive(), "connection owner did not stop after cancellation")
+        self.assertEqual(owner_errors, [])
+        self.assertEqual(wake_observed, [True])
+        self.assertEqual(promotion_results, [False])
+        self.assertLess(candidate.fileno(), 0)
+        self.assertFalse(authority.release_active_connection(handle))
 
     def make_policy(self, **overrides: object) -> SandboxPolicy:
         values: dict[str, object] = {
@@ -505,6 +687,310 @@ class NetworkLeaseTestCase(unittest.TestCase):
                 now_monotonic_ns=3_000_000_001,
             )
 
+    def test_pending_connection_promotion_replaces_close_handler_atomically(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        closed: list[str] = []
+
+        def close_pending() -> bool:
+            closed.append("pending")
+            return True
+
+        handle = authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=close_pending,
+            pending=True,
+        )
+
+        promote = getattr(authority, "promote_active_connection", None)
+        self.assertTrue(callable(promote), "authority lacks atomic connection promotion")
+        promoted = promote(
+            handle,
+            now_monotonic_ns=3_000_000_001,
+            close=lambda: closed.append("connected") is None,
+        )
+
+        self.assertTrue(promoted)
+        self.assertEqual(authority.revoke(policy), 2)
+        self.assertEqual(closed, ["connected"])
+        self.assertFalse(authority.release_active_connection(handle))
+
+    def test_pending_connection_promotion_is_one_shot(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        closed: list[str] = []
+
+        def close_pending() -> bool:
+            closed.append("pending")
+            return True
+
+        handle = authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=close_pending,
+            pending=True,
+        )
+
+        self.assertTrue(
+            authority.promote_active_connection(
+                handle,
+                now_monotonic_ns=3_000_000_001,
+                close=lambda: closed.append("first-connected") is None,
+            )
+        )
+        self.assertFalse(
+            authority.promote_active_connection(
+                handle,
+                now_monotonic_ns=3_000_000_002,
+                close=lambda: closed.append("second-connected") is None,
+            )
+        )
+        authority.revoke(policy)
+
+        self.assertEqual(closed, ["first-connected"])
+
+    def test_concurrent_pending_promotions_allow_only_one_close_owner(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        closed: list[str] = []
+
+        def close_pending() -> bool:
+            closed.append("pending")
+            return True
+
+        handle = authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=close_pending,
+            pending=True,
+        )
+        start = threading.Event()
+        results: dict[str, bool] = {}
+
+        def promote(name: str) -> None:
+            if not start.wait(timeout=2):
+                return
+
+            def close_connected() -> bool:
+                closed.append(name)
+                return True
+
+            results[name] = authority.promote_active_connection(
+                handle,
+                now_monotonic_ns=3_000_000_001,
+                close=close_connected,
+            )
+
+        first = threading.Thread(target=promote, args=("first",), daemon=True)
+        second = threading.Thread(target=promote, args=("second",), daemon=True)
+        first.start()
+        second.start()
+        start.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(sorted(results.values()), [False, True])
+        selected_owner = next(name for name, result in results.items() if result)
+        authority.revoke(policy)
+        self.assertEqual(closed, [selected_owner])
+
+    def test_expired_pending_connection_cannot_be_promoted(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        started_at = time.monotonic_ns()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=1,
+            now_monotonic_ns=started_at,
+        )
+        closed: list[str] = []
+
+        def close_pending() -> bool:
+            closed.append("pending")
+            return True
+
+        def close_connected() -> bool:
+            closed.append("connected")
+            return True
+
+        handle = authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=started_at + 1,
+            close=close_pending,
+            pending=True,
+        )
+
+        self.assertFalse(
+            authority.promote_active_connection(
+                handle,
+                now_monotonic_ns=grant.lease.expires_at_monotonic_ns,
+                close=close_connected,
+            )
+        )
+        self.assertEqual(
+            authority.close_expired_connections(grant.lease.expires_at_monotonic_ns),
+            1,
+        )
+        self.assertEqual(closed, ["pending"])
+
+    def test_pending_connection_promotion_rejects_pre_issue_clock(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        handle = authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=lambda: True,
+            pending=True,
+        )
+
+        self.assertFalse(
+            authority.promote_active_connection(
+                handle,
+                now_monotonic_ns=1_000_000_000,
+                close=lambda: True,
+            )
+        )
+
+    def test_pending_registration_requires_a_strict_boolean(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+
+        with self.assertRaisesRegex(
+            NetworkLeaseValidationError, "pending must be a boolean"
+        ):
+            authority.register_active_connection(
+                grant,
+                policy,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="pypi.org",
+                port=443,
+                now_monotonic_ns=3_000_000_000,
+                close=lambda: True,
+                pending=1,
+            )
+
+    def test_revoke_cancels_real_pending_loopback_connect_before_publication(self) -> None:
+        self._assert_pending_loopback_connect_cancelled(expire=False)
+
+    def test_expiry_cancels_real_pending_loopback_connect_before_publication(self) -> None:
+        self._assert_pending_loopback_connect_cancelled(expire=True)
+
+    def test_revoke_winning_before_connected_publication_rejects_promotion(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        peer, connected_socket = self.make_tcp_pair()
+        closed = threading.Event()
+        handle = authority.register_active_connection(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            close=lambda: self._close_socket_and_signal(connected_socket, closed),
+            pending=True,
+        )
+        publish_gate = threading.Event()
+        promotion_results: list[bool] = []
+
+        def publish_after_gate() -> None:
+            if not publish_gate.wait(timeout=3):
+                return
+            promoted = authority.promote_active_connection(
+                handle,
+                now_monotonic_ns=3_000_000_001,
+                close=lambda: self._close_socket_and_signal(connected_socket, closed),
+            )
+            promotion_results.append(promoted)
+            if not promoted:
+                self._close_socket_and_signal(connected_socket, closed)
+
+        publisher = threading.Thread(target=publish_after_gate, daemon=True)
+        publisher.start()
+        self.assertEqual(authority.revoke(policy), 2)
+        self.assertTrue(closed.wait(timeout=1))
+        publish_gate.set()
+        publisher.join(timeout=3)
+
+        self.assertFalse(publisher.is_alive())
+        self.assertEqual(promotion_results, [False])
+        self.assertLess(connected_socket.fileno(), 0)
+        self.assertEqual(peer.recv(1), b"")
+
     def test_revoke_closes_real_tcp_tunnel_endpoints(self) -> None:
         policy = self.make_policy()
         authority = NetworkLeaseAuthority()
@@ -540,6 +1026,45 @@ class NetworkLeaseTestCase(unittest.TestCase):
         self.assertEqual(client_peer.recv(1), b"")
         self.assertEqual(upstream_peer.recv(1), b"")
         self.assertFalse(authority.release_active_connection(handle))
+
+    def test_connected_socket_registration_cannot_be_promoted_again(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        peer, registered_socket = self.make_tcp_pair()
+        handle = authority.register_active_sockets(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            sockets=(registered_socket,),
+        )
+        replacement_called: list[bool] = []
+
+        def close_replacement() -> bool:
+            replacement_called.append(True)
+            return True
+
+        self.assertFalse(
+            authority.promote_active_connection(
+                handle,
+                now_monotonic_ns=3_000_000_001,
+                close=close_replacement,
+            )
+        )
+        authority.revoke(policy)
+
+        self.assertEqual(replacement_called, [])
+        self.assertEqual(peer.recv(1), b"")
 
     def test_registration_rejects_distinct_socket_objects_sharing_one_fd(self) -> None:
         policy = self.make_policy()

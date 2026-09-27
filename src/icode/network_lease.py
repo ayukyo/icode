@@ -286,6 +286,7 @@ class _ActiveNetworkConnection:
     policy_key: tuple[str, str, str, str]
     lease: NetworkLease
     close_callback: Callable[[], bool]
+    pending: bool = False
     closing: bool = False
     close_complete: threading.Event = field(
         default_factory=threading.Event, repr=False, compare=False,
@@ -505,18 +506,23 @@ class NetworkLeaseAuthority:
         port: int,
         now_monotonic_ns: int,
         close: Callable[[], bool],
+        pending: bool = False,
     ) -> _NetworkConnectionHandle:
         """Atomically validate and register one trusted proxy-owned connection.
 
-        A future proxy should register its local/outbound socket closure before
-        connecting; the close callback must return the strict boolean ``True``
-        only after confirming closure. Release the returned handle only after
-        normal closure. This does not create, route, or monitor a socket and is
-        not a network permission by itself.
+        A pending connect attempt must pass ``pending=True`` and register its
+        cancellation/wakeup callback before starting a non-blocking connect.
+        The callback must return strict boolean ``True`` only after its owner
+        confirms closure. Already-connected sockets remain non-pending and
+        cannot be promoted again. Release the returned handle only after normal
+        closure. This does not create, route, or monitor a socket and is not a
+        network permission by itself.
         """
 
         if not callable(close):
             raise NetworkLeaseValidationError("connection close callback is required")
+        if type(pending) is not bool:
+            raise NetworkLeaseValidationError("pending must be a boolean")
         self.close_expired_connections(now_monotonic_ns)
         policy_key = self._policy_key(policy)
         with self._lock:
@@ -535,6 +541,7 @@ class NetworkLeaseAuthority:
                 policy_key=policy_key,
                 lease=issued.lease,
                 close_callback=close,
+                pending=pending,
             )
             return handle
 
@@ -652,6 +659,54 @@ class NetworkLeaseAuthority:
                 return False
             del self._active_connections[handle.connection_id]
             entry.close_complete.set()
+            return True
+
+    def promote_active_connection(
+        self,
+        handle: object,
+        *,
+        now_monotonic_ns: int,
+        close: Callable[[], bool],
+    ) -> bool:
+        """Atomically transfer a registered pending attempt to a connected socket.
+
+        A trusted connector registers its cancellation/wakeup callback before
+        starting a non-blocking connect. Once the socket is connected, it calls
+        this method to replace that callback with one which owns the connected
+        socket. Promotion and revoke/expiry state checks share the authority
+        lock, so a failed promotion must close the candidate locally and must
+        never publish it to the caller. This is lifecycle bookkeeping only; it
+        does not perform or route a connection.
+        """
+
+        if not isinstance(handle, _NetworkConnectionHandle):
+            raise NetworkLeaseValidationError(
+                "active network connection handle is invalid"
+            )
+        if type(now_monotonic_ns) is not int or now_monotonic_ns < 0:
+            raise NetworkLeaseValidationError(
+                "now_monotonic_ns must be a non-negative integer"
+            )
+        if not callable(close):
+            raise NetworkLeaseValidationError(
+                "connected socket close callback is required"
+            )
+        with self._lock:
+            entry = self._active_connections.get(handle.connection_id)
+            if entry is None or entry.handle is not handle:
+                return False
+            if (
+                entry.closing
+                or not entry.pending
+                or entry.policy_key in self._revoking_policy_keys
+                or now_monotonic_ns < entry.lease.issued_at_monotonic_ns
+                or entry.lease.expires_at_monotonic_ns <= now_monotonic_ns
+                or entry.lease.generation
+                != self._generations.get(entry.policy_key, 1)
+            ):
+                return False
+            entry.close_callback = close
+            entry.pending = False
             return True
 
     def _close_active_connections(
