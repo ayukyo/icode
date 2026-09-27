@@ -341,6 +341,40 @@ class TestGitStatusBrokerExecution(unittest.TestCase):
             "the original metadata identity must be restored after the probe",
         )
 
+    def test_head_content_drift_during_status_discards_the_result(self) -> None:
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        head = identity.git_dir / "HEAD"
+        original_head = head.read_bytes()
+        original_execute = execute_policy_command
+        changed = False
+
+        def change_head_after_status(argv: list[str], **kwargs) -> ExecutionResult:
+            nonlocal changed
+            result = original_execute(argv, **kwargs)
+            if "--porcelain=v2" in argv:
+                head.write_bytes(b"0" * len(identity.revision) + b"\n")
+                changed = True
+            return result
+
+        try:
+            with patch(
+                "icode.git_broker.execute_policy_command",
+                side_effect=change_head_after_status,
+            ):
+                with self.assertRaisesRegex(
+                    GitStatusUnavailable, "revision_mismatch"
+                ):
+                    self._status()
+        finally:
+            head.write_bytes(original_head)
+
+        self.assertTrue(changed, "the HEAD rewrite must happen during status")
+        self.assertTrue(
+            verify_git_workspace_identity(identity).metadata_roots,
+            "the manager-owned HEAD content must be restored after the probe",
+        )
+
     def test_all_status_subcommands_share_one_wall_clock_deadline(self) -> None:
         identity = self.session.git_status_identity
         self.assertIsNotNone(identity)

@@ -239,6 +239,13 @@ def execute_git_status(
         entries = parse_porcelain_v2(result.raw_output)
         if any(entry.submodule_status != b"N..." for entry in entries):
             raise GitStatusUnavailable("submodule_status_unsupported")
+        # A shared writer can change manager-owned identity anchors while the
+        # read-only Git subprocess is running. Discard its result if those
+        # anchors no longer match the session snapshot; this does not freeze
+        # config, index, refs, or the rest of Git metadata.
+        verify_git_workspace_identity(identity)
+        if monotonic() >= deadline:
+            raise GitStatusUnavailable("status_timeout")
         return entries
     except GitStatusUnavailable:
         raise
