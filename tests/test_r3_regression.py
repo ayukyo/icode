@@ -147,8 +147,8 @@ class TestWindowsSnapshotReparseSafety(unittest.TestCase):
 
             result = subprocess.run(
                 [
-                    "cmd.exe", "/d", "/c",
-                    f'mklink /J "{junction}" "{outside}"',
+                    "cmd.exe", "/d", "/c", "mklink", "/J",
+                    str(junction), str(outside),
                 ],
                 check=False,
                 capture_output=True,
