@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import errno
+import gc
 import selectors
 import socket
 import threading
 import time
 import unittest
+import warnings
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -1234,6 +1236,41 @@ class NetworkLeaseTestCase(unittest.TestCase):
         self.assertEqual(observed, b"")
         self.assertFalse(authority.release_active_connection(handle))
 
+    def test_normal_socket_release_explicitly_disposes_authority_duplicate(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        peer, registered_socket = self.make_tcp_pair()
+        handle = authority.register_active_sockets(
+            grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+            sockets=(registered_socket,),
+        )
+        registered_socket.shutdown(socket.SHUT_RDWR)
+        registered_socket.close()
+
+        with warnings.catch_warnings(record=True) as captured:
+            warnings.simplefilter("always", ResourceWarning)
+            self.assertTrue(authority.release_active_connection(handle))
+            gc.collect()
+
+        self.assertFalse(
+            [warning for warning in captured if warning.category is ResourceWarning],
+            "normal release must explicitly close duplicated authority descriptors",
+        )
+        self.assertEqual(peer.recv(1), b"")
+
     def test_registration_rejects_unconnected_or_non_tcp_sockets(self) -> None:
         policy = self.make_policy()
         authority = NetworkLeaseAuthority()
@@ -1308,6 +1345,150 @@ class NetworkLeaseTestCase(unittest.TestCase):
         self.assertEqual(client_peer.recv(1), b"")
         self.assertEqual(upstream_peer.recv(1), b"")
         self.assertFalse(authority.release_active_connection(handle))
+
+    def test_expiry_sweep_closes_only_connections_for_the_expired_lease(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        expired_grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=1,
+            now_monotonic_ns=2_000_000_000,
+        )
+        live_grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("packages.example",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        expired_peer, expired_proxy = self.make_tcp_pair()
+        live_peer, live_proxy = self.make_tcp_pair()
+
+        expired_handle = authority.register_active_sockets(
+            expired_grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=2_500_000_000,
+            sockets=(expired_proxy,),
+        )
+        live_handle = authority.register_active_sockets(
+            live_grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="packages.example",
+            port=443,
+            now_monotonic_ns=2_500_000_000,
+            sockets=(live_proxy,),
+        )
+
+        self.assertEqual(authority.close_expired_connections(3_000_000_000), 1)
+
+        self.assertEqual(expired_peer.recv(1), b"")
+        live_peer.sendall(b"still-authorized")
+        self.assertEqual(self.recv_exact(live_proxy, 16), b"still-authorized")
+        authority.verify_request(
+            live_grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="packages.example",
+            port=443,
+            now_monotonic_ns=3_000_000_000,
+        )
+        self.assertFalse(authority.release_active_connection(expired_handle))
+        authority.revoke(policy)
+        self.assertEqual(live_peer.recv(1), b"")
+        self.assertFalse(authority.release_active_connection(live_handle))
+
+    def test_live_lease_can_release_during_expired_sibling_cleanup(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        expired_grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=1,
+            now_monotonic_ns=2_000_000_000,
+        )
+        live_grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("packages.example",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+        expired_close_entered = threading.Event()
+        finish_expired_close = threading.Event()
+
+        def close_expired_lease() -> bool:
+            expired_close_entered.set()
+            return finish_expired_close.wait(timeout=3)
+
+        expired_handle = authority.register_active_connection(
+            expired_grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="pypi.org",
+            port=443,
+            now_monotonic_ns=2_500_000_000,
+            close=close_expired_lease,
+        )
+        live_peer, live_proxy = self.make_tcp_pair()
+        self.addCleanup(live_peer.close)
+        self.addCleanup(live_proxy.close)
+        live_handle = authority.register_active_sockets(
+            live_grant,
+            policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="packages.example",
+            port=443,
+            now_monotonic_ns=2_500_000_000,
+            sockets=(live_proxy,),
+        )
+        sweep_result: list[int] = []
+        sweep_error: list[BaseException] = []
+
+        def sweep_expired_lease() -> None:
+            try:
+                sweep_result.append(
+                    authority.close_expired_connections(3_000_000_000)
+                )
+            except BaseException as error:
+                sweep_error.append(error)
+
+        sweep_thread = threading.Thread(target=sweep_expired_lease)
+        sweep_thread.start()
+        sibling_release_succeeded = False
+        try:
+            self.assertTrue(expired_close_entered.wait(timeout=1))
+            live_proxy.shutdown(socket.SHUT_RDWR)
+            live_proxy.close()
+            sibling_release_succeeded = authority.release_active_connection(
+                live_handle,
+            )
+        finally:
+            finish_expired_close.set()
+            sweep_thread.join(timeout=4)
+            if not sibling_release_succeeded:
+                authority.release_active_connection(live_handle)
+
+        self.assertFalse(sweep_thread.is_alive())
+        self.assertFalse(sweep_error)
+        self.assertEqual(sweep_result, [1])
+        self.assertTrue(
+            sibling_release_succeeded,
+            "an unrelated expired lease must not block normal sibling release",
+        )
+        self.assertEqual(live_peer.recv(1), b"")
+        self.assertFalse(authority._active_connections)
+        self.assertFalse(authority.release_active_connection(expired_handle))
 
     def test_normal_connection_release_is_idempotent_and_does_not_close_twice(self) -> None:
         policy = self.make_policy()

@@ -286,6 +286,7 @@ class _ActiveNetworkConnection:
     policy_key: tuple[str, str, str, str]
     lease: NetworkLease
     close_callback: Callable[[], bool]
+    release_callback: Callable[[], bool] | None = None
     pending: bool = False
     closing: bool = False
     close_complete: threading.Event = field(
@@ -508,6 +509,7 @@ class NetworkLeaseAuthority:
         close: Callable[[], bool],
         pending: bool = False,
         clock: Callable[[], int] | None = None,
+        release: Callable[[], bool] | None = None,
     ) -> _NetworkConnectionHandle:
         """Atomically validate and register one trusted proxy-owned connection.
 
@@ -525,6 +527,8 @@ class NetworkLeaseAuthority:
 
         if not callable(close):
             raise NetworkLeaseValidationError("connection close callback is required")
+        if release is not None and not callable(release):
+            raise NetworkLeaseValidationError("connection release callback is invalid")
         if type(pending) is not bool:
             raise NetworkLeaseValidationError("pending must be a boolean")
         if pending and clock is None:
@@ -563,6 +567,7 @@ class NetworkLeaseAuthority:
                 policy_key=policy_key,
                 lease=issued.lease,
                 close_callback=close,
+                release_callback=release,
                 pending=pending,
             )
             return handle
@@ -655,6 +660,16 @@ class NetworkLeaseAuthority:
                     pass
             return all(sock.fileno() < 0 for sock in owned_socket_tuple)
 
+        def release_sockets() -> bool:
+            """Dispose authority-owned duplicates after local normal shutdown."""
+
+            for sock in owned_socket_tuple:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+            return all(sock.fileno() < 0 for sock in owned_socket_tuple)
+
         try:
             return self.register_active_connection(
                 issued,
@@ -665,6 +680,7 @@ class NetworkLeaseAuthority:
                 now_monotonic_ns=now_monotonic_ns,
                 close=close_sockets,
                 clock=clock,
+                release=release_sockets,
             )
         except Exception:
             discard_owned_sockets()
@@ -679,11 +695,35 @@ class NetworkLeaseAuthority:
             entry = self._active_connections.get(handle.connection_id)
             if entry is None or entry.handle is not handle:
                 return False
-            if entry.closing or entry.policy_key in self._revoking_policy_keys:
+            # A revocation marker blocks new authorization/registrations, but it
+            # must not block an owner from releasing its own already-closed
+            # handle. An expired sibling lease can mark the shared policy key
+            # while another still-live lease is closing normally.
+            if entry.closing:
                 return False
-            del self._active_connections[handle.connection_id]
+            release_callback = entry.release_callback
+            if release_callback is None:
+                del self._active_connections[handle.connection_id]
+                entry.close_complete.set()
+                return True
+            entry.closing = True
+            entry.close_complete.clear()
+
+        try:
+            released = release_callback() is True
+        except Exception:  # noqa: BLE001 - callback details can contain socket data.
+            released = False
+
+        with self._lock:
+            current = self._active_connections.get(handle.connection_id)
+            if current is not entry:
+                entry.close_complete.set()
+                return released
+            if released:
+                del self._active_connections[handle.connection_id]
+            entry.closing = False
             entry.close_complete.set()
-            return True
+            return released
 
     def promote_active_connection(
         self,
@@ -809,7 +849,6 @@ class NetworkLeaseAuthority:
                 for entry in self._active_connections.values()
                 if (
                     entry.lease.expires_at_monotonic_ns <= now_monotonic_ns
-                    or entry.policy_key in self._revoking_policy_keys
                     or entry.lease.generation
                     != self._generations.get(entry.policy_key, 1)
                 )
@@ -820,6 +859,11 @@ class NetworkLeaseAuthority:
             for policy_key in revoking_keys:
                 if not any(
                     entry.policy_key == policy_key
+                    and (
+                        entry.lease.expires_at_monotonic_ns <= now_monotonic_ns
+                        or entry.lease.generation
+                        != self._generations.get(entry.policy_key, 1)
+                    )
                     for entry in self._active_connections.values()
                 ):
                     self._revoking_policy_keys.discard(policy_key)

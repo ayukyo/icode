@@ -106,8 +106,13 @@ class _PendingDial:
     the socket itself; cross-thread close is deliberately not used as a wakeup.
     """
 
-    def __init__(self, sock: socket.socket) -> None:
+    def __init__(
+        self,
+        sock: socket.socket,
+        cancel_event: Event | None = None,
+    ) -> None:
         self.socket = sock
+        self._cancel_event = cancel_event
         self._owner_thread_id = threading.get_ident()
         self._state_lock = Lock()
         self._cancelled = False
@@ -133,7 +138,9 @@ class _PendingDial:
     @property
     def cancelled(self) -> bool:
         with self._state_lock:
-            return self._cancelled
+            return self._cancelled or (
+                self._cancel_event is not None and self._cancel_event.is_set()
+            )
 
     def close_for_authority(self) -> bool:
         """Wake the owner and wait for confirmed socket closure."""
@@ -173,7 +180,14 @@ class _PendingDial:
         if threading.get_ident() != self._owner_thread_id:
             return False
         with self._state_lock:
-            if self._cancelled or self._closed.is_set():
+            if (
+                self._cancelled
+                or (
+                    self._cancel_event is not None
+                    and self._cancel_event.is_set()
+                )
+                or self._closed.is_set()
+            ):
                 return False
             return self._close_wakeup_pair_locked()
 
@@ -323,6 +337,7 @@ def open_authorized_https_connection(
     authority: NetworkLeaseAuthority,
     purpose: NetworkPurpose,
     resolver: Resolver | None = None,
+    cancel_event: Event | None = None,
 ) -> AuthorizedHttpsConnection:
     """Open one leased HTTPS target through a pinned numeric TCP address.
 
@@ -343,8 +358,12 @@ def open_authorized_https_connection(
 
     if not isinstance(authority, NetworkLeaseAuthority):
         raise NetworkConnectError(_CONNECT_FAILED)
+    if cancel_event is not None and type(cancel_event) is not Event:
+        raise NetworkConnectError(_CONNECT_FAILED)
 
     try:
+        if cancel_event is not None and cancel_event.is_set():
+            raise NetworkLeaseValidationError("host connection scope is closed")
         target = parse_https_connect_request_head(request_head)
         authority.verify_request(
             issued,
@@ -359,6 +378,8 @@ def open_authorized_https_connection(
             target.port,
             resolver=resolver,
         )
+        if cancel_event is not None and cancel_event.is_set():
+            raise NetworkLeaseValidationError("host connection scope is closed")
         if type(destinations) is not tuple or not destinations or any(
             type(destination) is not ResolvedNetworkTarget
             for destination in destinations
@@ -373,6 +394,8 @@ def open_authorized_https_connection(
             port=target.port,
             now_monotonic_ns=time.monotonic_ns(),
         )
+        if cancel_event is not None and cancel_event.is_set():
+            raise NetworkLeaseValidationError("host connection scope is closed")
     except Exception as error:  # noqa: BLE001 - connector failures are fail-closed.
         raise NetworkConnectError(_CONNECT_FAILED) from None
 
@@ -392,12 +415,14 @@ def open_authorized_https_connection(
                 port=target.port,
                 now_monotonic_ns=time.monotonic_ns(),
             )
+            if cancel_event is not None and cancel_event.is_set():
+                raise NetworkLeaseValidationError("host connection scope is closed")
             sock = _new_tcp_socket(
                 destination.family,
                 destination.socket_type,
                 destination.protocol,
             )
-            pending = _PendingDial(sock)
+            pending = _PendingDial(sock, cancel_event=cancel_event)
             handle = authority.register_active_connection(
                 issued,
                 policy,
@@ -410,6 +435,8 @@ def open_authorized_https_connection(
                 clock=time.monotonic_ns,
             )
             _connect_numeric(sock, destination.sockaddr, pending)
+            if pending.cancelled:
+                raise _PendingConnectCancelled
             # The establishment phase is non-blocking; trusted relay code gets
             # a normal blocking socket after successful connection promotion.
             sock.setblocking(True)
@@ -421,6 +448,8 @@ def open_authorized_https_connection(
                 port=target.port,
                 now_monotonic_ns=time.monotonic_ns(),
             )
+            if pending.cancelled:
+                raise _PendingConnectCancelled
             candidate_connection = AuthorizedHttpsConnection(
                 target=target,
                 sockaddr=destination.sockaddr,
@@ -439,6 +468,8 @@ def open_authorized_https_connection(
             active_connection = candidate_connection
             if not pending.finish_connected() or sock.fileno() < 0:
                 raise NetworkConnectError(_CONNECT_FAILED)
+            if pending.cancelled:
+                raise _PendingConnectCancelled
             return candidate_connection
         except NetworkLeaseValidationError:
             _cleanup_attempt(
