@@ -95,14 +95,20 @@ class LeasedConnectTargetTestCase(unittest.TestCase):
             callable(resolver),
             "lease-gated CONNECT target resolver is missing",
         )
-        return resolver(
-            request_head,
-            self.authority,
-            self.issued if issued is None else issued,
-            self.policy if policy is None else policy,
-            purpose,
-            **kwargs,
-        )
+        # Exercise lease-to-target behavior on every runner; the runtime patch
+        # floor itself remains independently tested by test_network_destination.
+        with patch(
+            "icode.network_destination._supports_safe_ipaddress_classification",
+            return_value=True,
+        ):
+            return resolver(
+                request_head,
+                self.authority,
+                self.issued if issued is None else issued,
+                self.policy if policy is None else policy,
+                purpose,
+                **kwargs,
+            )
 
     def test_valid_lease_resolves_only_to_validated_numeric_targets(self) -> None:
         resolver_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
@@ -294,20 +300,24 @@ class LeasedConnectTargetTestCase(unittest.TestCase):
         resolve_targets = getattr(module, "resolve_leased_https_connect_targets", None)
         self.assertTrue(callable(resolve_targets))
         issued_at = issued.lease.issued_at_monotonic_ns
-        with patch.object(
-            module.time,
-            "monotonic_ns",
-            side_effect=(issued_at + 1, issued_at + 1_000_000_001),
+        with patch(
+            "icode.network_destination._supports_safe_ipaddress_classification",
+            return_value=True,
         ):
-            with self.assertRaises(NetworkLeaseValidationError):
-                resolve_targets(
-                    _CONNECT_REQUEST,
-                    self.authority,
-                    issued,
-                    self.policy,
-                    NetworkPurpose.PACKAGE_INSTALL,
-                    resolver=resolver,
-                )
+            with patch.object(
+                module.time,
+                "monotonic_ns",
+                side_effect=(issued_at + 1, issued_at + 1_000_000_001),
+            ):
+                with self.assertRaises(NetworkLeaseValidationError):
+                    resolve_targets(
+                        _CONNECT_REQUEST,
+                        self.authority,
+                        issued,
+                        self.policy,
+                        NetworkPurpose.PACKAGE_INSTALL,
+                        resolver=resolver,
+                    )
 
     def test_private_dns_answer_is_rejected_without_returning_targets(self) -> None:
         def resolver(*args: Any, **kwargs: Any) -> list[tuple[Any, ...]]:
