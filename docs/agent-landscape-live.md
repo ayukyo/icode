@@ -786,3 +786,39 @@
 
 - **观察版本与差异：**最新 `openai/codex` main 为 `41f9084b30812db321a0b592def4f500d1e79cf4`，Apache-2.0；从本条 10:45 UTC 所记 `67a709665ac7b50311b93e32612c9a8281684787` 到该 SHA 仅前进一个提交，内容是日志脱敏，没有修改 Linux sandbox、network proxy 或 exec-server。见[上游比较](https://github.com/openai/codex/compare/67a709665ac7b50311b93e32612c9a8281684787...41f9084b30812db321a0b592def4f500d1e79cf4)与[最新提交](https://github.com/openai/codex/commit/41f9084b30812db321a0b592def4f500d1e79cf4)。因此前条固定 SHA 下关于 netns listener FD handoff、host bridge、SCM_RIGHTS 校验和测试缺口的源码观察没有因本次上游更新而改变。
 - **ICODE 决策刷新：**维持采纳机制、不复制实现：下一段仍需独立验证控制通道与 FD receiver 的来源、数量、类型、地址及关闭生命周期，并覆盖实际受控连接；本地 loopback probe 仍不接策略/Agent，也不等同代理权限。该次上游变化不构成调整阶段优先级或放宽当前验收门槛的理由。
+
+### 2026-09-27 12:46 UTC 阶段末复核：FD handoff 接收边界
+
+- **复用既有 Codex 观察，不宣称新上游状态：**本阶段沿用 11:35 UTC 固定的 Codex [`41f9084b30812db321a0b592def4f500d1e79cf4`](https://github.com/openai/codex/commit/41f9084b30812db321a0b592def4f500d1e79cf4) 机制记录；阶段末重新读取 GitHub commits 页面受限，`git ls-remote` 因 TLS 握手失败，未取得新的 main SHA。因此不更新“当前 HEAD”结论，待后续可访问时复核。
+- **本阶段采纳 / 暂缓：**采纳其私有 Unix 控制通道传递 loopback listener FD、host-side 验证后再桥接的架构顺序；本阶段仅实现独立 receiver 的来源/数量/类型/地址/FD 生命周期检查。暂缓实现 sender 和 host bridge/relay，必须另以实际受控流量验证，不从本地 FD 单测推断端到端网络安全。不复制 Codex Rust 代码，不引入第三方依赖；网络 `DENY` 与自动模式关闭。
+- **平台文档交叉验证：**Python 3.11 `socket.recvmsg()` 文档限定其 SCM_RIGHTS 自动关闭说明适用于 `recvmsg()` 自身抛异常；成功返回后应用代码仍须及时接管描述符。`signal.pthread_sigmask()` 可阻塞/恢复调用线程的信号，且 `SIGKILL`/`SIGSTOP` 不可屏蔽，已用于缩短的 descriptor-adoption 临界区并以真实 SIGINT 测试验收。[socket.recvmsg](https://docs.python.org/3.11/library/socket.html#socket.socket.recvmsg) · [signal.pthread_sigmask](https://docs.python.org/3.11/library/signal.html#signal.pthread_sigmask)。
+
+### 2026-09-27 13:45 UTC 修订：Python FD receiver 信号所有权
+
+- **纠正前条：**上一条短暂采用 `pthread_sigmask` 的方向及阶段记录的“mask 已验收”均已撤回。跨线程实测证明，仅屏蔽当前线程不能确保主解释器的 Python handler 不在 FD 所有权登记间隙抛异常；进一步审查也指出逐项恢复进程级 handler 有新的中断窗口。
+- **官方契约复核：**在线复核 Python 3.11.16 官方 `signal` 文档：handler 总在主解释器线程执行（信号即使由另一线程接收），且 handler 异常会在主线程异步引发；`socket.recvmsg()` 的 SCM_RIGHTS 自动清理仅适用于 `recvmsg()` 自身抛异常。故当前接收及 FD/socket 接管完整放入专用 worker，由主线程处理取消、join 和异常传播；不再替换或屏蔽调用方 signal handler。[Python signal：handler 线程及异常语义](https://docs.python.org/3.11/library/signal.html#signals-and-threads) · [Python socket.recvmsg：SCM_RIGHTS 异常清理边界](https://docs.python.org/3.11/library/socket.html#socket.socket.recvmsg)。
+- **采纳 / 暂缓：**保持采纳 Codex 固定 SHA `41f9084b30812db321a0b592def4f500d1e79cf4` 所观察到的私有 Unix FD handoff 架构机制，不复制其实现；worker/cancel/join 是 Python 接收器对本地所有权和 signal 合同的实现，不归因于 Codex。sender、host relay、实际受控流量与 OS“只能到代理”继续暂缓，Agent 网络仍 `DENY`。GitHub main 当前 SHA 本轮仍未取得新证据，不更新为 latest。
+- **本机验证：**dup 成功后由另一线程发 SIGINT，确认主线程 handler 已运行才放行 worker，重复 30 次无残留；receiver/native-probe 两模块 24/24 通过。`preflight.py --only tests`、`--only submodule`，治理/站点/竞品文档校验、限定变更文件密钥形态扫描、`compileall` 与 diff 检查均通过。独立代码审查与远端 CI 尚未完成；不得由单元测试推断跨平台或网络端到端就绪。
+
+### 2026-09-27 14:10 UTC 阶段末复核：cleanup signal 边界
+
+- **研究状态与来源界限：**沿用本轮只读复核的 Python 3.11.16 官方 signal/socket 契约及 Codex 固定 SHA `41f9084b30812db321a0b592def4f500d1e79cf4`；没有取得新的 Codex main SHA，不把该固定源码观察冒充 upstream 当前 HEAD。Python handler 在主解释器线程执行、可异步抛异常的规则，支持在 ICODE receiver 中隔离 FD 生命周期；这是 Python 本地实现选择，不归因于 Codex。
+- **本轮采纳 / 暂缓：**采纳把 cancellation 设置、worker join 和未交付 socket 关闭纳入抗重复中断清理循环，并在正常返回的 cleanup signal 下保留异常；暂缓把它解释成端到端隔离保证。sender/bridge、授权策略和跨平台网络强制仍未实现，R2 网络仍 `DENY`、自动模式关闭。
+- **验收更新：**两项清理期信号回归均按 TDD 先失败再通过；receiver/native-probe 26/26、dup/SIGINT 30 次、本地 Python 3.11.15 全量测试门禁、子模块与治理/站点/竞品文档检查通过。最终 Git tree 独立复审和提交后的远端 CI 尚未完成；不标记 Ready。
+
+### 2026-09-27 14:25 UTC 刷新：worker 启动和调用方异常上下文
+
+- **复审核心发现：**精确树复审发现 `sys.exc_info()` 可读到 caller 正在处理的外层异常，导致正常 receiver 调用误关 socket；另发现 `Thread.start()` 在 `ident` 发布前被打断时，延迟 worker 仍可能触碰控制 socket。两条真实语义回归先红后绿：外层 `except` 中实际接收并经 loopback 通信；模拟启动中断后再放行延迟 worker，验证 cancellation 在控制 socket getsockopt/recvmsg 前生效且来源 FD 无别名增长。
+- **本地实现取舍：**改为显式保存 receiver 自己的异常，不用 `sys.exc_info()` 判断调用状态；成功 socket 的最终返回位于抗中断 cleanup 区；已发布线程身份的 worker 进行 join，未发布身份的迟到 worker 在触碰控制 socket 前检查取消。worker/cancel/join 依然是 ICODE Python 侧局部选择，不宣称 Codex 使用相同机制；Codex 固定源码 SHA 不变，未取得新 main SHA。
+- **验收状态：**handoff/native-probe 定向测试 28/28、Python 3.11.15 全量测试门禁通过；最新精确 Git tree 独立复审、commit 后 CI 仍待完成。只证明此接收原语，没有证明 sender/bridge、策略、跨平台强制或网络端到端安全，R2 `DENY` 保持。
+
+### 2026-09-27 14:40 UTC 刷新：关闭失败时的 raw descriptor 清理
+
+- **复审发现与修复：**独立复审指出 wrapper `close()` 若抛异常，原 cleanup 会跳过 SCM_RIGHTS 原始 descriptor 回收。新增真实 handoff + 取消后 wrapper-close 注入回归，旧实现 descriptor alias `1→2`；将 raw descriptor 清理放入 wrapper close 的嵌套 `finally` 后，定向 handoff/native-probe 测试 29/29 通过。
+- **竞品取舍与边界：**没有新的上游观察；继续沿用 Codex 固定 SHA 的 Unix FD handoff 架构参考，不把异常清理实现归因于 Codex。此项只补 ICODE receiver 的本地资源所有权，不开放 sender/bridge、网络策略、自动模式或跨平台 OS 强制。
+- **复核状态：**完整测试门禁需在此最后改动后重跑；最终精确 tree review 与提交后远端 CI 尚未完成。
+
+### 2026-09-27 14:45 UTC 验收回报
+
+- **本机验证：**wrapper-close 异常修复后的完整 `.venv` Python 3.11.15 测试门禁通过，handoff/native-probe 29/29；真实 dup/SIGINT 连续 30 次通过，子模块与文档检查、限定文件密钥形态扫描、compileall/diff check 通过。
+- **仍待验证：**精确 tree 的独立复审、提交推送及远端 CI；本地测试没有证明跨平台或网络端到端隔离。Codex 仍按固定 SHA 作为机制参考，未声称当前 upstream HEAD。

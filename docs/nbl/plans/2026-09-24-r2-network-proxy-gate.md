@@ -166,3 +166,42 @@
 - **审查修复：**独立复审发现 expiry sweep 为一条过期 lease 设置 policy revoking 标记时，也阻断同 policy 活跃 sibling 的 `release_active_connection()`；正常 scope 会丢弃已关闭 sibling 的本地所有权，导致 authority entry/duplicate FD 残留。现仅由该 entry 自身的 `closing` 状态阻止 release；policy revoking 继续拒绝新审批、校验及注册，但不阻止已经关闭的 owner handle 释放。新增屏障测试确认 live peer 正常 EOF、该 handle 被删除、过期条目仍按 sweep 关闭且 authority 无残留。runtime 遇同步 DNS 时 `close() == False` 的重试责任已写入 API docstring；没有自动重试/完成通知。
 - **上游只读研究（观察 2026-09-27 09:46:51 UTC，固定快照）：**Codex `main` `67a709665ac7b50311b93e32612c9a8281684787`、Gemini CLI `main` `2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`，均 Apache-2.0。Codex execution-scope drop 会使策略 token 失效并拒绝尚未授权的决策，但所查代码/测试未证明既有 CONNECT 在 scope drop 时关闭；runtime shutdown 生命周期测试另有活动 CONNECT 双端 EOF/reset 证据，不能外推成逐 scope revoke 或 TTL。[scope token](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/network-proxy/src/proxy/execution_scope.rs#L3-L51) · [pending decision](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/network-proxy/src/proxy.rs#L1017-L1069) · [runtime shutdown lifecycle test](https://github.com/openai/codex/blob/67a709665ac7b50311b93e32612c9a8281684787/codex-rs/network-proxy/src/connection_lifecycle/lifecycle_tests.rs#L57-L172)。Gemini 管理 sandbox/proxy 进程生命周期；所查测试使用 mock handler，不证明活动 socket 双端关闭、DNS/connect 取消或 per-lease TTL。[sandbox lifecycle](https://github.com/google-gemini/gemini-cli/blob/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18/packages/cli/src/utils/sandbox.ts#L314-L395) · [proxy cleanup](https://github.com/google-gemini/gemini-cli/blob/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18/packages/cli/src/utils/sandbox.ts#L928-L1029)。
 - **采纳 / 暂缓与硬边界：**采纳 Codex runtime-owned cancellation 和真实 peer EOF 的验证方式；逐 lease expiry/generation、同 policy sibling 隔离是 ICODE 自有合同。Gemini 仅采纳 owner 生命周期思路，不视作 socket revoke 方案。未复制源码、无新增依赖。scope 仍无生产 listener、CONNECT response、TLS 或双向 relay，也未接 Agent/ToolContext、自动模式或 OS 网络后端；测试中手动传送数据仅作活跃 socket 控制，不是产品转发。Linux/macOS/Windows OS 级“只能到可信代理”仍是开放门槛，worker 网络默认 `DENY`。
+
+### 2026-09-27 12:46 UTC：Linux loopback listener FD receiver
+
+- **实现切片：**新增标准库-only `linux_proxy_handoff`，建立带 `SO_PASSCRED` 的私有 AF_UNIX/SOCK_SEQPACKET 控制通道；host receiver 限时接收并核验直接子进程 PID、固定消息、唯一 SCM_RIGHTS descriptor、IPv4 TCP listening socket、非零端口和 loopback 地址。通过 `MSG_CMSG_CLOEXEC` 接收，返回 socket wrapper 不可继承；selector 支持高于 1023 的 fd，recv 使用 DONTWAIT 处理多 reader 竞争，所有拒绝/中断路径关闭收到的 descriptor。
+- **中断窗口复现与修复：**独立复审指出 `recvmsg()` 成功返回 raw ancillary bytes 到 FD 所有权登记之间可被 SIGINT 打断。新增真实 listener + `os.kill(SIGINT)` 回归：旧实现 FD alias 从 1 增为 2；修复在短暂非阻塞接收及 ancillary 解析/登记区间屏蔽该线程可屏蔽信号，恢复原 mask 后由外层 finally 清理；新回归通过。Python 官方 3.11 文档说明 `recvmsg()` 只有在自身抛异常时才尝试关闭 SCM_RIGHTS descriptor，`pthread_sigmask()` 可暂存当前线程信号，不能据“recvmsg 有异常清理”覆盖成功返回后的 Python 所有权窗口：[recvmsg](https://docs.python.org/3.11/library/socket.html#socket.socket.recvmsg) · [pthread_sigmask](https://docs.python.org/3.11/library/signal.html#signal.pthread_sigmask)。
+- **研究取舍：**沿用此前固定 Codex 源码观察 [`41f9084b`](https://github.com/openai/codex/commit/41f9084b30812db321a0b592def4f500d1e79cf4) 的“netns loopback listener 经私有 Unix channel 交到 host bridge”机制；采纳 FD 类型/地址/来源与生命周期校验，不复制 Rust 实现或加依赖。12:46 UTC 阶段末在线复核 GitHub main 未能取回（GitHub 页面受限、`git ls-remote` TLS 握手失败），故该 SHA 仅作已固定参考，不标成当前最新。
+- **本机验收与状态：**receiver 与 native probe CI 单元测试 20/20、compileall、diff check、`preflight.py --only tests` 及 `--only submodule` 通过；本次三份 Python 文件的限定密钥形态扫描无命中。CI #248 workflow overall Success，但其 4 条 Python `::error` 注解来自刻意验证失败分支的 mock 测试输出；现已在测试中捕获 stdout 并保留负例断言，新 CI 仍待提交后确认。独立复审第三轮待回报。
+- **严格边界：**本切片没有建立 netns sender/listener、host bridge/relay、lease CONNECT 调用、授权或 Agent/ToolContext 网络入口；仅是 FD receiver 原语。新跨平台 CI、Linux x64/ARM64 runner receiver 测试、端到端受控流量和 OS“只能到代理”仍未验收，网络基础策略保持 `DENY`，自动模式关闭；不得作为 R2 完成证据。
+
+### 2026-09-27 13:45 UTC：SIGINT 所有权窗口修订
+
+- **撤回上一版方案：**12:46 UTC 记录的“短临界区屏蔽/延迟主线程信号”并未覆盖主线程上的 `os.dup()` 返回交接窗口；独立复审以真实 handoff + 同步 SIGINT 注入复现 FD alias 从 1 增至 2。基于该证据，上一版实现不再作为可提交候选。
+- **当前实现：**主线程只负责等待专用 daemon worker；worker 独占 `recvmsg()`、ancillary 解析、FD 登记、`os.dup()`、socket 包装和 loopback/TCP 校验。等待期间若调用方 signal handler 抛异常，主线程记录首个异常并发出取消；worker 的 selector 最多每 50ms 检查取消，收齐并关闭本地 FD/socket 后结束，主线程 join 完再传播原异常。所有 Python signal handler 保持调用方原状；非主线程调用直接执行原语。
+- **平台依据：**Python 3.11.16 官方文档说明 Python signal handler 总在主解释器线程执行，即使信号由其他线程收到；handler 抛出的异常也在主线程异步引发。故把拥有 SCM_RIGHTS 和 dup 生命周期的代码移出主线程，比逐一替换并恢复进程级 handler 更易审计。[signal：handler 执行线程与异常语义](https://docs.python.org/3.11/library/signal.html#signals-and-threads)。文档另说明 `recvmsg()` 仅在自身抛异常时尝试关闭收到的 SCM_RIGHTS descriptor，成功返回后的所有权仍由应用负责：[socket.recvmsg](https://docs.python.org/3.11/library/socket.html#socket.socket.recvmsg)。
+- **回归证据：**真实 `os.dup()` 之后同步发送 SIGINT、并等待主线程 handler 确认再放行 worker，30 次独立运行均通过；recvmsg 返回后 SIGINT、跨线程 SIGINT、自定义抛异常 handler 均验证取消/join 后没有 descriptor alias 残留。receiver/native-probe 两模块 24/24 通过；`preflight.py --only tests`、`--only submodule`，治理/站点/竞品文档校验、`compileall`、`git diff --check` 和限定六个变更文件的密钥形态扫描通过。独立复审及远端 CI 尚未完成；不可报告该 slice Ready。
+- **竞品采纳修订：**Codex 固定源码观察仍仅作架构机制参考；其私有 Unix FD handoff 机制采纳，不复制代码。本次 worker/cancel/join 是针对 Python 信号语义及 ICODE FD 所有权合同的本地实现选择，不宣称 Codex 使用相同内部策略。该修订不实现 sender、bridge/relay、lease 接线或 Agent 网络权限，R2 网络 `DENY` 与自动模式关闭。
+
+### 2026-09-27 14:10 UTC：worker cleanup signal 修订
+
+- **复审问题与 TDD 修复：**精确树复审指出 finalizer 中 `cancellation.set()` 位于保护区外，第二个 signal 可能跳过 join/FD 关闭；另一个异常也可能在 cleanup 的 `except BaseException` 中被吞。新增两条确定性回归，先在旧实现上分别复现未交付 socket 泄漏及 `KeyboardInterrupt` 被吞，再将取消设置、join、socket 关闭纳入重试清理循环，并在正常返回的 cleanup signal 下保留首个异常；两条均转绿。
+- **当前测试证据：**receiver/native-probe 定向套件 26/26；真实 `os.dup()` 后 SIGINT 回归连续 30 次通过；仓库 `.venv` Python 3.11.15 的完整 `preflight.py --only tests` 和子模块完整性门禁通过，治理/站点/竞品校验、compileall、diff check 与限定六个变更文件的密钥形态扫描通过。首次误用系统 Python 3.10.12 得到失败；该版本不满足 `pyproject.toml` 的 `requires-python >=3.11`，不将其作为项目测试结果。最终精确树独立复审、commit 后 CI 仍待完成。
+- **安全边界不变：**该修订只加强本地 FD owner 的信号清理；不能证明 worker 子进程隔离、sender/bridge/relay、CONNECT 策略接线、跨平台兼容或 OS 级“只能到可信代理”。网络 `DENY` 与自动模式关闭。
+
+### 2026-09-27 14:25 UTC：调用方上下文与 worker startup 中断
+
+- **TDD 复审修复：**独立复审发现 `sys.exc_info()` 可能看到 caller 的外层 `except`，不是 receiver 自己的失败；新增实际 SCM_RIGHTS+loopback 回归，旧实现返回 `None`，改为显式追踪本函数异常后通过。另模拟 `Thread.start()` 已抛出但 `ident` 尚未发布，再放行其 target；旧实现会访问控制 socket，新增早期 cancellation 检查后 getsockopt/recvmsg 均不再调用，来源 listener alias 不增长。
+- **线程清理合同：**工作线程身份已发布时，cleanup 设置取消后执行 bounded join 轮询；若调用 signal 恰在 `Thread.start()`、身份未发布的窄窗口到达，线程 target 尚不能运行 receiver，此时先设置取消并重抛，延迟启动的 target 在任何控制 socket 操作前退出。该分支不声称 join 一个尚未发布 ident 的线程；以取消屏障保证它不接触 handoff 通道或 descriptor。
+- **本地验收：**handoff/native-probe 定向 28/28、`.venv` Python 3.11.15 完整 unittest 门禁通过；本节证据不变更 sender、bridge/relay、策略或跨平台 OS 强制状态。最终精确树审查及远端 CI 待完成，R2 网络和自动模式仍关闭。
+
+### 2026-09-27 14:40 UTC：wrapper close 异常下 raw FD 回收
+
+- **TDD 复审修复：**精确树复审发现 adopted wrapper 在取消后 `close()` 若抛异常，会跳过随后 `_close_received_descriptors()`。新增真实 SCM_RIGHTS 接收、取消屏障和注入 close 异常的回归，旧实现 FD alias 从 1 增为 2；改为 `try/finally`，无论 wrapper close 结果如何都关闭原始 rights descriptors，回归转绿。
+- **局部验收：**handoff/native-probe 当前 29/29；wrapper-close 异常回归单独先红后绿。完整 `.venv` 测试、精确树独立复审、远端 CI 需在本改动后重新完成。
+- **安全边界不变：**仅增加 receiver cleanup 的资源回收保证，不是 sender/bridge/relay 或端到端网络安全证据；网络和自动模式保持关闭。
+
+### 2026-09-27 14:45 UTC：最终本机门禁状态
+
+- wrapper-close 修复后的 `.venv` Python 3.11.15 完整测试通过；handoff/native-probe 29/29，dup/SIGINT 30/30、子模块门禁、竞品/治理/站点检查、限定文件扫描、compileall 和 diff check 通过。
+- 精确树独立复审与 commit/push 后远端 CI 仍为硬门槛；当前不开放 R2 网络或自动模式。

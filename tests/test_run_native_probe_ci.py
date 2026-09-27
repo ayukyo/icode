@@ -65,6 +65,7 @@ class TestNativeProbeCi(unittest.TestCase):
             },
             detail="tree cleanup ok",
         )
+        success_output = StringIO()
 
         with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
              mock.patch.object(run_native_probe_ci, "probe_native_sandbox",
@@ -73,7 +74,8 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=protected), \
              mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
                                return_value=cleanup), \
-             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
+             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
+             redirect_stdout(success_output):
             result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
 
         self.assertTrue(score.call_args.args[0]["protected_write_denied"])
@@ -91,6 +93,7 @@ class TestNativeProbeCi(unittest.TestCase):
             },
             detail="protected paths failed",
         )
+        failure_output = StringIO()
         with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
              mock.patch.object(run_native_probe_ci, "probe_native_sandbox",
                                return_value=native), \
@@ -98,12 +101,15 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=failed), \
              mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
                                return_value=cleanup), \
-             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
+             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
+             redirect_stdout(failure_output):
             result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
 
         self.assertFalse(score.call_args.args[0]["protected_write_denied"])
         self.assertFalse(score.call_args.kwargs["doctor_self_test"])
         self.assertEqual(result, 1)
+        self.assertIn("::error::landlock native probe failed: protected paths:",
+                      failure_output.getvalue())
 
     def test_linux脱组后代未回收时证据为负且原生作业失败(self) -> None:
         sandbox = LandlockSandbox(helper="/tmp/icode-landlock")
@@ -127,6 +133,7 @@ class TestNativeProbeCi(unittest.TestCase):
             },
             detail="detached_descendant_still_running",
         )
+        failure_output = StringIO()
 
         with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
              mock.patch.object(run_native_probe_ci, "probe_native_sandbox",
@@ -135,12 +142,17 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=protected), \
              mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
                                return_value=cleanup), \
-             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
+             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
+             redirect_stdout(failure_output):
             result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
 
         self.assertIs(score.call_args.kwargs["process_tree_cleanup"], False)
         self.assertFalse(score.call_args.kwargs["doctor_self_test"])
         self.assertEqual(result, 1)
+        self.assertIn(
+            "::error::landlock native probe failed: process-tree cleanup:",
+            failure_output.getvalue(),
+        )
 
     def test_macos评分前采集同组清理且失败时门禁关闭(self) -> None:
         sandbox = MacSeatbeltSandbox(sandbox_exec="/bin/true")
@@ -196,6 +208,7 @@ class TestNativeProbeCi(unittest.TestCase):
             },
             detail="protected paths ok",
         )
+        output = StringIO()
 
         with mock.patch.object(run_native_probe_ci.sys, "platform", "darwin"), \
              mock.patch.object(run_native_probe_ci, "probe_native_sandbox", return_value=native), \
@@ -203,7 +216,8 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=protected), \
              mock.patch.object(run_native_probe_ci, "probe_macos_process_group_cleanup",
                                return_value=group, create=True), \
-             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
+             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
+             redirect_stdout(output):
             result = run_native_probe_ci._check(sandbox, "/bin/true")
 
         self.assertIs(score.call_args.kwargs.get("process_group_cleanup"), True)
