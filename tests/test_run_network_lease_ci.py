@@ -42,6 +42,7 @@ class TestLeaseCiFailureAnnotations(unittest.TestCase):
                 "tests.test_network_lease",
                 "tests.test_network_lease_monitor",
                 "tests.test_leased_connect",
+                "tests.test_network_connector",
             ],
         )
 
