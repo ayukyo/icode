@@ -296,9 +296,8 @@ class HostHttpsConnectScope:
             now_monotonic_ns=time.monotonic_ns(),
         )
 
-    def validate_policy_binding(self, policy: SandboxPolicy) -> None:
-        """Require this live host scope to belong to the exact deny-only policy."""
-
+    def validate_policy_identity(self, policy: SandboxPolicy) -> None:
+        """Check scope identity without taking ownership of another task's scope."""
         if not isinstance(policy, SandboxPolicy):
             raise NetworkLeaseValidationError("a valid SandboxPolicy is required")
         with self._lock:
@@ -306,6 +305,11 @@ class HostHttpsConnectScope:
                 raise NetworkLeaseValidationError(
                     "host connection scope is bound to a different policy"
                 )
+
+    def validate_policy_binding(self, policy: SandboxPolicy) -> None:
+        """Require this live host scope to belong to the exact deny-only policy."""
+
+        self.validate_policy_identity(policy)
         self.verify_lease()
 
     @contextmanager

@@ -255,12 +255,17 @@ def execute_linux_leased_connect_candidate(
         or not isinstance(scope, HostHttpsConnectScope)
     ):
         return ExecutionResult(None, "", 0, "invalid_proxy_scope", False, True, None)
-    scope_validated = False
+    scope_owned = False
     host_control: socket.socket | None = None
     sender_control: socket.socket | None = None
     try:
-        scope.validate_policy_binding(policy)
-        scope_validated = True
+        # Establish the policy identity before taking ownership; a wrong-scope
+        # caller must not close another task's active proxy session.
+        scope.validate_policy_identity(policy)
+        # Once the identity matches, this candidate owns cleanup even when
+        # the lease is already revoked or expired before process launch.
+        scope_owned = True
+        scope.verify_lease()
         workspace = policy.workspace_root.resolve(strict=True)
         working_directory = Path(cwd).resolve(strict=True)
         working_directory.relative_to(workspace)
@@ -283,7 +288,7 @@ def execute_linux_leased_connect_candidate(
         if host_control is not None:
             host_control.close()
         cleanup_ok = True
-        if scope_validated:
+        if scope_owned:
             try:
                 cleanup_ok = scope.close()
             except Exception:  # noqa: BLE001 - scope cleanup failure is not success.
@@ -297,7 +302,7 @@ def execute_linux_leased_connect_candidate(
             sender_control.close()
         if host_control is not None:
             host_control.close()
-        if scope_validated:
+        if scope_owned:
             try:
                 scope.close()
             except BaseException:

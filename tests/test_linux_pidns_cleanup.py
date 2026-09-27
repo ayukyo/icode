@@ -205,6 +205,9 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             upstream_listener.bind(("127.0.0.1", 0))
             upstream_listener.listen(1)
             upstream_listener.settimeout(3.0)
+            host_only_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            host_only_listener.bind(("127.0.0.1", 0))
+            host_only_listener.listen(1)
             upstream: socket.socket | None = None
             result_holder = []
             executor_thread: threading.Thread | None = None
@@ -215,6 +218,15 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                     "except OSError as exc: assert exc.errno == errno.EPERM, exc\n"
                     "else: raise AssertionError('worker created a new AF_UNIX socket')\n"
                     "host, port = os.environ['ICODE_PROXY_LISTENER'].rsplit(':', 1)\n"
+                    "proxy_port = int(port)\n"
+                    f"host_ports = ({upstream_listener.getsockname()[1]}, "
+                    f"{host_only_listener.getsockname()[1]})\n"
+                    "blocked_port = next(candidate for candidate in host_ports\n"
+                    "                     if candidate != proxy_port)\n"
+                    "direct = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+                    "direct_result = direct.connect_ex(('127.0.0.1', blocked_port))\n"
+                    "direct.close()\n"
+                    "assert direct_result == errno.ECONNREFUSED, direct_result\n"
                     "client = socket.create_connection((host, int(port)), timeout=2)\n"
                     "client.sendall(b'CONNECT packages.example:443 HTTP/1.1\\r\\n"
                     "Host: packages.example\\r\\n\\r\\n')\n"
@@ -296,6 +308,7 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                     executor_thread.join(timeout=18)
                 runtime.close()
                 upstream_listener.close()
+                host_only_listener.close()
                 if upstream is not None:
                     upstream.close()
 
@@ -355,6 +368,104 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                 self.assertFalse(marker.exists())
                 with self.assertRaises(NetworkLeaseValidationError):
                     scope.verify_lease()
+            finally:
+                runtime.close()
+
+    def test已撤销租约在launcher前拒绝且回收scope(self) -> None:
+        from icode.approvals import ScriptedApprover
+        from icode.execution_broker import execute_linux_leased_connect_candidate
+        from icode.network_lease import NetworkLeaseAuthority, NetworkPurpose
+        from icode.network_proxy_scope import HostConnectRuntime
+
+        with temp_workspace() as root:
+            workspace = (root / "code").resolve()
+            workspace.mkdir()
+            policy = SandboxPolicy(
+                schema_version=1, run_id="revoked-before-launch", ticket_id="revoked-before-launch",
+                step="code", workspace_root=workspace, read_roots=(workspace,),
+                write_roots=(workspace,), deny_read_roots=(), deny_write_roots=(),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=5, output_limit_bytes=1024, protected_paths=(),
+            )
+            authority = NetworkLeaseAuthority()
+            issued = authority.request_lease(
+                policy,
+                approver=ScriptedApprover([True]),
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("packages.example",),
+                ttl_seconds=30,
+            )
+            runtime = HostConnectRuntime(authority, sweep_interval_seconds=1.0)
+            runtime.start()
+            time.sleep(0.02)  # Let the monitor's initial sweep finish before revocation.
+            scope = runtime.create_scope(
+                issued, policy, NetworkPurpose.PACKAGE_INSTALL,
+            )
+            self.assertGreater(authority.revoke(policy), issued.lease.generation)
+            marker = workspace / "payload-ran"
+            try:
+                result = execute_linux_leased_connect_candidate(
+                    ["/usr/bin/touch", str(marker)],
+                    cwd=workspace,
+                    sandbox=LandlockSandbox(helper=str(root / "missing-helper")),
+                    policy=policy,
+                    scope=scope,
+                    timeout=3,
+                )
+                self.assertEqual(result.error, "proxy_setup_failed")
+                self.assertTrue(result.cleanup_ok)
+                self.assertFalse(marker.exists())
+                self.assertTrue(scope._closed)
+                self.assertNotIn(id(scope), runtime._scopes)
+            finally:
+                runtime.close()
+
+    def test策略不匹配scope拒绝launcher但不关闭其他工单scope(self) -> None:
+        from dataclasses import replace
+
+        from icode.approvals import ScriptedApprover
+        from icode.execution_broker import execute_linux_leased_connect_candidate
+        from icode.network_lease import NetworkLeaseAuthority, NetworkPurpose
+        from icode.network_proxy_scope import HostConnectRuntime
+
+        with temp_workspace() as root:
+            workspace = (root / "code").resolve()
+            workspace.mkdir()
+            policy = SandboxPolicy(
+                schema_version=1, run_id="scope-owner", ticket_id="scope-owner",
+                step="code", workspace_root=workspace, read_roots=(workspace,),
+                write_roots=(workspace,), deny_read_roots=(), deny_write_roots=(),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=5, output_limit_bytes=1024, protected_paths=(),
+            )
+            authority = NetworkLeaseAuthority()
+            issued = authority.request_lease(
+                policy,
+                approver=ScriptedApprover([True]),
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("packages.example",),
+                ttl_seconds=30,
+            )
+            runtime = HostConnectRuntime(authority, sweep_interval_seconds=1.0)
+            runtime.start()
+            time.sleep(0.02)
+            scope = runtime.create_scope(
+                issued, policy, NetworkPurpose.PACKAGE_INSTALL,
+            )
+            try:
+                result = execute_linux_leased_connect_candidate(
+                    ["/usr/bin/true"],
+                    cwd=workspace,
+                    sandbox=LandlockSandbox(helper=str(root / "missing-helper")),
+                    policy=replace(policy, ticket_id="different-ticket"),
+                    scope=scope,
+                    timeout=3,
+                )
+                self.assertEqual(result.error, "proxy_setup_failed")
+                self.assertTrue(result.cleanup_ok)
+                self.assertFalse(scope._closed)
+                scope.verify_lease()
+                self.assertIn(id(scope), runtime._scopes)
             finally:
                 runtime.close()
 
