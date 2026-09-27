@@ -19,7 +19,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 
 _SOURCE_PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "src"
 if (_SOURCE_PACKAGE_ROOT / "icode").is_dir():
@@ -436,7 +435,8 @@ def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
 
             worker = threading.Thread(target=accept_once, daemon=True)
             worker.start()
-            time.sleep(0.025)
+            # The server accepts ERROR_PIPE_CONNECTED when the client wins the
+            # scheduling race, so a startup sleep is neither needed nor reliable.
             client_result = "client_not_started"
             try:
                 client = open_runner_pipe_client(

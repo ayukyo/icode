@@ -15,12 +15,36 @@ from icode.windows_runner_pipe import (
     new_runner_pipe_name,
     open_runner_pipe_client,
     runner_process_user_sid,
+    RunnerPipeServer,
     select_logon_sid,
     validate_runner_pipe_name,
 )
 
 
 class TestWindowsRunnerPipePolicy(unittest.TestCase):
+    def test_server_accepts_client_that_connected_before_connect_named_pipe(self) -> None:
+        kernel = SimpleNamespace(
+            CreateEventW=mock.Mock(return_value=0x1234),
+            ConnectNamedPipe=mock.Mock(return_value=0),
+            CloseHandle=mock.Mock(return_value=1),
+        )
+        api = windows_runner_pipe._Win32Api(kernel=kernel, advapi=None)
+        server = RunnerPipeServer(name=r"\\.\pipe\icode-runner-" + "f" * 32,
+                                  handle=0x5678, api=api)
+
+        with mock.patch.object(
+            windows_runner_pipe.ctypes,
+            "get_last_error",
+            return_value=windows_runner_pipe._ERROR_PIPE_CONNECTED,
+            create=True,
+        ) as get_last_error:
+            server._connect(1_000)
+
+        self.assertTrue(server._connected)
+        kernel.ConnectNamedPipe.assert_called_once()
+        get_last_error.assert_called_once_with()
+        kernel.CloseHandle.assert_called_once_with(0x1234)
+
     def test_unconfirmed_cancel_drain_has_a_finite_wait_and_pins_storage(self) -> None:
         kernel = SimpleNamespace(
             CancelIoEx=mock.Mock(return_value=1),

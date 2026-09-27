@@ -705,6 +705,83 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(result, (True, "server_pid_mismatch_rejected"))
         create_server.assert_called_once_with("S-1-5-5-123-456")
 
+    def test_wrong_server_pid_probe_does_not_depend_on_a_fixed_startup_delay(self) -> None:
+        events: list[str] = []
+
+        class FakePipe:
+            name = r"\\.\pipe\icode-runner-" + "e" * 32
+            _connected = False
+
+            def __enter__(self) -> "FakePipe":
+                return self
+
+            def __exit__(self, exc_type: object, traceback: object, tb: object) -> None:
+                return None
+
+            def close(self) -> None:
+                return None
+
+        pipe = FakePipe()
+
+        class InlineThread:
+            def __init__(self, *, target: object, daemon: bool) -> None:
+                self.target = target
+
+            def start(self) -> None:
+                events.append("server_wait_started")
+
+            def join(self, timeout: float | None = None) -> None:
+                return None
+
+            def is_alive(self) -> bool:
+                return False
+
+        def open_client(*_args: object, **_kwargs: object) -> object:
+            events.append("client_connected_before_connect_named_pipe")
+            pipe._connected = True
+            raise PermissionError("runner_pipe_server_pid_mismatch")
+
+        kernel = mock.Mock()
+        kernel.GetCurrentProcess.return_value = 123
+        kernel.GetCurrentProcessId.return_value = 100
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.ctypes.WinDLL",
+                return_value=kernel,
+                create=True,
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.runner_process_logon_sid",
+                return_value="S-1-5-5-123-456",
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
+                return_value=pipe,
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe._diagnose_runner_pipe_access",
+                return_value="diagnostic_not_needed",
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.threading.Thread",
+                InlineThread,
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.open_runner_pipe_client",
+                side_effect=open_client,
+            ),
+            mock.patch("time.sleep") as sleep,
+        ):
+            result = runner_pipe_wrong_server_pid_probe()
+
+        self.assertEqual(result, (True, "server_pid_mismatch_rejected"))
+        self.assertEqual(
+            events,
+            ["server_wait_started", "client_connected_before_connect_named_pipe"],
+        )
+        sleep.assert_not_called()
+
     def test_wrong_server_pid_probe_confirms_only_the_expected_pid_mismatch(self) -> None:
         class FakePipe:
             name = r"\\.\pipe\icode-runner-" + "b" * 32

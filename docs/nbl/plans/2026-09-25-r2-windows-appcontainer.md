@@ -418,3 +418,10 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 
 - **原生复测：**手动 CI [#168 x64/ARM64](https://github.com/ayukyo/icode/actions/runs/36183275410) 的 `windows-latest` 与 `windows-11-arm` 均 `standard_user_token_probe=PASS`，回执字段为 `runner_standard_user=PASS`、`child_restricted=PASS`、`child_non_admin=PASS`、`child_identity=PASS`、`job_assignment=PASS`、`exit=PASS`。workflow 使用显式架构匹配的 Python，建立并最终移除随机临时普通账户；修正后的 impersonation-token membership 检查通过。
 - **采纳 / 暂缓：**只关闭“有效临时普通账户下 CreateProcessWithLogonW → restricted token → CreateProcessAsUserW 的正向可行性”门，不接产品执行器、不改变自动模式。错误密码/账号、可执行文件不可读、权限不足、失败无 marker/无残留、helper IPC、UAC setup/回滚、DPAPI/ACL/WFP 及真实用户 Windows 环境仍未验收。它们不通过前 R2 不得宣告完成。
+
+### 2026-09-27 UTC：Windows runner pipe 客户端先连竞态
+
+- **问题与契约：**`runner_pipe_wrong_server_pid_probe()` 曾在线程启动后固定睡眠 25 ms，再尝试客户端连接。睡眠不保证调度顺序，可能增加延迟并令探针依赖 runner 时序。Microsoft [`ConnectNamedPipe`](https://learn.microsoft.com/en-us/windows/win32/api/namedpipeapi/nf-namedpipeapi-connectnamedpipe) 合同明确：客户端在服务端调用前连接时，函数返回 0、`GetLastError()` 为 `ERROR_PIPE_CONNECTED` (535)，但连接已建立；这不是失败。
+- **上游取舍：**Codex 固定观察快照 [`985cf47a4eb6084b2ff6b30ebdb1216acda85bb4`](https://github.com/openai/codex/blob/985cf47a4eb6084b2ff6b30ebdb1216acda85bb4/codex-rs/windows-sandbox-rs/src/elevated/runner_pipe.rs#L103-L132) 接受 535 后校验客户端 PID；client 路径使用有界等待而非固定 sleep，并在 pipe 建立后另作 `SpawnRequest/SpawnReady` 应用层握手。ICODE 采纳“容忍合法先连时序 + 身份校验 + 有界等待/握手”的机制，不复制代码或改变权限合同。
+- **实现与本机验证：**新增模拟竞态测试断言探针不调用 `sleep`；初版在旧代码上因观察到 `sleep(0.025)` 而失败，移除固定延时后通过。另新增 `RunnerPipeServer._connect()` 收到 535 时标记已连接、并关闭事件句柄的回归。Windows pipe 与标准用户 token probe 两个模块共 57 项通过。无运行依赖、无 ACL/mask/token/进程行为调整。
+- **验收边界：**Linux 本机模拟不执行 Win32；本轮没有启动手动 Windows x64/ARM64 probe workflow，因此不代表管道访问拒绝已解决，也不构成 Windows 隔离/标准用户 runner 通过。需要原生双架构复测后才更新该门；Windows 自动模式及完整 R2 继续关闭。
