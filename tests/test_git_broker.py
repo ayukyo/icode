@@ -290,6 +290,109 @@ class TestGitStatusBrokerExecution(unittest.TestCase):
             "baseline\n",
         )
 
+    def test_helper_rejects_metadata_inode_replaced_after_python_recheck(self) -> None:
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        pointer = identity.checkout_root / ".git"
+        displaced_pointer = identity.checkout_root / ".git.identity-race-backup"
+        original_bytes = pointer.read_bytes()
+        original_execute = execute_policy_command
+        helper_results: list[ExecutionResult] = []
+        replaced = False
+
+        def replace_pointer_before_status(argv: list[str], **kwargs) -> ExecutionResult:
+            nonlocal replaced
+            if "--porcelain=v2" not in argv:
+                return original_execute(argv, **kwargs)
+
+            # execute_git_status has already verified the manager-issued
+            # identity and LandlockSandbox has serialized its original inode
+            # claim into argv. Replace that path immediately before the native
+            # helper opens it, then restore it even if launch or cleanup fails.
+            pointer.rename(displaced_pointer)
+            pointer.write_bytes(original_bytes)
+            replaced = True
+            try:
+                result = original_execute(argv, **kwargs)
+                helper_results.append(result)
+                return result
+            finally:
+                pointer.unlink(missing_ok=True)
+                displaced_pointer.rename(pointer)
+
+        with patch(
+            "icode.git_broker.execute_policy_command",
+            side_effect=replace_pointer_before_status,
+        ):
+            with self.assertRaisesRegex(
+                GitStatusUnavailable, "status_execution_failed"
+            ):
+                self._status()
+
+        self.assertTrue(replaced, "the replacement must occur after Python recheck")
+        self.assertEqual(len(helper_results), 1)
+        self.assertEqual(helper_results[0].exit_code, 1)
+        self.assertIn(
+            "metadata root identity changed", helper_results[0].output
+        )
+        self.assertTrue(helper_results[0].cleanup_ok)
+        self.assertTrue(
+            verify_git_workspace_identity(identity).metadata_roots,
+            "the original metadata identity must be restored after the probe",
+        )
+
+    def test_all_status_subcommands_share_one_wall_clock_deadline(self) -> None:
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        elapsed = [0.0]
+        calls: list[tuple[list[str], float]] = []
+
+        def simulated_monotonic() -> float:
+            return elapsed[0]
+
+        def simulated_query(argv: list[str], **kwargs) -> ExecutionResult:
+            calls.append((argv, kwargs["timeout"]))
+            if "--get-regexp" in argv or "--get" in argv:
+                exit_code = 1
+            elif "ls-files" in argv:
+                exit_code = 0
+            else:
+                exit_code = 0
+            elapsed[0] += 0.4
+            return ExecutionResult(
+                exit_code=exit_code,
+                output="",
+                output_bytes=0,
+                error=None,
+                output_truncated=False,
+                cleanup_ok=True,
+                cleanup_errno=None,
+                raw_output=b"",
+            )
+
+        with patch("icode.git_broker.monotonic", side_effect=simulated_monotonic):
+            with patch(
+                "icode.git_broker.execute_policy_command",
+                side_effect=simulated_query,
+            ):
+                with self.assertRaisesRegex(
+                    GitStatusUnavailable, "status_timeout"
+                ):
+                    execute_git_status(
+                        identity,
+                        sandbox=self.sandbox,
+                        policy=self.session.policy(
+                            "review", wall_timeout_seconds=10,
+                            output_limit_bytes=1024 * 1024,
+                        ),
+                        timeout=1,
+                    )
+
+        self.assertEqual(len(calls), 3)
+        self.assertAlmostEqual(calls[0][1], 1.0)
+        self.assertAlmostEqual(calls[1][1], 0.6)
+        self.assertAlmostEqual(calls[2][1], 0.2)
+
     def test_malicious_fsmonitor_and_external_diff_are_not_executed(self) -> None:
         identity = self.session.git_status_identity
         self.assertIsNotNone(identity)

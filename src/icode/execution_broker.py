@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import math
 import os
 import selectors
 import signal
@@ -97,12 +98,27 @@ def _stop_group(process: subprocess.Popen[bytes]) -> tuple[bool, int | None]:
 
 
 def execute_policy_command(
-    argv: list[str], *, cwd: Path, policy: SandboxPolicy, timeout: int,
+    argv: list[str], *, cwd: Path, policy: SandboxPolicy, timeout: int | float,
     git_status: bool = False, output_limit_bytes: int | None = None,
 ) -> ExecutionResult:
     """执行已由原生后端包装的命令；超时/超量时终止整组。"""
     if os.name != "posix":
         return ExecutionResult(None, "", 0, "unsupported_platform", False, False, None)
+
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        return ExecutionResult(None, "", 0, "invalid_timeout", False, True, None)
+    try:
+        timeout_seconds = float(timeout)
+    except (OverflowError, TypeError, ValueError):
+        return ExecutionResult(None, "", 0, "invalid_timeout", False, True, None)
+    if not math.isfinite(timeout_seconds):
+        return ExecutionResult(None, "", 0, "invalid_timeout", False, True, None)
+    if isinstance(timeout, int):
+        # Preserve the existing integer API's one-second minimum while allowing
+        # trusted internal callers to pass the remaining fractional deadline.
+        timeout_seconds = max(1.0, timeout_seconds)
+    elif timeout_seconds <= 0:
+        return ExecutionResult(None, "", 0, "invalid_timeout", False, True, None)
 
     output_limit = policy.output_limit_bytes
     if output_limit_bytes is not None:
@@ -114,7 +130,7 @@ def execute_policy_command(
             return ExecutionResult(None, "", 0, "invalid_output_limit", False, True, None)
         output_limit = min(output_limit, requested_output_limit)
 
-    deadline = time.monotonic() + min(max(1, int(timeout)), policy.wall_timeout_seconds)
+    deadline = time.monotonic() + min(timeout_seconds, policy.wall_timeout_seconds)
     try:
         process = subprocess.Popen(  # noqa: S603 - argv 经原生策略包装且 shell=False
             argv, cwd=str(cwd),

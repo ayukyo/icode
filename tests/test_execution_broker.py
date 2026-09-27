@@ -71,6 +71,21 @@ class TestPolicyCommandBroker(unittest.TestCase):
             self.assertEqual(result.raw_output, b"\x00\xffA")
             self.assertEqual(result.output, "\x00\ufffdA")
 
+    def test_fractional_timeout_is_enforced_without_rounding_up(self) -> None:
+        with temp_workspace() as root:
+            root = root.resolve()
+            started = time.monotonic()
+            result = execute_policy_command(
+                [sys.executable, "-c", "import time; time.sleep(2)"],
+                cwd=root,
+                policy=_context(root, wall_timeout=5).policy,
+                timeout=0.2,
+            )
+
+            self.assertEqual(result.error, "timeout")
+            self.assertTrue(result.cleanup_ok)
+            self.assertLess(time.monotonic() - started, 0.8)
+
     def test_command_close_output_streams_early_still_waits_for_exit(self) -> None:
         import threading
 

@@ -9,11 +9,13 @@ The prototype is not wired into user-facing execution or automatic mode.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import os
 import shutil
 import stat
 from pathlib import Path
 import sys
+from time import monotonic
 
 from .execution_broker import ExecutionResult, execute_policy_command
 from .isolation import MetadataReadRoot
@@ -52,7 +54,7 @@ def execute_git_status(
     *,
     sandbox: object,
     policy: SandboxPolicy,
-    timeout: int = _GIT_STATUS_TIMEOUT_SECONDS,
+    timeout: int | float = _GIT_STATUS_TIMEOUT_SECONDS,
 ) -> tuple[GitStatusEntry, ...]:
     """Run one fixed, Linux-only, read-only status query for the trusted session.
 
@@ -78,6 +80,21 @@ def execute_git_status(
         raise GitStatusUnavailable("policy_not_read_only")
     if not isinstance(identity, GitWorkspaceIdentity):
         raise GitStatusUnavailable("identity_missing")
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise GitStatusUnavailable("status_timeout_invalid")
+    try:
+        requested_timeout = float(timeout)
+        policy_timeout = float(policy.wall_timeout_seconds)
+    except (OverflowError, TypeError, ValueError):
+        raise GitStatusUnavailable("status_timeout_invalid") from None
+    if (
+        not math.isfinite(requested_timeout)
+        or not math.isfinite(policy_timeout)
+        or requested_timeout <= 0
+        or policy_timeout <= 0
+    ):
+        raise GitStatusUnavailable("status_timeout_invalid")
+    deadline = monotonic() + min(requested_timeout, policy_timeout)
 
     try:
         workspace_root = _absolute_path(identity.workspace_root)
@@ -127,14 +144,20 @@ def execute_git_status(
                 workspace_read_only=True,
                 execute_only=git_executable,
             )
-            return execute_policy_command(
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise GitStatusUnavailable("status_timeout")
+            result = execute_policy_command(
                 wrapped,
                 cwd=workspace_root,
                 policy=policy,
-                timeout=timeout,
+                timeout=remaining,
                 git_status=True,
                 output_limit_bytes=output_limit,
             )
+            if result.error == "timeout" or monotonic() >= deadline:
+                raise GitStatusUnavailable("status_timeout")
+            return result
 
         # A configured clean/process filter can execute a shell command while
         # status inspects modified files. Do not try to sandbox arbitrary Git
