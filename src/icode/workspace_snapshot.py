@@ -38,10 +38,14 @@ def snapshot_workspace(root: Path) -> dict[str, str]:
             # 所有子路径相对已经打开的目录 fd，防止检查后把祖先换成链接。
             with os.scandir(directory_fd) as entries:
                 for entry in sorted(entries, key=lambda item: item.name):
-                    if entry.name == ".icode_output" or entry.name == "__pycache__":
+                    mode = entry.stat(follow_symlinks=False).st_mode
+                    if entry.name in {".icode_output", "__pycache__"}:
+                        if not (
+                            stat.S_ISDIR(mode) or stat.S_ISLNK(mode) or stat.S_ISREG(mode)
+                        ):
+                            raise OSError("snapshot contains unsupported file type")
                         continue
                     child_parts = (*parts, entry.name)
-                    mode = entry.stat(follow_symlinks=False).st_mode
                     if stat.S_ISDIR(mode):
                         child_fd = os.open(entry.name, directory_flags, dir_fd=directory_fd)
                         try:
@@ -70,6 +74,8 @@ def snapshot_workspace(root: Path) -> dict[str, str]:
                             for chunk in iter(lambda: stream.read(64 * 1024), b""):
                                 digest.update(chunk)
                             out[Path(*child_parts).as_posix()] = digest.hexdigest()
+                    else:
+                        raise OSError("snapshot contains unsupported file type")
 
         root_fd = os.open(root, directory_flags)
         try:
@@ -109,12 +115,16 @@ def _snapshot_windows_workspace(root: Path) -> dict[str, str]:
         with os.scandir(directory) as iterator:
             entries = sorted(iterator, key=lambda item: item.name)
             for entry in entries:
+                status = entry.stat(follow_symlinks=False)
+                mode = status.st_mode
                 if entry.name in {".icode_output", "__pycache__"}:
+                    if not (
+                        stat.S_ISDIR(mode) or stat.S_ISLNK(mode) or stat.S_ISREG(mode)
+                    ):
+                        raise OSError("snapshot contains unsupported file type")
                     continue
                 child_parts = (*parts, entry.name)
                 relative = Path(*child_parts).as_posix()
-                status = entry.stat(follow_symlinks=False)
-                mode = status.st_mode
                 if stat.S_ISLNK(mode):
                     target = os.readlink(entry.path)
                     out[relative] = _entry_hash(
@@ -134,6 +144,8 @@ def _snapshot_windows_workspace(root: Path) -> dict[str, str]:
                     out[relative] = _entry_hash(
                         "file", "100644", path.read_bytes(),
                     )
+                else:
+                    raise OSError("snapshot contains unsupported file type")
 
     scan(root, ())
     return out

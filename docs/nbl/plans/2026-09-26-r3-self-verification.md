@@ -1,7 +1,7 @@
 # R3 自验证与有界修复
 
 - 日期：2026-09-27
-- 状态（2026-09-27 最新）：R3 自验证/有界修复核心、独立只读 Reviewer、受控 MiniMax-M3 真模型修复闭环，以及一次**强制触发的真实短上下文终结器**均有证据。验证证据绑定基线 SHA、初始/受测工作区指纹、稳定 raw Git tree OID、可选结果 commit tree、改动指纹和独立测试结果；`icode task --receipt-out` 可显式持久化失败或成功回执并导入证据包。测试空集稳定判失败，内部 unittest 用 `-B` 防止 verifier 写入 pyc 污染受测 tree。Linux Bubblewrap 工作流 Reviewer 命令的同命名空间账本隐藏与只读写入门已通过真实本机负例；macOS Seatbelt 同类拒读/只读负例已在 CI #223 的 `macos-latest` ARM64 与 `macos-15-intel` 原生 job 通过。Windows、容器和策略化 Reviewer 尚未开放。全量 preflight 的密钥、子模块和全套测试三道守护已通过；[CI #223](https://github.com/ayukyo/icode/actions/runs/36269281752) 全量 workflow 成功，[Pages #133](https://github.com/ayukyo/icode/actions/runs/36269281757) 站点发布 workflow 成功。R2 隔离能力仍未达到跨平台开放门槛。受测 tree 投影仅支持 POSIX 仓库根，最多 250,000 项、128 层和 256 MiB 文件字节；Python SHA-1 OID 不作签名或抗碰撞安全证明，commit 对象读取上限 1 MiB；子模块/嵌套 `.git`、Windows、attributes clean 转换、ACL/xattr、宿主环境与执行轨迹不在其证明范围。真模型终结器证据仅覆盖合成靶场中的强制 fallback，不代表自然触发率或完整 Reviewer 能力。
+- 状态（2026-09-28 最新）：R3 自验证/有界修复核心、独立只读 Reviewer、受控 MiniMax-M3 真模型修复闭环，以及一次**强制触发的真实短上下文终结器**均有证据。验证证据绑定基线 SHA、初始/受测工作区指纹、稳定 raw Git tree OID、可选结果 commit tree、改动指纹和独立测试结果；`icode task --receipt-out` 可显式持久化失败或成功回执并导入证据包。测试空集稳定判失败，内部 unittest 用 `-B` 防止 verifier 写入 pyc 污染受测 tree。Linux Bubblewrap 工作流 Reviewer 命令的同命名空间账本隐藏与只读写入门已通过真实本机负例；macOS Seatbelt 同类拒读/只读负例已在 CI #223 的 `macos-latest` ARM64 与 `macos-15-intel` 原生 job 通过。工作区快照现对 POSIX/Windows 未知特殊文件类型失败关闭，不再静默漏记；Windows、容器和策略化 Reviewer 尚未开放。全量 preflight 的密钥、子模块和全套测试三道守护已通过；[CI #223](https://github.com/ayukyo/icode/actions/runs/36269281752) 全量 workflow 成功，[Pages #133](https://github.com/ayukyo/icode/actions/runs/36269281757) 站点发布 workflow 成功。R2 隔离能力仍未达到跨平台开放门槛。受测 tree 投影仅支持 POSIX 仓库根，最多 250,000 项、128 层和 256 MiB 文件字节；Python SHA-1 OID 不作签名或抗碰撞安全证明，commit 对象读取上限 1 MiB；子模块/嵌套 `.git`、Windows、attributes clean 转换、ACL/xattr、宿主环境与执行轨迹不在其证明范围。真模型终结器证据仅覆盖合成靶场中的强制 fallback，不代表自然触发率或完整 Reviewer 能力。
 - 依据：[产品总架构](../../icode-agent-product-architecture.md) §13.7；[R2 跨平台隔离设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §12.2
 
 ## 2026-09-26 UTC 当前联动状态
@@ -263,3 +263,12 @@ R3 核心能力（本切片）：
 - **实现范围：**Windows `snapshot_workspace` 使用显式递归 `os.scandir`，对 root 及每个子项先做 no-follow metadata check；symlink 按原有合同只记录 link target bytes；junction、mount point、以及未知 reparse point 一律在扫描/读取其目标前抛 `OSError`，禁止产生部分快照。普通文件/目录继续按相对 POSIX 路径散列，`.icode_output` 与 `__pycache__` 排除语义不变。POSIX Git tree OID 路径不改，Windows OID 仍不可用。
 - **测试状态：**新回归模拟 workspace root reparse 属性与子目录 junction 属性，并断言 reparse 根未 `scandir`、子 junction 被发现后未递归目标。初次 [CI #241 Windows workspace job](https://github.com/ayukyo/icode/actions/runs/36299522452/job/108564474447) 仅在调用快照前因 `cmd.exe` 引号失败；修正为独立 argv 参数后，[CI #242 Windows workspace job](https://github.com/ayukyo/icode/actions/runs/36300286034/job/108566553505) 已原生建立 junction 并通过拒绝回归。该结果只验收静态 junction 检查，不覆盖未知 tag/mount point、句柄级抗竞态或 Windows tree OID。完整 R3 suite 应使用项目 Python 3.11，不使用系统 Python 3.10。
 - **保留边界：**路径型 `lstat/resolve/scandir/read_bytes` 检查只能拒绝静态 reparse；同用户进程若在检查后替换祖先，仍可能存在 TOCTOU。此实现不声称 Windows 句柄级抗竞态、完整 Windows 快照认证、Reviewer 隔离或 R2 自动模式 readiness；若该威胁进入验收范围，须另做句柄级方案或保持相应自动路径关闭。
+
+## 2026-09-28 Asia/Shanghai：工作区快照拒绝未知特殊文件类型
+
+- **缺口：**POSIX fd 扫描与 Windows `scandir` 扫描只处理目录、符号链接和普通文件；其它类型（例如 FIFO）没有显式分支，会被静默遗漏。这样 R3 `changed_files`/diff 指纹可能把真实工作区条目误当作“无改动”。POSIX Git tree OID 对特殊文件已有独立拒绝，但非 Git 靶场和普通改动清单仍依赖 `snapshot_workspace`。
+- **修改：**两平台快照在检查 `.icode_output` / `__pycache__` 排除名之后，遇到非目录、非链接、非普通文件时统一抛 `OSError("snapshot contains unsupported file type")`，不给特殊对象臆造快照编码；正常保留名继续排除。`workspace_changes` 将其映射为 `snapshot_unavailable`；`run_task` 初始或复核快照无法完整生成时中止，不产生成功报告。
+- **TDD 与验证：**POSIX 普通路径 FIFO、两个快照保留名上的 FIFO，以及模拟 Windows 同类三种场景均先在旧实现上因“未抛错”失败，补充类型检查后通过。关键快照类连续 20 轮共 120 次测试无失败；R3 回归/workspace 定向套件 126 项通过、1 项平台条件跳过；全仓 unittest 1,098 项通过、25 项条件跳过。Windows 测试为分支模拟，未替代原生 Windows runner 验证。
+- **独立复审：**首轮复审指出保留名在文件类型检查前 `continue` 的绕过；按意见增加 `.icode_output` / `__pycache__` 特殊对象负例并重排 no-follow 类型检查。复审复查最新 diff 后确认该 Important 项关闭、未发现新问题。
+- **上游对照与取舍：**复用持续对照中 OpenCode 固定 SHA `a42f393c850bec0c0f395fb91bf19b1ee8b31666` 的会话快照研究及 Codex 固定 SHA `b334d5b3f2d9441b95286a8c2af8c2152737d977` 的 worktree-diff 研究；所查源码没有为 ICODE 的未知特殊文件定义可安全复用的哈希合同，因此只采纳“证据必须明确覆盖改动集合”的原则，不复制实现或增加依赖。许可均 Apache-2.0。
+- **边界：**该改动使不可表示条目失败关闭，不解决 Windows 路径型快照的同用户并发祖先替换竞态；Windows Git tree OID、Windows/容器/策略化 Reviewer 的 OS 命令边界及 R2 隔离门仍未闭合。

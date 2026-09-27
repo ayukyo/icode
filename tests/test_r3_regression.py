@@ -130,6 +130,77 @@ class TestSnapshotGitFileSemantics(unittest.TestCase):
             )
             self.assertEqual(changed_files(non_executable, executable), ["run.sh"])
 
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "mkfifo"), "requires POSIX FIFO")
+    def test_snapshot遇到FIFO必须失败关闭而不是漏记(self) -> None:
+        with temp_workspace() as ws:
+            os.mkfifo(ws / "untracked-pipe")
+
+            with self.assertRaisesRegex(OSError, "unsupported file type"):
+                snapshot_workspace(ws)
+
+    @unittest.skipUnless(os.name == "posix" and hasattr(os, "mkfifo"), "requires POSIX FIFO")
+    def test_被排除名称本身为FIFO时仍必须失败关闭(self) -> None:
+        for excluded_name in (".icode_output", "__pycache__"):
+            with self.subTest(name=excluded_name), temp_workspace() as ws:
+                os.mkfifo(ws / excluded_name)
+
+                with self.assertRaisesRegex(OSError, "unsupported file type"):
+                    snapshot_workspace(ws)
+
+    def test_windows_snapshot遇到未知特殊类型必须失败关闭(self) -> None:
+        from icode import workspace_snapshot as snapshot_module
+
+        with temp_workspace() as ws:
+            class FakeEntry:
+                name = "untracked-pipe"
+                path = str(ws / name)
+
+                def stat(self, *, follow_symlinks: bool = True):
+                    return SimpleNamespace(st_mode=stat.S_IFIFO, st_file_attributes=0)
+
+            class FakeScandir:
+                def __init__(self, _directory) -> None:
+                    pass
+
+                def __enter__(self):
+                    return iter((FakeEntry(),))
+
+                def __exit__(self, *_args) -> None:
+                    return None
+
+            fake_os = SimpleNamespace(name="nt", scandir=FakeScandir)
+            with patch.object(snapshot_module, "os", fake_os):
+                with self.assertRaisesRegex(OSError, "unsupported file type"):
+                    snapshot_workspace(ws)
+
+    def test_windows_snapshot被排除名称的特殊类型仍必须失败关闭(self) -> None:
+        from icode import workspace_snapshot as snapshot_module
+
+        for excluded_name in (".icode_output", "__pycache__"):
+            with self.subTest(name=excluded_name), temp_workspace() as ws:
+                class FakeEntry:
+                    def __init__(self, name: str) -> None:
+                        self.name = name
+                        self.path = str(ws / name)
+
+                    def stat(self, *, follow_symlinks: bool = True):
+                        return SimpleNamespace(st_mode=stat.S_IFIFO, st_file_attributes=0)
+
+                class FakeScandir:
+                    def __init__(self, _directory) -> None:
+                        pass
+
+                    def __enter__(self):
+                        return iter((FakeEntry(excluded_name),))
+
+                    def __exit__(self, *_args) -> None:
+                        return None
+
+                fake_os = SimpleNamespace(name="nt", scandir=FakeScandir)
+                with patch.object(snapshot_module, "os", fake_os):
+                    with self.assertRaisesRegex(OSError, "unsupported file type"):
+                        snapshot_workspace(ws)
+
 
 class TestWindowsSnapshotReparseSafety(unittest.TestCase):
     REPARSE_POINT_ATTRIBUTE = stat.FILE_ATTRIBUTE_REPARSE_POINT
