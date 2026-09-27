@@ -38,6 +38,7 @@ from icode.isolation import (
     WslSandbox,
     capability_report,
     probe_capabilities,
+    probe_linux_protected_paths,
     probe_macos_process_group_cleanup,
     probe_macos_protected_paths,
     probe_native_sandbox,
@@ -56,6 +57,108 @@ def _metadata_read_root(path: Path) -> MetadataReadRoot:
 
 
 class TestProbe(unittest.TestCase):
+    def test_linux保护路径探针只在Linux上运行(self) -> None:
+        sandbox = LandlockSandbox(helper="/bin/true")
+        with mock.patch("icode.isolation.sys.platform", "darwin"):
+            result = probe_linux_protected_paths(sandbox)
+
+        self.assertFalse(result.executed)
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.checks,
+            {
+                "workspace_write_allowed": False,
+                "protected_write_denied": False,
+                "protected_rename_denied": False,
+            },
+        )
+
+    def test_linux保护路径探针使用分层git元数据和正向控制(self) -> None:
+        with temp_workspace() as root:
+            helper = root / "helper"
+            helper.write_bytes(b"probe helper")
+            helper.chmod(0o755)
+            manifest = root / "helper.sha256"
+            manifest.write_text(
+                hashlib.sha256(helper.read_bytes()).hexdigest() + "\n",
+                encoding="ascii",
+            )
+            sandbox = LandlockSandbox(
+                helper=str(helper), manifest=str(manifest),
+            )
+            executions = [
+                mock.Mock(exit_code=0, error=None, cleanup_ok=True),
+                mock.Mock(exit_code=1, error=None, cleanup_ok=True),
+                mock.Mock(exit_code=1, error=None, cleanup_ok=True),
+            ]
+
+            def simulate_broker(argv, *, cwd, policy, timeout):
+                if any("Path('allowed').write_text('ok')" in part for part in argv):
+                    (policy.workspace_root / "allowed").write_text(
+                        "ok", encoding="utf-8",
+                    )
+                return executions.pop(0)
+
+            with mock.patch("icode.isolation.sys.platform", "linux"), \
+                 mock.patch("icode.execution_broker.execute_policy_command",
+                            side_effect=simulate_broker) as execute:
+                result = probe_linux_protected_paths(sandbox)
+
+        self.assertTrue(result.executed)
+        self.assertTrue(result.passed, result.detail)
+        self.assertEqual(
+            result.checks,
+            {
+                "workspace_write_allowed": True,
+                "protected_write_denied": True,
+                "protected_rename_denied": True,
+            },
+        )
+        self.assertEqual(execute.call_count, 3)
+        for call in execute.call_args_list:
+            argv = call.args[0]
+            policy = call.kwargs["policy"]
+            self.assertEqual(policy.write_roots, (policy.workspace_root,))
+            self.assertEqual(policy.deny_write_roots, policy.protected_paths)
+            self.assertEqual(policy.network_mode, NetworkMode.DENY)
+            self.assertTrue(
+                policy.protected_paths[0].is_relative_to(policy.workspace_root.parent)
+            )
+
+    def test_doctor把Linux保护路径实测并入同一份一致性回执(self) -> None:
+        native = mock.Mock(
+            ready=True,
+            checks={"workspace_write": True},
+            detail="native ok",
+        )
+        protected = mock.Mock(
+            executed=True,
+            passed=True,
+            checks={
+                "workspace_write_allowed": True,
+                "protected_write_denied": True,
+                "protected_rename_denied": True,
+            },
+            detail="protected paths ok",
+        )
+        sandbox = LandlockSandbox(helper="/tmp/helper", manifest="/tmp/manifest")
+        with mock.patch("icode.isolation.sys.platform", "linux"), \
+             mock.patch("icode.isolation.probe_capabilities", return_value=()), \
+             mock.patch("icode.isolation.select_sandbox", return_value=NoIsolation()), \
+             mock.patch.object(LandlockSandbox, "from_bundle", return_value=sandbox), \
+             mock.patch("icode.isolation.probe_native_sandbox", return_value=native), \
+             mock.patch("icode.isolation.probe_linux_protected_paths",
+                        return_value=protected):
+            report = capability_report()
+
+        self.assertTrue(report["bundled_linux_helper"]["protected_path_probe_passed"])
+        self.assertTrue(
+            report["conformance_contract"]["outcomes"]["protected_paths"]
+        )
+        self.assertTrue(
+            report["conformance_contract"]["outcomes"]["doctor_self_test"]
+        )
+
     def test_macos保护路径探针只在macOS上运行(self) -> None:
         sandbox = MacSeatbeltSandbox(sandbox_exec="/bin/true")
         with mock.patch("icode.isolation.sys.platform", "linux"):
@@ -230,6 +333,9 @@ class TestProbe(unittest.TestCase):
             checkout = root / "checkout"
             checkout.mkdir()
             sandbox = LandlockSandbox(helper=str(helper), manifest=str(manifest))
+            protected = probe_linux_protected_paths(sandbox)
+            self.assertTrue(protected.executed)
+            self.assertTrue(protected.passed, protected.detail)
             positive = subprocess.run(
                 sandbox.wrap([str(system_python), "-c", "print('ready')"], workspace=checkout),
                 capture_output=True, text=True, timeout=4, check=False,

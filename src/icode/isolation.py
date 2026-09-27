@@ -98,6 +98,16 @@ class MacProtectedPathProbeResult:
 
 
 @dataclass(frozen=True)
+class LinuxProtectedPathProbeResult:
+    """Linux 分层工作区保护路径的真实实测；不代表完整 R2 就绪。"""
+
+    executed: bool
+    passed: bool
+    checks: dict[str, bool]
+    detail: str
+
+
+@dataclass(frozen=True)
 class MetadataReadRoot:
     """Trusted path plus creation-time identity for one read-only root."""
 
@@ -201,6 +211,118 @@ def probe_native_sandbox(sandbox: Sandbox) -> NativeProbeResult:
         not failed, checks,
         "通过最小负向探测" if not failed else "未通过：" + ", ".join(failed)
         + ("；诊断：" + " | ".join(diagnostics) if diagnostics else ""),
+    )
+
+
+def probe_linux_protected_paths(
+    sandbox: LandlockSandbox,
+) -> LinuxProtectedPathProbeResult:
+    """在 Linux 分层 checkout 中实测 `.git` 元数据写入/移动被拒。
+
+    ICODE 的 POSIX 自主工作区将可写代码目录与 checkout 根的 `.git`
+    元数据分开。Landlock 只授权工作区子树，因此该测试使用同样的兄弟布局；
+    它不声称可排除工作区内部的任意受保护子目录。
+    """
+    checks = {
+        "workspace_write_allowed": False,
+        "protected_write_denied": False,
+        "protected_rename_denied": False,
+    }
+    if not sys.platform.startswith("linux"):
+        return LinuxProtectedPathProbeResult(
+            False, False, checks, "仅适用于 Linux Landlock",
+        )
+    if not isinstance(sandbox, LandlockSandbox) or sandbox.manifest is None:
+        return LinuxProtectedPathProbeResult(
+            False, False, checks, "随包 Landlock 助手或摘要清单不可用",
+        )
+
+    from .execution_broker import execute_policy_command
+
+    stage = "setup"
+    try:
+        with tempfile.TemporaryDirectory(prefix="icode-linux-protected-probe-") as raw:
+            checkout = Path(raw).resolve() / "checkout"
+            workspace = checkout / "code"
+            workspace.mkdir(parents=True)
+            protected = checkout / ".git"
+            protected.write_text("gitdir: protected-metadata\n", encoding="utf-8")
+            protected_before = protected.read_text(encoding="utf-8")
+            moved = checkout / "git-moved"
+            allowed_file = workspace / "allowed"
+            policy = SandboxPolicy(
+                schema_version=1,
+                run_id="linux-protected-path-probe",
+                ticket_id="linux-protected-path-probe",
+                step="code",
+                workspace_root=workspace,
+                read_roots=(workspace,),
+                write_roots=(workspace,),
+                deny_read_roots=(),
+                deny_write_roots=(protected,),
+                network_mode=NetworkMode.DENY,
+                allowed_domains=(),
+                process_limit=8,
+                wall_timeout_seconds=5,
+                output_limit_bytes=2048,
+                protected_paths=(protected,),
+            )
+
+            def execute(argv: list[str]):
+                wrapped = sandbox.wrap_policy(argv, policy=policy)
+                return execute_policy_command(
+                    wrapped, cwd=workspace, policy=policy, timeout=5,
+                )
+
+            stage = "workspace_write_allowed"
+            allowed = execute([
+                sys.executable, "-c",
+                "from pathlib import Path; Path('allowed').write_text('ok')",
+            ])
+            checks["workspace_write_allowed"] = (
+                allowed.exit_code == 0 and allowed.error is None
+                and allowed.cleanup_ok and allowed_file.is_file()
+                and allowed_file.read_text(encoding="utf-8") == "ok"
+            )
+
+            stage = "protected_write_denied"
+            write = execute([
+                sys.executable, "-c",
+                "from pathlib import Path; import sys; "
+                "Path(sys.argv[1]).write_text('changed')",
+                str(protected),
+            ])
+            checks["protected_write_denied"] = (
+                checks["workspace_write_allowed"]
+                and write.exit_code not in (None, 0)
+                and write.error is None and write.cleanup_ok
+                and protected.read_text(encoding="utf-8") == protected_before
+            )
+
+            stage = "protected_rename_denied"
+            rename = execute([
+                sys.executable, "-c",
+                "from pathlib import Path; import sys; "
+                "Path(sys.argv[1]).rename(sys.argv[2])",
+                str(protected), str(moved),
+            ])
+            checks["protected_rename_denied"] = (
+                checks["workspace_write_allowed"]
+                and rename.exit_code not in (None, 0)
+                and rename.error is None and rename.cleanup_ok
+                and protected.is_file() and not moved.exists()
+                and protected.read_text(encoding="utf-8") == protected_before
+            )
+    except Exception:  # noqa: BLE001 - 原生探针异常必须 fail-closed。
+        return LinuxProtectedPathProbeResult(
+            True, False, checks, f"Linux 保护路径探针异常：{stage}",
+        )
+
+    failed = [name for name, passed in checks.items() if not passed]
+    return LinuxProtectedPathProbeResult(
+        True, not failed, checks,
+        "分层 checkout 保护路径探测通过" if not failed
+        else "Linux 保护路径未通过：" + ", ".join(failed),
     )
 
 
@@ -1474,6 +1596,7 @@ def capability_report() -> dict:
     bundled: dict[str, object] = {
         "installed": False,
         "minimal_probe_passed": False,
+        "protected_path_probe_passed": False,
         "policy_ready": False,
         "detail": "当前平台不适用",
     }
@@ -1487,10 +1610,16 @@ def capability_report() -> dict:
             else:
                 result = probe_native_sandbox(bundled_sandbox)
                 native_checks = dict(result.checks)
+                protected_result = probe_linux_protected_paths(bundled_sandbox)
+                native_checks.update(protected_result.checks)
                 bundled.update({
                     "installed": True,
                     "minimal_probe_passed": result.ready,
-                    "detail": result.detail,
+                    "protected_path_probe_passed": protected_result.passed,
+                    "detail": (
+                        result.detail if protected_result.passed
+                        else protected_result.detail
+                    ),
                 })
         except Exception:  # noqa: BLE001 - doctor 诊断失败不得误报可用
             bundled["detail"] = "随包助手诊断异常"
@@ -1537,7 +1666,9 @@ def capability_report() -> dict:
         # group cleanup and Windows Job cleanup are narrower probes; neither
         # proves the backend's complete filesystem/network contract.
         doctor_self_test=(
-            bool(bundled.get("minimal_probe_passed")) if platform == "linux" else False
+            bool(bundled.get("minimal_probe_passed"))
+            and bool(bundled.get("protected_path_probe_passed"))
+            if platform == "linux" else False
         ),
     )
     return {

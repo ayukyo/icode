@@ -94,4 +94,6 @@
 - Linux CI 的 user namespace/AppArmor 组合可能禁止 Bubblewrap；需报告环境不支持并保持拒绝执行，而不是在测试中跳过关键项。
 - macOS 的 Seatbelt profile 行为及系统服务授权可能随版本变化；限制是系统级目标，不能用应用层路径判断代替负向测试。
 
+- **2026-09-27 POSIX 分层 Git 元数据与 Linux protected-path 负例：**Landlock 的 path-beneath grant 只表达可访问层级；上游文档说明同一策略层中匹配规则可授予路径权限，叠加层则须分别满足授权，因此不能把工作区根 grant 当成对内部 `.git` 的 deny override。[Linux Landlock 文件层级规则](https://docs.kernel.org/userspace-api/landlock.html#layers-of-file-path-access-rights) 基于此限制，自动 Workbench 在 POSIX 上使用已有 `isolate_git_metadata=True`，令可写 `code/` 与 checkout `.git` 元数据分离；自检探针通过真实 `wrap_policy` 与命令 broker 验证工作区写入、兄弟 `.git` 写拒绝和重命名拒绝。本机原生探针 conformance 为 6/10，`critical_passed=false`、`ready=false`；188 项相关测试（8 项平台跳过）、完整 preflight 与安装式 Linux wheel/Git broker probe 通过。该路径不证明任意嵌套保护子目录，也未获得 ARM64/macOS/Windows 新代码原生结果，故自动模式继续阻断。
+
 参考：[Linux Landlock 官方文档](https://docs.kernel.org/userspace-api/landlock.html) · [Bubblewrap 手册](https://manpages.debian.org/bookworm/bubblewrap/bwrap.1.en.html) · [Apple 开发者论坛关于 sandbox-exec 支持状态](https://developer.apple.com/forums/thread/661939) · [Codex 当前 Seatbelt 实现](https://github.com/openai/codex/blob/main/codex-rs/sandboxing/src/seatbelt.rs)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import os
 import re
 import threading
 import time
@@ -478,6 +479,9 @@ class TestWorkbenchHTTP(unittest.TestCase):
                     protected = kwargs["extra_protected_paths"]
                     self.assertIn(settings.skill_root, protected)
                     self.assertIn(vendored_skill.resolve(), protected)
+                    self.assertEqual(
+                        kwargs["isolate_git_metadata"], os.name == "posix",
+                    )
                     self.assertIs(server.autonomy.workspace_manager, manager_instance)
                     self.assertFalse((data_root / "workspaces").exists())
                 finally:

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import threading
@@ -346,6 +347,9 @@ class WorkbenchServer:
                 default_data_root(),
                 self.service.project_id,
                 extra_protected_paths=tuple(protected_paths),
+                # POSIX 原生沙箱只给代码子树写权限；把 Git 元数据留在
+                # checkout 兄弟路径，避免可写根覆盖嵌套的 .git。
+                isolate_git_metadata=os.name == "posix",
             )
         self.autonomy = AutonomyManager(
             self.service,

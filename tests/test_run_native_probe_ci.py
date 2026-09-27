@@ -10,6 +10,8 @@ from unittest import mock
 from tests import _support  # noqa: F401
 
 from icode.isolation import (
+    LandlockSandbox,
+    LinuxProtectedPathProbeResult,
     MacProtectedPathProbeResult,
     MacSeatbeltSandbox,
     NativeProbeResult,
@@ -36,6 +38,56 @@ class TestNativeProbeCi(unittest.TestCase):
             "conformance linux doctor_self_test: UNVERIFIED (no_independent_evidence)",
             output.getvalue(),
         )
+
+    def test_linux保护路径证据进入评分且随包探针门禁失败关闭(self) -> None:
+        sandbox = LandlockSandbox(helper="/tmp/icode-landlock")
+        native = NativeProbeResult(
+            True, {"workspace_write": True}, "native ok",
+        )
+        protected = LinuxProtectedPathProbeResult(
+            executed=True,
+            passed=True,
+            checks={
+                "workspace_write_allowed": True,
+                "protected_write_denied": True,
+                "protected_rename_denied": True,
+            },
+            detail="protected paths ok",
+        )
+
+        with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
+             mock.patch.object(run_native_probe_ci, "probe_native_sandbox",
+                               return_value=native), \
+             mock.patch.object(run_native_probe_ci, "probe_linux_protected_paths",
+                               return_value=protected), \
+             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
+            result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
+
+        self.assertTrue(score.call_args.args[0]["protected_write_denied"])
+        self.assertTrue(score.call_args.kwargs["doctor_self_test"])
+        self.assertEqual(result, 0)
+
+        failed = LinuxProtectedPathProbeResult(
+            executed=True,
+            passed=False,
+            checks={
+                "workspace_write_allowed": True,
+                "protected_write_denied": False,
+                "protected_rename_denied": True,
+            },
+            detail="protected paths failed",
+        )
+        with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
+             mock.patch.object(run_native_probe_ci, "probe_native_sandbox",
+                               return_value=native), \
+             mock.patch.object(run_native_probe_ci, "probe_linux_protected_paths",
+                               return_value=failed), \
+             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score:
+            result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
+
+        self.assertFalse(score.call_args.args[0]["protected_write_denied"])
+        self.assertFalse(score.call_args.kwargs["doctor_self_test"])
+        self.assertEqual(result, 1)
 
     def test_macos评分前采集同组清理且失败时门禁关闭(self) -> None:
         sandbox = MacSeatbeltSandbox(sandbox_exec="/bin/true")

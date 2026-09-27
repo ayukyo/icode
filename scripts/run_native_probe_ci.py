@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -14,10 +15,16 @@ from icode.isolation import (
     MacSeatbeltSandbox,
     probe_macos_process_group_cleanup,
     probe_macos_protected_paths,
+    probe_linux_protected_paths,
     probe_native_sandbox,
 )
 
 MACOS_PROTECTED_PATH_CHECKS = (
+    "workspace_write_allowed",
+    "protected_write_denied",
+    "protected_rename_denied",
+)
+LINUX_PROTECTED_PATH_CHECKS = (
     "workspace_write_allowed",
     "protected_write_denied",
     "protected_rename_denied",
@@ -74,7 +81,15 @@ def main() -> int:
             if build.returncode != 0:
                 print(f"::error::Linux helper build failed: {build.stderr[-1500:]}")
                 return 1
-            return _check(LandlockSandbox(helper=str(helper)), str(helper))
+            manifest = Path(str(helper) + ".sha256")
+            manifest.write_text(
+                hashlib.sha256(helper.read_bytes()).hexdigest() + "\n",
+                encoding="ascii",
+            )
+            return _check(
+                LandlockSandbox(helper=str(helper), manifest=str(manifest)),
+                str(helper),
+            )
     elif sys.platform == "darwin":
         executable = shutil.which("sandbox-exec")
         if executable is None:
@@ -94,13 +109,21 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     if platform == "macos":
         protected_result = probe_macos_protected_paths(backend)
         group_result = probe_macos_process_group_cleanup(backend)
-        for name in MACOS_PROTECTED_PATH_CHECKS:
+        protected_checks = MACOS_PROTECTED_PATH_CHECKS
+    elif platform == "linux":
+        protected_result = probe_linux_protected_paths(backend)
+        protected_checks = LINUX_PROTECTED_PATH_CHECKS
+    else:
+        protected_checks = ()
+    if protected_result is not None:
+        for name in protected_checks:
             passed = protected_result.checks.get(name) is True
             print(
-                f"::notice::macos-protected-path {name}="
+                f"::notice::{platform}-protected-path {name}="
                 f"{str(passed).lower()}"
             )
             print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
+    if group_result is not None:
         for name, passed in group_result.checks.items():
             print(f"{backend.name} process_group_{name}: {'PASS' if passed else 'FAIL'}")
     checks = dict(result.checks)
