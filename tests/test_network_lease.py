@@ -983,9 +983,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
         def broken_clock() -> int:
             raise RuntimeError("private clock detail")
 
-        with self.assertRaisesRegex(
-            NetworkLeaseValidationError, "monotonic clock callback failed"
-        ):
+        with self.assertRaises(NetworkLeaseValidationError) as error:
             authority.register_active_connection(
                 grant,
                 policy,
@@ -997,6 +995,9 @@ class NetworkLeaseTestCase(unittest.TestCase):
                 pending=True,
                 clock=broken_clock,
             )
+        self.assertEqual(str(error.exception), "monotonic clock callback failed")
+        self.assertNotIn("private clock detail", str(error.exception))
+        self.assertFalse(authority._active_connections)
 
     def test_pending_registration_rejects_invalid_clock_results(self) -> None:
         policy = self.make_policy()
@@ -1027,6 +1028,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
                         pending=True,
                         clock=lambda: value,
                     )
+        self.assertFalse(authority._active_connections)
 
     def test_revoke_cancels_real_pending_loopback_connect_before_publication(self) -> None:
         self._assert_pending_loopback_connect_cancelled(expire=False)
