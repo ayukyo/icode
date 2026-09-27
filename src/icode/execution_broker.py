@@ -132,11 +132,18 @@ def execute_policy_command(
     try:
         assert process.stdout is not None
         selector.register(process.stdout, selectors.EVENT_READ)
-        while selector.get_map():
+        while selector.get_map() or process.poll() is None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 error = "timeout"
                 break
+            if not selector.get_map():
+                try:
+                    process.wait(timeout=remaining)
+                except subprocess.TimeoutExpired:
+                    error = "timeout"
+                    break
+                continue
             for key, _ in selector.select(remaining):
                 chunk = os.read(
                     key.fd,

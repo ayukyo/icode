@@ -146,3 +146,11 @@
 - **全量门禁：**Git broker、isolation、workspace、execution broker 聚焦回归 144 项通过、7 项按平台条件跳过；仓库 `scripts/preflight.py` 的密钥扫描、子模块完整性和完整 unittest 三道门全部通过。完整 Linux wheel 构建/隔离安装探针独立运行亦通过；这仍只是本机 x86_64，不替代 ARM64 CI。
 - **Landlock 机制依据：**当前实现用独立叠加规则层只处理 `LANDLOCK_ACCESS_FS_EXECUTE`；Linux 内核文档说明策略层叠加、子进程继承且访问需要所有策略层均许可，并允许 Path-Beneath 规则锚定文件对象：[Landlock 官方文档](https://docs.kernel.org/userspace-api/landlock.html)。这不是跨平台执行沙箱，不开放模型 Git 工具、不改变 `git_broker_unavailable` 外部行为；超时/超量输出压力、ARM64 wheel、macOS/Windows 等价门禁与工单调用链仍未关闭。
 - **兼容与后续缺口：**旧版 Git 把 `core.fsmonitor=false` 当 helper 路径的问题由本机 2.34.1 实测与官方文档确认；统一改用空覆盖 `core.fsmonitor=` 并由命令断言锁定。下一片继续给已安装 wheel 覆盖并发元数据对象替换、超时/超量输出时的进程清理；并行竞品研究有助选定机制，但不能替代这些跨平台负例和工具调用链验收。
+
+## 2026-09-27 命令输出 EOF 与进程退出解耦
+
+- **真实缺口与 RED：**`execute_policy_command()` 原来只在 stdout/stderr selector 仍有注册项时读取；子进程提前关闭两个流但继续运行时，EOF 会被误当作命令完成，执行器立刻进入清理并杀掉仍工作的直接子进程。新增真实子进程回归：子进程先写 ready 标记、关闭 stdout/stderr、等待父测试释放文件；修复前工作线程在释放前已经结束，断言如预期失败。
+- **最小修正与 GREEN：**读取循环现同时等待流 EOF 与直接进程退出；流均 EOF 而进程仍在运行时，在原有单调时钟 deadline 内等待 `process.wait()`，超时仍进入既有清理路径。不会改变命令参数、输出上限、sandbox policy、Git 工具注册或失败分类。
+- **本机验收：**`.venv/bin/python -m unittest tests.test_execution_broker tests.test_git_broker -v` 24 项通过；`.venv/bin/python scripts/preflight.py` 的密钥、子模块与完整 unittest 三道门通过；`compileall`、`git diff --check`、站点、治理及 20 项竞品清单检查通过。`scripts/run_native_wheel_ci.py` 本机 Linux x86_64 wheel 构建、检查、隔离安装、helper 与 Git broker 探针全部通过。
+- **并行研究与取舍（观察日 2026-09-27 UTC）：**Codex [`7f6c0f9`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473) 将墙钟到期、输出保留上限、进程组终止和继承管道的 2 秒排空期限分别处理；其组清理仍是平台相关的 best-effort。Qwen Code [`9e60263`](https://github.com/QwenLM/qwen-code/commit/9e60263fdeff8cb5bf5fc49287a2d20cef0dbe2e) 与 Gemini CLI [`2fe7c2d`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18) 也区分捕获上限与继续排空；Gemini shell timeout 是无输出静默期限，不能代替墙钟上限。**采纳**显式分离 deadline、输出流与进程生命周期，并补真实子进程测试；**不采纳**交互 shell 的“截断输出仍继续并返回”语义，Git 状态超限必须报错、清理失败必须 fail-closed。只借鉴机制，均未复制源码、增加依赖或改变许可证义务。
+- **阶段边界：**这是 Linux 内部 Git status 执行器的生命周期回归修正，不证明 timeout/超量时所有恶意后代均已物理回收，不覆盖主动 `setsid` 脱组，也不是跨平台清理结论。macOS/Windows Git broker、Linux ARM64 wheel、并发元数据身份漂移、模型工具调用链、R2 自动模式及网络仍未开放；R2/R3 均未完成。

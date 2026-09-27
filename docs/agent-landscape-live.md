@@ -1,7 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- 最近观察：2026-09-26；下次全量复核：不晚于 2026-10-24
-- 注：观察日期统一按 UTC 记录；本轮定向复核 R2 HTTPS CONNECT 处理顺序与 Python 3.11 异步 DNS/连接取消语义；20 项观察名单最近全量复核为 2026-09-24。时区校正：本轮对应 Asia/Shanghai 2026-09-27，GitHub CI #230 的实际运行时间为 2026-09-26 UTC；本页在上海 2026-09-27 08:00 前写入但误标“2026-09-27 UTC”的近期条目，UTC 日期应为 2026-09-26。
+- 最近观察：2026-09-27；下次全量复核：不晚于 2026-10-24
+- 注：观察日期统一按 UTC 记录；本轮定向复核 R2 HTTPS CONNECT 处理顺序、Python 3.11 异步 DNS/连接取消语义及命令输出/子进程生命周期；20 项观察名单最近全量复核为 2026-09-24。时区校正：本轮对应 Asia/Shanghai 2026-09-27，GitHub CI #230 的实际运行时间为 2026-09-26 UTC；本页在上海 2026-09-27 08:00 前写入但误标“2026-09-27 UTC”的近期条目，UTC 日期应为 2026-09-26。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。
 
@@ -659,3 +659,10 @@
 - **远端事实：**[CI #230](https://github.com/ayukyo/icode/actions/runs/36279299022) 在 `R2.1 workspace (macos-latest)` 与 `R2.2 native probe (macos-15-intel)` 都报告同一个测试断言失败：`tests.test_network_lease.NetworkLeaseTestCase.test_revoke_closes_socket_after_original_wrapper_detaches`；`R2.2 native probe (macos-latest)` 的 lease suite 通过。公开 annotation 给出测试 ID，但完整 traceback 需要登录才能查看。
 - **只读研究与假设：**测试当前在 revoke 后把 peer 设为 non-blocking，并仅调用一次 `recv(1)`；若 FIN/EOF 尚未变为可读会返回平台相关的“暂时不可用”错误。Python 官方文档说明非阻塞 socket 无法立即完成时会以平台相关错误失败，且可用 socket timeout 对阻塞操作设定上限；Apple `shutdown(2)` 文档说明 `SHUT_RDWR` 禁止本地后续收发，但不承诺 peer EOF 同步可见。因此“单次读取竞态”是优先候选，不是已由 traceback 确认的根因。[Python socket timeout/non-blocking](https://docs.python.org/3.11/library/socket.html#notes-on-socket-timeouts) · [Apple shutdown(2)](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/shutdown.2.html)
 - **处理与边界：**测试现改为最多等待 5 秒读取 EOF；生产 `NetworkLeaseAuthority` 没有改动，本机该用例通过。下一轮跨平台 CI 才能复验候选是否成立；若仍失败，需基于完整 traceback 再定位。R2 网络与自动模式继续关闭，不因测试调整而开放。
+
+### 2026-09-27 UTC 定向复核：命令输出上限、EOF 与子进程生命周期
+
+- **Codex 源码与测试：**固定提交 [`7f6c0f9387a0a60f396f61cc58f6b38bc98f2473`](https://github.com/openai/codex/commit/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473)，根许可证 Apache-2.0。[`exec.rs`](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/core/src/exec.rs#L60-L88) 使用单调时间 expiration；[执行/排空路径](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/core/src/exec.rs#L954-L1040) 分开处理进程组终止、输出捕获上限和后代持有管道时 2 秒排空期限。Unix 进程组 helper 明确为 best-effort，非 Unix helper 不执行等价组清理，[process_group.rs](https://github.com/openai/codex/blob/7f6c0f9387a0a60f396f61cc58f6b38bc98f2473/codex-rs/utils/pty/src/process_group.rs#L80-L109)。其真实进程测试覆盖 timeout/cancel 与部分 descendant 场景，但不证明脱组后代必然清除。
+- **Qwen Code 与 Gemini CLI：**Qwen Code 固定提交 [`9e60263fdeff8cb5bf5fc49287a2d20cef0dbe2e`](https://github.com/QwenLM/qwen-code/commit/9e60263fdeff8cb5bf5fc49287a2d20cef0dbe2e)，Apache-2.0；[`shellExecutionService.ts`](https://github.com/QwenLM/qwen-code/blob/9e60263fdeff8cb5bf5fc49287a2d20cef0dbe2e/packages/core/src/services/shellExecutionService.ts#L966-L988) 对超限输出停止保留但继续 drain，退出后继承管道的 settle 有 1 秒上限；其 process.kill 回退与 mock 测试不是真实进程树证明，[monitor 文档](https://github.com/QwenLM/qwen-code/blob/9e60263fdeff8cb5bf5fc49287a2d20cef0dbe2e/docs/developers/tools/monitor.md#L106-L118)也说明 CLI crash/OOM 不会自动回收 detached group。Gemini CLI 固定提交 [`2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18)，Apache-2.0；[`shell.ts`](https://github.com/google-gemini/gemini-cli/blob/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18/packages/core/src/tools/shell.ts#L597-L619) 在收到输出后重置 timeout，故它是 inactivity timeout 而非墙钟上限。其 shell fallback 限制保留输出量并仍运行命令；Unix/Windows 的组清理实现及 mock 单测不能单独证明任意真实后代都被回收。
+- **采纳 / 暂缓：**采纳独立表示墙钟期限、输出采集/排空和命令进程退出，并以真实子进程测试锁住 EOF 不等于进程完成。对安全敏感的固定 Git 查询，不采纳交互 shell 的超限后继续运行并返回部分内容：达到输出上限应拒绝整个结果，清理失败不得作为成功状态；不新增实现依赖、不复制代码。
+- **ICODE 本地实现证据：**`execution_broker.py` 现在即使 stdout/stderr 已 EOF，也继续在原 deadline 内等待直接进程退出；TDD 子进程先关闭两个流、再等显式释放的用例修复前失败、修复后通过。执行器与 Git broker 定向 24 项、全量 `scripts/preflight.py` 三道门、语法/文档检查及本机 x86_64 隔离 wheel/Git broker 探针通过。此项只覆盖本机 Linux 直接进程生命周期，不证明被主动脱组的后代、所有 timeout/output-limit 清理或其他平台。

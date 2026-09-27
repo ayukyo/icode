@@ -71,6 +71,51 @@ class TestPolicyCommandBroker(unittest.TestCase):
             self.assertEqual(result.raw_output, b"\x00\xffA")
             self.assertEqual(result.output, "\x00\ufffdA")
 
+    def test_command_close_output_streams_early_still_waits_for_exit(self) -> None:
+        import threading
+
+        with temp_workspace() as root:
+            root = root.resolve()
+            ready = root / "child-ready"
+            release = root / "allow-exit"
+            script = (
+                "import os, time; from pathlib import Path\n"
+                f"Path({str(ready)!r}).touch()\n"
+                "os.close(1); os.close(2)\n"
+                f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+            )
+            result_holder = []
+            finished = threading.Event()
+
+            def run_command() -> None:
+                result_holder.append(execute_policy_command(
+                    [sys.executable, "-c", script],
+                    cwd=root,
+                    policy=_context(root).policy,
+                    timeout=3,
+                ))
+                finished.set()
+
+            worker = threading.Thread(target=run_command, daemon=True)
+            worker.start()
+            deadline = time.monotonic() + 2
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(0.005)
+            try:
+                self.assertTrue(ready.exists(), "child did not reach the stream-close point")
+                self.assertFalse(
+                    finished.wait(0.1),
+                    "EOF on stdout must not be mistaken for command exit",
+                )
+            finally:
+                release.touch()
+            worker.join(timeout=3)
+
+            self.assertFalse(worker.is_alive(), "command waiter did not finish")
+            self.assertEqual(len(result_holder), 1)
+            self.assertIsNone(result_holder[0].error)
+            self.assertEqual(result_holder[0].exit_code, 0)
+
     def test_git_status_environment_is_fixed_and_output_limit_is_tighter(self) -> None:
         with temp_workspace() as root:
             root = root.resolve()
