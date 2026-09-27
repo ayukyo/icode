@@ -252,6 +252,13 @@ class HostConnectProxyServer:
         except (HostConnectScopeError, OSError, ValueError):
             if client_socket is not None:
                 _close_socket(client_socket)
+            # Revocation closes relay sockets from another thread. That close
+            # can surface as an I/O error before the normal post-relay lease
+            # check, so revalidate before deciding the listener may survive.
+            try:
+                self._scope.verify_lease()
+            except NetworkLeaseValidationError:
+                self.close()
             return True
         except Exception:
             if client_socket is not None:

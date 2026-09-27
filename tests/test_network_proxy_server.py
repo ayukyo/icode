@@ -948,6 +948,73 @@ class NetworkProxyServerTestCase(unittest.TestCase):
         self.assertLess(listener.fileno(), 0)
         self.assertTrue(server.close())
 
+    def test_revoke_during_relay_io_error_still_closes_listener(self) -> None:
+        listener = self.make_listener()
+        server = self.make_server(listener)
+        upstream_listener = self.make_listener()
+        upstream_listener.settimeout(2.0)
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.settimeout(2.0)
+        self.addCleanup(client.close)
+        relay_entered = threading.Event()
+        release_relay = threading.Event()
+        served: list[bool] = []
+
+        def raise_after_revoke(
+            _client_socket: socket.socket,
+            _upstream_socket: socket.socket,
+        ) -> None:
+            relay_entered.set()
+            if not release_relay.wait(2.0):
+                raise AssertionError("test did not release the relay barrier")
+            raise OSError("injected socket-close race")
+
+        server._relay = raise_after_revoke  # type: ignore[method-assign]
+        worker: threading.Thread | None = None
+        upstream_peer: socket.socket | None = None
+        try:
+            with patch(
+                "icode.network_connector.resolve_public_tcp_targets",
+                side_effect=lambda hostname, port, resolver=None: self.local_resolver(
+                    hostname,
+                    port,
+                    upstream_listener.getsockname(),
+                )(hostname, port),
+            ):
+                worker = threading.Thread(
+                    target=lambda: served.append(server.serve_once()),
+                    daemon=True,
+                )
+                worker.start()
+                client.connect(listener.getsockname())
+                client.sendall(self.request())
+                response = bytearray()
+                while not response.endswith(b"\r\n\r\n"):
+                    response.extend(client.recv(1))
+                self.assertEqual(
+                    bytes(response),
+                    b"HTTP/1.1 200 Connection Established\r\n\r\n",
+                )
+                upstream_peer, _address = upstream_listener.accept()
+                upstream_peer.settimeout(2.0)
+                self.addCleanup(upstream_peer.close)
+                self.assertTrue(relay_entered.wait(2.0))
+
+                self.authority.revoke(self.policy)
+                self.assert_peer_closed(client)
+                self.assert_peer_closed(upstream_peer)
+                release_relay.set()
+                worker.join(timeout=2.0)
+
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(served, [True])
+            self.assertLess(listener.fileno(), 0)
+        finally:
+            release_relay.set()
+            if worker is not None:
+                worker.join(timeout=2.0)
+        self.assertTrue(server.close())
+
     def test_expiry_monitor_failure_closes_an_active_relay(self) -> None:
         listener = self.make_listener()
         server = self.make_server(listener)

@@ -37,6 +37,82 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             )
         )
 
+    def _probe_loopback_network_namespace(
+        self,
+        helper_command: tuple[str, ...],
+        *,
+        workspace: Path,
+        marker: Path,
+    ) -> tuple[bool, str]:
+        """Check loopback setup before an opaque proxy handoff can hide stderr."""
+        system_python = Path("/usr/bin/python3")
+        self.assertTrue(system_python.is_file())
+        if not helper_command or any(not part for part in helper_command):
+            self.fail("invalid loopback namespace preflight command")
+        parent_netns = os.readlink("/proc/self/ns/net")
+        payload = (
+            "import os, socket\n"
+            f"assert os.readlink('/proc/self/ns/net') != {parent_netns!r}\n"
+            "server = socket.socket(socket.AF_INET, socket.SOCK_STREAM, "
+            "socket.IPPROTO_TCP)\n"
+            "server.bind(('127.0.0.1', 0)); server.listen(1)\n"
+            "server.close()\n"
+            f"open({str(marker)!r}, 'wb').close()\n"
+        )
+        result = subprocess.run(
+            [
+                *helper_command,
+                "--workspace", str(workspace),
+                "--parent-pid", str(os.getpid()),
+                "--network-loopback-only", "--",
+                str(system_python), "-c", payload,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+        if result.returncode == 0:
+            self.assertTrue(marker.is_file(), result.stderr)
+            return True, result.stderr
+        if self._namespace_network_permission_denied(result.stderr):
+            self.assertFalse(marker.exists(), result.stderr)
+            return False, result.stderr
+        self.fail(
+            "loopback namespace preflight failed unexpectedly: "
+            f"exit={result.returncode}, stderr={result.stderr!r}"
+        )
+
+    def test候选E2E前置探测识别loopback权限失败且payload未运行(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        launcher_source = (
+            Path(__file__).resolve().parent / "native/deny_loopback_ioctl.c"
+        )
+        compiler = shutil.which("cc") or "cc"
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            launcher = root / "deny-loopback-ioctl"
+            for source_file, executable in (
+                (source, helper), (launcher_source, launcher),
+            ):
+                subprocess.run(
+                    [compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                     str(source_file), "-o", str(executable)],
+                    check=True, capture_output=True, text=True,
+                )
+            workspace = root / "code"
+            workspace.mkdir()
+            marker = workspace / "loopback-preflight-ran"
+            available, detail = self._probe_loopback_network_namespace(
+                (str(launcher), str(helper)), workspace=workspace, marker=marker,
+            )
+
+        self.assertFalse(available, detail)
+        self.assertIn(
+            f"ICODE_LOOPBACK_SETUP_FAILURE stage=enable errno={errno.EPERM}", detail,
+        )
+        self.assertFalse(marker.exists())
+
     def test_loopback代理实验态不能到宿主或外部网络(self) -> None:
         source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
         system_python = Path("/usr/bin/python3")
@@ -171,6 +247,17 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             sandbox = LandlockSandbox(helper=str(helper), manifest=str(manifest))
             workspace = root / "code"
             workspace.mkdir()
+            preflight_marker = workspace / "loopback-preflight-ran"
+            loopback_available, preflight_detail = (
+                self._probe_loopback_network_namespace(
+                    (str(helper),), workspace=workspace, marker=preflight_marker,
+                )
+            )
+            if not loopback_available:
+                self.assertFalse(preflight_marker.exists(), preflight_detail)
+                self.skipTest(
+                    "runner blocks namespace loopback setup; preflight failed closed"
+                )
             policy = SandboxPolicy(
                 schema_version=1,
                 run_id="linux-proxy-handoff-run",
