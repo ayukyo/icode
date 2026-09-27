@@ -7,7 +7,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import unittest
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from icode.conformance_evidence import score_probe_evidence
 from icode.isolation import (
@@ -30,6 +33,47 @@ LINUX_PROTECTED_PATH_CHECKS = (
     "protected_write_denied",
     "protected_rename_denied",
 )
+
+ProbeStatus = Literal["passed", "skipped", "failed"]
+
+
+@dataclass(frozen=True)
+class ProbeExecution:
+    """单个 unittest 行为探针的三态结果；skip 不代表能力通过。"""
+
+    status: ProbeStatus
+    detail: str
+
+
+def _run_unittest_probe(test_case: unittest.TestCase) -> ProbeExecution:
+    """执行一个行为用例并保留 unittest 的显式 skip/failure 语义。"""
+    result = unittest.TestResult()
+    test_case.run(result)
+    if result.testsRun != 1:
+        return ProbeExecution("failed", f"expected one test, ran {result.testsRun}")
+    if result.skipped:
+        return ProbeExecution("skipped", result.skipped[0][1])
+    if result.wasSuccessful():
+        return ProbeExecution("passed", "")
+    failures = result.failures + result.errors
+    detail = failures[0][1] if failures else "unittest did not report success"
+    return ProbeExecution("failed", " ".join(detail.split())[-500:])
+
+
+def _probe_linux_network_lease_expiry() -> ProbeExecution:
+    """复用真实 Linux PID namespace/SCM_RIGHTS/CONNECT TTL 端到端用例。"""
+    repository_root = str(Path(__file__).resolve().parents[1])
+    if repository_root not in sys.path:
+        sys.path.insert(0, repository_root)
+    try:
+        from tests.test_linux_pidns_cleanup import TestLinuxPidNamespaceCleanup
+
+        test_case = TestLinuxPidNamespaceCleanup(
+            "test可信helper交接后授权隧道随租约到期关闭",
+        )
+    except Exception as exc:
+        return ProbeExecution("failed", f"could not load Linux lease expiry test: {exc}")
+    return _run_unittest_probe(test_case)
 
 
 def _emit_conformance_score(
@@ -110,6 +154,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     group_result = None
     protected_result = None
     process_tree_result = None
+    lease_expiry_result = None
     if platform == "macos":
         protected_result = probe_macos_protected_paths(backend)
         group_result = probe_macos_process_group_cleanup(backend)
@@ -117,6 +162,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     elif platform == "linux":
         protected_result = probe_linux_protected_paths(backend)
         process_tree_result = probe_linux_process_tree_cleanup(backend)
+        lease_expiry_result = _probe_linux_network_lease_expiry()
         protected_checks = LINUX_PROTECTED_PATH_CHECKS
     else:
         protected_checks = ()
@@ -143,6 +189,16 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     checks = dict(result.checks)
     if protected_result is not None:
         checks.update(protected_result.checks)
+    lease_expiry_failed = False
+    if lease_expiry_result is not None:
+        lease_status = lease_expiry_result.status
+        if lease_status not in {"passed", "skipped", "failed"}:
+            lease_status = "failed"
+        checks["network_allowlist_expiry"] = lease_status == "passed"
+        lease_expiry_failed = lease_status == "failed"
+        print(f"::notice::linux-network-allowlist-expiry status={lease_status}")
+        safe_detail = " ".join(lease_expiry_result.detail.split())[:500] or "-"
+        print(f"{backend.name} network_allowlist_expiry: {lease_status.upper()} ({safe_detail})")
     for name, passed in result.checks.items():
         print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
     _emit_conformance_score(checks, platform=platform,
@@ -167,7 +223,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         and (not process_tree_result.executed or not process_tree_result.passed)
     )
     native_ready = result.ready and not protected_failed and not process_tree_failed
-    if not native_ready or group_failed:
+    if not native_ready or group_failed or lease_expiry_failed:
         if not native_ready and isinstance(backend, MacSeatbeltSandbox):
             true_path = shutil.which("true")
             if true_path is not None:
@@ -198,6 +254,9 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
             failures.append(f"process-tree cleanup: {process_tree_result.detail}")
         if group_failed:
             failures.append(f"process-group cleanup: {group_result.detail}")
+        if lease_expiry_failed:
+            safe_detail = " ".join(lease_expiry_result.detail.split())[:500]
+            failures.append(f"network allowlist expiry: {safe_detail}")
         print(f"::error::{backend.name} native probe failed: {'; '.join(failures)}")
         return 1
     return 0

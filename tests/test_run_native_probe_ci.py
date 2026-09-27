@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stdout
 from io import StringIO
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -22,6 +23,94 @@ from scripts import run_native_probe_ci
 
 
 class TestNativeProbeCi(unittest.TestCase):
+    def test_unittest探针结果区分通过跳过和失败(self) -> None:
+        class PassingCase(unittest.TestCase):
+            def runTest(self) -> None:
+                pass
+
+        class SkippedCase(unittest.TestCase):
+            def runTest(self) -> None:
+                self.skipTest("namespace capability unavailable")
+
+        class FailingCase(unittest.TestCase):
+            def runTest(self) -> None:
+                self.fail("lease expiry was not enforced")
+
+        run_probe = getattr(run_native_probe_ci, "_run_unittest_probe", None)
+        self.assertTrue(callable(run_probe), "native runner must classify unittest outcomes")
+        self.assertEqual(run_probe(PassingCase()).status, "passed")
+        skipped = run_probe(SkippedCase())
+        self.assertEqual(skipped.status, "skipped")
+        self.assertIn("namespace capability unavailable", skipped.detail)
+        failed = run_probe(FailingCase())
+        self.assertEqual(failed.status, "failed")
+        self.assertIn("lease expiry was not enforced", failed.detail)
+
+    def _run_linux_check_with_lease_expiry(self, lease_result):
+        sandbox = LandlockSandbox(helper="/tmp/icode-landlock")
+        native = NativeProbeResult(True, {"workspace_write": True}, "native ok")
+        protected = LinuxProtectedPathProbeResult(
+            executed=True, passed=True,
+            checks={
+                "workspace_write_allowed": True,
+                "protected_write_denied": True,
+                "protected_rename_denied": True,
+            },
+            detail="protected paths ok",
+        )
+        cleanup = LinuxProcessTreeCleanupProbeResult(
+            executed=True, passed=True,
+            checks={
+                "descendant_started": True,
+                "descendant_detached": True,
+                "descendant_exited": True,
+                "no_delayed_write": True,
+            },
+            detail="tree cleanup ok",
+        )
+        output = StringIO()
+        with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
+             mock.patch.object(run_native_probe_ci, "probe_native_sandbox",
+                               return_value=native), \
+             mock.patch.object(run_native_probe_ci, "probe_linux_protected_paths",
+                               return_value=protected), \
+             mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
+                               return_value=cleanup), \
+             mock.patch.object(run_native_probe_ci, "_probe_linux_network_lease_expiry",
+                               return_value=lease_result, create=True) as lease_probe, \
+             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
+             redirect_stdout(output):
+            result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
+        return result, lease_probe, score, output.getvalue()
+
+    def test_linux租约到期正向证据进入评分(self) -> None:
+        result, lease_probe, score, output = self._run_linux_check_with_lease_expiry(
+            SimpleNamespace(status="passed", detail="both peers observed EOF"),
+        )
+        lease_probe.assert_called_once_with()
+        self.assertTrue(score.call_args.args[0]["network_allowlist_expiry"])
+        self.assertEqual(result, 0)
+        self.assertIn("linux-network-allowlist-expiry status=passed", output)
+
+    def test_linux环境跳过不计租约到期正向证据(self) -> None:
+        result, lease_probe, score, output = self._run_linux_check_with_lease_expiry(
+            SimpleNamespace(status="skipped", detail="namespace capability unavailable"),
+        )
+        lease_probe.assert_called_once_with()
+        self.assertFalse(score.call_args.args[0]["network_allowlist_expiry"])
+        self.assertEqual(result, 0)
+        self.assertIn("linux-network-allowlist-expiry status=skipped", output)
+
+    def test_linux租约到期回归失败时原生作业失败(self) -> None:
+        result, lease_probe, score, output = self._run_linux_check_with_lease_expiry(
+            SimpleNamespace(status="failed", detail="lease expiry was not enforced"),
+        )
+        lease_probe.assert_called_once_with()
+        self.assertFalse(score.call_args.args[0]["network_allowlist_expiry"])
+        self.assertEqual(result, 1)
+        self.assertIn("linux-network-allowlist-expiry status=failed", output)
+        self.assertIn("network allowlist expiry", output)
+
     def test_conformance来源字符串不会被拆成单字符(self) -> None:
         report = {
             "score": {"passed": 0, "total": 10, "critical_passed": False, "ready": False},

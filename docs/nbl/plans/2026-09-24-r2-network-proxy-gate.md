@@ -257,7 +257,8 @@
 ## 2026-09-28 Asia/Shanghai：Linux candidate 的租约到期隧道回归（本机）
 
 - **缺口与新增回归：**原 Linux candidate 真实端到端只覆盖 live lease 下连接本机 upstream、双向传输与半关闭，租约到期关闭现有 CONNECT 两端仍分散在 authority/server 单元集成测试里。本机新增/收紧真实 helper → network namespace → SCM_RIGHTS listener → lease-bound CONNECT 的长连接路径：候选在有效授权下拿到 `200` 并双向传输；短 TTL 到期后 worker 端和 upstream peer 都必须得到 EOF；结束后复用已过期 scope 再启动写 marker 命令，必须在 helper/payload 启动前失败关闭。
-- **本机证据与边界：**项目 Python 3.11.15 单项端到端回归通过（约 5.3 秒）；完整 Linux PID cleanup 模块 22 项通过。全仓 `.venv` Python 3.11 `preflight.py --only tests` 通过；子模块、竞品/治理/站点检查、AST 编译及 `git diff --check` 通过。DNS resolver 只在该测试中把 `packages.example:443` 映射至本机临时 loopback upstream；生产数值目标筛选未放宽，不访问公网。该测试仍属于 Linux 候选实验，不接 `ToolContext`/Agent；远端 CI 与跨架构验收尚待运行。本项是新增直接行为证据，尚未写入十项 conformance 的 `network_temporary_allowlist` 分数，不能据此宣布 R2 ready。
+- **评分接线与本机证据：**`scripts/run_native_probe_ci.py` 现在直接执行同一个 TTL E2E，并读取 unittest 的结构化结果：PASS 才提供 `network_allowlist_expiry=true`；显式环境 SKIP 保持 false/未验证但不伪装成测试失败；回归 FAIL 让 native job 失败。本机 Linux native runner 实际运行通过，报告 `8/10`、`critical_passed=true`、`ready=false`，缺口是 `resource_limits` 与 `uniform_violation`。项目 Python 3.11.15 单项端到端回归约 5.3 秒；完整 Linux PID cleanup 模块 22 项及全仓 `.venv` Python 3.11 `preflight.py --only tests` 已通过，子模块、竞品/治理/站点检查、AST 编译及 `git diff --check` 也通过。DNS resolver 只在该测试中把 `packages.example:443` 映射至本机临时 loopback upstream；生产数值目标筛选未放宽，不访问公网。该测试仍属 Linux 候选实验，不接 `ToolContext`/Agent；评分不是自动模式放行，也不证明 OS 层只能访问代理。远端 CI 与跨架构验收尚待运行，R2 仍未 ready。
+- **并行竞品研究结论：**固定 Codex 快照针对特定 bwrap/namespace 权限错误做能力分类，但部分测试在不足时日志后普通返回；这可能让测试 harness 将未实际执行的能力探测呈现为成功（推断，依据见[持续竞品对照](../../agent-landscape-live.md)及其 Rust harness 来源）。采纳窄范围环境原因分类，暂不照搬普通返回；ICODE 使用可审计三态。收益是报告能区别代码失败与宿主能力不足；成本为 native CI 多执行一次约 5 秒单项用例；不复制 Codex 代码、无新增运行依赖或许可证负担，非 Linux 产品路径不变。验收条件是 PASS 才计直接证据、SKIP 不加分、FAIL 阻断该 native job，并由后续 Linux x64/ARM64 CI 实测。
 
 ## 2026-09-28 Asia/Shanghai：CI #256 与 macOS Seatbelt 代理范围复核
 
