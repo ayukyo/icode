@@ -7,9 +7,11 @@ import math
 import os
 import selectors
 import signal
+import socket
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -102,8 +104,27 @@ def execute_policy_command(
     git_status: bool = False, output_limit_bytes: int | None = None,
 ) -> ExecutionResult:
     """执行已由原生后端包装的命令；超时/超量时终止整组。"""
+    return _execute_policy_command(
+        argv, cwd=cwd, policy=policy, timeout=timeout,
+        git_status=git_status, output_limit_bytes=output_limit_bytes,
+    )
+
+
+def _execute_policy_command(
+    argv: list[str], *, cwd: Path, policy: SandboxPolicy, timeout: int | float,
+    git_status: bool = False, output_limit_bytes: int | None = None,
+    pass_fds: tuple[int, ...] = (),
+    on_spawn: Callable[[subprocess.Popen[bytes], float], None] | None = None,
+) -> ExecutionResult:
+    """Private process core with a narrowly scoped trusted-launch hook."""
     if os.name != "posix":
         return ExecutionResult(None, "", 0, "unsupported_platform", False, False, None)
+    if (
+        type(pass_fds) is not tuple
+        or any(type(descriptor) is not int or descriptor < 0 for descriptor in pass_fds)
+        or len(set(pass_fds)) != len(pass_fds)
+    ):
+        return ExecutionResult(None, "", 0, "invalid_handoff", False, True, None)
 
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
         return ExecutionResult(None, "", 0, "invalid_timeout", False, True, None)
@@ -132,11 +153,12 @@ def execute_policy_command(
 
     deadline = time.monotonic() + min(timeout_seconds, policy.wall_timeout_seconds)
     try:
+        launch_options = {"pass_fds": pass_fds} if pass_fds else {}
         process = subprocess.Popen(  # noqa: S603 - argv 经原生策略包装且 shell=False
             argv, cwd=str(cwd),
             env=_policy_environment(policy.workspace_root, git_status=git_status),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            shell=False, start_new_session=True,
+            shell=False, start_new_session=True, **launch_options,
         )
     except (OSError, ValueError):
         return ExecutionResult(None, "", 0, "launch_failed", False, True, None)
@@ -147,8 +169,14 @@ def execute_policy_command(
     selector = selectors.DefaultSelector()
     try:
         assert process.stdout is not None
-        selector.register(process.stdout, selectors.EVENT_READ)
-        while selector.get_map() or process.poll() is None:
+        if on_spawn is not None:
+            try:
+                on_spawn(process, deadline)
+            except Exception:  # noqa: BLE001 - trusted handoff failure denies execution.
+                error = "proxy_setup_failed"
+        if error is None:
+            selector.register(process.stdout, selectors.EVENT_READ)
+        while error is None and (selector.get_map() or process.poll() is None):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 error = "timeout"
@@ -195,3 +223,150 @@ def execute_policy_command(
         cleanup_errno,
         raw_output,
     )
+
+
+def execute_linux_leased_connect_candidate(
+    argv: list[str], *, cwd: Path, sandbox: object,
+    policy: SandboxPolicy, scope: object, timeout: int | float,
+    output_limit_bytes: int | None = None,
+) -> ExecutionResult:
+    """Run one trusted Linux proxy candidate with helper/session ownership.
+
+    This is a staged integration seam only: it is not registered as an Agent
+    tool and does not change ``execute_policy_command`` or the worker DENY
+    policy. A trusted caller must supply a current, policy-bound host lease
+    scope. Product exposure remains blocked on the OS proxy-only conformance
+    gate and explicit approval workflow.
+    """
+    if not sys.platform.startswith("linux"):
+        return ExecutionResult(None, "", 0, "unsupported_platform", False, False, None)
+
+    from .isolation import LandlockSandbox
+    from .network_proxy_scope import HostHttpsConnectScope
+    from .network_proxy_server import LinuxHostConnectProxySession
+    from .linux_proxy_handoff import create_loopback_listener_handoff_channel
+    from .sandbox_policy import NetworkMode
+
+    if (
+        not isinstance(sandbox, LandlockSandbox)
+        or not isinstance(policy, SandboxPolicy)
+        or policy.network_mode is not NetworkMode.DENY
+        or policy.allowed_domains
+        or not isinstance(scope, HostHttpsConnectScope)
+    ):
+        return ExecutionResult(None, "", 0, "invalid_proxy_scope", False, True, None)
+    scope_validated = False
+    host_control: socket.socket | None = None
+    sender_control: socket.socket | None = None
+    try:
+        scope.validate_policy_binding(policy)
+        scope_validated = True
+        workspace = policy.workspace_root.resolve(strict=True)
+        working_directory = Path(cwd).resolve(strict=True)
+        working_directory.relative_to(workspace)
+        if not working_directory.is_dir():
+            raise ValueError("cwd is not a directory")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or any(type(part) is not str or "\x00" in part for part in argv)
+            or not argv[0]
+        ):
+            raise ValueError("invalid argv")
+        host_control, sender_control = create_loopback_listener_handoff_channel()
+        wrapped = sandbox.wrap_leased_connect_candidate(
+            argv, policy=policy, sender_control=sender_control,
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        if sender_control is not None:
+            sender_control.close()
+        if host_control is not None:
+            host_control.close()
+        cleanup_ok = True
+        if scope_validated:
+            try:
+                cleanup_ok = scope.close()
+            except Exception:  # noqa: BLE001 - scope cleanup failure is not success.
+                cleanup_ok = False
+        return ExecutionResult(
+            None, "", 0, "proxy_setup_failed" if cleanup_ok else "cleanup_failed",
+            False, cleanup_ok, None if cleanup_ok else errno.EBUSY,
+        )
+    except BaseException:
+        if sender_control is not None:
+            sender_control.close()
+        if host_control is not None:
+            host_control.close()
+        if scope_validated:
+            try:
+                scope.close()
+            except BaseException:
+                pass
+        raise
+
+    session: LinuxHostConnectProxySession | None = None
+    scope_cleanup_ok = True
+
+    def start_handoff(process: subprocess.Popen[bytes], deadline: float) -> None:
+        nonlocal session, host_control
+        assert sender_control is not None
+        sender_control.close()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("proxy handoff deadline elapsed")
+        if remaining <= 5.0:
+            handoff_timeout = remaining / 2.0
+            ready_timeout = remaining - handoff_timeout
+        else:
+            handoff_timeout = 5.0
+            ready_timeout = min(1.0, remaining - handoff_timeout)
+        if host_control is None:
+            raise RuntimeError("proxy handoff control socket is unavailable")
+        session = LinuxHostConnectProxySession(
+            host_control,
+            expected_pid=process.pid,
+            scope=scope,
+            handoff_timeout_seconds=handoff_timeout,
+            ready_timeout_seconds=ready_timeout,
+        )
+        host_control = None
+        session.start()
+
+    result: ExecutionResult
+    try:
+        assert sender_control is not None
+        result = _execute_policy_command(
+            wrapped,
+            cwd=working_directory,
+            policy=policy,
+            timeout=timeout,
+            output_limit_bytes=output_limit_bytes,
+            pass_fds=(sender_control.fileno(),),
+            on_spawn=start_handoff,
+        )
+    finally:
+        descriptor_cleanup_ok = True
+        try:
+            if sender_control is not None:
+                sender_control.close()
+        except OSError:
+            descriptor_cleanup_ok = False
+        if host_control is not None:
+            try:
+                host_control.close()
+            except OSError:
+                descriptor_cleanup_ok = False
+        try:
+            scope_cleanup_ok = (
+                session.close() if session is not None else scope.close()
+            ) and descriptor_cleanup_ok
+        except Exception:  # noqa: BLE001 - no unconfirmed proxy cleanup is reported as success.
+            scope_cleanup_ok = False
+    cleanup_ok = result.cleanup_ok and scope_cleanup_ok
+    if not cleanup_ok:
+        return ExecutionResult(
+            result.exit_code, result.output, result.output_bytes,
+            "cleanup_failed", result.output_truncated, False,
+            result.cleanup_errno or errno.EBUSY, result.raw_output,
+        )
+    return result

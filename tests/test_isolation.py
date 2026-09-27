@@ -1073,6 +1073,51 @@ class TestSandboxWrapping(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         sandbox._checked_policy_workspace(changed)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux 临时 CONNECT 候选包装")
+    def test_leased_connect_candidate_only_accepts_private_seqpacket_and_deny_policy(self) -> None:
+        with temp_workspace() as root:
+            workspace = (root / "code").resolve()
+            workspace.mkdir()
+            policy = SandboxPolicy(
+                schema_version=1, run_id="proxy-candidate", ticket_id="proxy-candidate",
+                step="code", workspace_root=workspace, read_roots=(workspace,),
+                write_roots=(workspace,), deny_read_roots=(), deny_write_roots=(),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+            )
+            sandbox = LandlockSandbox(helper="/bin/true")
+            host, sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+            stream_host, stream_sender = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                with mock.patch.object(sandbox, "prepare_policy"):
+                    wrapped = sandbox.wrap_leased_connect_candidate(
+                        ["/usr/bin/true"], policy=policy, sender_control=sender,
+                    )
+                    self.assertIn("--network-loopback-only", wrapped)
+                    descriptor_index = wrapped.index("--proxy-control-fd")
+                    self.assertEqual(wrapped[descriptor_index + 1], str(sender.fileno()))
+                    self.assertEqual(wrapped[-2:], ["--", "/usr/bin/true"])
+                    with self.assertRaises(ValueError):
+                        sandbox.wrap_policy(["/usr/bin/true"], policy=policy, network=True)
+                    with self.assertRaises(ValueError):
+                        sandbox.wrap_leased_connect_candidate(
+                            ["/usr/bin/true"],
+                            policy=replace(
+                                policy,
+                                network_mode=NetworkMode.PROXY_ALLOWLIST,
+                                allowed_domains=("packages.example",),
+                            ),
+                            sender_control=sender,
+                        )
+                    with self.assertRaises(ValueError):
+                        sandbox.wrap_leased_connect_candidate(
+                            ["/usr/bin/true"], policy=policy,
+                            sender_control=stream_sender,
+                        )
+            finally:
+                for endpoint in (host, sender, stream_host, stream_sender):
+                    endpoint.close()
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux Landlock read-only policy")
     def test_landlock_Git只读工作区拒绝可执行授权重叠(self) -> None:
         sandbox = LandlockSandbox(helper="/not-needed-for-static-check")

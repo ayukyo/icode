@@ -25,6 +25,7 @@ import os
 import select
 import signal
 import shutil
+import socket
 import stat
 import struct
 import subprocess
@@ -1119,6 +1120,8 @@ class LandlockSandbox:
         self, argv: Sequence[str], *, policy: SandboxPolicy,
         metadata_roots: Sequence[MetadataReadRoot], network: bool = False,
         workspace_read_only: bool = False, execute_only: Path | None = None,
+        network_loopback_only: bool = False,
+        proxy_control_descriptor: int | None = None,
     ) -> list[str]:
         """Wrap a trusted internal read-only query with extra file/directory roots.
 
@@ -1127,6 +1130,16 @@ class LandlockSandbox:
         """
         if network:
             raise ValueError("Landlock helper does not support network grants")
+        if (
+            type(network_loopback_only) is not bool
+            or (network_loopback_only and (
+                proxy_control_descriptor is None
+                or type(proxy_control_descriptor) is not int
+                or proxy_control_descriptor < 3
+            ))
+            or (not network_loopback_only and proxy_control_descriptor is not None)
+        ):
+            raise ValueError("invalid trusted proxy handoff configuration")
         if workspace_read_only:
             self._validate_non_executable_workspace(policy.workspace_root)
         self.prepare_policy(policy)
@@ -1140,6 +1153,40 @@ class LandlockSandbox:
         return self._wrap_with_metadata_roots(
             argv, workspace=policy.workspace_root, metadata_roots=validated_roots,
             workspace_read_only=workspace_read_only, execute_only=execute_claims,
+            network_loopback_only=network_loopback_only,
+            proxy_control_descriptor=proxy_control_descriptor,
+        )
+
+    def wrap_leased_connect_candidate(
+        self, argv: Sequence[str], *, policy: SandboxPolicy,
+        sender_control: socket.socket,
+    ) -> list[str]:
+        """Build a non-product Linux loopback-proxy candidate command.
+
+        The caller must supply a live host-owned lease scope and retain control
+        of the resulting helper process. This method is deliberately separate
+        from ``wrap_policy`` and is not exposed through ToolContext or Agent
+        tools; ordinary policy execution remains network-deny.
+        """
+        if (
+            not sys.platform.startswith("linux")
+            or not isinstance(policy, SandboxPolicy)
+            or type(sender_control) is not socket.socket
+            or sender_control.fileno() < 3
+            or sender_control.getsockopt(socket.SOL_SOCKET, socket.SO_DOMAIN)
+            != socket.AF_UNIX
+            or sender_control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)
+            != socket.SOCK_SEQPACKET
+            or policy.network_mode is not NetworkMode.DENY
+            or policy.allowed_domains
+        ):
+            raise ValueError("leased CONNECT candidate is unavailable")
+        return self._wrap_policy_with_metadata_roots(
+            argv,
+            policy=policy,
+            metadata_roots=(),
+            network_loopback_only=True,
+            proxy_control_descriptor=sender_control.fileno(),
         )
 
     def _validate_non_executable_workspace(self, workspace: Path) -> Path:
@@ -1195,6 +1242,8 @@ class LandlockSandbox:
         self, argv: Sequence[str], *, workspace: Path,
         metadata_roots: Sequence[MetadataReadRoot], workspace_read_only: bool,
         execute_only: Sequence[ExecuteOnlyFile] | None = None,
+        network_loopback_only: bool = False,
+        proxy_control_descriptor: int | None = None,
     ) -> list[str]:
         helper = Path(self.helper)
         if not helper.is_file():
@@ -1210,6 +1259,9 @@ class LandlockSandbox:
         ]
         if workspace_read_only:
             wrapped.append("--workspace-read-only")
+        if network_loopback_only:
+            wrapped.extend(("--network-loopback-only", "--proxy-control-fd",
+                            str(proxy_control_descriptor)))
         for root in self._runtime_read_roots():
             wrapped.extend(("--runtime-read", str(root)))
         for root in metadata_roots:

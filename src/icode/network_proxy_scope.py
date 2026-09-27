@@ -296,6 +296,18 @@ class HostHttpsConnectScope:
             now_monotonic_ns=time.monotonic_ns(),
         )
 
+    def validate_policy_binding(self, policy: SandboxPolicy) -> None:
+        """Require this live host scope to belong to the exact deny-only policy."""
+
+        if not isinstance(policy, SandboxPolicy):
+            raise NetworkLeaseValidationError("a valid SandboxPolicy is required")
+        with self._lock:
+            if self._closed or self._policy != policy:
+                raise NetworkLeaseValidationError(
+                    "host connection scope is bound to a different policy"
+                )
+        self.verify_lease()
+
     @contextmanager
     def live_lease_guard(self) -> Iterator[None]:
         """Hold scope/runtime/authority state stable for a short release action.

@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -20,7 +21,11 @@ from tests import _support  # noqa: F401  # Add the repository's src/ to sys.pat
 from icode import linux_proxy_handoff, network_proxy_server
 from icode.approvals import ScriptedApprover
 from icode.network_destination import ResolvedNetworkTarget
-from icode.network_lease import NetworkLeaseAuthority, NetworkPurpose
+from icode.network_lease import (
+    NetworkLeaseAuthority,
+    NetworkLeaseValidationError,
+    NetworkPurpose,
+)
 from icode.network_proxy_scope import HostConnectRuntime
 from icode.network_proxy_server import HostConnectProxyError, HostConnectProxyServer
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
@@ -95,6 +100,18 @@ class NetworkProxyServerTestCase(unittest.TestCase):
         server = HostConnectProxyServer(listener, self.scope)
         self.addCleanup(server.close)
         return server
+
+    def test_scope_requires_the_live_exact_deny_only_policy_binding(self) -> None:
+        self.scope.validate_policy_binding(self.policy)
+        with self.assertRaises(NetworkLeaseValidationError):
+            self.scope.validate_policy_binding(replace(self.policy, ticket_id="OTHER"))
+        with self.assertRaises(NetworkLeaseValidationError):
+            self.scope.validate_policy_binding(replace(
+                self.policy,
+                network_mode=NetworkMode.PROXY_ALLOWLIST,
+                allowed_domains=("packages.example",),
+            ))
+        self.scope.verify_lease()
 
     def assert_peer_closed(self, client: socket.socket) -> None:
         try:

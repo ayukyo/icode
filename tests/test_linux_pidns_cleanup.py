@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import array
 import errno
+import hashlib
 import os
 import shutil
 import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -145,18 +147,11 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
         self.assertIn("isolated-loopback-only", result.stdout)
 
     def test可信helper交接listener并收到host_ack后才启动payload(self) -> None:
-        from icode.linux_proxy_handoff import (
-            create_loopback_listener_handoff_channel,
-            ProxyHandoffError,
-        )
+        from icode.execution_broker import execute_linux_leased_connect_candidate
         from icode.approvals import ScriptedApprover
         from icode.network_destination import ResolvedNetworkTarget
         from icode.network_lease import NetworkLeaseAuthority, NetworkPurpose
         from icode.network_proxy_scope import HostConnectRuntime
-        from icode.network_proxy_server import (
-            HostConnectProxyError,
-            LinuxHostConnectProxySession,
-        )
 
         source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
         system_python = Path("/usr/bin/python3")
@@ -168,6 +163,12 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                  "-Werror", str(source), "-o", str(helper)],
                 check=True, capture_output=True, text=True,
             )
+            manifest = root / "icode-landlock.sha256"
+            manifest.write_text(
+                hashlib.sha256(helper.read_bytes()).hexdigest() + "\n",
+                encoding="ascii",
+            )
+            sandbox = LandlockSandbox(helper=str(helper), manifest=str(manifest))
             workspace = root / "code"
             workspace.mkdir()
             policy = SandboxPolicy(
@@ -178,14 +179,14 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                 workspace_root=workspace,
                 read_roots=(workspace,),
                 write_roots=(workspace,),
-                deny_read_roots=(workspace / ".git",),
-                deny_write_roots=(workspace / ".git",),
+                deny_read_roots=(),
+                deny_write_roots=(),
                 network_mode=NetworkMode.DENY,
                 allowed_domains=(),
                 process_limit=8,
                 wall_timeout_seconds=60,
                 output_limit_bytes=4096,
-                protected_paths=(workspace / ".git",),
+                protected_paths=(),
             )
             authority = NetworkLeaseAuthority()
             issued = authority.request_lease(
@@ -204,59 +205,33 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             upstream_listener.bind(("127.0.0.1", 0))
             upstream_listener.listen(1)
             upstream_listener.settimeout(3.0)
-            host_control, sender_control = create_loopback_listener_handoff_channel()
-            session: LinuxHostConnectProxySession | None = None
             upstream: socket.socket | None = None
-            process: subprocess.Popen[str] | None = None
+            result_holder = []
+            executor_thread: threading.Thread | None = None
             try:
-                with open(os.devnull, "rb") as inherited:
-                    worker = (
-                        "import errno, os, socket\n"
-                        "try: socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
-                        "except OSError as exc: assert exc.errno == errno.EPERM, exc\n"
-                        "else: raise AssertionError('worker created a new AF_UNIX socket')\n"
-                        f"try: os.fstat({inherited.fileno()})\n"
-                        "except OSError as exc: assert exc.errno == errno.EBADF, exc\n"
-                        "else: raise AssertionError('helper leaked an unrelated descriptor')\n"
-                        "host, port = os.environ['ICODE_PROXY_LISTENER'].rsplit(':', 1)\n"
-                        "client = socket.create_connection((host, int(port)), timeout=2)\n"
-                        "client.sendall(b'CONNECT packages.example:443 HTTP/1.1\\r\\n"
-                        "Host: packages.example\\r\\n\\r\\n')\n"
-                        "response = bytearray()\n"
-                        "while not response.endswith(b'\\r\\n\\r\\n'):\n"
-                        "    response.extend(client.recv(1))\n"
-                        "assert response == b'HTTP/1.1 200 Connection Established"
-                        "\\r\\n\\r\\n', response\n"
-                        "client.sendall(b'worker-to-host-marker')\n"
-                        "client.shutdown(socket.SHUT_WR)\n"
-                        "expected = b'host-to-worker-marker'\n"
-                        "reply = bytearray()\n"
-                        "while len(reply) < len(expected):\n"
-                        "    reply.extend(client.recv(len(expected) - len(reply)))\n"
-                        "assert reply == expected, reply\n"
-                        "client.close()\n"
-                        "print('handoff-proxy-payload-ran')\n"
-                    )
-                    command = [
-                        str(helper), "--workspace", str(workspace),
-                        "--parent-pid", str(os.getpid()), "--network-loopback-only",
-                        "--proxy-control-fd", str(sender_control.fileno()), "--",
-                        str(system_python), "-c", worker,
-                    ]
-                    environment = os.environ.copy()
-                    environment["ICODE_PROXY_LISTENER"] = "198.51.100.9:443"
-                    process = subprocess.Popen(
-                        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                        text=True, env=environment,
-                        pass_fds=(sender_control.fileno(), inherited.fileno()),
-                    )
-                sender_control.close()
-                session = LinuxHostConnectProxySession(
-                    host_control,
-                    expected_pid=process.pid,
-                    scope=scope,
-                    handoff_timeout_seconds=5.0,
-                    ready_timeout_seconds=1.0,
+                worker = (
+                    "import errno, os, socket\n"
+                    "try: socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+                    "except OSError as exc: assert exc.errno == errno.EPERM, exc\n"
+                    "else: raise AssertionError('worker created a new AF_UNIX socket')\n"
+                    "host, port = os.environ['ICODE_PROXY_LISTENER'].rsplit(':', 1)\n"
+                    "client = socket.create_connection((host, int(port)), timeout=2)\n"
+                    "client.sendall(b'CONNECT packages.example:443 HTTP/1.1\\r\\n"
+                    "Host: packages.example\\r\\n\\r\\n')\n"
+                    "response = bytearray()\n"
+                    "while not response.endswith(b'\\r\\n\\r\\n'):\n"
+                    "    response.extend(client.recv(1))\n"
+                    "assert response == b'HTTP/1.1 200 Connection Established"
+                    "\\r\\n\\r\\n', response\n"
+                    "client.sendall(b'worker-to-host-marker')\n"
+                    "client.shutdown(socket.SHUT_WR)\n"
+                    "expected = b'host-to-worker-marker'\n"
+                    "reply = bytearray()\n"
+                    "while len(reply) < len(expected):\n"
+                    "    reply.extend(client.recv(len(expected) - len(reply)))\n"
+                    "assert reply == expected, reply\n"
+                    "client.close()\n"
+                    "print('handoff-proxy-payload-ran')\n"
                 )
                 resolver = lambda hostname, port, resolver=None: (
                     ResolvedNetworkTarget(
@@ -266,43 +241,122 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                         sockaddr=upstream_listener.getsockname(),
                     ),
                 )
-                try:
-                    with mock.patch(
+                def execute() -> None:
+                    result_holder.append(execute_linux_leased_connect_candidate(
+                        [str(system_python), "-c", worker],
+                        cwd=workspace,
+                        sandbox=sandbox,
+                        policy=policy,
+                        scope=scope,
+                        timeout=15,
+                    ))
+
+                executor_thread = threading.Thread(target=execute, daemon=True)
+                with (
+                    mock.patch(
                         "icode.network_connector.resolve_public_tcp_targets",
                         side_effect=resolver,
-                    ):
-                        session.start()
+                    ),
+                    mock.patch.dict(os.environ, {
+                        "ICODE_PROXY_LISTENER": "198.51.100.9:443",
+                    }),
+                ):
+                    executor_thread.start()
+                    try:
                         upstream, _address = upstream_listener.accept()
-                        upstream.settimeout(3.0)
-                        self.assertEqual(
-                            upstream.recv(64), b"worker-to-host-marker",
+                    except socket.timeout:
+                        executor_thread.join(timeout=18)
+                        if result_holder and self._namespace_network_permission_denied(
+                            result_holder[0].output
+                        ):
+                            self.assertNotIn(
+                                "handoff-proxy-payload-ran", result_holder[0].output,
+                            )
+                            self.skipTest(
+                                "runner blocks user/network namespace setup; helper failed closed"
+                            )
+                        self.fail(
+                            "host proxy did not receive the worker CONNECT request: "
+                            + (str(result_holder[0]) if result_holder else "launcher still running")
                         )
-                        self.assertEqual(upstream.recv(1), b"")
-                        upstream.sendall(b"host-to-worker-marker")
-                        upstream.shutdown(socket.SHUT_WR)
-                        stdout, stderr = process.communicate(timeout=5)
-                except (HostConnectProxyError, ProxyHandoffError):
-                    stdout, stderr = process.communicate(timeout=3)
-                    if self._namespace_network_permission_denied(stderr):
-                        self.assertNotIn("handoff-proxy-payload-ran", stdout)
-                        self.skipTest(
-                            "runner blocks user/network namespace setup; helper failed closed"
-                        )
-                    raise
-                self.assertEqual(process.returncode, 0, stderr)
-                self.assertIn("handoff-proxy-payload-ran", stdout)
+                    upstream.settimeout(3.0)
+                    self.assertEqual(upstream.recv(64), b"worker-to-host-marker")
+                    self.assertEqual(upstream.recv(1), b"")
+                    upstream.sendall(b"host-to-worker-marker")
+                    upstream.shutdown(socket.SHUT_WR)
+                    executor_thread.join(timeout=18)
+                self.assertFalse(executor_thread.is_alive(), "trusted launcher did not finish")
+                result = result_holder[0]
+                self.assertIsNone(result.error, result.output)
+                self.assertEqual(result.exit_code, 0, result.output)
+                self.assertTrue(result.cleanup_ok)
+                self.assertIn("handoff-proxy-payload-ran", result.output)
             finally:
-                if process is not None and process.poll() is None:
-                    process.kill()
-                    process.communicate(timeout=3)
-                if session is not None:
-                    session.close()
+                if executor_thread is not None:
+                    executor_thread.join(timeout=18)
                 runtime.close()
+                upstream_listener.close()
                 if upstream is not None:
                     upstream.close()
-                upstream_listener.close()
-                sender_control.close()
-                host_control.close()
+
+    def test_helper未交接listener时launcher失败关闭scope且不运行payload(self) -> None:
+        from icode.approvals import ScriptedApprover
+        from icode.execution_broker import execute_linux_leased_connect_candidate
+        from icode.network_lease import (
+            NetworkLeaseAuthority,
+            NetworkLeaseValidationError,
+            NetworkPurpose,
+        )
+        from icode.network_proxy_scope import HostConnectRuntime
+
+        with temp_workspace() as root:
+            helper = root / "helper-exits-before-handoff"
+            helper.write_text("#!/bin/sh\nexit 37\n", encoding="ascii")
+            helper.chmod(0o755)
+            manifest = root / "helper.sha256"
+            manifest.write_text(
+                hashlib.sha256(helper.read_bytes()).hexdigest() + "\n",
+                encoding="ascii",
+            )
+            workspace = (root / "code").resolve()
+            workspace.mkdir()
+            policy = SandboxPolicy(
+                schema_version=1, run_id="failed-handoff", ticket_id="failed-handoff",
+                step="code", workspace_root=workspace, read_roots=(workspace,),
+                write_roots=(workspace,), deny_read_roots=(), deny_write_roots=(),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=5, output_limit_bytes=1024, protected_paths=(),
+            )
+            authority = NetworkLeaseAuthority()
+            issued = authority.request_lease(
+                policy,
+                approver=ScriptedApprover([True]),
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("packages.example",),
+                ttl_seconds=30,
+            )
+            runtime = HostConnectRuntime(authority, sweep_interval_seconds=0.01)
+            runtime.start()
+            scope = runtime.create_scope(
+                issued, policy, NetworkPurpose.PACKAGE_INSTALL,
+            )
+            marker = workspace / "payload-ran"
+            try:
+                result = execute_linux_leased_connect_candidate(
+                    ["/usr/bin/touch", str(marker)],
+                    cwd=workspace,
+                    sandbox=LandlockSandbox(helper=str(helper), manifest=str(manifest)),
+                    policy=policy,
+                    scope=scope,
+                    timeout=3,
+                )
+                self.assertEqual(result.error, "proxy_setup_failed")
+                self.assertTrue(result.cleanup_ok)
+                self.assertFalse(marker.exists())
+                with self.assertRaises(NetworkLeaseValidationError):
+                    scope.verify_lease()
+            finally:
+                runtime.close()
 
     def test错误host_ack时payload不会启动(self) -> None:
         from icode.linux_proxy_handoff import create_loopback_listener_handoff_channel
