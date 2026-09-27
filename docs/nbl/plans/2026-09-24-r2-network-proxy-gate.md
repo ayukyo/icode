@@ -254,6 +254,11 @@
 - **本机验收刷新：**定向套件完整重跑 161 项，153 通过、8 跳过。首次全量定向运行有一次既有 FD alias 计数用例间歇失败；单测及连续 40 次复测通过，完整定向套件重跑通过，但触发时序的根因未确认，故记为非复现而非已解释修复。随后 `scripts/preflight.py --only tests`、子模块、密钥扫描快照、竞品/治理/站点检查、AST 与 `git diff --check` 通过。密钥扫描只包含 Git 跟踪文件及本次差异，未触碰未跟踪用户数据。此为本机结果，不代表远端 CI。
 - **未完成边界：**本片只证明 Linux x86_64 本机候选路径的 host-loopback 隔离与受控本地桥接；测试权限不足仍按 fail-closed skip，不计正向通过。未测真实公网、生产 DNS、Linux ARM64/macOS/Windows；没有提升 conformance、`policy_contract_ready` 或自动模式，网络默认仍 DENY。代码与文档待提交推送，远端 CI 状态待验证。
 
+## 2026-09-28 Asia/Shanghai：Linux candidate 的租约到期隧道回归（本机）
+
+- **缺口与新增回归：**原 Linux candidate 真实端到端只覆盖 live lease 下连接本机 upstream、双向传输与半关闭，租约到期关闭现有 CONNECT 两端仍分散在 authority/server 单元集成测试里。本机新增/收紧真实 helper → network namespace → SCM_RIGHTS listener → lease-bound CONNECT 的长连接路径：候选在有效授权下拿到 `200` 并双向传输；短 TTL 到期后 worker 端和 upstream peer 都必须得到 EOF；结束后复用已过期 scope 再启动写 marker 命令，必须在 helper/payload 启动前失败关闭。
+- **本机证据与边界：**项目 Python 3.11.15 单项端到端回归通过（约 5.3 秒）；完整 Linux PID cleanup 模块 22 项通过。全仓 `.venv` Python 3.11 `preflight.py --only tests` 通过；子模块、竞品/治理/站点检查、AST 编译及 `git diff --check` 通过。DNS resolver 只在该测试中把 `packages.example:443` 映射至本机临时 loopback upstream；生产数值目标筛选未放宽，不访问公网。该测试仍属于 Linux 候选实验，不接 `ToolContext`/Agent；远端 CI 与跨架构验收尚待运行。本项是新增直接行为证据，尚未写入十项 conformance 的 `network_temporary_allowlist` 分数，不能据此宣布 R2 ready。
+
 ## 2026-09-28 Asia/Shanghai：CI #256 与 macOS Seatbelt 代理范围复核
 
 - **推送后验证：**commit `9d7d2a09817b87669c454470cb6259ebee5a392c` 的 [CI #256](https://github.com/ayukyo/icode/actions/runs/36349914123) 和 Pages [#166](https://github.com/ayukyo/icode/actions/runs/36349914269) 均成功。Python 3.11/3.12、Windows、wheel 及 Linux/macOS native workflow job 通过；这只说明这些 workflow 步骤通过，不代表原生隔离 ready。Linux native conformance 为 `7/10`、macOS 为 `6/10`，均 `critical_passed=false`、`ready=false`。worker 网络仍为 `DENY`，自动模式关闭。

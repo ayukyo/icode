@@ -222,7 +222,7 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("isolated-loopback-only", result.stdout)
 
-    def test可信helper交接listener并收到host_ack后才启动payload(self) -> None:
+    def test可信helper交接后授权隧道随租约到期关闭(self) -> None:
         from icode.execution_broker import execute_linux_leased_connect_candidate
         from icode.approvals import ScriptedApprover
         from icode.network_destination import ResolvedNetworkTarget
@@ -281,7 +281,7 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                 approver=ScriptedApprover([True]),
                 purpose=NetworkPurpose.PACKAGE_INSTALL,
                 allowed_domains=("packages.example",),
-                ttl_seconds=60,
+                ttl_seconds=5,
             )
             runtime = HostConnectRuntime(authority, sweep_interval_seconds=0.01)
             runtime.start()
@@ -329,8 +329,10 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                     "while len(reply) < len(expected):\n"
                     "    reply.extend(client.recv(len(expected) - len(reply)))\n"
                     "assert reply == expected, reply\n"
+                    "client.settimeout(10)\n"
+                    "assert client.recv(1) == b'', 'lease expiry did not close client'\n"
                     "client.close()\n"
-                    "print('handoff-proxy-payload-ran')\n"
+                    "print('lease-expiry-closed-client')\n"
                 )
                 resolver = lambda hostname, port, resolver=None: (
                     ResolvedNetworkTarget(
@@ -378,18 +380,33 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                             "host proxy did not receive the worker CONNECT request: "
                             + (str(result_holder[0]) if result_holder else "launcher still running")
                         )
-                    upstream.settimeout(3.0)
+                    upstream.settimeout(10.0)
                     self.assertEqual(upstream.recv(64), b"worker-to-host-marker")
-                    self.assertEqual(upstream.recv(1), b"")
                     upstream.sendall(b"host-to-worker-marker")
-                    upstream.shutdown(socket.SHUT_WR)
+                    # The active tunnel must remain open until lease expiry,
+                    # then the authority must close the peer owned by relay.
+                    self.assertEqual(upstream.recv(1), b"")
                     executor_thread.join(timeout=18)
                 self.assertFalse(executor_thread.is_alive(), "trusted launcher did not finish")
                 result = result_holder[0]
                 self.assertIsNone(result.error, result.output)
                 self.assertEqual(result.exit_code, 0, result.output)
                 self.assertTrue(result.cleanup_ok)
-                self.assertIn("handoff-proxy-payload-ran", result.output)
+                self.assertIn("lease-expiry-closed-client", result.output)
+                self.assertGreaterEqual(
+                    time.monotonic_ns(), issued.lease.expires_at_monotonic_ns,
+                )
+
+                expired_marker = workspace / "expired-scope-payload-ran"
+                expired_result = execute_linux_leased_connect_candidate(
+                    [str(system_python), "-c",
+                     f"from pathlib import Path; Path({str(expired_marker)!r}).touch()"],
+                    cwd=workspace, sandbox=sandbox, policy=policy, scope=scope,
+                    timeout=3,
+                )
+                self.assertEqual(expired_result.error, "proxy_setup_failed")
+                self.assertTrue(expired_result.cleanup_ok)
+                self.assertFalse(expired_marker.exists())
             finally:
                 if executor_thread is not None:
                     executor_thread.join(timeout=18)
