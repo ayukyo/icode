@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
+import stat
+import subprocess
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -125,6 +129,134 @@ class TestSnapshotGitFileSemantics(unittest.TestCase):
                 snapshot_fingerprint(executable),
             )
             self.assertEqual(changed_files(non_executable, executable), ["run.sh"])
+
+
+class TestWindowsSnapshotReparseSafety(unittest.TestCase):
+    REPARSE_POINT_ATTRIBUTE = stat.FILE_ATTRIBUTE_REPARSE_POINT
+
+    @unittest.skipUnless(os.name == "nt", "requires a native Windows junction")
+    def test_native_windows_junction_is_rejected_before_target_scan(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-r3-junction-") as temporary:
+            base = Path(temporary)
+            workspace = base / "workspace"
+            outside = base / "outside"
+            junction = workspace / "junction"
+            workspace.mkdir()
+            outside.mkdir()
+            (outside / "secret.txt").write_text("outside", encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    "cmd.exe", "/d", "/c",
+                    f'mklink /J "{junction}" "{outside}"',
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(
+                result.returncode,
+                0,
+                f"could not create native test junction: {result.stdout} {result.stderr}",
+            )
+
+            with self.assertRaisesRegex(OSError, "unsupported reparse point"):
+                snapshot_workspace(workspace)
+
+    def test_windows_snapshot_rejects_reparse_workspace_root(self) -> None:
+        from icode import workspace_snapshot as snapshot_module
+
+        with temp_workspace() as ws:
+            real_lstat = Path.lstat
+            scanned: list[Path] = []
+
+            def fake_lstat(path: Path):
+                if path == ws:
+                    return SimpleNamespace(
+                        st_mode=stat.S_IFDIR,
+                        st_file_attributes=self.REPARSE_POINT_ATTRIBUTE,
+                    )
+                return real_lstat(path)
+
+            def fake_scandir(directory):
+                scanned.append(Path(directory))
+                raise AssertionError("reparse workspace root must not be scanned")
+
+            fake_os = SimpleNamespace(name="nt", scandir=fake_scandir)
+            def is_junction(_path: Path) -> bool:
+                raise AssertionError("snapshot must use stat reparse attributes")
+
+            with patch.object(snapshot_module, "os", fake_os), patch.object(
+                Path, "lstat", fake_lstat,
+            ), patch.object(Path, "is_junction", is_junction, create=True):
+                with self.assertRaises(OSError):
+                    snapshot_workspace(ws)
+
+            self.assertEqual(scanned, [])
+
+    def test_windows_snapshot_rejects_junction_before_enumerating_target(self) -> None:
+        from icode import workspace_snapshot as snapshot_module
+
+        with temp_workspace() as ws:
+            junction = ws / "junction"
+            junction.mkdir()
+            (junction / "outside-secret.txt").write_text("not part of workspace", encoding="utf-8")
+            scanned: list[Path] = []
+            real_scandir = os.scandir
+            reparse_point_attribute = self.REPARSE_POINT_ATTRIBUTE
+
+            class FakeEntry:
+                def __init__(self, entry) -> None:
+                    self._entry = entry
+                    self.name = entry.name
+                    self.path = entry.path
+
+                def stat(self, *, follow_symlinks: bool = True):
+                    result = self._entry.stat(follow_symlinks=follow_symlinks)
+                    if Path(self.path) == junction:
+                        return SimpleNamespace(
+                            st_mode=stat.S_IFDIR,
+                            st_file_attributes=reparse_point_attribute,
+                        )
+                    return result
+
+            class FakeScandir:
+                def __init__(self, directory) -> None:
+                    self.directory = Path(directory)
+                    self._real_iterator = None
+                    self._entries = ()
+
+                def __enter__(self):
+                    scanned.append(self.directory)
+                    self._real_iterator = real_scandir(self.directory)
+                    self._entries = tuple(
+                        FakeEntry(entry) for entry in self._real_iterator
+                    )
+                    return iter(self._entries)
+
+                def __exit__(self, *_args) -> None:
+                    assert self._real_iterator is not None
+                    self._real_iterator.close()
+
+            fake_os = SimpleNamespace(
+                name="nt",
+                scandir=FakeScandir,
+                fsencode=os.fsencode,
+            )
+
+            def is_junction(_path: Path) -> bool:
+                raise AssertionError("snapshot must use stat reparse attributes")
+
+            with patch.object(snapshot_module, "os", fake_os), patch.object(
+                Path,
+                "is_junction",
+                is_junction,
+                create=True,
+            ):
+                with self.assertRaises(OSError):
+                    snapshot_workspace(ws)
+
+            self.assertEqual(scanned, [ws])
 
 
 @unittest.skipUnless(

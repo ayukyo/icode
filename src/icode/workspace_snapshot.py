@@ -12,6 +12,7 @@ from pathlib import Path
 _MAX_GIT_TREE_ENTRIES = 250_000
 _MAX_GIT_TREE_DEPTH = 128
 _MAX_GIT_TREE_BYTES = 256 * 1024 * 1024
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = stat.FILE_ATTRIBUTE_REPARSE_POINT
 
 
 class WorktreeTreeUnavailable(RuntimeError):
@@ -77,25 +78,64 @@ def snapshot_workspace(root: Path) -> dict[str, str]:
             os.close(root_fd)
         return out
 
-    # Windows 暂无目录 fd + O_NOFOLLOW：不跟随链接/接合点，且自动模式
-    # 仍保持阻断。路径离开根或类型在扫描中改变时按错误处理。
-    if root.is_symlink() or getattr(root, "is_junction", lambda: False)():
+    return _snapshot_windows_workspace(root)
+
+
+def _snapshot_windows_workspace(root: Path) -> dict[str, str]:
+    """Snapshot Windows paths without descending through reparse points.
+
+    Windows does not provide the POSIX directory-fd + O_NOFOLLOW traversal
+    used above. Static symlinks are represented by their target text; junctions,
+    mount points, and other reparse points fail closed instead of being silently
+    omitted or enumerated. Path-based checks do not prevent a same-user process
+    from replacing an ancestor between validation and access.
+    """
+    try:
+        root_status = root.lstat()
+    except OSError:
+        raise OSError("snapshot root is unavailable") from None
+    root_attributes = getattr(root_status, "st_file_attributes", 0)
+    if (
+        stat.S_ISLNK(root_status.st_mode)
+        or root_attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT
+        or not stat.S_ISDIR(root_status.st_mode)
+    ):
         raise OSError("snapshot root must be a real directory")
+
     anchor = root.resolve(strict=True)
-    for path in sorted(root.rglob("*")):
-        rel_parts = path.relative_to(root).parts
-        if ".icode_output" in rel_parts or "__pycache__" in rel_parts:
-            continue
-        relative = path.relative_to(root).as_posix()
-        if path.is_symlink():
-            out[relative] = _entry_hash(
-                "symlink", "120000", os.fsencode(os.readlink(path)),
-            )
-        elif getattr(path, "is_junction", lambda: False)():
-            continue
-        elif path.is_file():
-            path.resolve(strict=True).relative_to(anchor)
-            out[relative] = _entry_hash("file", "100644", path.read_bytes())
+    out: dict[str, str] = {}
+
+    def scan(directory: Path, parts: tuple[str, ...]) -> None:
+        with os.scandir(directory) as iterator:
+            entries = sorted(iterator, key=lambda item: item.name)
+            for entry in entries:
+                if entry.name in {".icode_output", "__pycache__"}:
+                    continue
+                child_parts = (*parts, entry.name)
+                relative = Path(*child_parts).as_posix()
+                status = entry.stat(follow_symlinks=False)
+                mode = status.st_mode
+                if stat.S_ISLNK(mode):
+                    target = os.readlink(entry.path)
+                    out[relative] = _entry_hash(
+                        "symlink", "120000", os.fsencode(target),
+                    )
+                    continue
+                attributes = getattr(status, "st_file_attributes", 0)
+                if attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT:
+                    raise OSError("snapshot contains an unsupported reparse point")
+
+                path = Path(entry.path)
+                if stat.S_ISDIR(mode):
+                    path.resolve(strict=True).relative_to(anchor)
+                    scan(path, child_parts)
+                elif stat.S_ISREG(mode):
+                    path.resolve(strict=True).relative_to(anchor)
+                    out[relative] = _entry_hash(
+                        "file", "100644", path.read_bytes(),
+                    )
+
+    scan(root, ())
     return out
 
 
