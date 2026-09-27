@@ -205,3 +205,18 @@
 
 - wrapper-close 修复后的 `.venv` Python 3.11.15 完整测试通过；handoff/native-probe 29/29，dup/SIGINT 30/30、子模块门禁、竞品/治理/站点检查、限定文件扫描、compileall 和 diff check 通过。
 - 精确树独立复审与 commit/push 后远端 CI 仍为硬门槛；当前不开放 R2 网络或自动模式。
+
+## 2026-09-27 下一片设计：Linux trusted sender → receiver → loopback accept
+
+- **固定源码研究：**Codex `openai/codex` SHA [`41f9084b30812db321a0b592def4f500d1e79cf4`](https://github.com/openai/codex/commit/41f9084b30812db321a0b592def4f500d1e79cf4)，Apache-2.0。`proxy_lifecycle.rs` 通过私有 Unix 通道交接单个 loopback TCP listener FD；host 校验后 ACK，sandbox command 在 ACK 后才运行。该 SHA 的 README 称 `socketpair()` 会被阻止，但可执行 `managed_proxy.rs` 测试明确允许 AF_UNIX `socketpair()` 并只拒绝 AF_UNIX `socket()`；ICODE 以可执行源码/测试为准，不把文档表述提升为已证明能力。[handoff 源码](https://github.com/openai/codex/blob/41f9084b30812db321a0b592def4f500d1e79cf4/codex-rs/linux-sandbox/src/proxy_lifecycle.rs) · [managed proxy 测试](https://github.com/openai/codex/blob/41f9084b30812db321a0b592def4f500d1e79cf4/codex-rs/linux-sandbox/tests/suite/managed_proxy.rs#L806-L845)
+- **采纳 / 暂缓：**采纳单 listener FD、独占控制通道、host 收到并验证后 ACK、ACK 后才启动 payload 的顺序；暂缓 CONNECT 解析/lease/relay、真实上游代理、Agent/ToolContext 接线和网络策略开放，不复制实现代码、不加运行依赖。对跨 netns socket 语义以 ICODE 自身真实回环测试验收。
+- **本片验收：**Linux native helper 内建立 `127.0.0.1:0` TCP listener，经现有 credential-bound receiver 交给 host；host 发送严格 ACK 后 payload 才启动，并通过该 listener 与 host 收发 marker。验证 worker 新建 AF_UNIX `socket()` 被 seccomp 拒绝、错误 ACK/控制 fd 缺失时 payload 不启动、失败路径关闭 FD/子进程；namespace 受限的 runner 只能记为 skip/degraded，不能计通过。所有流量限于本机 loopback，不访问公网。
+- **边界：**这是受控原生 helper 的 handoff 与 host accept 证明，不是 CONNECT proxy、代理目标授权或“worker 只能访问获批代理”的完整旁路证明。worker/Agent 网络与自动模式保持关闭；Linux 双架构 CI 和 OS 级 bypass 验收仍未满足。
+
+### 2026-09-27 UTC 阶段末：nonce-bound listener ACK
+
+- **实现：**native helper 在 loopback-only netns 中创建仅绑定 `127.0.0.1` 的 TCP listener，用 `getrandom(GRND_NONBLOCK)` 生成每次 handoff 独立的 16-byte challenge，与单个 listener FD 同包发送；host ACK 必须回显完整 challenge，native 才继续 fork/exec payload。随机源不可用、通道异常、超时、错误 ACK 一律关闭 listener/control 并不启动 payload。Python receiver 继续验证直接子进程 PID、消息长度、唯一 FD 与 listener 类型/地址；成功返回后才将 nonce 一次性绑定到 listener 对象和原 control socket，ACK 需匹配二者且只能使用一次。
+- **TDD 与独立复审：**独立复审先发现固定 ACK 可在 listener 到达前排队，真实 native 回归在旧实现上观察到 payload 错误启动（RED）；改用随机 nonce 后，预排队旧 ACK、正确前缀+正确长度但错误 nonce、错误控制通道、重复 ACK 均拒绝且 marker 不产生。相关失败接收测试改为 4 秒有界等待。独立只读复审未发现 Critical/Important，Ready to merge 仅针对此 handoff slice；该结论不代表生产代理接线或完整 R2 网络门通过。
+- **本机验收：**本阶段完整相关 handoff/native-probe 套件 48 项通过；4 条关键真实 namespace/native 边界连续 20 轮（80 次运行）通过且无平台 skip。Python 3.11.15 Linux x86_64 安装式 wheel 构建、检查、隔离安装、安装后 probe、宿主崩溃清理和 Git status broker probe 全通过；preflight 全量 unittest 与 submodule 门通过；`-Werror` 原生构建由真实集成测试覆盖。推送后的 Linux ARM64 / macOS / Windows CI 尚待回收。
+- **上游对照与范围：**沿用 Codex 固定源码 SHA [`41f9084b30812db321a0b592def4f500d1e79cf4`](https://github.com/openai/codex/commit/41f9084b30812db321a0b592def4f500d1e79cf4)（Apache-2.0）的私有 Unix listener FD handoff / host ACK 机制作为架构参考；本阶段新增 nonce 是针对 ICODE 审查问题的本地强化，不归因于上游，也未复制上游实现或增加依赖。尝试刷新 Codex 当前源码页时 GitHub 未给出可核验的最新 commit SHA，因此不把 unpinned `main` 当成新固定观察，后续可访问时再复核。
+- **严格边界与下一步：**真实测试只在本机 loopback 完成 marker 往返，不访问公网。此片未实现 host bridge 到授权上游、CONNECT listener/TLS/双向 relay、production proxy lifecycle、worker/Agent/ToolContext 接线、跨平台“只能到代理”路由或完整原生 conformance；netns helper 仍为不接产品执行路径的受控候选。网络默认 `DENY`，自动模式、Git 工具入口继续关闭；R2/R3 均未完成。下一阶段先把可信 host listener 生命周期与既有 lease/数值地址连接器按 scope 接成 loopback-only 验收闭环，同时维持 worker 网络拒绝，跨平台 OS 强制另列门禁。

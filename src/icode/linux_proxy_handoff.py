@@ -1,8 +1,9 @@
 """Fail-closed Linux receiver for a private loopback-listener FD handoff.
 
-This module only creates the private control channel and validates one received
-listener. It does not start a proxy, relay bytes, authorize destinations, or
-enable network access for an Agent or sandboxed process.
+This module creates the private control channel, validates one received
+listener and exposes an explicit host ACK. It does not start a proxy, relay
+bytes, authorize destinations, or enable network access for an Agent or
+sandboxed process.
 """
 
 from __future__ import annotations
@@ -17,12 +18,17 @@ import struct
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Callable
 
 _HANDOFF_MESSAGE = b"ICODE_PROXY_LISTENER_V1"
+_HANDOFF_ACK = b"ICODE_PROXY_LISTENER_ACK_V1"
+_HANDOFF_NONCE_SIZE = 16
 _MAX_RECEIVED_FDS = 4
 _CREDENTIALS = struct.Struct("3i")
 _HANDOFF_ERROR = "Linux proxy listener handoff is invalid"
+_ACK_STATE_LOCK = threading.Lock()
+_ACK_STATE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 class ProxyHandoffError(ConnectionError):
@@ -121,7 +127,7 @@ def _receive_message(
                 continue
             try:
                 payload, ancillary, flags, address = control.recvmsg(
-                    len(_HANDOFF_MESSAGE) + 1,
+                    len(_HANDOFF_MESSAGE) + _HANDOFF_NONCE_SIZE + 1,
                     ancillary_bytes,
                     receive_flags,
                 )
@@ -221,7 +227,7 @@ def _receive_loopback_listener_impl(
     expected_pid: int,
     timeout_seconds: float,
     cancellation: threading.Event | None,
-) -> socket.socket:
+) -> tuple[socket.socket, bytes]:
     if not sys.platform.startswith("linux"):
         raise ProxyHandoffError(_HANDOFF_ERROR)
     if (
@@ -240,6 +246,7 @@ def _receive_loopback_listener_impl(
 
     descriptors: list[int] = []
     listener_holder: list[socket.socket] = []
+    nonce_holder: list[bytes] = []
     try:
         if cancellation is not None and cancellation.is_set():
             raise ProxyHandoffError(_HANDOFF_ERROR)
@@ -255,13 +262,15 @@ def _receive_loopback_listener_impl(
             if (
                 flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC)
                 or malformed
-                or payload != _HANDOFF_MESSAGE
+                or not payload.startswith(_HANDOFF_MESSAGE)
+                or len(payload) != len(_HANDOFF_MESSAGE) + _HANDOFF_NONCE_SIZE
                 or len(descriptors) != 1
                 or len(credentials) != 1
                 or credentials[0][0] != expected_pid
             ):
                 raise ProxyHandoffError(_HANDOFF_ERROR)
             listener_holder.append(_wrap_received_listener(descriptors[0]))
+            nonce_holder.append(payload[len(_HANDOFF_MESSAGE):])
 
         _receive_message(
             control,
@@ -270,7 +279,7 @@ def _receive_loopback_listener_impl(
             cancellation=cancellation,
             accept_message=validate_and_adopt,
         )
-        return listener_holder.pop()
+        return listener_holder.pop(), nonce_holder.pop()
     except ProxyHandoffError:
         raise
     except (OSError, OverflowError, TypeError, ValueError, struct.error):
@@ -307,15 +316,24 @@ def receive_loopback_listener(
     """
 
     if threading.current_thread() is not threading.main_thread():
-        return _receive_loopback_listener_impl(
+        listener, nonce = _receive_loopback_listener_impl(
             control,
             expected_pid=expected_pid,
             timeout_seconds=timeout_seconds,
             cancellation=None,
         )
+        try:
+            _register_ack_state(listener, control, nonce)
+        except BaseException:
+            try:
+                listener.close()
+            except BaseException:
+                pass
+            raise
+        return listener
 
     cancellation = threading.Event()
-    outcome: list[socket.socket | BaseException] = []
+    outcome: list[tuple[socket.socket, bytes] | BaseException] = []
 
     def receive_on_worker() -> None:
         try:
@@ -380,10 +398,14 @@ def receive_loopback_listener(
                     # Deliver the socket only inside the retry-protected region.
                     # If a signal lands while evaluating this return, retain
                     # ownership here and close it on the next cleanup pass.
-                    return outcome[0]
+                    listener, nonce = outcome[0]
+                    _register_ack_state(listener, control, nonce)
+                    return listener
                 for value in outcome:
-                    if isinstance(value, socket.socket):
-                        value.close()
+                    if isinstance(value, tuple):
+                        listener, _nonce = value
+                        _forget_ack_state(listener)
+                        listener.close()
                 break
             except BaseException as exc:
                 # Repeated caller signals must not strand worker-owned FDs;
@@ -392,3 +414,60 @@ def receive_loopback_listener(
                     cleanup_exception = exc
         if active_exception is None and cleanup_exception is not None:
             raise cleanup_exception
+
+
+def _register_ack_state(
+    listener: socket.socket,
+    control: socket.socket,
+    nonce: bytes,
+) -> None:
+    if len(nonce) != _HANDOFF_NONCE_SIZE:
+        raise ProxyHandoffError(_HANDOFF_ERROR)
+    with _ACK_STATE_LOCK:
+        if listener in _ACK_STATE:
+            raise ProxyHandoffError(_HANDOFF_ERROR)
+        _ACK_STATE[listener] = (control, nonce)
+
+
+def _forget_ack_state(listener: socket.socket) -> None:
+    with _ACK_STATE_LOCK:
+        _ACK_STATE.pop(listener, None)
+
+
+def acknowledge_loopback_listener_handoff(
+    control: socket.socket,
+    listener: socket.socket,
+) -> None:
+    """Release a trusted helper only after the host has prepared its bridge.
+
+    The caller must first successfully receive and validate the listener, then
+    establish whatever host-side accept/bridge ownership is required, and only
+    then send an ACK bound to this exact listener and its unpredictable
+    per-handoff nonce. The listener must be the object returned by the matching
+    successful receive call. An ACK is a one-way release; callers must
+    terminate the helper if their surrounding startup operation is
+    interrupted or fails.
+    """
+
+    if not sys.platform.startswith("linux"):
+        raise ProxyHandoffError(_HANDOFF_ERROR)
+    try:
+        _validate_control_socket(control)
+        if not isinstance(listener, socket.socket) or listener.fileno() < 0:
+            raise ProxyHandoffError(_HANDOFF_ERROR)
+        with _ACK_STATE_LOCK:
+            state = _ACK_STATE.get(listener)
+            if state is None or state[0] is not control:
+                raise ProxyHandoffError(_HANDOFF_ERROR)
+            del _ACK_STATE[listener]
+        payload = _HANDOFF_ACK + state[1]
+        acknowledged = control.send(
+            payload,
+            socket.MSG_DONTWAIT | socket.MSG_NOSIGNAL,
+        )
+    except ProxyHandoffError:
+        raise
+    except (OSError, TypeError, ValueError):
+        raise ProxyHandoffError(_HANDOFF_ERROR) from None
+    if acknowledged != len(payload):
+        raise ProxyHandoffError(_HANDOFF_ERROR)

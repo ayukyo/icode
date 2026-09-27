@@ -26,10 +26,13 @@
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/ioctl.h>
+#include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef LANDLOCK_ACCESS_FS_REFER
@@ -58,6 +61,7 @@
                   LANDLOCK_ACCESS_FS_MAKE_BLOCK | LANDLOCK_ACCESS_FS_MAKE_SYM | \
                   LANDLOCK_ACCESS_FS_REFER | LANDLOCK_ACCESS_FS_TRUNCATE)
 #define ICODE_SOCK_TYPE_MASK 0x0fU
+enum { ICODE_HANDOFF_NONCE_SIZE = 16 };
 
 struct metadata_read_root {
     const char *path;
@@ -157,6 +161,246 @@ static int parse_u64_decimal(const char *value, uint64_t *result) {
 #endif
     *result = (uint64_t)parsed;
     return 0;
+}
+
+static int close_inherited_descriptors(int preserved_descriptor) {
+    if (preserved_descriptor < 0) {
+        return (int)syscall(SYS_close_range, 3U, UINT_MAX, 0U);
+    }
+    if (preserved_descriptor < 3) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (preserved_descriptor > 3 &&
+        syscall(SYS_close_range, 3U,
+                (unsigned int)preserved_descriptor - 1U, 0U) != 0) {
+        return -1;
+    }
+    if (syscall(SYS_close_range,
+                (unsigned int)preserved_descriptor + 1U, UINT_MAX, 0U) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int validate_proxy_control_descriptor(int descriptor) {
+    if (descriptor < 3) {
+        errno = EINVAL;
+        return -1;
+    }
+    int domain = 0;
+    int type = 0;
+    struct ucred peer = {0};
+    socklen_t length = sizeof(int);
+    if (getsockopt(descriptor, SOL_SOCKET, SO_DOMAIN, &domain, &length) != 0 ||
+        length != sizeof(domain) || domain != AF_UNIX) {
+        errno = EPERM;
+        return -1;
+    }
+    length = sizeof(int);
+    if (getsockopt(descriptor, SOL_SOCKET, SO_TYPE, &type, &length) != 0 ||
+        length != sizeof(type) || type != SOCK_SEQPACKET) {
+        errno = EPERM;
+        return -1;
+    }
+    length = sizeof(peer);
+    if (getsockopt(descriptor, SOL_SOCKET, SO_PEERCRED, &peer, &length) != 0 ||
+        length != sizeof(peer) || peer.pid != getppid()) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+static int64_t monotonic_milliseconds(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+    return (int64_t)now.tv_sec * 1000 + (int64_t)now.tv_nsec / 1000000;
+}
+
+static int fill_handoff_nonce(unsigned char *nonce, size_t length) {
+    size_t offset = 0;
+    while (offset < length) {
+        ssize_t received = getrandom(
+            nonce + offset, length - offset, GRND_NONBLOCK);
+        if (received < 0 && errno == EINTR) continue;
+        if (received <= 0) {
+            if (received == 0) errno = EIO;
+            return -1;
+        }
+        offset += (size_t)received;
+    }
+    return 0;
+}
+
+static int wait_for_proxy_handoff_ack(
+    int descriptor,
+    const unsigned char *nonce,
+    size_t nonce_length
+) {
+    static const char expected_ack[] = "ICODE_PROXY_LISTENER_ACK_V1";
+    unsigned char expected_payload[
+        sizeof(expected_ack) - 1 + ICODE_HANDOFF_NONCE_SIZE];
+    if (nonce_length != ICODE_HANDOFF_NONCE_SIZE ||
+        nonce_length > sizeof(expected_payload) -
+        (sizeof(expected_ack) - 1)) {
+        errno = EINVAL;
+        return -1;
+    }
+    memcpy(expected_payload, expected_ack, sizeof(expected_ack) - 1);
+    memcpy(expected_payload + sizeof(expected_ack) - 1, nonce, nonce_length);
+    int64_t start = monotonic_milliseconds();
+    if (start < 0) return -1;
+    int64_t deadline = start + 30000;
+
+    for (;;) {
+        int64_t now = monotonic_milliseconds();
+        if (now < 0) return -1;
+        int64_t remaining = deadline - now;
+        if (remaining <= 0) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        struct pollfd wait_socket = {.fd = descriptor, .events = POLLIN};
+        int ready = poll(&wait_socket, 1,
+                         remaining > INT_MAX ? INT_MAX : (int)remaining);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0) return -1;
+        if (ready == 0) continue;
+        if (!(wait_socket.revents & POLLIN)) {
+            errno = EPIPE;
+            return -1;
+        }
+
+        unsigned char payload[sizeof(expected_payload)];
+        union {
+            struct cmsghdr alignment;
+            char bytes[CMSG_SPACE(sizeof(int) * 4)];
+        } ancillary = {0};
+        struct iovec data = {.iov_base = payload, .iov_len = sizeof(payload)};
+        struct msghdr message = {
+            .msg_iov = &data,
+            .msg_iovlen = 1,
+            .msg_control = ancillary.bytes,
+            .msg_controllen = sizeof(ancillary.bytes),
+        };
+        ssize_t received = recvmsg(descriptor, &message, MSG_CMSG_CLOEXEC);
+        if (received < 0 && errno == EINTR) continue;
+        if (received < 0) return -1;
+
+        int malformed = (message.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) != 0;
+        for (struct cmsghdr *header = CMSG_FIRSTHDR(&message); header;
+             header = CMSG_NXTHDR(&message, header)) {
+            if (header->cmsg_level == SOL_SOCKET &&
+                header->cmsg_type == SCM_RIGHTS &&
+                header->cmsg_len >= CMSG_LEN(0)) {
+                size_t bytes = header->cmsg_len - CMSG_LEN(0);
+                size_t complete = bytes - (bytes % sizeof(int));
+                const unsigned char *raw = (const unsigned char *)CMSG_DATA(header);
+                for (size_t offset = 0; offset < complete; offset += sizeof(int)) {
+                    int unexpected = -1;
+                    memcpy(&unexpected, raw + offset, sizeof(unexpected));
+                    if (unexpected >= 0) close(unexpected);
+                }
+            }
+            malformed = 1;
+        }
+        if (malformed || received != (ssize_t)(sizeof(expected_payload)) ||
+            memcmp(payload, expected_payload, sizeof(expected_payload)) != 0) {
+            errno = EPROTO;
+            return -1;
+        }
+        return 0;
+    }
+}
+
+static int handoff_loopback_listener(int control_descriptor) {
+    static const char handoff_message[] = "ICODE_PROXY_LISTENER_V1";
+    int listener = -1;
+    struct sockaddr_in address = {0};
+    socklen_t address_length = sizeof(address);
+    char endpoint[64];
+    unsigned char nonce[ICODE_HANDOFF_NONCE_SIZE];
+    unsigned char handoff_payload[
+        sizeof(handoff_message) - 1 + ICODE_HANDOFF_NONCE_SIZE];
+
+    listener = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    if (listener < 0) goto fail;
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    if (bind(listener, (struct sockaddr *)&address, sizeof(address)) != 0 ||
+        listen(listener, 16) != 0 ||
+        getsockname(listener, (struct sockaddr *)&address, &address_length) != 0)
+        goto fail;
+    if (address_length != sizeof(address) ||
+        address.sin_addr.s_addr != htonl(INADDR_LOOPBACK) ||
+        ntohs(address.sin_port) == 0) {
+        errno = EINVAL;
+        goto fail;
+    }
+    int endpoint_size = snprintf(endpoint, sizeof(endpoint), "127.0.0.1:%u",
+                                 (unsigned int)ntohs(address.sin_port));
+    if (endpoint_size < 0 || (size_t)endpoint_size >= sizeof(endpoint)) {
+        errno = EINVAL;
+        goto fail;
+    }
+    if (setenv("ICODE_PROXY_LISTENER", endpoint, 1) != 0) {
+        goto fail;
+    }
+    if (fill_handoff_nonce(nonce, sizeof(nonce)) != 0) goto fail;
+    memcpy(handoff_payload, handoff_message, sizeof(handoff_message) - 1);
+    memcpy(handoff_payload + sizeof(handoff_message) - 1,
+           nonce, sizeof(nonce));
+
+    struct iovec data = {
+        .iov_base = handoff_payload,
+        .iov_len = sizeof(handoff_payload),
+    };
+    union {
+        struct cmsghdr alignment;
+        char bytes[CMSG_SPACE(sizeof(listener))];
+    } ancillary = {0};
+    struct msghdr message = {
+        .msg_iov = &data,
+        .msg_iovlen = 1,
+        .msg_control = ancillary.bytes,
+        .msg_controllen = sizeof(ancillary.bytes),
+    };
+    struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+    if (!header) {
+        errno = EINVAL;
+        goto fail;
+    }
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    header->cmsg_len = CMSG_LEN(sizeof(listener));
+    memcpy(CMSG_DATA(header), &listener, sizeof(listener));
+    ssize_t sent;
+    do {
+        sent = sendmsg(control_descriptor, &message, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+    if (sent != (ssize_t)sizeof(handoff_payload)) {
+        if (sent >= 0) errno = EIO;
+        goto fail;
+    }
+    if (wait_for_proxy_handoff_ack(
+            control_descriptor, nonce, sizeof(nonce)) != 0) goto fail;
+
+    if (close(listener) != 0) goto fail;
+    listener = -1;
+    if (close(control_descriptor) != 0) goto fail;
+    return 0;
+
+fail: {
+        int saved_errno = errno ? errno : EIO;
+        if (listener >= 0) close(listener);
+        close(control_descriptor);
+        unsetenv("ICODE_PROXY_LISTENER");
+        errno = saved_errno;
+        perror("loopback listener handoff");
+        return -1;
+    }
 }
 
 static int add_metadata_path(int ruleset, const struct metadata_read_root *root) {
@@ -764,11 +1008,16 @@ static int supervise_task(pid_t host_parent, const char *workspace,
                           char **command,
                           int workspace_read_only,
                           int network_loopback_only,
+                          int proxy_control_descriptor,
                           const char *setgroups_path,
                           const char *uid_map_path) {
     int mapless = enter_task_namespaces(
         host_parent, setgroups_path, uid_map_path, network_loopback_only);
     if (mapless < 0) return 1;
+    if (proxy_control_descriptor >= 0 &&
+        handoff_loopback_listener(proxy_control_descriptor) != 0) {
+        return 1;
+    }
     int control[2];
     if (pipe2(control, O_CLOEXEC) != 0) {
         perror("pipe2 sandbox parent");
@@ -807,16 +1056,12 @@ static int supervise_task(pid_t host_parent, const char *workspace,
 
 static int run_helper(int argc, char **argv, const char *setgroups_path,
                       const char *uid_map_path) {
-    /* Landlock cannot revoke a writable file already open in the host. */
-    if (syscall(SYS_close_range, 3U, UINT_MAX, 0U) != 0) {
-        perror("close_range inherited descriptors");
-        return 1;
-    }
     if (argc < 7 || strcmp(argv[1], "--workspace") != 0 ||
         strcmp(argv[3], "--parent-pid") != 0) {
         fprintf(stderr,
                 "usage: icode-landlock --workspace PATH --parent-pid PID "
                 "[--workspace-read-only] [--network-loopback-only] "
+                "[--proxy-control-fd FD] "
                 "[--runtime-read PATH]... "
                 "[--metadata-read PATH DEVICE INODE]... "
                 "[--execute-only PATH DEVICE INODE] "
@@ -848,6 +1093,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     size_t execute_only_count = 0;
     int workspace_read_only = 0;
     int network_loopback_only = 0;
+    int proxy_control_descriptor = -1;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
         if (strcmp(argv[command_index], "--workspace-read-only") == 0) {
@@ -870,6 +1116,20 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
             }
             network_loopback_only = 1;
             command_index += 1;
+        } else if (strcmp(argv[command_index], "--proxy-control-fd") == 0) {
+            uint64_t descriptor_value = 0;
+            if (proxy_control_descriptor >= 0 ||
+                command_index + 1 >= argc ||
+                parse_u64_decimal(argv[command_index + 1], &descriptor_value) != 0 ||
+                descriptor_value < 3 || descriptor_value > INT_MAX) {
+                fprintf(stderr, "invalid proxy control descriptor\n");
+                free(runtime_roots);
+                free(metadata_roots);
+                free(execute_only);
+                return 2;
+            }
+            proxy_control_descriptor = (int)descriptor_value;
+            command_index += 2;
         } else if (strcmp(argv[command_index], "--runtime-read") == 0) {
             if (command_index + 1 >= argc || argv[command_index + 1][0] != '/') {
                 fprintf(stderr, "invalid runtime root\n");
@@ -958,6 +1218,30 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         return 2;
     }
     ++command_index;
+    if (proxy_control_descriptor >= 0 && !network_loopback_only) {
+        fprintf(stderr, "proxy control descriptor requires loopback-only mode\n");
+        free(runtime_roots);
+        free(metadata_roots);
+        free(execute_only);
+        return 2;
+    }
+    if (proxy_control_descriptor >= 0 &&
+        validate_proxy_control_descriptor(proxy_control_descriptor) != 0) {
+        fprintf(stderr, "proxy control descriptor is not a trusted channel\n");
+        free(runtime_roots);
+        free(metadata_roots);
+        free(execute_only);
+        return 1;
+    }
+    /* Preserve only the one authenticated bootstrap endpoint, if requested. */
+    if (close_inherited_descriptors(proxy_control_descriptor) != 0) {
+        perror("close_range inherited descriptors");
+        if (proxy_control_descriptor >= 0) close(proxy_control_descriptor);
+        free(runtime_roots);
+        free(metadata_roots);
+        free(execute_only);
+        return 1;
+    }
     if (install_parent_death_signal((pid_t)parent_value) != 0 ||
         restore_child_reaping() != 0) {
         free(runtime_roots);
@@ -987,6 +1271,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         execute_only_count > 0 ? execute_only : NULL, execute_only_count,
         argv + command_index,
         workspace_read_only, network_loopback_only,
+        proxy_control_descriptor,
         setgroups_path, uid_map_path);
     free(workspace);
     free(runtime_roots);

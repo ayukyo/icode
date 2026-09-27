@@ -16,6 +16,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+_HANDOFF_PREFIX = b"ICODE_PROXY_LISTENER_V1"
+_HANDOFF_NONCE = bytes.fromhex("00112233445566778899aabbccddeeff")
+_HANDOFF_PACKET = _HANDOFF_PREFIX + _HANDOFF_NONCE
+_HANDOFF_ACK = b"ICODE_PROXY_LISTENER_ACK_V1" + _HANDOFF_NONCE
+
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "仅 Linux 支持 SCM_RIGHTS receiver")
 class TestLinuxProxyHandoff(unittest.TestCase):
@@ -24,7 +29,7 @@ class TestLinuxProxyHandoff(unittest.TestCase):
         sender: socket.socket,
         descriptors: list[int],
         *,
-        payload: bytes = b"ICODE_PROXY_LISTENER_V1",
+        payload: bytes = _HANDOFF_PACKET,
     ) -> None:
         ancillary = []
         if descriptors:
@@ -50,6 +55,7 @@ class TestLinuxProxyHandoff(unittest.TestCase):
             "Linux proxy listener handoff receiver is not implemented",
         )
         from icode.linux_proxy_handoff import (
+            acknowledge_loopback_listener_handoff,
             create_loopback_listener_handoff_channel,
             receive_loopback_listener,
         )
@@ -64,12 +70,17 @@ class TestLinuxProxyHandoff(unittest.TestCase):
             source.listen(1)
             rights = array.array("i", [source.fileno()])
             sender_control.sendmsg(
-                [b"ICODE_PROXY_LISTENER_V1"],
+                [_HANDOFF_PACKET],
                 [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
             )
 
             received = receive_loopback_listener(
                 host_control, expected_pid=os.getpid(), timeout_seconds=1.0,
+            )
+            sender_control.settimeout(1.0)
+            acknowledge_loopback_listener_handoff(host_control, received)
+            self.assertEqual(
+                sender_control.recv(64), _HANDOFF_ACK,
             )
 
             source.close()
@@ -83,6 +94,46 @@ class TestLinuxProxyHandoff(unittest.TestCase):
         finally:
             for sock in (accepted, client, received, source,
                          sender_control, host_control):
+                if sock is not None:
+                    sock.close()
+
+    def test_ACK必须绑定已接收listener和原控制通道且只能成功一次(self) -> None:
+        from icode.linux_proxy_handoff import (
+            ProxyHandoffError,
+            acknowledge_loopback_listener_handoff,
+            create_loopback_listener_handoff_channel,
+            receive_loopback_listener,
+        )
+
+        host_control, sender_control = create_loopback_listener_handoff_channel()
+        other_host, other_sender = create_loopback_listener_handoff_channel()
+        source = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        received: socket.socket | None = None
+        try:
+            source.bind(("127.0.0.1", 0))
+            source.listen(1)
+            with self.assertRaises(ProxyHandoffError):
+                acknowledge_loopback_listener_handoff(host_control, source)
+            sender_control.settimeout(0.05)
+            with self.assertRaises(socket.timeout):
+                sender_control.recv(64)
+
+            self._send_fds(sender_control, [source.fileno()])
+            received = receive_loopback_listener(
+                host_control, expected_pid=os.getpid(), timeout_seconds=1.0,
+            )
+            with self.assertRaises(ProxyHandoffError):
+                acknowledge_loopback_listener_handoff(other_host, received)
+            acknowledge_loopback_listener_handoff(host_control, received)
+            sender_control.settimeout(1.0)
+            self.assertEqual(sender_control.recv(64), _HANDOFF_ACK)
+            with self.assertRaises(ProxyHandoffError):
+                acknowledge_loopback_listener_handoff(host_control, received)
+        finally:
+            for sock in (
+                received, source, other_sender, other_host,
+                sender_control, host_control,
+            ):
                 if sock is not None:
                     sock.close()
 
@@ -219,7 +270,8 @@ class TestLinuxProxyHandoff(unittest.TestCase):
             listener.listen(1)
             rights = array.array('i', [listener.fileno()])
             sender.sendmsg(
-                [b'ICODE_PROXY_LISTENER_V1'],
+                [b'ICODE_PROXY_LISTENER_V1' + bytes.fromhex(
+                    '00112233445566778899aabbccddeeff')],
                 [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
             )
 
@@ -288,7 +340,7 @@ class TestLinuxProxyHandoff(unittest.TestCase):
             "listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
             "listener.bind(('127.0.0.1', 0)); listener.listen(1)\n"
             "fds = array.array('i', [listener.fileno()])\n"
-            "sender.sendmsg([b'ICODE_PROXY_LISTENER_V1'], [(socket.SOL_SOCKET, "
+            "sender.sendmsg([b'ICODE_PROXY_LISTENER_V1' + bytes.fromhex('00112233445566778899aabbccddeeff')], [(socket.SOL_SOCKET, "
             "socket.SCM_RIGHTS, fds)])\n"
             "print(listener.getsockname()[1], flush=True)\n"
             "listener.close(); sender.close()\n"
@@ -333,9 +385,9 @@ class TestLinuxProxyHandoff(unittest.TestCase):
         )
 
         for descriptor_count, payload in (
-            (0, b"ICODE_PROXY_LISTENER_V1"),
-            (2, b"ICODE_PROXY_LISTENER_V1"),
-            (5, b"ICODE_PROXY_LISTENER_V1"),
+            (0, _HANDOFF_PACKET),
+            (2, _HANDOFF_PACKET),
+            (5, _HANDOFF_PACKET),
             (1, b"NOT_A_LISTENER"),
         ):
             with self.subTest(descriptor_count=descriptor_count, payload=payload):
@@ -771,7 +823,7 @@ class TestLinuxProxyHandoff(unittest.TestCase):
                 mock.patch.object(
                     linux_proxy_handoff,
                     "_receive_loopback_listener_impl",
-                    return_value=listener,
+                    return_value=(listener, _HANDOFF_NONCE),
                 ),
             ):
                 with self.assertRaises(KeyboardInterrupt):
@@ -820,7 +872,7 @@ class TestLinuxProxyHandoff(unittest.TestCase):
                 mock.patch.object(
                     linux_proxy_handoff,
                     "_receive_loopback_listener_impl",
-                    return_value=listener,
+                    return_value=(listener, _HANDOFF_NONCE),
                 ),
             ):
                 with self.assertRaises(KeyboardInterrupt):

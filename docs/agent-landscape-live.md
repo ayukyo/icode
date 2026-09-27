@@ -822,3 +822,10 @@
 
 - **本机验证：**wrapper-close 异常修复后的完整 `.venv` Python 3.11.15 测试门禁通过，handoff/native-probe 29/29；真实 dup/SIGINT 连续 30 次通过，子模块与文档检查、限定文件密钥形态扫描、compileall/diff check 通过。
 - **仍待验证：**精确 tree 的独立复审、提交推送及远端 CI；本地测试没有证明跨平台或网络端到端隔离。Codex 仍按固定 SHA 作为机制参考，未声称当前 upstream HEAD。
+
+### 2026-09-27 UTC 定向刷新：listener handoff 的预排队 ACK
+
+- **上游状态与证据边界：**沿用 Codex 固定快照 [`41f9084b`](https://github.com/openai/codex/commit/41f9084b30812db321a0b592def4f500d1e79cf4)（Apache-2.0）的 private Unix listener-FD handoff/host ACK 机制观察，不复制代码。尝试刷新时，GitHub 当前 [`proxy_routing.rs` 页面](https://github.com/openai/codex/blob/main/codex-rs/linux-sandbox/src/proxy_routing.rs)显示该路径连接 `send_listener`/`receive_listener` 与 host bridge，但页面未能提供 latest commit SHA，GitHub commits API 也未能访问；因此此为未固定版本线索，不用它改写固定快照结论，也不声称取得当前 upstream SHA。
+- **ICODE 采纳 / 创新 / 暂缓：**采纳“host 验证收到的 listener 后才放行 payload”顺序；独立审查发现固定 ACK 可在 listener 到达前排队，故 ICODE 用 kernel `getrandom(GRND_NONBLOCK)` 的每次 handoff 随机 nonce 绑定 FD handoff 与 host ACK，并在 Python API 把一次性 nonce 绑定到精确 listener/control 对象。这是 ICODE 为修补自身调用顺序竞态所做的本地增强，不归因于 Codex。暂缓生产 CONNECT bridge/relay、lease 接线、Agent/ToolContext 网络权限及 OS 级“只到代理”。无新增运行依赖。
+- **验收：**旧固定 ACK 预排队真实 native 回归在修复前使 payload 启动（RED）；新实现拒绝预排队 ACK、同长度错误 nonce、错控制通道和重复 ACK。相关套件 48 项与安装式 Linux wheel probe 通过；核心 native namespace 边界 20 轮共 80 次通过。推送后的 ARM64/macOS/Windows CI 待核实。
+- **产品边界：**只证明本机 loopback listener FD 交接与 marker 往返，不访问公网，不是生产代理或网络授权证明。worker/Agent 网络仍 `DENY`，自动模式关闭，R2/R3 继续进行。

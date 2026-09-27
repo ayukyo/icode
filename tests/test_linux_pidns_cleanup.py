@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import array
 import errno
 import os
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import time
@@ -22,6 +24,17 @@ from icode.sandbox_policy import NetworkMode, SandboxPolicy
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc"),
                      "需要 Linux C 编译器；命名空间权限由用例实测")
 class TestLinuxPidNamespaceCleanup(unittest.TestCase):
+    @staticmethod
+    def _namespace_network_permission_denied(stderr: str) -> bool:
+        return (
+            "unshare user/pid/network namespace: Operation not permitted" in stderr
+            or "unshare user/pid/network namespace: Permission denied" in stderr
+            or any(
+                f"ICODE_LOOPBACK_SETUP_FAILURE stage=enable errno={code}" in stderr
+                for code in (errno.EPERM, errno.EACCES)
+            )
+        )
+
     def test_loopback代理实验态不能到宿主或外部网络(self) -> None:
         source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
         system_python = Path("/usr/bin/python3")
@@ -130,6 +143,317 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("isolated-loopback-only", result.stdout)
+
+    def test可信helper交接listener并收到host_ack后才启动payload(self) -> None:
+        from icode.linux_proxy_handoff import (
+            acknowledge_loopback_listener_handoff,
+            create_loopback_listener_handoff_channel,
+            ProxyHandoffError,
+            receive_loopback_listener,
+        )
+
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        system_python = Path("/usr/bin/python3")
+        self.assertTrue(system_python.is_file())
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                 "-Werror", str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            workspace = root / "code"
+            workspace.mkdir()
+            host_control, sender_control = create_loopback_listener_handoff_channel()
+            received: socket.socket | None = None
+            accepted: socket.socket | None = None
+            process: subprocess.Popen[str] | None = None
+            try:
+                with open(os.devnull, "rb") as inherited:
+                    worker = (
+                        "import errno, os, socket\n"
+                        "try: socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+                        "except OSError as exc: assert exc.errno == errno.EPERM, exc\n"
+                        "else: raise AssertionError('worker created a new AF_UNIX socket')\n"
+                        f"try: os.fstat({inherited.fileno()})\n"
+                        "except OSError as exc: assert exc.errno == errno.EBADF, exc\n"
+                        "else: raise AssertionError('helper leaked an unrelated descriptor')\n"
+                        "host, port = os.environ['ICODE_PROXY_LISTENER'].rsplit(':', 1)\n"
+                        "client = socket.create_connection((host, int(port)), timeout=2)\n"
+                        "client.sendall(b'worker-to-host-marker')\n"
+                        "client.close()\n"
+                        "print('handoff-payload-ran')\n"
+                    )
+                    command = [
+                        str(helper), "--workspace", str(workspace),
+                        "--parent-pid", str(os.getpid()), "--network-loopback-only",
+                        "--proxy-control-fd", str(sender_control.fileno()), "--",
+                        str(system_python), "-c", worker,
+                    ]
+                    environment = os.environ.copy()
+                    environment["ICODE_PROXY_LISTENER"] = "198.51.100.9:443"
+                    process = subprocess.Popen(
+                        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                        text=True, env=environment,
+                        pass_fds=(sender_control.fileno(), inherited.fileno()),
+                    )
+                sender_control.close()
+                try:
+                    received = receive_loopback_listener(
+                        host_control,
+                        expected_pid=process.pid,
+                        timeout_seconds=5,
+                    )
+                except ProxyHandoffError:
+                    stdout, stderr = process.communicate(timeout=3)
+                    if self._namespace_network_permission_denied(stderr):
+                        self.assertNotIn("handoff-payload-ran", stdout)
+                        self.skipTest(
+                            "runner blocks user/network namespace setup; helper failed closed"
+                        )
+                    raise
+                received.settimeout(3)
+                acknowledge_loopback_listener_handoff(host_control, received)
+                accepted, _ = received.accept()
+                self.assertEqual(accepted.recv(64), b"worker-to-host-marker")
+                stdout, stderr = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, stderr)
+                self.assertIn("handoff-payload-ran", stdout)
+            finally:
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=3)
+                if accepted is not None:
+                    accepted.close()
+                if received is not None:
+                    received.close()
+                sender_control.close()
+                host_control.close()
+
+    def test错误host_ack时payload不会启动(self) -> None:
+        from icode.linux_proxy_handoff import create_loopback_listener_handoff_channel
+
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                 "-Werror", str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            workspace = root / "code"
+            workspace.mkdir()
+            marker = workspace / "must-not-run"
+            host_control, sender_control = create_loopback_listener_handoff_channel()
+            process: subprocess.Popen[str] | None = None
+            descriptors: list[int] = []
+            try:
+                command = [
+                    str(helper), "--workspace", str(workspace),
+                    "--parent-pid", str(os.getpid()), "--network-loopback-only",
+                    "--proxy-control-fd", str(sender_control.fileno()), "--",
+                    "/usr/bin/touch", str(marker),
+                ]
+                process = subprocess.Popen(
+                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, pass_fds=(sender_control.fileno(),),
+                )
+                sender_control.close()
+                host_control.settimeout(4)
+                payload, ancillary, flags, _ = host_control.recvmsg(
+                    128,
+                    socket.CMSG_SPACE(array.array("i").itemsize)
+                    + socket.CMSG_SPACE(struct.calcsize("3i")),
+                )
+                if payload == b"":
+                    _stdout, stderr = process.communicate(timeout=3)
+                    if self._namespace_network_permission_denied(stderr):
+                        self.skipTest(
+                            "runner blocks user/network namespace setup; helper failed closed"
+                        )
+                self.assertFalse(flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC))
+                self.assertTrue(payload.startswith(b"ICODE_PROXY_LISTENER_V1"))
+                self.assertEqual(len(payload), len(b"ICODE_PROXY_LISTENER_V1") + 16)
+                credentials = []
+                for level, kind, data in ancillary:
+                    if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                        values = array.array("i")
+                        values.frombytes(data[:len(data) - len(data) % values.itemsize])
+                        descriptors.extend(values)
+                    elif level == socket.SOL_SOCKET and kind == socket.SCM_CREDENTIALS:
+                        credentials.append(struct.unpack("3i", data))
+                self.assertEqual(len(descriptors), 1)
+                self.assertEqual(len(credentials), 1)
+                self.assertEqual(credentials[0][0], process.pid)
+                nonce_offset = len(b"ICODE_PROXY_LISTENER_V1")
+                nonce = payload[nonce_offset:]
+                self.assertEqual(len(nonce), 16)
+                wrong_nonce = bytes([nonce[0] ^ 1]) + nonce[1:]
+                host_control.send(b"ICODE_PROXY_LISTENER_ACK_V1" + wrong_nonce)
+                _stdout, stderr = process.communicate(timeout=5)
+                self.assertNotEqual(process.returncode, 0, stderr)
+                self.assertFalse(marker.exists())
+            finally:
+                for descriptor in descriptors:
+                    os.close(descriptor)
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=3)
+                sender_control.close()
+                host_control.close()
+
+    def test不存在的proxy_control_fd在namespace和payload启动前失败(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                 "-Werror", str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            workspace = root / "code"
+            workspace.mkdir()
+            marker = workspace / "must-not-run"
+            result = subprocess.run(
+                [str(helper), "--workspace", str(workspace),
+                 "--parent-pid", str(os.getpid()), "--network-loopback-only",
+                 "--proxy-control-fd", str(2**31 - 1), "--",
+                 "/usr/bin/touch", str(marker)],
+                capture_output=True, text=True, timeout=4, check=False,
+            )
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("proxy control descriptor is not a trusted channel", result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_host关闭handoff控制通道时payload不会启动(self) -> None:
+        from icode.linux_proxy_handoff import create_loopback_listener_handoff_channel
+
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                 "-Werror", str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            workspace = root / "code"
+            workspace.mkdir()
+            marker = workspace / "must-not-run"
+            host_control, sender_control = create_loopback_listener_handoff_channel()
+            process: subprocess.Popen[str] | None = None
+            descriptors: list[int] = []
+            try:
+                command = [
+                    str(helper), "--workspace", str(workspace),
+                    "--parent-pid", str(os.getpid()), "--network-loopback-only",
+                    "--proxy-control-fd", str(sender_control.fileno()), "--",
+                    "/usr/bin/touch", str(marker),
+                ]
+                process = subprocess.Popen(
+                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, pass_fds=(sender_control.fileno(),),
+                )
+                sender_control.close()
+                host_control.settimeout(4)
+                payload, ancillary, flags, _ = host_control.recvmsg(
+                    128,
+                    socket.CMSG_SPACE(array.array("i").itemsize)
+                    + socket.CMSG_SPACE(struct.calcsize("3i")),
+                )
+                if payload == b"":
+                    _stdout, stderr = process.communicate(timeout=3)
+                    if self._namespace_network_permission_denied(stderr):
+                        self.skipTest(
+                            "runner blocks user/network namespace setup; helper failed closed"
+                        )
+                self.assertFalse(flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC))
+                self.assertTrue(payload.startswith(b"ICODE_PROXY_LISTENER_V1"))
+                self.assertEqual(len(payload), len(b"ICODE_PROXY_LISTENER_V1") + 16)
+                for level, kind, data in ancillary:
+                    if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                        values = array.array("i")
+                        values.frombytes(data[:len(data) - len(data) % values.itemsize])
+                        descriptors.extend(values)
+                self.assertEqual(len(descriptors), 1)
+                host_control.close()
+                _stdout, stderr = process.communicate(timeout=5)
+                self.assertNotEqual(process.returncode, 0, stderr)
+                self.assertFalse(marker.exists())
+            finally:
+                for descriptor in descriptors:
+                    os.close(descriptor)
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=3)
+                sender_control.close()
+                host_control.close()
+
+    def test预先排队的固定ack不能释放payload(self) -> None:
+        from icode.linux_proxy_handoff import create_loopback_listener_handoff_channel
+
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                 "-Werror", str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            workspace = root / "code"
+            workspace.mkdir()
+            marker = workspace / "must-not-run"
+            host_control, sender_control = create_loopback_listener_handoff_channel()
+            process: subprocess.Popen[str] | None = None
+            descriptors: list[int] = []
+            try:
+                # Reproduce the ordering race: the old fixed ACK can be queued
+                # before the helper has sent its listener for host validation.
+                host_control.send(b"ICODE_PROXY_LISTENER_ACK_V1")
+                command = [
+                    str(helper), "--workspace", str(workspace),
+                    "--parent-pid", str(os.getpid()), "--network-loopback-only",
+                    "--proxy-control-fd", str(sender_control.fileno()), "--",
+                    "/usr/bin/touch", str(marker),
+                ]
+                process = subprocess.Popen(
+                    command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, pass_fds=(sender_control.fileno(),),
+                )
+                sender_control.close()
+                host_control.settimeout(4)
+                payload, ancillary, flags, _ = host_control.recvmsg(
+                    128,
+                    socket.CMSG_SPACE(array.array("i").itemsize)
+                    + socket.CMSG_SPACE(struct.calcsize("3i")),
+                )
+                if payload == b"":
+                    _stdout, stderr = process.communicate(timeout=3)
+                    if self._namespace_network_permission_denied(stderr):
+                        self.assertNotIn("handoff-payload-ran", _stdout)
+                        self.skipTest(
+                            "runner blocks user/network namespace setup; helper failed closed"
+                        )
+                self.assertFalse(flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC))
+                self.assertTrue(payload.startswith(b"ICODE_PROXY_LISTENER_V1"))
+                self.assertEqual(len(payload), len(b"ICODE_PROXY_LISTENER_V1") + 16)
+                for level, kind, data in ancillary:
+                    if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                        values = array.array("i")
+                        values.frombytes(data[:len(data) - len(data) % values.itemsize])
+                        descriptors.extend(values)
+                self.assertEqual(len(descriptors), 1)
+                _stdout, stderr = process.communicate(timeout=5)
+                self.assertNotEqual(process.returncode, 0, stderr)
+                self.assertFalse(marker.exists())
+            finally:
+                for descriptor in descriptors:
+                    os.close(descriptor)
+                if process is not None and process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=3)
+                sender_control.close()
+                host_control.close()
 
     def test_loopback接口配置被拒时payload不会启动(self) -> None:
         source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
