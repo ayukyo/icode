@@ -414,32 +414,42 @@ static int install_network_loopback_only(void) {
     return 0;
 }
 
+static void report_loopback_setup_failure(const char *stage, const char *message) {
+    int saved_errno = errno;
+    fprintf(stderr, "ICODE_LOOPBACK_SETUP_FAILURE stage=%s errno=%d\n",
+            stage, saved_errno);
+    errno = saved_errno;
+    perror(message);
+    errno = saved_errno;
+}
+
 static int bring_loopback_up(void) {
     int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
-        perror("open loopback control socket");
+        report_loopback_setup_failure("socket", "open loopback control socket");
         return -1;
     }
     struct ifreq interface = {0};
     if (strlen("lo") >= sizeof(interface.ifr_name)) {
         close(fd);
         errno = EINVAL;
+        report_loopback_setup_failure("validate", "loopback interface name");
         return -1;
     }
     memcpy(interface.ifr_name, "lo", sizeof("lo"));
     if (ioctl(fd, SIOCGIFFLAGS, &interface) != 0) {
-        perror("read loopback interface flags");
+        report_loopback_setup_failure("read", "read loopback interface flags");
         close(fd);
         return -1;
     }
     interface.ifr_flags = (short)(interface.ifr_flags | IFF_UP);
     if (ioctl(fd, SIOCSIFFLAGS, &interface) != 0) {
-        perror("enable loopback interface");
+        report_loopback_setup_failure("enable", "enable loopback interface");
         close(fd);
         return -1;
     }
     if (close(fd) != 0) {
-        perror("close loopback control socket");
+        report_loopback_setup_failure("close", "close loopback control socket");
         return -1;
     }
     return 0;

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import socket
@@ -19,7 +20,7 @@ from icode.sandbox_policy import NetworkMode, SandboxPolicy
 
 
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc"),
-                     "需要 Linux C 编译器和进程命名空间")
+                     "需要 Linux C 编译器；命名空间权限由用例实测")
 class TestLinuxPidNamespaceCleanup(unittest.TestCase):
     def test_loopback代理实验态不能到宿主或外部网络(self) -> None:
         source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
@@ -34,6 +35,7 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             )
             workspace = root / "code"
             workspace.mkdir()
+            payload_started = workspace / "payload-started"
             host_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             try:
                 host_listener.bind(("127.0.0.1", 0))
@@ -41,6 +43,8 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                 host_port = host_listener.getsockname()[1]
                 parent_netns = os.readlink("/proc/self/ns/net")
                 code = (
+                    "from pathlib import Path\n"
+                    f"Path({str(payload_started)!r}).write_text('started')\n"
                     "import errno, os, socket\n"
                     f"assert os.readlink('/proc/self/ns/net') != {parent_netns!r}\n"
                     "server = socket.socket(socket.AF_INET, socket.SOCK_STREAM,\n"
@@ -103,8 +107,64 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             finally:
                 host_listener.close()
 
+            setup_failure = next(
+                (line for line in result.stderr.splitlines()
+                 if line.startswith("ICODE_LOOPBACK_SETUP_FAILURE ")),
+                None,
+            )
+            if setup_failure is not None:
+                fields = dict(
+                    field.split("=", 1)
+                    for field in setup_failure.split()[1:]
+                    if "=" in field
+                )
+                if (fields.get("stage") == "enable"
+                        and fields.get("errno") in {
+                            str(errno.EPERM), str(errno.EACCES),
+                        }):
+                    self.assertFalse(payload_started.exists(), result.stderr)
+                    self.skipTest(
+                        "runner 不允许在新 network namespace 配置 loopback; "
+                        "探测已失败关闭，正向网络验证未执行"
+                    )
+
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("isolated-loopback-only", result.stdout)
+
+    def test_loopback接口配置被拒时payload不会启动(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        launcher_source = (
+            Path(__file__).resolve().parent / "native/deny_loopback_ioctl.c"
+        )
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            launcher = root / "deny-loopback-ioctl"
+            compiler = shutil.which("cc") or "cc"
+            for source_file, executable in (
+                (source, helper), (launcher_source, launcher),
+            ):
+                subprocess.run(
+                    [compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
+                     str(source_file), "-o", str(executable)],
+                    check=True, capture_output=True, text=True,
+                )
+            workspace = root / "code"
+            workspace.mkdir()
+            marker = workspace / "must-not-run"
+            result = subprocess.run(
+                [str(launcher), str(helper), "--workspace", str(workspace),
+                 "--parent-pid", str(os.getpid()), "--network-loopback-only", "--",
+                 "/usr/bin/python3", "-c",
+                 f"from pathlib import Path; Path({str(marker)!r}).touch()"],
+                capture_output=True, text=True, timeout=8, check=False,
+            )
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(
+            f"ICODE_LOOPBACK_SETUP_FAILURE stage=enable errno={errno.EPERM}",
+            result.stderr,
+        )
+        self.assertFalse(marker.exists())
 
     def test_loopback代理实验态选项重复时不启动命令(self) -> None:
         source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
