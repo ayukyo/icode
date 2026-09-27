@@ -968,6 +968,66 @@ class NetworkLeaseTestCase(unittest.TestCase):
                 pending=True,
             )
 
+    def test_pending_registration_fails_closed_when_clock_raises(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+
+        def broken_clock() -> int:
+            raise RuntimeError("private clock detail")
+
+        with self.assertRaisesRegex(
+            NetworkLeaseValidationError, "monotonic clock callback failed"
+        ):
+            authority.register_active_connection(
+                grant,
+                policy,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="pypi.org",
+                port=443,
+                now_monotonic_ns=3_000_000_000,
+                close=lambda: True,
+                pending=True,
+                clock=broken_clock,
+            )
+
+    def test_pending_registration_rejects_invalid_clock_results(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+
+        for value in (True, -1, 3.0):
+            with self.subTest(clock_result=value):
+                with self.assertRaisesRegex(
+                    NetworkLeaseValidationError,
+                    "monotonic clock callback returned an invalid value",
+                ):
+                    authority.register_active_connection(
+                        grant,
+                        policy,
+                        purpose=NetworkPurpose.PACKAGE_INSTALL,
+                        hostname="pypi.org",
+                        port=443,
+                        now_monotonic_ns=3_000_000_000,
+                        close=lambda: True,
+                        pending=True,
+                        clock=lambda: value,
+                    )
+
     def test_revoke_cancels_real_pending_loopback_connect_before_publication(self) -> None:
         self._assert_pending_loopback_connect_cancelled(expire=False)
 
