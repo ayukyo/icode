@@ -11,10 +11,12 @@ separate, explicitly bounded owner rather than spawning unbounded handlers.
 from __future__ import annotations
 
 import ipaddress
+import math
 import os
 import select
 import selectors
 import socket
+import sys
 import threading
 import time
 from threading import Lock, RLock
@@ -37,6 +39,8 @@ _RELAY_POLL_SECONDS = 0.1
 _RELAY_READ_CHUNK_BYTES = 64 * 1024
 _RELAY_BUFFER_LIMIT_BYTES = 256 * 1024
 _HEADER_TERMINATOR = b"\r\n\r\n"
+_HANDOFF_READY_TIMEOUT_SECONDS = 2.0
+_SESSION_JOIN_TIMEOUT_SECONDS = 4.0
 
 
 class HostConnectProxyError(ConnectionError):
@@ -269,12 +273,23 @@ class HostConnectProxyServer:
         stop_event: threading.Event | None = None,
         *,
         resolver: Resolver | None = None,
+        ready_event: threading.Event | None = None,
     ) -> None:
-        """Run the serialized accept loop until stopped or this owner closes."""
+        """Run the serialized accept loop until stopped or this owner closes.
+
+        ``ready_event`` is set only after the current lease/runtime has been
+        verified. A host handoff owner can wait for it before acknowledging a
+        sandbox payload; it does not grant the payload network access itself.
+        """
 
         if stop_event is not None and type(stop_event) is not threading.Event:
             raise HostConnectProxyError(_PROXY_ERROR)
+        if ready_event is not None and type(ready_event) is not threading.Event:
+            raise HostConnectProxyError(_PROXY_ERROR)
         try:
+            if ready_event is not None:
+                self._scope.verify_lease()
+                ready_event.set()
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
@@ -422,3 +437,239 @@ class HostConnectProxyServer:
                 if sent <= 0:
                     return
                 del buffer[:sent]
+
+
+class LinuxHostConnectProxySession:
+    """Own one Linux listener handoff and its lease-bound host proxy loop.
+
+    The caller starts the trusted sandbox helper and retains responsibility
+    for stopping that process. This owner receives its authenticated listener,
+    starts a healthy accept loop, and only then sends the nonce-bound ACK that
+    releases the helper payload. The session consumes the host control socket
+    and scope once ``start()`` begins; failures close both without ACK.
+    """
+
+    def __init__(
+        self,
+        control_socket: socket.socket,
+        *,
+        expected_pid: int,
+        scope: HostHttpsConnectScope,
+        handoff_timeout_seconds: float = 5.0,
+        ready_timeout_seconds: float = _HANDOFF_READY_TIMEOUT_SECONDS,
+    ) -> None:
+        if (
+            type(control_socket) is not socket.socket
+            or control_socket.fileno() < 0
+            or type(expected_pid) is not int
+            or expected_pid <= 1
+            or not isinstance(scope, HostHttpsConnectScope)
+            or isinstance(handoff_timeout_seconds, bool)
+            or not isinstance(handoff_timeout_seconds, (int, float))
+            or not 0 <= handoff_timeout_seconds <= 30
+            or not math.isfinite(handoff_timeout_seconds)
+            or isinstance(ready_timeout_seconds, bool)
+            or not isinstance(ready_timeout_seconds, (int, float))
+            or not 0 < ready_timeout_seconds <= 10
+            or not math.isfinite(ready_timeout_seconds)
+        ):
+            raise HostConnectProxyError(_PROXY_ERROR)
+
+        self._control = control_socket
+        self._expected_pid = expected_pid
+        self._scope = scope
+        self._handoff_timeout_seconds = float(handoff_timeout_seconds)
+        self._ready_timeout_seconds = float(ready_timeout_seconds)
+        self._lock = RLock()
+        self._stop_event = threading.Event()
+        self._ready_event = threading.Event()
+        self._server: HostConnectProxyServer | None = None
+        self._thread: threading.Thread | None = None
+        self._serve_failure: BaseException | None = None
+        self._start_attempted = False
+        self._starting = False
+        self._closing = False
+        self._closed = False
+        self._acknowledged = False
+
+    @property
+    def ready(self) -> bool:
+        """Whether a live accept loop has verified the lease/runtime."""
+
+        with self._lock:
+            return (
+                self._ready_event.is_set()
+                and self._thread is not None
+                and self._thread.is_alive()
+                and self._serve_failure is None
+                and not self._closing
+                and not self._closed
+            )
+
+    @property
+    def acknowledged(self) -> bool:
+        """Whether the receiver successfully sent the helper's release ACK."""
+
+        with self._lock:
+            return self._acknowledged
+
+    def start(self) -> None:
+        """Receive, prepare and acknowledge exactly one helper listener."""
+
+        if not sys.platform.startswith("linux"):
+            raise HostConnectProxyError(_PROXY_ERROR)
+        with self._lock:
+            if self._start_attempted or self._closing or self._closed:
+                raise HostConnectProxyError(_PROXY_ERROR)
+            self._start_attempted = True
+            self._starting = True
+
+        listener: socket.socket | None = None
+        try:
+            from .linux_proxy_handoff import (
+                acknowledge_loopback_listener_handoff,
+                receive_loopback_listener,
+            )
+
+            listener = receive_loopback_listener(
+                self._control,
+                expected_pid=self._expected_pid,
+                timeout_seconds=self._handoff_timeout_seconds,
+            )
+            server = HostConnectProxyServer(listener, self._scope)
+            with self._lock:
+                if self._closing:
+                    raise HostConnectProxyError(_PROXY_ERROR)
+                self._server = server
+                listener = None  # Ownership transferred to the server.
+
+            def serve() -> None:
+                try:
+                    server.serve_forever(
+                        self._stop_event,
+                        ready_event=self._ready_event,
+                    )
+                except BaseException as exc:
+                    with self._lock:
+                        self._serve_failure = exc
+
+            thread = threading.Thread(
+                target=serve,
+                name="icode-host-connect-proxy",
+                daemon=True,
+            )
+            with self._lock:
+                self._thread = thread
+            thread.start()
+
+            deadline = time.monotonic() + self._ready_timeout_seconds
+            while not self._ready_event.is_set():
+                if not thread.is_alive():
+                    raise HostConnectProxyError(_PROXY_ERROR)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise HostConnectProxyError(_PROXY_ERROR)
+                self._ready_event.wait(min(0.05, remaining))
+            if not thread.is_alive():
+                raise HostConnectProxyError(_PROXY_ERROR)
+            with self._scope.live_lease_guard():
+                with self._lock:
+                    if self._closing or self._closed or not self.ready:
+                        raise HostConnectProxyError(_PROXY_ERROR)
+                    acknowledge_loopback_listener_handoff(
+                        self._control, server._listener,
+                    )
+                    self._acknowledged = True
+                    self._starting = False
+        except BaseException as exc:
+            if listener is not None:
+                try:
+                    listener.close()
+                except BaseException:
+                    pass
+            with self._lock:
+                self._starting = False
+            try:
+                self.close()
+            except BaseException:
+                # The startup failure remains primary. ``close`` retries its
+                # own interrupted operations; callers may retry if it returns
+                # incomplete on the next explicit cleanup attempt.
+                pass
+            if isinstance(exc, Exception):
+                raise HostConnectProxyError(_PROXY_ERROR) from None
+            raise
+
+    def close(self) -> bool:
+        """Stop the accept loop, close its scope and release the control FD.
+
+        The helper process is caller-owned and must be stopped by its launcher.
+        A false result means the serving thread or scope still has in-flight
+        work; retry after its owner returns (for example after synchronous DNS
+        resolution finishes).
+        """
+
+        with self._lock:
+            self._closing = True
+            self._stop_event.set()
+            if self._starting:
+                return False
+            server = self._server
+            thread = self._thread
+
+        pending_interrupt: BaseException | None = None
+
+        def remember_interrupt(exc: BaseException) -> None:
+            nonlocal pending_interrupt
+            if pending_interrupt is None:
+                pending_interrupt = exc
+
+        server_closed = True
+        if server is not None:
+            try:
+                server_closed = server.close()
+            except BaseException as exc:
+                remember_interrupt(exc)
+                server_closed = False
+        if thread is not None and thread is not threading.current_thread():
+            deadline = time.monotonic() + _SESSION_JOIN_TIMEOUT_SECONDS
+            while thread.is_alive():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    thread.join(timeout=min(0.05, remaining))
+                except BaseException as exc:
+                    # Preserve caller interruption but keep retrying the
+                    # bounded join so it cannot strand the listener owner.
+                    remember_interrupt(exc)
+        thread_stopped = thread is None or not thread.is_alive()
+        if server is not None:
+            try:
+                server_closed = server.close()
+            except BaseException as exc:
+                remember_interrupt(exc)
+                server_closed = False
+        try:
+            scope_closed = self._scope.close()
+        except BaseException as exc:
+            remember_interrupt(exc)
+            scope_closed = False
+
+        control_closed = self._control.fileno() < 0
+        for _attempt in range(3):
+            if control_closed:
+                break
+            try:
+                self._control.close()
+                control_closed = self._control.fileno() < 0
+            except BaseException as exc:
+                remember_interrupt(exc)
+                control_closed = self._control.fileno() < 0
+
+        closed = server_closed and scope_closed and thread_stopped and control_closed
+        with self._lock:
+            self._closed = closed
+        if pending_interrupt is not None:
+            raise pending_interrupt
+        return closed

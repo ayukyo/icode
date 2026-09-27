@@ -18,6 +18,8 @@ import secrets
 import socket
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable
@@ -498,23 +500,82 @@ class NetworkLeaseAuthority:
             raise NetworkLeaseValidationError("issued network lease is required")
         policy_key = self._policy_key(policy)
         with self._lock:
-            if policy_key in self._revoking_policy_keys:
-                raise NetworkLeaseValidationError(
-                    "network scope revocation cleanup is incomplete"
-                )
-            expected = hmac.new(
-                self._key,
-                issued.lease.canonical_payload(),
-                hashlib.sha256,
-            ).hexdigest()
-            if not hmac.compare_digest(expected, issued.signature):
-                raise NetworkLeaseValidationError("network lease signature is invalid")
-            issued.lease.validate_scope(
+            self._verify_scope_locked(
                 policy,
+                policy_key=policy_key,
+                issued=issued,
                 purpose=purpose,
                 now_monotonic_ns=now_monotonic_ns,
-                current_generation=self._generations.get(policy_key, 1),
             )
+
+    @contextmanager
+    def scope_guard(
+        self,
+        issued: IssuedNetworkLease,
+        policy: SandboxPolicy,
+        *,
+        purpose: NetworkPurpose,
+        clock: Callable[[], int],
+    ) -> Iterator[None]:
+        """Hold the lease-generation lock across one short publication action.
+
+        Trusted host code may use this for a non-blocking, irreversible action
+        such as releasing a sandbox only after its lease has been revalidated.
+        The clock is sampled after acquiring the lock; keep the body short and
+        do not perform DNS, socket connection, or waits.
+        """
+
+        if not isinstance(issued, IssuedNetworkLease):
+            raise NetworkLeaseValidationError("issued network lease is required")
+        if not callable(clock):
+            raise NetworkLeaseValidationError("monotonic clock callback is invalid")
+        policy_key = self._policy_key(policy)
+        with self._lock:
+            try:
+                now_monotonic_ns = clock()
+            except Exception:  # noqa: BLE001 - lease publication fails closed.
+                raise NetworkLeaseValidationError(
+                    "monotonic clock callback failed"
+                ) from None
+            if type(now_monotonic_ns) is not int or now_monotonic_ns < 0:
+                raise NetworkLeaseValidationError(
+                    "monotonic clock callback returned an invalid value"
+                )
+            self._verify_scope_locked(
+                policy,
+                policy_key=policy_key,
+                issued=issued,
+                purpose=purpose,
+                now_monotonic_ns=now_monotonic_ns,
+            )
+            yield
+
+    def _verify_scope_locked(
+        self,
+        policy: SandboxPolicy,
+        *,
+        policy_key: tuple[str, str, str, str],
+        issued: IssuedNetworkLease,
+        purpose: NetworkPurpose,
+        now_monotonic_ns: int,
+    ) -> None:
+        if policy_key in self._revoking_policy_keys:
+            raise NetworkLeaseValidationError(
+                "network scope revocation cleanup is incomplete"
+            )
+        expected = hmac.new(
+            self._key,
+            issued.lease.canonical_payload(),
+            hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(expected, issued.signature):
+            raise NetworkLeaseValidationError("network lease signature is invalid")
+        issued.lease.validate_scope(
+            policy,
+            purpose=purpose,
+            now_monotonic_ns=now_monotonic_ns,
+            current_generation=self._generations.get(policy_key, 1),
+        )
 
     def _verify_request_locked(
         self,
@@ -1007,6 +1068,24 @@ class NetworkLeaseExpiryMonitor:
 
         with self._state_lock:
             return self._last_error
+
+    @contextmanager
+    def healthy_guard(self) -> Iterator[None]:
+        """Keep monitor health stable across a short host publication action."""
+
+        with self._state_lock:
+            thread = self._thread
+            if (
+                not self._started
+                or self._stopped
+                or thread is None
+                or not thread.is_alive()
+                or self._failure_count != 0
+            ):
+                raise NetworkLeaseValidationError(
+                    "network lease expiry monitor is unhealthy"
+                )
+            yield
 
     def start(self) -> None:
         """Start exactly one daemon sweep thread for this monitor instance."""

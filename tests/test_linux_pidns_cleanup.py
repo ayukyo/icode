@@ -146,10 +146,16 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
 
     def test可信helper交接listener并收到host_ack后才启动payload(self) -> None:
         from icode.linux_proxy_handoff import (
-            acknowledge_loopback_listener_handoff,
             create_loopback_listener_handoff_channel,
             ProxyHandoffError,
-            receive_loopback_listener,
+        )
+        from icode.approvals import ScriptedApprover
+        from icode.network_destination import ResolvedNetworkTarget
+        from icode.network_lease import NetworkLeaseAuthority, NetworkPurpose
+        from icode.network_proxy_scope import HostConnectRuntime
+        from icode.network_proxy_server import (
+            HostConnectProxyError,
+            LinuxHostConnectProxySession,
         )
 
         source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
@@ -164,9 +170,43 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             )
             workspace = root / "code"
             workspace.mkdir()
+            policy = SandboxPolicy(
+                schema_version=1,
+                run_id="linux-proxy-handoff-run",
+                ticket_id="ICODE-LINUX-PROXY-HANDOFF",
+                step="code",
+                workspace_root=workspace,
+                read_roots=(workspace,),
+                write_roots=(workspace,),
+                deny_read_roots=(workspace / ".git",),
+                deny_write_roots=(workspace / ".git",),
+                network_mode=NetworkMode.DENY,
+                allowed_domains=(),
+                process_limit=8,
+                wall_timeout_seconds=60,
+                output_limit_bytes=4096,
+                protected_paths=(workspace / ".git",),
+            )
+            authority = NetworkLeaseAuthority()
+            issued = authority.request_lease(
+                policy,
+                approver=ScriptedApprover([True]),
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("packages.example",),
+                ttl_seconds=60,
+            )
+            runtime = HostConnectRuntime(authority, sweep_interval_seconds=0.01)
+            runtime.start()
+            scope = runtime.create_scope(
+                issued, policy, NetworkPurpose.PACKAGE_INSTALL,
+            )
+            upstream_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            upstream_listener.bind(("127.0.0.1", 0))
+            upstream_listener.listen(1)
+            upstream_listener.settimeout(3.0)
             host_control, sender_control = create_loopback_listener_handoff_channel()
-            received: socket.socket | None = None
-            accepted: socket.socket | None = None
+            session: LinuxHostConnectProxySession | None = None
+            upstream: socket.socket | None = None
             process: subprocess.Popen[str] | None = None
             try:
                 with open(os.devnull, "rb") as inherited:
@@ -180,9 +220,22 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                         "else: raise AssertionError('helper leaked an unrelated descriptor')\n"
                         "host, port = os.environ['ICODE_PROXY_LISTENER'].rsplit(':', 1)\n"
                         "client = socket.create_connection((host, int(port)), timeout=2)\n"
+                        "client.sendall(b'CONNECT packages.example:443 HTTP/1.1\\r\\n"
+                        "Host: packages.example\\r\\n\\r\\n')\n"
+                        "response = bytearray()\n"
+                        "while not response.endswith(b'\\r\\n\\r\\n'):\n"
+                        "    response.extend(client.recv(1))\n"
+                        "assert response == b'HTTP/1.1 200 Connection Established"
+                        "\\r\\n\\r\\n', response\n"
                         "client.sendall(b'worker-to-host-marker')\n"
+                        "client.shutdown(socket.SHUT_WR)\n"
+                        "expected = b'host-to-worker-marker'\n"
+                        "reply = bytearray()\n"
+                        "while len(reply) < len(expected):\n"
+                        "    reply.extend(client.recv(len(expected) - len(reply)))\n"
+                        "assert reply == expected, reply\n"
                         "client.close()\n"
-                        "print('handoff-payload-ran')\n"
+                        "print('handoff-proxy-payload-ran')\n"
                     )
                     command = [
                         str(helper), "--workspace", str(workspace),
@@ -198,35 +251,56 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                         pass_fds=(sender_control.fileno(), inherited.fileno()),
                     )
                 sender_control.close()
+                session = LinuxHostConnectProxySession(
+                    host_control,
+                    expected_pid=process.pid,
+                    scope=scope,
+                    handoff_timeout_seconds=5.0,
+                    ready_timeout_seconds=1.0,
+                )
+                resolver = lambda hostname, port, resolver=None: (
+                    ResolvedNetworkTarget(
+                        family=socket.AF_INET,
+                        socket_type=socket.SOCK_STREAM,
+                        protocol=socket.IPPROTO_TCP,
+                        sockaddr=upstream_listener.getsockname(),
+                    ),
+                )
                 try:
-                    received = receive_loopback_listener(
-                        host_control,
-                        expected_pid=process.pid,
-                        timeout_seconds=5,
-                    )
-                except ProxyHandoffError:
+                    with mock.patch(
+                        "icode.network_connector.resolve_public_tcp_targets",
+                        side_effect=resolver,
+                    ):
+                        session.start()
+                        upstream, _address = upstream_listener.accept()
+                        upstream.settimeout(3.0)
+                        self.assertEqual(
+                            upstream.recv(64), b"worker-to-host-marker",
+                        )
+                        self.assertEqual(upstream.recv(1), b"")
+                        upstream.sendall(b"host-to-worker-marker")
+                        upstream.shutdown(socket.SHUT_WR)
+                        stdout, stderr = process.communicate(timeout=5)
+                except (HostConnectProxyError, ProxyHandoffError):
                     stdout, stderr = process.communicate(timeout=3)
                     if self._namespace_network_permission_denied(stderr):
-                        self.assertNotIn("handoff-payload-ran", stdout)
+                        self.assertNotIn("handoff-proxy-payload-ran", stdout)
                         self.skipTest(
                             "runner blocks user/network namespace setup; helper failed closed"
                         )
                     raise
-                received.settimeout(3)
-                acknowledge_loopback_listener_handoff(host_control, received)
-                accepted, _ = received.accept()
-                self.assertEqual(accepted.recv(64), b"worker-to-host-marker")
-                stdout, stderr = process.communicate(timeout=5)
                 self.assertEqual(process.returncode, 0, stderr)
-                self.assertIn("handoff-payload-ran", stdout)
+                self.assertIn("handoff-proxy-payload-ran", stdout)
             finally:
                 if process is not None and process.poll() is None:
                     process.kill()
                     process.communicate(timeout=3)
-                if accepted is not None:
-                    accepted.close()
-                if received is not None:
-                    received.close()
+                if session is not None:
+                    session.close()
+                runtime.close()
+                if upstream is not None:
+                    upstream.close()
+                upstream_listener.close()
                 sender_control.close()
                 host_control.close()
 

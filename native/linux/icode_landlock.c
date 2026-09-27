@@ -324,7 +324,11 @@ static int handoff_loopback_listener(int control_descriptor) {
     unsigned char handoff_payload[
         sizeof(handoff_message) - 1 + ICODE_HANDOFF_NONCE_SIZE];
 
-    listener = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, IPPROTO_TCP);
+    /* SCM_RIGHTS shares the open-file-description status flags with the host.
+     * Nonblocking accept is required before the listener is handed off so a
+     * stale readiness event cannot strand the host proxy in blocking accept. */
+    listener = socket(
+        AF_INET, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, IPPROTO_TCP);
     if (listener < 0) goto fail;
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);

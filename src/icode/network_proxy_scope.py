@@ -12,6 +12,8 @@ from __future__ import annotations
 import socket
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import Event, Lock, RLock
 
@@ -206,6 +208,23 @@ class HostConnectRuntime:
                 and self._monitor.failure_count == 0
             )
 
+    @contextmanager
+    def healthy_guard(self) -> Iterator[None]:
+        """Keep runtime shutdown and expiry-monitor health stable briefly."""
+
+        with self._lock:
+            if (
+                not self._started
+                or self._closing
+                or self._closed
+            ):
+                raise HostConnectScopeError(_SCOPE_ERROR)
+            try:
+                with self._monitor.healthy_guard():
+                    yield
+            except NetworkLeaseValidationError:
+                raise HostConnectScopeError(_SCOPE_ERROR) from None
+
     def _forget_scope(self, scope: HostHttpsConnectScope) -> None:
         with self._lock:
             if self._scopes.get(id(scope)) is scope:
@@ -276,6 +295,30 @@ class HostHttpsConnectScope:
             purpose=self._purpose,
             now_monotonic_ns=time.monotonic_ns(),
         )
+
+    @contextmanager
+    def live_lease_guard(self) -> Iterator[None]:
+        """Hold scope/runtime/authority state stable for a short release action.
+
+        This is reserved for irreversible host-side publication such as the
+        nonce ACK which releases a sandbox payload. The guarded body must be
+        non-blocking; normal CONNECT processing continues to use
+        ``verify_lease`` and its existing bounded cancellation paths.
+        """
+
+        with self._lock:
+            if self._closed or self._cancel_event.is_set():
+                raise NetworkLeaseValidationError(
+                    "host connection scope is closed"
+                )
+            with self._runtime.healthy_guard():
+                with self._authority.scope_guard(
+                    self._issued,
+                    self._policy,
+                    purpose=self._purpose,
+                    clock=time.monotonic_ns,
+                ):
+                    yield
 
     def open_connect(
         self,

@@ -13,6 +13,7 @@ import warnings
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from tests import _support  # noqa: F401  # Add the repository's src/ to sys.path.
 
@@ -648,6 +649,61 @@ class NetworkLeaseTestCase(unittest.TestCase):
             renewed, policy, purpose=NetworkPurpose.PACKAGE_INSTALL,
             hostname="pypi.org", port=443, now_monotonic_ns=3_000_000_001,
         )
+
+    def test_scope_guard_rechecks_expiry_after_waiting_for_authority_lock(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        started_at = 2_000_000_000
+        issued = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=started_at,
+        )
+        sampled_time = {"value": issued.lease.expires_at_monotonic_ns - 1}
+        policy_key_checked = threading.Event()
+        outcomes: list[str] = []
+        original_policy_key = authority._policy_key
+
+        def observe_policy_key(candidate_policy: SandboxPolicy):
+            result = original_policy_key(candidate_policy)
+            policy_key_checked.set()
+            return result
+
+        def guard_scope() -> None:
+            try:
+                with authority.scope_guard(
+                    issued,
+                    policy,
+                    purpose=NetworkPurpose.PACKAGE_INSTALL,
+                    clock=lambda: sampled_time["value"],
+                ):
+                    outcomes.append("entered")
+            except NetworkLeaseValidationError:
+                outcomes.append("rejected")
+
+        authority._lock.acquire()
+        worker = threading.Thread(target=guard_scope, daemon=True)
+        try:
+            with patch.object(
+                authority,
+                "_policy_key",
+                side_effect=observe_policy_key,
+            ):
+                worker.start()
+                self.assertTrue(policy_key_checked.wait(1.0))
+                self.assertLess(
+                    sampled_time["value"],
+                    issued.lease.expires_at_monotonic_ns,
+                )
+                sampled_time["value"] = issued.lease.expires_at_monotonic_ns
+        finally:
+            authority._lock.release()
+        worker.join(timeout=1.0)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(outcomes, ["rejected"])
 
     def test_active_connection_is_closed_when_its_lease_is_revoked(self) -> None:
         policy = self.make_policy()

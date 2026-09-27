@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import array
 import errno
 import os
 import socket
+import sys
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tests import _support  # noqa: F401  # Add the repository's src/ to sys.path.
 
+from icode import linux_proxy_handoff, network_proxy_server
 from icode.approvals import ScriptedApprover
 from icode.network_destination import ResolvedNetworkTarget
 from icode.network_lease import NetworkLeaseAuthority, NetworkPurpose
@@ -148,6 +152,333 @@ class NetworkProxyServerTestCase(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(served, [True])
         self.assertTrue(server.close())
+
+    def test_serve_forever_can_signal_readiness_before_payload_ack(self) -> None:
+        server = self.make_server(self.make_listener())
+        ready = threading.Event()
+        stop = threading.Event()
+        failures: list[BaseException] = []
+
+        def serve() -> None:
+            try:
+                server.serve_forever(stop, ready_event=ready)
+            except BaseException as exc:
+                failures.append(exc)
+
+        worker = threading.Thread(target=serve, daemon=True)
+        worker.start()
+        try:
+            self.assertTrue(
+                ready.wait(1.0),
+                "listener loop must be healthy before the sandbox is released",
+            )
+            self.assertTrue(worker.is_alive())
+            self.assertEqual(failures, [])
+        finally:
+            stop.set()
+            server.close()
+            worker.join(timeout=2.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(failures, [])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux SCM_RIGHTS")
+    def test_handoff_session_starts_ready_proxy_before_ack_and_relays(self) -> None:
+        session_type = getattr(
+            network_proxy_server, "LinuxHostConnectProxySession", None,
+        )
+        self.assertTrue(
+            callable(session_type),
+            "Linux handoff must have a host-owned CONNECT session coordinator",
+        )
+        listener = self.make_listener()
+        upstream_listener = self.make_listener()
+        upstream_listener.settimeout(2.0)
+        host_control, sender_control = (
+            linux_proxy_handoff.create_loopback_listener_handoff_channel()
+        )
+        self.addCleanup(host_control.close)
+        self.addCleanup(sender_control.close)
+        nonce = bytes.fromhex("102132435465768798a9bacbdcedfe0f")
+        payload = b"ICODE_PROXY_LISTENER_V1" + nonce
+        rights = array.array("i", [listener.fileno()])
+        self.assertEqual(
+            sender_control.sendmsg(
+                [payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+            ),
+            len(payload),
+        )
+        session = session_type(
+            host_control,
+            expected_pid=os.getpid(),
+            scope=self.scope,
+            handoff_timeout_seconds=1.0,
+            ready_timeout_seconds=1.0,
+        )
+        self.addCleanup(session.close)
+        acknowledge = linux_proxy_handoff.acknowledge_loopback_listener_handoff
+
+        def acknowledge_only_after_ready(control: socket.socket, received: socket.socket) -> None:
+            self.assertTrue(session.ready)
+            self.assertFalse(session.acknowledged)
+            acknowledge(control, received)
+
+        client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client.settimeout(2.0)
+        self.addCleanup(client.close)
+        with (
+            patch(
+                "icode.linux_proxy_handoff.acknowledge_loopback_listener_handoff",
+                side_effect=acknowledge_only_after_ready,
+            ),
+            patch(
+                "icode.network_connector.resolve_public_tcp_targets",
+                side_effect=lambda hostname, port, resolver=None: self.local_resolver(
+                    hostname, port, upstream_listener.getsockname(),
+                )(hostname, port),
+            ),
+        ):
+            session.start()
+            sender_control.settimeout(1.0)
+            self.assertEqual(
+                sender_control.recv(64),
+                b"ICODE_PROXY_LISTENER_ACK_V1" + nonce,
+            )
+            client.connect(listener.getsockname())
+            client.sendall(self.request())
+            response = bytearray()
+            while not response.endswith(b"\r\n\r\n"):
+                response.extend(client.recv(1))
+            self.assertEqual(
+                bytes(response),
+                b"HTTP/1.1 200 Connection Established\r\n\r\n",
+            )
+            upstream, _address = upstream_listener.accept()
+            upstream.settimeout(2.0)
+            self.addCleanup(upstream.close)
+            client.sendall(b"handoff request")
+            self.assertEqual(upstream.recv(16), b"handoff request")
+            upstream.sendall(b"handoff response")
+            self.assertEqual(client.recv(16), b"handoff response")
+            self.assertTrue(session.close())
+            self.assert_peer_closed(client)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux SCM_RIGHTS")
+    def test_revoked_lease_does_not_ack_payload_and_closes_handoff(self) -> None:
+        session_type = getattr(
+            network_proxy_server, "LinuxHostConnectProxySession", None,
+        )
+        self.assertTrue(
+            callable(session_type),
+            "Linux handoff must have a host-owned CONNECT session coordinator",
+        )
+        listener = self.make_listener()
+        host_control, sender_control = (
+            linux_proxy_handoff.create_loopback_listener_handoff_channel()
+        )
+        self.addCleanup(host_control.close)
+        self.addCleanup(sender_control.close)
+        nonce = bytes.fromhex("ffeeddccbbaa99887766554433221100")
+        payload = b"ICODE_PROXY_LISTENER_V1" + nonce
+        rights = array.array("i", [listener.fileno()])
+        sender_control.sendmsg(
+            [payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+        )
+        session = session_type(
+            host_control,
+            expected_pid=os.getpid(),
+            scope=self.scope,
+            handoff_timeout_seconds=1.0,
+            ready_timeout_seconds=1.0,
+        )
+        self.addCleanup(session.close)
+        self.authority.revoke(self.policy)
+
+        with self.assertRaises(HostConnectProxyError):
+            session.start()
+
+        sender_control.settimeout(1.0)
+        self.assertEqual(sender_control.recv(64), b"")
+        self.assertFalse(session.acknowledged)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux SCM_RIGHTS")
+    def test_revoked_lease_is_rechecked_at_the_ack_boundary(self) -> None:
+        session_type = getattr(
+            network_proxy_server, "LinuxHostConnectProxySession", None,
+        )
+        self.assertTrue(callable(session_type), "Linux handoff session is required")
+        listener = self.make_listener()
+        host_control, sender_control = (
+            linux_proxy_handoff.create_loopback_listener_handoff_channel()
+        )
+        self.addCleanup(host_control.close)
+        self.addCleanup(sender_control.close)
+        nonce = bytes.fromhex("1234567890abcdef1234567890abcdef")
+        payload = b"ICODE_PROXY_LISTENER_V1" + nonce
+        rights = array.array("i", [listener.fileno()])
+        sender_control.sendmsg(
+            [payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+        )
+        session = session_type(
+            host_control,
+            expected_pid=os.getpid(),
+            scope=self.scope,
+            handoff_timeout_seconds=1.0,
+            ready_timeout_seconds=1.0,
+        )
+        self.addCleanup(session.close)
+        original_verify = self.scope.verify_lease
+        original_guard = self.scope.live_lease_guard
+
+        def keep_ready_thread_alive(
+            server: HostConnectProxyServer,
+            _stop_event: threading.Event,
+            *,
+            ready_event: threading.Event,
+        ) -> None:
+            original_verify()
+            ready_event.set()
+            server._closed_event.wait(2.0)
+
+        @contextmanager
+        def revoke_before_ack_guard():
+            self.authority.revoke(self.policy)
+            with original_guard():
+                yield
+
+        with (
+            patch.object(
+                HostConnectProxyServer,
+                "serve_forever",
+                new=keep_ready_thread_alive,
+            ),
+            patch.object(self.scope, "live_lease_guard", new=revoke_before_ack_guard),
+        ):
+            with self.assertRaises(HostConnectProxyError):
+                session.start()
+
+        self.assertTrue(session._ready_event.is_set())
+        sender_control.settimeout(1.0)
+        self.assertEqual(sender_control.recv(64), b"")
+        self.assertFalse(session.acknowledged)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux SCM_RIGHTS")
+    def test_close_during_handoff_reports_incomplete_then_retries(self) -> None:
+        session_type = getattr(
+            network_proxy_server, "LinuxHostConnectProxySession", None,
+        )
+        self.assertTrue(callable(session_type), "Linux handoff session is required")
+        host_control, sender_control = (
+            linux_proxy_handoff.create_loopback_listener_handoff_channel()
+        )
+        self.addCleanup(host_control.close)
+        self.addCleanup(sender_control.close)
+        session = session_type(
+            host_control,
+            expected_pid=os.getpid(),
+            scope=self.scope,
+            handoff_timeout_seconds=0.1,
+            ready_timeout_seconds=1.0,
+        )
+        self.addCleanup(session.close)
+        errors: list[BaseException] = []
+
+        def start() -> None:
+            try:
+                session.start()
+            except BaseException as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=start, daemon=True)
+        worker.start()
+        deadline = time.monotonic() + 1.0
+        while not session._start_attempted and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertTrue(session._start_attempted)
+        self.assertFalse(
+            session.close(),
+            "shutdown must report that the in-progress receiver has not unwound",
+        )
+        worker.join(timeout=1.0)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], HostConnectProxyError)
+        self.assertTrue(session.close())
+        sender_control.settimeout(1.0)
+        self.assertEqual(sender_control.recv(64), b"")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux SCM_RIGHTS")
+    def test_session_close_preserves_interrupt_after_closing_control_fd(self) -> None:
+        session_type = getattr(
+            network_proxy_server, "LinuxHostConnectProxySession", None,
+        )
+        self.assertTrue(callable(session_type), "Linux handoff session is required")
+        listener = self.make_listener()
+        host_control, sender_control = (
+            linux_proxy_handoff.create_loopback_listener_handoff_channel()
+        )
+        self.addCleanup(host_control.close)
+        self.addCleanup(sender_control.close)
+        nonce = bytes.fromhex("0011aa22bb33cc44dd55ee66ff778899")
+        payload = b"ICODE_PROXY_LISTENER_V1" + nonce
+        rights = array.array("i", [listener.fileno()])
+        sender_control.sendmsg(
+            [payload], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, rights)],
+        )
+        session = session_type(
+            host_control,
+            expected_pid=os.getpid(),
+            scope=self.scope,
+            handoff_timeout_seconds=1.0,
+            ready_timeout_seconds=1.0,
+        )
+        self.addCleanup(session.close)
+        session.start()
+        thread = session._thread
+        self.assertIsNotNone(thread)
+        assert thread is not None
+        join = thread.join
+        interrupts = 0
+
+        def interrupt_once(*, timeout: float | None = None) -> None:
+            nonlocal interrupts
+            if interrupts == 0:
+                interrupts += 1
+                raise KeyboardInterrupt
+            join(timeout=timeout)
+
+        with patch.object(thread, "join", side_effect=interrupt_once):
+            with self.assertRaises(KeyboardInterrupt):
+                session.close()
+
+        self.assertEqual(interrupts, 1)
+        self.assertLess(host_control.fileno(), 0)
+        self.assertTrue(session.close())
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires Linux SCM_RIGHTS")
+    def test_handoff_session_normalizes_unrepresentably_large_timeout(self) -> None:
+        session_type = getattr(
+            network_proxy_server, "LinuxHostConnectProxySession", None,
+        )
+        self.assertTrue(callable(session_type), "Linux handoff session is required")
+        host_control, sender_control = (
+            linux_proxy_handoff.create_loopback_listener_handoff_channel()
+        )
+        self.addCleanup(host_control.close)
+        self.addCleanup(sender_control.close)
+
+        try:
+            session_type(
+                host_control,
+                expected_pid=os.getpid(),
+                scope=self.scope,
+                handoff_timeout_seconds=10**1000,
+            )
+        except HostConnectProxyError:
+            return
+        except OverflowError:
+            self.fail("timeout validation must not leak numeric conversion errors")
+        self.fail("unrepresentably large timeout was accepted")
 
     def test_upstream_failure_closes_without_sending_success_response(self) -> None:
         listener = self.make_listener()
