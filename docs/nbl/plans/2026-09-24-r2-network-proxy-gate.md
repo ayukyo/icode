@@ -110,6 +110,14 @@
 - **本机验收：**8 项 `tests.test_connect_request` 覆盖大小写规范化、Host 默认/显式 443、authority/Host 混淆、ASCII/Unicode/IP/zone/userinfo/端口、HTTP method/version、重复/缺失 Host、CL/TE/额外头、CRLF/折叠/控制字符/尾随字节、超长 block、字节与头数上限边界以及拒绝信息不回显输入；新增测试先以缺少模块失败，再以未实现桩让两项正向合同按预期失败，随后实现后全绿。`tests.test_connect_request` 与 DNS/policy/lease 模块合计 100 项通过，无 DNS/TCP/公网请求。Python 3.11.15 下完整 `scripts/preflight.py` 的密钥扫描、子模块完整性与全量 unittest 三道守护通过；`check_agent_landscape.py`、`check_governance.py`、`check_site.py`、`git diff --check` 通过。独立静态复审无 Critical/Important，边界与拒绝文本的 Minor 覆盖项已补测，可提交。
 - **边界与兼容性：**纯 parser 不证明连接层正确读满一块 header、不管理 asyncio 超时/分段/limit、delimiter 后缓冲区或提前到达的隧道数据；不核验 lease、做 DNS/拨号、创建 listener 或开放 worker 网络。当前只接受 Host 头，可能拒绝携带 User-Agent/Proxy-Connection 的客户端；后续只有在确有客户端兼容需求时，才经实测添加明确、不会转发给目标的安全头白名单。CI #228 总体失败与本切片无关的原生门结果见[持续竞品对照](../../agent-landscape-live.md)。
 
+### 2026-09-27 host-side 到期租约自动回收组件
+
+- **问题与范围：**`NetworkLeaseAuthority.close_expired_connections()` 原来只在可信调用方显式 sweep 或登记新连接时执行；如果宿主 scope 空闲且不再有新请求，已登记的到期连接可能一直保留。新增显式生命周期组件 `NetworkLeaseExpiryMonitor`：由可信 host owner 单次启动专用 daemon thread，使用单调时钟立即 sweep，之后默认每 100 ms（可配置 10 ms–1 s）重试；停止最多等待 5 秒并返回是否退出。Authority 自身仍不隐式创建线程。
+- **失败语义：**close callback 未确认时 authority 原有的 `revoking` 保护保持生效；monitor 只保留活动登记并在下一轮重试。监视器只记录固定的 `connection_cleanup_failed` 健康类别，不记录异常文本。启动间隔拒绝 bool、非有限、超界与超大整数，monitor 实例不可重复启动。
+- **本机验收：**5 项 `tests.test_network_lease_monitor` 覆盖真实 loopback peer 在 TTL 后读到 EOF、一次关闭失败后重试成功、敏感错误内容不进入健康状态、周期/单次生命周期边界与停止超时。平台 lease CI runner `scripts/run_network_lease_ci.py` 已包含 authority 与 monitor 两套测试；本机 runner 34 项通过，完整 `scripts/preflight.py` 的密钥扫描、子模块完整性和全量测试三道门通过；macOS/Windows CI 需新提交后验证。
+- **研究与取舍：**Codex `main` [`985cf47a`](https://github.com/openai/codex/commit/985cf47a4eb6084b2ff6b30ebdb1216acda85bb4)、Qwen Code 0.24.6 [`e471cfe6`](https://github.com/QwenLM/qwen-code/commit/e471cfe6cdd1eb151d3bb870ffa8658f0e497033) 与 Gemini CLI [`2fe7c2d3`](https://github.com/google-gemini/gemini-cli/commit/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18) 固定源码均为 Apache-2.0。**采纳**Codex 的 scope 生命周期关闭真实连接思路和实 TCP 两端 EOF 作为验收形式；**暂缓**任何上游代理实现直抄，也不将 scope shutdown 等同 lease TTL timer。Qwen/Gemini 示例仍按 hostname 拨号或只提供静态 sidecar，未显示本项目所需的租约撤销和 IP pinning。无代码复制与新增依赖。
+- **严格边界：**该组件尚未接入已提交的 CONNECT handler、生产 proxy lifecycle、任何 worker/Agent/ToolContext；本地测试连接只使用 loopback，未访问公网。100 ms 是轮询间隔，不是硬实时截止；最坏回收时间还包含 close callback 耗时。它不取消同步 DNS/阻塞 connect、不建立 listener/relay、不阻止子进程绕过代理，也不替代 Linux netns、macOS Seatbelt 或 Windows WFP “只能到代理”门。基础策略保持 `DENY`，R2 网络、自动模式与工具入口继续关闭。
+
 ### 2026-09-26 UTC：CI #230 lease 关闭断言跨平台修正候选
 
 - **观测事实：**CI #230 的 Actions annotation 在 macOS workspace 与 Intel native job 都报告 `test_revoke_closes_socket_after_original_wrapper_detaches` assertion failure；ARM native lease job 未报失败。完整 traceback 需登录才能访问，故目前只确认失败用例，不确认失败断言位置和值。

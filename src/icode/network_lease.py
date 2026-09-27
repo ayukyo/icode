@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import re
 import secrets
 import socket
@@ -37,6 +38,10 @@ MAX_NETWORK_LEASE_TTL_NS = MAX_NETWORK_LEASE_TTL_SECONDS * NANOSECONDS_PER_SECON
 MAX_NETWORK_LEASE_DOMAINS = 32
 HTTPS_PORT = 443
 _NETWORK_CONNECTION_CLOSE_WAIT_SECONDS = 5.0
+DEFAULT_NETWORK_LEASE_SWEEP_INTERVAL_SECONDS = 0.1
+MIN_NETWORK_LEASE_SWEEP_INTERVAL_SECONDS = 0.01
+MAX_NETWORK_LEASE_SWEEP_INTERVAL_SECONDS = 1.0
+NETWORK_LEASE_MONITOR_STOP_TIMEOUT_SECONDS = 5.0
 
 _LEASE_ID_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 _POLICY_HASH_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
@@ -762,3 +767,119 @@ class NetworkLeaseAuthority:
             ):
                 self._revoking_policy_keys.discard(policy_key)
         return generation
+
+
+class NetworkLeaseExpiryMonitor:
+    """Periodically sweep expired host-owned connections on a trusted thread.
+
+    The monitor is opt-in and single-use: the host lifecycle owner must start it
+    while its proxy scope is active and stop it during shutdown. It does not
+    open listeners, grant worker networking, or replace OS-level proxy routing.
+    Failed closes remain fail-closed in the authority and are retried on the
+    next sweep; the monitor records only a safe failure category, not exception
+    text that could contain socket or destination details.
+    """
+
+    def __init__(
+        self,
+        authority: NetworkLeaseAuthority,
+        *,
+        sweep_interval_seconds: float = DEFAULT_NETWORK_LEASE_SWEEP_INTERVAL_SECONDS,
+    ) -> None:
+        if not isinstance(authority, NetworkLeaseAuthority):
+            raise NetworkLeaseValidationError(
+                "a host NetworkLeaseAuthority is required"
+            )
+        try:
+            interval = float(sweep_interval_seconds)
+        except (OverflowError, TypeError, ValueError):
+            interval = math.nan
+        if (
+            type(sweep_interval_seconds) not in (int, float)
+            or not math.isfinite(interval)
+            or not MIN_NETWORK_LEASE_SWEEP_INTERVAL_SECONDS
+            <= interval
+            <= MAX_NETWORK_LEASE_SWEEP_INTERVAL_SECONDS
+        ):
+            raise NetworkLeaseValidationError(
+                "sweep interval must be between 0.01 and 1.0 seconds"
+            )
+
+        self._authority = authority
+        self._sweep_interval_seconds = interval
+        self._stop_event = threading.Event()
+        self._state_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._started = False
+        self._stopped = False
+        self._failure_count = 0
+        self._last_error: str | None = None
+
+    @property
+    def running(self) -> bool:
+        """Whether the owned sweep thread is currently alive."""
+
+        with self._state_lock:
+            return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def failure_count(self) -> int:
+        """Number of sweep attempts whose cleanup did not complete."""
+
+        with self._state_lock:
+            return self._failure_count
+
+    @property
+    def last_error(self) -> str | None:
+        """A fixed, non-sensitive health category for the most recent sweep."""
+
+        with self._state_lock:
+            return self._last_error
+
+    def start(self) -> None:
+        """Start exactly one daemon sweep thread for this monitor instance."""
+
+        with self._state_lock:
+            if self._started or self._stopped:
+                raise RuntimeError("network lease expiry monitor is single-use")
+            thread = threading.Thread(
+                target=self._run,
+                name="icode-network-lease-expiry",
+                daemon=True,
+            )
+            self._thread = thread
+            self._started = True
+            try:
+                thread.start()
+            except BaseException:
+                self._thread = None
+                self._started = False
+                raise
+
+    def stop(self) -> bool:
+        """Request shutdown and wait up to the fixed bounded join interval."""
+
+        with self._state_lock:
+            self._stopped = True
+            thread = self._thread
+            self._stop_event.set()
+        if thread is None:
+            return True
+        if thread is threading.current_thread():
+            return False
+        thread.join(timeout=NETWORK_LEASE_MONITOR_STOP_TIMEOUT_SECONDS)
+        return not thread.is_alive()
+
+    def _run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                self._authority.close_expired_connections(time.monotonic_ns())
+            except Exception:  # noqa: BLE001 - keep retrying without exposing details.
+                with self._state_lock:
+                    self._failure_count += 1
+                    self._last_error = "connection_cleanup_failed"
+            else:
+                with self._state_lock:
+                    self._last_error = None
+            if self._stop_event.wait(self._sweep_interval_seconds):
+                return

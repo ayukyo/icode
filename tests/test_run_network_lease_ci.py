@@ -7,7 +7,10 @@ import unittest
 
 from tests import _support  # noqa: F401
 
-from scripts.run_network_lease_ci import emit_failure_annotations
+from scripts.run_network_lease_ci import (
+    emit_failure_annotations,
+    load_network_lease_suite,
+)
 
 
 class _TestIdentity:
@@ -19,6 +22,25 @@ class _TestIdentity:
 
 
 class TestLeaseCiFailureAnnotations(unittest.TestCase):
+    def test_platform_lease_job_runs_authority_and_expiry_monitor_suites(self) -> None:
+        class TrackingLoader:
+            def __init__(self) -> None:
+                self.loaded: list[str] = []
+
+            def loadTestsFromName(self, name: str) -> unittest.TestSuite:
+                self.loaded.append(name)
+                return unittest.TestSuite()
+
+        loader = TrackingLoader()
+
+        suite = load_network_lease_suite(loader=loader)  # type: ignore[arg-type]
+
+        self.assertIsInstance(suite, unittest.TestSuite)
+        self.assertEqual(
+            loader.loaded,
+            ["tests.test_network_lease", "tests.test_network_lease_monitor"],
+        )
+
     def test_failure_annotation_contains_only_sanitized_test_identity(self) -> None:
         result = unittest.TestResult()
         result.failures.append(

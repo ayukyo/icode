@@ -1,4 +1,4 @@
-"""Run the network lease test module with safe per-test Actions annotations."""
+"""Run network lease lifecycle suites with safe Actions annotations."""
 
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ from typing import TextIO
 
 _SAFE_TEST_ID_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._"
+)
+_NETWORK_LEASE_TEST_MODULES = (
+    "tests.test_network_lease",
+    "tests.test_network_lease_monitor",
 )
 
 
@@ -40,9 +44,21 @@ def emit_failure_annotations(result: unittest.TestResult, stream: TextIO) -> Non
             )
 
 
+def load_network_lease_suite(
+    *, loader: unittest.TestLoader | None = None,
+) -> unittest.TestSuite:
+    """Load authority and automatic-expiry tests in the platform lease job."""
+
+    selected_loader = loader or unittest.defaultTestLoader
+    suite = unittest.TestSuite()
+    for module_name in _NETWORK_LEASE_TEST_MODULES:
+        suite.addTests(selected_loader.loadTestsFromName(module_name))
+    return suite
+
+
 def main() -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    suite = unittest.defaultTestLoader.loadTestsFromName("tests.test_network_lease")
+    suite = load_network_lease_suite()
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     emit_failure_annotations(result, sys.stdout)
     return 0 if result.wasSuccessful() else 1
