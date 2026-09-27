@@ -1,7 +1,7 @@
 # R2 资源限制与统一违规回执实施门
 
 - 日期：2026-09-28 Asia/Shanghai
-- 状态：只读审计与本机机制实验完成；实现未开始，能力评分不变
+- 状态：R2 资源限制与原生违规回执实现未开始；只读审计、本机机制实验和应用层拒绝回执基础切片已完成，能力评分不变
 - 目标：把十项合同中的 `resource_limits`、`uniform_violation` 接入真实隔离命令路径，并提供跨平台可核验回执。
 - 依据：[R2 跨平台隔离设计 §12.2、§13、§14](../specs/2026-09-23-r2-cross-platform-isolation-design.md)
 
@@ -35,3 +35,10 @@
 Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.com/openai/codex/commit/21eb35513df478a2a090bfc2c0293caaf435b36d) 中的 deadline、输出缓冲、进程组清理可作为宿主监督结构参考；Unified Exec 的 tracked-session 数不能作为任务进程上限。Codex 的内部 OS violation 分类可作为脱敏分类测试参考，但未发现其公开工具回执有统一机器错误码。相关源码事实和采纳决策记录在[持续竞品对照](../../agent-landscape-live.md)。本计划不复制代码、不增加运行时依赖，也不据上游行为推断 ICODE 能力。
 
 本计划不改变 worker 网络默认 `DENY`、macOS 地址范围门槛、`policy_contract_ready`、workbench 自动模式或现有 capability 评分。macOS 的 `localhost` 同端口规则和 `process_limit` 是否把线程计入两项用户决定仍待答复；答复前仅进行只读核查，不放宽策略。
+
+## 2026-09-28：应用策略层统一拒绝回执（已落地，非 OS 验收）
+
+- `ToolRegistry` 文件读取/写入拒绝与 `AgentLoop` Guard 拒绝现在都返回稳定 `error_code=policy_denied` 和 `violation_receipt`；CLI 对两类路径都显示同一普通语言提示。拒绝结果事件不转发动态判定原因，`LoopResult.render()` 也不再回显 Guard 拒绝细节。
+- 回执固定标记 `enforcement_layer=application_policy` 与 `os_enforced=false`，只记录受限工具名和静态类别；非标准工具名收敛为 `other`，避免把原始标签写入回执。既有细分 `meta.error` 保留，兼容原调用方。
+- RED 新用例先观察到缺字段、拒绝提示未到达 CLI、报告回显动态参数及成功结果机器码碰撞，再实现；5 项聚焦回归通过；全仓 `python -m unittest` 为 1,094 项通过、25 项条件跳过。
+- **不改变 `uniform_violation` 评分：**上述结果是调用进入 OS 后端前的应用策略拒绝，明确不证明原生 DENY；真实 OS 负例、允许路径正例、普通 `exit 13` 反例及 CLI/MCP 原生回执 parity 仍是 VR-1 门槛。

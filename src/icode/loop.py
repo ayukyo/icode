@@ -23,7 +23,14 @@ from .backends import AssistantMessage, Backend, Usage
 from .budget import BudgetTracker
 from .guard import Decision, Guard, Verdict
 from .operations import OperationRecorder
-from .tools import OPCLASS_READ_ONLY, ToolContext, ToolRegistry, ToolResult
+from .tools import (
+    OPCLASS_READ_ONLY,
+    POLICY_DENIED_USER_MESSAGE,
+    ToolContext,
+    ToolRegistry,
+    ToolResult,
+    application_policy_violation_receipt,
+)
 
 
 @dataclass
@@ -152,12 +159,31 @@ class AgentLoop:
                                   "工具不存在")
 
         verdict = self._decide(call_name, args)
-        inv = ToolInvocation(call_name, args, verdict.decision.value, False, note=verdict.reason)
+        denial_note = (
+            POLICY_DENIED_USER_MESSAGE
+            if verdict.decision is Decision.DENY
+            else verdict.reason
+        )
+        inv = ToolInvocation(
+            call_name, args, verdict.decision.value, False, note=denial_note,
+        )
 
         if verdict.decision is Decision.DENY:
-            inv.result = ToolResult(False, f"已被权限模型拒绝：{verdict.reason}",
-                                    {"error": "denied"}, opclass=tool.opclass)
-            self.on_event("tool_denied", {"tool": call_name, "reason": verdict.reason})
+            violation_receipt = application_policy_violation_receipt(
+                call_name, "guard_denied",
+            )
+            inv.result = ToolResult(False, POLICY_DENIED_USER_MESSAGE,
+                                    {
+                                        "error": "denied",
+                                        "error_code": "policy_denied",
+                                        "violation_receipt": violation_receipt,
+                                    }, opclass=tool.opclass)
+            self.on_event("tool_denied", {
+                "tool": call_name,
+                "error_code": "policy_denied",
+                "user_message": POLICY_DENIED_USER_MESSAGE,
+                "violation_receipt": violation_receipt,
+            })
             return inv
 
         if verdict.decision is Decision.REQUIRE_APPROVAL:
@@ -205,7 +231,10 @@ class AgentLoop:
         self.on_event("tool_start", {"tool": call_name, "arguments": safe_args})
         result = self.registry.invoke(call_name, self.ctx, args)
         inv.result = result
-        self.on_event("tool_result", {"tool": call_name, "ok": result.ok, "meta": result.meta})
+        result_event = {"tool": call_name, "ok": result.ok, "meta": result.meta}
+        if not result.ok and result.meta.get("error_code") == "policy_denied":
+            result_event["user_message"] = POLICY_DENIED_USER_MESSAGE
+        self.on_event("tool_result", result_event)
 
         if op_attempt and self.operations is not None:
             finished = self.operations.finish(

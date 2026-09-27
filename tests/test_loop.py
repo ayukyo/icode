@@ -238,7 +238,107 @@ class TestLoopGuards(unittest.TestCase):
         r = loop.run([{"role": "user", "content": "删除"}])
         inv = r.turns[0].invocations[0]
         self.assertEqual(inv.decision, "deny")
-        self.assertIn("危险模式", inv.note)
+        self.assertEqual(inv.note, "此操作超出当前任务范围，已阻止。")
+        self.assertEqual(inv.result.meta["error_code"], "policy_denied")
+        self.assertEqual(
+            inv.result.meta["violation_receipt"],
+            {
+                "schema_version": 1,
+                "enforcement_layer": "application_policy",
+                "os_enforced": False,
+                "category": "guard_denied",
+                "operation": "run_command",
+            },
+        )
+        self.assertEqual(inv.result.content, "此操作超出当前任务范围，已阻止。")
+
+    def test_权限拒绝事件带结构化回执且不携带自然语言原因(self) -> None:
+        events: list[tuple[str, dict]] = []
+        loop = _loop([{
+            "content": "",
+            "tool_calls": [{
+                "id": "c1", "name": "run_command",
+                "arguments": {"argv": ["rm", "-rf", "/"]},
+            }],
+        }, "完成"], self.root)
+        loop.on_event = lambda kind, payload: events.append((kind, payload))
+
+        result = loop.run([{"role": "user", "content": "删除"}])
+
+        self.assertTrue(result.ok)
+        denied = [payload for kind, payload in events if kind == "tool_denied"]
+        self.assertEqual(len(denied), 1)
+        self.assertNotIn("reason", denied[0])
+        self.assertEqual(denied[0]["error_code"], "policy_denied")
+        self.assertEqual(denied[0]["user_message"], "此操作超出当前任务范围，已阻止。")
+        self.assertEqual(denied[0]["violation_receipt"]["os_enforced"], False)
+
+    def test_应用策略拒绝结果事件携带安全提示(self) -> None:
+        protected_file = self.root / "protected.txt"
+        protected_file.write_text("private marker", encoding="utf-8")
+        events: list[tuple[str, dict]] = []
+        loop = _loop([{
+            "content": "",
+            "tool_calls": [{
+                "id": "read-protected", "name": "read_file",
+                "arguments": {"path": str(protected_file)},
+            }],
+        }, "完成"], self.root)
+        loop.ctx.deny_read_roots = (protected_file,)
+        loop.on_event = lambda kind, payload: events.append((kind, payload))
+
+        result = loop.run([{"role": "user", "content": "读取文件"}])
+
+        self.assertTrue(result.ok)
+        tool_results = [payload for kind, payload in events if kind == "tool_result"]
+        self.assertEqual(len(tool_results), 1)
+        self.assertFalse(tool_results[0]["ok"])
+        self.assertEqual(tool_results[0]["meta"]["error_code"], "policy_denied")
+        self.assertEqual(tool_results[0]["user_message"], "此操作超出当前任务范围，已阻止。")
+
+    def test_成功结果不会因机器码碰撞附加拒绝提示(self) -> None:
+        events: list[tuple[str, dict]] = []
+        loop = _loop([{
+            "content": "",
+            "tool_calls": [{
+                "id": "success", "name": "success_probe", "arguments": {},
+            }],
+        }, "完成"], self.root)
+        loop.registry.register(Tool(
+            name="success_probe",
+            description="test-only result metadata probe",
+            parameters={
+                "type": "object", "properties": {}, "required": [],
+                "additionalProperties": False,
+            },
+            handler=lambda _ctx: ToolResult(
+                True, "ok", {"error_code": "policy_denied"},
+            ),
+        ))
+        loop.on_event = lambda kind, payload: events.append((kind, payload))
+
+        result = loop.run([{"role": "user", "content": "探测成功结果"}])
+
+        self.assertTrue(result.ok)
+        tool_results = [payload for kind, payload in events if kind == "tool_result"]
+        self.assertTrue(tool_results[0]["ok"])
+        self.assertNotIn("user_message", tool_results[0])
+
+    def test_拒绝报告不回显含敏感参数的Guard原因(self) -> None:
+        marker = "PRIVATE_DENIAL_ARGUMENT_MARKER"
+        loop = _loop([{
+            "content": "",
+            "tool_calls": [{
+                "id": "malformed-shell", "name": "run_command",
+                "arguments": {"argv": ["echo", f"$(cat {marker})"]},
+            }],
+        }, "完成"], self.root)
+
+        result = loop.run([{"role": "user", "content": "运行命令"}])
+
+        invocation = result.turns[0].invocations[0]
+        self.assertEqual(invocation.note, "此操作超出当前任务范围，已阻止。")
+        self.assertNotIn(marker, result.render())
 
     def test_畸形命令参数被拒且回合继续(self) -> None:
         for bad in ({"python": "-V"}, ["python", 1], 7):

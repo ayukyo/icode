@@ -888,6 +888,13 @@
 - **违规回执源码事实：**Codex 固定快照有内部 [`SandboxViolationEvent` 分类](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/sandboxing/src/violation.rs)及[分类测试](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/sandboxing/src/violation_tests.rs)，但执行 handler 最终仍将拒绝映射为聚合输出与退出码，[未发现稳定机器错误码或 CLI/MCP parity 断言](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/core/src/tools/handlers/unified_exec/exec_command.rs)。ICODE `ToolRegistry` 的统一 `policy_denied` 目前仅覆盖应用层 `read_denied`/`write_denied`；不能据此关闭 R2 原生 OS DENY 回执合同。
 - **ICODE 取舍与验收：**采纳内部拒绝分类、脱敏及真实负例对照的测试形式，不复制上游代码，不新增运行依赖；暂缓将应用层拒绝单测或普通非零退出码计为 `uniform_violation`。达标探针必须穿过真实 OS 后端和执行 broker，加入允许路径正对照与普通 `exit 13` 误分类反对照，再核 CLI/MCP 稳定错误码、相同用户提示和隔离违规摘要。两个缺口均保持未验证，不能改分。
 
+### 2026-09-28 Asia/Shanghai 刷新：OpenHands 资源限制与拒绝回执
+
+- **固定来源 / 许可证：**OpenHands `software-agent-sdk@d77ada7a030b3acaa82593d402632680361dfe42`，MIT；只代表此固定快照，不声称为后续 HEAD。
+- **资源执行事实：**[`LocalWorkspace`](https://github.com/OpenHands/software-agent-sdk/blob/d77ada7a030b3acaa82593d402632680361dfe42/openhands-sdk/openhands/sdk/workspace/local.py)直接在宿主启动命令，命令超时默认为 30 秒；[`DockerWorkspace`](https://github.com/OpenHands/software-agent-sdk/blob/d77ada7a030b3acaa82593d402632680361dfe42/openhands-workspace/openhands/workspace/docker/workspace.py)发现 `nofile` ulimit，但未见 PID、CPU、内存限额参数。Terminal 的无输出超时可能保留仍运行进程，不能当作强制终止；这些结论仅限所查调用路径。OpenHands 企业 Kubernetes 的每会话 Pod 资源配置属于不同部署层，不可外推成开源 SDK 本机默认能力。
+- **拒绝回执事实：**固定 SDK 的通用 Observation 只有内容和 `is_error`，没有统一 OS-deny 码；hook/user 拒绝路径有 `rejection_source`、action 标识与原因，但属于应用/确认层，不代表内核隔离回执。
+- **采纳 / 暂缓：**采纳显式标注拒绝来源并保留安全调用标识的做法。ICODE 本片把 Guard/ToolRegistry 拒绝统一成 `policy_denied` 与 `violation_receipt`，回执明确 `enforcement_layer=application_policy`、`os_enforced=false`；CLI 对两类应用拒绝均显示统一提示，最终报告不回显动态 Guard 原因。不复制上游实现、不新增依赖。暂缓将 hook、容器存在或普通退出码记为原生隔离能力；R2 `resource_limits` 与 `uniform_violation` 仍需真实 OS 执行链证据。
+
 ### 2026-09-28 刷新：macOS Seatbelt 动态代理端口边界
 
 - **固定来源：**Codex `openai/codex@21eb35513df478a2a090bfc2c0293caaf435b36d`，Apache-2.0；固定提交 [Seatbelt 网络规则](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/sandboxing/src/seatbelt.rs#L2741-L2815)可按运行时代理端口生成 `remote ip "localhost:{port}"` 出站授权，并保持 deny-default；[proxy listener](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/network-proxy/src/proxy.rs#L221-L320)使用动态 listener 端口。该实现是精确到端口，不是精确到 IPv4 loopback 地址。

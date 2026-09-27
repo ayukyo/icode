@@ -26,7 +26,45 @@ OPCLASS_EXTERNAL = "external_side_effect"
 OPCLASS_DESTRUCTIVE = "destructive_hardware"
 
 _POLICY_DENIAL_ERRORS = frozenset({"read_denied", "write_denied"})
-_POLICY_DENIED_USER_MESSAGE = "此操作超出当前任务范围，已阻止。"
+_APPLICATION_POLICY_DENIAL_CATEGORIES = _POLICY_DENIAL_ERRORS | {"guard_denied"}
+POLICY_DENIED_USER_MESSAGE = "此操作超出当前任务范围，已阻止。"
+
+
+def application_policy_violation_receipt(
+    operation: str, category: str,
+) -> dict[str, object]:
+    """Build a safe, explicitly application-layer denial receipt.
+
+    This is not evidence of an operating-system sandbox denial and must never
+    be used to satisfy the native ``uniform_violation`` conformance gate.
+    """
+    if (
+        type(operation) is not str
+        or not operation
+        or len(operation) > 64
+        or not operation[0].isascii()
+        or not (operation[0].isalnum() or operation[0] == "_")
+        or any(
+            not char.isascii()
+            or not (char.isalnum() or char in "_.-")
+            for char in operation[1:]
+        )
+    ):
+        # Tool names are extensible. Never leak malformed/custom labels into
+        # receipts, but do not turn a denial into a secondary tool exception.
+        operation = "other"
+    if (
+        type(category) is not str
+        or category not in _APPLICATION_POLICY_DENIAL_CATEGORIES
+    ):
+        raise ValueError("unsupported application policy denial category")
+    return {
+        "schema_version": 1,
+        "enforcement_layer": "application_policy",
+        "os_enforced": False,
+        "category": category,
+        "operation": operation,
+    }
 
 
 @dataclass
@@ -204,8 +242,11 @@ class ToolRegistry:
                 # 稳定的用户提示与机器码统一；保留 error 作为调用方兼容的细分原因。
                 meta = dict(result.meta)
                 meta["error_code"] = "policy_denied"
+                meta["violation_receipt"] = application_policy_violation_receipt(
+                    name, str(result.meta["error"]),
+                )
                 return ToolResult(
-                    False, _POLICY_DENIED_USER_MESSAGE, meta, opclass=result.opclass,
+                    False, POLICY_DENIED_USER_MESSAGE, meta, opclass=result.opclass,
                 )
             return result
         except TypeError as exc:

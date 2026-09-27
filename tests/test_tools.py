@@ -314,10 +314,51 @@ class TestFileTools(unittest.TestCase):
         self.assertEqual([result.meta["error"] for result in denied],
                          ["read_denied", "write_denied"])
         self.assertTrue(all(result.meta["error_code"] == "policy_denied" for result in denied))
+        self.assertEqual(
+            [result.meta["violation_receipt"] for result in denied],
+            [
+                {
+                    "schema_version": 1,
+                    "enforcement_layer": "application_policy",
+                    "os_enforced": False,
+                    "category": "read_denied",
+                    "operation": "read_file",
+                },
+                {
+                    "schema_version": 1,
+                    "enforcement_layer": "application_policy",
+                    "os_enforced": False,
+                    "category": "write_denied",
+                    "operation": "write_file",
+                },
+            ],
+        )
         self.assertEqual({result.content for result in denied},
                          {"此操作超出当前任务范围，已阻止。"})
         self.assertNotIn("PRIVATE_MARKER", denied[0].content)
         self.assertEqual(config.read_text(encoding="utf-8"), "before\n")
+
+    def test_应用策略违规回执拒绝不安全标签(self) -> None:
+        from icode.tools import application_policy_violation_receipt
+
+        namespaced = application_policy_violation_receipt(
+            "mcp.tool-name", "guard_denied",
+        )
+        self.assertEqual(namespaced["operation"], "mcp.tool-name")
+
+        for operation in (
+            "read_file /private/secret", "x" * 65, [],
+        ):
+            with self.subTest(operation=operation):
+                receipt = application_policy_violation_receipt(
+                    operation, "guard_denied",
+                )
+                self.assertEqual(receipt["operation"], "other")
+
+        for category in ("raw secret text", []):
+            with self.subTest(category=category):
+                with self.assertRaises(ValueError):
+                    application_policy_violation_receipt("read_file", category)
 
     def test_策略编辑必须同时有读取权限(self) -> None:
         from icode.sandbox_policy import NetworkMode, SandboxPolicy

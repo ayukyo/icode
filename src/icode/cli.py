@@ -388,9 +388,14 @@ def _build_runner(args: argparse.Namespace):
         elif kind == "tool_start":
             print(f"      · 调用 {payload.get('tool')}")
         elif kind == "tool_result":
-            print(f"        {'成功' if payload.get('ok') else '失败'}")
+            meta = payload.get("meta")
+            if (not payload.get("ok") and isinstance(meta, dict)
+                    and meta.get("error_code") == "policy_denied"):
+                print(f"        [拒绝] {payload.get('user_message', '此操作已被阻止。')}")
+            else:
+                print(f"        {'成功' if payload.get('ok') else '失败'}")
         elif kind == "tool_denied":
-            print(f"        [拒绝] {payload.get('reason')}")
+            print(f"        [拒绝] {payload.get('user_message', '此操作已被阻止。')}")
         elif kind == "approval_requested":
             print(f"        [待确认] {payload.get('reason')}")
         elif kind == "operation_ambiguous":
