@@ -1,8 +1,17 @@
 # R2.4 临时网络授权与代理门禁
 
 - 日期：2026-09-24
-- 状态：已新增 v2 host-only lease overlay（绑定默认 DENY 基线）、本机审批/HMAC/撤销 authority 契约及真实 socket 关闭测试适配器；没有生产代理或 OS 强制路由，自动模式保持默认断网
+- 状态：已新增 v2 host-only lease overlay（绑定默认 DENY 基线）、本机审批/HMAC/撤销 authority 契约、真实 socket 关闭测试适配器及 Linux native loopback-only namespace probe；没有生产代理或 OS 强制路由，自动模式保持默认断网
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §8、§14；[持续竞品对照](../../agent-landscape-live.md)
+
+## 2026-09-27 10:45 UTC 最新推进：Linux loopback-only namespace probe
+
+- **并行只读研究：**Codex `openai/codex@67a709665ac7b50311b93e32612c9a8281684787`（Apache-2.0）的 Linux sandbox 有 netns loopback TCP listener、host bridge、SCM_RIGHTS FD handoff 与按 socket family 限制 seccomp；其直接相关测试仍不足以证明 managed-proxy 完整旁路防护。Codex README 对 AF_UNIX/socketpair 的概述与此 SHA 源码不同：源码保留 `socketpair()` 供本地 IPC。Gemini CLI `2fe7c2d3f065dc40ad573d50b2091116f8a4aa18`（Apache-2.0）通过 Docker/Podman 网络与代理容器，不适配本项目无额外容器运行时的 pip-only 约束。精确证据与链接见[持续竞品对照](../../agent-landscape-live.md)。
+- **采纳 / 暂缓：**采纳 netns、loopback-only 和 seccomp socket family/type 约束作为后续 FD bridge 的基础；暂缓真实 bridge 与策略开放，未复制代码、未新增运行依赖。本地 `unshare --user --map-root-user --net true` 仅作主机能力预检，不代替原生子进程测试。
+- **实现状态：**native helper 增加仅供原生探针调用、未接入 `LandlockSandbox`/`SandboxPolicy`/Agent 的 `--network-loopback-only` 模式。它创建 user/PID/network namespaces，在丢弃能力前仅启用新命名空间的 `lo`；子进程 seccomp 仅允许 IPv4/IPv6 TCP stream `socket()`（protocol 0 或 TCP），保持 `io_uring_setup` 拒绝；UDP、raw 及 AF_UNIX `socket()` 被拒。两个模式中的 `socketpair()` 都仅允许 AF_UNIX stream/datagram/seqpacket，protocol=0，作为本地 IPC；其他 family/type/protocol 由 seccomp 拒绝。默认生产 DENY 路径不传新 flag，拒绝全部 `socket()`，并施加同一 `socketpair()` 本地限定；`NetworkMode.PROXY_ALLOWLIST` 仍由策略入口拒绝。
+- **先红后绿与本机证据：**真实进程测试先因 helper 不识别新选项失败，再通过。后来新增 `socketpair()` 限定回归，先因 seccomp 未检查 family/protocol、由内核返回 `EOPNOTSUPP` 而失败，再修复通过。验证 netns 标识与宿主不同、IPv4 loopback TCP（protocol 0 与显式 `IPPROTO_TCP`）可双向通信、宿主 127.0.0.1 服务不可达、IPv4 TEST-NET-3 以 `ENETUNREACH` 失败、IPv6 TEST-NET 返回网络不可达/不支持错误、UDP/协议错配/AF_UNIX `socket()` 以 `EPERM` 失败；AF_UNIX 三种本地 pair 可通信，而其他 family/type/protocol 以 `EPERM` 拒绝；重复开关在命令启动前返回错误。默认 DENY 原生 probe 另外验证 IPv4/IPv6 TCP、UDP、AF_UNIX `socket()` 均被拒，且 socketpair 只开放有效 AF_UNIX 本地 IPC。C `-Werror` 构建、PID namespace/mapless 15 项、定向 probe 3 项通过；完整 `scripts/preflight.py` 三道门通过，Linux wheel 构建、隔离安装及运行态探针全部通过。独立复核为 0 Critical / 0 Important，曾指出的显式 TCP 正向测试缺口已补入并复验。
+- **当前验收结果：**`scripts/run_native_probe_ci.py` 的进程树清理、保护路径、默认网络 DENY 均实测通过，但 R2 conformance 只有 7/10，`critical_passed=false`、`ready=false`；临时网络 allowlist、资源限制、统一违规处理仍为未验证。因此这只是 loopback namespace 基础切片，不能宣称 R2 网络/自动模式通过。新提交后的跨架构 GitHub CI 仍待运行。
+- **严格边界：**netns+本地 loopback 不提供 host bridge、listener FD handoff、CONNECT proxy、lease/域名授权、DNS/IP pinning、expiry/revoke 的双端关闭或 ToolContext 调用链。它只证明本机该 helper 模式没有外部路由且宿主 loopback 不可达；不能标为 OS“只到代理”通过，也不开放临时网络、工单自动模式或 R2/R3。Linux x86_64/ARM64 线上验证仍待推送后的 CI。
 
 ## 三问与现状
 

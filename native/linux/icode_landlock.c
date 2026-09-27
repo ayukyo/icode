@@ -14,6 +14,8 @@
 #include <linux/seccomp.h>
 #include <linux/securebits.h>
 #include <limits.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <sched.h>
 #include <signal.h>
@@ -23,6 +25,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -53,6 +57,7 @@
                   LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_MAKE_FIFO | \
                   LANDLOCK_ACCESS_FS_MAKE_BLOCK | LANDLOCK_ACCESS_FS_MAKE_SYM | \
                   LANDLOCK_ACCESS_FS_REFER | LANDLOCK_ACCESS_FS_TRUNCATE)
+#define ICODE_SOCK_TYPE_MASK 0x0fU
 
 struct metadata_read_root {
     const char *path;
@@ -303,8 +308,25 @@ static int install_network_deny(void) {
         BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, ICODE_X32_SYSCALL_BIT, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
 #endif
-        /* No direct TCP, UDP or host Unix sockets. Proxy access comes in R2.4. */
+        /* No socket() calls; keep only AF_UNIX socketpair() for local IPC. */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_socket, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_socketpair, 0, 13),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, args[0])),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, args[1])),
+        BPF_STMT(BPF_ALU | BPF_AND | BPF_K, ICODE_SOCK_TYPE_MASK),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_STREAM, 2, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_DGRAM, 1, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_SEQPACKET, 0, 2),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, args[2])),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_io_uring_setup, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
@@ -317,6 +339,107 @@ static int install_network_deny(void) {
     };
     if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) != 0) {
         perror("PR_SET_SECCOMP");
+        return -1;
+    }
+    return 0;
+}
+
+static int install_network_loopback_only(void) {
+    /*
+     * This private helper mode is a bridge prerequisite, not a product grant:
+     * its network namespace has only an enabled loopback interface. The filter
+     * permits TCP stream sockets for a future local proxy, but denies UDP,
+     * raw, AF_UNIX socket() calls and other socket families. socketpair() is
+     * restricted to AF_UNIX local IPC (stream/datagram/seqpacket, protocol 0).
+     * Without a bridge, a task cannot reach services in the host namespace
+     * through 127.0.0.1.
+     */
+    struct sock_filter instructions[] = {
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, arch)),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICODE_AUDIT_ARCH, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, nr)),
+#if defined(__x86_64__)
+        /* x32 shares AUDIT_ARCH_X86_64 but adds a syscall-number bit. */
+        BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, ICODE_X32_SYSCALL_BIT, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+#endif
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_io_uring_setup, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        /* Validate network-capable socket() separately from local socketpair(). */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_socket, 0, 11),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, args[0])),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET, 1, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_INET6, 0, 7),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, args[1])),
+        BPF_STMT(BPF_ALU | BPF_AND | BPF_K, ICODE_SOCK_TYPE_MASK),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_STREAM, 0, 4),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, args[2])),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, IPPROTO_TCP, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_socketpair, 0, 13),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, args[0])),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, args[1])),
+        BPF_STMT(BPF_ALU | BPF_AND | BPF_K, ICODE_SOCK_TYPE_MASK),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_STREAM, 2, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_DGRAM, 1, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SOCK_SEQPACKET, 0, 2),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 offsetof(struct seccomp_data, args[2])),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
+    };
+    struct sock_fprog program = {
+        .len = (unsigned short)(sizeof(instructions) / sizeof(instructions[0])),
+        .filter = instructions,
+    };
+    if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) != 0) {
+        perror("PR_SET_SECCOMP loopback-only");
+        return -1;
+    }
+    return 0;
+}
+
+static int bring_loopback_up(void) {
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        perror("open loopback control socket");
+        return -1;
+    }
+    struct ifreq interface = {0};
+    if (strlen("lo") >= sizeof(interface.ifr_name)) {
+        close(fd);
+        errno = EINVAL;
+        return -1;
+    }
+    memcpy(interface.ifr_name, "lo", sizeof("lo"));
+    if (ioctl(fd, SIOCGIFFLAGS, &interface) != 0) {
+        perror("read loopback interface flags");
+        close(fd);
+        return -1;
+    }
+    interface.ifr_flags = (short)(interface.ifr_flags | IFF_UP);
+    if (ioctl(fd, SIOCSIFFLAGS, &interface) != 0) {
+        perror("enable loopback interface");
+        close(fd);
+        return -1;
+    }
+    if (close(fd) != 0) {
+        perror("close loopback control socket");
         return -1;
     }
     return 0;
@@ -453,11 +576,16 @@ static int verify_uid_only_mapping(void) {
 
 /* Return 0 for mapped credentials, 1 for verified mapless PID namespace. */
 static int enter_task_namespaces(pid_t host_parent, const char *setgroups_path,
-                                 const char *uid_map_path) {
+                                 const char *uid_map_path,
+                                 int network_loopback_only) {
     uid_t outer_uid = geteuid();
     gid_t outer_gid = getegid();
-    if (unshare(CLONE_NEWUSER | CLONE_NEWPID) != 0) {
-        perror("unshare user/pid namespace");
+    int namespace_flags = CLONE_NEWUSER | CLONE_NEWPID;
+    if (network_loopback_only) namespace_flags |= CLONE_NEWNET;
+    if (unshare(namespace_flags) != 0) {
+        perror(network_loopback_only
+            ? "unshare user/pid/network namespace"
+            : "unshare user/pid namespace");
         return -1;
     }
     char mapping[64];
@@ -473,7 +601,8 @@ static int enter_task_namespaces(pid_t host_parent, const char *setgroups_path,
          * confinement; Landlock and no-new-privileges still apply below. */
         if (verify_empty_mapping("/proc/self/uid_map") != 0 ||
             verify_uid_only_mapping() != 0 ||
-            install_parent_death_signal(host_parent) != 0) return -1;
+            install_parent_death_signal(host_parent) != 0 ||
+            (network_loopback_only && bring_loopback_up() != 0)) return -1;
         return 1;
     }
     if (setgroups_state == 1) {
@@ -484,7 +613,9 @@ static int enter_task_namespaces(pid_t host_parent, const char *setgroups_path,
             write_mapping("/proc/self/gid_map", mapping, 0) != 0) return -1;
     }
     /* Moving to a user namespace can change credentials and clear PDEATHSIG. */
-    return install_parent_death_signal(host_parent) == 0 ? 0 : -1;
+    if (install_parent_death_signal(host_parent) != 0 ||
+        (network_loopback_only && bring_loopback_up() != 0)) return -1;
+    return 0;
 }
 
 static int drop_payload_capabilities(int mapless) {
@@ -563,7 +694,8 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
                               const struct execute_only_file *execute_only,
                               size_t execute_only_count,
                               char **command,
-                              int workspace_read_only, int mapless) {
+                              int workspace_read_only, int mapless,
+                              int network_loopback_only) {
     /* Namespace PID 1 sees its parent as PID 0, so getppid cannot validate it. */
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
         prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0) {
@@ -588,7 +720,9 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
                                workspace_read_only) != 0 ||
             (execute_only && install_execute_only(
                 execute_only, execute_only_count) != 0) ||
-            install_network_deny() != 0) _exit(1);
+            (network_loopback_only
+                ? install_network_loopback_only()
+                : install_network_deny()) != 0) _exit(1);
         execvp(command[0], command);
         perror("execvp");
         _exit(127);
@@ -619,9 +753,11 @@ static int supervise_task(pid_t host_parent, const char *workspace,
                           size_t execute_only_count,
                           char **command,
                           int workspace_read_only,
+                          int network_loopback_only,
                           const char *setgroups_path,
                           const char *uid_map_path) {
-    int mapless = enter_task_namespaces(host_parent, setgroups_path, uid_map_path);
+    int mapless = enter_task_namespaces(
+        host_parent, setgroups_path, uid_map_path, network_loopback_only);
     if (mapless < 0) return 1;
     int control[2];
     if (pipe2(control, O_CLOEXEC) != 0) {
@@ -641,7 +777,7 @@ static int supervise_task(pid_t host_parent, const char *workspace,
             control[0], workspace, runtime_roots, runtime_root_count,
             metadata_roots, metadata_root_count, execute_only,
             execute_only_count, command,
-            workspace_read_only, mapless);
+            workspace_read_only, mapless, network_loopback_only);
         close(control[0]);
         _exit(result);
     }
@@ -670,7 +806,8 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         strcmp(argv[3], "--parent-pid") != 0) {
         fprintf(stderr,
                 "usage: icode-landlock --workspace PATH --parent-pid PID "
-                "[--workspace-read-only] [--runtime-read PATH]... "
+                "[--workspace-read-only] [--network-loopback-only] "
+                "[--runtime-read PATH]... "
                 "[--metadata-read PATH DEVICE INODE]... "
                 "[--execute-only PATH DEVICE INODE] "
                 "-- COMMAND [ARG...]\n");
@@ -700,6 +837,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     size_t metadata_root_count = 0;
     size_t execute_only_count = 0;
     int workspace_read_only = 0;
+    int network_loopback_only = 0;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
         if (strcmp(argv[command_index], "--workspace-read-only") == 0) {
@@ -711,6 +849,16 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                 return 2;
             }
             workspace_read_only = 1;
+            command_index += 1;
+        } else if (strcmp(argv[command_index], "--network-loopback-only") == 0) {
+            if (network_loopback_only) {
+                fprintf(stderr, "duplicate loopback-only network option\n");
+                free(runtime_roots);
+                free(metadata_roots);
+                free(execute_only);
+                return 2;
+            }
+            network_loopback_only = 1;
             command_index += 1;
         } else if (strcmp(argv[command_index], "--runtime-read") == 0) {
             if (command_index + 1 >= argc || argv[command_index + 1][0] != '/') {
@@ -828,7 +976,8 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         metadata_roots, metadata_root_count,
         execute_only_count > 0 ? execute_only : NULL, execute_only_count,
         argv + command_index,
-        workspace_read_only, setgroups_path, uid_map_path);
+        workspace_read_only, network_loopback_only,
+        setgroups_path, uid_map_path);
     free(workspace);
     free(runtime_roots);
     free(metadata_roots);

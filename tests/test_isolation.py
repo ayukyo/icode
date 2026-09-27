@@ -389,13 +389,35 @@ class TestProbe(unittest.TestCase):
             self.assertEqual(installed_python.returncode, 0, installed_python.stderr)
             denied = subprocess.run(
                 sandbox.wrap(
-                    [str(system_python), "-c", "import socket; socket.socket(socket.AF_UNIX)"],
+                    [str(system_python), "-c",
+                     "import socket;\n"
+                     "for family, kind in ((socket.AF_INET, socket.SOCK_STREAM),\n"
+                     "                     (socket.AF_INET6, socket.SOCK_STREAM),\n"
+                     "                     (socket.AF_INET, socket.SOCK_DGRAM),\n"
+                     "                     (socket.AF_UNIX, socket.SOCK_STREAM)):\n"
+                     "    try: socket.socket(family, kind)\n"
+                     "    except PermissionError: continue\n"
+                     "    raise AssertionError('default-deny socket was allowed')\n"
+                     "for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM,\n"
+                     "             socket.SOCK_SEQPACKET):\n"
+                     "    left, right = socket.socketpair(socket.AF_UNIX, kind)\n"
+                     "    left.send(b'ipc'); assert right.recv(3) == b'ipc'\n"
+                     "    left.close(); right.close()\n"
+                     "try: socket.socketpair(socket.AF_INET)\n"
+                     "except PermissionError: pass\n"
+                     "else: raise AssertionError('non-local socketpair allowed')\n"
+                     "for kind, protocol in ((socket.SOCK_RAW, 0),\n"
+                     "                       (socket.SOCK_STREAM, 1)):\n"
+                     "    try: socket.socketpair(socket.AF_UNIX, kind, protocol)\n"
+                     "    except PermissionError: continue\n"
+                     "    raise AssertionError('invalid local socketpair allowed')\n"
+                     "print('socket-denied; AF_UNIX-socketpair-only')"],
                     workspace=checkout,
                 ),
                 capture_output=True, text=True, timeout=4, check=False,
             )
-            self.assertNotEqual(denied.returncode, 0)
-            self.assertIn("PermissionError", denied.stderr)
+            self.assertEqual(denied.returncode, 0, denied.stderr)
+            self.assertIn("socket-denied; AF_UNIX-socketpair-only", denied.stdout)
             for syscall in ("setsid", "setpgid"):
                 operation = (
                     "import os; os.setpgid(0, 0)"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -20,6 +21,114 @@ from icode.sandbox_policy import NetworkMode, SandboxPolicy
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc"),
                      "需要 Linux C 编译器和进程命名空间")
 class TestLinuxPidNamespaceCleanup(unittest.TestCase):
+    def test_loopback代理实验态不能到宿主或外部网络(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        system_python = Path("/usr/bin/python3")
+        self.assertTrue(system_python.is_file())
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                 "-Werror", str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            workspace = root / "code"
+            workspace.mkdir()
+            host_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                host_listener.bind(("127.0.0.1", 0))
+                host_listener.listen(1)
+                host_port = host_listener.getsockname()[1]
+                parent_netns = os.readlink("/proc/self/ns/net")
+                code = (
+                    "import errno, os, socket\n"
+                    f"assert os.readlink('/proc/self/ns/net') != {parent_netns!r}\n"
+                    "server = socket.socket(socket.AF_INET, socket.SOCK_STREAM,\n"
+                    "                       socket.IPPROTO_TCP)\n"
+                    "server.bind(('127.0.0.1', 0)); server.listen(1)\n"
+                    "client = socket.create_connection(server.getsockname(), timeout=1)\n"
+                    "accepted, _ = server.accept()\n"
+                    "client.sendall(b'loopback'); assert accepted.recv(8) == b'loopback'\n"
+                    "accepted.close(); client.close(); server.close()\n"
+                    "host = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+                    "host_result = host.connect_ex(('127.0.0.1', "
+                    f"{host_port}))\n"
+                    "host.close()\n"
+                    "assert host_result == errno.ECONNREFUSED, host_result\n"
+                    "outside = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+                    "outside.settimeout(1)\n"
+                    "outside_result = outside.connect_ex(('198.51.100.1', 443))\n"
+                    "outside.close()\n"
+                    "assert outside_result == errno.ENETUNREACH, outside_result\n"
+                    "if socket.has_ipv6:\n"
+                    "    ipv6 = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)\n"
+                    "    ipv6.settimeout(1)\n"
+                    "    ipv6_result = ipv6.connect_ex(('2001:db8::1', 443, 0, 0))\n"
+                    "    ipv6.close()\n"
+                    "    assert ipv6_result in (errno.ENETUNREACH,\n"
+                    "                           errno.EHOSTUNREACH,\n"
+                    "                           errno.EAFNOSUPPORT), ipv6_result\n"
+                    "for family, kind, protocol in (\n"
+                    "    (socket.AF_INET, socket.SOCK_DGRAM, 0),\n"
+                    "    (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_UDP),\n"
+                    "    (socket.AF_UNIX, socket.SOCK_STREAM, 0),\n"
+                    "):\n"
+                    "    try: socket.socket(family, kind, protocol)\n"
+                    "    except OSError as exc: assert exc.errno == errno.EPERM, exc\n"
+                    "    else: raise AssertionError('non-proxy socket type allowed')\n"
+                    "for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM,\n"
+                    "             socket.SOCK_SEQPACKET):\n"
+                    "    pair_left, pair_right = socket.socketpair(\n"
+                    "        socket.AF_UNIX, kind)\n"
+                    "    pair_left.send(b'ipc'); assert pair_right.recv(3) == b'ipc'\n"
+                    "    pair_left.close(); pair_right.close()\n"
+                    "try: socket.socketpair(socket.AF_INET)\n"
+                    "except OSError as exc: assert exc.errno == errno.EPERM, exc\n"
+                    "else: raise AssertionError('non-local socketpair allowed')\n"
+                    "for family, kind, protocol in (\n"
+                    "    (socket.AF_UNIX, socket.SOCK_RAW, 0),\n"
+                    "    (socket.AF_UNIX, socket.SOCK_STREAM, 1),\n"
+                    "):\n"
+                    "    try: socket.socketpair(family, kind, protocol)\n"
+                    "    except OSError as exc: assert exc.errno == errno.EPERM, exc\n"
+                    "    else: raise AssertionError('invalid local socketpair allowed')\n"
+                    "print('isolated-loopback-only')\n"
+                )
+                result = subprocess.run(
+                    [str(helper), "--workspace", str(workspace),
+                     "--parent-pid", str(os.getpid()), "--network-loopback-only", "--",
+                     str(system_python), "-c", code],
+                    capture_output=True, text=True, timeout=8, check=False,
+                )
+            finally:
+                host_listener.close()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("isolated-loopback-only", result.stdout)
+
+    def test_loopback代理实验态选项重复时不启动命令(self) -> None:
+        source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
+        with temp_workspace() as root:
+            helper = root / "icode-landlock"
+            subprocess.run(
+                [shutil.which("cc") or "cc", "-std=c11", "-O2", "-Wall", "-Wextra",
+                 "-Werror", str(source), "-o", str(helper)],
+                check=True, capture_output=True, text=True,
+            )
+            workspace = root / "code"
+            workspace.mkdir()
+            marker = workspace / "must-not-run"
+            result = subprocess.run(
+                [str(helper), "--workspace", str(workspace),
+                 "--parent-pid", str(os.getpid()), "--network-loopback-only",
+                 "--network-loopback-only", "--", "/usr/bin/touch", str(marker)],
+                capture_output=True, text=True, timeout=4, check=False,
+            )
+
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("duplicate loopback-only network option", result.stderr)
+        self.assertFalse(marker.exists())
+
     def test_继承NOCLDWAIT和屏蔽SIGCHLD仍正确等待命令(self) -> None:
         source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
         launcher_source = Path(__file__).resolve().parent / "native/no_cldwait_launcher.c"
