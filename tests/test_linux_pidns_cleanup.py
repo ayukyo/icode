@@ -390,7 +390,11 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                 host_control.close()
 
     def test预先排队的固定ack不能释放payload(self) -> None:
-        from icode.linux_proxy_handoff import create_loopback_listener_handoff_channel
+        from icode.linux_proxy_handoff import (
+            ProxyHandoffError,
+            create_loopback_listener_handoff_channel,
+            receive_loopback_listener,
+        )
 
         source = Path(__file__).resolve().parents[1] / "native/linux/icode_landlock.c"
         with temp_workspace() as root:
@@ -405,7 +409,7 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             marker = workspace / "must-not-run"
             host_control, sender_control = create_loopback_listener_handoff_channel()
             process: subprocess.Popen[str] | None = None
-            descriptors: list[int] = []
+            received: socket.socket | None = None
             try:
                 # Reproduce the ordering race: the old fixed ACK can be queued
                 # before the helper has sent its listener for host validation.
@@ -421,34 +425,36 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                     text=True, pass_fds=(sender_control.fileno(),),
                 )
                 sender_control.close()
-                host_control.settimeout(4)
-                payload, ancillary, flags, _ = host_control.recvmsg(
-                    128,
-                    socket.CMSG_SPACE(array.array("i").itemsize)
-                    + socket.CMSG_SPACE(struct.calcsize("3i")),
-                )
-                if payload == b"":
-                    _stdout, stderr = process.communicate(timeout=3)
+                # Make the close-before-receive ordering deterministic: the
+                # queued legacy ACK must be rejected before the host reads the
+                # listener packet, regardless of runner scheduling.
+                process.wait(timeout=5)
+                try:
+                    # The helper may reject the stale ACK and close a seqpacket
+                    # channel while its SCM_RIGHTS message is still unread. Linux
+                    # can surface that close as ECONNRESET instead of delivering
+                    # the queued listener; use the production receiver so both
+                    # fail-closed outcomes are handled identically.
+                    received = receive_loopback_listener(
+                        host_control,
+                        expected_pid=process.pid,
+                        timeout_seconds=4,
+                    )
+                except ProxyHandoffError:
+                    stdout, stderr = process.communicate(timeout=3)
                     if self._namespace_network_permission_denied(stderr):
-                        self.assertNotIn("handoff-payload-ran", _stdout)
+                        self.assertFalse(marker.exists())
                         self.skipTest(
                             "runner blocks user/network namespace setup; helper failed closed"
                         )
-                self.assertFalse(flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC))
-                self.assertTrue(payload.startswith(b"ICODE_PROXY_LISTENER_V1"))
-                self.assertEqual(len(payload), len(b"ICODE_PROXY_LISTENER_V1") + 16)
-                for level, kind, data in ancillary:
-                    if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-                        values = array.array("i")
-                        values.frombytes(data[:len(data) - len(data) % values.itemsize])
-                        descriptors.extend(values)
-                self.assertEqual(len(descriptors), 1)
-                _stdout, stderr = process.communicate(timeout=5)
+                else:
+                    _stdout, stderr = process.communicate(timeout=5)
                 self.assertNotEqual(process.returncode, 0, stderr)
+                self.assertIn("loopback listener handoff", stderr)
                 self.assertFalse(marker.exists())
             finally:
-                for descriptor in descriptors:
-                    os.close(descriptor)
+                if received is not None:
+                    received.close()
                 if process is not None and process.poll() is None:
                     process.kill()
                     process.communicate(timeout=3)
