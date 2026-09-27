@@ -22,7 +22,7 @@ class _TestIdentity:
 
 
 class TestLeaseCiFailureAnnotations(unittest.TestCase):
-    def test_platform_lease_job_runs_authority_and_expiry_monitor_suites(self) -> None:
+    def test_platform_lease_job_runs_authority_monitor_and_connect_suites(self) -> None:
         class TrackingLoader:
             def __init__(self) -> None:
                 self.loaded: list[str] = []
@@ -38,7 +38,11 @@ class TestLeaseCiFailureAnnotations(unittest.TestCase):
         self.assertIsInstance(suite, unittest.TestSuite)
         self.assertEqual(
             loader.loaded,
-            ["tests.test_network_lease", "tests.test_network_lease_monitor"],
+            [
+                "tests.test_network_lease",
+                "tests.test_network_lease_monitor",
+                "tests.test_leased_connect",
+            ],
         )
 
     def test_failure_annotation_contains_only_sanitized_test_identity(self) -> None:

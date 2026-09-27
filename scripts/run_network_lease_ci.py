@@ -14,6 +14,7 @@ _SAFE_TEST_ID_CHARACTERS = frozenset(
 _NETWORK_LEASE_TEST_MODULES = (
     "tests.test_network_lease",
     "tests.test_network_lease_monitor",
+    "tests.test_leased_connect",
 )
 
 
