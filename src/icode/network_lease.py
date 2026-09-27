@@ -183,21 +183,15 @@ class NetworkLease:
         if self.generation <= 0:
             raise NetworkLeaseValidationError("generation must be a positive integer")
 
-    def validate_request(
+    def validate_scope(
         self,
         policy: SandboxPolicy,
         *,
         purpose: NetworkPurpose,
-        hostname: str,
-        port: int,
         now_monotonic_ns: int,
         current_generation: int,
     ) -> None:
-        """Validate a host-proxy request over an unchanged deny-only base policy.
-
-        The lease is a host-side authorization overlay. It does not alter the
-        candidate ``SandboxPolicy`` or grant a worker network permission.
-        """
+        """Validate the live lease and deny-only policy without a target."""
 
         self.validate()
         if not isinstance(policy, SandboxPolicy):
@@ -222,18 +216,41 @@ class NetworkLease:
             raise NetworkLeaseValidationError("network lease is bound to a different policy")
         if type(purpose) is not NetworkPurpose or purpose is not self.purpose:
             raise NetworkLeaseValidationError("request purpose differs from the lease")
-        if type(hostname) is not str or not is_exact_dns_hostname(hostname):
-            raise NetworkLeaseValidationError("request hostname must be an exact DNS hostname")
-        if hostname.lower() not in self.allowed_domains:
-            raise NetworkLeaseValidationError("request hostname is not authorized by the lease")
-        if type(port) is not int or port != self.port:
-            raise NetworkLeaseValidationError("request port is not authorized by the lease")
         if type(now_monotonic_ns) is not int or now_monotonic_ns < 0:
             raise NetworkLeaseValidationError("now_monotonic_ns must be a non-negative integer")
         if not self.issued_at_monotonic_ns <= now_monotonic_ns < self.expires_at_monotonic_ns:
             raise NetworkLeaseValidationError("network lease is not currently active")
         if type(current_generation) is not int or current_generation != self.generation:
             raise NetworkLeaseValidationError("network lease generation was revoked or replaced")
+
+    def validate_request(
+        self,
+        policy: SandboxPolicy,
+        *,
+        purpose: NetworkPurpose,
+        hostname: str,
+        port: int,
+        now_monotonic_ns: int,
+        current_generation: int,
+    ) -> None:
+        """Validate a host-proxy request over an unchanged deny-only base policy.
+
+        The lease is a host-side authorization overlay. It does not alter the
+        candidate ``SandboxPolicy`` or grant a worker network permission.
+        """
+
+        self.validate_scope(
+            policy,
+            purpose=purpose,
+            now_monotonic_ns=now_monotonic_ns,
+            current_generation=current_generation,
+        )
+        if type(hostname) is not str or not is_exact_dns_hostname(hostname):
+            raise NetworkLeaseValidationError("request hostname must be an exact DNS hostname")
+        if hostname.lower() not in self.allowed_domains:
+            raise NetworkLeaseValidationError("request hostname is not authorized by the lease")
+        if type(port) is not int or port != self.port:
+            raise NetworkLeaseValidationError("request port is not authorized by the lease")
 
     def canonical_payload(self) -> bytes:
         """Return the deterministic bytes authenticated by the host-only HMAC key."""
@@ -465,6 +482,38 @@ class NetworkLeaseAuthority:
                 hostname=hostname,
                 port=port,
                 now_monotonic_ns=now_monotonic_ns,
+            )
+
+    def verify_scope(
+        self,
+        issued: IssuedNetworkLease,
+        policy: SandboxPolicy,
+        *,
+        purpose: NetworkPurpose,
+        now_monotonic_ns: int,
+    ) -> None:
+        """Authenticate lease liveness before a proxy knows its request target."""
+
+        if not isinstance(issued, IssuedNetworkLease):
+            raise NetworkLeaseValidationError("issued network lease is required")
+        policy_key = self._policy_key(policy)
+        with self._lock:
+            if policy_key in self._revoking_policy_keys:
+                raise NetworkLeaseValidationError(
+                    "network scope revocation cleanup is incomplete"
+                )
+            expected = hmac.new(
+                self._key,
+                issued.lease.canonical_payload(),
+                hashlib.sha256,
+            ).hexdigest()
+            if not hmac.compare_digest(expected, issued.signature):
+                raise NetworkLeaseValidationError("network lease signature is invalid")
+            issued.lease.validate_scope(
+                policy,
+                purpose=purpose,
+                now_monotonic_ns=now_monotonic_ns,
+                current_generation=self._generations.get(policy_key, 1),
             )
 
     def _verify_request_locked(

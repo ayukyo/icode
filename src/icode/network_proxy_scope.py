@@ -238,8 +238,44 @@ class HostHttpsConnectScope:
         self._cancel_event = Event()
         self._closed = False
         self._open_count = 0
+        self._accepted_clients: dict[int, socket.socket] = {}
         self._pending_clients: dict[int, tuple[socket.socket, object]] = {}
         self._tunnels: dict[int, AuthorizedHttpsTunnel] = {}
+
+    def register_accepted_client(self, client_socket: socket.socket) -> None:
+        """Track an accepted proxy peer before reading any untrusted bytes."""
+
+        if type(client_socket) is not socket.socket:
+            raise HostConnectScopeError(_SCOPE_ERROR)
+        with self._lock:
+            if (
+                self._closed
+                or not self._runtime._healthy
+                or id(client_socket) in self._accepted_clients
+            ):
+                _close_socket(client_socket)
+                raise HostConnectScopeError(_SCOPE_ERROR)
+            self._accepted_clients[id(client_socket)] = client_socket
+
+    def release_accepted_client(self, client_socket: socket.socket) -> None:
+        """Release a header-reading peer after ownership moves or it closes."""
+
+        with self._lock:
+            if self._accepted_clients.get(id(client_socket)) is client_socket:
+                del self._accepted_clients[id(client_socket)]
+
+    def verify_lease(self) -> None:
+        """Recheck live scope authority while waiting for a CONNECT head."""
+
+        with self._lock:
+            if self._closed or not self._runtime._healthy:
+                raise NetworkLeaseValidationError("host connection scope is closed")
+        self._authority.verify_scope(
+            self._issued,
+            self._policy,
+            purpose=self._purpose,
+            now_monotonic_ns=time.monotonic_ns(),
+        )
 
     def open_connect(
         self,
@@ -288,6 +324,7 @@ class HostHttpsConnectScope:
                     raise NetworkLeaseValidationError(
                         "host connection scope is closed"
                     )
+                self._accepted_clients.pop(id(client_socket), None)
                 self._pending_clients[id(client_socket)] = (
                     client_socket,
                     client_handle,
@@ -367,11 +404,14 @@ class HostHttpsConnectScope:
         with self._lock:
             self._closed = True
             self._cancel_event.set()
+            accepted_clients = tuple(self._accepted_clients.values())
             pending_clients = tuple(self._pending_clients.values())
             tunnels = tuple(self._tunnels.values())
             self._pending_clients.clear()
 
         cleanup_ok = True
+        for client_socket in accepted_clients:
+            cleanup_ok = _close_socket(client_socket) and cleanup_ok
         for client_socket, handle in pending_clients:
             cleanup_ok = _close_socket(client_socket) and cleanup_ok
             self._authority.release_active_connection(handle)
@@ -379,8 +419,9 @@ class HostHttpsConnectScope:
             cleanup_ok = tunnel.close() and cleanup_ok
         with self._lock:
             no_open_operations = self._open_count == 0
+            no_accepted_clients = not self._accepted_clients
             no_tunnels = not self._tunnels
-        if cleanup_ok and no_open_operations and no_tunnels:
+        if cleanup_ok and no_open_operations and no_accepted_clients and no_tunnels:
             self._runtime._forget_scope(self)
             return True
         return False
