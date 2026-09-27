@@ -407,6 +407,7 @@ def open_authorized_https_connection(
                 now_monotonic_ns=time.monotonic_ns(),
                 close=pending.close_for_authority,
                 pending=True,
+                clock=time.monotonic_ns,
             )
             _connect_numeric(sock, destination.sockaddr, pending)
             # The establishment phase is non-blocking; trusted relay code gets

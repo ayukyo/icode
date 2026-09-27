@@ -507,6 +507,7 @@ class NetworkLeaseAuthority:
         now_monotonic_ns: int,
         close: Callable[[], bool],
         pending: bool = False,
+        clock: Callable[[], int] | None = None,
     ) -> _NetworkConnectionHandle:
         """Atomically validate and register one trusted proxy-owned connection.
 
@@ -516,16 +517,37 @@ class NetworkLeaseAuthority:
         confirms closure. Already-connected sockets remain non-pending and
         cannot be promoted again. Release the returned handle only after normal
         closure. This does not create, route, or monitor a socket and is not a
-        network permission by itself.
+        network permission by itself. Pending registrations require ``clock``;
+        it is sampled under the authority lock after synchronous expiry cleanup,
+        so a pending dial cannot rely on a timestamp made stale by a close
+        callback.
         """
 
         if not callable(close):
             raise NetworkLeaseValidationError("connection close callback is required")
         if type(pending) is not bool:
             raise NetworkLeaseValidationError("pending must be a boolean")
+        if pending and clock is None:
+            raise NetworkLeaseValidationError(
+                "pending connection requires a monotonic clock callback"
+            )
+        if clock is not None and not callable(clock):
+            raise NetworkLeaseValidationError("monotonic clock callback is invalid")
         self.close_expired_connections(now_monotonic_ns)
         policy_key = self._policy_key(policy)
         with self._lock:
+            registration_time = now_monotonic_ns
+            if clock is not None:
+                try:
+                    registration_time = clock()
+                except Exception:  # noqa: BLE001 - registration fails closed.
+                    raise NetworkLeaseValidationError(
+                        "monotonic clock callback failed"
+                    ) from None
+                if type(registration_time) is not int or registration_time < 0:
+                    raise NetworkLeaseValidationError(
+                        "monotonic clock callback returned an invalid value"
+                    )
             self._verify_request_locked(
                 issued,
                 policy,
@@ -533,7 +555,7 @@ class NetworkLeaseAuthority:
                 purpose=purpose,
                 hostname=hostname,
                 port=port,
-                now_monotonic_ns=now_monotonic_ns,
+                now_monotonic_ns=registration_time,
             )
             handle = _NetworkConnectionHandle(secrets.token_hex(32))
             self._active_connections[handle.connection_id] = _ActiveNetworkConnection(
@@ -555,6 +577,7 @@ class NetworkLeaseAuthority:
         port: int,
         now_monotonic_ns: int,
         sockets: tuple[socket.socket, ...],
+        clock: Callable[[], int] | None = None,
     ) -> _NetworkConnectionHandle:
         """Register real proxy-owned sockets for authority-controlled closure.
 
@@ -641,6 +664,7 @@ class NetworkLeaseAuthority:
                 port=port,
                 now_monotonic_ns=now_monotonic_ns,
                 close=close_sockets,
+                clock=clock,
             )
         except Exception:
             discard_owned_sockets()

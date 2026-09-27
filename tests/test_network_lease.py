@@ -162,6 +162,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
             now_monotonic_ns=started_at + 1,
             close=cancel_pending_connect,
             pending=True,
+            clock=lambda: started_at + 1,
         )
 
         pending_errors = {
@@ -713,6 +714,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
             now_monotonic_ns=3_000_000_000,
             close=close_pending,
             pending=True,
+            clock=lambda: 3_000_000_000,
         )
 
         promote = getattr(authority, "promote_active_connection", None)
@@ -754,6 +756,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
             now_monotonic_ns=3_000_000_000,
             close=close_pending,
             pending=True,
+            clock=lambda: 3_000_000_000,
         )
 
         self.assertTrue(
@@ -800,6 +803,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
             now_monotonic_ns=3_000_000_000,
             close=close_pending,
             pending=True,
+            clock=lambda: 3_000_000_000,
         )
         start = threading.Event()
         results: dict[str, bool] = {}
@@ -864,6 +868,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
             now_monotonic_ns=started_at + 1,
             close=close_pending,
             pending=True,
+            clock=lambda: started_at + 1,
         )
 
         self.assertFalse(
@@ -899,6 +904,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
             now_monotonic_ns=3_000_000_000,
             close=lambda: True,
             pending=True,
+            clock=lambda: 3_000_000_000,
         )
 
         self.assertFalse(
@@ -935,6 +941,33 @@ class NetworkLeaseTestCase(unittest.TestCase):
                 pending=1,
             )
 
+    def test_pending_registration_requires_fresh_monotonic_clock(self) -> None:
+        policy = self.make_policy()
+        authority = NetworkLeaseAuthority()
+        grant = authority.request_lease(
+            policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("pypi.org",),
+            ttl_seconds=60,
+            now_monotonic_ns=2_000_000_000,
+        )
+
+        with self.assertRaisesRegex(
+            NetworkLeaseValidationError,
+            "pending connection requires a monotonic clock callback",
+        ):
+            authority.register_active_connection(
+                grant,
+                policy,
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                hostname="pypi.org",
+                port=443,
+                now_monotonic_ns=3_000_000_000,
+                close=lambda: True,
+                pending=True,
+            )
+
     def test_revoke_cancels_real_pending_loopback_connect_before_publication(self) -> None:
         self._assert_pending_loopback_connect_cancelled(expire=False)
 
@@ -963,6 +996,7 @@ class NetworkLeaseTestCase(unittest.TestCase):
             now_monotonic_ns=3_000_000_000,
             close=lambda: self._close_socket_and_signal(connected_socket, closed),
             pending=True,
+            clock=lambda: 3_000_000_000,
         )
         publish_gate = threading.Event()
         promotion_results: list[bool] = []

@@ -213,6 +213,98 @@ class NetworkConnectorTestCase(unittest.TestCase):
 
         socket_factory.assert_not_called()
 
+    def test_expiry_during_connection_cleanup_prevents_pending_dial(self) -> None:
+        from icode.network_connector import (
+            NetworkConnectError,
+            open_authorized_https_connection,
+        )
+
+        old_issued = self.authority.request_lease(
+            self.policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("packages.example",),
+            ttl_seconds=1,
+            now_monotonic_ns=1_000_000_000,
+        )
+        target_issued_at = 2_000_000_000
+        target_issued = self.authority.request_lease(
+            self.policy,
+            approver=ScriptedApprover([True]),
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            allowed_domains=("packages.example",),
+            ttl_seconds=1,
+            now_monotonic_ns=target_issued_at,
+        )
+        clock = {"now": target_issued_at}
+
+        def delayed_expired_close() -> bool:
+            clock["now"] = target_issued.lease.expires_at_monotonic_ns + 1
+            return True
+
+        self.authority.register_active_connection(
+            old_issued,
+            self.policy,
+            purpose=NetworkPurpose.PACKAGE_INSTALL,
+            hostname="packages.example",
+            port=443,
+            now_monotonic_ns=1_500_000_000,
+            close=delayed_expired_close,
+        )
+
+        target = self.resolved_target(("93.184.216.34", 443))
+        connect_calls: list[tuple[object, ...]] = []
+
+        class PendingSocket:
+            family = socket.AF_INET
+
+            def __init__(self) -> None:
+                self.closed = False
+
+            def setblocking(self, _blocking: bool) -> None:
+                pass
+
+            def connect_ex(self, address: tuple[object, ...]) -> int:
+                connect_calls.append(address)
+                return 0
+
+            def shutdown(self, _how: int) -> None:
+                raise OSError("test socket is not connected")
+
+            def close(self) -> None:
+                self.closed = True
+
+            def fileno(self) -> int:
+                return -1 if self.closed else 202
+
+        pending_socket = PendingSocket()
+
+        def current_time() -> int:
+            return clock["now"]
+
+        with patch(
+            "icode.network_connector.resolve_public_tcp_targets",
+            return_value=(target,),
+        ), patch(
+            "icode.network_connector.time.monotonic_ns",
+            side_effect=current_time,
+        ), patch(
+            "icode.network_connector._new_tcp_socket",
+            return_value=pending_socket,
+        ):
+            with self.assertRaises(NetworkConnectError):
+                open_authorized_https_connection(
+                    self.request(),
+                    target_issued,
+                    self.policy,
+                    authority=self.authority,
+                    purpose=NetworkPurpose.PACKAGE_INSTALL,
+                )
+
+        self.assertEqual(connect_calls, [])
+        self.assertEqual(clock["now"], target_issued.lease.expires_at_monotonic_ns + 1)
+        self.assertEqual(pending_socket.fileno(), -1)
+
     def test_connects_to_the_resolver_returned_numeric_sockaddr(self) -> None:
         from icode.network_connector import open_authorized_https_connection
 
