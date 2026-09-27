@@ -1,6 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
 - 最近观察：2026-09-27；下次全量复核：不晚于 2026-10-24
+- 2026-09-27 UTC Git 状态工具定向复核：Codex [`121f91fd5d9dc66017866ce9bdc49f1e182721df`](https://github.com/openai/codex/commit/121f91fd5d9dc66017866ce9bdc49f1e182721df)（MIT）内部 branch summary 用于 UI，未证明模型安全工具；Gemini CLI [`46e7b41c6ae3b0435e9a7dc85fe8b09032f1b387`](https://github.com/google-gemini/gemini-cli/commit/46e7b41c6ae3b0435e9a7dc85fe8b09032f1b387)（Apache-2.0）通用 shell 回执包含命令、目录、退出码、stdout/stderr，依赖其执行策略。ICODE **采纳**窄、只读、结构化 broker 与显式失败，**不适配**把 UI helper 或通用 shell 当作最小权限 Git 端口；已受门控接线但自动模式仍关闭。本机 Linux x86_64 原生及安装式 wheel 新工具入口通过，ARM64/跨平台等价待验；无源码复制或新依赖。
 - 注：观察日期统一按 UTC 记录；本轮定向复核 R2 HTTPS CONNECT 处理顺序、Python 3.11 异步 DNS/连接取消语义及命令输出/子进程生命周期；20 项观察名单最近全量复核为 2026-09-24。时区校正：本轮对应 Asia/Shanghai 2026-09-27，GitHub CI #230 的实际运行时间为 2026-09-26 UTC；本页在上海 2026-09-27 08:00 前写入但误标“2026-09-27 UTC”的近期条目，UTC 日期应为 2026-09-26。
 - 用途：每项开发并行研究 1–3 个相关项目，按需吸收机制；不是一次性市场排名，也不是 ICODE 功能完成清单。
 - 历史研究：[2026-09-23 快照](./agent-landscape.md)。热度、活跃度、许可证、实现状态会变化，旧结论须重新核对。

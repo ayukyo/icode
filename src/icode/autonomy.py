@@ -28,6 +28,7 @@ from .loop import LoopConfig
 from .sandbox_policy import SandboxPolicy
 from .tickets import TicketError, TicketService
 from .workspace import (
+    GitWorkspaceIdentity,
     WorkspaceBusyError,
     WorkspaceError,
     WorkspaceManager,
@@ -205,21 +206,35 @@ class NativeChainExecutor:
                         error_code="isolation_unavailable",
                     )
             try:
-                report = self._step_runner(
-                    self.settings,
-                    backend=self.backend,
-                    workspace=context.workspace,
-                    requirement=context.requirement,
-                    ticket_id=context.ticket_id,
-                    steps=(step,),
-                    out_dir=out_dir,
-                    approver=self.approver,
-                    loop_config=self.loop_config,
-                    budget=self.budget,
-                    on_event=self.on_event,
-                    sandbox=self.sandbox,
-                    policy=policy,
-                )
+                workspace_session = None
+                if (
+                    step != "review"
+                    and isinstance(session, WorkspaceSession)
+                    and session.kind == "git_worktree"
+                    and session.ticket_id == getattr(control, "ticket_id", None) == context.ticket_id
+                    and session.run_id == getattr(control, "run_id", None) == policy.run_id
+                    and session.workspace_root == context.workspace.resolve()
+                    and isinstance(session.git_status_identity, GitWorkspaceIdentity)
+                    and session.git_status_identity.workspace_root == context.workspace.resolve()
+                ):
+                    workspace_session = session
+                step_kwargs = {
+                    "backend": self.backend,
+                    "workspace": context.workspace,
+                    "requirement": context.requirement,
+                    "ticket_id": context.ticket_id,
+                    "steps": (step,),
+                    "out_dir": out_dir,
+                    "approver": self.approver,
+                    "loop_config": self.loop_config,
+                    "budget": self.budget,
+                    "on_event": self.on_event,
+                    "sandbox": self.sandbox,
+                    "policy": policy,
+                }
+                if workspace_session is not None:
+                    step_kwargs["workspace_session"] = workspace_session
+                report = self._step_runner(self.settings, **step_kwargs)
             except Exception:  # noqa: BLE001 - 只返回稳定码，不泄露异常正文。
                 return ExecutionResult(
                     state="failed", last_step=step, error_code="chain_error")

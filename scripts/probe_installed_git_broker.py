@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import shlex
@@ -136,6 +137,7 @@ def _probe() -> None:
     from icode.git_broker import GitStatusUnavailable, execute_git_status
     from icode.isolation import LandlockSandbox
     from icode.sandbox_policy import NetworkMode
+    from icode.tools import ToolContext, default_registry
     from icode.workspace import WorkspaceManager
 
     with tempfile.TemporaryDirectory(prefix="icode-installed-git-") as raw:
@@ -229,6 +231,45 @@ def _probe() -> None:
             _require(policy.network_mode is NetworkMode.DENY, "git_policy_not_offline")
             metadata_before = _git_tree_snapshot(identity)
             entries = execute_git_status(identity, sandbox=sandbox, policy=policy)
+
+            # Verify the end-user tool route from this installed wheel too;
+            # this route must bind the exact manager session and reject review.
+            tool_policy = session.policy("code")
+            tool_context = ToolContext(
+                root=session.workspace_root, sandbox=sandbox, policy=tool_policy,
+                workspace_session=session,
+            )
+            tool = default_registry(git_status_context=tool_context).get("git_status")
+            _require(tool is not None, "git_status_tool_not_registered")
+            parameters = tool.schema()["function"]["parameters"]
+            _require(
+                parameters.get("properties") == {}
+                and parameters.get("additionalProperties") is False,
+                "git_status_tool_schema_not_fixed",
+            )
+            tool_result = default_registry(
+                git_status_context=tool_context,
+            ).invoke("git_status", tool_context, {})
+            _require(tool_result.ok, "git_status_tool_call_failed")
+            try:
+                tool_data = json.loads(tool_result.content)
+            except (TypeError, ValueError):
+                raise ProbeFailure("git_status_tool_output_invalid") from None
+            _require(
+                {entry.get("path") for entry in tool_data.get("entries", [])}
+                == {".gitattributes", "tracked.txt", "new file.txt"},
+                "git_status_tool_entries_mismatch",
+            )
+            _require(str(root) not in tool_result.content, "git_status_tool_leaked_absolute_path")
+            review_policy = session.policy("review")
+            review_context = ToolContext(
+                root=session.workspace_root, sandbox=sandbox, policy=review_policy,
+                workspace_session=session,
+            )
+            _require(
+                default_registry(git_status_context=review_context).get("git_status") is None,
+                "git_status_tool_registered_for_review",
+            )
             for name in tuple(os.environ):
                 if name.startswith("GIT_"):
                     os.environ.pop(name, None)

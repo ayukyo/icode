@@ -15,6 +15,7 @@ from typing import Any, Callable, Protocol, runtime_checkable
 
 from ..artifact_broker import ArtifactBroker
 from ..sandbox_policy import SandboxPolicy
+from ..workspace import WorkspaceSession
 
 # 工具输出回灌模型时的字符上限（渐进披露原则：不要把大段正文塞回上下文）
 DEFAULT_OUTPUT_LIMIT = 8000
@@ -45,6 +46,7 @@ class ToolContext:
     read_only_workspace: bool = False
     review_submission_enabled: bool = False
     deny_read_roots: tuple[Path, ...] = ()
+    workspace_session: WorkspaceSession | None = None
 
     def resolve(self, path: str) -> Path:
         p = Path(path)

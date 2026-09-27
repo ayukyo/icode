@@ -28,6 +28,7 @@ from .control import ControlPlane
 from .loop import LoopConfig
 from .runner import StepReport, _snapshot, run_contract_step
 from .sandbox_policy import SandboxPolicy
+from .workspace import GitWorkspaceIdentity, WorkspaceSession
 
 # 各步骤的**额外交付要求**（步骤顺序不在这里，见 chain_steps）
 # 注意：这里**只描述内容要求，不写裸文件名**。
@@ -282,6 +283,7 @@ def run_chain(
     on_event=None,
     sandbox=None,
     policy: SandboxPolicy | None = None,
+    workspace_session: WorkspaceSession | None = None,
     on_step=None,
     out_dir: Path | None = None,
 ) -> ChainReport:
@@ -314,6 +316,24 @@ def run_chain(
     before = _snapshot(workspace)
 
     for name in order:
+        git_status_session = None
+        if (
+            name != "review"
+            and isinstance(workspace_session, WorkspaceSession)
+            and workspace_session.kind == "git_worktree"
+            and isinstance(workspace_session.git_status_identity, GitWorkspaceIdentity)
+            and isinstance(policy, SandboxPolicy)
+            and workspace_session.ticket_id == ticket_id == policy.ticket_id
+            and workspace_session.run_id == policy.run_id
+            and workspace_session.workspace_root == workspace
+            and workspace_session.git_status_identity.workspace_root == workspace
+            and policy.step == name
+        ):
+            try:
+                if policy == workspace_session.policy(name):
+                    git_status_session = workspace_session
+            except Exception:  # noqa: BLE001 - invalid session policy only disables the tool.
+                git_status_session = None
         instructions = STEP_INSTRUCTIONS.get(name, "")
         post = None
         if name == "review":
@@ -350,6 +370,7 @@ def run_chain(
             ticket_id=ticket_id, requirement=requirement, approver=approver,
             loop_config=loop_config, budget=budget, on_event=on_event,
             sandbox=sandbox, policy=policy, out_dir=out_dir,
+            workspace_session=git_status_session,
             change_baseline=before if policy is not None else None,
             extra_instructions=instructions, post_write=post,
         )

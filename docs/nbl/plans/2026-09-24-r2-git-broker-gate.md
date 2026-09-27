@@ -1,8 +1,15 @@
 # R2.4 分层工作区 Git 状态代理门禁
 
 - 日期：2026-09-24
-- 状态：Linux 固定参数 Git status 内部原型已在本机真实 Landlock 下通过定向验证；不注册工具、不接模型调用链。macOS/Windows 等价边界、干净 wheel 和完整 R2 仍阻断
+- 状态：Linux 固定参数 Git status 已在本机真实 Landlock 下通过定向验证；可信自主会话的只读无参数工具已接线，但当前 Landlock 策略合同尚未 ready，自动模式仍阻断。macOS/Windows 等价边界和完整 R2 仍阻断
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §4.2、§7；[持续竞品对照](../../agent-landscape-live.md)
+
+## 2026-09-27 UTC 当前切片：受门控的 Git status 工具接线
+
+- **接线：**`NativeChainExecutor` 仅在真实 `WorkspaceSession` 类型、当前 control/context ticket 与 session 一致、control/session/policy run 一致、workspace 一致时传递完整 session；不再接受裸 `GitWorkspaceIdentity` 作为链路授权。`run_chain` 再核对 session kind/ticket/run/workspace 和 session 派生 policy；默认注册表与 handler 继续核对 session、policy、identity、Linux 与真实 Landlock。非 Reviewer 且所有门禁通过时才提供无参数 `git_status`。普通任务、snapshot、缺会话及 macOS/Windows 无工具；handler 只调用 `execute_git_status()`，不退回宿主 Git。
+- **结果合同：**单份 JSON 以 `clean`、`entries`、`kind`、`index_status`、`worktree_status` 表示清洁、暂存、工作区、未跟踪和冲突；仅输出相对路径，原始 bytes 用 `os.fsdecode` 后 `ensure_ascii=True` 编码，控制字符与非 UTF-8 不会注入新行或终端控制。输出超过上下文限额即整项失败，稳定 `git_broker_unavailable`，不交付截断状态。该查询不是快照或 diff。
+- **TDD 与本机证据：**工具上下文缺 session、裸 identity 入口、control/session ticket/run 不匹配及路径越界负例均先观察失败，再最小接线或拒绝；真实临时 `WorkspaceManager` 分层会话与 Landlock broker 验证清洁、修改、暂存、未跟踪、控制字符、非 UTF-8、错误脱敏、Reviewer 阻断和输出限额。`scripts/run_native_wheel_ci.py` 在隔离 venv 安装生成的 Linux x86_64 wheel 后，实际导入并调用 `git_status`，验证固定无参 schema、受污染 GIT 环境下的状态回执、相对路径，以及 review 步骤不注册；原有 helper、宿主崩溃清理和 broker 探针也通过。没有 Linux ARM64、macOS/Windows wheel 或原生等价证据。`LandlockSandbox.policy_contract_ready` 仍为 false，因此不声称真实自动工单已开放。
+- **上游取舍（观察日 2026-09-27 UTC）：**Codex [`121f91fd5d9dc66017866ce9bdc49f1e182721df`](https://github.com/openai/codex/commit/121f91fd5d9dc66017866ce9bdc49f1e182721df)（MIT）的 Git branch summary 是内部 UI helper，不是模型专用状态工具；Gemini CLI [`46e7b41c6ae3b0435e9a7dc85fe8b09032f1b387`](https://github.com/google-gemini/gemini-cli/commit/46e7b41c6ae3b0435e9a7dc85fe8b09032f1b387)（Apache-2.0）主要以 project-root 检查/确认的通用 shell 提供命令回执。**采纳**显式错误、窄结构化状态端口；**暂缓/不适配**用 UI helper 或通用 shell 充当最小权限 broker。未复制源码或引入依赖。
 
 ## 三问与现状
 

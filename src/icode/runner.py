@@ -58,6 +58,7 @@ from .workspace_snapshot import diff_fingerprint as _diff_fingerprint
 from .workspace_snapshot import WorktreeTreeUnavailable
 from .workspace_snapshot import snapshot_fingerprint as _snapshot_fingerprint
 from .workspace_snapshot import snapshot_workspace as _snapshot
+from .workspace import WorkspaceSession
 from .workspace_snapshot import worktree_git_tree_oid as _worktree_git_tree_oid
 
 _NO_TESTS_SUMMARY = re.compile(r"(?m)^Ran 0 tests? in\b")
@@ -323,6 +324,7 @@ def run_contract_step(
     on_event=None,
     sandbox: Sandbox | None = None,
     policy: SandboxPolicy | None = None,
+    workspace_session: WorkspaceSession | None = None,
     change_baseline: dict[str, str] | None = None,
     out_dir: Path | None = None,
     extra_instructions: str = "",
@@ -423,6 +425,7 @@ def run_contract_step(
                     loop_config=loop_config, budget=budget, on_event=on_event,
                     checkpointer=ckpt, extra_instructions=extra_instructions,
                     operations=step_ops, sandbox=sandbox, policy=policy,
+                    workspace_session=workspace_session,
                     change_baseline=change_baseline,
                 )
                 report.loop = loop
@@ -499,6 +502,7 @@ def run_contract_step(
                         checkpointer=ckpt,
                         sandbox=sandbox,
                         policy=policy,
+                        workspace_session=workspace_session,
                         change_baseline=change_baseline,
                         extra_instructions=repair_instructions,
                         operations=step_ops,
@@ -649,6 +653,7 @@ def _make_ctx(
     *, read_only_workspace: bool = False,
     review_submission_enabled: bool = False,
     deny_read_roots: tuple[Path, ...] = (),
+    workspace_session: WorkspaceSession | None = None,
 ) -> ToolContext:
     """构造工具上下文；未显式指定时按本机实测能力自动选隔离后端。"""
     return ToolContext(
@@ -657,6 +662,7 @@ def _make_ctx(
         change_baseline=change_baseline, read_only_workspace=read_only_workspace,
         review_submission_enabled=review_submission_enabled,
         deny_read_roots=deny_read_roots,
+        workspace_session=workspace_session,
     )
 
 
@@ -803,13 +809,10 @@ def _run_agent(
     policy: SandboxPolicy | None = None,
     change_baseline: dict[str, str] | None = None,
     operations: OperationRecorder | None = None,
+    workspace_session: WorkspaceSession | None = None,
 ) -> LoopResult:
     read_only_workspace = step == "review"
     artifact_broker = _artifact_broker_for_step(out_dir, contract, step, policy)
-    registry = default_registry(
-        include_artifacts=artifact_broker is not None,
-        include_changes=change_baseline is not None,
-    )
     deny_read_roots = list(policy.deny_read_roots if policy is not None else ())
     if read_only_workspace:
         # next_out_dir() creates host-controlled ticket data below this root.
@@ -835,6 +838,12 @@ def _run_agent(
         workspace, sandbox, policy, artifact_broker, change_baseline,
         read_only_workspace=read_only_workspace,
         deny_read_roots=tuple(deny_read_roots),
+        workspace_session=workspace_session,
+    )
+    registry = default_registry(
+        include_artifacts=artifact_broker is not None,
+        include_changes=change_baseline is not None,
+        git_status_context=ctx,
     )
     on_turn = None
     if checkpointer is not None:

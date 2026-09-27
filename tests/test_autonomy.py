@@ -30,9 +30,11 @@ from icode.runner import StepReport
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.tickets import TicketError, TicketService
 from icode.workspace import (
+    GitWorkspaceIdentity,
     WorkspaceBusyError,
     WorkspaceError,
     WorkspaceManager,
+    WorkspaceSession,
 )
 from tests._support import require_skill, temp_workspace
 
@@ -367,6 +369,91 @@ class RecordingWorkspaceManager:
 
 
 class TestNativeChainExecutor(unittest.TestCase):
+    def test_git_identity_only_from_matching_current_worktree_session(self) -> None:
+        settings = require_skill()
+        with temp_workspace() as root:
+            workspace = root.resolve()
+            context = ExecutionContext(
+                ticket_id="AUTO-GIT-1", out_dir=workspace / "ticket",
+                workspace=workspace, requirement="status", status="init_in_progress",
+                completed_steps=(),
+            )
+            identity = GitWorkspaceIdentity(
+                checkout_root=workspace, code_root=workspace,
+                workspace_root=workspace, top_level=workspace,
+                common_dir=workspace / "common", git_dir=workspace / "git",
+                revision="a" * 40, identity_token="private",
+                source_relative_path=Path("."),
+            )
+            session = WorkspaceSession(
+                project_id="test-project", ticket_id=context.ticket_id,
+                run_id="run-1", kind="git_worktree", source_root=workspace,
+                workspace_root=workspace, runtime_root=workspace / "runtime",
+                receipts_root=workspace / "receipts",
+                manifest_path=workspace / "workspace.json",
+                protected_paths=(workspace / ".git", identity.common_dir),
+                lease=object(), git_status_identity=identity,
+            )
+            control = RecordingControl()
+            control.session = session
+            control.ticket_id = context.ticket_id
+            control.run_id = "run-1"
+            calls: list[dict] = []
+            executor = NativeChainExecutor(
+                settings, backend=FakeBackend(["done"]),
+                step_runner=lambda *args, **kwargs: (
+                    calls.append(kwargs), ChainReport(delivered=True)
+                )[1],
+                sandbox=SimpleNamespace(
+                    is_real_isolation=True, policy_contract_ready=True,
+                    wrap_policy=lambda *args, **kwargs: [],
+                    prepare_policy=lambda candidate: None,
+                ),
+            )
+            trace = SimpleNamespace(returncode=0, data={
+                "ticket_id": context.ticket_id, "status": "init_in_progress",
+            })
+            with patch("icode.autonomy.chain_steps", return_value=("plan",)), patch(
+                "icode.autonomy.ControlPlane.trace", return_value=trace,
+            ):
+                for kind, ticket, run, control_ticket, control_run, expected in (
+                    ("git_worktree", context.ticket_id, "run-1", context.ticket_id, "run-1", identity),
+                    ("snapshot", context.ticket_id, "run-1", context.ticket_id, "run-1", None),
+                    ("git_worktree", context.ticket_id, "run-1", "other-ticket", "run-1", None),
+                    ("git_worktree", context.ticket_id, "run-1", context.ticket_id, "other-run", None),
+                ):
+                    session.kind, session.ticket_id, session.run_id = kind, ticket, run
+                    control.ticket_id, control.run_id = control_ticket, control_run
+                    result = executor.execute(context, control)
+                    self.assertEqual(result.state, "succeeded")
+                    self.assertIs(
+                        calls[-1].get("workspace_session"),
+                        session if expected is identity else None,
+                    )
+                    if expected is not identity:
+                        self.assertNotIn("workspace_session", calls[-1])
+
+                session.git_status_identity = GitWorkspaceIdentity(
+                    checkout_root=workspace, code_root=workspace,
+                    workspace_root=workspace / "other", top_level=workspace,
+                    common_dir=identity.common_dir, git_dir=identity.git_dir,
+                    revision=identity.revision, identity_token=identity.identity_token,
+                    source_relative_path=Path("."),
+                )
+                control.ticket_id, control.run_id = context.ticket_id, "run-1"
+                result = executor.execute(context, control)
+                self.assertEqual(result.state, "succeeded")
+                self.assertNotIn("workspace_session", calls[-1])
+
+                control.session = SimpleNamespace(
+                    kind="git_worktree", ticket_id=context.ticket_id, run_id="run-1",
+                    workspace_root=workspace, git_status_identity=identity,
+                    policy=lambda step: session.policy(step),
+                )
+                result = executor.execute(context, control)
+                self.assertEqual(result.state, "succeeded")
+                self.assertNotIn("workspace_session", calls[-1])
+
     def test_直接执行有待办步骤但无会话时不启动模型(self) -> None:
         settings = require_skill()
         with temp_workspace() as workspace:

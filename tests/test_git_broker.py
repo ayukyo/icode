@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import hashlib
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,8 +19,10 @@ from icode.git_broker import (
     execute_git_status,
     verify_git_workspace_identity,
 )
+from icode.git_status import GitStatusEntry
 from icode.isolation import LandlockSandbox
 from icode.workspace import WorkspaceManager
+from icode.tools import ToolContext, default_registry
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -232,6 +235,128 @@ class TestGitStatusBrokerExecution(unittest.TestCase):
                 "review", wall_timeout_seconds=10, output_limit_bytes=1024 * 1024
             ),
         )
+
+    def _tool(self, *, output_limit: int = 8000, step: str = "code"):
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        ctx = ToolContext(
+            root=self.session.workspace_root, sandbox=self.sandbox,
+            policy=self.session.policy(step),
+            workspace_session=self.session, output_limit=output_limit,
+            read_only_workspace=step == "review",
+        )
+        registry = default_registry(git_status_context=ctx)
+        return registry, ctx
+
+    def test_tool_exposes_no_model_arguments_and_real_status(self) -> None:
+        registry, ctx = self._tool()
+        schema = registry.get("git_status").schema()["function"]["parameters"]
+        self.assertEqual(schema["properties"], {})
+        self.assertEqual(schema["required"], [])
+        self.assertIs(schema["additionalProperties"], False)
+        root = self.session.workspace_root
+        (root / "tracked.txt").write_text("changed\n", encoding="utf-8")
+        (root / "fresh.txt").write_text("fresh\n", encoding="utf-8")
+        result = registry.invoke("git_status", ctx, {})
+        self.assertTrue(result.ok, result.content)
+        data = json.loads(result.content)
+        self.assertFalse(data["clean"])
+        self.assertEqual(data["entries"], [
+            {"kind": "tracked", "path": "tracked.txt", "index_status": ".", "worktree_status": "M"},
+            {"kind": "untracked", "path": "fresh.txt", "index_status": None, "worktree_status": None},
+        ])
+        self.assertNotIn(str(root), result.content)
+        self.assertNotIn(self.session.git_status_identity.identity_token, result.content)
+
+    def test_tool_clean_and_staged_fields(self) -> None:
+        registry, ctx = self._tool()
+        self.assertEqual(json.loads(registry.invoke("git_status", ctx, {}).content), {
+            "clean": True, "entries": [],
+        })
+        (self.session.workspace_root / "tracked.txt").write_text("staged\n", encoding="utf-8")
+        identity = self.session.git_status_identity
+        self.assertIsNotNone(identity)
+        subprocess.run([
+            "git", "--git-dir", str(identity.git_dir), "--work-tree",
+            str(identity.workspace_root), "add", "--", "tracked.txt",
+        ], check=True, capture_output=True)
+        data = json.loads(registry.invoke("git_status", ctx, {}).content)
+        self.assertFalse(data["clean"])
+        tracked = next(item for item in data["entries"] if item["path"] == "tracked.txt")
+        self.assertEqual(tracked["index_status"], "M", data)
+        self.assertEqual(tracked["worktree_status"], ".")
+
+    def test_tool_rejects_absolute_or_parent_paths_from_broker(self) -> None:
+        registry, ctx = self._tool()
+        for path in (b"/outside", b"../outside"):
+            with self.subTest(path=path), patch(
+                "icode.tools.builtin.execute_git_status",
+                return_value=(GitStatusEntry("untracked", path, None, None),),
+            ):
+                result = registry.invoke("git_status", ctx, {})
+            self.assertFalse(result.ok)
+            self.assertEqual(result.meta["error"], "git_broker_unavailable")
+            self.assertNotIn("outside", result.content)
+
+    def test_tool_path_bytes_are_escaped_and_result_is_complete(self) -> None:
+        registry, ctx = self._tool()
+        raw_name = b"odd\n\x1b\xff.txt"
+        file_path = os.fsencode(self.session.workspace_root) + b"/" + raw_name
+        with open(file_path, "wb") as stream:
+            stream.write(b"x")
+        result = registry.invoke("git_status", ctx, {})
+        self.assertTrue(result.ok, result.content)
+        self.assertNotIn("\n", result.content)
+        self.assertNotIn("\x1b", result.content)
+        self.assertTrue(result.content.isascii())
+        self.assertEqual(json.loads(result.content)["entries"][0]["path"], os.fsdecode(raw_name))
+
+    def test_tool_rejects_oversize_without_partial_status(self) -> None:
+        registry, ctx = self._tool(output_limit=25)
+        (self.session.workspace_root / "oversize.txt").write_text("x", encoding="utf-8")
+        result = registry.invoke("git_status", ctx, {})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta["error"], "git_broker_unavailable")
+        self.assertNotIn("oversize.txt", result.content)
+
+    def test_tool_error_is_stable_and_does_not_run_host_git(self) -> None:
+        registry, ctx = self._tool()
+        with patch("icode.tools.builtin.execute_git_status", side_effect=GitStatusUnavailable("/private/secret")) as broker, patch("subprocess.run") as host:
+            result = registry.invoke("git_status", ctx, {})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta["error"], "git_broker_unavailable")
+        self.assertNotIn("secret", result.content)
+        broker.assert_called_once_with(
+            ctx.workspace_session.git_status_identity,
+            sandbox=ctx.sandbox, policy=ctx.policy,
+        )
+        host.assert_not_called()
+
+    def test_tool_reviewer_and_mismatched_context_are_unavailable(self) -> None:
+        registry, ctx = self._tool(step="review")
+        self.assertIsNone(registry.get("git_status"))
+        _, inconsistent_review_ctx = self._tool()
+        inconsistent_review_ctx.policy = self.session.policy("review")
+        self.assertIsNone(default_registry(
+            git_status_context=inconsistent_review_ctx,
+        ).get("git_status"))
+        with patch("icode.tools.builtin.execute_git_status") as broker:
+            result = default_registry(git_status_context=self._tool()[1]).invoke("git_status", ctx, {})
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta["error"], "git_broker_unavailable")
+        broker.assert_not_called()
+        self.assertNotIn("git_status", default_registry().names())
+        ctx.read_only_workspace = False
+        ctx.policy = self.session.policy("code", wall_timeout_seconds=10)
+        ctx.root = self.root / "wrong"
+        self.assertIsNone(default_registry(git_status_context=ctx).get("git_status"))
+
+    def test_registry_requires_metadata_write_protection(self) -> None:
+        from dataclasses import replace
+
+        _, ctx = self._tool()
+        ctx.policy = replace(ctx.policy, deny_write_roots=(), protected_paths=())
+        self.assertIsNone(default_registry(git_status_context=ctx).get("git_status"))
 
     def test_status_command_does_not_install_empty_external_diff_override(self) -> None:
         commands: list[list[str]] = []

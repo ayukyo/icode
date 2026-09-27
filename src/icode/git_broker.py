@@ -1,9 +1,11 @@
 """Fail-closed identity validation and Linux-only internal Git status query.
 
-The fixed query accepts no model argv or repository path and is not exposed as
-a tool. Metadata roots carry expected device/inode claims; the native Landlock
-helper compares those claims on the same opened fd used to install each rule.
-The prototype is not wired into user-facing execution or automatic mode.
+The fixed query accepts no model argv or repository path. A no-argument tool
+wrapper may call it only for a manager-session-bound worktree under a real
+Landlock policy gate. Metadata roots carry expected device/inode claims; the
+native Landlock helper compares those claims on the same opened fd used to
+install each rule. Automatic mode remains closed until its full policy
+contract is ready.
 """
 
 from __future__ import annotations
@@ -58,7 +60,8 @@ def execute_git_status(
 ) -> tuple[GitStatusEntry, ...]:
     """Run one fixed, Linux-only, read-only status query for the trusted session.
 
-    This remains an internal API: no tool or command route calls it. It accepts
+    This remains an internal API called only by the gated no-argument status
+    tool; no arbitrary command route or host-Git fallback calls it. It accepts
     neither Git argv nor a repository path from the model. Any unsupported
     workspace shape, backend, metadata identity, helper, command result, or
     parser output fails closed with a path-free error.

@@ -17,6 +17,7 @@ import os
 import re
 import secrets
 import stat
+import sys
 from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
@@ -24,6 +25,10 @@ from typing import Iterator
 
 from ..artifact_broker import ArtifactAccessError
 from ..execution_broker import execute_policy_command
+from ..git_broker import GitStatusUnavailable, execute_git_status
+from ..isolation import LandlockSandbox
+from ..sandbox_policy import NetworkMode, SandboxPolicy
+from ..workspace import GitWorkspaceIdentity, WorkspaceSession
 from ..workspace_snapshot import changed_files, snapshot_workspace
 from .base import (
     OPCLASS_MANAGED_WRITE,
@@ -725,8 +730,86 @@ def _looks_read_only(args: list[str]) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _git_status_available(ctx: ToolContext) -> bool:
+    session = ctx.workspace_session
+    policy = ctx.policy
+    if not isinstance(session, WorkspaceSession) or not isinstance(policy, SandboxPolicy):
+        return False
+    identity = session.git_status_identity
+    if not isinstance(identity, GitWorkspaceIdentity):
+        return False
+    try:
+        session_policy = session.policy(policy.step)
+    except Exception:  # noqa: BLE001 - stale or malformed session disables the tool.
+        return False
+    return (
+        sys.platform.startswith("linux")
+        and isinstance(ctx.sandbox, LandlockSandbox)
+        and not ctx.read_only_workspace
+        and policy.step != "review"
+        and session.kind == "git_worktree"
+        and session.ticket_id == policy.ticket_id
+        and session.run_id == policy.run_id
+        and policy == session_policy
+        and session.workspace_root == ctx.root
+        and ctx.root == identity.workspace_root == identity.code_root == policy.workspace_root
+        and identity.source_relative_path == Path(".")
+        and policy.network_mode is NetworkMode.DENY
+        and not policy.allowed_domains
+        and policy.read_roots == (ctx.root,)
+        and policy.write_roots == (ctx.root,)
+        and {identity.checkout_root / ".git", identity.common_dir}.issubset(
+            set(policy.deny_write_roots)
+        )
+    )
+
+
+def git_status(ctx: ToolContext) -> ToolResult:
+    """Return one complete, path-safe status from the manager-issued worktree."""
+    if (
+        not _git_status_available(ctx)
+        or not isinstance(ctx.workspace_session, WorkspaceSession)
+        or not isinstance(ctx.workspace_session.git_status_identity, GitWorkspaceIdentity)
+        or ctx.policy is None
+    ):
+        return ToolResult(False, "Git 状态不可用", {"error": "git_broker_unavailable"})
+    try:
+        entries = execute_git_status(
+            ctx.workspace_session.git_status_identity,
+            sandbox=ctx.sandbox, policy=ctx.policy,
+        )
+        for item in entries:
+            for path in (item.path, item.original_path):
+                if path is None:
+                    continue
+                if (not isinstance(path, bytes) or not path or path.startswith(b"/")
+                        or b"\0" in path or b".." in path.split(b"/")):
+                    raise ValueError("invalid relative status path")
+        payload = {
+            "clean": not entries,
+            "entries": [
+                {
+                    "kind": item.kind,
+                    "path": os.fsdecode(item.path),
+                    "index_status": item.index_status,
+                    "worktree_status": item.worktree_status,
+                    **({"original_path": os.fsdecode(item.original_path)}
+                       if item.original_path is not None else {}),
+                }
+                for item in entries
+            ],
+        }
+        content = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+        if len(content) > ctx.output_limit:
+            return ToolResult(False, "Git 状态超出输出限额", {"error": "git_broker_unavailable"})
+        return ToolResult(True, content, {"entry_count": len(entries)})
+    except (GitStatusUnavailable, UnicodeError, ValueError, TypeError):
+        return ToolResult(False, "Git 状态不可用", {"error": "git_broker_unavailable"})
+
+
 def default_registry(*, include_artifacts: bool = False,
-                     include_changes: bool = False) -> ToolRegistry:
+                     include_changes: bool = False,
+                     git_status_context: ToolContext | None = None) -> ToolRegistry:
     """Phase 2 最小工具集。
 
     **不含任意 shell 执行**：`run_command` 需经 guard 白名单放行，
@@ -808,6 +891,13 @@ def default_registry(*, include_artifacts: bool = False,
             description="列出相对本次任务开始时的文件增删改；不是 Git 暂存或提交状态。",
             parameters=_params({}, []),
             handler=workspace_changes,
+        ))
+    if git_status_context is not None and _git_status_available(git_status_context):
+        reg.register(Tool(
+            name="git_status",
+            description="查询当前工单工作区的 Git 暂存、工作区、未跟踪和冲突状态。",
+            parameters={**_params({}, []), "additionalProperties": False},
+            handler=git_status,
         ))
     if include_artifacts:
         reg.register(Tool(
