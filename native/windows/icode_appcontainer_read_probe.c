@@ -226,10 +226,18 @@ static BOOL network_connect_is_denied(const ProbeArguments *arguments, int *erro
     WSADATA winsock_data;
     SOCKET client = INVALID_SOCKET;
     struct sockaddr_in address;
+    struct timeval connect_timeout;
+    fd_set writable_sockets;
+    fd_set exceptional_sockets;
+    u_long nonblocking = 1;
     int startup_result;
     int connect_result;
+    int select_result;
+    int socket_error = 0;
+    int socket_error_size = sizeof(socket_error);
     int error = 0;
     BOOL denied = FALSE;
+    BOOL connected = FALSE;
 
     startup_result = WSAStartup(MAKEWORD(2, 2), &winsock_data);
     if (startup_result != 0) {
@@ -246,13 +254,53 @@ static BOOL network_connect_is_denied(const ProbeArguments *arguments, int *erro
         address.sin_port = htons(arguments->network_port);
         if (InetPtonW(AF_INET, arguments->network_address, &address.sin_addr) != 1) {
             error = WSAEINVAL;
+        } else if (ioctlsocket(client, FIONBIO, &nonblocking) == SOCKET_ERROR) {
+            error = WSAGetLastError();
         } else {
             connect_result = connect(client, (const struct sockaddr *)&address, sizeof(address));
-            if (connect_result == 0) {
-                (void)send(client, kNetworkProbe, (int)(sizeof(kNetworkProbe) - 1), 0);
-            } else {
+            if (connect_result == SOCKET_ERROR) {
                 error = WSAGetLastError();
-                denied = error == WSAEACCES;
+                if (error == WSAEACCES) {
+                    denied = TRUE;
+                } else if (error == WSAEWOULDBLOCK || error == WSAEINPROGRESS ||
+                    error == WSAEALREADY) {
+                    /* Winsock reports connect success in writefds and failure in exceptfds. */
+                    FD_ZERO(&writable_sockets);
+                    FD_SET(client, &writable_sockets);
+                    FD_ZERO(&exceptional_sockets);
+                    FD_SET(client, &exceptional_sockets);
+                    /* A timeout is inconclusive, never proof that the sandbox denied access. */
+                    connect_timeout.tv_sec = 1;
+                    connect_timeout.tv_usec = 0;
+                    select_result = select(
+                        0, NULL, &writable_sockets, &exceptional_sockets,
+                        &connect_timeout
+                    );
+                    if (select_result > 0) {
+                        if (!FD_ISSET(client, &writable_sockets) &&
+                            !FD_ISSET(client, &exceptional_sockets)) {
+                            error = WSAEINVAL;
+                        } else if (getsockopt(
+                                client, SOL_SOCKET, SO_ERROR,
+                                (char *)&socket_error, &socket_error_size
+                            ) == SOCKET_ERROR) {
+                            error = WSAGetLastError();
+                        } else {
+                            error = socket_error;
+                            connected = socket_error == 0;
+                            denied = socket_error == WSAEACCES;
+                        }
+                    } else if (select_result == 0) {
+                        error = WSAETIMEDOUT;
+                    } else {
+                        error = WSAGetLastError();
+                    }
+                }
+            } else {
+                connected = TRUE;
+            }
+            if (connected) {
+                (void)send(client, kNetworkProbe, (int)(sizeof(kNetworkProbe) - 1), 0);
             }
         }
     }
