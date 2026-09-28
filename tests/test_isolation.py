@@ -2084,16 +2084,17 @@ print("metadata-read-only-ok")
 
         probe_code = (
             "import socket, sys\n"
-            "sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
-            "sock.settimeout(1.5)\n"
+            "sock = None\n"
             "try:\n"
+            "    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            "    sock.settimeout(1.5)\n"
             "    sock.connect((sys.argv[1], int(sys.argv[2])))\n"
             "    if sys.argv[3] == 'send': sock.sendall(b'icode-seatbelt-probe')\n"
             "    print('probe:connected', flush=True)\n"
             "except OSError as exc:\n"
             "    print('probe:errno=' + str(exc.errno), flush=True)\n"
             "finally:\n"
-            "    sock.close()\n"
+            "    if sock is not None: sock.close()\n"
         )
 
         def run_probe(

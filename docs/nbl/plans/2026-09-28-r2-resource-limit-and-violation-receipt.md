@@ -76,6 +76,12 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **本地边界：**诊断用例在 Linux 按设计跳过，不能作为 macOS 通过证据。该步骤此前只有最终汇总 notice，loopback 正例/异端口拒绝任一步失败时均缺少可公开机器分类。
 - **本次处理：**在每个本机 socket probe 完成后写出不含地址、端口、路径的固定阶段与结果 notice；子进程退出异常、缺失结果标记或正/负对照分类不符时写出脱敏 error annotation。仅增强观测，不改变 Seatbelt profile、产品 network DENY、评分或自动模式。提交后须重新收集双架构原生结果，才能决定后续实现。
 
+## 2026-09-28 Asia/Shanghai：macOS probe 将 socket 创建纳入拒绝分类
+
+- **复跑证据：**commit `fbf2960b379b` 的 CI [run 36372163484](https://github.com/ayukyo/icode/actions/runs/36372163484) 中 Intel 与 Apple Silicon 两个 macOS job 均输出安全注解 `stage=loopback-allowed subprocess_exit=1 marker_count=0`，说明失败发生在正例探针产生结果标记之前。此次信息仍不足以证明 Seatbelt 规则行为。
+- **测试缺陷与修正：**子进程探针把 `socket.socket()` 和 `settimeout()` 放在 `try/except OSError` 外；若其中任一受策略影响，子进程会退出而不是返回 errno。现将创建/设置超时也纳入同一受控分类，并仅在对象已创建时关闭；这样拒绝会成为带数字 errno 的受限标记，再由父测试按预期分类。Linux 无法运行 Seatbelt 原生分支；修改后的 macOS 双架构 CI 尚待结果。
+- **边界：**这是测试观测正确性修复，不放宽 profile、不将策略拒绝当成成功、不改生产网络 DENY、macOS 地址范围决策、评分或自动模式。若 loopback 正例报告拒绝，仍需另行处理机制边界。
+
 ## 2026-09-28 Asia/Shanghai：host proxy 授权前关闭回执竞态
 
 - `serve_once()` 在不完整 CONNECT 请求头期间遇到 `server.close()`，曾在 socket/lease 错误分支未观察 `_closed` 时偶发返回 `True`，与其“关闭/停机返回 `False`”文档契约不一致。
