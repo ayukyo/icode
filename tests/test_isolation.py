@@ -113,6 +113,15 @@ def _seatbelt_stderr_tags(stderr: str) -> str:
         ("loader", ("dyld", "library not loaded")),
         ("launch", ("cannot execute", "exec failed", "spawn", "launch")),
         ("python_runtime", ("traceback", "fatal python error", "importerror")),
+        ("python_import_error", ("importerror", "modulenotfounderror")),
+        ("python_name_error", ("nameerror",)),
+        ("python_attribute_error", ("attributeerror",)),
+        ("python_type_error", ("typeerror",)),
+        ("python_value_error", ("valueerror",)),
+        ("python_os_error", (
+            "oserror", "permissionerror", "filenotfounderror", "timeouterror",
+        )),
+        ("python_runtime_error", ("runtimeerror", "assertionerror")),
     )
     tags = [
         name for name, needles in categories
@@ -990,6 +999,14 @@ class TestSandboxWrapping(unittest.TestCase):
             "sandbox_exec+unbound_variable",
         )
         self.assertEqual(_seatbelt_stderr_tags(""), "empty")
+
+    def test_Seatbelt运行时异常类别保持固定且不包含原始内容(self) -> None:
+        self.assertEqual(
+            _seatbelt_stderr_tags(
+                "Traceback (most recent call last):\nNameError: private value"
+            ),
+            "python_runtime+python_name_error",
+        )
 
     def test_landlock_Reviewer包装显式传入工作区只读标记(self) -> None:
         with temp_workspace() as root:
@@ -2112,15 +2129,25 @@ print("metadata-read-only-ok")
 
         probe_code = (
             "import socket, sys\n"
+            "print('probe:stage=socket-imported', flush=True)\n"
             "sock = None\n"
+            "stage = 'socket-create'\n"
             "try:\n"
             "    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            "    print('probe:stage=socket-created', flush=True)\n"
+            "    stage = 'socket-timeout'\n"
             "    sock.settimeout(1.5)\n"
+            "    print('probe:stage=timeout-set', flush=True)\n"
+            "    stage = 'connect'\n"
+            "    print('probe:stage=connect', flush=True)\n"
             "    sock.connect((sys.argv[1], int(sys.argv[2])))\n"
-            "    if sys.argv[3] == 'send': sock.sendall(b'icode-seatbelt-probe')\n"
+            "    if sys.argv[3] == 'send':\n"
+            "        stage = 'send'\n"
+            "        print('probe:stage=send', flush=True)\n"
+            "        sock.sendall(b'icode-seatbelt-probe')\n"
             "    print('probe:connected', flush=True)\n"
             "except OSError as exc:\n"
-            "    print('probe:errno=' + str(exc.errno), flush=True)\n"
+            "    print('probe:errno=' + str(exc.errno) + '@' + stage, flush=True)\n"
             "finally:\n"
             "    if sock is not None: sock.close()\n"
         )
@@ -2138,12 +2165,20 @@ print("metadata-read-only-ok")
                  address, str(port), "send" if send else "no-send"],
                 capture_output=True, text=True, timeout=6, check=False,
             )
-            matches = re.findall(r"(?m)^probe:(connected|errno=\d+)$", result.stdout)
+            matches = re.findall(
+                r"(?m)^probe:(connected|errno=\d+@(?:socket-create|socket-timeout|connect|send))$",
+                result.stdout,
+            )
+            child_stages = re.findall(
+                r"(?m)^probe:stage=(socket-imported|socket-created|timeout-set|connect|send)$",
+                result.stdout,
+            )
             if result.returncode != 0 or len(matches) != 1:
                 print(
                     "::error::macos-seatbelt-port-boundary "
                     f"stage={stage} subprocess_exit={result.returncode} "
                     f"marker_count={len(matches)} "
+                    f"child_stages={'+'.join(child_stages) or 'none'} "
                     f"stderr_tags={_seatbelt_stderr_tags(result.stderr)}",
                     flush=True,
                 )
@@ -2151,7 +2186,8 @@ print("metadata-read-only-ok")
             marker = matches[0]
             print(
                 "::notice::macos-seatbelt-port-boundary "
-                f"stage={stage} probe_result={marker}",
+                f"stage={stage} probe_result={marker} "
+                f"child_stages={'+'.join(child_stages) or 'none'}",
                 flush=True,
             )
             return marker
@@ -2195,12 +2231,13 @@ print("metadata-read-only-ok")
         def classify(result: str) -> str:
             if result == "connected":
                 return "connected"
-            code = int(result.removeprefix("errno="))
+            errno_text, child_stage = result.removeprefix("errno=").split("@", 1)
+            code = int(errno_text)
             if code in (errno.EPERM, errno.EACCES):
-                return "denied"
+                return f"denied_{child_stage}"
             if code == errno.ECONNREFUSED:
-                return "allowed_no_listener"
-            return f"inconclusive_errno_{code}"
+                return f"allowed_no_listener_{child_stage}"
+            return f"inconclusive_errno_{code}_{child_stage}"
 
         sandbox = MacSeatbeltSandbox(sandbox_exec=sandbox_exec)
         with temp_workspace() as workspace:
@@ -2257,7 +2294,7 @@ print("metadata-read-only-ok")
                     )
                     other_class = classify(other_result)
                     assert_classification(
-                        "other-loopback-port", other_result, "denied",
+                        "other-loopback-port", other_result, "denied_connect",
                     )
 
                 if local_address is None:

@@ -950,6 +950,12 @@
 - **当前直接证据：**ICODE CI run [`36374038529`](https://github.com/ayukyo/icode/actions/runs/36374038529) 的 macOS ARM64/Intel 注解均为 `profile-startup` 阶段 exit 1、marker 0、stderr 类别 `other`。这在时间顺序上先于 socket 创建；目前没有证据把失败归因到端口谓词，也没有证据指向某个文件访问/平台规则。
 - **采纳 / 暂缓：**采纳分层最小对照——基础 profile 的 `/usr/bin/true`、Python `-S`、普通 Python，再单独追加端口规则；诊断只暴露退出码、marker 数和固定类别，不暴露 stderr 原文/路径/地址/端口。暂缓复制 Codex 的整套额外 Seatbelt 许可条款，暂不调整生产 DENY 或能力分数。Apple [`network client entitlement`](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.network.client) 描述 entitlement 能力，不是此 raw SBPL 谓词的精确语法或匹配范围规范；实际结论必须来自原生 macOS 运行证据。观察日：2026-09-28。
 
+### 2026-09-28 Asia/Shanghai 刷新：macOS Seatbelt startup 与 socket 子进程分层
+
+- **ICODE CI 新证据：**commit `a57a93e` 的 [CI run 36375272942](https://github.com/ayukyo/icode/actions/runs/36375272942) 中 Intel 与 Apple Silicon 的基础 `/usr/bin/true`、Python `-S`、普通 Python、附加端口谓词后的普通 Python 均成功启动；随后实际 socket 探针 exit 1、无业务标记，现有安全分类为 `python_runtime`。故启动/谓词解析假设暂不成立为故障原因，连接 syscall、发送、Python 异常的具体位置尚未确认。
+- **采纳 / 已实现：**用固定阶段注解标识 socket 模块导入、创建、timeout、connect、send；OSError 只输出数字 errno 与阶段，stderr 进一步映射到固定异常类标签。所有 annotation 不包含异常原文、用户路径、地址或端口。此 test-only probe 是 ICODE 对 Codex 文本规则的真实运行补充；本地分类与全量测试通过，macOS 原生行为等待新 CI。Codex 固定版本对应测试主要断言 profile 文本，不能代替原生行为探测。
+- **安全边界：**连接是否被授权仍未得出结论；即便下一轮通过，只能记载实际正反探针向量，不能据此宣称代理进程绑定或严格 loopback-only。产品 DENY、评分与自动模式不变。观察日：2026-09-28。
+
 ### 2026-09-28 Asia/Shanghai 刷新：跨平台任务级 process_limit
 
 - **Linux：**Linux kernel [cgroup v2 PID controller](https://docs.kernel.org/admin-guide/cgroup-v2.html#pid) 的 `pids.max` 是子树硬限额，超限 fork/clone 返回 `EAGAIN`；其任务计数按 TID，因此线程也计入。systemd [cgroup delegation 合同](https://systemd.io/CGROUP_DELEGATION/)要求管理者只写被委派子树；ICODE 本机 user manager 曾可创建 transient scope，但当前用户 manager `Delegate=no`，该实验不代表所有 pip-only 安装主机可用。

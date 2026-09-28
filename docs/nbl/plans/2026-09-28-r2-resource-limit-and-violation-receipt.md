@@ -106,3 +106,9 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **固定上游核对：**Codex `openai/codex@21eb35513df478a2a090bfc2c0293caaf435b36d` 的逐端口 SBPL 规则与 ICODE 测试追加的字面相同，但 Codex profile 还组合 base、文件、动态网络与网络策略等规则；其公开测试核验生成的 profile 文本，没有证据证明该固定测试在原生 Seatbelt 下实际 connect。Apple 公开 entitlement 文档也未规定该 raw SBPL 谓词的精确语法/匹配范围。故不复制 Codex 的额外授权策略，不把代码文本相同当作运行行为相同。
 - **下一组可证伪对照：**仅在测试子进程依次运行 ICODE 基础 profile + `/usr/bin/true`、Python `-S`、普通 Python，再追加随机端口规则重复普通 Python；为每个阶段输出固定 stage/退出码/标记数/白名单 stderr 类别，固定工作目录，不输出原始 stderr、路径、地址或端口。若基础 profile 的 true 失败，调查执行器/profile；若 true 成功而 `-S` 失败，调查解释器/运行库访问；若 `-S` 成功而普通 Python 失败，调查 site 初始化路径；若只有追加规则失败，才将调查转向该 SBPL 规则。此诊断不发送网络数据，不改生产 profile、network DENY、能力分数或自动模式。
 - **本机验证边界：**stderr 分类回归与语法检查可在 Linux 执行；Seatbelt 原生诊断按平台跳过，不计 macOS 证据。修改后必须回收 Intel 和 Apple Silicon 原生 runner 输出，才能继续判断根因。当前 macOS 仍为 `6/10, critical_passed=false, ready=false`。
+
+## 2026-09-28 Asia/Shanghai：macOS profile startup 已通过、socket 子进程仍异常
+
+- **远端分层结果：**commit `a57a93e` 的 CI [run 36375272942](https://github.com/ayukyo/icode/actions/runs/36375272942) 双架构都通过 `base-executable`、`base-python-no-site`、`base-python-site` 和 `port-rule-python-site`，随后在 `loopback-allowed` 探针退出 1、没有结果标记，stderr 仅命中固定 `python_runtime` 类别。基础 profile、普通 Python 初始化和追加端口规则后的解释器启动因此已有正向证据；网络 connect/send 是否执行成功仍无证据。
+- **可排除范围：**本次不再把失败描述为 profile startup 失败；前述 Python venv/site 启动路径假设在这些启动控制中未复现。尚未区分 socket 模块导入、socket 创建/timeout、connect、send 或探针内部未捕获异常，不推断为 Seatbelt 拒绝或授权。
+- **本次处理：**子进程现输出固定阶段 `socket-imported`/`socket-created`/`timeout-set`/`connect`/`send`；OSError 回执附数字 errno 与失败阶段，annotation 只包含有序固定阶段标签和白名单 Python 异常类别，不打印异常正文。保留连接正反对照，不把不可分类结果降为 skip。Linux 本机分类/语法/全量测试守护通过；Seatbelt 原生用例按平台跳过，下一 commit 的 Intel 与 Apple Silicon CI 才能验证这些阶段标签。产品网络 DENY、评分、自动模式不变。
