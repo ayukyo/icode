@@ -168,6 +168,9 @@ jobs:
       - name: Diagnose Seatbelt localhost random-port address scope
         if: runner.os == 'macOS'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_localhost随机端口规则地址范围诊断 -v
+      - name: Probe path-scoped Seatbelt AF_UNIX proxy candidate
+        if: runner.os == 'macOS'
+        run: python -m unittest tests.test_macos_unix_socket_probe -v
       - name: Verify read-only Reviewer hides ticket ledger
         if: runner.os == 'macOS'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_只读Reviewer真实隐藏账本且阻断工作区内外写入 -v
