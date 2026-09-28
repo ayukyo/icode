@@ -124,6 +124,14 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
+      - name: Verify R3 Reviewer exact-file and hardlink read limits (macOS)
+        if: runner.os == 'macOS'
+        run: >-
+          python -m unittest
+          tests.test_tools.TestFileTools.test_精确工作区路径不能读取工作区外文件的硬链接
+          tests.test_tools.TestFileTools.test_工具上下文精确读取白名单限制read_file
+          tests.test_tools.TestFileTools.test_工具上下文精确读取白名单不扩展为目录grep
+          -v
       - name: Diagnose Linux user-namespace host policy
         if: runner.os == 'Linux'
         shell: bash
