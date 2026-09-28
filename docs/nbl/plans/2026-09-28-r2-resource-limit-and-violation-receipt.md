@@ -34,7 +34,7 @@
 
 Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.com/openai/codex/commit/21eb35513df478a2a090bfc2c0293caaf435b36d) 中的 deadline、输出缓冲、进程组清理可作为宿主监督结构参考；Unified Exec 的 tracked-session 数不能作为任务进程上限。Codex 的内部 OS violation 分类可作为脱敏分类测试参考，但未发现其公开工具回执有统一机器错误码。相关源码事实和采纳决策记录在[持续竞品对照](../../agent-landscape-live.md)。本计划不复制代码、不增加运行时依赖，也不据上游行为推断 ICODE 能力。
 
-本计划不改变 worker 网络默认 `DENY`、macOS 地址范围门槛、`policy_contract_ready`、workbench 自动模式或现有 capability 评分。macOS 的 `localhost` 同端口规则和 `process_limit` 是否把线程计入两项用户决定仍待答复；答复前仅进行只读核查，不放宽策略。
+本计划不改变 worker 网络默认 `DENY`、macOS 地址范围门槛、`policy_contract_ready`、workbench 自动模式或现有 capability 评分。macOS 的 `localhost` 同端口规则和 `process_limit` 是否把线程计入两项用户决定仍待答复；为获取直接内核行为证据，允许新增不接入产品的原生 test-only 诊断，但答复前不放宽策略或评分。
 
 ## 2026-09-28：应用策略层统一拒绝回执（已落地，非 OS 验收）
 
@@ -63,3 +63,15 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **平台语义：**Linux cgroup v2 `pids.max` 是子树硬限额、超限 fork/clone 失败，但 PID controller 按 TID/task 统计，线程也计入；需 systemd manager/cgroup delegation 能力探测，缺失时 payload 不启动。Windows [Job `ActiveProcessLimit`](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_limit_information#members)按 Job 中活跃进程计数。macOS [RLIMIT_NPROC](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/setrlimit.2.html)和 launchd [`NumberOfProcesses`](https://github.com/apple-oss-distributions/launchd/blob/main/man/launchd.plist.5#L1807-L1818)按 UID，无法表达 per-ticket cap；当前 Seatbelt 无等价计数原语。
 - **Codex 对照：**固定 SHA `21eb35513df478a2a090bfc2c0293caaf435b36d` 的 `MAX_UNIFIED_EXEC_PROCESSES=64` 是 tracked session LRU soft cap（[常量](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/core/src/unified_exec/mod.rs#L832) · [清理逻辑](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/core/src/unified_exec/process_manager.rs#L1650-L1688)），不是 OS 级子进程限制；所查 Windows Job helper 也未设置 `ACTIVE_PROCESS`。[license](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/LICENSE#L588-L590) 为 Apache-2.0。
 - **取舍与验收：**保留 RL-0，不改变 `process_limit` 计数合同，等待确认是否包含命令根/helper、以及是否接受 Linux 将线程计入。下一实现必须贯通 policy→Workbench `run_command`→broker→原生 enforcer；Linux cap=2 根+子进程正例、cap=1 超限无 marker、真实 cgroup membership/`pids.events`、缺 manager/delegation 时无 payload；Windows policy/IPC→Job 正反例与 Job assignment 失败无 marker；macOS 无机制时返回 `unsupported` 且不计分，禁止用 per-user `RLIMIT_NPROC` 假装单任务上限。所有平台另需宽限正对照及普通 exit 13 不误报。macOS 若 `process_limit` 与 `uniform_violation` 都未通过，按 9/10 合同无法就绪。Codex/Linux/Windows/Apple 一手来源和观察日期见[持续竞品对照](../../agent-landscape-live.md)。
+
+## 2026-09-28 Asia/Shanghai：Seatbelt localhost 端口范围 test-only 诊断
+
+- 在 `tests/test_isolation.py` 增加原生 macOS 专项用例，并挂入现有 macOS native-probe CI 矩阵；它仅对该测试子进程使用 Codex 式 `localhost:<random_port>` 规则，不修改生产 profile、网络默认 DENY、能力评分或自动模式。
+- 用 loopback listener 验证该端口正例、另一 loopback 端口拒绝；再对宿主已分配的非 loopback 地址同端口发起不发送数据的连接，不建立 LAN listener。按 `EPERM`/`EACCES`、`ECONNREFUSED` 分类；不可分类时跳过并明确提示。无公网目标。
+- 此无监听探针低于 LAN-bound same-port decoy 的证据强度，不能证明与活跃本机服务的完整交互语义；实际 macOS runner 结果待 CI。用户对产品边界的决定仍待答复，生产授权继续 DENY。
+
+## 2026-09-28 Asia/Shanghai：host proxy 授权前关闭回执竞态
+
+- `serve_once()` 在不完整 CONNECT 请求头期间遇到 `server.close()`，曾在 socket/lease 错误分支未观察 `_closed` 时偶发返回 `True`，与其“关闭/停机返回 `False`”文档契约不一致。
+- 更新路径：无已授权 tunnel 时，在错误处理后用既有锁观察 `_closed`；若 shutdown 已线性化则返回 `False`。已授权 tunnel 在 relay I/O 错误时仍视为本次请求已处理，保持原有 `True` 语义。
+- TDD 证据：旧实现对 shutdown 断言 20 轮中 16 次失败；修复后 20/20 通过。proxy server 套件 28 项通过，提交前 `preflight --only tests` 通过。此修复不改变 lease 授权、网络 DENY、策略评分或自动模式。

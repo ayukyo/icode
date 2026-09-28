@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import ast
 from dataclasses import replace
+import errno
 import hashlib
+import ipaddress
 import os
 import plistlib
+import re
 import socket
 import unittest
 import shutil
@@ -55,6 +58,46 @@ def _metadata_read_root(path: Path) -> MetadataReadRoot:
     path = path.resolve(strict=True)
     status = os.lstat(path)
     return MetadataReadRoot(path, status.st_dev, status.st_ino)
+
+
+def _macos_non_loopback_ipv4() -> str | None:
+    """Return an IPv4 address assigned to this macOS host, if one is usable."""
+
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["/sbin/ifconfig", "-a"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    for raw_address in re.findall(r"(?m)^\s*inet\s+([0-9.]+)(?:\s|$)", result.stdout):
+        try:
+            address = ipaddress.IPv4Address(raw_address)
+        except ipaddress.AddressValueError:
+            continue
+        if (
+            address.is_loopback
+            or address.is_link_local
+            or address.is_unspecified
+            or address.is_multicast
+            or address.is_reserved
+        ):
+            continue
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.bind((str(address), 0))
+        except OSError:
+            continue
+        return str(address)
+    return None
 
 
 class TestProbe(unittest.TestCase):
@@ -2029,6 +2072,107 @@ print("metadata-read-only-ok")
             )
             self.assertNotEqual(result.returncode, 0, result)
             self.assertNotIn("outside-private-tmp-secret", result.stdout)
+
+    @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt 实测")
+    def test_seatbelt_localhost随机端口规则地址范围诊断(self) -> None:
+        """仅作诊断：核验 localhost:<port> 规则，不放开产品网络。"""
+
+        local_address = _macos_non_loopback_ipv4()
+        sandbox_exec = shutil.which("sandbox-exec") or "/usr/bin/sandbox-exec"
+        if not Path(sandbox_exec).is_file():
+            self.skipTest("sandbox-exec 不可用")
+
+        probe_code = (
+            "import socket, sys\n"
+            "sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+            "sock.settimeout(1.5)\n"
+            "try:\n"
+            "    sock.connect((sys.argv[1], int(sys.argv[2])))\n"
+            "    if sys.argv[3] == 'send': sock.sendall(b'icode-seatbelt-probe')\n"
+            "    print('probe:connected', flush=True)\n"
+            "except OSError as exc:\n"
+            "    print('probe:errno=' + str(exc.errno), flush=True)\n"
+            "finally:\n"
+            "    sock.close()\n"
+        )
+
+        def run_probe(profile: str, address: str, port: int, *, send: bool = False) -> str:
+            result = subprocess.run(
+                [sandbox_exec, "-p", profile, sys.executable, "-c", probe_code,
+                 address, str(port), "send" if send else "no-send"],
+                capture_output=True, text=True, timeout=6, check=False,
+            )
+            self.assertEqual(
+                result.returncode, 0,
+                f"Seatbelt probe failed: {result.stderr or result.stdout}",
+            )
+            matches = re.findall(r"(?m)^probe:(connected|errno=\d+)$", result.stdout)
+            self.assertEqual(len(matches), 1, result.stdout)
+            return matches[0]
+
+        def classify(result: str) -> str:
+            if result == "connected":
+                return "connected"
+            code = int(result.removeprefix("errno="))
+            if code in (errno.EPERM, errno.EACCES):
+                return "denied"
+            if code == errno.ECONNREFUSED:
+                return "allowed_no_listener"
+            return f"inconclusive_errno_{code}"
+
+        sandbox = MacSeatbeltSandbox(sandbox_exec=sandbox_exec)
+        with temp_workspace() as workspace:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as loopback_listener:
+                loopback_listener.bind(("127.0.0.1", 0))
+                loopback_listener.listen(2)
+                loopback_port = loopback_listener.getsockname()[1]
+                profile = (
+                    sandbox._profile(workspace, False)
+                    + f'(allow network-outbound (remote ip "localhost:{loopback_port}"))'
+                )
+
+                # Positive control: the exact localhost port rule reaches the loopback listener.
+                loopback_result = run_probe(
+                    profile, "127.0.0.1", loopback_port, send=True,
+                )
+                self.assertEqual(classify(loopback_result), "connected", loopback_result)
+                loopback_listener.settimeout(1)
+                accepted, _ = loopback_listener.accept()
+                with accepted:
+                    self.assertEqual(accepted.recv(64), b"icode-seatbelt-probe")
+
+                # Negative control: an otherwise live loopback listener on another port stays denied.
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as other_listener:
+                    other_listener.bind(("127.0.0.1", 0))
+                    other_listener.listen(1)
+                    other_port = other_listener.getsockname()[1]
+                    other_result = run_probe(profile, "127.0.0.1", other_port)
+                    other_class = classify(other_result)
+                    self.assertEqual(other_class, "denied", other_result)
+
+                if local_address is None:
+                    print(
+                        "::warning::macos-seatbelt-port-boundary "
+                        "same_host_address=unavailable"
+                    )
+                    self.skipTest("没有可绑定的宿主非 loopback IPv4 地址")
+
+                # No listener is created on the non-loopback address and no bytes are sent.
+                host_result = run_probe(profile, local_address, loopback_port)
+                host_class = classify(host_result)
+                if host_class.startswith("inconclusive_"):
+                    print(
+                        "::warning::macos-seatbelt-port-boundary "
+                        f"same_host_address={host_class}"
+                    )
+                    self.skipTest("宿主非 loopback 地址结果无法区分策略拒绝与网络错误")
+
+                print(
+                    "::notice::macos-seatbelt-port-boundary "
+                    f"loopback=connected other_loopback_port={other_class} "
+                    f"same_host_address_same_port={host_class} "
+                    "external_network=not_probed"
+                )
 
     @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt + Reviewer 联测")
     def test_seatbelt_只读Reviewer真实隐藏账本且阻断工作区内外写入(self) -> None:

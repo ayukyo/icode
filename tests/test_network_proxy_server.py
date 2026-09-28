@@ -733,7 +733,8 @@ class NetworkProxyServerTestCase(unittest.TestCase):
             worker.join(timeout=2.0)
 
         self.assertFalse(worker.is_alive())
-        self.assertEqual(served, [True])
+        # Closing may race with lease invalidation; either way shutdown is False.
+        self.assertEqual(served, [False])
         self.assertEqual(resolver_calls, [])
         self.assertTrue(server.close())
 

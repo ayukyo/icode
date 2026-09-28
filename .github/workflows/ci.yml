@@ -135,6 +135,9 @@ jobs:
       - name: Verify minimal Seatbelt denies external private tmp reads
         if: runner.os == 'macOS'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_最小profile不读取private_tmp外部秘密 -v
+      - name: Diagnose Seatbelt localhost random-port address scope
+        if: runner.os == 'macOS'
+        run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_localhost随机端口规则地址范围诊断 -v
       - name: Verify read-only Reviewer hides ticket ledger
         if: runner.os == 'macOS'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_seatbelt_只读Reviewer真实隐藏账本且阻断工作区内外写入 -v

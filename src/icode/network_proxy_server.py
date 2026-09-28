@@ -259,6 +259,14 @@ class HostConnectProxyServer:
                 self._scope.verify_lease()
             except NetworkLeaseValidationError:
                 self.close()
+                return tunnel is not None
+            # Once an authorized tunnel exists, this call already served its request.
+            if tunnel is not None:
+                return True
+            # Shutdown before a request was authorized is the documented stop result.
+            with self._lock:
+                if self._closed:
+                    return False
             return True
         except Exception:
             if client_socket is not None:
