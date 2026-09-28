@@ -82,6 +82,12 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **测试缺陷与修正：**子进程探针把 `socket.socket()` 和 `settimeout()` 放在 `try/except OSError` 外；若其中任一受策略影响，子进程会退出而不是返回 errno。现将创建/设置超时也纳入同一受控分类，并仅在对象已创建时关闭；这样拒绝会成为带数字 errno 的受限标记，再由父测试按预期分类。Linux 无法运行 Seatbelt 原生分支；修改后的 macOS 双架构 CI 尚待结果。
 - **边界：**这是测试观测正确性修复，不放宽 profile、不将策略拒绝当成成功、不改生产网络 DENY、macOS 地址范围决策、评分或自动模式。若 loopback 正例报告拒绝，仍需另行处理机制边界。
 
+## 2026-09-28 Asia/Shanghai：profile 启动与 socket probe 分层对照
+
+- **复跑结果：**commit `38c241a26099` 的 CI [run 36372816346](https://github.com/ayukyo/icode/actions/runs/36372816346) 在两个 macOS 架构仍于 `loopback-allowed` 返回 `subprocess_exit=1, marker_count=0`；将 socket 构造和 timeout 设置移入 `try/except OSError` 后结果未变，因此不能把此前的异常归因为 socket syscall 被策略拒绝。
+- **下一步诊断：**新增同一 Seatbelt profile 下只启动 Python 并打印固定标记的前置对照，先判断 profile/解释器是否可启动，再运行 loopback socket probe。回执仅包含阶段、退出码、固定标记数和 stderr 是否非空；不会回显 stderr、路径、地址或端口。
+- **门槛：**本机 Linux 的相关测试只能按平台跳过；下一次 Intel/Apple Silicon 原生结果是确认失败在启动层还是 socket 层的必要证据。生产网络授权与评分不变。
+
 ## 2026-09-28 Asia/Shanghai：host proxy 授权前关闭回执竞态
 
 - `serve_once()` 在不完整 CONNECT 请求头期间遇到 `server.close()`，曾在 socket/lease 错误分支未观察 `_closed` 时偶发返回 `True`，与其“关闭/停机返回 `False`”文档契约不一致。

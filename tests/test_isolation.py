@@ -2137,6 +2137,30 @@ print("metadata-read-only-ok")
                 )
             self.assertEqual(actual, expected, result)
 
+        def assert_profile_starts_python(profile: str) -> None:
+            result = subprocess.run(
+                [sandbox_exec, "-p", profile, sys.executable, "-c",
+                 "print('probe:profile-started', flush=True)"],
+                capture_output=True, text=True, timeout=6, check=False,
+            )
+            markers = re.findall(
+                r"(?m)^probe:profile-started$", result.stdout,
+            )
+            if result.returncode != 0 or len(markers) != 1:
+                print(
+                    "::error::macos-seatbelt-port-boundary "
+                    f"stage=profile-startup subprocess_exit={result.returncode} "
+                    f"marker_count={len(markers)} "
+                    f"stderr_nonempty={bool(result.stderr)}",
+                    flush=True,
+                )
+                self.fail("Seatbelt could not start the bounded Python probe")
+            print(
+                "::notice::macos-seatbelt-port-boundary stage=profile-startup "
+                "probe_result=started",
+                flush=True,
+            )
+
         def classify(result: str) -> str:
             if result == "connected":
                 return "connected"
@@ -2157,6 +2181,7 @@ print("metadata-read-only-ok")
                     sandbox._profile(workspace, False)
                     + f'(allow network-outbound (remote ip "localhost:{loopback_port}"))'
                 )
+                assert_profile_starts_python(profile)
 
                 # Positive control: the exact localhost port rule reaches the loopback listener.
                 loopback_result = run_probe(
