@@ -24,6 +24,7 @@ from unittest import mock
 from urllib.parse import urlsplit
 
 import icode.windows_appcontainer as windows_appcontainer
+import icode.windows_job as windows_job_module
 from icode.windows_appcontainer import (
     _AppContainerSetupError,
     _delete_appcontainer_profile,
@@ -533,6 +534,95 @@ def _compact_path_resolution_probe_notice(
 
 
 class TestWindowsAppContainer(unittest.TestCase):
+    def test_只读句柄POC缺少显式optin时默认拒绝(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-read-handle-gate-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch.dict(
+                 os.environ,
+                 {"GITHUB_ACTIONS": "true", "RUNNER_OS": "Windows"},
+                 clear=True,
+             ), mock.patch("ctypes.WinDLL", create=True) as load_api:
+            result = run_windows_appcontainer(
+                [sys.executable], cwd=raw, timeout_seconds=2,
+                _diagnostic_read_handle=123,
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+        self.assertFalse(result.cleanup_ok)
+        load_api.assert_not_called()
+
+    def test_只读句柄POC即使有optin也拒绝非GitHubWindowsrunner(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-read-handle-runner-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch.dict(
+                 os.environ,
+                 {"ICODE_DIAGNOSTIC_READ_HANDLE": "true"},
+                 clear=True,
+             ), mock.patch("ctypes.WinDLL", create=True) as load_api:
+            result = run_windows_appcontainer(
+                [sys.executable], cwd=raw, timeout_seconds=2,
+                _diagnostic_read_handle=123,
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+        load_api.assert_not_called()
+
+    def test_只读句柄POC拒绝工作区外的同名可执行文件(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-read-handle-path-") as raw:
+            root = Path(raw)
+            workspace = root / "workspace"
+            external = root / "external"
+            workspace.mkdir()
+            external.mkdir()
+            probe = external / "icode-appcontainer-read-probe.exe"
+            probe.write_bytes(b"test-only placeholder")
+            with mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+                 mock.patch.dict(
+                     os.environ,
+                     {
+                         "GITHUB_ACTIONS": "true",
+                         "RUNNER_OS": "Windows",
+                         "ICODE_DIAGNOSTIC_READ_HANDLE": "true",
+                     },
+                     clear=True,
+                 ), mock.patch("ctypes.WinDLL", create=True) as load_api:
+                result = run_windows_appcontainer(
+                    [str(probe), "--input-handle", windows_job_module._READ_HANDLE_PLACEHOLDER],
+                    cwd=workspace, timeout_seconds=2, _diagnostic_read_handle=123,
+                )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+        load_api.assert_not_called()
+
+    def test_只读句柄POC固定可执行文件在工作区内才进入原生设置(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-read-handle-allow-") as raw:
+            workspace = Path(raw)
+            probe = workspace / "icode-appcontainer-read-probe.exe"
+            probe.write_bytes(b"test-only placeholder")
+            with mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+                 mock.patch.dict(
+                     os.environ,
+                     {
+                         "GITHUB_ACTIONS": "true",
+                         "RUNNER_OS": "Windows",
+                         "ICODE_DIAGNOSTIC_READ_HANDLE": "true",
+                     },
+                     clear=True,
+                 ), mock.patch(
+                     "ctypes.WinDLL", side_effect=OSError(5, "expected test stop"), create=True,
+                 ) as load_api:
+                result = run_windows_appcontainer(
+                    [str(probe), "--input-handle", windows_job_module._READ_HANDLE_PLACEHOLDER],
+                    cwd=workspace, timeout_seconds=2, _diagnostic_read_handle=123,
+                )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "appcontainer_api_unavailable")
+        load_api.assert_called_once_with("userenv", use_last_error=True)
+
     def test_failure_marker分类保留安全阶段但不输出任意异常内容(self) -> None:
         self.assertEqual(_classify_runtime_probe_failure(""), "not_observed")
         self.assertEqual(

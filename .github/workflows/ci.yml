@@ -274,6 +274,44 @@ jobs:
       - name: Verify leased TCP socket lifecycle
         run: python scripts/run_network_lease_ci.py
 
+  windows-appcontainer-read-handle-probe:
+    name: R2 Windows AppContainer read-handle probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            cmake-architecture: x64
+          - os: windows-11-arm
+            cmake-architecture: ARM64
+    env:
+      PYTHONPATH: src
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Build native AppContainer read-handle probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDirectory = Join-Path $env:RUNNER_TEMP 'icode-appcontainer-read-probe'
+          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}'
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $LASTEXITCODE" }
+          cmake --build $buildDirectory --config Release --parallel 1
+          if ($LASTEXITCODE -ne 0) { throw "Native probe build failed: $LASTEXITCODE" }
+          $probe = Join-Path $buildDirectory 'Release/icode-appcontainer-read-probe.exe'
+          python scripts/run_windows_appcontainer_read_probe.py $probe
+          if ($LASTEXITCODE -ne 0) { throw "AppContainer read-handle probe failed: $LASTEXITCODE" }
+
   windows-standard-user-token-probe:
     if: github.event_name == 'workflow_dispatch' && inputs.run_windows_standard_user_token_probe
     name: Standard-user restricted token probe (${{ matrix.os }})

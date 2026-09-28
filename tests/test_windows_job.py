@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +13,7 @@ from unittest import mock
 
 from tests._support import temp_workspace
 
+import icode.windows_job as windows_job_module
 from icode.windows_job import (
     WindowsJobResult,
     _allocate_attribute_list_buffer,
@@ -24,6 +26,145 @@ from icode.windows_job import (
 
 
 class TestWindowsJob(unittest.TestCase):
+    def test_FILE_STANDARD_INFO使用Win32BOOLEAN字段布局(self) -> None:
+        standard_info = getattr(windows_job_module, "_FILE_STANDARD_INFO", None)
+        self.assertIsNotNone(standard_info, "FILE_STANDARD_INFO layout is not exposed for validation")
+        self.assertEqual(standard_info.DeletePending.offset, 20)
+        self.assertEqual(standard_info.Directory.offset, 21)
+        field_types = dict(standard_info._fields_)
+        self.assertEqual(ctypes.sizeof(field_types["DeletePending"]), 1)
+        self.assertEqual(ctypes.sizeof(field_types["Directory"]), 1)
+        self.assertEqual(ctypes.sizeof(standard_info), 24)
+
+    @unittest.skipUnless(sys.platform == "win32", "需 Windows 文件句柄原生验证")
+    def test_只读句柄拒绝目录句柄(self) -> None:
+        from ctypes import wintypes
+
+        with temp_workspace() as workspace:
+            probe = workspace / "icode-appcontainer-read-probe.exe"
+            probe.write_bytes(b"directory-handle-test-placeholder")
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CreateFileW.argtypes = [
+                wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+            ]
+            kernel.CreateFileW.restype = wintypes.HANDLE
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            directory_handle = kernel.CreateFileW(
+                str(workspace), 0x80000000, 0x00000007, None,
+                3, 0x02000000 | 0x00000080, None,
+            )
+            self.assertTrue(directory_handle)
+            try:
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "GITHUB_ACTIONS": "true",
+                        "RUNNER_OS": "Windows",
+                        "ICODE_DIAGNOSTIC_READ_HANDLE": "true",
+                    },
+                ):
+                    result = run_windows_job(
+                        [str(probe), "--input-handle", windows_job_module._READ_HANDLE_PLACEHOLDER],
+                        cwd=workspace, timeout_seconds=2, _appcontainer_sid=123,
+                        _diagnostic_read_handle=int(directory_handle),
+                    )
+            finally:
+                kernel.CloseHandle(directory_handle)
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+
+    def test_AppContainer只读句柄占位符绑定到精确继承句柄值(self) -> None:
+        bind = getattr(windows_job_module, "_bind_read_handle_placeholder", None)
+        self.assertTrue(callable(bind), "AppContainer read-handle binding is not implemented")
+        placeholder = windows_job_module._READ_HANDLE_PLACEHOLDER
+        self.assertEqual(
+            bind(["reader.exe", "--input-handle", placeholder], 0x1234),
+            ["reader.exe", "--input-handle", "4660"],
+        )
+
+    def test_AppContainer只读句柄占位符拒绝缺失重复和非法句柄(self) -> None:
+        bind = getattr(windows_job_module, "_bind_read_handle_placeholder", None)
+        self.assertTrue(callable(bind), "AppContainer read-handle binding is not implemented")
+        placeholder = windows_job_module._READ_HANDLE_PLACEHOLDER
+        invalid = (
+            ([], 0x1234),
+            (["reader.exe", placeholder, placeholder], 0x1234),
+            (["reader.exe", f"--handle={placeholder}"], 0x1234),
+            (["reader.exe", placeholder], 0),
+            (["reader.exe", placeholder], -1),
+            (["reader.exe", placeholder], True),
+        )
+        for argv, handle_value in invalid:
+            with self.subTest(argv=argv, handle_value=handle_value):
+                with self.assertRaises(ValueError):
+                    bind(argv, handle_value)
+
+    def test_只读句柄不允许脱离AppContainer或留下未绑定占位符(self) -> None:
+        placeholder = windows_job_module._READ_HANDLE_PLACEHOLDER
+        with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch("ctypes.WinDLL", create=True) as load_api:
+            without_appcontainer = run_windows_job(
+                [sys.executable, "--input-handle", placeholder],
+                cwd=workspace, timeout_seconds=2, _diagnostic_read_handle=123,
+            )
+            unbound_placeholder = run_windows_job(
+                [sys.executable, "--input-handle", placeholder],
+                cwd=workspace, timeout_seconds=2,
+            )
+
+        for result in (without_appcontainer, unbound_placeholder):
+            self.assertFalse(result.executed)
+            self.assertEqual(result.error, "invalid_diagnostic_probe")
+        load_api.assert_not_called()
+
+    def test_底层只读句柄入口拒绝绕过固定GitHub探针门(self) -> None:
+        placeholder = windows_job_module._READ_HANDLE_PLACEHOLDER
+        with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch.dict(
+                 os.environ,
+                 {
+                     "GITHUB_ACTIONS": "true",
+                     "RUNNER_OS": "Windows",
+                     "ICODE_DIAGNOSTIC_READ_HANDLE": "true",
+                 },
+                 clear=True,
+             ), mock.patch(
+                 "ctypes.WinDLL", side_effect=OSError(5, "expected test stop"), create=True,
+             ) as load_api:
+            result = run_windows_job(
+                [sys.executable, "--input-handle", placeholder],
+                cwd=workspace, timeout_seconds=2, _appcontainer_sid=123,
+                _diagnostic_read_handle=456,
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+        load_api.assert_not_called()
+
+    def test_普通WindowsJob创建进程时不继承宿主句柄(self) -> None:
+        api = mock.Mock()
+        api.CreateJobObjectW.return_value = 1
+        api.SetInformationJobObject.return_value = 1
+        api.CreateProcessW.return_value = 0
+        api.CloseHandle.return_value = 1
+        with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch("ctypes.WinDLL", return_value=api, create=True), \
+             mock.patch("ctypes.get_last_error", return_value=0, create=True):
+            result = run_windows_job(
+                [sys.executable], cwd=workspace, timeout_seconds=2,
+            )
+
+        self.assertFalse(result.executed)
+        self.assertTrue(result.cleanup_ok)
+        self.assertEqual(result.error, "native_api_failed")
+        self.assertIs(api.CreateProcessW.call_args.args[4], False)
+
     def test_AppContainer属性列表缓冲区有足够大小并按指针对齐(self) -> None:
         import ctypes
 

@@ -9,9 +9,13 @@ import subprocess
 import sys
 import tempfile
 import time
+from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
+
+
+_READ_HANDLE_PLACEHOLDER = "{ICODE_READ_HANDLE}"
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,18 @@ class WindowsJobProbeResult:
     detail: str
 
 
+class _FILE_STANDARD_INFO(ctypes.Structure):
+    """Win32 FILE_STANDARD_INFO; BOOLEAN fields are one byte, not BOOL."""
+
+    _fields_ = [
+        ("AllocationSize", ctypes.c_longlong),
+        ("EndOfFile", ctypes.c_longlong),
+        ("NumberOfLinks", ctypes.c_uint32),
+        ("DeletePending", ctypes.c_ubyte),
+        ("Directory", ctypes.c_ubyte),
+    ]
+
+
 def _allocate_attribute_list_buffer(
     required_size: int,
 ) -> tuple[ctypes.Array, ctypes.c_void_p]:
@@ -41,6 +57,60 @@ def _allocate_attribute_list_buffer(
     element_count = (required_size + pointer_size - 1) // pointer_size
     storage = (ctypes.c_size_t * element_count)()
     return storage, ctypes.cast(storage, ctypes.c_void_p)
+
+
+def _bind_read_handle_placeholder(
+    argv: Sequence[str], handle_value: int,
+) -> list[str]:
+    """Bind one explicit diagnostic token to the duplicated read-only handle."""
+    if (
+        isinstance(argv, (str, bytes))
+        or not isinstance(argv, Sequence)
+        or type(handle_value) is not int
+        or handle_value <= 0
+        or any(not isinstance(argument, str) for argument in argv)
+    ):
+        raise ValueError("invalid inherited read-handle binding")
+    matches = [argument for argument in argv if argument == _READ_HANDLE_PLACEHOLDER]
+    if len(matches) != 1 or any(
+        _READ_HANDLE_PLACEHOLDER in argument
+        and argument != _READ_HANDLE_PLACEHOLDER
+        for argument in argv
+    ):
+        raise ValueError("read-handle placeholder must appear as one whole argument")
+    return [
+        str(handle_value) if argument == _READ_HANDLE_PLACEHOLDER else argument
+        for argument in argv
+    ]
+
+
+def _is_fixed_read_handle_probe(
+    argv: Sequence[str], cwd: str | os.PathLike[str], handle_value: int,
+) -> bool:
+    """Share the fail-closed runner, executable, workspace, and argument gate."""
+    if (
+        type(handle_value) is not int
+        or handle_value <= 0
+        or os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("RUNNER_OS") != "Windows"
+        or os.environ.get("ICODE_DIAGNOSTIC_READ_HANDLE") != "true"
+        or isinstance(argv, (str, bytes))
+        or not isinstance(argv, Sequence)
+        or not argv
+        or not isinstance(argv[0], str)
+        or not os.path.isabs(argv[0])
+        or ntpath.basename(argv[0]).casefold() != "icode-appcontainer-read-probe.exe"
+    ):
+        return False
+    try:
+        _bind_read_handle_placeholder(argv, handle_value)
+        probe_path = os.path.normcase(os.path.realpath(argv[0]))
+        workspace_path = os.path.normcase(
+            os.path.realpath(os.path.abspath(os.fspath(cwd))),
+        )
+    except (OSError, TypeError, ValueError):
+        return False
+    return bool(probe_path) and os.path.dirname(probe_path) == workspace_path
 
 
 def _build_windows_environment_block(
@@ -183,6 +253,7 @@ def run_windows_job(
     argv: Sequence[str], *, cwd: str | Path, timeout_seconds: int,
     process_limit: int = 8,
     _appcontainer_sid: int | None = None,
+    _diagnostic_read_handle: int | None = None,
     _diagnostic_null_application_name: bool = False,
     _appcontainer_localappdata: str | None = None,
 ) -> WindowsJobResult:
@@ -190,9 +261,29 @@ def run_windows_job(
 
     这是清理能力的局部试验，不接自动工单。主进程退出或超时后都终止
     Job 中剩余后代；最后一个 Job 句柄因宿主崩溃关闭时也由内核回收。
+    仅开发期 AppContainer POC 可选择继承一个降权后的普通只读文件句柄；
+    常规调用仍不继承任何宿主凭据或文件句柄。
     私有 app-name 诊断只允许 AppContainer 启动固定的无参数 whoami 探针；容器 profile
     路径只由上层 AppContainer 包装器通过 Win32 API 获取并传入。
     """
+    if _diagnostic_read_handle is not None:
+        if (
+            _appcontainer_sid is None
+            or _diagnostic_null_application_name
+            or not _is_fixed_read_handle_probe(argv, cwd, _diagnostic_read_handle)
+        ):
+            return WindowsJobResult(
+                False, None, "invalid_diagnostic_probe", False,
+                "只读句柄仅允许受控 runner 上工作区内的固定 AppContainer 探针",
+            )
+    elif any(
+        isinstance(argument, str) and _READ_HANDLE_PLACEHOLDER in argument
+        for argument in argv
+    ):
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", False,
+            "命令包含未绑定的只读句柄占位符",
+        )
     if sys.platform != "win32":
         return WindowsJobResult(False, None, "unsupported_platform", False, "仅适用于 Windows")
     if not argv or not Path(argv[0]).is_absolute() or not Path(argv[0]).is_file():
@@ -309,6 +400,11 @@ def run_windows_job(
             ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD),
         ]
 
+    class FILE_ATTRIBUTE_TAG_INFO(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD), ("ReparseTag", wintypes.DWORD),
+        ]
+
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
     kernel.CreateJobObjectW.restype = wintypes.HANDLE
@@ -351,9 +447,70 @@ def run_windows_job(
     kernel.UpdateProcThreadAttribute.restype = wintypes.BOOL
     kernel.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
     kernel.DeleteProcThreadAttributeList.restype = None
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.GetFileType.argtypes = [wintypes.HANDLE]
+    kernel.GetFileType.restype = wintypes.DWORD
+    kernel.GetFileInformationByHandleEx.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+    ]
+    kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel.DuplicateHandle.argtypes = [
+        wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL,
+        wintypes.DWORD,
+    ]
+    kernel.DuplicateHandle.restype = wintypes.BOOL
+
+    duplicate_read_handle = wintypes.HANDLE()
+    bound_argv = list(argv)
+    if _diagnostic_read_handle is not None:
+        source_handle = wintypes.HANDLE(_diagnostic_read_handle)
+        standard_info = _FILE_STANDARD_INFO()
+        attribute_info = FILE_ATTRIBUTE_TAG_INFO()
+        valid_source = (
+            kernel.GetFileType(source_handle) == 1
+            and bool(kernel.GetFileInformationByHandleEx(
+                source_handle, 1, ctypes.byref(standard_info),
+                ctypes.sizeof(standard_info),
+            ))
+            and bool(kernel.GetFileInformationByHandleEx(
+                source_handle, 9, ctypes.byref(attribute_info),
+                ctypes.sizeof(attribute_info),
+            ))
+            and not standard_info.Directory
+            and standard_info.NumberOfLinks == 1
+            and not (attribute_info.FileAttributes & 0x400)
+        )
+        if not valid_source:
+            return WindowsJobResult(
+                False, None, "invalid_diagnostic_probe", False,
+                "只读句柄必须指向普通、非重解析、单链接磁盘文件",
+            )
+        current_process = kernel.GetCurrentProcess()
+        if not kernel.DuplicateHandle(
+            current_process, source_handle, current_process,
+            ctypes.byref(duplicate_read_handle), 0x00120089, True, 0,
+        ):
+            return WindowsJobResult(
+                False, None, "invalid_diagnostic_probe", False,
+                "只读文件句柄复制失败",
+            )
+        try:
+            bound_argv = _bind_read_handle_placeholder(
+                argv, int(duplicate_read_handle.value),
+            )
+        except (TypeError, ValueError):
+            kernel.CloseHandle(duplicate_read_handle)
+            return WindowsJobResult(
+                False, None, "invalid_diagnostic_probe", False,
+                "只读句柄命令占位符不符合诊断合同",
+            )
 
     job = kernel.CreateJobObjectW(None, None)
     if not job:
+        if duplicate_read_handle.value:
+            kernel.CloseHandle(duplicate_read_handle)
         return WindowsJobResult(False, None, "job_creation_failed", False, str(ctypes.get_last_error()))
     process = PROCESS_INFORMATION()
     created = False
@@ -373,24 +530,25 @@ def run_windows_job(
         if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
             raise OSError(ctypes.get_last_error(), "SetInformationJobObject")
 
-        # 不继承宿主凭据或文件句柄；Job 自身也不会被子进程持有。
+        # 默认不继承宿主句柄；诊断例外仅传一个降权为只读的普通文件句柄。
         environment_block = _build_windows_environment_block(argv[0], root, system_root)
         if _appcontainer_localappdata is not None:
             environment_block = _append_windows_environment_value(
                 environment_block, "LOCALAPPDATA", _appcontainer_localappdata,
             )
         env_block = ctypes.create_unicode_buffer(environment_block)
-        command = ctypes.create_unicode_buffer(subprocess.list2cmdline(list(argv)))
+        command = ctypes.create_unicode_buffer(subprocess.list2cmdline(bound_argv))
         if _appcontainer_sid is None:
             startup = STARTUPINFO()
             startup.cb = ctypes.sizeof(startup)
             startup_ptr = ctypes.cast(ctypes.byref(startup), ctypes.c_void_p)
             creation_flags = 0x00000004 | 0x00000400  # CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
         else:
+            attribute_count = 2 if duplicate_read_handle.value else 1
             attribute_size = ctypes.c_size_t()
             ctypes.set_last_error(0)
             size_query_ok = bool(kernel.InitializeProcThreadAttributeList(
-                None, 1, 0, ctypes.byref(attribute_size),
+                None, attribute_count, 0, ctypes.byref(attribute_size),
             ))
             size_error = 0 if size_query_ok else ctypes.get_last_error()
             size_query_expected = (
@@ -407,7 +565,7 @@ def run_windows_job(
                 attribute_size.value,
             )
             attr_init_ok = bool(kernel.InitializeProcThreadAttributeList(
-                attribute_list, 1, 0, ctypes.byref(attribute_size),
+                attribute_list, attribute_count, 0, ctypes.byref(attribute_size),
             ))
             attr_init_error = 0 if attr_init_ok else ctypes.get_last_error()
             diagnostics.append(
@@ -436,6 +594,20 @@ def run_windows_job(
             )
             if not attr_update_ok:
                 raise OSError(attr_update_error, "UpdateProcThreadAttribute(security)")
+            if duplicate_read_handle.value:
+                inherited_handles = (wintypes.HANDLE * 1)(duplicate_read_handle.value)
+                handle_list_ok = bool(kernel.UpdateProcThreadAttribute(
+                    attribute_list, 0, 0x00020002,
+                    ctypes.cast(inherited_handles, ctypes.c_void_p),
+                    ctypes.sizeof(inherited_handles), None, None,
+                ))
+                handle_list_error = 0 if handle_list_ok else ctypes.get_last_error()
+                diagnostics.append(
+                    f"read_handle_list_ok={handle_list_ok} "
+                    f"read_handle_list_error={handle_list_error} count=1 access=read_only"
+                )
+                if not handle_list_ok:
+                    raise OSError(handle_list_error, "UpdateProcThreadAttribute(handle_list)")
             startup_ex = STARTUPINFOEX()
             startup_ex.StartupInfo.cb = ctypes.sizeof(startup_ex)
             startup_ex.lpAttributeList = attribute_list
@@ -451,7 +623,7 @@ def run_windows_job(
                 diagnostics.append("application_name_mode=null_cmdline_fixed_whoami")
         if not kernel.CreateProcessW(
             None if _diagnostic_null_application_name else str(argv[0]),
-            command, None, None, False, creation_flags,
+            command, None, None, bool(duplicate_read_handle.value), creation_flags,
             env_block, str(root), startup_ptr, ctypes.byref(process),
         ):
             raise OSError(ctypes.get_last_error(), "CreateProcessW")
@@ -477,6 +649,8 @@ def run_windows_job(
         system_detail = ctypes.FormatError(exc.errno).strip() if exc.errno else ""
         detail = f"{exc.strerror or type(exc).__name__}: {system_detail} (err={exc.errno})"
     finally:
+        if duplicate_read_handle.value:
+            kernel.CloseHandle(duplicate_read_handle)
         if attributes_initialized and attribute_list is not None:
             kernel.DeleteProcThreadAttributeList(attribute_list)
         if assigned:

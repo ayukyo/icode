@@ -22,6 +22,7 @@ from ctypes import wintypes
 from typing import Sequence
 
 from .windows_job import (
+    _is_fixed_read_handle_probe,
     WindowsJobResult,
     _is_fixed_system_whoami_probe,
     run_windows_job,
@@ -1236,6 +1237,7 @@ def _restore_workspace_acl(
 def run_windows_appcontainer(
     argv: Sequence[str], *, cwd: str | Path, timeout_seconds: int,
     process_limit: int = 8,
+    _diagnostic_read_handle: int | None = None,
     _diagnostic_null_application_name: bool = False,
     _diagnostic_omit_localappdata: bool = False,
     _diagnostic_runtime_acl: bool = False,
@@ -1249,7 +1251,21 @@ def run_windows_appcontainer(
     runtime ACL 差分仅允许 GitHub Windows runner 当前 Python 或专用 temp staging 树的只读诊断，
     不用于工单命令。
     其它私有启动差分仅允许固定无参数 whoami 探针，不用于任何工单命令。
+    只读句柄差分仅允许 GitHub Windows runner 上固定名称的原生测试探针，
+    并要求参数中恰有一个完整占位符；它不构成生产 Reviewer 隔离证明。
     """
+    if _diagnostic_read_handle is not None:
+        if (
+            not _is_fixed_read_handle_probe(argv, cwd, _diagnostic_read_handle)
+            or _diagnostic_null_application_name is not False
+            or _diagnostic_omit_localappdata is not False
+            or _diagnostic_runtime_acl is not False
+            or _diagnostic_runtime_roots is not None
+        ):
+            return WindowsJobResult(
+                False, None, "invalid_diagnostic_probe", False,
+                "只读句柄探针仅允许受控 GitHub Windows runner 的固定原生探针",
+            )
     if not isinstance(_diagnostic_runtime_acl, bool):
         return WindowsJobResult(False, None, "invalid_diagnostic_probe", True, "诊断 ACL 模式无效")
     diagnostic_acl_opt_in = (
@@ -1493,6 +1509,7 @@ def run_windows_appcontainer(
                 argv, cwd=root, timeout_seconds=timeout_seconds,
                 process_limit=process_limit, _appcontainer_sid=int(sid.value),
                 _appcontainer_localappdata=profile_local_app_data,
+                _diagnostic_read_handle=_diagnostic_read_handle,
                 _diagnostic_null_application_name=_diagnostic_null_application_name,
             )
             primary_job_cleanup_ok = main.cleanup_ok
