@@ -106,6 +106,7 @@ def _seatbelt_stderr_tags(stderr: str) -> str:
     lowered = stderr.lower()
     categories = (
         ("sandbox_exec", ("sandbox-exec",)),
+        ("unsupported_host_predicate", ("host must be * or localhost",)),
         ("unbound_variable", ("unbound variable", "undefined variable")),
         ("profile", ("profile", "sbpl", "predicate")),
         ("syntax_or_invalid", ("syntax", "parse", "invalid")),
@@ -999,6 +1000,14 @@ class TestSandboxWrapping(unittest.TestCase):
             "sandbox_exec+unbound_variable",
         )
         self.assertEqual(_seatbelt_stderr_tags(""), "empty")
+
+    def test_Seatbelt不支持的数值主机谓词暴露固定标签(self) -> None:
+        self.assertEqual(
+            _seatbelt_stderr_tags(
+                "sandbox-exec: host must be * or localhost in network address"
+            ),
+            "sandbox_exec+unsupported_host_predicate",
+        )
 
     def test_Seatbelt运行时异常类别保持固定且不包含原始内容(self) -> None:
         self.assertEqual(
@@ -2388,6 +2397,94 @@ print("metadata-read-only-ok")
                         f"same_host_active_listener={host_class} "
                         f"listener_accepted={'yes' if listener_accepted else 'no'} "
                         f"canary_received={'yes' if canary_received else 'no'} "
+                        "external_network=not_probed",
+                        flush=True,
+                    )
+
+                    # Test a numeric IPv4 loopback predicate separately. The
+                    # localhost form above is known to reach the host address;
+                    # this candidate must preserve loopback access while
+                    # denying the active same-port host listener.
+                    loopback_only_profile = base_profile + (
+                        f'(allow network-outbound '
+                        f'(remote ip "127.0.0.1:{loopback_port}"))'
+                    )
+                    numeric_startup = subprocess.run(
+                        [
+                            sandbox_exec, "-p", loopback_only_profile,
+                            sys.executable, "-c",
+                            "print('probe:profile-started', flush=True)",
+                        ],
+                        cwd=workspace, capture_output=True, text=True,
+                        timeout=6, check=False,
+                    )
+                    numeric_startup_markers = re.findall(
+                        r"(?m)^probe:profile-started$", numeric_startup.stdout,
+                    )
+                    numeric_startup_tags = _seatbelt_stderr_tags(
+                        numeric_startup.stderr,
+                    )
+                    if numeric_startup.returncode != 0:
+                        if "unsupported_host_predicate" in numeric_startup_tags.split("+"):
+                            print(
+                                "::warning::macos-seatbelt-port-boundary "
+                                "numeric_ipv4_rule=unsupported_host_predicate "
+                                "conformance_credit=none "
+                                f"stderr_tags={numeric_startup_tags}",
+                                flush=True,
+                            )
+                            return
+                        print(
+                            "::error::macos-seatbelt-port-boundary "
+                            "numeric_ipv4_rule=startup_inconclusive "
+                            f"subprocess_exit={numeric_startup.returncode} "
+                            f"stderr_tags={numeric_startup_tags}",
+                            flush=True,
+                        )
+                        self.fail("Numeric IPv4 profile startup failed inconclusively")
+                    if len(numeric_startup_markers) != 1:
+                        print(
+                            "::error::macos-seatbelt-port-boundary "
+                            "numeric_ipv4_rule=startup_marker_invalid "
+                            f"marker_count={len(numeric_startup_markers)} "
+                            f"stderr_tags={numeric_startup_tags}",
+                            flush=True,
+                        )
+                        self.fail("Numeric IPv4 profile startup marker is invalid")
+                    print(
+                        "::notice::macos-seatbelt-port-boundary "
+                        "numeric_ipv4_rule=profile_started",
+                        flush=True,
+                    )
+                    strict_loopback_result = run_probe(
+                        loopback_only_profile, "127.0.0.1", loopback_port,
+                        stage="numeric-ipv4-loopback-allowed", send=True,
+                    )
+                    assert_classification(
+                        "numeric-ipv4-loopback-allowed",
+                        strict_loopback_result, "connected",
+                    )
+                    loopback_listener.settimeout(1)
+                    accepted, _ = loopback_listener.accept()
+                    with accepted:
+                        self.assertEqual(accepted.recv(64), canary_payload)
+
+                    host_listener.settimeout(0.25)
+                    strict_host_result = run_probe(
+                        loopback_only_profile, local_address, loopback_port,
+                        stage="numeric-ipv4-rule-blocks-host-address", send=True,
+                    )
+                    assert_classification(
+                        "numeric-ipv4-rule-blocks-host-address",
+                        strict_host_result, "denied_connect",
+                    )
+                    with self.assertRaises(socket.timeout):
+                        host_listener.accept()
+                    print(
+                        "::notice::macos-seatbelt-port-boundary "
+                        "numeric_ipv4_loopback=connected "
+                        "numeric_rule_same_host=denied_connect "
+                        "same_host_listener_accepted=no canary_received=no "
                         "external_network=not_probed",
                         flush=True,
                     )
