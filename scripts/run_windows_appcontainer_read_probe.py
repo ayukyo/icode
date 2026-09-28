@@ -9,6 +9,7 @@ import json
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 import platform
 import shutil
@@ -37,7 +38,26 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _dacl_digest(path: Path) -> str:
+@dataclass(frozen=True)
+class _DaclSnapshot:
+    descriptor_digest: str
+    acl_digest: str
+    control: int
+    revision: int
+    present: bool
+    defaulted: bool
+    ace_count: int
+    acl_bytes_in_use: int
+
+
+def _format_network_error(value: object) -> str:
+    """Expose only a bounded numeric Winsock code in CI diagnostics."""
+    if type(value) is int and 0 <= value <= 0xFFFF:
+        return str(value)
+    return "unknown"
+
+
+def _dacl_snapshot(path: Path) -> _DaclSnapshot:
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
     advapi.GetFileSecurityW.argtypes = [
         wintypes.LPCWSTR,
@@ -47,6 +67,29 @@ def _dacl_digest(path: Path) -> str:
         ctypes.POINTER(wintypes.DWORD),
     ]
     advapi.GetFileSecurityW.restype = wintypes.BOOL
+    advapi.GetSecurityDescriptorDacl.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(wintypes.BOOL),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    advapi.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+    advapi.GetSecurityDescriptorControl.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.WORD), ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi.GetSecurityDescriptorControl.restype = wintypes.BOOL
+
+    class ACL_SIZE_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("AceCount", wintypes.DWORD),
+            ("AclBytesInUse", wintypes.DWORD),
+            ("AclBytesFree", wintypes.DWORD),
+        ]
+
+    advapi.GetAclInformation.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.c_int,
+    ]
+    advapi.GetAclInformation.restype = wintypes.BOOL
     required = wintypes.DWORD()
     ctypes.set_last_error(0)
     first_ok = bool(advapi.GetFileSecurityW(
@@ -61,7 +104,43 @@ def _dacl_digest(path: Path) -> str:
         required.value, ctypes.byref(required),
     ):
         raise OSError(ctypes.get_last_error(), "GetFileSecurityW")
-    return hashlib.sha256(descriptor.raw[:required.value]).hexdigest()
+    present = wintypes.BOOL()
+    dacl = ctypes.c_void_p()
+    defaulted = wintypes.BOOL()
+    if not advapi.GetSecurityDescriptorDacl(
+        descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted),
+    ):
+        raise OSError(ctypes.get_last_error(), "GetSecurityDescriptorDacl")
+    control = wintypes.WORD()
+    revision = wintypes.DWORD()
+    if not advapi.GetSecurityDescriptorControl(
+        descriptor, ctypes.byref(control), ctypes.byref(revision),
+    ):
+        raise OSError(ctypes.get_last_error(), "GetSecurityDescriptorControl")
+    if not present.value or not dacl.value:
+        raise OSError("DACL is absent or null")
+    size_info = ACL_SIZE_INFORMATION()
+    if not advapi.GetAclInformation(
+        dacl, ctypes.byref(size_info), ctypes.sizeof(size_info), 2,
+    ):
+        raise OSError(ctypes.get_last_error(), "GetAclInformation")
+    acl_bytes_in_use = int(size_info.AclBytesInUse)
+    if acl_bytes_in_use < 8:
+        raise OSError("DACL length is invalid")
+    return _DaclSnapshot(
+        descriptor_digest=hashlib.sha256(
+            descriptor.raw[:required.value],
+        ).hexdigest(),
+        acl_digest=hashlib.sha256(
+            ctypes.string_at(dacl, acl_bytes_in_use),
+        ).hexdigest(),
+        control=int(control.value),
+        revision=int(revision.value),
+        present=bool(present.value),
+        defaulted=bool(defaulted.value),
+        ace_count=int(size_info.AceCount),
+        acl_bytes_in_use=acl_bytes_in_use,
+    )
 
 
 @contextmanager
@@ -158,11 +237,11 @@ def _run(probe_executable: Path) -> int:
             protected_files = (source, sibling, outside_file, profile_file)
             protected_directories = (root, protected, outside, synthetic_profile)
             file_digests_before = {path: _file_digest(path) for path in protected_files}
-            dacl_digests_before = {
-                path: _dacl_digest(path)
+            dacl_snapshots_before = {
+                path: _dacl_snapshot(path)
                 for path in (*protected_directories, *protected_files, workspace)
             }
-            workspace_dacl_before = dacl_digests_before[workspace]
+            workspace_dacl_before = dacl_snapshots_before[workspace]
 
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
                 listener.bind(("127.0.0.1", 0))
@@ -226,8 +305,8 @@ def _run(probe_executable: Path) -> int:
                     receipt = {}
 
             file_digests_after = {path: _file_digest(path) for path in protected_files}
-            dacl_digests_after = {
-                path: _dacl_digest(path)
+            dacl_snapshots_after = {
+                path: _dacl_snapshot(path)
                 for path in (*protected_directories, *protected_files, workspace)
             }
             checks = {
@@ -250,11 +329,13 @@ def _run(probe_executable: Path) -> int:
                 "no_network_connection": not unexpected_network_client,
                 "protected_content_unchanged": file_digests_before == file_digests_after,
                 "protected_dacls_unchanged": all(
-                    dacl_digests_before[path] == dacl_digests_after[path]
+                    dacl_snapshots_before[path].descriptor_digest
+                    == dacl_snapshots_after[path].descriptor_digest
                     for path in (*protected_directories, *protected_files)
                 ),
                 "workspace_dacl_restored": (
-                    workspace_dacl_before == dacl_digests_after[workspace]
+                    workspace_dacl_before.descriptor_digest
+                    == dacl_snapshots_after[workspace].descriptor_digest
                 ),
                 "no_write_marker": not marker.exists(),
                 "native_receipt_finalized": receipt.get("stage") == 5,
@@ -266,6 +347,23 @@ def _run(probe_executable: Path) -> int:
                 f"native_stage={receipt.get('stage', 0)} "
                 f"diagnostics={_safe_diagnostics(result.detail)} "
                 f"checks={sum(value is True for value in checks.values())}/{len(checks)}"
+            )
+            workspace_dacl_after = dacl_snapshots_after[workspace]
+            print(
+                "  native_network_receipt="
+                f"denied:{receipt.get('network_denied') is True},"
+                f"error:{_format_network_error(receipt.get('network_error'))}"
+            )
+            print(
+                "  workspace_dacl_diagnostics="
+                f"descriptor_equal:{workspace_dacl_before.descriptor_digest == workspace_dacl_after.descriptor_digest},"
+                f"acl_equal:{workspace_dacl_before.acl_digest == workspace_dacl_after.acl_digest},"
+                f"control_before:0x{workspace_dacl_before.control:04x},"
+                f"control_after:0x{workspace_dacl_after.control:04x},"
+                f"ace_count:{workspace_dacl_before.ace_count}/{workspace_dacl_after.ace_count},"
+                f"acl_bytes:{workspace_dacl_before.acl_bytes_in_use}/{workspace_dacl_after.acl_bytes_in_use},"
+                f"present:{workspace_dacl_before.present}/{workspace_dacl_after.present},"
+                f"defaulted:{workspace_dacl_before.defaulted}/{workspace_dacl_after.defaulted}"
             )
             for name, passed in checks.items():
                 print(f"  {name}={'pass' if passed else 'fail'}")
