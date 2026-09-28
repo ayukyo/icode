@@ -306,3 +306,10 @@ R3 核心能力（本切片）：
 - **现有证据足够：**复核确认原生探针父目录句柄使用 `FILE_SHARE_READ`，已同时省略 `FILE_SHARE_WRITE` 与 `FILE_SHARE_DELETE`；CI #292/#294 的 NTFS x64/ARM64 观察仍是子项 create/delete 成功、rename 报 sharing violation。另开目录 DELETE-access handle 被拒，不等于命名空间冻结。
 - **官方合同：**Microsoft [`CreateFileW`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew) 描述共享标志对同一 file/device 后续 open 请求的兼容要求；[`DeleteFileW`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-deletefilew) 与 [`MoveFileW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefilew) 没有将父目录 share mode 定义为递归子项 namespace lock。
 - **取舍：**不再加只会重测已知差异的 A/B。仅当需要解释当前 runner 上 rename 为何被拦时，再做 test-only share-mode 组合诊断；它不改变安全结论。Windows `worktree_git_tree_oid()` 继续 `unsupported_platform`，路径 TOCTOU、Reviewer OS 边界与自动路径不变。
+
+## 2026-09-29 Asia/Shanghai：Linux Reviewer Bubblewrap CI 门补齐
+
+- **问题与现状：**Linux Reviewer 的工作流命令包装已通过本机真实 Bubblewrap 验证：审查源码可读，`.icode_output` 中账本及其工作区内符号链接别名不可读，工作区外 sentinel 不可读，源码与输出目录写入被拒，宿主内容保持不变。但既有全量 unittest 用例带 Linux+bwrap 条件 skip；若 CI runner 缺少 bwrap，仅靠常规测试不能证明原生边界运行过。
+- **实现：**`.github/workflows/ci.yml` 的 Linux native-probe matrix 新增专项步骤，显式 `apt-get update/install bubblewrap`，然后运行 `ToolContext` 调用链集成用例和直接 Bubblewrap OS 探针。缺少包、安装失败、bwrap namespace 无法启动或测试失败都会使 job 失败，不把平台 skip 计为通过。新增 `tests/test_ci_workflow_contracts.py` 锁定这条 CI 契约；契约变更测试先 RED，加入依赖安装后 GREEN。
+- **本地证据：**新 Reviewer OS 探针连续 20 次通过；隔离模块 84 项通过、9 项 macOS 专属测试按条件跳过；工作流契约测试通过；`preflight.py --only tests`、修改文件 compileall、`git diff --check` 通过。竞品取舍、许可及链接记录见[持续对照](../../agent-landscape-live.md) 2026-09-29 Linux Reviewer 小节。
+- **未验收：**本次尚无推送后的 GitHub Linux x64/ARM64 矩阵结果。此门只覆盖 Linux Reviewer 文件边界，不替代 macOS/Windows Reviewer、R2 资源限额/违规回执验收，也不表示 R2 或 R3 ready；自动模式状态不变。

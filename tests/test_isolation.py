@@ -2489,6 +2489,72 @@ print("metadata-read-only-ok")
                         flush=True,
                     )
 
+    @unittest.skipUnless(
+        sys.platform == "linux" and shutil.which("bwrap"),
+        "需 Linux Bubblewrap + Reviewer 联测",
+    )
+    def test_bwrap_只读Reviewer真实隐藏账本且阻断工作区内外写入(self) -> None:
+        with temp_workspace() as temporary_root:
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            source = workspace / "reviewed.py"
+            source.write_text("source-original\n", encoding="utf-8")
+            output_root = workspace / ".icode_output"
+            ticket_dir = output_root / "ticket-1"
+            out_dir = ticket_dir / "review"
+            out_dir.mkdir(parents=True)
+            ledger = ticket_dir / "ledger.json"
+            ledger.write_text("private-ledger-marker\n", encoding="utf-8")
+            alias = workspace / "ledger-alias"
+            alias.symlink_to(ledger)
+            outside_secret = temporary_root / "outside-secret.txt"
+            outside_secret.write_text("outside-secret-marker\n", encoding="utf-8")
+
+            code = (
+                "from pathlib import Path\n"
+                "source = Path('reviewed.py')\n"
+                "assert source.read_text() == 'source-original\\n'\n"
+                "for path in (Path('.icode_output/ticket-1/ledger.json'), Path('ledger-alias')):\n"
+                "    try: path.read_text()\n"
+                "    except OSError: pass\n"
+                "    else: raise AssertionError(f'excluded content readable: {path}')\n"
+                "for path in (source, Path('.icode_output/new.json')):\n"
+                "    try: path.write_text('tampered')\n"
+                "    except OSError: pass\n"
+                "    else: raise AssertionError(f'writable: {path}')\n"
+                f"outside = Path({str(outside_secret)!r})\n"
+                "try: outside.read_text()\n"
+                "except OSError: pass\n"
+                "else: raise AssertionError('outside workspace was readable')\n"
+                "print('bwrap-review-boundary-ok')\n"
+            )
+            sandbox = BubblewrapSandbox()
+            wrapped = sandbox.wrap_read_only_excluding(
+                [str(Path(getattr(sys, "_base_executable", sys.executable)).resolve()),
+                 "-c", code],
+                workspace=workspace,
+                deny_read_roots=(output_root, out_dir),
+            )
+            result = subprocess.run(
+                wrapped, cwd=workspace, capture_output=True, text=True,
+                timeout=15, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            self.assertEqual(result.stdout.strip(), "bwrap-review-boundary-ok")
+            self.assertNotIn(
+                "private-ledger-marker", result.stdout + result.stderr,
+            )
+            self.assertNotIn(
+                "outside-secret-marker", result.stdout + result.stderr,
+            )
+            self.assertEqual(source.read_text(encoding="utf-8"), "source-original\n")
+            self.assertEqual(ledger.read_text(encoding="utf-8"), "private-ledger-marker\n")
+            self.assertEqual(
+                outside_secret.read_text(encoding="utf-8"),
+                "outside-secret-marker\n",
+            )
+            self.assertFalse((output_root / "new.json").exists())
+
     @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt + Reviewer 联测")
     def test_seatbelt_只读Reviewer真实隐藏账本且阻断工作区内外写入(self) -> None:
         with temp_workspace() as temporary_root:

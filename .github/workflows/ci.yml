@@ -138,6 +138,14 @@ jobs:
           else
             printf '::warning::mapless user+PID namespace unavailable: %s\n' "$mapless"
           fi
+      - name: Verify Linux read-only Reviewer OS boundary
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap
+          command -v bwrap
+          python -m unittest tests.test_isolation.TestSandboxWrapping.test_bwrap_只读Reviewer实际隐藏工单账本且阻断所有写入 -v
+          python -m unittest tests.test_isolation.TestSandboxWrapping.test_bwrap_只读Reviewer真实隐藏账本且阻断工作区内外写入 -v
       - name: Verify mapped and mapless Linux sandbox branches
         if: runner.os == 'Linux'
         run: python -m unittest tests.test_linux_mapless -v
