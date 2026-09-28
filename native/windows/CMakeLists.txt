@@ -15,7 +15,6 @@ set_target_properties(icode_appcontainer_read_probe PROPERTIES
 target_compile_definitions(icode_appcontainer_read_probe PRIVATE
   UNICODE
   _UNICODE
-  WIN32_LEAN_AND_MEAN
   _WIN32_WINNT=0x0A00
 )
 target_link_libraries(icode_appcontainer_read_probe PRIVATE ws2_32)

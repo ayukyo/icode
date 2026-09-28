@@ -51,6 +51,7 @@ typedef struct ProbeReceipt {
     BOOL network_denied;
     int network_error;
     BOOL report_written;
+    unsigned completed_stage;
 } ProbeReceipt;
 
 static BOOL parse_handle(const wchar_t *value, HANDLE *handle_out) {
@@ -261,7 +262,7 @@ static BOOL network_connect_is_denied(const ProbeArguments *arguments, int *erro
     return denied;
 }
 
-static BOOL write_receipt(const wchar_t *path, ProbeReceipt *receipt) {
+static BOOL write_receipt(const wchar_t *path, ProbeReceipt *receipt, unsigned stage) {
     char json[768];
     int length;
     DWORD bytes_written = 0;
@@ -273,7 +274,7 @@ static BOOL write_receipt(const wchar_t *path, ProbeReceipt *receipt) {
         "\"handle_write_denied\":%s,\"source_path_denied\":%s,"
         "\"sibling_path_denied\":%s,\"outside_path_denied\":%s,"
         "\"profile_path_denied\":%s,\"marker_create_denied\":%s,"
-        "\"network_denied\":%s,\"network_error\":%d}\n",
+        "\"network_denied\":%s,\"network_error\":%d,\"stage\":%u}\n",
         receipt->token_is_appcontainer ? "true" : "false",
         receipt->handle_read_ok ? "true" : "false",
         receipt->handle_write_denied ? "true" : "false",
@@ -283,7 +284,8 @@ static BOOL write_receipt(const wchar_t *path, ProbeReceipt *receipt) {
         receipt->profile_path_denied ? "true" : "false",
         receipt->marker_create_denied ? "true" : "false",
         receipt->network_denied ? "true" : "false",
-        receipt->network_error
+        receipt->network_error,
+        stage
     );
     if (length <= 0 || (size_t)length >= sizeof(json)) return FALSE;
     output = CreateFileW(
@@ -306,17 +308,40 @@ int wmain(int argc, wchar_t **argv) {
     if (!parse_arguments(argc, argv, &arguments)) return 2;
 
     receipt.token_is_appcontainer = token_is_appcontainer();
+    receipt.completed_stage = 1;
+    receipt.report_written = write_receipt(
+        arguments.report_path, &receipt, receipt.completed_stage
+    );
+
     receipt.handle_read_ok = read_approved_handle(arguments.input_handle);
     if (receipt.handle_read_ok) {
         receipt.handle_write_denied = write_to_handle_is_denied(arguments.input_handle);
     }
+    receipt.completed_stage = 2;
+    receipt.report_written = write_receipt(
+        arguments.report_path, &receipt, receipt.completed_stage
+    );
+
     receipt.source_path_denied = path_read_is_denied(arguments.source_path);
     receipt.sibling_path_denied = path_read_is_denied(arguments.sibling_path);
     receipt.outside_path_denied = path_read_is_denied(arguments.outside_path);
     receipt.profile_path_denied = path_read_is_denied(arguments.profile_path);
+    receipt.completed_stage = 3;
+    receipt.report_written = write_receipt(
+        arguments.report_path, &receipt, receipt.completed_stage
+    );
+
     receipt.marker_create_denied = marker_create_is_denied(arguments.marker_path);
+    receipt.completed_stage = 4;
+    receipt.report_written = write_receipt(
+        arguments.report_path, &receipt, receipt.completed_stage
+    );
+
     receipt.network_denied = network_connect_is_denied(&arguments, &receipt.network_error);
-    receipt.report_written = write_receipt(arguments.report_path, &receipt);
+    receipt.completed_stage = 5;
+    receipt.report_written = write_receipt(
+        arguments.report_path, &receipt, receipt.completed_stage
+    );
 
     all_checks = receipt.token_is_appcontainer && receipt.handle_read_ok &&
         receipt.handle_write_denied && receipt.source_path_denied &&

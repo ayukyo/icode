@@ -102,6 +102,16 @@ def _host_listener_is_live(listener: socket.socket) -> bool:
         return False
 
 
+def _safe_diagnostics(detail: str) -> str:
+    """Keep only path-free key/value diagnostics from the native wrapper."""
+    safe_parts = [
+        part for part in detail.split("; ")
+        if 0 < len(part) <= 160
+        and all(character.isalnum() or character in "._=-" for character in part)
+    ]
+    return ",".join(safe_parts)[:1024] or "none"
+
+
 def _run(probe_executable: Path) -> int:
     if sys.platform != "win32":
         print("windows_platform=false")
@@ -247,11 +257,14 @@ def _run(probe_executable: Path) -> int:
                     workspace_dacl_before == dacl_digests_after[workspace]
                 ),
                 "no_write_marker": not marker.exists(),
+                "native_receipt_finalized": receipt.get("stage") == 5,
             }
             print(
                 "windows_appcontainer_read_handle_probe "
                 f"architecture={platform.machine()} "
                 f"error={result.error or 'none'} "
+                f"native_stage={receipt.get('stage', 0)} "
+                f"diagnostics={_safe_diagnostics(result.detail)} "
                 f"checks={sum(value is True for value in checks.values())}/{len(checks)}"
             )
             for name, passed in checks.items():
