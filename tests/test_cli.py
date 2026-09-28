@@ -99,6 +99,39 @@ class TestCliToolEvents(unittest.TestCase):
         self.assertNotIn("拒绝", rendered)
         self.assertNotIn("隔离拦截", rendered)
 
+    def test_原生观察器不完整时提示结果不能判定为成功(self) -> None:
+        args = SimpleNamespace(
+            backend="fake", key_file="", model="", base_url="", proxy="",
+            no_proxy=None, approve=False, budget_tokens=1000, quiet=False,
+            isolation="auto",
+        )
+        output = io.StringIO()
+
+        with (
+            patch("icode.backends.build_backend", return_value=object()),
+            patch("icode.isolation.select_sandbox", return_value=object()),
+            contextlib.redirect_stdout(output),
+        ):
+            _, _, _, on_event, _ = _build_runner(args)
+            on_event("tool_result", {
+                "tool": "run_command",
+                "ok": False,
+                "meta": {
+                    "error": "violation_observer_failed",
+                    "violation_observer_status": "incomplete",
+                    "argv": ["PRIVATE_COMMAND_MARKER"],
+                },
+                "user_message": "PRIVATE_USER_MESSAGE",
+            })
+
+        rendered = output.getvalue()
+        self.assertIn("[隔离结果未确认]", rendered)
+        self.assertIn("不要据此判断命令成功", rendered)
+        self.assertNotIn("拒绝", rendered)
+        self.assertNotIn("系统隔离拦截", rendered)
+        self.assertNotIn("PRIVATE_COMMAND_MARKER", rendered)
+        self.assertNotIn("PRIVATE_USER_MESSAGE", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

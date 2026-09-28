@@ -1012,6 +1012,12 @@
 - **实际实现与缺口：**Linux 原生 AF_INET DENY 已经过 `run_command → AgentLoop tool_result → CLI` 事件路径，并有允许 `AF_UNIX socketpair()` 与普通 exit 13 反例；CLI 展示不改变原生能力分数。`src/icode` 没有对外 MCP server/结果适配器；`vendor/icode-skill` 暴露的是工作流能力 MCP 工具，不接收本 Python runtime 的 `ToolResult`。因此当前不宣称 CLI/MCP parity，也不把协议 `isError` 单独当成稳定错误码。
 - **未来接口验收建议：**若增加 runtime MCP adapter，让 MCP `content` 使用同一安全提示，`structuredContent` 携带同一个 `error_code` 与版本化回执；协议错误继续走 JSON-RPC error。对同一 OS DENY、应用层拒绝、允许操作、普通 exit 13 和 observer incomplete 做 CLI/MCP 等价及脱敏测试。当前暂缓 adapter 开发，等待产品定义对外 MCP 执行入口；本研究不改变 `uniform_violation=false`、Linux 既有评分、R2/R3 状态、网络 DENY 或自动模式。
 
+### 2026-09-28 Asia/Shanghai 刷新：原生观察器不完整状态的安全投影
+
+- **相关上游边界：**复用上节固定 Codex `36650394c5b38c2990ccf2a3457165ca3e9d9726`、OpenHands `d77ada7a030b3acaa82593d402632680361dfe42` 与 MCP `2026-07-28` 规范观察：结构化机器结果、工具错误标志和用户内容是不同字段；协议结果形态本身不证明 OS 来源。Apple [App Sandbox 违规诊断文档](https://developer.apple.com/documentation/security/discovering-and-diagnosing-app-sandbox-violations)描述诊断渠道，但未承诺事件日志完整、实时或可判定丢失；Microsoft [AppContainer 实施文档](https://learn.microsoft.com/en-us/windows/win32/secauthz/implementing-an-appcontainer)说明隔离身份/能力模型，不提供 ICODE 所需的统一违规回执契约。观察日期：2026-09-28。
+- **ICODE 取舍：**采纳显式 incomplete 状态作为 UI 信号：失败工具事件仅在 `violation_observer_status=incomplete` 时显示固定“隔离结果未确认”提示；不依赖自然语言/退出码推断拒绝，不输出参数或原始诊断。暂缓新建 MCP transport 与 macOS/Windows 回执产品化：当前 Python runtime 无 MCP ToolResult adapter；macOS 日志是 test-only 且无完整性合同，Windows 仍缺获认可的真实 R2 后端。无上游代码复制、无新增依赖/许可证影响，不加 `uniform_violation` 分、不放开自动模式。
+- **验收建议：**持续区分 observer `complete`/`incomplete`、普通 timeout/exit、应用层拒绝和 OS receipt；只对失败且明确 incomplete 的事件展示固定安全提示，并测试动态 argv、消息与诊断字段不泄漏。若未来确定新增 MCP 接口，需先通过产品架构评审，再对同一 ToolResult 做 CLI 与 MCP 等价验证。
+
 ### 2026-09-28 Asia/Shanghai 刷新：R3 Windows 目录句柄与文件 ID 原语
 
 - **Win32 合同与边界：**Microsoft [`CreateFileW`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew) 定义共享模式对同一打开对象的读/写/删除兼容检查；[`FILE_ID_BOTH_DIR_INFO`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_both_dir_info) 与 [`GetFileInformationByHandleEx`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-getfileinformationbyhandleex) 可从目录句柄枚举名称、属性和 64 位 FileId。它们没有承诺递归冻结子项或返回整棵树的 point-in-time 原子快照；`FILE_ID_BOTH_DIR_INFO` 也不含 reparse tag。
