@@ -514,6 +514,25 @@ class TestResultCommitTreeBinding(unittest.TestCase):
         self._git(repo, "commit", "-q", "-m", message)
         return self._git(repo, "rev-parse", "HEAD")
 
+    def _rewrite_loose_object_payload(
+        self, repo: Path, object_sha: str, old: bytes, new: bytes,
+    ) -> None:
+        import zlib
+
+        object_path = repo / ".git" / "objects" / object_sha[:2] / object_sha[2:]
+        raw_object = zlib.decompress(object_path.read_bytes())
+        header, separator, payload = raw_object.partition(b"\0")
+        self.assertTrue(separator)
+        self.assertEqual(len(payload), int(header.rsplit(b" ", 1)[1]))
+        self.assertIn(old, payload)
+        self.assertEqual(len(old), len(new))
+        corrupted_payload = payload.replace(old, new, 1)
+        self.assertNotEqual(corrupted_payload, payload)
+
+        # Git creates loose objects read-only; mutate only this disposable test repo.
+        object_path.chmod(0o600)
+        object_path.write_bytes(zlib.compress(header + b"\0" + corrupted_payload))
+
     def test_commit_tree读取只读对象并且不改用户index(self) -> None:
         from icode.workspace import read_git_commit_tree_oid
 
@@ -724,6 +743,159 @@ class TestResultCommitTreeBinding(unittest.TestCase):
                 bound.verification.result_commit_tree_status, "result_commit_unavailable",
             )
             self.assertFalse(bound.ok)
+
+    def test_commit对象内容与OID不匹配时失败关闭(self) -> None:
+        from icode.workspace import WorkspaceError, read_git_commit_tree_oid
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            commit_sha = self._commit(repo, "tested\n", "original")
+            self._rewrite_loose_object_payload(
+                repo, commit_sha, b"original", b"corrupt!",
+            )
+
+            with self.assertRaises(WorkspaceError):
+                read_git_commit_tree_oid(repo, commit_sha)
+
+    def test_tree对象内容与OID不匹配时失败关闭(self) -> None:
+        from icode.workspace import WorkspaceError, read_git_commit_tree_oid
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            commit_sha = self._commit(repo, "tested\n", "tested")
+            tree_sha = self._git(repo, "rev-parse", "HEAD^{tree}")
+            self._rewrite_loose_object_payload(
+                repo, tree_sha, b"source.txt", b"broken.txt",
+            )
+
+            with self.assertRaises(WorkspaceError):
+                read_git_commit_tree_oid(repo, commit_sha)
+
+    def test_tree对象超出读取预算时失败关闭(self) -> None:
+        from icode.workspace import WorkspaceError, read_git_commit_tree_oid
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            commit_sha = self._commit(repo, "tested\n", "tested")
+
+            with patch("icode.workspace._MAX_GIT_TREE_OBJECT_BYTES", 1):
+                with self.assertRaises(WorkspaceError):
+                    read_git_commit_tree_oid(repo, commit_sha)
+
+    def test_commit正文读取预算绑定预查大小(self) -> None:
+        import icode.workspace as workspace_module
+        from icode.workspace import WorkspaceError, read_git_commit_tree_oid
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            commit_sha = self._commit(repo, "tested\n", "tested")
+            original_run_git_bytes = workspace_module._run_git_bytes
+            body_budgets = []
+
+            def report_tiny_commit_size(root, arguments, **kwargs):
+                arguments = tuple(arguments)
+                if arguments == ("cat-file", "-s", commit_sha):
+                    return subprocess.CompletedProcess(
+                        ["git", "cat-file", "-s", commit_sha], 0, b"1\n", b"",
+                    )
+                if arguments == ("cat-file", "commit", commit_sha):
+                    body_budgets.append(kwargs.get("max_output_bytes"))
+                return original_run_git_bytes(root, arguments, **kwargs)
+
+            with patch(
+                "icode.workspace._run_git_bytes", side_effect=report_tiny_commit_size,
+            ):
+                with self.assertRaises(WorkspaceError):
+                    read_git_commit_tree_oid(repo, commit_sha)
+
+            self.assertEqual(body_budgets, [1])
+
+    def test_tree正文读取预算绑定预查大小(self) -> None:
+        import icode.workspace as workspace_module
+        from icode.workspace import WorkspaceError, read_git_commit_tree_oid
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            commit_sha = self._commit(repo, "tested\n", "tested")
+            tree_sha = self._git(repo, "rev-parse", "HEAD^{tree}")
+            original_run_git_bytes = workspace_module._run_git_bytes
+            body_budgets = []
+
+            def report_tiny_tree_size(root, arguments, **kwargs):
+                arguments = tuple(arguments)
+                if arguments == ("cat-file", "-s", tree_sha):
+                    return subprocess.CompletedProcess(
+                        ["git", "cat-file", "-s", tree_sha], 0, b"1\n", b"",
+                    )
+                if arguments == ("cat-file", "tree", tree_sha):
+                    body_budgets.append(kwargs.get("max_output_bytes"))
+                return original_run_git_bytes(root, arguments, **kwargs)
+
+            with patch(
+                "icode.workspace._run_git_bytes", side_effect=report_tiny_tree_size,
+            ):
+                with self.assertRaises(WorkspaceError):
+                    read_git_commit_tree_oid(repo, commit_sha)
+
+            self.assertEqual(body_budgets, [1])
+
+    def test_Git原始对象读取超出输出上限时提前终止(self) -> None:
+        from icode.workspace import WorkspaceError, _run_git_bytes
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            commit_sha = self._commit(repo, "bounded output\n", "bounded output")
+
+            with self.assertRaises(WorkspaceError):
+                _run_git_bytes(
+                    repo, ("cat-file", "commit", commit_sha),
+                    max_output_bytes=1,
+                    no_replace_objects=True, no_lazy_fetch=True,
+                )
+
+    def test_partial_clone缺少tree时拒绝惰性取回(self) -> None:
+        import subprocess
+
+        from icode.workspace import WorkspaceError, read_git_commit_tree_oid
+
+        with temp_workspace() as ws:
+            source = self._new_repo(ws)
+            commit_sha = self._commit(source, "partial clone\n", "partial clone")
+            tree_sha = self._git(source, "rev-parse", "HEAD^{tree}")
+            self._git(source, "config", "uploadpack.allowFilter", "true")
+
+            partial = ws / "partial"
+            subprocess.run(
+                ["git", "clone", "--filter=tree:0", "--no-checkout",
+                 source.as_uri(), str(partial)],
+                check=True, capture_output=True, timeout=30,
+            )
+            clean_git_env = {
+                key: value for key, value in os.environ.items()
+                if not key.upper().startswith("GIT_")
+            }
+            no_fetch_env = {**clean_git_env, "GIT_NO_LAZY_FETCH": "1"}
+            missing_before = subprocess.run(
+                ["git", "-C", str(partial), "cat-file", "-e", tree_sha],
+                check=False, capture_output=True, env=no_fetch_env, timeout=30,
+            )
+            self.assertNotEqual(missing_before.returncode, 0)
+
+            with self.assertRaises(WorkspaceError):
+                read_git_commit_tree_oid(partial, commit_sha)
+
+            missing_after = subprocess.run(
+                ["git", "-C", str(partial), "cat-file", "-e", tree_sha],
+                check=False, capture_output=True, env=no_fetch_env, timeout=30,
+            )
+            self.assertNotEqual(missing_after.returncode, 0)
+
+            # 本地 file:// promisor 用作正向对照，确认对象确实可按需取回。
+            fetched = subprocess.run(
+                ["git", "-C", str(partial), "cat-file", "-e", tree_sha],
+                check=False, capture_output=True, env=clean_git_env, timeout=30,
+            )
+            self.assertEqual(fetched.returncode, 0, fetched.stderr.decode(errors="replace"))
 
     def test_run_task显式参数自动绑定结果commit(self) -> None:
         from icode.backends import FakeBackend

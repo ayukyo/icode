@@ -193,7 +193,7 @@ R3 核心能力（本切片）：
 ## 下一片（尚未闭合）
 
 1. **已实现的基础锚点：**`base_commit_sha` 只表示任务开始时的提交；`initial_worktree_fingerprint` 与 `tested_worktree_fingerprint` 覆盖包括预存脏改动在内的快照，`diff_fingerprint` 保留本轮改动语义。回执与 Reviewer 终态校验均覆盖这些字段；快照摘要现包含文件类型、符号链接目标及 POSIX Git 可执行位，相关行为先 RED 后 GREEN。该快照仍不等于 Git tree。
-2. **受测 tree 与结果 commit：**从 POSIX 仓库根以 no-follow 文件描述符只读扫描当前 Git 文件投影，用 Python 标准库按 Git object serialization 计算 tree OID；包含 staged/unstaged 当前工作树状态、未跟踪及 ignored 项，不触碰用户 index、不调用 `git add`/filters。以测试前后工作树 fingerprint 与 tree OID 一致作为可记录条件。现在可通过显式 `--result-commit` 与只读 commit/tree 查询比较；匹配只证明 tree 层路径/字节/模式一致，不认证来源/时序，也不含 ACL、xattr 或执行环境。Windows、子目录工作区、嵌套 `.git`/gitlink、特殊文件、路径竞态或不可读项一律不提供 OID。Attributes 不被读取或执行：其转换最多造成安全的不匹配，不能把 raw-worktree 哈希解释为 Git clean-filter 结果。
+2. **受测 tree 与结果 commit：**从 POSIX 仓库根以 no-follow 文件描述符只读扫描当前 Git 文件投影，用 Python 标准库按 Git object serialization 计算 tree OID；包含 staged/unstaged 当前工作树状态、未跟踪及 ignored 项，不触碰用户 index、不调用 `git add`/filters。以测试前后工作树 fingerprint 与 tree OID 一致作为可记录条件。显式 `--result-commit` 的只读查询现会重算 commit/tree 规范对象 OID 并比对请求 OID；正文读取受预查大小硬上限约束。匹配只证明 tree 层路径/字节/模式一致，不认证来源/时序，也不含 ACL、xattr 或执行环境。缺失 promisor 对象不得因查询而惰性取回；该行为按具体 Git binary 验收，不由版本号推断。Windows、子目录工作区、嵌套 `.git`/gitlink、特殊文件、路径竞态或不可读项一律不提供受测 tree OID。Attributes 不被读取或执行：其转换最多造成安全的不匹配，不能把 raw-worktree 哈希解释为 Git clean-filter 结果。
 3. **工作流 Reviewer 命令边界（Linux 与 macOS 已验收）：**Linux Bubblewrap 在同一 mount namespace 中以只读 bind 暴露工作区，再用只读空 tmpfs 覆盖 `.icode_output`；路径必须存在、是工作区内真实目录且每层无符号链接，否则不启动命令。已在本机真实执行验证源码可读、工单账本与工作区外秘密不可读、源码与账本路径均不可写。macOS Seatbelt 的同类负例已在 [CI #223](https://github.com/ayukyo/icode/actions/runs/36269281752) 的 ARM64 `macos-latest` 与 Intel `macos-15-intel` 原生 job 通过；Windows、容器及策略化 Reviewer 仍 fail-closed；
 4. **短上下文终结器真模型路径（已补一条有限证据，2026-09-27）：**在合成临时靶场强制进入合法 fallback，再由真实 MiniMax-M3 执行终结器；记录见本计划末尾。此项不代表主 Reviewer 自然触发 fallback 的概率，也不替代 R2 或跨平台 OS 边界验收。
 
@@ -272,3 +272,11 @@ R3 核心能力（本切片）：
 - **独立复审：**首轮复审指出保留名在文件类型检查前 `continue` 的绕过；按意见增加 `.icode_output` / `__pycache__` 特殊对象负例并重排 no-follow 类型检查。复审复查最新 diff 后确认该 Important 项关闭、未发现新问题。
 - **上游对照与取舍：**复用持续对照中 OpenCode 固定 SHA `a42f393c850bec0c0f395fb91bf19b1ee8b31666` 的会话快照研究及 Codex 固定 SHA `b334d5b3f2d9441b95286a8c2af8c2152737d977` 的 worktree-diff 研究；所查源码没有为 ICODE 的未知特殊文件定义可安全复用的哈希合同，因此只采纳“证据必须明确覆盖改动集合”的原则，不复制实现或增加依赖。许可均 Apache-2.0。
 - **边界：**该改动使不可表示条目失败关闭，不解决 Windows 路径型快照的同用户并发祖先替换竞态；Windows Git tree OID、Windows/容器/策略化 Reviewer 的 OS 命令边界及 R2 隔离门仍未闭合。
+
+## 2026-09-28 Asia/Shanghai：R3 结果 commit/tree 对象完整性
+
+- **缺口与复现：**只读 `cat-file` 的类型、大小和可解析 commit header 不证明对象正文确实属于请求的 OID。在临时仓库中修改 loose commit 的消息正文、保留原 OID 文件名后，旧逻辑仍返回 tree OID；tree 对象也能以同样方式被伪造。本次只修改 disposable 测试仓库，未改用户仓库对象。
+- **修复：**按 Git 规范对 `type + 空格 + size + NUL + payload` 重算 SHA-1 或 SHA-256，commit/tree OID 不一致即拒绝。元数据 stdout 上限为 128 字节，commit 正文上限 1 MiB，tree 正文上限 128 MiB；更重要的是，每次正文 `cat-file` 都把刚预查的具体对象大小作为流式硬上限，避免 size 查询与正文读取之间对象变化导致先无界分配。输出一旦超过上限即终止并回收 Git 子进程。读取设置 `GIT_NO_LAZY_FETCH=1`，不改用户 index、不写 Git 对象或引用。
+- **测试与复审：**commit/tree 篡改、树预算、超限终止及 partial clone 缺树用例覆盖负例；两项“预查 size 与正文上限接线”测试先在旧实现中因实际参数为 `None` 失败，接线后通过。该回归边界组 7 项连续 20 轮共 140 次通过；结果 commit/tree 与 workspace 聚焦测试 80 项通过；全仓 unittest 1,105 项通过、25 项条件跳过。独立复审发现正文限额未接到 API 调用，修复后复审确认关闭。preflight 测试与子模块门分别通过；密钥形态扫描限定本次 5 个修改文件，避免遍历未跟踪用户目录；站点、治理、竞品排期、编译与 diff 检查通过。推送后的远端 CI 尚待执行。
+- **Git 运行时证据边界：**本机 `/usr/bin/git` 是 Ubuntu Jammy `1:2.34.1-1ubuntu1.17`，发行版回补 `GIT_NO_LAZY_FETCH`；同一 binary 的本地 `file://` partial clone/tree 正反对照确认：变量设置时 tree 保持缺失，清除变量后可取回。上游 vanilla Git v2.34.1 源码并无此环境变量处理，不应把本机发行版回补外推为同版本号二进制的普遍能力；已验证的新版本上游测试也以 blob 缺失为例，本地测试补充了 tree 场景。变量拒绝隐式 promisor 取回，不禁止显式 `git fetch`。来源及取舍见[持续竞品对照](../../agent-landscape-live.md)本节。
+- **R3 边界：**对象 hash 一致只证明正文匹配该 OID，不证明作者来源、签名、任务时序或测试行为；现有 Windows Git tree OID、路径竞态及其它 R2/R3 门仍未关闭。Python 系统解释器 3.10 低于工程 `requires-python >=3.11`；本节测试使用项目 `.venv` Python 3.11。

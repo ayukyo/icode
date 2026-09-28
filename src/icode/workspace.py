@@ -48,6 +48,9 @@ _GIT_COMMAND_TIMEOUT_SECONDS = 60
 _HASH_CHUNK_SIZE_BYTES = 1024 * 1024
 _MAX_GIT_SYMLINK_TARGET_BYTES = 4096
 _MAX_GIT_COMMIT_OBJECT_BYTES = 1024 * 1024
+_MAX_GIT_OBJECT_METADATA_BYTES = 128
+# `cat-file` captures one raw tree in memory; bound that optional verification read.
+_MAX_GIT_TREE_OBJECT_BYTES = 128 * 1024 * 1024
 
 
 def _validated_bytes(name: str, value: str) -> bytes:
@@ -672,7 +675,12 @@ def _run_git(
     timeout_seconds: float | None = None,
     no_replace_objects: bool = False,
     no_lazy_fetch: bool = False,
+    max_output_bytes: int | None = None,
 ) -> subprocess.CompletedProcess:
+    if max_output_bytes is not None and (
+        max_output_bytes < 0 or text or input_data is not None
+    ):
+        raise WorkspaceError("Git 输出预算参数无效")
     environment = {
         key: value
         for key, value in os.environ.items()
@@ -680,6 +688,11 @@ def _run_git(
     }
     if no_lazy_fetch:
         environment["GIT_NO_LAZY_FETCH"] = "1"
+    effective_timeout = (
+        _GIT_COMMAND_TIMEOUT_SECONDS
+        if timeout_seconds is None
+        else min(_GIT_COMMAND_TIMEOUT_SECONDS, timeout_seconds)
+    )
     try:
         with tempfile.TemporaryDirectory(prefix="icode-empty-hooks-") as hooks_dir:
             command = ["git"]
@@ -696,26 +709,121 @@ def _run_git(
                 str(working_directory),
                 *arguments,
             ))
-            completed = subprocess.run(
-                command,
-                shell=False,
-                check=False,
-                capture_output=True,
-                text=text,
-                input=None if text else input_data,
-                env=environment,
-                timeout=(
-                    _GIT_COMMAND_TIMEOUT_SECONDS
-                    if timeout_seconds is None
-                    else min(_GIT_COMMAND_TIMEOUT_SECONDS, timeout_seconds)
-                ),
-            )
+            if max_output_bytes is None:
+                completed = subprocess.run(
+                    command,
+                    shell=False,
+                    check=False,
+                    capture_output=True,
+                    text=text,
+                    input=None if text else input_data,
+                    env=environment,
+                    timeout=effective_timeout,
+                )
+            else:
+                completed = _run_git_bounded_output(
+                    command, environment, effective_timeout, max_output_bytes,
+                )
     except (OSError, subprocess.SubprocessError):
         # SubprocessError 会携带捕获的输出；异常边界不保留原异常链。
         raise WorkspaceError("Git 命令执行失败") from None
     if check and completed.returncode != 0:
         raise WorkspaceError("Git 命令执行失败")
     return completed
+
+
+def _run_git_bounded_output(
+    command: list[str],
+    environment: Mapping[str, str],
+    timeout_seconds: float,
+    max_output_bytes: int,
+) -> subprocess.CompletedProcess[bytes]:
+    """并行排空 stdout，但仅保留预算内字节；超限或超时即终止 Git。"""
+    try:
+        process = subprocess.Popen(
+            command,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=False,
+            env=environment,
+        )
+    except OSError:
+        raise WorkspaceError("Git 命令执行失败") from None
+
+    stdout = bytearray()
+    output_exceeded = threading.Event()
+    read_errors: list[OSError] = []
+
+    def drain_stdout() -> None:
+        stream = process.stdout
+        if stream is None:
+            read_errors.append(OSError("Git stdout pipe is unavailable"))
+            return
+        try:
+            while True:
+                remaining = max_output_bytes - len(stdout)
+                chunk = stream.read1(min(_HASH_CHUNK_SIZE_BYTES, remaining + 1))
+                if not chunk:
+                    break
+                if len(chunk) > remaining:
+                    output_exceeded.set()
+                    try:
+                        process.kill()
+                    except OSError:
+                        pass
+                    break
+                stdout.extend(chunk)
+        except OSError as exc:
+            read_errors.append(exc)
+            try:
+                process.kill()
+            except OSError:
+                pass
+        finally:
+            stream.close()
+
+    reader = threading.Thread(
+        target=drain_stdout, name="icode-git-output-reader", daemon=True,
+    )
+    try:
+        reader.start()
+    except (OSError, RuntimeError):
+        try:
+            process.kill()
+        except OSError:
+            pass
+        process.wait()
+        if process.stdout is not None:
+            process.stdout.close()
+        raise WorkspaceError("Git 输出读取失败") from None
+    try:
+        return_code = process.wait(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        process.wait()
+        reader.join()
+        raise WorkspaceError("Git 命令执行失败") from None
+    except OSError:
+        try:
+            process.kill()
+        except OSError:
+            pass
+        process.wait()
+        reader.join()
+        raise WorkspaceError("Git 命令执行失败") from None
+    reader.join()
+    if read_errors:
+        raise WorkspaceError("Git 输出读取失败") from None
+    if output_exceeded.is_set():
+        raise WorkspaceError("Git 输出超出读取预算")
+    return subprocess.CompletedProcess(
+        command, return_code, bytes(stdout), b"",
+    )
 
 
 def _run_git_bytes(
@@ -727,6 +835,7 @@ def _run_git_bytes(
     timeout_seconds: float | None = None,
     no_replace_objects: bool = False,
     no_lazy_fetch: bool = False,
+    max_output_bytes: int | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     return cast(
         subprocess.CompletedProcess[bytes],
@@ -739,6 +848,7 @@ def _run_git_bytes(
             timeout_seconds=timeout_seconds,
             no_replace_objects=no_replace_objects,
             no_lazy_fetch=no_lazy_fetch,
+            max_output_bytes=max_output_bytes,
         ),
     )
 
@@ -837,6 +947,20 @@ def read_git_repository_state(
     return object_format, head_sha
 
 
+def _git_object_oid(object_format: str, object_type: bytes, payload: bytes) -> str:
+    """重算 Git loose-object 规范 OID，不依赖 cat-file 校验对象内容哈希。"""
+    digest = (
+        hashlib.sha1(usedforsecurity=False)
+        if object_format == "sha1"
+        else hashlib.sha256()
+    )
+    digest.update(
+        object_type + b" " + str(len(payload)).encode("ascii") + b"\0"
+    )
+    digest.update(payload)
+    return digest.hexdigest()
+
+
 def read_git_commit_tree_oid(repository_root: Path, commit_sha: str) -> str:
     """只读读取完整 commit OID 指向的原始 tree，不解析 tag/表达式或替换引用。"""
     if (
@@ -852,10 +976,14 @@ def read_git_commit_tree_oid(repository_root: Path, commit_sha: str) -> str:
     if len(commit_sha) != expected_length:
         raise WorkspaceError("结果 commit OID 与 storage object format 不匹配")
 
-    def query(arguments: tuple[str, ...]) -> bytes:
+    def query(
+        arguments: tuple[str, ...], *,
+        max_output_bytes: int = _MAX_GIT_OBJECT_METADATA_BYTES,
+    ) -> bytes:
         result = _run_git_bytes(
             root, ("cat-file", *arguments), check=False,
             no_replace_objects=True, no_lazy_fetch=True,
+            max_output_bytes=max_output_bytes,
         )
         if result.returncode != 0:
             raise WorkspaceError("结果 commit 对象不可用")
@@ -872,9 +1000,11 @@ def read_git_commit_tree_oid(repository_root: Path, commit_sha: str) -> str:
     if size <= 0 or size > _MAX_GIT_COMMIT_OBJECT_BYTES:
         raise WorkspaceError("结果 commit 对象超出读取预算")
 
-    commit_data = query(("commit", commit_sha))
+    commit_data = query(("commit", commit_sha), max_output_bytes=size)
     if len(commit_data) != size:
         raise WorkspaceError("结果 commit 对象大小发生变化")
+    if _git_object_oid(object_format, b"commit", commit_data) != commit_sha:
+        raise WorkspaceError("结果 commit 对象 OID 校验失败")
     header, separator, _message = commit_data.partition(b"\n\n")
     if not separator:
         raise WorkspaceError("结果 commit header 无效")
@@ -893,6 +1023,17 @@ def read_git_commit_tree_oid(repository_root: Path, commit_sha: str) -> str:
     tree_type = query(("-t", tree_oid)).strip()
     if tree_type != b"tree":
         raise WorkspaceError("结果 commit tree 对象不可用")
+    tree_size_bytes = query(("-s", tree_oid)).strip()
+    if not tree_size_bytes or not tree_size_bytes.isdigit():
+        raise WorkspaceError("结果 commit tree 对象大小无效")
+    tree_size = int(tree_size_bytes)
+    if tree_size > _MAX_GIT_TREE_OBJECT_BYTES:
+        raise WorkspaceError("结果 commit tree 对象超出读取预算")
+    tree_data = query(("tree", tree_oid), max_output_bytes=tree_size)
+    if len(tree_data) != tree_size:
+        raise WorkspaceError("结果 commit tree 对象大小发生变化")
+    if _git_object_oid(object_format, b"tree", tree_data) != tree_oid:
+        raise WorkspaceError("结果 commit tree 对象 OID 校验失败")
     return tree_oid
 
 
