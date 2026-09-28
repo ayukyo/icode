@@ -70,6 +70,12 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - 用 loopback listener 验证该端口正例、另一 loopback 端口拒绝；再对宿主已分配的非 loopback 地址同端口发起不发送数据的连接，不建立 LAN listener。按 `EPERM`/`EACCES`、`ECONNREFUSED` 分类；不可分类时跳过并明确提示。无公网目标。
 - 此无监听探针低于 LAN-bound same-port decoy 的证据强度，不能证明与活跃本机服务的完整交互语义；实际 macOS runner 结果待 CI。用户对产品边界的决定仍待答复，生产授权继续 DENY。
 
+## 2026-09-28 Asia/Shanghai：macOS localhost 诊断 CI 失败的安全化观测
+
+- **远端状态：**commit `4e98e76f59aea218020f65a7c27b0c37ae5b6edf` 的 [CI #271](https://github.com/ayukyo/icode/actions/runs/36370796374) 中 Linux/Windows、Python 3.11/3.12 以及官网部署均成功；macOS ARM64 与 Intel 两个 native job 都在 `Diagnose Seatbelt localhost random-port address scope` 失败。可匿名读取的 GitHub job/check 注解只给出步骤非零退出码和既有 `6/10, critical_passed=false, ready=false` 汇总，未暴露 unittest 断言/阶段输出；因此当前不推断失败阶段或 Seatbelt 行为。
+- **本地边界：**诊断用例在 Linux 按设计跳过，不能作为 macOS 通过证据。该步骤此前只有最终汇总 notice，loopback 正例/异端口拒绝任一步失败时均缺少可公开机器分类。
+- **本次处理：**在每个本机 socket probe 完成后写出不含地址、端口、路径的固定阶段与结果 notice；子进程退出异常、缺失结果标记或正/负对照分类不符时写出脱敏 error annotation。仅增强观测，不改变 Seatbelt profile、产品 network DENY、评分或自动模式。提交后须重新收集双架构原生结果，才能决定后续实现。
+
 ## 2026-09-28 Asia/Shanghai：host proxy 授权前关闭回执竞态
 
 - `serve_once()` 在不完整 CONNECT 请求头期间遇到 `server.close()`，曾在 socket/lease 错误分支未观察 `_closed` 时偶发返回 `True`，与其“关闭/停机返回 `False`”文档契约不一致。

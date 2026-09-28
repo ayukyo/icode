@@ -2096,19 +2096,45 @@ print("metadata-read-only-ok")
             "    sock.close()\n"
         )
 
-        def run_probe(profile: str, address: str, port: int, *, send: bool = False) -> str:
+        def run_probe(
+            profile: str,
+            address: str,
+            port: int,
+            *,
+            stage: str,
+            send: bool = False,
+        ) -> str:
             result = subprocess.run(
                 [sandbox_exec, "-p", profile, sys.executable, "-c", probe_code,
                  address, str(port), "send" if send else "no-send"],
                 capture_output=True, text=True, timeout=6, check=False,
             )
-            self.assertEqual(
-                result.returncode, 0,
-                f"Seatbelt probe failed: {result.stderr or result.stdout}",
-            )
             matches = re.findall(r"(?m)^probe:(connected|errno=\d+)$", result.stdout)
-            self.assertEqual(len(matches), 1, result.stdout)
-            return matches[0]
+            if result.returncode != 0 or len(matches) != 1:
+                print(
+                    "::error::macos-seatbelt-port-boundary "
+                    f"stage={stage} subprocess_exit={result.returncode} "
+                    f"marker_count={len(matches)}",
+                    flush=True,
+                )
+                self.fail("Seatbelt probe did not return one safe result marker")
+            marker = matches[0]
+            print(
+                "::notice::macos-seatbelt-port-boundary "
+                f"stage={stage} probe_result={marker}",
+                flush=True,
+            )
+            return marker
+
+        def assert_classification(stage: str, result: str, expected: str) -> None:
+            actual = classify(result)
+            if actual != expected:
+                print(
+                    "::error::macos-seatbelt-port-boundary "
+                    f"stage={stage} expected={expected} observed={actual}",
+                    flush=True,
+                )
+            self.assertEqual(actual, expected, result)
 
         def classify(result: str) -> str:
             if result == "connected":
@@ -2133,9 +2159,10 @@ print("metadata-read-only-ok")
 
                 # Positive control: the exact localhost port rule reaches the loopback listener.
                 loopback_result = run_probe(
-                    profile, "127.0.0.1", loopback_port, send=True,
+                    profile, "127.0.0.1", loopback_port,
+                    stage="loopback-allowed", send=True,
                 )
-                self.assertEqual(classify(loopback_result), "connected", loopback_result)
+                assert_classification("loopback-allowed", loopback_result, "connected")
                 loopback_listener.settimeout(1)
                 accepted, _ = loopback_listener.accept()
                 with accepted:
@@ -2146,9 +2173,14 @@ print("metadata-read-only-ok")
                     other_listener.bind(("127.0.0.1", 0))
                     other_listener.listen(1)
                     other_port = other_listener.getsockname()[1]
-                    other_result = run_probe(profile, "127.0.0.1", other_port)
+                    other_result = run_probe(
+                        profile, "127.0.0.1", other_port,
+                        stage="other-loopback-port",
+                    )
                     other_class = classify(other_result)
-                    self.assertEqual(other_class, "denied", other_result)
+                    assert_classification(
+                        "other-loopback-port", other_result, "denied",
+                    )
 
                 if local_address is None:
                     print(
@@ -2158,7 +2190,10 @@ print("metadata-read-only-ok")
                     self.skipTest("没有可绑定的宿主非 loopback IPv4 地址")
 
                 # No listener is created on the non-loopback address and no bytes are sent.
-                host_result = run_probe(profile, local_address, loopback_port)
+                host_result = run_probe(
+                    profile, local_address, loopback_port,
+                    stage="same-host-address-same-port",
+                )
                 host_class = classify(host_result)
                 if host_class.startswith("inconclusive_"):
                     print(
