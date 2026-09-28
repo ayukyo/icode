@@ -1,7 +1,7 @@
 # R2 资源限制与统一违规回执实施门
 
 - 日期：2026-09-28 Asia/Shanghai
-- 状态：R2 资源限制与原生违规回执实现未开始；只读审计、本机机制实验和应用层拒绝回执基础切片已完成，能力评分不变
+- 状态：R2 资源限制及原生回执的产品接线仍未开始；只读审计、本机机制实验、应用层拒绝回执基础切片和 Linux test-only USER_NOTIF 原型已有证据，能力评分不变
 - 目标：把十项合同中的 `resource_limits`、`uniform_violation` 接入真实隔离命令路径，并提供跨平台可核验回执。
 - 依据：[R2 跨平台隔离设计 §12.2、§13、§14](../specs/2026-09-23-r2-cross-platform-isolation-design.md)
 
@@ -118,3 +118,10 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **远端证据：**commit `4359b64` 的 CI [run 36376053831](https://github.com/ayukyo/icode/actions/runs/36376053831) 两架构的四个启动对照均通过；socket 探针失败时 `child_stages=none` 且 stderr 分类为 `python_runtime+python_os_error`。因为第一个阶段标记原先位于 `import socket` 之后，这说明异常发生在该标记之前或导入过程中，不能归因于 connect/send。
 - **代码差异与推断：**启动控制显式使用临时 workspace 作为 `cwd`，而原 socket 子进程继承 CI checkout cwd；该 cwd 不在 test-only profile 的 workspace 读授权内。此上下文差异可由源码直接确认；它是否就是 Python socket 导入期间权限异常的根因，仍待新原生 runner 验证。
 - **本次处理：**socket 子进程与启动控制统一 `cwd=workspace`，并将 `import socket` 放入阶段化 OSError 捕获区。若导入返回权限 errno，会标记 `socket-import`；若仍为非 OSError Python 异常，则只输出固定异常类别和已到达阶段，不泄漏原文。只改诊断测试，不改产品 profile/网络 DENY/评分/自动模式。Linux 全量测试通过；Seatbelt 原生效果待下一 CI。
+
+## 2026-09-28 Asia/Shanghai：Linux seccomp USER_NOTIF 原生回执试验原型
+
+- **上游研究：**Linux 内核 [`seccomp filter` 官方文档](https://docs.kernel.org/userspace-api/seccomp_filter.html)定义了 `SECCOMP_RET_USER_NOTIF`、`NEW_LISTENER`、listener 传递与 broker `NOTIF_SEND` 响应；无特权进程先设置 `no_new_privs` 后可建立过滤器。该机制的系统调用结果由接收通知的 broker 决定，所以回执必须如实写成“内核通知到达 + ICODE broker 回答 EPERM”，不是独立于 broker 的内核审计结论。Codex 固定版本 `36650394c5b38c2990ccf2a3457165ca3e9d9726` 的 [`denial.rs`](https://github.com/openai/codex/blob/36650394c5b38c2990ccf2a3457165ca3e9d9726/codex-rs/sandboxing/src/denial.rs) 仍结合退出与输出推测 likely denial；OpenHands 固定版本 `d77ada7a030b3acaa82593d402632680361dfe42` 的 [`CommandResult`](https://github.com/OpenHands/software-agent-sdk/blob/d77ada7a030b3acaa82593d402632680361dfe42/openhands-sdk/openhands/sdk/workspace/models.py) 仍是通用命令结果字段。只借鉴内核监督原语及显式结果分层，没有复制代码；Codex 为 Apache-2.0、OpenHands 为 MIT，本原型无第三方代码/运行依赖。
+- **当前实现与窄切片：**产品 Linux helper 的默认网络过滤仍直接返回 `SECCOMP_RET_ERRNO|EPERM`，没有通知通道。新增的 C probe 只在 `tests/fixtures/native/`，通过 `SCM_RIGHTS` 将 USER_NOTIF listener 交给测试父进程，父端确认仅为 `socket(AF_INET, ...)` 后明确回复 `-EPERM`；`AF_UNIX socketpair()` 是允许正例。拒绝握手时载荷不启动；普通 exit 13 单独验证不产生通知标记。CI 输出显式 `conformance_credit=none`，不接入 `ExecutionResult`、CLI/MCP、产品策略或评分。
+- **取舍：**采纳 USER_NOTIF 作为 Linux 私有机制原型，暂缓产品接线；其生产化还需将 listener 从当前 PID namespace 安全交给 broker、启动前建立观察与失败关闭，并定义通知器退出/覆盖不完整语义。macOS `log stream` 仅是待原生验证的系统日志观察候选，空流不得解释为无拒绝；Windows Job Object 不提供通用文件/网络违规事件，三平台 `uniform_violation` 仍不计分。Landlock 普通文件拒绝亦没有本原型可用的通用逐操作通知。
+- **本机验收：**三项 Linux 用例通过：broker 收到指定 syscall 通知并回复 EPERM、允许的本地 socketpair 成功、拒绝 observer handshake 后载荷未启动、普通 exit 13 不产生日志标记。该结果只验证 Linux syscall 机制，不代表 workbench/broker 产品路径闭环；须待 Linux x86_64/ARM64 native CI 重现，并完成 broker/CLI/MCP 的真实正反例后，才能评估是否计入 `uniform_violation`。本阶段不改变 `resource_limits=false`、`uniform_violation=false`、自动模式或所有平台评分。

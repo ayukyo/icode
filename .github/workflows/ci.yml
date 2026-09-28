@@ -119,6 +119,9 @@ jobs:
         run: python -m unittest tests.test_linux_mapless -v
       - name: Run actual native negative probes
         run: python scripts/run_native_probe_ci.py
+      - name: Verify test-only seccomp USER_NOTIF receipt prototype
+        if: runner.os == 'Linux'
+        run: python -m unittest tests.test_seccomp_notify_probe -v
       - name: Verify Linux PID namespace host-crash cleanup
         if: runner.os == 'Linux'
         run: python -m unittest tests.test_linux_pidns_cleanup -v
