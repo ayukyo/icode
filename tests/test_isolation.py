@@ -2127,6 +2127,7 @@ print("metadata-read-only-ok")
         if not Path(sandbox_exec).is_file():
             self.skipTest("sandbox-exec 不可用")
 
+        canary_payload = b"icode-seatbelt-probe"
         probe_code = (
             "import sys\n"
             "sock = None\n"
@@ -2146,7 +2147,7 @@ print("metadata-read-only-ok")
             "    if sys.argv[3] == 'send':\n"
             "        stage = 'send'\n"
             "        print('probe:stage=send', flush=True)\n"
-            "        sock.sendall(b'icode-seatbelt-probe')\n"
+            f"        sock.sendall({canary_payload!r})\n"
             "    print('probe:connected', flush=True)\n"
             "except OSError as exc:\n"
             "    print('probe:errno=' + str(exc.errno) + '@' + stage, flush=True)\n"
@@ -2306,25 +2307,90 @@ print("metadata-read-only-ok")
                     )
                     self.skipTest("没有可绑定的宿主非 loopback IPv4 地址")
 
-                # No listener is created on the non-loopback address and no bytes are sent.
-                host_result = run_probe(
-                    profile, local_address, loopback_port,
-                    stage="same-host-address-same-port",
-                )
-                host_class = classify(host_result)
-                if host_class.startswith("inconclusive_"):
-                    print(
-                        "::warning::macos-seatbelt-port-boundary "
-                        f"same_host_address={host_class}"
-                    )
-                    self.skipTest("宿主非 loopback 地址结果无法区分策略拒绝与网络错误")
+                # Keep a canary listener active on the host's assigned address
+                # and the exact same port. This distinguishes Seatbelt denial
+                # from ECONNREFUSED caused by a missing service without probing
+                # any off-host address.
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as host_listener:
+                    try:
+                        host_listener.bind((local_address, loopback_port))
+                        host_listener.listen(1)
+                    except OSError as exc:
+                        print(
+                            "::warning::macos-seatbelt-port-boundary "
+                            f"same_host_active_listener=unavailable errno={exc.errno}",
+                            flush=True,
+                        )
+                        self.skipTest("无法在宿主非 loopback 地址绑定同一随机端口")
 
-                print(
-                    "::notice::macos-seatbelt-port-boundary "
-                    f"loopback=connected other_loopback_port={other_class} "
-                    f"same_host_address_same_port={host_class} "
-                    "external_network=not_probed"
-                )
+                    host_listener.settimeout(0.25)
+                    host_result = run_probe(
+                        profile, local_address, loopback_port,
+                        stage="same-host-address-same-port-active-listener",
+                        send=True,
+                    )
+                    host_class = classify(host_result)
+                    listener_accepted = False
+                    canary_received = False
+                    try:
+                        accepted, _ = host_listener.accept()
+                    except socket.timeout:
+                        pass
+                    else:
+                        listener_accepted = True
+                        with accepted:
+                            accepted.settimeout(0.5)
+                            received = bytearray()
+                            try:
+                                while len(received) < len(canary_payload):
+                                    chunk = accepted.recv(
+                                        len(canary_payload) - len(received)
+                                    )
+                                    if not chunk:
+                                        break
+                                    received.extend(chunk)
+                                canary_received = bytes(received) == canary_payload
+                            except socket.timeout:
+                                pass
+
+                    # The native syscall result and the local listener must
+                    # agree; otherwise report a broken/inconclusive probe.
+                    if host_class == "connected":
+                        self.assertTrue(
+                            listener_accepted,
+                            "connect reported success but the active local listener saw none",
+                        )
+                        self.assertTrue(
+                            canary_received,
+                            "connect reported success but the listener did not receive the canary",
+                        )
+                    elif host_class == "denied_connect":
+                        self.assertFalse(
+                            listener_accepted,
+                            "connect was reported denied but the active local listener accepted it",
+                        )
+                    elif host_class == "denied_send":
+                        host_class = (
+                            "connected_but_send_denied"
+                            if listener_accepted
+                            else "inconclusive_send_denied_without_accept"
+                        )
+
+                    inconclusive = (
+                        host_class.startswith("inconclusive_")
+                        or host_class.startswith("allowed_no_listener_")
+                        or host_class == "connected_but_send_denied"
+                    )
+                    level = "warning" if inconclusive else "notice"
+                    print(
+                        f"::{level}::macos-seatbelt-port-boundary "
+                        f"loopback=connected other_loopback_port={other_class} "
+                        f"same_host_active_listener={host_class} "
+                        f"listener_accepted={'yes' if listener_accepted else 'no'} "
+                        f"canary_received={'yes' if canary_received else 'no'} "
+                        "external_network=not_probed",
+                        flush=True,
+                    )
 
     @unittest.skipUnless(sys.platform == "darwin", "需 macOS Seatbelt + Reviewer 联测")
     def test_seatbelt_只读Reviewer真实隐藏账本且阻断工作区内外写入(self) -> None:
