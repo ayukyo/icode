@@ -85,6 +85,22 @@ class ToolContext:
     review_submission_enabled: bool = False
     deny_read_roots: tuple[Path, ...] = ()
     workspace_session: WorkspaceSession | None = None
+    # Optional application-layer defense in depth for isolated Reviewers.
+    # None preserves ordinary workspace/policy behavior; an empty tuple denies
+    # every file read.
+    allowed_read_files: tuple[Path, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if self.allowed_read_files is None:
+            return
+        try:
+            self.allowed_read_files = tuple(
+                Path(path).resolve(strict=False)
+                for path in self.allowed_read_files
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            # Malformed reviewer scope must never widen into an unrestricted read.
+            self.allowed_read_files = ()
 
     def resolve(self, path: str) -> Path:
         p = Path(path)

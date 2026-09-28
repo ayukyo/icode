@@ -653,6 +653,7 @@ def _make_ctx(
     *, read_only_workspace: bool = False,
     review_submission_enabled: bool = False,
     deny_read_roots: tuple[Path, ...] = (),
+    allowed_read_files: tuple[Path, ...] | None = None,
     workspace_session: WorkspaceSession | None = None,
 ) -> ToolContext:
     """构造工具上下文；未显式指定时按本机实测能力自动选隔离后端。"""
@@ -662,6 +663,7 @@ def _make_ctx(
         change_baseline=change_baseline, read_only_workspace=read_only_workspace,
         review_submission_enabled=review_submission_enabled,
         deny_read_roots=deny_read_roots,
+        allowed_read_files=allowed_read_files,
         workspace_session=workspace_session,
     )
 
@@ -1513,6 +1515,7 @@ def _run_task_reviewer(
         read_only_workspace=True,
         review_submission_enabled=True,
         deny_read_roots=deny_read_roots,
+        allowed_read_files=tuple(read_roots),
     )
     agent = AgentLoop(
         backend=backend,
@@ -1610,6 +1613,7 @@ def _run_task_reviewer(
             read_only_workspace=True,
             review_submission_enabled=True,
             deny_read_roots=deny_read_roots,
+            allowed_read_files=tuple(read_roots),
         )
         finalizer = AgentLoop(
             backend=backend,

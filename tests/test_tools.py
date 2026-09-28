@@ -43,6 +43,8 @@ class TestFileTools(unittest.TestCase):
             try:
                 os.link(secret, alias)
             except OSError as exc:
+                if os.name == "nt":
+                    self.fail(f"Windows CI 必须支持临时 NTFS 硬链接回归：{exc}")
                 self.skipTest(f"当前文件系统不支持创建测试硬链接：{exc}")
 
             reviewer_context = ToolContext(root=self.root, read_only_workspace=True)
@@ -58,6 +60,40 @@ class TestFileTools(unittest.TestCase):
         self.assertNotIn("HARDLINK_PRIVATE_MARKER", result.content)
         self.assertTrue(ordinary_read.ok)
         self.assertIn("HARDLINK_PRIVATE_MARKER", ordinary_read.content)
+
+    def test_工具上下文精确读取白名单限制read_file(self) -> None:
+        allowed = self.root / "pkg" / "m.py"
+        denied = self.root / "pkg" / "note.txt"
+        reviewer_context = ToolContext(
+            root=self.root, read_only_workspace=True, allowed_read_files=(allowed,),
+        )
+
+        allowed_result = self.reg.invoke(
+            "read_file", reviewer_context, {"path": "pkg/m.py"},
+        )
+        denied_result = self.reg.invoke(
+            "read_file", reviewer_context, {"path": "pkg/note.txt"},
+        )
+
+        self.assertTrue(allowed_result.ok)
+        self.assertFalse(denied_result.ok)
+        self.assertEqual(denied_result.meta.get("error"), "read_denied")
+        self.assertNotIn("TODO", denied_result.content)
+
+    def test_工具上下文精确读取白名单不扩展为目录grep(self) -> None:
+        reviewer_context = ToolContext(
+            root=self.root,
+            read_only_workspace=True,
+            allowed_read_files=(self.root / "pkg" / "m.py",),
+        )
+
+        result = self.reg.invoke(
+            "grep", reviewer_context, {"pattern": "TODO", "path": "pkg"},
+        )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta.get("error"), "read_denied")
+        self.assertNotIn("pkg/note.txt:1: TODO", result.content)
 
     def test_受保护读取根拒绝直读并过滤递归工具(self) -> None:
         private = self.root / ".icode_output" / "ticket-1"

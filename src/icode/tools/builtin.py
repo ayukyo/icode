@@ -200,6 +200,9 @@ def _policy_allows_read(ctx: ToolContext, target: Path) -> bool:
         return False
     if any(target.is_relative_to(root) for root in denied_roots):
         return False
+    if (ctx.allowed_read_files is not None
+            and target not in ctx.allowed_read_files):
+        return False
     if ctx.policy is None:
         return True
     return (
@@ -319,6 +322,7 @@ def grep_files(
         scan_ctx = ToolContext(
             root=root, policy=ctx.policy, deny_read_roots=ctx.deny_read_roots,
             read_only_workspace=ctx.read_only_workspace,
+            allowed_read_files=ctx.allowed_read_files,
         )
         try:
             entries = _safe_workspace_entries(scan_ctx)
