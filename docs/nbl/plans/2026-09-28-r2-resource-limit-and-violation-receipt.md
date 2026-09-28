@@ -1,7 +1,7 @@
 # R2 资源限制与统一违规回执实施门
 
 - 日期：2026-09-28 Asia/Shanghai
-- 状态：R2 资源限制及原生回执的产品接线仍未开始；只读审计、本机机制实验、应用层拒绝回执基础切片和 Linux test-only USER_NOTIF 原型已有证据，能力评分不变
+- 状态：R2 资源限制及原生回执的产品接线仍未开始；只读审计、本机机制实验、应用层拒绝回执基础切片、Linux test-only USER_NOTIF 原型，以及 macOS 双架构 test-only 精确拒绝事件观测已有证据，能力评分不变
 - 目标：把十项合同中的 `resource_limits`、`uniform_violation` 接入真实隔离命令路径，并提供跨平台可核验回执。
 - 依据：[R2 跨平台隔离设计 §12.2、§13、§14](../specs/2026-09-23-r2-cross-platform-isolation-design.md)
 
@@ -125,3 +125,11 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **当前实现与窄切片：**产品 Linux helper 的默认网络过滤仍直接返回 `SECCOMP_RET_ERRNO|EPERM`，没有通知通道。新增的 C probe 只在 `tests/fixtures/native/`，通过 `SCM_RIGHTS` 将 USER_NOTIF listener 交给测试父进程，父端确认仅为 `socket(AF_INET, ...)` 后明确回复 `-EPERM`；`AF_UNIX socketpair()` 是允许正例。拒绝握手时载荷不启动；普通 exit 13 单独验证不产生通知标记。CI 输出显式 `conformance_credit=none`，不接入 `ExecutionResult`、CLI/MCP、产品策略或评分。
 - **取舍：**采纳 USER_NOTIF 作为 Linux 私有机制原型，暂缓产品接线；其生产化还需将 listener 从当前 PID namespace 安全交给 broker、启动前建立观察与失败关闭，并定义通知器退出/覆盖不完整语义。macOS `log stream` 仅是待原生验证的系统日志观察候选，空流不得解释为无拒绝；Windows Job Object 不提供通用文件/网络违规事件，三平台 `uniform_violation` 仍不计分。Landlock 普通文件拒绝亦没有本原型可用的通用逐操作通知。
 - **验收结果：**本机三项 Linux 用例、20 轮重复、全量 unittest 均通过。推送提交 `48c465f` 的 [CI #285](https://github.com/ayukyo/icode/actions/runs/36392124437) 成功，四个 Ubuntu native job（x86_64/ARM64，22.04 与当前 runner）均包含并通过该 test-only probe；Apple Silicon 与 Intel macOS job 也在同一 run 通过其既有诊断。Linux 评分仍随 runner 不同（最新 runner/24.04 ARM 为 7/10、critical 未通过；22.04 两架构为 8/10、critical 通过），所有平台 `ready=false`。这只验证 Linux syscall 机制，不代表 workbench/broker 产品路径闭环；完成真实 broker/CLI/MCP 正反例和跨平台来源 parity 前，`uniform_violation` 仍不计分。本阶段不改变 `resource_limits=false`、`uniform_violation=false`、自动模式或能力评分。
+
+## 2026-09-28 Asia/Shanghai：macOS Seatbelt 原生拒绝日志 test-only 探针
+
+- **上游证据：**Apple 的[沙箱违规诊断文档](https://developer.apple.com/documentation/security/discovering-and-diagnosing-app-sandbox-violations)建议在 Console 中按 `com.apple.sandbox.reporting` / `violation` 检索，并说明部分系统库拒绝可能出现在 app stderr；macOS [`log(1)`](https://man.freebsd.org/cgi/man.cgi?apropos=0&manpath=macOS+13.6.5&query=log&sektion=1)文档定义 `ndjson`、`--level debug` 和 predicate 查询接口，但没有承诺每个 deny 都会被 CLI 实时输出或给出稳定字段合同。固定 Codex SHA [`1cc7e2361237ce7244430ee1d581c77f95c57ac8`](https://github.com/openai/codex/commit/1cc7e2361237ce7244430ee1d581c77f95c57ac8) 的 [Seatbelt logger](https://github.com/openai/codex/blob/1cc7e2361237ce7244430ee1d581c77f95c57ac8/codex-rs/cli/src/debug_sandbox/seatbelt.rs#L52-L114) 同时筛选 Sandbox kernel sender 与 reporting subsystem，并解析 `eventMessage` 中的进程 PID/能力；这是实现参考，不保证其他系统版本/runner 上的日志可见性。
+- **ICODE 本机改动：**仅扩展 `tests/macos_violation_log_probe.py` 的原生诊断：请求 debug NDJSON，同时读取 stdout/stderr，以 kernel sender、Apple reporting subsystem 和 Sandbox 消息作为候选筛选；对日志总量/行数设限，诊断只输出固定类别与计数，不保留或打印原始日志正文、路径或 PID。日志格式错误、观察器失败或超时均保持 inconclusive；只有解析到目标进程 PID 与目标 capability 的精确事件才报告 observed。未接入产品执行器、ExecutionResult、CLI/MCP 或能力计分。
+- **原生结果：**提交 [`a2b54ee`](https://github.com/ayukyo/icode/commit/a2b54ee8c8ac51d9bfc3cfbbd32dd348b4533074) 的 [CI #289 Intel job](https://github.com/ayukyo/icode/actions/runs/36402344430/job/108862919786) 与 [Apple Silicon job](https://github.com/ayukyo/icode/actions/runs/36402344430/job/108862919787) 均输出 `macos-sandbox-violation-probe status=observed capability=file-read-data conformance_credit=none`；受控子进程 stderr 的拒绝与 PID/capability 精确日志事件在两个 runner 上均有观测。全量 workflow 最终 success；此 test-only 结果仍不给能力分。
+- **采纳 / 暂缓：**采纳 bounded、脱敏、精确 PID/capability 的原生正例作为后续 observer 研究基础；暂缓将统一日志用作产品级可信回执。该通道可能缺记录或延迟，空日志不证明无拒绝；还需 observer 启动前屏障、错误/丢失的不完整状态、允许路径对照、普通 exit 13 反例及真实 broker→CLI/MCP parity。`uniform_violation=false`、macOS `6/10`、自动模式关闭不变；不复制 Codex 代码、不增加依赖或许可证义务。
+- **并行网络边界结果：**同一 CI #289 的 Intel 与 Apple Silicon job 均验证 `localhost:<port>` 可连接宿主非 loopback 活跃同端口 listener 并发送 canary；获准 loopback 正例成功、其它 loopback 端口拒绝。该行为不能满足严格 loopback 地址边界，产品 worker 网络继续 DENY，不计 `network_temporary_allowlist`。
