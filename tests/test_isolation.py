@@ -2128,11 +2128,13 @@ print("metadata-read-only-ok")
             self.skipTest("sandbox-exec 不可用")
 
         probe_code = (
-            "import socket, sys\n"
-            "print('probe:stage=socket-imported', flush=True)\n"
+            "import sys\n"
             "sock = None\n"
-            "stage = 'socket-create'\n"
+            "stage = 'socket-import'\n"
             "try:\n"
+            "    import socket\n"
+            "    print('probe:stage=socket-imported', flush=True)\n"
+            "    stage = 'socket-create'\n"
             "    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
             "    print('probe:stage=socket-created', flush=True)\n"
             "    stage = 'socket-timeout'\n"
@@ -2163,10 +2165,10 @@ print("metadata-read-only-ok")
             result = subprocess.run(
                 [sandbox_exec, "-p", profile, sys.executable, "-c", probe_code,
                  address, str(port), "send" if send else "no-send"],
-                capture_output=True, text=True, timeout=6, check=False,
+                cwd=workspace, capture_output=True, text=True, timeout=6, check=False,
             )
             matches = re.findall(
-                r"(?m)^probe:(connected|errno=\d+@(?:socket-create|socket-timeout|connect|send))$",
+                r"(?m)^probe:(connected|errno=\d+@(?:socket-import|socket-create|socket-timeout|connect|send))$",
                 result.stdout,
             )
             child_stages = re.findall(

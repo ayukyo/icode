@@ -956,6 +956,12 @@
 - **采纳 / 已实现：**用固定阶段注解标识 socket 模块导入、创建、timeout、connect、send；OSError 只输出数字 errno 与阶段，stderr 进一步映射到固定异常类标签。所有 annotation 不包含异常原文、用户路径、地址或端口。此 test-only probe 是 ICODE 对 Codex 文本规则的真实运行补充；本地分类与全量测试通过，macOS 原生行为等待新 CI。Codex 固定版本对应测试主要断言 profile 文本，不能代替原生行为探测。
 - **安全边界：**连接是否被授权仍未得出结论；即便下一轮通过，只能记载实际正反探针向量，不能据此宣称代理进程绑定或严格 loopback-only。产品 DENY、评分与自动模式不变。观察日：2026-09-28。
 
+### 2026-09-28 Asia/Shanghai 刷新：socket import 前异常与测试 cwd 对齐
+
+- **CI 证据：**`a57a93e` 的 [run 36376053831](https://github.com/ayukyo/icode/actions/runs/36376053831) 中 Intel/Apple Silicon 的 profile 启动对照全部成功；socket 探针为 exit 1、`child_stages=none`、stderr 固定标签 `python_runtime+python_os_error`。首个子进程阶段标签位于 `import socket` 后，因此可以把失败顺序限定到导入之前/期间，不能据此推断网络 syscall 行为。
+- **可核事实与待证推断：**原 startup control 使用 `cwd=workspace`，socket probe 则继承 checkout cwd；该 checkout 不在 Seatbelt profile 授权的临时 workspace 子树。此上下文不一致是源码事实；它是否造成 Python 导入期 OS 错误尚未证明。
+- **采纳 / 待验：**将 probe cwd 与 startup control 统一为授权 workspace；并把 `import socket` 放入 OSError 捕获阶段，失败时仅回传 `errno@socket-import` 或固定异常类别。该切片不触碰生产 Seatbelt 或网络策略；新 Intel/Apple Silicon CI 结果决定是否采纳此根因假设。
+
 ### 2026-09-28 Asia/Shanghai 刷新：跨平台任务级 process_limit
 
 - **Linux：**Linux kernel [cgroup v2 PID controller](https://docs.kernel.org/admin-guide/cgroup-v2.html#pid) 的 `pids.max` 是子树硬限额，超限 fork/clone 返回 `EAGAIN`；其任务计数按 TID，因此线程也计入。systemd [cgroup delegation 合同](https://systemd.io/CGROUP_DELEGATION/)要求管理者只写被委派子树；ICODE 本机 user manager 曾可创建 transient scope，但当前用户 manager `Delegate=no`，该实验不代表所有 pip-only 安装主机可用。

@@ -112,3 +112,9 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **远端分层结果：**commit `a57a93e` 的 CI [run 36375272942](https://github.com/ayukyo/icode/actions/runs/36375272942) 双架构都通过 `base-executable`、`base-python-no-site`、`base-python-site` 和 `port-rule-python-site`，随后在 `loopback-allowed` 探针退出 1、没有结果标记，stderr 仅命中固定 `python_runtime` 类别。基础 profile、普通 Python 初始化和追加端口规则后的解释器启动因此已有正向证据；网络 connect/send 是否执行成功仍无证据。
 - **可排除范围：**本次不再把失败描述为 profile startup 失败；前述 Python venv/site 启动路径假设在这些启动控制中未复现。尚未区分 socket 模块导入、socket 创建/timeout、connect、send 或探针内部未捕获异常，不推断为 Seatbelt 拒绝或授权。
 - **本次处理：**子进程现输出固定阶段 `socket-imported`/`socket-created`/`timeout-set`/`connect`/`send`；OSError 回执附数字 errno 与失败阶段，annotation 只包含有序固定阶段标签和白名单 Python 异常类别，不打印异常正文。保留连接正反对照，不把不可分类结果降为 skip。Linux 本机分类/语法/全量测试守护通过；Seatbelt 原生用例按平台跳过，下一 commit 的 Intel 与 Apple Silicon CI 才能验证这些阶段标签。产品网络 DENY、评分、自动模式不变。
+
+## 2026-09-28 Asia/Shanghai：macOS 探针 socket import 前失败的上下文一致化
+
+- **远端证据：**commit `4359b64` 的 CI [run 36376053831](https://github.com/ayukyo/icode/actions/runs/36376053831) 两架构的四个启动对照均通过；socket 探针失败时 `child_stages=none` 且 stderr 分类为 `python_runtime+python_os_error`。因为第一个阶段标记原先位于 `import socket` 之后，这说明异常发生在该标记之前或导入过程中，不能归因于 connect/send。
+- **代码差异与推断：**启动控制显式使用临时 workspace 作为 `cwd`，而原 socket 子进程继承 CI checkout cwd；该 cwd 不在 test-only profile 的 workspace 读授权内。此上下文差异可由源码直接确认；它是否就是 Python socket 导入期间权限异常的根因，仍待新原生 runner 验证。
+- **本次处理：**socket 子进程与启动控制统一 `cwd=workspace`，并将 `import socket` 放入阶段化 OSError 捕获区。若导入返回权限 errno，会标记 `socket-import`；若仍为非 OSError Python 异常，则只输出固定异常类别和已到达阶段，不泄漏原文。只改诊断测试，不改产品 profile/网络 DENY/评分/自动模式。Linux 全量测试通过；Seatbelt 原生效果待下一 CI。
