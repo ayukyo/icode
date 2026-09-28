@@ -88,6 +88,12 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **下一步诊断：**新增同一 Seatbelt profile 下只启动 Python 并打印固定标记的前置对照，先判断 profile/解释器是否可启动，再运行 loopback socket probe。回执仅包含阶段、退出码、固定标记数和 stderr 是否非空；不会回显 stderr、路径、地址或端口。
 - **门槛：**本机 Linux 的相关测试只能按平台跳过；下一次 Intel/Apple Silicon 原生结果是确认失败在启动层还是 socket 层的必要证据。生产网络授权与评分不变。
 
+## 2026-09-28 Asia/Shanghai：profile startup 失败的 stderr 词类回执
+
+- **复跑证据：**commit `abe6ef55ee9a` 的 [CI run 36373392322](https://github.com/ayukyo/icode/actions/runs/36373392322) 在 Intel 与 Apple Silicon 上都于 `profile-startup` 失败：进程退出 1、固定标记数 0、stderr 非空。该结果说明 Python 在该 profile 下未成功启动，但尚不能区分 SBPL 解析、执行器启动或 runner 约束。
+- **观测修改：**下一回执仅由固定词类形成 `sandbox_exec` / `profile` / `syntax_or_invalid` / `permission` / `loader` / `launch` 标签；绝不输出 stderr 原文、用户目录、地址或端口。相同 profile 的启动 A/B 和后续 loopback 探针仍分别运行。
+- **边界：**目前不能将该现象归因于产品 Seatbelt 网络边界或修改生产策略；需等待新一轮双架构原生 CI 的安全类别结果。
+
 ## 2026-09-28 Asia/Shanghai：host proxy 授权前关闭回执竞态
 
 - `serve_once()` 在不完整 CONNECT 请求头期间遇到 `server.close()`，曾在 socket/lease 错误分支未观察 `_closed` 时偶发返回 `True`，与其“关闭/停机返回 `False`”文档契约不一致。

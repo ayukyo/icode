@@ -2097,6 +2097,23 @@ print("metadata-read-only-ok")
             "    if sock is not None: sock.close()\n"
         )
 
+        def stderr_tags(stderr: str) -> str:
+            lowered = stderr.lower()
+            tags: list[str] = []
+            if "sandbox-exec" in lowered:
+                tags.append("sandbox_exec")
+            if any(token in lowered for token in ("profile", "sbpl", "predicate")):
+                tags.append("profile")
+            if any(token in lowered for token in ("syntax", "parse", "invalid")):
+                tags.append("syntax_or_invalid")
+            if any(token in lowered for token in ("denied", "not permitted", "permission")):
+                tags.append("permission")
+            if any(token in lowered for token in ("dyld", "library not loaded")):
+                tags.append("loader")
+            if any(token in lowered for token in ("exec", "spawn", "launch")):
+                tags.append("launch")
+            return "+".join(tags) or ("other" if stderr else "empty")
+
         def run_probe(
             profile: str,
             address: str,
@@ -2115,7 +2132,8 @@ print("metadata-read-only-ok")
                 print(
                     "::error::macos-seatbelt-port-boundary "
                     f"stage={stage} subprocess_exit={result.returncode} "
-                    f"marker_count={len(matches)}",
+                    f"marker_count={len(matches)} "
+                    f"stderr_tags={stderr_tags(result.stderr)}",
                     flush=True,
                 )
                 self.fail("Seatbelt probe did not return one safe result marker")
@@ -2151,7 +2169,7 @@ print("metadata-read-only-ok")
                     "::error::macos-seatbelt-port-boundary "
                     f"stage=profile-startup subprocess_exit={result.returncode} "
                     f"marker_count={len(markers)} "
-                    f"stderr_nonempty={bool(result.stderr)}",
+                    f"stderr_tags={stderr_tags(result.stderr)}",
                     flush=True,
                 )
                 self.fail("Seatbelt could not start the bounded Python probe")
