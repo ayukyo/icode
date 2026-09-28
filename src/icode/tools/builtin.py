@@ -68,7 +68,10 @@ def read_file(ctx: ToolContext, path: str, offset: int = 1, limit: int = 400) ->
 
     try:
         anchor = _anchored_read_root(ctx, target)
-        content = _read_anchored_text(anchor, target.relative_to(anchor), errors="replace")
+        content = _read_anchored_text(
+            anchor, target.relative_to(anchor), errors="replace",
+            reject_hardlinks=ctx.read_only_workspace,
+        )
     except (OSError, RuntimeError):
         content = None
     if content is None:
@@ -216,7 +219,13 @@ def _anchored_read_root(ctx: ToolContext, target: Path) -> Path:
     return workspace if target.is_relative_to(workspace) else target.parent
 
 
-def _read_anchored_text(root: Path, relative: Path, *, errors: str = "ignore") -> str | None:
+def _read_anchored_text(
+    root: Path,
+    relative: Path,
+    *,
+    errors: str = "ignore",
+    reject_hardlinks: bool = False,
+) -> str | None:
     """从可信目录读取真实普通文件；祖先与终点均不跟随链接。"""
     if not relative.parts:
         return None
@@ -236,7 +245,12 @@ def _read_anchored_text(root: Path, relative: Path, *, errors: str = "ignore") -
                 dir_fd=directory_fd,
             )
             with os.fdopen(file_fd, "rb") as stream:
-                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                info = os.fstat(stream.fileno())
+                # 路径白名单无法区分硬链接的另一个目录项；Reviewer 只读白名单
+                # 因此只接受单链接 inode，避免外部内容通过别名进入模型上下文。
+                if not stat.S_ISREG(info.st_mode) or (
+                    reject_hardlinks and info.st_nlink != 1
+                ):
                     return None
                 return stream.read().decode("utf-8", errors=errors)
         except OSError:
@@ -252,7 +266,15 @@ def _read_anchored_text(root: Path, relative: Path, *, errors: str = "ignore") -
             return None
     try:
         if target.resolve(strict=True).is_relative_to(root) and target.is_file():
-            return target.read_text(encoding="utf-8", errors=errors)
+            file_fd = os.open(target, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            with os.fdopen(file_fd, "r", encoding="utf-8", errors=errors) as stream:
+                info = os.fstat(stream.fileno())
+                # Windows 也必须在已打开的文件句柄上检查链接数，避免仅按名称授权。
+                if not stat.S_ISREG(info.st_mode) or (
+                    reject_hardlinks and info.st_nlink != 1
+                ):
+                    return None
+                return stream.read()
     except (OSError, RuntimeError):
         pass
     return None
@@ -283,7 +305,10 @@ def grep_files(
         else:
             try:
                 anchor = _anchored_read_root(ctx, target)
-                text = _read_anchored_text(anchor, target.relative_to(anchor))
+                text = _read_anchored_text(
+                    anchor, target.relative_to(anchor),
+                    reject_hardlinks=ctx.read_only_workspace,
+                )
             except (OSError, RuntimeError):
                 text = None
             targets = [(base, text)]
@@ -293,6 +318,7 @@ def grep_files(
             return ToolResult(False, "策略禁止读取该目录", {"error": "read_denied"})
         scan_ctx = ToolContext(
             root=root, policy=ctx.policy, deny_read_roots=ctx.deny_read_roots,
+            read_only_workspace=ctx.read_only_workspace,
         )
         try:
             entries = _safe_workspace_entries(scan_ctx)
@@ -303,7 +329,9 @@ def grep_files(
         except (OSError, RuntimeError):
             return ToolResult(False, "目录扫描失败，已停止 grep 查询",
                               {"error": "grep_unavailable"})
-        targets = ((root / relative, _read_anchored_text(root, relative))
+        targets = ((root / relative, _read_anchored_text(
+            root, relative, reject_hardlinks=ctx.read_only_workspace,
+        ))
                    for relative in relatives)
     else:
         targets = []

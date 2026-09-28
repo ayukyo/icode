@@ -35,6 +35,30 @@ class TestFileTools(unittest.TestCase):
         self.assertIn("1| def add", r.content)
         self.assertEqual(r.meta["total_lines"], 6)
 
+    def test_精确工作区路径不能读取工作区外文件的硬链接(self) -> None:
+        with temp_workspace() as outside:
+            secret = outside / "review-private.txt"
+            secret.write_text("HARDLINK_PRIVATE_MARKER\n", encoding="utf-8")
+            alias = self.root / "pkg" / "review-note.txt"
+            try:
+                os.link(secret, alias)
+            except OSError as exc:
+                self.skipTest(f"当前文件系统不支持创建测试硬链接：{exc}")
+
+            reviewer_context = ToolContext(root=self.root, read_only_workspace=True)
+            result = self.reg.invoke(
+                "read_file", reviewer_context, {"path": "pkg/review-note.txt"},
+            )
+            ordinary_read = self.reg.invoke(
+                "read_file", self.ctx, {"path": "pkg/review-note.txt"},
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta.get("error"), "read_unavailable")
+        self.assertNotIn("HARDLINK_PRIVATE_MARKER", result.content)
+        self.assertTrue(ordinary_read.ok)
+        self.assertIn("HARDLINK_PRIVATE_MARKER", ordinary_read.content)
+
     def test_受保护读取根拒绝直读并过滤递归工具(self) -> None:
         private = self.root / ".icode_output" / "ticket-1"
         private.mkdir(parents=True)

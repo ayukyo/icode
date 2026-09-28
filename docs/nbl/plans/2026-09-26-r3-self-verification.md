@@ -316,6 +316,13 @@ R3 核心能力（本切片）：
 - **后续修正：**拆分 Bubblewrap 安装、AppArmor 前置、ToolContext 集成、直接 OS 探针四个步骤；当限制 sysctl 为 1 时只加载附带的 `/usr/bin/bwrap` AppArmor profile（授予该程序 `userns`），不写 sysctl、不关闭全局限制。Ubuntu 官方 24.04 说明支持在 `unconfined` profile 上添加 `userns` 权限；本机 Ubuntu 22.04 AppArmor parser 3.0.4 不识别该新规则，因此不把本机 parser 输出算作通过，须由 24.04 原生 CI 验证。此 CI-only 配置不会证明普通用户安装后无需 AppArmor 前置，也不改变生产代码或 capability score。
 - **未验收：**CI #307 尚待推送后完成 Linux 四腿复验。此门只覆盖 Linux Reviewer 文件边界，不替代 macOS/Windows Reviewer、R2 资源限额/违规回执验收，也不表示 R2 或 R3 ready；自动模式状态不变。
 
+## 2026-09-29 Asia/Shanghai：Reviewer 精确读文件拒绝硬链接别名
+
+- **问题与 RED 证据：**`read_file` 先按规范路径做工作区/白名单判断，再经锚定目录句柄读取；但 hard link 的工作区目录项仍解析到工作区内名称，POSIX 打开句柄的原有检查只确认普通文件。新增外部私密标记文件硬链接到工作区白名单路径的回归后，旧实现确实返回了内容（测试先 RED）。
+- **最小实现：**仅当 `ToolContext.read_only_workspace=True` 时，`_read_anchored_text` 对实际打开的文件句柄读取 `fstat().st_nlink`，只允许链接数为 1 的普通文件；不支持读取的 hard link 返回既有 `read_unavailable`。普通会话不加此限制，保留其原有硬链接读取兼容性。POSIX 继续沿锚定目录 fd + `O_NOFOLLOW` 读取；Windows 改用打开句柄读取并在同一句柄上检查链接数。未增加依赖或复制上游代码。
+- **上游证据与取舍：**Codex `openai/codex` 固定 SHA `1bf73324cadc72a53ed467edc7d3fd2b145a6166` 的 [file-system API](https://github.com/openai/codex/blob/1bf73324cadc72a53ed467edc7d3fd2b145a6166/codex-rs/file-system/src/lib.rs) 与 [local file system](https://github.com/openai/codex/blob/1bf73324cadc72a53ed467edc7d3fd2b145a6166/codex-rs/exec-server/src/local_file_system.rs)，以及 Gemini CLI `2fe7c2d3f065dc40ad573d50b2091116f8a4aa18` 的 [fileUtils.ts](https://github.com/google-gemini/gemini-cli/blob/2fe7c2d3f065dc40ad573d50b2091116f8a4aa18/packages/core/src/utils/fileUtils.ts)，在所查路径中均未发现硬链接计数拒绝。Gemini 会在读取前后比较 `dev`/`ino`，能帮助发现路径对象替换，但不识别同一 inode 的其他链接。Microsoft [硬链接说明](https://learn.microsoft.com/en-us/windows/win32/fileio/hard-links-and-junctions)说明多个名称引用同一文件；[`BY_HANDLE_FILE_INFORMATION.nNumberOfLinks`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/ns-fileapi-by_handle_file_information)提供句柄链接数。**采纳**在 Reviewer 白名单路径上补充同一句柄链接数门槛；不把 `nlink==1` 解释成来源证明，也不把 Gemini 的路径身份检查外推成硬链接防护。
+- **本机验收与剩余门：**硬链接回归先 RED 后 GREEN，断言 Reviewer context 不泄露标记且普通 context 兼容读取；收窄后的 focused 回归、完整 `scripts/preflight.py` 三道门，以及官网、治理、竞品排期、文档契约、compileall、diff 检查均通过。Windows `fstat` 链接计数需由真实 Windows x64/ARM64 CI 验证；本切片不解决 Windows symlink/reparse TOCTOU、文件树快照竞态、策略化 Reviewer 或 OS 沙箱，也不改变 R2/R3 readiness。观察日期：2026-09-29。
+
 ## 2026-09-29 Asia/Shanghai：Reviewer CI AppArmor profile 安全复核
 
 - **历史 CI 结果：**commit `63c0f49` 的 [CI #307](https://github.com/ayukyo/icode/actions/runs/36462913484) 四个 Ubuntu runner 的 Bubblewrap 检查成功。但该版本使用 `flags=(unconfined)` + `userns` profile；Canonical [明确说明](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)这类 profile 会为 unconfined 应用提供绕过 userns 限制的路径。因此 #307 是测试配置下的成功运行记录，不是可接受的安全隔离证据，覆盖旧的“CI #307 尚待复验”状态说明。
