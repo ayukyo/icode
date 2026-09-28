@@ -277,6 +277,12 @@ R3 核心能力（本切片）：
 
 - **缺口与复现：**只读 `cat-file` 的类型、大小和可解析 commit header 不证明对象正文确实属于请求的 OID。在临时仓库中修改 loose commit 的消息正文、保留原 OID 文件名后，旧逻辑仍返回 tree OID；tree 对象也能以同样方式被伪造。本次只修改 disposable 测试仓库，未改用户仓库对象。
 - **修复：**按 Git 规范对 `type + 空格 + size + NUL + payload` 重算 SHA-1 或 SHA-256，commit/tree OID 不一致即拒绝。元数据 stdout 上限为 128 字节，commit 正文上限 1 MiB，tree 正文上限 128 MiB；更重要的是，每次正文 `cat-file` 都把刚预查的具体对象大小作为流式硬上限，避免 size 查询与正文读取之间对象变化导致先无界分配。输出一旦超过上限即终止并回收 Git 子进程。读取设置 `GIT_NO_LAZY_FETCH=1`，不改用户 index、不写 Git 对象或引用。
-- **测试与复审：**commit/tree 篡改、树预算、超限终止及 partial clone 缺树用例覆盖负例；两项“预查 size 与正文上限接线”测试先在旧实现中因实际参数为 `None` 失败，接线后通过。该回归边界组 7 项连续 20 轮共 140 次通过；结果 commit/tree 与 workspace 聚焦测试 80 项通过；全仓 unittest 1,105 项通过、25 项条件跳过。独立复审发现正文限额未接到 API 调用，修复后复审确认关闭。preflight 测试与子模块门分别通过；密钥形态扫描限定本次 5 个修改文件，避免遍历未跟踪用户目录；站点、治理、竞品排期、编译与 diff 检查通过。推送后的远端 CI 尚待执行。
+- **测试与复审：**commit/tree 篡改、树预算、超限终止及 partial clone 缺树用例覆盖负例；两项“预查 size 与正文上限接线”测试先在旧实现中因实际参数为 `None` 失败，接线后通过。该回归边界组 7 项连续 20 轮共 140 次通过；结果 commit/tree 与 workspace 聚焦测试 80 项通过；全仓 unittest 1,105 项通过、25 项条件跳过。独立复审发现正文限额未接到 API 调用，修复后复审确认关闭。preflight 测试与子模块门分别通过；密钥形态扫描限定本次 5 个修改文件，避免遍历未跟踪用户目录；站点、治理、竞品排期、编译与 diff 检查通过。推送后 CI 状态见下方 #263 复验记录。
 - **Git 运行时证据边界：**本机 `/usr/bin/git` 是 Ubuntu Jammy `1:2.34.1-1ubuntu1.17`，发行版回补 `GIT_NO_LAZY_FETCH`；同一 binary 的本地 `file://` partial clone/tree 正反对照确认：变量设置时 tree 保持缺失，清除变量后可取回。上游 vanilla Git v2.34.1 源码并无此环境变量处理，不应把本机发行版回补外推为同版本号二进制的普遍能力；已验证的新版本上游测试也以 blob 缺失为例，本地测试补充了 tree 场景。变量拒绝隐式 promisor 取回，不禁止显式 `git fetch`。来源及取舍见[持续竞品对照](../../agent-landscape-live.md)本节。
 - **R3 边界：**对象 hash 一致只证明正文匹配该 OID，不证明作者来源、签名、任务时序或测试行为；现有 Windows Git tree OID、路径竞态及其它 R2/R3 门仍未关闭。Python 系统解释器 3.10 低于工程 `requires-python >=3.11`；本节测试使用项目 `.venv` Python 3.11。
+
+## 2026-09-28 Asia/Shanghai：结果对象完整性推送后 CI #263
+
+- **结果：**commit [`cfa90ac`](https://github.com/ayukyo/icode/commit/cfa90aca011d46740fa3e555b584d15c667e310f) 的 [CI #263](https://github.com/ayukyo/icode/actions/runs/36361956421) 已结束且总体成功；Python 3.11/3.12 测试、Windows Job/wheel 与 workspace/native workflow jobs 完成。该结果验证对象完整性切片的推送后 workflow，不等同 R2 隔离 ready。
+- **R2 原生评分仍失败：**Ubuntu 22.04 x64/ARM64 为 `8/10`、`critical_passed=true`、`ready=false`；`ubuntu-latest` 与 Ubuntu 24.04 ARM 为 `7/10`、`critical_passed=false`、`ready=false`；macOS Apple Silicon/Intel 为 `6/10`、`critical_passed=false`、`ready=false`。普通 workflow 成功不能替代这些直接探针结果，自动模式继续关闭。
+- **本次未覆盖：**Windows Git worktree tree OID、Windows/容器/策略化 Reviewer 的 OS 只读边界、R2 资源限制与原生违规回执仍未验收。Windows tree OID 的可行性研究与待确认边界见[持续竞品对照](../../agent-landscape-live.md) 2026-09-28 Windows 小节。
