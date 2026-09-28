@@ -13,6 +13,9 @@ DEFAULT_MODULES = (
     "tests.test_workspace",
     "tests.test_autonomy",
     "tests.test_workbench",
+    # This reader handles Git commit/tree objects on every OS; it is distinct
+    # from the POSIX-only worktree tree-OID scanner.
+    "tests.test_r3_regression.TestResultCommitTreeBinding",
 )
 
 

@@ -479,7 +479,6 @@ class TestWorktreeGitTreeOID(unittest.TestCase):
                 worktree_git_tree_oid(target, object_format="sha3")
 
 
-@unittest.skipUnless(os.name == "posix", "Git result-tree verification uses POSIX test repositories")
 class TestResultCommitTreeBinding(unittest.TestCase):
     def _git(self, root, *arguments: str) -> str:
         import subprocess
