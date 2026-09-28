@@ -97,10 +97,18 @@ def _emit_conformance_score(
         process_group_cleanup=process_group_cleanup,
     )
     score = report["score"]
+    group_cleanup = score["process_group_cleanup"]
+    process_group_status = (
+        "not_applicable"
+        if group_cleanup is None
+        else str(group_cleanup).lower()
+    )
     print(
         f"::notice::conformance {platform} "
         f"passed={score['passed']}/{score['total']} "
         f"critical_passed={str(score['critical_passed']).lower()} "
+        f"platform_critical_passed={str(score['platform_critical_passed']).lower()} "
+        f"process_group_cleanup={process_group_status} "
         f"ready={str(score['ready']).lower()}"
     )
     for capability_id, passed in sorted(report["outcomes"].items()):

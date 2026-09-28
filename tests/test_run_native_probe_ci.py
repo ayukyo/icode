@@ -113,7 +113,14 @@ class TestNativeProbeCi(unittest.TestCase):
 
     def test_conformance来源字符串不会被拆成单字符(self) -> None:
         report = {
-            "score": {"passed": 0, "total": 10, "critical_passed": False, "ready": False},
+            "score": {
+                "passed": 0,
+                "total": 10,
+                "critical_passed": False,
+                "platform_critical_passed": False,
+                "process_group_cleanup": None,
+                "ready": False,
+            },
             "outcomes": {"doctor_self_test": False},
             "evidence": {"doctor_self_test": "no_independent_evidence"},
         }
@@ -128,6 +135,8 @@ class TestNativeProbeCi(unittest.TestCase):
             "conformance linux doctor_self_test: UNVERIFIED (no_independent_evidence)",
             output.getvalue(),
         )
+        self.assertIn("platform_critical_passed=false", output.getvalue())
+        self.assertIn("process_group_cleanup=not_applicable", output.getvalue())
 
     def test_linux保护路径证据进入评分且随包探针门禁失败关闭(self) -> None:
         sandbox = LandlockSandbox(helper="/tmp/icode-landlock")
@@ -241,6 +250,41 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertIn(
             "::error::landlock native probe failed: process-tree cleanup:",
             failure_output.getvalue(),
+        )
+
+    def test_macos评分回执区分严格树清理与平台同组清理(self) -> None:
+        output = StringIO()
+        checks = {
+            "workspace_write": True,
+            "outside_write_denied": True,
+            "protected_write_denied": True,
+            "secret_read_denied": True,
+            "network_denied": True,
+            "network_allowlist_expiry": True,
+            "child_inherits": True,
+        }
+
+        with redirect_stdout(output):
+            run_native_probe_ci._emit_conformance_score(
+                checks,
+                platform="macos",
+                doctor_self_test=True,
+                process_tree_cleanup=False,
+                process_group_cleanup=True,
+            )
+
+        notice = next(
+            line for line in output.getvalue().splitlines()
+            if line.startswith("::notice::conformance macos ")
+        )
+        self.assertIn("critical_passed=false", notice)
+        self.assertIn("platform_critical_passed=true", notice)
+        self.assertIn("process_group_cleanup=true", notice)
+        self.assertIn("ready=false", notice)
+        self.assertIn(
+            "conformance macos process_tree_cleanup: UNVERIFIED "
+            "(no_independent_evidence)",
+            output.getvalue(),
         )
 
     def test_macos评分前采集同组清理且失败时门禁关闭(self) -> None:
