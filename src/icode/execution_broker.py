@@ -31,6 +31,8 @@ class ExecutionResult:
     cleanup_ok: bool
     cleanup_errno: int | None
     raw_output: bytes = b""
+    violation_receipt: dict[str, object] | None = None
+    violation_observer_status: str | None = None
 
 
 def _policy_environment(root: Path, *, git_status: bool = False) -> dict[str, str]:
@@ -107,6 +109,132 @@ def execute_policy_command(
     return _execute_policy_command(
         argv, cwd=cwd, policy=policy, timeout=timeout,
         git_status=git_status, output_limit_bytes=output_limit_bytes,
+    )
+
+
+def execute_linux_violation_observed_command(
+    argv: list[str], *, cwd: Path, sandbox: object, policy: SandboxPolicy,
+    timeout: int | float, output_limit_bytes: int | None = None,
+    command_wrapper: Callable[[list[str], socket.socket], list[str]],
+) -> ExecutionResult:
+    """Run a Linux deny-only command with a pre-exec USER_NOTIF observer.
+
+    This is used only when the real Landlock helper is explicitly selected.
+    The notification broker always answers EPERM; an absent or failed observer
+    prevents payload execution and never degrades to an unobserved command.
+    """
+    if not sys.platform.startswith("linux"):
+        return ExecutionResult(None, "", 0, "unsupported_platform", False, False, None)
+
+    from .isolation import LandlockSandbox
+    from .linux_seccomp_notify import (
+        LinuxSeccompViolationMonitor,
+        create_seccomp_listener_handoff_channel,
+    )
+    from .sandbox_policy import NetworkMode
+
+    if (
+        not isinstance(sandbox, LandlockSandbox)
+        or not isinstance(policy, SandboxPolicy)
+        or policy.network_mode is not NetworkMode.DENY
+        or policy.allowed_domains
+    ):
+        return ExecutionResult(None, "", 0, "invalid_violation_scope", False, True, None)
+
+    host_control: socket.socket | None = None
+    sender_control: socket.socket | None = None
+    monitor: LinuxSeccompViolationMonitor | None = None
+    try:
+        workspace = policy.workspace_root.resolve(strict=True)
+        working_directory = Path(cwd).resolve(strict=True)
+        working_directory.relative_to(workspace)
+        if not working_directory.is_dir():
+            raise ValueError("cwd is not a directory")
+        if (
+            not isinstance(argv, list)
+            or not argv
+            or any(type(part) is not str or "\x00" in part for part in argv)
+            or not argv[0]
+        ):
+            raise ValueError("invalid argv")
+        host_control, sender_control = create_seccomp_listener_handoff_channel()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        for endpoint in (sender_control, host_control):
+            if endpoint is not None:
+                try:
+                    endpoint.close()
+                except OSError:
+                    pass
+        return ExecutionResult(
+            None, "", 0, "violation_observer_setup_failed", False, True, None,
+            violation_observer_status="incomplete",
+        )
+
+    try:
+        wrapped = command_wrapper(argv, sender_control)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        sender_control.close()
+        host_control.close()
+        return ExecutionResult(
+            None, "", 0, "isolation_unavailable", False, True, None,
+            violation_observer_status="incomplete",
+        )
+    monitor = LinuxSeccompViolationMonitor(host_control)
+
+    def start_observer(process: subprocess.Popen[bytes], deadline: float) -> None:
+        assert monitor is not None and sender_control is not None
+        try:
+            sender_control.close()
+            monitor.bind_process(process)
+            monitor.start(deadline_monotonic=deadline)
+        except Exception:  # noqa: BLE001 - observer setup failure kills payload.
+            monitor.abort()
+
+    result: ExecutionResult
+    try:
+        assert sender_control is not None and monitor is not None
+        result = _execute_policy_command(
+            wrapped,
+            cwd=working_directory,
+            policy=policy,
+            timeout=timeout,
+            output_limit_bytes=output_limit_bytes,
+            pass_fds=(sender_control.fileno(),),
+            on_spawn=start_observer,
+        )
+    finally:
+        if sender_control is not None:
+            try:
+                sender_control.close()
+            except OSError:
+                pass
+        if host_control is not None:
+            try:
+                host_control.close()
+            except OSError:
+                pass
+        monitor_closed = monitor.close() if monitor is not None else False
+
+    assert monitor is not None
+    observer_ok = monitor_closed and monitor._started and not monitor.failed
+    receipt = monitor.receipt() if observer_ok else None
+    error = result.error
+    if not observer_ok and error not in (
+        "timeout", "output_limit", "cleanup_failed", "invalid_timeout",
+        "invalid_output_limit", "launch_failed",
+    ):
+        error = "violation_observer_failed"
+    return ExecutionResult(
+        result.exit_code,
+        result.output,
+        result.output_bytes,
+        error,
+        result.output_truncated,
+        result.cleanup_ok,
+        result.cleanup_errno,
+        result.raw_output,
+        receipt,
+        "complete" if observer_ok else "incomplete",
     )
 
 

@@ -1116,12 +1116,38 @@ class LandlockSandbox:
             argv, policy=policy, metadata_roots=(), network=network,
         )
 
+    def wrap_policy_with_violation_receipt(
+        self, argv: Sequence[str], *, policy: SandboxPolicy,
+        control_socket: socket.socket,
+    ) -> list[str]:
+        """Wrap one deny-only command with a private native receipt channel."""
+        if (
+            not sys.platform.startswith("linux")
+            or not isinstance(policy, SandboxPolicy)
+            or type(control_socket) is not socket.socket
+            or control_socket.fileno() < 3
+            or control_socket.getsockopt(socket.SOL_SOCKET, socket.SO_DOMAIN)
+            != socket.AF_UNIX
+            or control_socket.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE)
+            != socket.SOCK_SEQPACKET
+            or policy.network_mode is not NetworkMode.DENY
+            or policy.allowed_domains
+        ):
+            raise ValueError("native violation receipt channel is unavailable")
+        return self._wrap_policy_with_metadata_roots(
+            argv,
+            policy=policy,
+            metadata_roots=(),
+            violation_control_descriptor=control_socket.fileno(),
+        )
+
     def _wrap_policy_with_metadata_roots(
         self, argv: Sequence[str], *, policy: SandboxPolicy,
         metadata_roots: Sequence[MetadataReadRoot], network: bool = False,
         workspace_read_only: bool = False, execute_only: Path | None = None,
         network_loopback_only: bool = False,
         proxy_control_descriptor: int | None = None,
+        violation_control_descriptor: int | None = None,
     ) -> list[str]:
         """Wrap a trusted internal read-only query with extra file/directory roots.
 
@@ -1138,6 +1164,12 @@ class LandlockSandbox:
                 or proxy_control_descriptor < 3
             ))
             or (not network_loopback_only and proxy_control_descriptor is not None)
+            or (violation_control_descriptor is not None and (
+                type(violation_control_descriptor) is not int
+                or violation_control_descriptor < 3
+                or network_loopback_only
+                or proxy_control_descriptor is not None
+            ))
         ):
             raise ValueError("invalid trusted proxy handoff configuration")
         if workspace_read_only:
@@ -1155,6 +1187,7 @@ class LandlockSandbox:
             workspace_read_only=workspace_read_only, execute_only=execute_claims,
             network_loopback_only=network_loopback_only,
             proxy_control_descriptor=proxy_control_descriptor,
+            violation_control_descriptor=violation_control_descriptor,
         )
 
     def wrap_leased_connect_candidate(
@@ -1244,6 +1277,7 @@ class LandlockSandbox:
         execute_only: Sequence[ExecuteOnlyFile] | None = None,
         network_loopback_only: bool = False,
         proxy_control_descriptor: int | None = None,
+        violation_control_descriptor: int | None = None,
     ) -> list[str]:
         helper = Path(self.helper)
         if not helper.is_file():
@@ -1262,6 +1296,8 @@ class LandlockSandbox:
         if network_loopback_only:
             wrapped.extend(("--network-loopback-only", "--proxy-control-fd",
                             str(proxy_control_descriptor)))
+        if violation_control_descriptor is not None:
+            wrapped.extend(("--violation-control-fd", str(violation_control_descriptor)))
         for root in self._runtime_read_roots():
             wrapped.extend(("--runtime-read", str(root)))
         for root in metadata_roots:

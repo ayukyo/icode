@@ -24,7 +24,10 @@ from pathlib import Path
 from typing import Iterator
 
 from ..artifact_broker import ArtifactAccessError
-from ..execution_broker import execute_policy_command
+from ..execution_broker import (
+    execute_linux_violation_observed_command,
+    execute_policy_command,
+)
 from ..git_broker import GitStatusUnavailable, execute_git_status
 from ..isolation import LandlockSandbox
 from ..sandbox_policy import NetworkMode, SandboxPolicy
@@ -33,6 +36,7 @@ from ..workspace_snapshot import changed_files, snapshot_workspace
 from .base import (
     OPCLASS_MANAGED_WRITE,
     OPCLASS_READ_ONLY,
+    POLICY_DENIED_USER_MESSAGE,
     Tool,
     ToolContext,
     ToolRegistry,
@@ -641,8 +645,17 @@ def run_command(
             {"error": "git_broker_unavailable"},
             opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
         )
+    use_linux_violation_receipts = (
+        ctx.policy is not None
+        and sys.platform.startswith("linux")
+        and isinstance(ctx.sandbox, LandlockSandbox)
+        and ctx.policy.network_mode is NetworkMode.DENY
+        and not ctx.policy.allowed_domains
+    )
     try:
-        exec_argv = ctx.wrap_command(args)
+        exec_argv = (
+            args if use_linux_violation_receipts else ctx.wrap_command(args)
+        )
     except Exception as exc:  # noqa: BLE001 - 隔离不可用时拒绝执行，不降级
         return ToolResult(
             False,
@@ -652,35 +665,68 @@ def run_command(
         )
 
     if ctx.policy is not None:
-        outcome = execute_policy_command(
-            exec_argv, cwd=workdir, policy=ctx.policy, timeout=timeout,
-        )
+        if use_linux_violation_receipts:
+            outcome = execute_linux_violation_observed_command(
+                args,
+                cwd=workdir,
+                sandbox=ctx.sandbox,
+                policy=ctx.policy,
+                timeout=timeout,
+                command_wrapper=ctx.wrap_command_with_violation_receipt,
+            )
+        else:
+            outcome = execute_policy_command(
+                exec_argv, cwd=workdir, policy=ctx.policy, timeout=timeout,
+            )
         # 命令参数可能含密钥：事件与回执只保留摘要，不回显原文。
         argv_sha256 = hashlib.sha256(
             json.dumps(args, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+        if outcome.error == "isolation_unavailable":
+            return ToolResult(
+                False,
+                "隔离不可用，已拒绝执行：工单隔离策略绑定失败，命令已拒绝",
+                {"error": "isolation_unavailable", "sandbox": ctx.isolation_label()},
+                opclass=OPCLASS_MANAGED_WRITE,
+            )
+        result_meta = {
+            "argv_sha256": argv_sha256,
+            "exit_code": outcome.exit_code,
+            "cwd": workdir.relative_to(ctx.root.resolve()).as_posix(),
+            "isolation": ctx.isolation_label(),
+            "real_isolation": ctx.needs_real_isolation(),
+            "policy_hash": ctx.policy.policy_hash,
+            "output_bytes": outcome.output_bytes,
+            "output_truncated": outcome.output_truncated,
+            "cleanup_ok": outcome.cleanup_ok,
+            "cleanup_errno": outcome.cleanup_errno,
+            # cleanup_ok 只表示 broker 的进程组收束调用成功，不是整树证明。
+            "cleanup_scope": (
+                "not_started" if outcome.error in ("launch_failed", "unsupported_platform")
+                else "process_group"
+            ),
+        }
+        if outcome.violation_observer_status is not None:
+            result_meta["violation_observer_status"] = outcome.violation_observer_status
+        if outcome.violation_receipt is not None:
+            result_meta.update({
+                "error": "policy_denied",
+                "error_code": "policy_denied",
+                "violation_receipt": outcome.violation_receipt,
+            })
+            return ToolResult(
+                False,
+                POLICY_DENIED_USER_MESSAGE,
+                result_meta,
+                opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
+            )
+        if outcome.error:
+            result_meta["error"] = outcome.error
         output = outcome.output.strip() or "<无输出>"
         return ToolResult(
             outcome.error is None and outcome.exit_code == 0,
             f"$ [受控命令]\nexit={outcome.exit_code}\n{output}",
-            {
-                "argv_sha256": argv_sha256,
-                "exit_code": outcome.exit_code,
-                "cwd": workdir.relative_to(ctx.root.resolve()).as_posix(),
-                "isolation": ctx.isolation_label(),
-                "real_isolation": ctx.needs_real_isolation(),
-                "policy_hash": ctx.policy.policy_hash,
-                "output_bytes": outcome.output_bytes,
-                "output_truncated": outcome.output_truncated,
-                "cleanup_ok": outcome.cleanup_ok,
-                "cleanup_errno": outcome.cleanup_errno,
-                # cleanup_ok 只表示 broker 的进程组收束调用成功，不是整树证明。
-                "cleanup_scope": (
-                    "not_started" if outcome.error in ("launch_failed", "unsupported_platform")
-                    else "process_group"
-                ),
-                **({"error": outcome.error} if outcome.error else {}),
-            },
+            result_meta,
             opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
         )
 

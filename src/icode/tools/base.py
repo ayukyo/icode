@@ -133,12 +133,7 @@ class ToolContext:
                     "命令已拒绝"
                 ) from None
         if self.policy is not None:
-            # 自主会话的策略必须由后端完整绑定；普通 wrap 只证明最小探针，
-            # 无法保护可写工作区内的 .git 等例外路径。
-            wrap_policy = getattr(self.sandbox, "wrap_policy", None)
-            if (not self.needs_real_isolation() or not callable(wrap_policy)
-                    or self.policy.workspace_root != self.root.resolve()):
-                raise IsolationUnavailable("原生后端尚不能执行该工单的完整隔离策略")
+            wrap_policy = self._policy_command_wrapper()
             try:
                 return list(wrap_policy(argv, policy=self.policy, network=network))
             except Exception:  # noqa: BLE001 - 策略绑定失败不允许退回普通 wrap
@@ -153,6 +148,35 @@ class ToolContext:
                 f"隔离后端 {getattr(self.sandbox, 'name', '?')} 包装命令失败；"
                 "为避免在无隔离状态下执行，已拒绝该命令"
             ) from None
+
+    def _policy_command_wrapper(self):
+        """Return the policy wrapper only after enforcing ToolContext binding."""
+        if self.read_only_workspace:
+            raise IsolationUnavailable("策略化 Reviewer 命令尚无可验证的只读策略绑定")
+        wrap_policy = getattr(self.sandbox, "wrap_policy", None)
+        if (
+            self.policy is None
+            or not self.needs_real_isolation()
+            or not callable(wrap_policy)
+            or self.policy.workspace_root != self.root.resolve()
+        ):
+            raise IsolationUnavailable("原生后端尚不能执行该工单的完整隔离策略")
+        return wrap_policy
+
+    def wrap_command_with_violation_receipt(
+        self, argv: list[str], control_socket: object,
+    ) -> list[str]:
+        """Wrap a command for native receipts without bypassing context binding."""
+        self._policy_command_wrapper()
+        wrap_receipt = getattr(self.sandbox, "wrap_policy_with_violation_receipt", None)
+        if not callable(wrap_receipt):
+            raise IsolationUnavailable("原生违规回执通道不可用，命令已拒绝")
+        try:
+            return list(wrap_receipt(
+                argv, policy=self.policy, control_socket=control_socket,
+            ))
+        except Exception:  # noqa: BLE001 - handoff 包装失败时拒绝执行
+            raise IsolationUnavailable("工单隔离策略绑定失败，命令已拒绝") from None
 
 
 class IsolationUnavailable(RuntimeError):

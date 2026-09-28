@@ -212,6 +212,125 @@ static int validate_proxy_control_descriptor(int descriptor) {
     return 0;
 }
 
+static int validate_violation_control_descriptor(int descriptor) {
+    if (descriptor < 3) {
+        errno = EINVAL;
+        return -1;
+    }
+    int domain = 0;
+    int type = 0;
+    struct ucred peer = {0};
+    socklen_t length = sizeof(int);
+    if (getsockopt(descriptor, SOL_SOCKET, SO_DOMAIN, &domain, &length) != 0 ||
+        length != sizeof(domain) || domain != AF_UNIX) {
+        errno = EPERM;
+        return -1;
+    }
+    length = sizeof(int);
+    if (getsockopt(descriptor, SOL_SOCKET, SO_TYPE, &type, &length) != 0 ||
+        length != sizeof(type) || type != SOCK_SEQPACKET) {
+        errno = EPERM;
+        return -1;
+    }
+    length = sizeof(peer);
+    if (getsockopt(descriptor, SOL_SOCKET, SO_PEERCRED, &peer, &length) != 0 ||
+        length != sizeof(peer) || peer.pid != getppid()) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
+
+static int send_seccomp_listener_handoff(int control_descriptor, int listener) {
+    static const char handoff_message[] = "ICODE_SECCOMP_LISTENER_V1";
+    static const char expected_ack[] = "ICODE_SECCOMP_LISTENER_ACK_V1";
+    struct iovec data = {
+        .iov_base = (void *)handoff_message,
+        .iov_len = sizeof(handoff_message) - 1,
+    };
+    union {
+        struct cmsghdr alignment;
+        char bytes[CMSG_SPACE(sizeof(listener))];
+    } ancillary = {0};
+    struct msghdr message = {
+        .msg_iov = &data,
+        .msg_iovlen = 1,
+        .msg_control = ancillary.bytes,
+        .msg_controllen = sizeof(ancillary.bytes),
+    };
+    struct cmsghdr *header = CMSG_FIRSTHDR(&message);
+    if (!header) {
+        errno = EINVAL;
+        return -1;
+    }
+    header->cmsg_level = SOL_SOCKET;
+    header->cmsg_type = SCM_RIGHTS;
+    header->cmsg_len = CMSG_LEN(sizeof(listener));
+    memcpy(CMSG_DATA(header), &listener, sizeof(listener));
+
+    ssize_t sent;
+    do {
+        sent = sendmsg(control_descriptor, &message, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
+    if (sent != (ssize_t)(sizeof(handoff_message) - 1)) {
+        if (sent >= 0) errno = EIO;
+        return -1;
+    }
+
+    struct pollfd wait_socket = {.fd = control_descriptor, .events = POLLIN};
+    int ready;
+    do {
+        ready = poll(&wait_socket, 1, 5000);
+    } while (ready < 0 && errno == EINTR);
+    if (ready <= 0 || !(wait_socket.revents & POLLIN)) {
+        if (ready == 0) errno = ETIMEDOUT;
+        else if (ready > 0) errno = EPIPE;
+        return -1;
+    }
+
+    unsigned char payload[sizeof(expected_ack)];
+    union {
+        struct cmsghdr alignment;
+        char bytes[CMSG_SPACE(sizeof(int) * 4)];
+    } response_ancillary = {0};
+    struct iovec response_data = {
+        .iov_base = payload,
+        .iov_len = sizeof(payload),
+    };
+    struct msghdr response = {
+        .msg_iov = &response_data,
+        .msg_iovlen = 1,
+        .msg_control = response_ancillary.bytes,
+        .msg_controllen = sizeof(response_ancillary.bytes),
+    };
+    ssize_t received;
+    do {
+        received = recvmsg(control_descriptor, &response, MSG_CMSG_CLOEXEC);
+    } while (received < 0 && errno == EINTR);
+    int malformed = (response.msg_flags & (MSG_TRUNC | MSG_CTRUNC)) != 0;
+    for (struct cmsghdr *item = CMSG_FIRSTHDR(&response); item;
+         item = CMSG_NXTHDR(&response, item)) {
+        if (item->cmsg_level == SOL_SOCKET &&
+            item->cmsg_type == SCM_RIGHTS && item->cmsg_len >= CMSG_LEN(0)) {
+            size_t bytes = item->cmsg_len - CMSG_LEN(0);
+            size_t complete = bytes - (bytes % sizeof(int));
+            const unsigned char *raw = (const unsigned char *)CMSG_DATA(item);
+            for (size_t offset = 0; offset < complete; offset += sizeof(int)) {
+                int unexpected = -1;
+                memcpy(&unexpected, raw + offset, sizeof(unexpected));
+                if (unexpected >= 0) close(unexpected);
+            }
+        }
+        malformed = 1;
+    }
+    if (received != (ssize_t)(sizeof(expected_ack) - 1) || malformed ||
+        memcmp(payload, expected_ack, sizeof(expected_ack) - 1) != 0) {
+        errno = EPROTO;
+        return -1;
+    }
+    return 0;
+}
+
 static int64_t monotonic_milliseconds(void) {
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
@@ -545,7 +664,16 @@ fail:
     return -1;
 }
 
-static int install_network_deny(void) {
+static int install_network_deny(int violation_control_descriptor) {
+    /*
+     * Ordinary helper runs preserve direct ERRNO denial. When the trusted host
+     * broker explicitly requests a receipt, denied socket syscalls instead go
+     * through USER_NOTIF; the broker only answers EPERM and must ACK before
+     * the payload is allowed to exec.
+     */
+    unsigned int deny_action = violation_control_descriptor >= 0
+        ? SECCOMP_RET_USER_NOTIF
+        : (SECCOMP_RET_ERRNO | EPERM);
     struct sock_filter instructions[] = {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, ICODE_AUDIT_ARCH, 1, 0),
@@ -558,12 +686,12 @@ static int install_network_deny(void) {
 #endif
         /* No socket() calls; keep only AF_UNIX socketpair() for local IPC. */
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_socket, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_RET | BPF_K, deny_action),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_socketpair, 0, 13),
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  offsetof(struct seccomp_data, args[0])),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AF_UNIX, 1, 0),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_RET | BPF_K, deny_action),
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  offsetof(struct seccomp_data, args[1])),
         BPF_STMT(BPF_ALU | BPF_AND | BPF_K, ICODE_SOCK_TYPE_MASK),
@@ -573,11 +701,11 @@ static int install_network_deny(void) {
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  offsetof(struct seccomp_data, args[2])),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_RET | BPF_K, deny_action),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_RET | BPF_K, deny_action),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_io_uring_setup, 0, 1),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_RET | BPF_K, deny_action),
         /* PID namespace lifetime, not process-group membership, owns cleanup. */
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
@@ -585,8 +713,33 @@ static int install_network_deny(void) {
         .len = (unsigned short)(sizeof(instructions) / sizeof(instructions[0])),
         .filter = instructions,
     };
-    if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) != 0) {
-        perror("PR_SET_SECCOMP");
+    if (violation_control_descriptor < 0) {
+        if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &program) != 0) {
+            perror("PR_SET_SECCOMP");
+            return -1;
+        }
+        return 0;
+    }
+
+    int listener = (int)syscall(
+        SYS_seccomp,
+        SECCOMP_SET_MODE_FILTER,
+        SECCOMP_FILTER_FLAG_NEW_LISTENER,
+        &program);
+    if (listener < 0) {
+        perror("seccomp NEW_LISTENER");
+        return -1;
+    }
+    int handoff_result = send_seccomp_listener_handoff(
+        violation_control_descriptor, listener);
+    int saved_errno = errno;
+    if (close(listener) != 0 && handoff_result == 0) {
+        saved_errno = errno;
+        handoff_result = -1;
+    }
+    if (handoff_result != 0) {
+        errno = saved_errno ? saved_errno : EIO;
+        perror("seccomp listener handoff");
         return -1;
     }
     return 0;
@@ -953,7 +1106,8 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
                               size_t execute_only_count,
                               char **command,
                               int workspace_read_only, int mapless,
-                              int network_loopback_only) {
+                              int network_loopback_only,
+                              int violation_control_descriptor) {
     /* Namespace PID 1 sees its parent as PID 0, so getppid cannot validate it. */
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
         prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0) {
@@ -980,10 +1134,15 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
                 execute_only, execute_only_count) != 0) ||
             (network_loopback_only
                 ? install_network_loopback_only()
-                : install_network_deny()) != 0) _exit(1);
+                : install_network_deny(violation_control_descriptor)) != 0) _exit(1);
+        if (violation_control_descriptor >= 0 &&
+            close(violation_control_descriptor) != 0) _exit(1);
         execvp(command[0], command);
         perror("execvp");
         _exit(127);
+    }
+    if (violation_control_descriptor >= 0) {
+        close(violation_control_descriptor);
     }
     for (;;) {
         int status;
@@ -1013,6 +1172,7 @@ static int supervise_task(pid_t host_parent, const char *workspace,
                           int workspace_read_only,
                           int network_loopback_only,
                           int proxy_control_descriptor,
+                          int violation_control_descriptor,
                           const char *setgroups_path,
                           const char *uid_map_path) {
     int mapless = enter_task_namespaces(
@@ -1040,11 +1200,15 @@ static int supervise_task(pid_t host_parent, const char *workspace,
             control[0], workspace, runtime_roots, runtime_root_count,
             metadata_roots, metadata_root_count, execute_only,
             execute_only_count, command,
-            workspace_read_only, mapless, network_loopback_only);
+            workspace_read_only, mapless, network_loopback_only,
+            violation_control_descriptor);
         close(control[0]);
         _exit(result);
     }
     close(control[0]);
+    if (violation_control_descriptor >= 0) {
+        close(violation_control_descriptor);
+    }
     int status;
     pid_t waited;
     do {
@@ -1065,7 +1229,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         fprintf(stderr,
                 "usage: icode-landlock --workspace PATH --parent-pid PID "
                 "[--workspace-read-only] [--network-loopback-only] "
-                "[--proxy-control-fd FD] "
+                "[--proxy-control-fd FD | --violation-control-fd FD] "
                 "[--runtime-read PATH]... "
                 "[--metadata-read PATH DEVICE INODE]... "
                 "[--execute-only PATH DEVICE INODE] "
@@ -1098,6 +1262,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     int workspace_read_only = 0;
     int network_loopback_only = 0;
     int proxy_control_descriptor = -1;
+    int violation_control_descriptor = -1;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
         if (strcmp(argv[command_index], "--workspace-read-only") == 0) {
@@ -1133,6 +1298,20 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                 return 2;
             }
             proxy_control_descriptor = (int)descriptor_value;
+            command_index += 2;
+        } else if (strcmp(argv[command_index], "--violation-control-fd") == 0) {
+            uint64_t descriptor_value = 0;
+            if (violation_control_descriptor >= 0 ||
+                command_index + 1 >= argc ||
+                parse_u64_decimal(argv[command_index + 1], &descriptor_value) != 0 ||
+                descriptor_value < 3 || descriptor_value > INT_MAX) {
+                fprintf(stderr, "invalid violation control descriptor\n");
+                free(runtime_roots);
+                free(metadata_roots);
+                free(execute_only);
+                return 2;
+            }
+            violation_control_descriptor = (int)descriptor_value;
             command_index += 2;
         } else if (strcmp(argv[command_index], "--runtime-read") == 0) {
             if (command_index + 1 >= argc || argv[command_index + 1][0] != '/') {
@@ -1222,8 +1401,16 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         return 2;
     }
     ++command_index;
-    if (proxy_control_descriptor >= 0 && !network_loopback_only) {
+    if (proxy_control_descriptor >= 0 &&
+        (violation_control_descriptor >= 0 || !network_loopback_only)) {
         fprintf(stderr, "proxy control descriptor requires loopback-only mode\n");
+        free(runtime_roots);
+        free(metadata_roots);
+        free(execute_only);
+        return 2;
+    }
+    if (violation_control_descriptor >= 0 && network_loopback_only) {
+        fprintf(stderr, "violation control descriptor requires network-deny mode\n");
         free(runtime_roots);
         free(metadata_roots);
         free(execute_only);
@@ -1237,10 +1424,21 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         free(execute_only);
         return 1;
     }
+    if (violation_control_descriptor >= 0 &&
+        validate_violation_control_descriptor(violation_control_descriptor) != 0) {
+        fprintf(stderr, "violation control descriptor is not a trusted channel\n");
+        free(runtime_roots);
+        free(metadata_roots);
+        free(execute_only);
+        return 1;
+    }
     /* Preserve only the one authenticated bootstrap endpoint, if requested. */
-    if (close_inherited_descriptors(proxy_control_descriptor) != 0) {
+    int preserved_descriptor = proxy_control_descriptor >= 0
+        ? proxy_control_descriptor : violation_control_descriptor;
+    if (close_inherited_descriptors(preserved_descriptor) != 0) {
         perror("close_range inherited descriptors");
         if (proxy_control_descriptor >= 0) close(proxy_control_descriptor);
+        if (violation_control_descriptor >= 0) close(violation_control_descriptor);
         free(runtime_roots);
         free(metadata_roots);
         free(execute_only);
@@ -1275,7 +1473,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         execute_only_count > 0 ? execute_only : NULL, execute_only_count,
         argv + command_index,
         workspace_read_only, network_loopback_only,
-        proxy_control_descriptor,
+        proxy_control_descriptor, violation_control_descriptor,
         setgroups_path, uid_map_path);
     free(workspace);
     free(runtime_roots);
