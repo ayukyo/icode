@@ -81,6 +81,30 @@ jobs:
       - name: Verify leased TCP socket lifecycle
         run: python scripts/run_network_lease_ci.py
 
+  windows-tree-snapshot-probe:
+    name: R3 Windows directory-handle probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+    env:
+      PYTHONPATH: src
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Probe bounded directory records and native handle sharing
+        run: python -m unittest tests.test_windows_tree_snapshot_probe -v
+
   native-probe:
     name: R2.2 native probe (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -1,0 +1,369 @@
+"""Test-only Windows file-ID directory enumeration probe."""
+
+from __future__ import annotations
+
+import ctypes
+import importlib
+import os
+import struct
+import tempfile
+import unittest
+from pathlib import Path
+
+from tests.windows_tree_snapshot_probe import _FileIdBothDirectoryInfoHeader
+
+_HEADER_SIZE = ctypes.sizeof(_FileIdBothDirectoryInfoHeader)
+
+
+def _entry_record(
+    name: str,
+    *,
+    file_id: int,
+    attributes: int = 0x80,
+    next_entry_offset: int = 0,
+) -> bytes:
+    name_bytes = name.encode("utf-16-le")
+    record = bytearray(max(_HEADER_SIZE + len(name_bytes), next_entry_offset))
+    struct.pack_into(
+        "<I", record, _FileIdBothDirectoryInfoHeader.next_entry_offset.offset,
+        next_entry_offset,
+    )
+    struct.pack_into(
+        "<I", record, _FileIdBothDirectoryInfoHeader.file_attributes.offset, attributes,
+    )
+    struct.pack_into(
+        "<I", record, _FileIdBothDirectoryInfoHeader.file_name_length.offset,
+        len(name_bytes),
+    )
+    struct.pack_into(
+        "<Q", record, _FileIdBothDirectoryInfoHeader.file_id.offset, file_id,
+    )
+    record[_HEADER_SIZE:_HEADER_SIZE + len(name_bytes)] = name_bytes
+    return bytes(record)
+
+
+class TestFileIdDirectoryInfoParser(unittest.TestCase):
+    def _parser_module(self):
+        try:
+            return importlib.import_module("tests.windows_tree_snapshot_probe")
+        except ImportError:
+            return None
+
+    def test_ctypes_header_matches_documented_fixed_header_size(self) -> None:
+        self.assertEqual(_HEADER_SIZE, 104)
+        self.assertEqual(
+            _FileIdBothDirectoryInfoHeader.file_id.offset % 8,
+            0,
+            "64-bit file identifier must retain native alignment",
+        )
+
+    def test_parser_returns_name_attributes_and_full_file_id(self) -> None:
+        module = self._parser_module()
+        parser = getattr(module, "parse_file_id_both_directory_info", None)
+        self.assertTrue(callable(parser), "Windows directory-info parser is missing")
+
+        entries = parser(_entry_record("源 file.txt", file_id=0xFEDCBA9876543210))
+
+        self.assertEqual(
+            [(entry.name, entry.attributes, entry.file_id) for entry in entries],
+            [("源 file.txt", 0x80, 0xFEDCBA9876543210)],
+        )
+
+    def test_parser_walks_multiple_aligned_records_and_preserves_reparse_flag(self) -> None:
+        module = self._parser_module()
+        parser = getattr(module, "parse_file_id_both_directory_info", None)
+        self.assertTrue(callable(parser), "Windows directory-info parser is missing")
+        first_size = _HEADER_SIZE + len("first.txt".encode("utf-16-le"))
+        first_offset = (first_size + 7) & ~7
+        buffer = (
+            _entry_record(
+                "first.txt", file_id=7, next_entry_offset=first_offset,
+            )
+            + _entry_record(
+                "link", file_id=9, attributes=0x400, next_entry_offset=0,
+            )
+        )
+
+        entries = parser(buffer)
+
+        self.assertEqual(
+            [(entry.name, entry.file_id, entry.attributes) for entry in entries],
+            [("first.txt", 7, 0x80), ("link", 9, 0x400)],
+        )
+
+    def test_parser_rejects_odd_utf16_name_length(self) -> None:
+        module = self._parser_module()
+        parser = getattr(module, "parse_file_id_both_directory_info", None)
+        error_type = getattr(module, "WindowsDirectoryProbeError", RuntimeError)
+        self.assertTrue(callable(parser), "Windows directory-info parser is missing")
+        buffer = bytearray(_entry_record("name", file_id=1))
+        struct.pack_into(
+            "<I", buffer, _FileIdBothDirectoryInfoHeader.file_name_length.offset, 3,
+        )
+
+        with self.assertRaises(error_type):
+            parser(bytes(buffer))
+
+    def test_parser_rejects_unaligned_or_out_of_bounds_next_offset(self) -> None:
+        module = self._parser_module()
+        parser = getattr(module, "parse_file_id_both_directory_info", None)
+        error_type = getattr(module, "WindowsDirectoryProbeError", RuntimeError)
+        self.assertTrue(callable(parser), "Windows directory-info parser is missing")
+        record = _entry_record("name", file_id=1)
+
+        for next_offset in (1, len(record) + 8):
+            malformed = bytearray(record)
+            struct.pack_into("<I", malformed, 0, next_offset)
+            with self.subTest(next_offset=next_offset):
+                with self.assertRaises(error_type):
+                    parser(bytes(malformed))
+
+
+@unittest.skipUnless(os.name == "nt", "requires native Windows handle semantics")
+class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
+    def test_directory_file_ids_and_file_handle_share_semantics(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        from tests.windows_tree_snapshot_probe import parse_file_id_both_directory_info
+
+        class FileTime(ctypes.Structure):
+            _fields_ = [
+                ("low", wintypes.DWORD),
+                ("high", wintypes.DWORD),
+            ]
+
+        class ByHandleFileInformation(ctypes.Structure):
+            _fields_ = [
+                ("attributes", wintypes.DWORD),
+                ("creation_time", FileTime),
+                ("access_time", FileTime),
+                ("write_time", FileTime),
+                ("volume_serial", wintypes.DWORD),
+                ("size_high", wintypes.DWORD),
+                ("size_low", wintypes.DWORD),
+                ("links", wintypes.DWORD),
+                ("index_high", wintypes.DWORD),
+                ("index_low", wintypes.DWORD),
+            ]
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ]
+        kernel.CreateFileW.restype = ctypes.c_void_p
+        kernel.GetFileInformationByHandleEx.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+        ]
+        kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel.GetFileInformationByHandle.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ByHandleFileInformation),
+        ]
+        kernel.GetFileInformationByHandle.restype = wintypes.BOOL
+        kernel.DeleteFileW.argtypes = [wintypes.LPCWSTR]
+        kernel.DeleteFileW.restype = wintypes.BOOL
+        kernel.MoveFileW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        kernel.MoveFileW.restype = wintypes.BOOL
+        kernel.GetVolumeInformationW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+        ]
+        kernel.GetVolumeInformationW.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel.CloseHandle.restype = wintypes.BOOL
+
+        invalid_handle = ctypes.c_void_p(-1).value
+        open_existing = 3
+        file_share_read = 0x00000001
+        file_share_all = 0x00000007
+        file_list_directory = 0x00000001
+        generic_read = 0x80000000
+        generic_write = 0x40000000
+        delete_access = 0x00010000
+        file_read_attributes = 0x00000080
+        file_flag_backup_semantics = 0x02000000
+        file_flag_open_reparse_point = 0x00200000
+        file_attribute_normal = 0x00000080
+        create_new = 1
+        file_id_both_directory_restart_info = 0x0B
+        error_sharing_violation = 32
+        error_access_denied = 5
+
+        with tempfile.TemporaryDirectory(prefix="icode-r3-win-handle-") as temporary:
+            root = Path(temporary)
+            filesystem_name = ctypes.create_unicode_buffer(64)
+            volume_serial = wintypes.DWORD()
+            max_component_length = wintypes.DWORD()
+            filesystem_flags = wintypes.DWORD()
+            self.assertTrue(
+                kernel.GetVolumeInformationW(
+                    str(root.anchor), None, 0,
+                    ctypes.byref(volume_serial),
+                    ctypes.byref(max_component_length),
+                    ctypes.byref(filesystem_flags),
+                    filesystem_name, len(filesystem_name),
+                ),
+                "filesystem query failed",
+            )
+            payload = root / "payload.bin"
+            added_by_probe = root / "added-by-probe.bin"
+            rename_source = root / "rename-source.bin"
+            rename_target = root / "rename-target.bin"
+            delete_by_probe = root / "delete-by-probe.bin"
+            payload.write_bytes(b"bounded file-id probe")
+            rename_source.write_bytes(b"rename probe")
+            delete_by_probe.write_bytes(b"delete probe")
+            (root / "child").mkdir()
+
+            root_handle = kernel.CreateFileW(
+                str(root), file_list_directory | file_read_attributes,
+                file_share_read, None, open_existing,
+                file_flag_backup_semantics | file_flag_open_reparse_point, None,
+            )
+            self.assertNotIn(root_handle, (None, invalid_handle), "directory open failed")
+            payload_handle = None
+            unexpected_handle = None
+            try:
+                directory_buffer = ctypes.create_string_buffer(64 * 1024)
+                self.assertTrue(
+                    kernel.GetFileInformationByHandleEx(
+                        root_handle, file_id_both_directory_restart_info,
+                        directory_buffer, len(directory_buffer),
+                    ),
+                    "directory enumeration failed",
+                )
+                entries = parse_file_id_both_directory_info(directory_buffer.raw)
+                entry = next((item for item in entries if item.name == "payload.bin"), None)
+                self.assertIsNotNone(entry, "expected file entry was not enumerated")
+
+                payload_handle = kernel.CreateFileW(
+                    str(payload), generic_read | file_read_attributes,
+                    file_share_read, None, open_existing, file_flag_open_reparse_point, None,
+                )
+                self.assertNotIn(payload_handle, (None, invalid_handle), "file open failed")
+                file_information = ByHandleFileInformation()
+                self.assertTrue(
+                    kernel.GetFileInformationByHandle(payload_handle, ctypes.byref(file_information)),
+                    "file identity query failed",
+                )
+                opened_file_id = (
+                    (int(file_information.index_high) << 32)
+                    | int(file_information.index_low)
+                )
+                self.assertEqual(entry.file_id, opened_file_id, "directory and handle IDs differ")
+
+                def classify_namespace_result(succeeded: bool) -> str:
+                    if succeeded:
+                        return "allowed"
+                    error = ctypes.get_last_error()
+                    if error == error_sharing_violation:
+                        return "blocked_sharing_violation"
+                    if error == error_access_denied:
+                        return "blocked_access_denied"
+                    return f"blocked_other_{error}"
+
+                ctypes.set_last_error(0)
+                unexpected_handle = kernel.CreateFileW(
+                    str(added_by_probe), generic_write, file_share_all, None, create_new,
+                    file_attribute_normal, None,
+                )
+                if unexpected_handle in (None, invalid_handle):
+                    directory_create_error = ctypes.get_last_error()
+                    if directory_create_error == error_sharing_violation:
+                        directory_create_result = "blocked_sharing_violation"
+                    elif directory_create_error == error_access_denied:
+                        directory_create_result = "blocked_access_denied"
+                    else:
+                        directory_create_result = f"blocked_other_{directory_create_error}"
+                else:
+                    directory_create_result = "allowed"
+                    kernel.CloseHandle(unexpected_handle)
+                    unexpected_handle = None
+                    self.assertTrue(
+                        kernel.DeleteFileW(str(added_by_probe)),
+                        "probe-created child cleanup failed",
+                    )
+
+                ctypes.set_last_error(0)
+                directory_rename_result = classify_namespace_result(
+                    bool(kernel.MoveFileW(str(rename_source), str(rename_target)))
+                )
+                if directory_rename_result == "allowed":
+                    self.assertTrue(
+                        kernel.DeleteFileW(str(rename_target)),
+                        "renamed probe child cleanup failed",
+                    )
+
+                ctypes.set_last_error(0)
+                directory_delete_result = classify_namespace_result(
+                    bool(kernel.DeleteFileW(str(delete_by_probe)))
+                )
+
+                ctypes.set_last_error(0)
+                unexpected_handle = kernel.CreateFileW(
+                    str(root), delete_access, file_share_all, None, open_existing,
+                    file_flag_backup_semantics | file_flag_open_reparse_point, None,
+                )
+                self.assertEqual(
+                    unexpected_handle, invalid_handle,
+                    "read-only directory handle unexpectedly allowed DELETE access",
+                )
+                self.assertEqual(ctypes.get_last_error(), error_sharing_violation)
+                unexpected_handle = None
+
+                ctypes.set_last_error(0)
+                unexpected_handle = kernel.CreateFileW(
+                    str(payload), generic_write, file_share_all, None, open_existing,
+                    file_flag_open_reparse_point | file_attribute_normal, None,
+                )
+                self.assertEqual(
+                    unexpected_handle, invalid_handle,
+                    "read-only file handle unexpectedly allowed a writer",
+                )
+                self.assertEqual(ctypes.get_last_error(), error_sharing_violation)
+                unexpected_handle = None
+
+                ctypes.set_last_error(0)
+                unexpected_handle = kernel.CreateFileW(
+                    str(payload), delete_access, file_share_all, None, open_existing,
+                    file_flag_open_reparse_point, None,
+                )
+                self.assertEqual(
+                    unexpected_handle, invalid_handle,
+                    "read-only file handle unexpectedly allowed DELETE access",
+                )
+                self.assertEqual(ctypes.get_last_error(), error_sharing_violation)
+                unexpected_handle = None
+                print(
+                    "windows-tree-snapshot-probe "
+                    f"filesystem={filesystem_name.value} "
+                    f"directory_create={directory_create_result} "
+                    f"directory_rename={directory_rename_result} "
+                    f"directory_delete={directory_delete_result} "
+                    "file_write=blocked_sharing_violation "
+                    "file_delete=blocked_sharing_violation"
+                )
+            finally:
+                for handle in (unexpected_handle, payload_handle, root_handle):
+                    if handle not in (None, invalid_handle):
+                        kernel.CloseHandle(handle)
+
+
+if __name__ == "__main__":
+    unittest.main()
