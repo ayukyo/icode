@@ -625,6 +625,13 @@ class TestLinuxProxyHandoff(unittest.TestCase):
                         timeout_seconds=1.0,
                     )
 
+            self.assertFalse(
+                any(
+                    thread.name == "icode-proxy-fd-receiver"
+                    for thread in threading.enumerate()
+                ),
+                "receiver worker must finish before re-raising SIGINT",
+            )
             aliases = self._descriptor_alias_count(source)
             self.assertEqual(aliases, before)
         finally:
@@ -847,20 +854,17 @@ class TestLinuxProxyHandoff(unittest.TestCase):
             def __init__(self, *, target, **_kwargs) -> None:
                 self._target = target
                 self.ident = None
-                self.alive_checks = 0
+                self.join_calls = 0
 
             def start(self) -> None:
                 self.ident = 1
                 self._target()
 
-            def is_alive(self) -> bool:
-                self.alive_checks += 1
-                if self.alive_checks == 2:
-                    raise KeyboardInterrupt
-                return False
-
             def join(self, timeout=None) -> None:
                 del timeout
+                self.join_calls += 1
+                if self.join_calls == 1:
+                    raise KeyboardInterrupt
 
         try:
             with (

@@ -348,6 +348,27 @@ def receive_loopback_listener(
         except BaseException as exc:
             outcome.append(exc)
 
+    def wait_for_worker_completion() -> BaseException | None:
+        interruption: BaseException | None = None
+        # ``outcome`` is appended only after _receive_loopback_listener_impl()
+        # has completed its descriptor-cleanup finally blocks. It is therefore
+        # a resource-ownership barrier, unlike Thread.is_alive()/join() while a
+        # signal can interrupt CPython's thread-state-lock wait.
+        while not outcome:
+            try:
+                time.sleep(0.005)
+            except BaseException as exc:
+                if interruption is None:
+                    interruption = exc
+                while True:
+                    try:
+                        cancellation.set()
+                        break
+                    except BaseException as cancel_exc:
+                        if interruption is None:
+                            interruption = cancel_exc
+        return interruption
+
     worker = threading.Thread(
         target=receive_on_worker,
         name="icode-proxy-fd-receiver",
@@ -357,28 +378,16 @@ def receive_loopback_listener(
     active_exception: BaseException | None = None
     try:
         worker.start()
-        while True:
-            try:
-                if not worker.is_alive():
-                    break
-                worker.join(timeout=0.05)
-            except BaseException as exc:
-                if pending_interrupt is None:
-                    pending_interrupt = exc
-                while True:
-                    try:
-                        cancellation.set()
-                        break
-                    except BaseException as cancel_exc:
-                        if pending_interrupt is None:
-                            pending_interrupt = cancel_exc
+        pending_interrupt = wait_for_worker_completion()
 
         if pending_interrupt is not None:
             raise pending_interrupt
         if len(outcome) != 1:
             raise ProxyHandoffError(_HANDOFF_ERROR)
         if isinstance(outcome[0], BaseException):
-            raise outcome.pop()
+            # Keep the result as the completion marker used by the cleanup
+            # barrier in ``finally``.
+            raise outcome[0]
     except BaseException as exc:
         # sys.exc_info() here would also expose an exception handled by the
         # caller around this function, falsely marking a successful call as
@@ -391,9 +400,10 @@ def receive_loopback_listener(
             try:
                 cancellation.set()
                 if worker.ident is not None:
-                    worker.join(timeout=0.05)
-                    if worker.is_alive():
-                        continue
+                    interruption = wait_for_worker_completion()
+                    if cleanup_exception is None:
+                        cleanup_exception = interruption
+                    worker.join()
                 if active_exception is None and cleanup_exception is None:
                     # Deliver the socket only inside the retry-protected region.
                     # If a signal lands while evaluating this return, retain
