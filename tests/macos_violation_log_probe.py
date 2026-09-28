@@ -7,6 +7,7 @@ inconclusive.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import json
 import re
@@ -20,16 +21,33 @@ from typing import Iterable
 
 SUBSYSTEM = "com.apple.sandbox.reporting"
 CATEGORY = "violation"
-PREDICATE = f'subsystem == "{SUBSYSTEM}" AND category == "{CATEGORY}"'
+PREDICATE = (
+    '(processID == 0 AND senderImagePath CONTAINS "/Sandbox") OR '
+    f'(subsystem == "{SUBSYSTEM}" AND category == "{CATEGORY}") OR '
+    'eventMessage CONTAINS[c] "Sandbox"'
+)
 MAX_RECORD_BYTES = 16 * 1024
 MAX_STREAM_BYTES = 1024 * 1024
 MAX_RECORDS = 4096
 LOGGER_START_GRACE_SECONDS = 0.5
 LOGGER_STOP_TIMEOUT_SECONDS = 2.0
 READER_JOIN_TIMEOUT_SECONDS = 2.0
-TARGET_EVENT_WAIT_SECONDS = 1.0
+TARGET_EVENT_WAIT_SECONDS = 5.0
 
 _LOG_STREAM_FILTER_BANNER_PREFIX = b"Filtering the log data using "
+_DIAGNOSTIC_COUNTERS = (
+    "stdout_lines", "stderr_lines", "stdout_json", "stderr_json",
+    "stdout_non_json", "stderr_non_json", "filter_banner",
+    "json_object", "json_non_object", "subsystem_match", "category_match",
+    "source_reporting", "source_kernel", "source_other",
+    "message_type_default", "message_type_info",
+    "message_type_debug", "message_type_error", "message_type_fault",
+    "message_type_other", "emitter_pid_zero", "emitter_pid_nonzero",
+    "emitter_pid_other", "sender_path_sandbox", "sender_path_other",
+    "sender_path_missing", "deny_message", "deny_unparsed", "message_other",
+    "message_missing", "capability_file_read_data", "capability_other",
+)
+_MESSAGE_TYPES = {"default", "info", "debug", "error", "fault"}
 _DENIAL_MESSAGE = re.compile(
     r"^Sandbox:\s+[^()\r\n]{1,128}\((?P<pid>[0-9]{1,10})\)\s+"
     r"deny\([0-9]+\)\s+(?P<capability>[a-z][a-z0-9-]{0,63})(?:\s|$)"
@@ -56,6 +74,7 @@ class ViolationObserverUnavailable(RuntimeError):
 class Observation:
     status: str
     reason: str
+    diagnostics: str = ""
 
 
 def parse_violation_record(line: bytes) -> tuple[int, str] | None:
@@ -69,7 +88,18 @@ def parse_violation_record(line: bytes) -> tuple[int, str] | None:
         raise ViolationRecordError("invalid_json") from None
     if not isinstance(record, dict):
         raise ViolationRecordError("invalid_record_shape")
-    if record.get("subsystem") != SUBSYSTEM or record.get("category") != CATEGORY:
+    subsystem_match = record.get("subsystem") == SUBSYSTEM
+    category_match = record.get("category") == CATEGORY
+    reporting_source = subsystem_match and category_match
+    process_id = record.get("processID")
+    sender_image = record.get("senderImagePath")
+    kernel_source = (
+        type(process_id) is int
+        and process_id == 0
+        and isinstance(sender_image, str)
+        and "/Sandbox" in sender_image
+    )
+    if not (reporting_source or kernel_source):
         return None
 
     message = record.get("eventMessage")
@@ -83,6 +113,134 @@ def parse_violation_record(line: bytes) -> tuple[int, str] | None:
     if pid <= 0:
         raise ViolationRecordError("invalid_pid")
     return pid, match.group("capability")
+
+
+def diagnostic_record_categories(line: bytes) -> tuple[str, ...]:
+    """Return fixed, content-free buckets for one log record."""
+
+    try:
+        record = json.loads(line)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return ("invalid_json",)
+    if not isinstance(record, dict):
+        return ("json_non_object",)
+
+    categories = ["json_object"]
+    message_type = record.get("messageType")
+    if isinstance(message_type, str) and message_type in _MESSAGE_TYPES:
+        categories.append(f"message_type_{message_type}")
+    else:
+        categories.append("message_type_other")
+
+    process_id = record.get("processID")
+    if type(process_id) is not int:
+        categories.append("emitter_pid_other")
+    elif process_id == 0:
+        categories.append("emitter_pid_zero")
+    else:
+        categories.append("emitter_pid_nonzero")
+
+    sender_image = record.get("senderImagePath")
+    if not isinstance(sender_image, str):
+        categories.append("sender_path_missing")
+    elif "/Sandbox" in sender_image:
+        categories.append("sender_path_sandbox")
+    else:
+        categories.append("sender_path_other")
+
+    subsystem_match = record.get("subsystem") == SUBSYSTEM
+    category_match = record.get("category") == CATEGORY
+    reporting_source = subsystem_match and category_match
+    kernel_source = (
+        type(process_id) is int
+        and process_id == 0
+        and isinstance(sender_image, str)
+        and "/Sandbox" in sender_image
+    )
+    if subsystem_match:
+        categories.append("subsystem_match")
+    if category_match:
+        categories.append("category_match")
+    if reporting_source:
+        categories.append("source_reporting")
+    if kernel_source:
+        categories.append("source_kernel")
+    if not reporting_source and not kernel_source:
+        categories.append("source_other")
+
+    message = record.get("eventMessage")
+    if not isinstance(message, str):
+        categories.append("message_missing")
+    else:
+        match = _DENIAL_MESSAGE.match(message)
+        if match is None:
+            if message.startswith("Sandbox:"):
+                categories.append("deny_unparsed")
+            else:
+                categories.append("message_other")
+        else:
+            categories.append("deny_message")
+            if match.group("capability") == "file-read-data":
+                categories.append("capability_file_read_data")
+            else:
+                categories.append("capability_other")
+    return tuple(categories)
+
+
+def format_sanitized_diagnostics(
+    counts: Mapping[str, int],
+    *,
+    events: Iterable[tuple[int, str]],
+    target_pid: int,
+    capability: str,
+    logger_returncode: int | None,
+) -> str:
+    """Render only bounded counts and booleans; never include log values."""
+
+    count = lambda name: max(0, int(counts.get(name, 0)))
+    target_match = any(
+        pid == target_pid and item == capability for pid, item in events
+    )
+    if logger_returncode is None:
+        logger_state = "running"
+    elif logger_returncode == 0:
+        logger_state = "exit_zero"
+    else:
+        logger_state = "exit_nonzero"
+
+    return (
+        f"lines=out:{count('stdout_lines')},err:{count('stderr_lines')} "
+        f"json=out:{count('stdout_json')},err:{count('stderr_json')},"
+        f"bad:{count('stdout_non_json') + count('stderr_non_json')} "
+        f"sources=subsystem:{count('subsystem_match')},"
+        f"category:{count('category_match')},reporting:{count('source_reporting')},"
+        f"kernel:{count('source_kernel')},other:{count('source_other')} "
+        f"types=default:{count('message_type_default')},"
+        f"info:{count('message_type_info')},debug:{count('message_type_debug')},"
+        f"error:{count('message_type_error')},fault:{count('message_type_fault')},"
+        f"other:{count('message_type_other')} "
+        f"sender=pid0:{count('emitter_pid_zero')},"
+        f"pidn:{count('emitter_pid_nonzero')},pid?:{count('emitter_pid_other')},"
+        f"path_sandbox:{count('sender_path_sandbox')},"
+        f"path_other:{count('sender_path_other')},"
+        f"path?:{count('sender_path_missing')} "
+        f"deny:parsed={count('deny_message')},unparsed={count('deny_unparsed')},"
+        f"file_read_data={count('capability_file_read_data')},"
+        f"other_cap={count('capability_other')},"
+        f"message_other={count('message_other')},"
+        f"message_missing={count('message_missing')} "
+        f"target_match={'yes' if target_match else 'no'} "
+        f"log_process={logger_state} banners={count('filter_banner')}"
+    )
+
+
+def build_log_stream_command(executable: Path) -> list[str]:
+    """Build a bounded observer command that includes debug-level log records."""
+
+    return [
+        str(executable), "stream", "--style", "ndjson",
+        "--level", "debug", "--predicate", PREDICATE,
+    ]
 
 
 def parse_violation_stream_line(
@@ -123,21 +281,32 @@ class BoundedViolationLogObserver:
     """Bounded test-only reader for the macOS Unified Logging CLI."""
 
     def __init__(self, process: subprocess.Popen[bytes]) -> None:
-        if process.stdout is None:
-            raise ValueError("log stream stdout is required")
+        if process.stdout is None or process.stderr is None:
+            raise ValueError("log stream stdout and stderr are required")
         self._process = process
-        self._stdout = process.stdout
+        self._streams = (
+            ("stdout", process.stdout),
+            ("stderr", process.stderr),
+        )
         self._events: set[tuple[int, str]] = set()
         self._lock = threading.Lock()
         self._changed = threading.Event()
+        self._diagnostic_counts = {name: 0 for name in _DIAGNOSTIC_COUNTERS}
+        self._total_bytes = 0
+        self._total_records = 0
         self._incomplete_reason: str | None = None
         self._closing = False
-        self._reader = threading.Thread(
-            target=self._read_records,
-            name="macos-violation-log-reader",
-            daemon=True,
-        )
-        self._reader.start()
+        self._readers = [
+            threading.Thread(
+                target=self._read_records,
+                args=(name, stream),
+                name=f"macos-violation-log-{name}-reader",
+                daemon=True,
+            )
+            for name, stream in self._streams
+        ]
+        for reader in self._readers:
+            reader.start()
 
     @classmethod
     def start(cls) -> BoundedViolationLogObserver:
@@ -146,12 +315,9 @@ class BoundedViolationLogObserver:
             raise ViolationObserverUnavailable("log_cli_unavailable")
         try:
             process = subprocess.Popen(
-                [
-                    str(executable), "stream", "--style", "ndjson",
-                    "--predicate", PREDICATE,
-                ],
+                build_log_stream_command(executable),
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
             )
         except OSError:
             raise ViolationObserverUnavailable("log_stream_start_failed") from None
@@ -169,18 +335,22 @@ class BoundedViolationLogObserver:
                 self._incomplete_reason = reason
         self._changed.set()
 
-    def _read_records(self) -> None:
-        total_bytes = 0
-        records_seen = 0
+    def _read_records(self, stream_name: str, stream) -> None:
+        first_line = True
         try:
             while True:
-                line = self._stdout.readline(MAX_RECORD_BYTES + 1)
+                line = stream.readline(MAX_RECORD_BYTES + 1)
                 if not line:
-                    if not self._closing:
+                    if not self._closing and self._process.poll() is not None:
                         self._set_incomplete("log_stream_ended")
                     return
 
-                total_bytes += len(line)
+                with self._lock:
+                    self._diagnostic_counts[f"{stream_name}_lines"] += 1
+                    self._total_bytes += len(line)
+                    self._total_records += 1
+                    total_bytes = self._total_bytes
+                    total_records = self._total_records
                 if total_bytes > MAX_STREAM_BYTES:
                     self._set_incomplete("stream_byte_limit")
                     return
@@ -189,14 +359,29 @@ class BoundedViolationLogObserver:
                     self._set_incomplete("record_size_or_truncation")
                     return
 
-                records_seen += 1
-                if records_seen > MAX_RECORDS:
+                if total_records > MAX_RECORDS:
                     self._set_incomplete("stream_record_limit")
                     return
+                if first_line and line.startswith(_LOG_STREAM_FILTER_BANNER_PREFIX):
+                    with self._lock:
+                        self._diagnostic_counts["filter_banner"] += 1
+                    first_line = False
+                    continue
+                first_line = False
+
+                categories = diagnostic_record_categories(line)
+                with self._lock:
+                    if "json_object" in categories or "json_non_object" in categories:
+                        self._diagnostic_counts[f"{stream_name}_json"] += 1
+                    if "invalid_json" in categories:
+                        self._diagnostic_counts[f"{stream_name}_non_json"] += 1
+                    for category in categories:
+                        if category in self._diagnostic_counts:
+                            self._diagnostic_counts[category] += 1
                 try:
                     event = parse_violation_stream_line(
                         line,
-                        first_line=(records_seen == 1),
+                        first_line=False,
                     )
                 except ViolationRecordError as error:
                     self._set_incomplete(error.reason)
@@ -212,19 +397,44 @@ class BoundedViolationLogObserver:
             if not self._closing:
                 self._set_incomplete("log_stream_read_failed")
 
+    def _observation(
+        self,
+        *,
+        events: tuple[tuple[int, str], ...],
+        incomplete_reason: str | None,
+        target_pid: int,
+        capability: str,
+    ) -> Observation:
+        result = classify_observation(
+            events,
+            target_pid=target_pid,
+            capability=capability,
+            incomplete_reason=incomplete_reason,
+        )
+        with self._lock:
+            counts = dict(self._diagnostic_counts)
+        diagnostics = format_sanitized_diagnostics(
+            counts,
+            events=events,
+            target_pid=target_pid,
+            capability=capability,
+            logger_returncode=self._process.poll(),
+        )
+        return Observation(result.status, result.reason, diagnostics)
+
     def observe(self, *, target_pid: int, capability: str) -> Observation:
         deadline = time.monotonic() + TARGET_EVENT_WAIT_SECONDS
         while True:
             with self._lock:
                 events = tuple(self._events)
                 incomplete_reason = self._incomplete_reason
-            result = classify_observation(
-                events,
+            result = self._observation(
+                events=events,
+                incomplete_reason=incomplete_reason,
                 target_pid=target_pid,
                 capability=capability,
-                incomplete_reason=incomplete_reason,
             )
-            if result.status == "observed" or incomplete_reason is not None:
+            if result.status == "observed":
                 return result
             if self._process.poll() is not None or time.monotonic() >= deadline:
                 return result
@@ -246,13 +456,15 @@ class BoundedViolationLogObserver:
             except ProcessLookupError:
                 pass
             self._process.wait(timeout=LOGGER_STOP_TIMEOUT_SECONDS)
-        self._reader.join(timeout=READER_JOIN_TIMEOUT_SECONDS)
-        if self._reader.is_alive():
+        for reader in self._readers:
+            reader.join(timeout=READER_JOIN_TIMEOUT_SECONDS)
+        if any(reader.is_alive() for reader in self._readers):
             self._set_incomplete("log_reader_cleanup_timeout")
-        try:
-            self._stdout.close()
-        except OSError:
-            pass
+        for _, stream in self._streams:
+            try:
+                stream.close()
+            except OSError:
+                pass
 
     def __enter__(self) -> BoundedViolationLogObserver:
         return self
