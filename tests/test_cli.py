@@ -132,6 +132,35 @@ class TestCliToolEvents(unittest.TestCase):
         self.assertNotIn("PRIVATE_COMMAND_MARKER", rendered)
         self.assertNotIn("PRIVATE_USER_MESSAGE", rendered)
 
+    def test_平台后端不支持且确认未启动时显示固定提示(self) -> None:
+        args = SimpleNamespace(
+            backend="fake", key_file="", model="", base_url="", proxy="",
+            no_proxy=None, approve=False, budget_tokens=1000, quiet=False,
+            isolation="auto",
+        )
+        output = io.StringIO()
+
+        with (
+            patch("icode.backends.build_backend", return_value=object()),
+            patch("icode.isolation.select_sandbox", return_value=object()),
+            contextlib.redirect_stdout(output),
+        ):
+            _, _, _, on_event, _ = _build_runner(args)
+            on_event("tool_result", {
+                "tool": "run_command",
+                "ok": False,
+                "meta": {
+                    "error_code": "unsupported_platform",
+                    "payload_started": False,
+                    "argv": ["PRIVATE_COMMAND_MARKER"],
+                },
+            })
+
+        rendered = output.getvalue()
+        self.assertIn("[未启动] 当前平台暂未开放受控命令执行", rendered)
+        self.assertNotIn("失败", rendered)
+        self.assertNotIn("PRIVATE_COMMAND_MARKER", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,7 +1,7 @@
 # R2 资源限制与统一违规回执实施门
 
-- 日期：2026-09-28 Asia/Shanghai
-- 状态：R2 资源限制和跨平台统一违规回执验收未完成；Linux deny-only `run_command` 已接入 USER_NOTIF 原生回执并通过 CLI 展示，但 MCP adapter、macOS/Windows 来源 parity、文件拒绝覆盖、`process_limit` 语义和平台门槛仍未闭合，能力评分不变
+- 日期：2026-09-29 Asia/Shanghai
+- 状态：R2 资源限制和跨平台统一违规回执验收未完成；Linux deny-only `run_command` 已接入 USER_NOTIF 原生回执并通过 CLI 展示；非 POSIX 不支持路径新增固定 CLI 提示和明确的未启动字段，但 MCP adapter、macOS/Windows 来源 parity、文件拒绝覆盖、`process_limit` 语义和平台门槛仍未闭合，能力评分不变
 - 目标：把十项合同中的 `resource_limits`、`uniform_violation` 接入真实隔离命令路径，并提供跨平台可核验回执。
 - 依据：[R2 跨平台隔离设计 §12.2、§13、§14](../specs/2026-09-23-r2-cross-platform-isolation-design.md)
 
@@ -159,3 +159,11 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **TDD 与验收：**新增回归先因缺少原生回执失败；独立审查后又补入策略根错配、只读上下文、observer deadline 到期、poller 初始化异常及 `Thread.start()` 失败清理的先红后绿用例。覆盖真实 AF_INET socket DENY、AF_UNIX `socketpair()` 允许正例、普通 exit 13 不误报、错误 ACK、策略绑定失败及观察器失败关闭。新模块 9 项连续 20 轮共 180/180；broker/tools/CLI/loop 定向 73 项、isolation 74 项通过；C helper 以 `-std=c11 -O2 -Wall -Wextra -Werror` 编译，Python 源码/测试编译检查通过。全仓 preflight 首轮因核心离线模块引入 `socket` 导入失败，已修正并定向复测通过；最终三道门待重跑。
 - **风险控制与限制：**回执只包含固定错误文案、有限类别/计数及 `seccomp_user_notif` 来源，不回显 argv、路径或原始输出；handoff/observer 初始化失败时 helper 不得执行 payload，运行期观察失败采取终止并标为 incomplete。观察线程的就绪/ACK 采用显式 event barrier；ACK 前确认 observer 未失败且仍存活，close 会唤醒等待中的线程；线程创建失败路径不会对未启动线程调用 join，仍会关闭 listener FD。该 observer 只覆盖 helper 当前经 USER_NOTIF 处理的 socket 类系统调用，不能记录 Landlock 文件访问拒绝；不宣称覆盖全部 syscall、完整 CLI/MCP parity 或跨平台一致性。
 - **门禁状态：**这是本机 Linux 产品路径的增量证据；CI native-probe 已显式加入此集成测试，提交后仍须确认 x86_64/ARM64 与发行版 jobs 实际结果；macOS/Windows 原生来源 parity 仍未闭合。不得据此关闭 VR-1 或增加 `uniform_violation` 分数；不改变 `resource_limits=false`、`policy_contract_ready=false`、R2/R3 完成状态、网络 DENY 或自动模式。`process_limit` 计数口径仍待用户确认，代码未调整其语义。
+
+## 2026-09-29 Asia/Shanghai：不支持平台的命令启动状态提示
+
+- **问题与安全边界：**`execution_broker._execute_policy_command()` 在非 POSIX 平台于 `subprocess.Popen()` 前返回 `unsupported_platform`，但 `ToolResult` 原先继续拼接 `exit=None / <无输出>`，CLI 事件只显示“失败”。这既不够清楚，也没有可让 UI 稳定识别“命令尚未启动”的字段。
+- **修改：**该唯一早退路径新增 `error_code=unsupported_platform`、`payload_started=false`；保留既有 `error`、`exit_code=None` 与 `cleanup_scope=not_started`。工具内容和 CLI 均使用固定提示；CLI 只有在两个新增字段精确匹配时才称“命令未启动”。观察器 `incomplete` 分支优先，不被覆盖成确定未启动；argv、路径和异常文本不进入提示。
+- **TDD 与验证：**原工具输出用例先因 `exit=None` 与预期不符失败；补充机器字段/CLI 脱敏回归后，旧行为分别以字段缺失和泛化“失败”复现。修正后执行 broker/工具/CLI 定向 51 项通过，新路径重复 20/20；`preflight.py --only tests`、compileall、diff check 与治理/官网/竞品检查通过，独立只读复审 APPROVE（无 Critical/Important/Minor）。提交后的 CI 结果见后续推送记录。
+- **上游取舍：**Codex Action 固定快照在不满足 Windows 安全策略时于安装/启动前固定失败，但只有 stderr/退出码，没有结构化 `payload_started`；Codex 核心文档说明 WSL1 缺 bwrap 时调用前拒绝；OpenHands SDK 所查通用会话错误路径无对应“后端不支持且 payload 未启动”回执。采纳“拒绝要在启动前发生并给固定说明”，不复制代码，也不采用 Codex Action 的 `unsafe` 降级；ICODE 自有机器状态更明确。版本、许可证与源链接见[持续竞品对照](../../agent-landscape-live.md)。
+- **边界：**这只是 unsupported-platform 情况的状态表达，不新增 Windows/macOS 执行后端，不代表用户可在这些平台运行受控命令，也不补充 `uniform_violation`/`resource_limits` 证据；R2/R3、自动模式、策略评分和网络 DENY 均不变。无运行依赖。

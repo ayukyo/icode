@@ -720,6 +720,16 @@ def run_command(
                 result_meta,
                 opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
             )
+        if outcome.error == "unsupported_platform":
+            result_meta["error"] = "unsupported_platform"
+            result_meta["error_code"] = "unsupported_platform"
+            result_meta["payload_started"] = False
+            return ToolResult(
+                False,
+                "当前平台暂未开放受控命令执行，命令未启动。",
+                result_meta,
+                opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
+            )
         if outcome.error:
             result_meta["error"] = outcome.error
         output = outcome.output.strip() or "<无输出>"

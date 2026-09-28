@@ -31,6 +31,7 @@ _MAX_NATIVE_VIOLATION_COUNT = 65_535
 _INCOMPLETE_NATIVE_OBSERVER_NOTICE = (
     "[隔离结果未确认] 隔离检查未完整结束；不要据此判断命令成功。"
 )
+_UNSUPPORTED_PLATFORM_NOTICE = "[未启动] 当前平台暂未开放受控命令执行，命令未启动。"
 
 
 def _native_violation_summary(meta: object) -> str | None:
@@ -426,6 +427,10 @@ def _build_runner(args: argparse.Namespace):
             elif (not payload.get("ok") and isinstance(meta, dict)
                     and meta.get("violation_observer_status") == "incomplete"):
                 print(f"        {_INCOMPLETE_NATIVE_OBSERVER_NOTICE}")
+            elif (not payload.get("ok") and isinstance(meta, dict)
+                    and meta.get("error_code") == "unsupported_platform"
+                    and meta.get("payload_started") is False):
+                print(f"        {_UNSUPPORTED_PLATFORM_NOTICE}")
             else:
                 print(f"        {'成功' if payload.get('ok') else '失败'}")
         elif kind == "tool_denied":

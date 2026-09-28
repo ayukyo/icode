@@ -39,6 +39,42 @@ def _context(root: Path, *, wall_timeout: int = 5, output_limit: int = 1024) -> 
     return ToolContext(root=root, sandbox=_TestOnlyPolicyBackend(), policy=policy)
 
 
+class TestUnsupportedPolicyCommandBackend(unittest.TestCase):
+    def test_不支持的平台明确提示命令未启动(self) -> None:
+        with temp_workspace() as raw_root:
+            root = raw_root.resolve()
+            context = _context(root)
+            command_secret = "ICODE_UNSUPPORTED_PLATFORM_COMMAND_SENTINEL"
+
+            def execute_on_unsupported_platform(*args, **kwargs):
+                if os.name != "posix":
+                    return execute_policy_command(*args, **kwargs)
+                with mock.patch("icode.execution_broker.os.name", "nt"):
+                    return execute_policy_command(*args, **kwargs)
+
+            with (
+                mock.patch(
+                    "icode.tools.builtin.execute_policy_command",
+                    side_effect=execute_on_unsupported_platform,
+                ),
+                mock.patch("icode.execution_broker.subprocess.Popen") as process_start,
+            ):
+                result = default_registry().invoke("run_command", context, {
+                    "argv": [sys.executable, "-c", "pass", command_secret],
+                })
+
+            process_start.assert_not_called()
+            self.assertFalse(result.ok)
+            self.assertEqual(result.meta["error"], "unsupported_platform")
+            self.assertEqual(result.meta["error_code"], "unsupported_platform")
+            self.assertIs(result.meta["payload_started"], False)
+            self.assertIsNone(result.meta["exit_code"])
+            self.assertEqual(result.meta["cleanup_scope"], "not_started")
+            self.assertIn("命令未启动", result.content)
+            self.assertNotIn("exit=None", result.content)
+            self.assertNotIn(command_secret, result.content)
+
+
 @unittest.skipUnless(os.name == "posix", "R2.2 仅覆盖 POSIX 策略命令")
 class TestPolicyCommandBroker(unittest.TestCase):
     def test_普通命令非零退出不伪报策略拒绝(self) -> None:
