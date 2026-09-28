@@ -37,8 +37,8 @@ class TestLinuxReviewerBoundaryCi(unittest.TestCase):
           printf '%s  %s\\n' "${profile_sha256}" "${profile_path}" | sha256sum --check
           sudo apparmor_parser --replace "${profile_path}"
           active_profiles='/sys/kernel/security/apparmor/profiles'
-          if ! grep -Fq 'bwrap (enforce)' "${active_profiles}"; then
-            cat "${active_profiles}"
+          if ! sudo grep -Fq 'bwrap (enforce)' "${active_profiles}"; then
+            sudo cat "${active_profiles}"
             echo "::error::Pinned bwrap AppArmor profile was not loaded"
             exit 1
           fi
