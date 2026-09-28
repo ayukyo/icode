@@ -176,3 +176,9 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **推荐合同（待确认）：**每个 `run_command` 自成 OS 配额边界；payload 根进程计 1，所有子孙进程计入；ICODE broker/launcher/observer 不计入且必须位于边界外，不能通过事后扣减 helper 数来掩盖语义。Linux TID 与 Windows active-process 的平台差异在策略回执/能力说明中明示。macOS 没有 task-scoped 硬限额时启动前返回 `unsupported`，附 `payload_started=false`，不改用 per-user 限额或进程组清理代替。
 - **待用户确认：**是否接受 Linux 把线程计入而 Windows 不计线程；payload 根进程/子孙计数且基础设施 helper 排除在配额边界外。答复前不改 `process_limit` 的语义或资源限制评分。
 - **下一实现验收：**同一 cap 从 policy 经 AgentLoop、Workbench 和 broker 到 OS enforcer；cap=2 根+一个子进程成功、cap=1 仅根可运行且子进程在 marker 前被拒绝；按选定口径验证线程；真实 cgroup membership/`pids.current`/`pids.events` 与 Job active-process 证据；cgroup manager/delegation、Job 创建/配置/assignment 失败时无 payload marker；正常、超时、取消、异常及脱组后代路径均确认整 scope/Job 清理。macOS native job 应确认 unsupported + 未启动，而不是跳过后计分。所有正例均需同载荷对照；未完成前 `resource_limits=false`、平台能力评分和自动模式保持不变。
+
+## 2026-09-29 Asia/Shanghai：macOS 同组清理回执字段复验
+
+- **改动：**原生评分 notice 现在并列输出严格 `critical_passed`、平台语义 `platform_critical_passed` 与 `process_group_cleanup`。当平台不适用同组例外时输出 `not_applicable`。只复用现有 scorer 数据，不改变十项证据、9/10 最低项数、critical 集或 `ready` 公式。
+- **测试与远端验证：**TDD 回归先观测缺失的平台字段，再验证 macOS 严格树仍 `UNVERIFIED`、平台同组证据可见且 `ready` 不被抬高；非 macOS 对照确认 `not_applicable`。Python 3.11 原生探针模块 11 项通过，全量 preflight 三门通过。提交 [`00440f2`](https://github.com/ayukyo/icode/commit/00440f2) 的 CI [#315](https://github.com/ayukyo/icode/actions/runs/36486236204) 18 个必需 job success，两个可选 Windows 安全诊断跳过；官网 [#219](https://github.com/ayukyo/icode/actions/runs/36486236336) success。
+- **门槛边界：**此前 CI #313 macOS Intel 与 Apple Silicon 同组 normal-exit/timeout 测试通过，但评分为 `6/10`、`ready=false`。Codex 对照只支持“同 PGID”局部清理口径，不能推导脱组后代清理；`process_tree_cleanup` 严格项仍保留为未验证。此次 CI 不增加能力分数，`resource_limits=false`、`uniform_violation=false`、`process_limit` 语义待确认、R2/R3 与自动模式状态不变。上游机制和取舍记录在[持续竞品对照](../../agent-landscape-live.md)。
