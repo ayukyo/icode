@@ -100,6 +100,27 @@ def _macos_non_loopback_ipv4() -> str | None:
     return None
 
 
+def _seatbelt_stderr_tags(stderr: str) -> str:
+    """Expose fixed error categories without printing runner stderr contents."""
+
+    lowered = stderr.lower()
+    categories = (
+        ("sandbox_exec", ("sandbox-exec",)),
+        ("unbound_variable", ("unbound variable", "undefined variable")),
+        ("profile", ("profile", "sbpl", "predicate")),
+        ("syntax_or_invalid", ("syntax", "parse", "invalid")),
+        ("permission", ("denied", "not permitted", "permission")),
+        ("loader", ("dyld", "library not loaded")),
+        ("launch", ("cannot execute", "exec failed", "spawn", "launch")),
+        ("python_runtime", ("traceback", "fatal python error", "importerror")),
+    )
+    tags = [
+        name for name, needles in categories
+        if any(needle in lowered for needle in needles)
+    ]
+    return "+".join(tags) or ("other" if stderr else "empty")
+
+
 class TestProbe(unittest.TestCase):
     def test_linux后代清理探针在非Linux平台明确不执行(self) -> None:
         with mock.patch("icode.isolation.sys.platform", "darwin"):
@@ -963,6 +984,13 @@ class TestWslAndJobLimits(unittest.TestCase):
 
 
 class TestSandboxWrapping(unittest.TestCase):
+    def test_Seatbelt错误分类只暴露固定标签(self) -> None:
+        self.assertEqual(
+            _seatbelt_stderr_tags("sandbox-exec: unbound variable: TIOCSTI"),
+            "sandbox_exec+unbound_variable",
+        )
+        self.assertEqual(_seatbelt_stderr_tags(""), "empty")
+
     def test_landlock_Reviewer包装显式传入工作区只读标记(self) -> None:
         with temp_workspace() as root:
             workspace = root / "workspace"
@@ -2097,23 +2125,6 @@ print("metadata-read-only-ok")
             "    if sock is not None: sock.close()\n"
         )
 
-        def stderr_tags(stderr: str) -> str:
-            lowered = stderr.lower()
-            tags: list[str] = []
-            if "sandbox-exec" in lowered:
-                tags.append("sandbox_exec")
-            if any(token in lowered for token in ("profile", "sbpl", "predicate")):
-                tags.append("profile")
-            if any(token in lowered for token in ("syntax", "parse", "invalid")):
-                tags.append("syntax_or_invalid")
-            if any(token in lowered for token in ("denied", "not permitted", "permission")):
-                tags.append("permission")
-            if any(token in lowered for token in ("dyld", "library not loaded")):
-                tags.append("loader")
-            if any(token in lowered for token in ("exec", "spawn", "launch")):
-                tags.append("launch")
-            return "+".join(tags) or ("other" if stderr else "empty")
-
         def run_probe(
             profile: str,
             address: str,
@@ -2133,7 +2144,7 @@ print("metadata-read-only-ok")
                     "::error::macos-seatbelt-port-boundary "
                     f"stage={stage} subprocess_exit={result.returncode} "
                     f"marker_count={len(matches)} "
-                    f"stderr_tags={stderr_tags(result.stderr)}",
+                    f"stderr_tags={_seatbelt_stderr_tags(result.stderr)}",
                     flush=True,
                 )
                 self.fail("Seatbelt probe did not return one safe result marker")
@@ -2155,27 +2166,29 @@ print("metadata-read-only-ok")
                 )
             self.assertEqual(actual, expected, result)
 
-        def assert_profile_starts_python(profile: str) -> None:
+        def assert_profile_startup(
+            profile: str, *, stage: str, command: list[str], marker: str | None,
+        ) -> None:
             result = subprocess.run(
-                [sandbox_exec, "-p", profile, sys.executable, "-c",
-                 "print('probe:profile-started', flush=True)"],
-                capture_output=True, text=True, timeout=6, check=False,
+                [sandbox_exec, "-p", profile, *command],
+                cwd=workspace, capture_output=True, text=True, timeout=6, check=False,
             )
-            markers = re.findall(
-                r"(?m)^probe:profile-started$", result.stdout,
+            markers = (
+                re.findall(r"(?m)^probe:profile-started$", result.stdout)
+                if marker else []
             )
-            if result.returncode != 0 or len(markers) != 1:
+            if result.returncode != 0 or (marker is not None and len(markers) != 1):
                 print(
                     "::error::macos-seatbelt-port-boundary "
-                    f"stage=profile-startup subprocess_exit={result.returncode} "
+                    f"stage={stage} subprocess_exit={result.returncode} "
                     f"marker_count={len(markers)} "
-                    f"stderr_tags={stderr_tags(result.stderr)}",
+                    f"stderr_tags={_seatbelt_stderr_tags(result.stderr)}",
                     flush=True,
                 )
-                self.fail("Seatbelt could not start the bounded Python probe")
+                self.fail("Seatbelt startup control did not meet its bounded result")
             print(
-                "::notice::macos-seatbelt-port-boundary stage=profile-startup "
-                "probe_result=started",
+                "::notice::macos-seatbelt-port-boundary "
+                f"stage={stage} probe_result=started",
                 flush=True,
             )
 
@@ -2191,15 +2204,36 @@ print("metadata-read-only-ok")
 
         sandbox = MacSeatbeltSandbox(sandbox_exec=sandbox_exec)
         with temp_workspace() as workspace:
+            base_profile = sandbox._profile(workspace, False)
+            assert_profile_startup(
+                base_profile, stage="base-executable", command=["/usr/bin/true"],
+                marker=None,
+            )
+            assert_profile_startup(
+                base_profile, stage="base-python-no-site",
+                command=[sys.executable, "-S", "-c",
+                         "print('probe:profile-started', flush=True)"],
+                marker="probe:profile-started",
+            )
+            assert_profile_startup(
+                base_profile, stage="base-python-site",
+                command=[sys.executable, "-c",
+                         "print('probe:profile-started', flush=True)"],
+                marker="probe:profile-started",
+            )
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as loopback_listener:
                 loopback_listener.bind(("127.0.0.1", 0))
                 loopback_listener.listen(2)
                 loopback_port = loopback_listener.getsockname()[1]
-                profile = (
-                    sandbox._profile(workspace, False)
-                    + f'(allow network-outbound (remote ip "localhost:{loopback_port}"))'
+                profile = base_profile + (
+                    f'(allow network-outbound (remote ip "localhost:{loopback_port}"))'
                 )
-                assert_profile_starts_python(profile)
+                assert_profile_startup(
+                    profile, stage="port-rule-python-site",
+                    command=[sys.executable, "-c",
+                             "print('probe:profile-started', flush=True)"],
+                    marker="probe:profile-started",
+                )
 
                 # Positive control: the exact localhost port rule reaches the loopback listener.
                 loopback_result = run_probe(

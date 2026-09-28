@@ -99,3 +99,10 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - `serve_once()` 在不完整 CONNECT 请求头期间遇到 `server.close()`，曾在 socket/lease 错误分支未观察 `_closed` 时偶发返回 `True`，与其“关闭/停机返回 `False`”文档契约不一致。
 - 更新路径：无已授权 tunnel 时，在错误处理后用既有锁观察 `_closed`；若 shutdown 已线性化则返回 `False`。已授权 tunnel 在 relay I/O 错误时仍视为本次请求已处理，保持原有 `True` 语义。
 - TDD 证据：旧实现对 shutdown 断言 20 轮中 16 次失败；修复后 20/20 通过。proxy server 套件 28 项通过，提交前 `preflight --only tests` 通过。此修复不改变 lease 授权、网络 DENY、策略评分或自动模式。
+
+## 2026-09-28 Asia/Shanghai：Seatbelt startup 失败边界与固定上游对照
+
+- **复跑证据：**commit `c3a67a1` 的 CI [run 36374038529](https://github.com/ayukyo/icode/actions/runs/36374038529) 中 Apple Silicon 与 Intel 原生 job 都报告 `stage=profile-startup subprocess_exit=1 marker_count=0 stderr_tags=other`；因此目前只确认失败早于 socket，不确认是动态 `localhost:<port>` 规则、Python 启动、profile 解析或平台限制。
+- **固定上游核对：**Codex `openai/codex@21eb35513df478a2a090bfc2c0293caaf435b36d` 的逐端口 SBPL 规则与 ICODE 测试追加的字面相同，但 Codex profile 还组合 base、文件、动态网络与网络策略等规则；其公开测试核验生成的 profile 文本，没有证据证明该固定测试在原生 Seatbelt 下实际 connect。Apple 公开 entitlement 文档也未规定该 raw SBPL 谓词的精确语法/匹配范围。故不复制 Codex 的额外授权策略，不把代码文本相同当作运行行为相同。
+- **下一组可证伪对照：**仅在测试子进程依次运行 ICODE 基础 profile + `/usr/bin/true`、Python `-S`、普通 Python，再追加随机端口规则重复普通 Python；为每个阶段输出固定 stage/退出码/标记数/白名单 stderr 类别，固定工作目录，不输出原始 stderr、路径、地址或端口。若基础 profile 的 true 失败，调查执行器/profile；若 true 成功而 `-S` 失败，调查解释器/运行库访问；若 `-S` 成功而普通 Python 失败，调查 site 初始化路径；若只有追加规则失败，才将调查转向该 SBPL 规则。此诊断不发送网络数据，不改生产 profile、network DENY、能力分数或自动模式。
+- **本机验证边界：**stderr 分类回归与语法检查可在 Linux 执行；Seatbelt 原生诊断按平台跳过，不计 macOS 证据。修改后必须回收 Intel 和 Apple Silicon 原生 runner 输出，才能继续判断根因。当前 macOS 仍为 `6/10, critical_passed=false, ready=false`。

@@ -944,6 +944,12 @@
 - **已加的直接诊断：**`tests/test_isolation.py` 与 `.github/workflows/ci.yml` 新增仅在 macOS CI 执行的 test-only profile 用例：loopback 同端口正例、其它 loopback 端口拒绝、宿主已分配非 loopback 地址同端口的无监听且不发送数据探测；不可分类时会显式 skip。它不建立 LAN listener、不访问公网、不调用生产网络放行路径。此探针比活跃 LAN-bound same-port decoy 的证据弱，CI 原生结果待回收，不能被解释为 Apple API 保证。
 - **ICODE 现状与取舍：**macOS policy compiler 与 wrapper 对网络放行仍 fail-closed；现有 host proxy 只对到达它的请求校验 lease、DNS 名、HTTPS 端口和数值目标，不会挡住同端口其它本机服务。暂缓产品代理接线与 `network_temporary_allowlist` 评分，用户对“任务可访问宿主本地任意地址上的唯一随机代理端口”这一残余范围的决定仍待答复。若接受，正式验收还需覆盖活跃 LAN-bound same-port decoy、其他端口/外网、`localhost`/`127.0.0.1`/`::1`、端口重用、代理退出、租约到期/revoke 和 `allow_local_binding=false`；不能宣称“仅 loopback”或“仅代理进程”。严格地址/进程绑定仍需 AF_UNIX 路径授权或另行评估受支持系统扩展。观察日：2026-09-28。只读研究和本轮 test-only 诊断，不改生产策略、未复制代码或增加依赖。
 
+### 2026-09-28 Asia/Shanghai 刷新：Seatbelt localhost 诊断失败定位
+
+- **固定 Codex 对照：**仍为 `openai/codex@21eb35513df478a2a090bfc2c0293caaf435b36d`，Apache-2.0。其 [`seatbelt.rs`](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/sandboxing/src/seatbelt.rs) 逐端口谓词与 ICODE 诊断文本相同；但 Codex 实际拼接 base policy、文件 policy、动态网络规则及 [`seatbelt_network_policy.sbpl`](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/sandboxing/src/seatbelt_network_policy.sbpl)。固定版本 [`seatbelt_tests.rs`](https://github.com/openai/codex/blob/21eb35513df478a2a090bfc2c0293caaf435b36d/codex-rs/sandboxing/src/seatbelt_tests.rs) 检查 profile 文本；未找到该测试在真实 Seatbelt 下对规则执行 TCP connect 的证据。两者不能按单条规则字面相同推断运行效果相同。
+- **当前直接证据：**ICODE CI run [`36374038529`](https://github.com/ayukyo/icode/actions/runs/36374038529) 的 macOS ARM64/Intel 注解均为 `profile-startup` 阶段 exit 1、marker 0、stderr 类别 `other`。这在时间顺序上先于 socket 创建；目前没有证据把失败归因到端口谓词，也没有证据指向某个文件访问/平台规则。
+- **采纳 / 暂缓：**采纳分层最小对照——基础 profile 的 `/usr/bin/true`、Python `-S`、普通 Python，再单独追加端口规则；诊断只暴露退出码、marker 数和固定类别，不暴露 stderr 原文/路径/地址/端口。暂缓复制 Codex 的整套额外 Seatbelt 许可条款，暂不调整生产 DENY 或能力分数。Apple [`network client entitlement`](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.network.client) 描述 entitlement 能力，不是此 raw SBPL 谓词的精确语法或匹配范围规范；实际结论必须来自原生 macOS 运行证据。观察日：2026-09-28。
+
 ### 2026-09-28 Asia/Shanghai 刷新：跨平台任务级 process_limit
 
 - **Linux：**Linux kernel [cgroup v2 PID controller](https://docs.kernel.org/admin-guide/cgroup-v2.html#pid) 的 `pids.max` 是子树硬限额，超限 fork/clone 返回 `EAGAIN`；其任务计数按 TID，因此线程也计入。systemd [cgroup delegation 合同](https://systemd.io/CGROUP_DELEGATION/)要求管理者只写被委派子树；ICODE 本机 user manager 曾可创建 transient scope，但当前用户 manager `Delegate=no`，该实验不代表所有 pip-only 安装主机可用。
