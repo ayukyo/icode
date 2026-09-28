@@ -17,6 +17,37 @@ from icode.sandbox_policy import NetworkMode, SandboxPolicy
 
 
 class TestViolationEventParser(unittest.TestCase):
+    def test_first_fixed_log_filter_banner_is_ignored_without_returning_contents(self) -> None:
+        parser = getattr(probe, "parse_violation_stream_line", None)
+        self.assertTrue(callable(parser), "test-only stream line parser is missing")
+
+        line = b'Filtering the log data using "predicate /private/sensitive-path"\n'
+        self.assertIsNone(parser(line, first_line=True))
+
+    def test_unknown_non_json_stream_preamble_remains_inconclusive(self) -> None:
+        parser = getattr(probe, "parse_violation_stream_line", None)
+        self.assertTrue(callable(parser), "test-only stream line parser is missing")
+
+        with self.assertRaises(probe.ViolationRecordError) as caught:
+            parser(b"Unrecognized logger startup text\n", first_line=True)
+        self.assertEqual(caught.exception.reason, "invalid_json")
+
+    def test_known_filter_banner_after_first_line_remains_inconclusive(self) -> None:
+        parser = getattr(probe, "parse_violation_stream_line", None)
+        self.assertTrue(callable(parser), "test-only stream line parser is missing")
+
+        with self.assertRaises(probe.ViolationRecordError) as caught:
+            parser(b'Filtering the log data using "predicate"\n', first_line=False)
+        self.assertEqual(caught.exception.reason, "invalid_json")
+
+    def test_malformed_json_first_line_is_not_mistaken_for_a_banner(self) -> None:
+        parser = getattr(probe, "parse_violation_stream_line", None)
+        self.assertTrue(callable(parser), "test-only stream line parser is missing")
+
+        with self.assertRaises(probe.ViolationRecordError) as caught:
+            parser(b'{"subsystem":\n', first_line=True)
+        self.assertEqual(caught.exception.reason, "invalid_json")
+
     def test_parser_returns_only_pid_and_capability_for_a_matching_event(self) -> None:
         parser = getattr(probe, "parse_violation_record", None)
         self.assertTrue(callable(parser), "test-only violation event parser is missing")

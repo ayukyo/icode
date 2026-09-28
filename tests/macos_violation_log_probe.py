@@ -29,6 +29,7 @@ LOGGER_STOP_TIMEOUT_SECONDS = 2.0
 READER_JOIN_TIMEOUT_SECONDS = 2.0
 TARGET_EVENT_WAIT_SECONDS = 1.0
 
+_LOG_STREAM_FILTER_BANNER_PREFIX = b"Filtering the log data using "
 _DENIAL_MESSAGE = re.compile(
     r"^Sandbox:\s+[^()\r\n]{1,128}\((?P<pid>[0-9]{1,10})\)\s+"
     r"deny\([0-9]+\)\s+(?P<capability>[a-z][a-z0-9-]{0,63})(?:\s|$)"
@@ -82,6 +83,24 @@ def parse_violation_record(line: bytes) -> tuple[int, str] | None:
     if pid <= 0:
         raise ViolationRecordError("invalid_pid")
     return pid, match.group("capability")
+
+
+def parse_violation_stream_line(
+    line: bytes,
+    *,
+    first_line: bool,
+) -> tuple[int, str] | None:
+    """Parse one bounded stream line, allowing only the known initial CLI banner."""
+
+    if len(line) > MAX_RECORD_BYTES:
+        raise ViolationRecordError("record_too_large")
+    if not line.endswith(b"\n"):
+        raise ViolationRecordError("record_size_or_truncation")
+    if first_line and line.startswith(_LOG_STREAM_FILTER_BANNER_PREFIX):
+        # The CLI may write a human-readable filter banner before NDJSON. Drop
+        # it immediately; never retain or expose its predicate text.
+        return None
+    return parse_violation_record(line)
 
 
 def classify_observation(
@@ -175,7 +194,10 @@ class BoundedViolationLogObserver:
                     self._set_incomplete("stream_record_limit")
                     return
                 try:
-                    event = parse_violation_record(line)
+                    event = parse_violation_stream_line(
+                        line,
+                        first_line=(records_seen == 1),
+                    )
                 except ViolationRecordError as error:
                     self._set_incomplete(error.reason)
                     continue
