@@ -1,7 +1,7 @@
 # R2 资源限制与统一违规回执实施门
 
 - 日期：2026-09-28 Asia/Shanghai
-- 状态：R2 资源限制及原生回执的产品接线仍未开始；只读审计、本机机制实验、应用层拒绝回执基础切片、Linux test-only USER_NOTIF 原型，以及 macOS 双架构 test-only 精确拒绝事件观测已有证据，能力评分不变
+- 状态：R2 资源限制和跨平台统一违规回执验收未完成；Linux deny-only `run_command` 已接入 USER_NOTIF 原生回执并通过 CLI 展示，但 MCP adapter、macOS/Windows 来源 parity、文件拒绝覆盖、`process_limit` 语义和平台门槛仍未闭合，能力评分不变
 - 目标：把十项合同中的 `resource_limits`、`uniform_violation` 接入真实隔离命令路径，并提供跨平台可核验回执。
 - 依据：[R2 跨平台隔离设计 §12.2、§13、§14](../specs/2026-09-23-r2-cross-platform-isolation-design.md)
 
@@ -144,6 +144,15 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **取舍：**采纳分离 socket-domain 与路径 outbound 规则仅作为 test-only 原语；**暂缓**生产接入、网络评分和自动模式。当前 `HostConnectProxyServer` 为 loopback TCP + HTTP CONNECT，不能因此候选而向常见客户端只注入 `HTTP_PROXY` 并期待 AF_UNIX。若继续此路线，须评估受同一 lease/policy 限制的 SOCKS5-over-UDS 或逐客户端 adapter，再实测真实代理协议、严格直连负例、DNS/IP 约束、连接到期/撤销和 listener 清理。还须覆盖 socket path alias/symlink、短路径长度、目录权限/替换竞态。当前 `MacSeatbeltSandbox` 不放开网络，macOS `6/10`、`policy_contract_ready=false` 与自动模式关闭均不变；无上游代码复制或新运行依赖。
 
 ## 2026-09-28 Asia/Shanghai：Linux USER_NOTIF 接入真实 run_command（本机切片）
+
+### AgentLoop 与 CLI 安全投影 follow-up（2026-09-28）
+
+- **范围：**AgentLoop 真实命令拒绝事件测试核实 `ToolResult.meta` 中的稳定 `policy_denied`、原生回执和统一用户提示能到达 CLI 事件边界。CLI 仅在 schema 版本、强制层、来源、类别和有界计数全部匹配时显示固定 `network_socket × count` 摘要；其余拒绝仍用通用安全提示，不显示 argv、路径、输出或额外回执字段。
+- **回归：**Linux 原生回执集成 10 项连续 20 轮共 200/200；CLI、AgentLoop、Linux receipt 定向套件 40 项通过。覆盖真实 AF_INET DENY 事件、允许 `AF_UNIX socketpair()`、普通 exit 13 不误报，以及 CLI 摘要与参数脱敏。
+- **最终本机门禁：**完整 `scripts/preflight.py` 的 secrets、submodule、全量 unittest 三门通过（1,156 项，30 项 skip）；针对复审反馈加强线程关闭交错测试后，该用例连续 100/100 通过，最终 `scripts/preflight.py --only tests` 也通过。Python compileall、`git diff --check`、竞品/治理/官网检查通过，三文档一致性审计连续两次均为 0 项；独立复审最终 APPROVE，无 Critical/Important/Minor。跨平台 GitHub CI 待提交推送后核验。
+- **上游取舍：**Codex `openai/codex@36650394c5b38c2990ccf2a3457165ca3e9d9726`（Apache-2.0）保留 MCP `structuredContent`、`isError`、`_meta` 等结果面；OpenHands `software-agent-sdk@d77ada7a030b3acaa82593d402632680361dfe42`（MIT）的所查转换路径把内容与错误布尔值转成 observation；MCP `2026-07-28` 规范允许由工具定义 schema 的 `structuredContent`，没有通用业务 `error_code`。采纳机器码、脱敏回执、用户文案分层；不复制代码、不新增依赖。固定来源见[持续竞品对照](../../agent-landscape-live.md)。
+- **MCP 边界：**`src/icode` 当前没有对外 MCP server/result adapter；`vendor/icode-skill` 提供的 MCP 服务是工作流工具，不是 AgentLoop `ToolResult` 的传输层。因此本阶段只验证 CLI，不声称 CLI/MCP parity。若未来增加 runtime MCP adapter，应将相同 `error_code` 与受限回执放入 `structuredContent`、安全提示放入 `content`，并测试同一拒绝来源的等价性。
+- **门禁状态：**Linux→AgentLoop→CLI 本机链路通过，但 macOS/Windows 来源 parity、MCP adapter、文件拒绝覆盖及 `process_limit` 语义仍未闭合；`uniform_violation=false`、`resource_limits=false`、平台评分、网络 DENY、`policy_contract_ready=false` 与自动模式不变，R2/R3 不宣告完成。
 
 - **阶段范围：**在真实 Linux `LandlockSandbox` + deny-only policy 的 `run_command` 分支引入 `SECCOMP_RET_USER_NOTIF` listener；C helper 通过 SCM_RIGHTS 将 listener 交给已就绪的 Python broker，并在收到正确 ACK 前不启动 payload。broker 明确对当前受控 socket DENY 回复 `EPERM`，原生来源与观察器状态沿 `ExecutionResult` 传至工具回执。其它 sandbox、平台、allow policy 和既有执行路径保持不变。
 - **TDD 与验收：**新增回归先因缺少原生回执失败；独立审查后又补入策略根错配、只读上下文、observer deadline 到期、poller 初始化异常及 `Thread.start()` 失败清理的先红后绿用例。覆盖真实 AF_INET socket DENY、AF_UNIX `socketpair()` 允许正例、普通 exit 13 不误报、错误 ACK、策略绑定失败及观察器失败关闭。新模块 9 项连续 20 轮共 180/180；broker/tools/CLI/loop 定向 73 项、isolation 74 项通过；C helper 以 `-std=c11 -O2 -Wall -Wextra -Werror` 编译，Python 源码/测试编译检查通过。全仓 preflight 首轮因核心离线模块引入 `socket` 导入失败，已修正并定向复测通过；最终三道门待重跑。

@@ -19,7 +19,11 @@ from pathlib import Path
 
 from tests._support import temp_workspace
 
+from icode.approvals import ScriptedApprover
+from icode.backends import FakeBackend
+from icode.guard import Guard, Scope
 from icode.isolation import LandlockSandbox
+from icode.loop import AgentLoop, LoopConfig
 from icode.linux_seccomp_notify import create_seccomp_listener_handoff_channel
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.tools import POLICY_DENIED_USER_MESSAGE, ToolContext, default_registry
@@ -136,6 +140,65 @@ class TestLinuxViolationReceipt(unittest.TestCase):
                 "count": 1,
             },
         )
+
+    def test_AgentLoop事件保留真实原生回执和统一用户提示(self) -> None:
+        with temp_workspace() as root:
+            context = self._context(root)
+            probe_script = root / "network_denial_probe.py"
+            probe_script.write_text(
+                "import socket\n"
+                "try:\n"
+                "    socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+                "except PermissionError:\n"
+                "    print('network denied')\n"
+                "else:\n"
+                "    raise SystemExit(17)\n",
+                encoding="utf-8",
+            )
+            events: list[tuple[str, dict]] = []
+            loop = AgentLoop(
+                backend=FakeBackend([
+                    {
+                        "content": "",
+                        "tool_calls": [{
+                            "id": "native-denial",
+                            "name": "run_command",
+                            "arguments": {
+                                "argv": [
+                                    sys.executable,
+                                    str(probe_script),
+                                ],
+                                "timeout": 8,
+                            },
+                        }],
+                    },
+                    "已根据隔离策略停止。",
+                ]),
+                registry=default_registry(),
+                guard=Guard(Scope(workspace_root=root)),
+                ctx=context,
+                approver=ScriptedApprover(answers=[True]),
+                config=LoopConfig(max_turns=3, max_tool_calls_per_turn=1),
+                on_event=lambda kind, payload: events.append((kind, payload)),
+            )
+
+            result = loop.run([{"role": "user", "content": "验证网络默认拒绝"}])
+
+        self.assertTrue(result.ok)
+        tool_results = [payload for kind, payload in events if kind == "tool_result"]
+        self.assertEqual(len(tool_results), 1)
+        event = tool_results[0]
+        self.assertFalse(event["ok"])
+        self.assertEqual(event["meta"]["error_code"], "policy_denied")
+        self.assertEqual(event["meta"]["violation_observer_status"], "complete")
+        self.assertEqual(
+            event["meta"]["violation_receipt"]["enforcement_layer"],
+            "os_seccomp_user_notif",
+        )
+        self.assertEqual(
+            event["meta"]["violation_receipt"]["category"], "network_socket",
+        )
+        self.assertEqual(event["user_message"], POLICY_DENIED_USER_MESSAGE)
 
     def test_allowed_unix_socketpair_does_not_emit_violation_receipt(self) -> None:
         with temp_workspace() as root:

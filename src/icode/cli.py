@@ -27,6 +27,29 @@ from .guard import Guard, Scope
 from .handshake import run_handshake
 
 REPO_ROOT = repo_root()
+_MAX_NATIVE_VIOLATION_COUNT = 65_535
+
+
+def _native_violation_summary(meta: object) -> str | None:
+    """只把已知原生回执分类显示给用户，不回显动态执行元数据。"""
+    if not isinstance(meta, dict):
+        return None
+    receipt = meta.get("violation_receipt")
+    if not isinstance(receipt, dict):
+        return None
+    if (
+        type(receipt.get("schema_version")) is not int
+        or receipt.get("schema_version") != 1
+        or receipt.get("enforcement_layer") != "os_seccomp_user_notif"
+        or receipt.get("os_enforced") is not True
+        or receipt.get("source") != "seccomp_user_notif"
+        or receipt.get("category") != "network_socket"
+        or type(receipt.get("count")) is not int
+        or receipt.get("count") < 1
+        or receipt.get("count") > _MAX_NATIVE_VIOLATION_COUNT
+    ):
+        return None
+    return f"network_socket × {receipt['count']}"
 
 
 def _nonnegative_int(value: str) -> int:
@@ -391,7 +414,12 @@ def _build_runner(args: argparse.Namespace):
             meta = payload.get("meta")
             if (not payload.get("ok") and isinstance(meta, dict)
                     and meta.get("error_code") == "policy_denied"):
-                print(f"        [拒绝] {payload.get('user_message', '此操作已被阻止。')}")
+                message = payload.get("user_message", "此操作已被阻止。")
+                native_summary = _native_violation_summary(meta)
+                if native_summary is not None:
+                    print(f"        [系统隔离拦截] {native_summary}：{message}")
+                else:
+                    print(f"        [拒绝] {message}")
             else:
                 print(f"        {'成功' if payload.get('ok') else '失败'}")
         elif kind == "tool_denied":

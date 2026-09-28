@@ -450,18 +450,46 @@ class NetworkProxyServerTestCase(unittest.TestCase):
             ready_timeout_seconds=1.0,
         )
         self.addCleanup(session.close)
-        session.start()
+        serving = threading.Event()
+        release_thread = threading.Event()
+        # Test cleanups run in reverse registration order, so release the
+        # held thread before the session retries its ordinary shutdown path.
+        self.addCleanup(release_thread.set)
+
+        def hold_accept_thread(
+            server, stop_event=None, *, ready_event=None, **_kwargs,
+        ) -> None:
+            if stop_event is None:
+                raise AssertionError("session must provide a stop event")
+            server._scope.verify_lease()
+            serving.set()
+            if ready_event is not None:
+                ready_event.set()
+            stop_event.wait()
+            release_thread.wait(timeout=5.0)
+
+        with patch.object(
+            network_proxy_server.HostConnectProxyServer,
+            "serve_forever",
+            new=hold_accept_thread,
+        ):
+            session.start()
+            self.assertTrue(serving.wait(timeout=1.0))
         thread = session._thread
         self.assertIsNotNone(thread)
         assert thread is not None
+        self.assertTrue(thread.is_alive())
         join = thread.join
         interrupts = 0
+        join_calls = 0
 
         def interrupt_once(*, timeout: float | None = None) -> None:
-            nonlocal interrupts
+            nonlocal interrupts, join_calls
+            join_calls += 1
             if interrupts == 0:
                 interrupts += 1
                 raise KeyboardInterrupt
+            release_thread.set()
             join(timeout=timeout)
 
         with patch.object(thread, "join", side_effect=interrupt_once):
@@ -469,6 +497,7 @@ class NetworkProxyServerTestCase(unittest.TestCase):
                 session.close()
 
         self.assertEqual(interrupts, 1)
+        self.assertGreaterEqual(join_calls, 2)
         self.assertLess(host_control.fileno(), 0)
         self.assertTrue(session.close())
 
