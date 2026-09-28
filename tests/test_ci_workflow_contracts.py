@@ -20,13 +20,36 @@ class TestLinuxReviewerBoundaryCi(unittest.TestCase):
           sudo apt-get install --yes bubblewrap
           command -v bwrap
 """,
-            """      - name: Allow Bubblewrap user namespaces under Ubuntu AppArmor
+            """      - name: Load the pinned Bubblewrap AppArmor profile when required
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          if [[ -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] \\
-            && [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" == "1" ]]; then
-            sudo apparmor_parser -r .github/apparmor/bwrap-userns.profile
+          if [[ ! -r /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]] \\
+            || [[ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns)" != "1" ]]; then
+            echo "::notice::AppArmor user namespace restriction is not enabled"
+            exit 0
+          fi
+          profile_revision='b0eb95457bc2de401920308869d016e696c73664'
+          profile_sha256='11d39094f044f0cda0febb3ad517b830301da6b2ce929664af09ee9e4dd264f9'
+          profile_path="${RUNNER_TEMP}/bwrap-userns-restrict"
+          profile_url="https://gitlab.com/apparmor/apparmor/-/raw/${profile_revision}/profiles/apparmor/profiles/extras/bwrap-userns-restrict"
+          curl --fail --location --silent --show-error "${profile_url}" --output "${profile_path}"
+          printf '%s  %s\\n' "${profile_sha256}" "${profile_path}" | sha256sum --check
+          sudo apparmor_parser --replace "${profile_path}"
+          active_profiles='/sys/kernel/security/apparmor/profiles'
+          if ! grep -Fq 'bwrap (enforce)' "${active_profiles}"; then
+            cat "${active_profiles}"
+            echo "::error::Pinned bwrap AppArmor profile was not loaded"
+            exit 1
+          fi
+          bwrap_args=(--die-with-parent --unshare-user --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /lib /lib --proc /proc --dev /dev)
+          if [[ -e /lib64 ]]; then
+            bwrap_args+=(--ro-bind /lib64 /lib64)
+          fi
+          child_profile="$(bwrap "${bwrap_args[@]}" -- /bin/cat /proc/self/attr/current)"
+          if [[ "${child_profile}" != *unpriv_bwrap* ]]; then
+            echo "::error::Bubblewrap child did not enter the restricted AppArmor profile: ${child_profile}"
+            exit 1
           fi
 """,
             """      - name: Verify Linux Reviewer ToolContext boundary
@@ -47,17 +70,35 @@ class TestLinuxReviewerBoundaryCi(unittest.TestCase):
                     "Linux native-probe matrix must run each Bubblewrap Reviewer gate explicitly",
                 )
 
-        apparmor_profile = (
-            repository_root / ".github/apparmor/bwrap-userns.profile"
-        ).read_text(encoding="utf-8")
-        self.assertIn("profile /usr/bin/bwrap flags=(unconfined)", apparmor_profile)
-        self.assertIn("userns,", apparmor_profile)
+        ordered_step_names = (
+            "      - name: Install Bubblewrap for Linux Reviewer probes",
+            "      - name: Load the pinned Bubblewrap AppArmor profile when required",
+            "      - name: Verify Linux Reviewer ToolContext boundary",
+            "      - name: Verify Linux read-only Reviewer OS boundary",
+        )
+        step_positions = tuple(workflow.index(name) for name in ordered_step_names)
         self.assertEqual(
-            apparmor_profile,
-            "include <tunables/global>\n\n"
-            "profile /usr/bin/bwrap flags=(unconfined) {\n"
-            "    userns,\n"
-            "}\n",
+            step_positions,
+            tuple(sorted(step_positions)),
+            "Bubblewrap must be installed and its active AppArmor child profile verified before Reviewer probes",
+        )
+
+        self.assertIn(
+            "profile_revision='b0eb95457bc2de401920308869d016e696c73664'",
+            workflow,
+        )
+        self.assertIn(
+            "profile_sha256='11d39094f044f0cda0febb3ad517b830301da6b2ce929664af09ee9e4dd264f9'",
+            workflow,
+        )
+        self.assertIn("sha256sum --check", workflow)
+        self.assertIn("sudo apparmor_parser --replace", workflow)
+        self.assertIn("bwrap (enforce)", workflow)
+        self.assertIn("*unpriv_bwrap*", workflow)
+        self.assertNotIn("flags=(unconfined)", workflow)
+        self.assertFalse(
+            (repository_root / ".github/apparmor/bwrap-userns.profile").exists(),
+            "Do not ship the broad unconfined profile with userns permission",
         )
         self.assertNotIn("sysctl -w", workflow)
 
