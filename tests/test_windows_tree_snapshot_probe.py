@@ -350,15 +350,28 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 )
                 self.assertEqual(ctypes.get_last_error(), error_sharing_violation)
                 unexpected_handle = None
-                print(
+                filesystem_label = filesystem_name.value
+                if (
+                    not 1 <= len(filesystem_label) <= 16
+                    or not filesystem_label.isascii()
+                    or not all(char.isalnum() or char in "_-" for char in filesystem_label)
+                ):
+                    filesystem_label = "other"
+                probe_result = (
                     "windows-tree-snapshot-probe "
-                    f"filesystem={filesystem_name.value} "
+                    f"filesystem={filesystem_label} "
                     f"directory_create={directory_create_result} "
                     f"directory_rename={directory_rename_result} "
                     f"directory_delete={directory_delete_result} "
                     "file_write=blocked_sharing_violation "
                     "file_delete=blocked_sharing_violation"
                 )
+                print(probe_result)
+                if os.environ.get("GITHUB_ACTIONS") == "true":
+                    print(
+                        "::notice title=R3 Windows tree snapshot probe::"
+                        f"{probe_result}"
+                    )
             finally:
                 for handle in (unexpected_handle, payload_handle, root_handle):
                     if handle not in (None, invalid_handle):
