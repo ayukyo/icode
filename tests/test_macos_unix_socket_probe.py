@@ -25,7 +25,6 @@ from icode.isolation import MacSeatbeltSandbox
 from icode.network_destination import ResolvedNetworkTarget
 from icode.network_lease import NetworkLeaseAuthority, NetworkPurpose
 from icode.network_proxy_scope import HostConnectRuntime, HostHttpsConnectScope
-from icode.network_proxy_server import HostConnectProxyServer
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 
 
@@ -739,6 +738,72 @@ class TestUnixSocketCanaryAndProfile(unittest.TestCase):
         self.assertIn('/private/tmp/a \\"quoted\\" root', profile)
 
 
+class TestLiveLeaseTestProxyFactory(unittest.TestCase):
+    def test_factory_creates_the_listener_it_hands_to_the_proxy_server(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-live-proxy-factory-") as raw:
+            workspace = Path(raw) / "workspace"
+            workspace.mkdir()
+            policy = SandboxPolicy(
+                schema_version=1,
+                run_id="run-live-proxy-factory-test",
+                ticket_id="ICODE-LIVE-PROXY-FACTORY-TEST",
+                step="code",
+                workspace_root=workspace,
+                read_roots=(workspace,),
+                write_roots=(workspace,),
+                deny_read_roots=(workspace / ".git",),
+                deny_write_roots=(workspace / ".git",),
+                network_mode=NetworkMode.DENY,
+                allowed_domains=(),
+                process_limit=2,
+                wall_timeout_seconds=10,
+                output_limit_bytes=1024,
+                protected_paths=(workspace / ".git",),
+            )
+            authority = NetworkLeaseAuthority()
+            issued = authority.request_lease(
+                policy,
+                approver=ScriptedApprover([True]),
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("packages.example",),
+                ttl_seconds=30,
+            )
+            runtime = HostConnectRuntime(authority, sweep_interval_seconds=0.01)
+            runtime.start()
+            try:
+                scope = runtime.create_scope(
+                    issued,
+                    policy,
+                    NetworkPurpose.PACKAGE_INSTALL,
+                )
+                factory = getattr(probe, "create_test_lease_proxy_server", None)
+                self.assertTrue(
+                    callable(factory),
+                    "test-only owned listener factory is missing",
+                )
+                listener, server = factory(scope)
+                try:
+                    self.assertIs(type(listener), socket.socket)
+                    self.assertIs(server._listener, listener)
+                    self.assertEqual(listener.getsockname()[0], "127.0.0.1")
+                    self.assertGreater(listener.getsockname()[1], 0)
+                    self.assertEqual(listener.gettimeout(), 0.0)
+                    self.assertFalse(listener.get_inheritable())
+                    try:
+                        listening = listener.getsockopt(
+                            socket.SOL_SOCKET,
+                            socket.SO_ACCEPTCONN,
+                        )
+                    except OSError as error:
+                        self.assertEqual(error.errno, errno.ENOPROTOOPT)
+                    else:
+                        self.assertEqual(listening, 1)
+                finally:
+                    self.assertTrue(server.close())
+            finally:
+                self.assertTrue(runtime.close())
+
+
 @unittest.skipUnless(sys.platform == "darwin", "requires native macOS Seatbelt")
 class TestNativeUnixSocketPolicy(unittest.TestCase):
     @staticmethod
@@ -1079,11 +1144,6 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                 NetworkPurpose.PACKAGE_INSTALL,
             )
 
-            proxy_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            proxy_listener.bind(("127.0.0.1", 0))
-            proxy_listener.listen(4)
-            proxy_listener.setblocking(False)
-
             listener_facts: list[str] = []
 
             def record_listener_fact(
@@ -1109,88 +1169,92 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                     fact_value = f"error:{type(error).__name__}"
                 listener_facts.append(f"{name}={fact_value}")
 
-            def listening_buffer_fact() -> str:
-                option_value = proxy_listener.getsockopt(
-                    socket.SOL_SOCKET,
-                    socket.SO_ACCEPTCONN,
-                    4,
+            def inspect_owned_listener(listener: socket.socket) -> None:
+                def listening_buffer_fact() -> str:
+                    option_value = listener.getsockopt(
+                        socket.SOL_SOCKET,
+                        socket.SO_ACCEPTCONN,
+                        4,
+                    )
+                    if type(option_value) is not bytes or len(option_value) != 4:
+                        return "unexpected_buffer_shape"
+                    return (
+                        "matches_one"
+                        if option_value == struct.pack("@i", 1)
+                        else "differs_from_one"
+                    )
+
+                def stream_socket_buffer_fact() -> str:
+                    option_value = listener.getsockopt(
+                        socket.SOL_SOCKET,
+                        socket.SO_TYPE,
+                        4,
+                    )
+                    if type(option_value) is not bytes or len(option_value) != 4:
+                        return "unexpected_buffer_shape"
+                    return (
+                        "matches_stream"
+                        if option_value == struct.pack("@i", socket.SOCK_STREAM)
+                        else "differs_from_stream"
+                    )
+
+                record_listener_fact(
+                    "exact_socket_type",
+                    lambda: type(listener) is socket.socket,
                 )
-                if type(option_value) is not bytes or len(option_value) != 4:
-                    return "unexpected_buffer_shape"
-                return (
-                    "matches_one"
-                    if option_value == struct.pack("@i", 1)
-                    else "differs_from_one"
+                record_listener_fact(
+                    "ipv4_family",
+                    lambda: listener.family == socket.AF_INET,
+                )
+                record_listener_fact(
+                    "stream_socket",
+                    lambda: listener.getsockopt(
+                        socket.SOL_SOCKET,
+                        socket.SO_TYPE,
+                    ) == socket.SOCK_STREAM,
+                )
+                record_listener_fact("acceptconn_level", lambda: socket.SOL_SOCKET)
+                record_listener_fact("acceptconn_option", lambda: socket.SO_ACCEPTCONN)
+                record_listener_fact(
+                    "stream_socket_buffer_form",
+                    stream_socket_buffer_fact,
+                )
+                record_listener_fact(
+                    "listening",
+                    lambda: listener.getsockopt(
+                        socket.SOL_SOCKET,
+                        socket.SO_ACCEPTCONN,
+                    ) == 1,
+                )
+                record_listener_fact("listening_buffer_form", listening_buffer_fact)
+                record_listener_fact(
+                    "ipv4_loopback",
+                    lambda: listener.getsockname()[0] == "127.0.0.1",
+                )
+                record_listener_fact(
+                    "positive_port",
+                    lambda: type(listener.getsockname()[1]) is int
+                    and listener.getsockname()[1] > 0,
+                )
+                record_listener_fact(
+                    "wrapper_nonblocking",
+                    lambda: listener.gettimeout() == 0.0,
+                )
+                record_listener_fact(
+                    "fd_nonblocking",
+                    lambda: not os.get_blocking(listener.fileno()),
+                )
+                record_listener_fact(
+                    "scope_type",
+                    lambda: isinstance(scope, HostHttpsConnectScope),
+                )
+                record_listener_fact(
+                    "noninheritable_after_validation",
+                    lambda: not listener.get_inheritable(),
                 )
 
-            def stream_socket_buffer_fact() -> str:
-                option_value = proxy_listener.getsockopt(
-                    socket.SOL_SOCKET,
-                    socket.SO_TYPE,
-                    4,
-                )
-                if type(option_value) is not bytes or len(option_value) != 4:
-                    return "unexpected_buffer_shape"
-                return (
-                    "matches_stream"
-                    if option_value == struct.pack("@i", socket.SOCK_STREAM)
-                    else "differs_from_stream"
-                )
-
-            record_listener_fact(
-                "exact_socket_type",
-                lambda: type(proxy_listener) is socket.socket,
-            )
-            record_listener_fact(
-                "ipv4_family",
-                lambda: proxy_listener.family == socket.AF_INET,
-            )
-            record_listener_fact(
-                "stream_socket",
-                lambda: proxy_listener.getsockopt(
-                    socket.SOL_SOCKET,
-                    socket.SO_TYPE,
-                ) == socket.SOCK_STREAM,
-            )
-            record_listener_fact("acceptconn_level", lambda: socket.SOL_SOCKET)
-            record_listener_fact("acceptconn_option", lambda: socket.SO_ACCEPTCONN)
-            record_listener_fact(
-                "stream_socket_buffer_form",
-                stream_socket_buffer_fact,
-            )
-            record_listener_fact(
-                "listening",
-                lambda: proxy_listener.getsockopt(
-                    socket.SOL_SOCKET,
-                    socket.SO_ACCEPTCONN,
-                ) == 1,
-            )
-            record_listener_fact("listening_buffer_form", listening_buffer_fact)
-            record_listener_fact(
-                "ipv4_loopback",
-                lambda: proxy_listener.getsockname()[0] == "127.0.0.1",
-            )
-            record_listener_fact(
-                "positive_port",
-                lambda: type(proxy_listener.getsockname()[1]) is int
-                and proxy_listener.getsockname()[1] > 0,
-            )
-            record_listener_fact(
-                "wrapper_nonblocking",
-                lambda: proxy_listener.gettimeout() == 0.0,
-            )
-            record_listener_fact(
-                "fd_nonblocking",
-                lambda: not os.get_blocking(proxy_listener.fileno()),
-            )
-            record_listener_fact(
-                "scope_type",
-                lambda: isinstance(scope, HostHttpsConnectScope),
-            )
-            record_listener_fact(
-                "already_noninheritable",
-                lambda: not proxy_listener.get_inheritable(),
-            )
+            proxy_listener, proxy_server = probe.create_test_lease_proxy_server(scope)
+            inspect_owned_listener(proxy_listener)
             print(
                 "::notice::macos-live-lease-listener-contract "
                 f"python={platform.python_version()} "
@@ -1199,7 +1263,6 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                 + " ".join(listener_facts),
                 flush=True,
             )
-            proxy_server = HostConnectProxyServer(proxy_listener, scope)
             upstream_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             upstream_listener.bind(("127.0.0.1", 0))
             upstream_listener.listen(2)

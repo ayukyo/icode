@@ -1,6 +1,7 @@
 # R2.4 临时网络授权与代理门禁
 
 - 日期：2026-09-24
+- 最新复验与修正候选（2026-09-29，CI #350）：两架构都证实 `SO_ACCEPTCONN` 两种 getter 为 Darwin `ENOPROTOOPT=42`，`SO_TYPE` 4-byte control 返回 stream；XNU 源码判断获原生 errno 支持。test-only canary 已改为由自有 factory 创建并监听一个 loopback socket，只对该精确对象在构造期间临时桥接已知 `listen()` 事实；未知 errno 仍拒绝、生产 validator 不变。当前 Linux 聚焦 51 项通过（3 项 Darwin-native skip），预期下一轮 x64/ARM64 macOS CI 验证 canary 是否越过 constructor。Windows live/control 双 `10060` 与 NetIso `INTERNET_CLIENT=2` 仍未达门，网络授权和 worker 网络保持关闭。
 - 最新状态（2026-09-29，CI #349）：macOS Intel/Apple Silicon 的网络 canary 在 `HostConnectProxyServer` 构造处失败；所有已记录 listener 前置条件为真，只有 `SO_ACCEPTCONN` 整数 getter 产生 `OSError`，还没进入 SOCKS/relay。XNU 源码审阅提示 Darwin `getsockopt(SO_ACCEPTCONN)` 可能不受支持，待只读 errno 与 `buflen=4` 对照由下一次双架构 runner 确认；不能把异常映射为 listener 已验证。Windows AppContainer x64/ARM64 对活跃/未监听端口均超时 `10060`，只记 inconclusive。相关主 CI [#349](https://github.com/ayukyo/icode/actions/runs/36570938004)，官网 [#349](https://github.com/ayukyo/icode/actions/runs/36570938035)。默认网络 DENY、NetIso `PRIVATE_NETWORK=1` 门和 worker 网络保持关闭。
 - **实现边界：**诊断仅在 test-only native canary；不得放宽生产 listener 检查。若确认 Darwin 不支持 getter，只允许以 canary 自己刚创建并成功执行 `listen()` 的 socket 来源建立测试端，不接受不明来源 socket，不把主动 `connect/accept` 当只读侦测。
 - 状态：已新增 v2 host-only lease overlay（绑定默认 DENY 基线）、本机审批/HMAC/撤销 authority 契约、真实 socket 关闭测试适配器及 Linux native loopback-only namespace probe；没有生产代理或 OS 强制路由，自动模式保持默认断网

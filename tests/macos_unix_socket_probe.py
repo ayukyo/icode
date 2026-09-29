@@ -715,3 +715,78 @@ def build_test_profile(base_profile: str, approved_socket_root: Path) -> str:
         + quoted_path
         + '")))'
     )
+
+
+def create_test_lease_proxy_server(
+    scope: object,
+) -> tuple[socket.socket, object]:
+    """Create a test-owned loopback listener and its lease proxy server.
+
+    Darwin exposes the ``SO_ACCEPTCONN`` constant but may not implement its
+    ``getsockopt`` query. Only in that case, construction substitutes the
+    known result for the exact socket this helper created and called
+    ``listen()`` on. The production validator remains unchanged and unknown
+    listener sockets are never accepted through this test-only compatibility
+    path.
+    """
+
+    import errno
+    import sys
+    from unittest.mock import patch
+
+    from icode.network_proxy_server import HostConnectProxyServer
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        listener.setblocking(False)
+
+        if sys.platform == "darwin":
+            try:
+                listening = listener.getsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_ACCEPTCONN,
+                )
+            except OSError as error:
+                if error.errno != errno.ENOPROTOOPT:
+                    raise
+                original_getsockopt = socket.socket.getsockopt
+
+                def getsockopt_for_owned_listener(
+                    candidate: socket.socket,
+                    level: int,
+                    option: int,
+                    *arguments: int,
+                ) -> int | bytes:
+                    if (
+                        candidate is listener
+                        and level == socket.SOL_SOCKET
+                        and option == socket.SO_ACCEPTCONN
+                        and not arguments
+                    ):
+                        return 1
+                    return original_getsockopt(
+                        candidate,
+                        level,
+                        option,
+                        *arguments,
+                    )
+
+                with patch.object(
+                    socket.socket,
+                    "getsockopt",
+                    new=getsockopt_for_owned_listener,
+                ):
+                    server = HostConnectProxyServer(listener, scope)
+            else:
+                if listening != 1:
+                    raise OSError("test listener is not accepting connections")
+                server = HostConnectProxyServer(listener, scope)
+        else:
+            server = HostConnectProxyServer(listener, scope)
+    except BaseException:
+        listener.close()
+        raise
+
+    return listener, server
