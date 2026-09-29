@@ -98,6 +98,57 @@ def classify_namespace_operation_result(succeeded: object, winerror: object) -> 
     return "blocked_other"
 
 
+def classify_directory_listing_drift(before: object, after: object) -> str:
+    """Compare two bounded records from one held directory handle.
+
+    This only detects differences between the supplied flat listings. It does
+    not prove that either listing is complete or that the namespace was stable
+    between calls; callers must establish those facts separately.
+    """
+
+    def signatures(entries: object) -> dict[str, tuple[int, int, bytes]] | None:
+        if type(entries) is not tuple:
+            return None
+        result: dict[str, tuple[int, int, bytes]] = {}
+        for entry in entries:
+            if not isinstance(entry, ExtendedDirectoryInfoEntry):
+                return None
+            if (
+                type(entry.attributes) is not int
+                or not 0 <= entry.attributes <= 0xFFFFFFFF
+                or type(entry.reparse_tag) is not int
+                or not 0 <= entry.reparse_tag <= 0xFFFFFFFF
+            ):
+                return None
+            try:
+                require_enumerated_entry_name(entry, entry.name)
+                file_id = _validate_file_id(entry.file_id)
+            except (TypeError, ValueError, WindowsDirectoryProbeError):
+                return None
+            if entry.name in result:
+                return None
+            reparse_tag = (
+                entry.reparse_tag
+                if entry.attributes & _FILE_ATTRIBUTE_REPARSE_POINT
+                else 0  # The API leaves this field undefined for ordinary entries.
+            )
+            result[entry.name] = (entry.attributes, reparse_tag, file_id)
+        return result
+
+    before_signatures = signatures(before)
+    after_signatures = signatures(after)
+    if before_signatures is None or after_signatures is None:
+        return "receipt_incomplete"
+    if before_signatures.keys() != after_signatures.keys():
+        return "namespace_changed"
+    if any(
+        before_signatures[name] != after_signatures[name]
+        for name in before_signatures
+    ):
+        return "entry_changed"
+    return "same_observation"
+
+
 def _validate_file_id(file_id: bytes) -> bytes:
     """Reject FILE_ID_128 sentinel values that do not identify an object."""
 

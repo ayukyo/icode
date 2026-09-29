@@ -357,6 +357,66 @@ class TestNamespaceOperationReceipt(unittest.TestCase):
         self.assertEqual(classify(False, -1), "receipt_incomplete")
 
 
+class TestDirectoryListingDrift(unittest.TestCase):
+    def test_comparison_fails_closed_on_namespace_or_identity_drift(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        classify = getattr(module, "classify_directory_listing_drift", None)
+        self.assertTrue(
+            callable(classify),
+            "held-directory listing drift classifier is missing",
+        )
+        entry_type = getattr(module, "ExtendedDirectoryInfoEntry")
+
+        def entry(
+            name: str,
+            file_id: str,
+            *,
+            attributes: int = 0x80,
+            reparse_tag: int = 0,
+        ):
+            return entry_type(
+                name=name,
+                attributes=attributes,
+                reparse_tag=reparse_tag,
+                file_id=bytes.fromhex(file_id),
+            )
+
+        first = entry("first.txt", "00112233445566778899aabbccddeeff")
+        second = entry("second.txt", "10112233445566778899aabbccddeeff")
+        self.assertEqual(
+            classify((first, second), (first, second)), "same_observation",
+        )
+        undefined_tag = entry(
+            "first.txt", "00112233445566778899aabbccddeeff",
+            reparse_tag=0xA000000C,
+        )
+        self.assertEqual(classify((first,), (undefined_tag,)), "same_observation")
+        self.assertEqual(
+            classify((first,), (first, second)), "namespace_changed",
+        )
+        self.assertEqual(
+            classify((first, second), (second,)), "namespace_changed",
+        )
+        replaced = entry("first.txt", "20112233445566778899aabbccddeeff")
+        self.assertEqual(classify((first,), (replaced,)), "entry_changed")
+        changed_attributes = entry(
+            "first.txt", "00112233445566778899aabbccddeeff", attributes=0x400,
+        )
+        self.assertEqual(classify((first,), (changed_attributes,)), "entry_changed")
+        changed_tag = entry(
+            "first.txt", "00112233445566778899aabbccddeeff",
+            attributes=0x400, reparse_tag=0xA000000C,
+        )
+        self.assertEqual(
+            classify((changed_attributes,), (changed_tag,)), "entry_changed",
+        )
+        self.assertEqual(classify((first, first), (first,)), "receipt_incomplete")
+        self.assertEqual(classify((object(),), (object(),)), "receipt_incomplete")
+        invalid_id = entry("bad.txt", "00000000000000000000000000000000")
+        self.assertEqual(classify((invalid_id,), (invalid_id,)), "receipt_incomplete")
+        self.assertEqual(classify(None, (first,)), "receipt_incomplete")
+
+
 class TestEnumeratedEntryIdentityGate(unittest.TestCase):
     def test_checked_reader_uses_the_exact_enumerated_child_name(self) -> None:
         module = importlib.import_module("tests.windows_tree_snapshot_probe")
@@ -478,6 +538,108 @@ class TestEnumeratedEntryIdentityGate(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "requires native Windows handle semantics")
 class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
+    def test_held_directory_restart_list_detects_add_remove_and_same_name_replacement(self) -> None:
+        from ctypes import wintypes
+
+        from tests.windows_tree_snapshot_probe import (
+            _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS,
+            classify_directory_listing_drift,
+            parse_file_id_extd_directory_info,
+        )
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        ]
+        kernel.CreateFileW.restype = ctypes.c_void_p
+        kernel.GetFileInformationByHandleEx.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+        ]
+        kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel.CloseHandle.restype = wintypes.BOOL
+
+        invalid_handle = ctypes.c_void_p(-1).value
+        file_list_directory = 0x00000001
+        file_read_attributes = 0x00000080
+        file_share_all = 0x00000007
+        file_open_existing = 3
+        file_flag_backup_semantics = 0x02000000
+        file_flag_open_reparse_point = 0x00200000
+
+        with tempfile.TemporaryDirectory(prefix="icode-r3-dir-drift-") as raw:
+            root = Path(raw)
+            first = root / "first.txt"
+            second = root / "second.txt"
+            displaced = root / "displaced.txt"
+            first.write_bytes(b"object A")
+            second.write_bytes(b"object B")
+            handle = kernel.CreateFileW(
+                str(root), file_list_directory | file_read_attributes,
+                file_share_all, None, file_open_existing,
+                file_flag_backup_semantics | file_flag_open_reparse_point, None,
+            )
+            self.assertNotIn(handle, (None, invalid_handle), "held directory open failed")
+
+            def list_entries():
+                buffer = ctypes.create_string_buffer(64 * 1024)
+                self.assertTrue(
+                    kernel.GetFileInformationByHandleEx(
+                        handle,
+                        _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS,
+                        buffer,
+                        len(buffer),
+                    ),
+                    "held-directory restart enumeration failed",
+                )
+                return parse_file_id_extd_directory_info(buffer.raw)
+
+            try:
+                baseline = list_entries()
+                self.assertEqual(
+                    {entry.name for entry in baseline}, {"first.txt", "second.txt"},
+                    "the bounded disposable baseline listing was incomplete",
+                )
+                self.assertEqual(
+                    classify_directory_listing_drift(baseline, list_entries()),
+                    "same_observation",
+                )
+
+                extra = root / "extra.txt"
+                extra.write_bytes(b"added")
+                added = list_entries()
+                self.assertEqual(
+                    {entry.name for entry in added},
+                    {"first.txt", "second.txt", "extra.txt"},
+                )
+                self.assertEqual(
+                    classify_directory_listing_drift(baseline, added),
+                    "namespace_changed",
+                )
+                extra.unlink()
+                removed = list_entries()
+                self.assertEqual(
+                    classify_directory_listing_drift(baseline, removed),
+                    "same_observation",
+                )
+
+                # Swap two ordinary objects while preserving the exact names.
+                first.rename(displaced)
+                second.rename(first)
+                displaced.rename(second)
+                replaced = list_entries()
+                self.assertEqual(
+                    {entry.name for entry in replaced}, {"first.txt", "second.txt"},
+                )
+                self.assertEqual(
+                    classify_directory_listing_drift(baseline, replaced),
+                    "entry_changed",
+                )
+            finally:
+                if not kernel.CloseHandle(handle):
+                    raise OSError("failed_native_handle_cleanup")
+
     def test_extd_directory_identity_matches_relative_open_and_detects_aba_replacement(self) -> None:
         from ctypes import wintypes
 
