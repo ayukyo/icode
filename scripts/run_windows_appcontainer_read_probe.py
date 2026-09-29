@@ -84,23 +84,40 @@ def _classify_wfp_target_drop_receipt(
         type(collector_exit_code) is not int
         or collector_exit_code != 0
         or not isinstance(receipt, dict)
-        or receipt.get("schema_version") != 3
+        or type(receipt.get("schema_version")) is not int
+        or receipt.get("schema_version") != 4
+        or receipt.get("subscription_ok") is not True
         or receipt.get("unsubscribe_ok") is not True
         or receipt.get("network_events_collected") is not True
-        or type(receipt.get("capability_subscription_ok")) is not bool
-        or type(receipt.get("classify_drop_subscription_ok")) is not bool
     ):
         return "evidence_unavailable"
-    capability_count = receipt.get("matched_capability_drop_count")
-    classify_count = receipt.get("matched_classify_drop_count")
+    count_fields = (
+        "event_callback_count",
+        "capability_drop_event_count",
+        "classify_drop_event_count",
+        "matched_capability_drop_count",
+        "matched_classify_drop_count",
+    )
+    counts = {field: receipt.get(field) for field in count_fields}
+    if any(
+        type(value) is not int or not 0 <= value <= 0xFFFF
+        for value in counts.values()
+    ):
+        return "evidence_unavailable"
+    callback_count = counts["event_callback_count"]
+    capability_event_count = counts["capability_drop_event_count"]
+    classify_event_count = counts["classify_drop_event_count"]
+    capability_count = counts["matched_capability_drop_count"]
+    classify_count = counts["matched_classify_drop_count"]
     if (
-        type(capability_count) is not int or not 0 <= capability_count <= 0xFFFF
-        or type(classify_count) is not int or not 0 <= classify_count <= 0xFFFF
+        capability_event_count + classify_event_count > callback_count
+        or capability_count > capability_event_count
+        or classify_count > classify_event_count
     ):
         return "evidence_unavailable"
-    if receipt["capability_subscription_ok"] and capability_count > 0:
+    if capability_count > 0:
         return "capability_drop_attributed"
-    if receipt["classify_drop_subscription_ok"] and classify_count > 0:
+    if classify_count > 0:
         return "classify_drop_attributed"
     return "evidence_unavailable"
 
@@ -139,13 +156,9 @@ def _wfp_observer_diagnostic_summary(
         "collector_exit_code": (
             collector_exit_code if type(collector_exit_code) is int else None
         ),
-        "capability_subscription_ok": (
-            receipt_dict.get("capability_subscription_ok")
-            if type(receipt_dict.get("capability_subscription_ok")) is bool else None
-        ),
-        "classify_drop_subscription_ok": (
-            receipt_dict.get("classify_drop_subscription_ok")
-            if type(receipt_dict.get("classify_drop_subscription_ok")) is bool else None
+        "subscription_ok": (
+            receipt_dict.get("subscription_ok")
+            if type(receipt_dict.get("subscription_ok")) is bool else None
         ),
         "unsubscribe_ok": (
             receipt_dict.get("unsubscribe_ok")
@@ -155,6 +168,9 @@ def _wfp_observer_diagnostic_summary(
             receipt_dict.get("network_events_collected")
             if type(receipt_dict.get("network_events_collected")) is bool else None
         ),
+        "event_callback_count": bounded_count("event_callback_count"),
+        "capability_drop_event_count": bounded_count("capability_drop_event_count"),
+        "classify_drop_event_count": bounded_count("classify_drop_event_count"),
         "matched_capability_drop_count": bounded_count("matched_capability_drop_count"),
         "matched_classify_drop_count": bounded_count("matched_classify_drop_count"),
     }

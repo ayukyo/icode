@@ -283,11 +283,13 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
 
         receipt = {
-            "schema_version": 3,
-            "capability_subscription_ok": True,
-            "classify_drop_subscription_ok": True,
+            "schema_version": 4,
+            "subscription_ok": True,
             "unsubscribe_ok": True,
             "network_events_collected": True,
+            "event_callback_count": 1,
+            "capability_drop_event_count": 1,
+            "classify_drop_event_count": 0,
             "matched_capability_drop_count": 1,
             "matched_classify_drop_count": 0,
         }
@@ -303,11 +305,13 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
 
         receipt = {
-            "schema_version": 3,
-            "capability_subscription_ok": True,
-            "classify_drop_subscription_ok": True,
+            "schema_version": 4,
+            "subscription_ok": True,
             "unsubscribe_ok": True,
             "network_events_collected": True,
+            "event_callback_count": 1,
+            "capability_drop_event_count": 0,
+            "classify_drop_event_count": 1,
             "matched_capability_drop_count": 0,
             "matched_classify_drop_count": 1,
         }
@@ -316,42 +320,59 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             "classify_drop_attributed",
         )
 
+    def test_wfp_receipt_without_callbacks_or_matching_events_is_unavailable(self) -> None:
+        classify = getattr(
+            probe_module, "_classify_wfp_target_drop_receipt", None,
+        )
+        self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
+        receipt = {
+            "schema_version": 4,
+            "subscription_ok": True,
+            "unsubscribe_ok": True,
+            "network_events_collected": True,
+            "event_callback_count": 0,
+            "capability_drop_event_count": 0,
+            "classify_drop_event_count": 0,
+            "matched_capability_drop_count": 0,
+            "matched_classify_drop_count": 0,
+        }
+        self.assertEqual(
+            classify(receipt, collector_exit_code=0),
+            "evidence_unavailable",
+        )
+
     def test_wfp_receipt_without_complete_match_remains_evidence_unavailable(self) -> None:
         classify = getattr(
             probe_module, "_classify_wfp_target_drop_receipt", None,
         )
         self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
 
+        valid_receipt = {
+            "schema_version": 4,
+            "subscription_ok": True,
+            "unsubscribe_ok": True,
+            "network_events_collected": True,
+            "event_callback_count": 1,
+            "capability_drop_event_count": 1,
+            "classify_drop_event_count": 0,
+            "matched_capability_drop_count": 1,
+            "matched_classify_drop_count": 0,
+        }
         unavailable_cases = (
             (None, 0),
-            ({"schema_version": 3, "capability_subscription_ok": False,
-              "classify_drop_subscription_ok": True, "unsubscribe_ok": True,
-              "network_events_collected": True, "matched_capability_drop_count": 1,
-              "matched_classify_drop_count": 0}, 0),
-            ({"schema_version": 3, "capability_subscription_ok": True,
-              "classify_drop_subscription_ok": False, "unsubscribe_ok": True,
-              "network_events_collected": True, "matched_capability_drop_count": 0,
-              "matched_classify_drop_count": 1}, 0),
-            ({"schema_version": 3, "capability_subscription_ok": True,
-              "classify_drop_subscription_ok": True, "unsubscribe_ok": False,
-              "network_events_collected": True, "matched_capability_drop_count": 1,
-              "matched_classify_drop_count": 0}, 0),
-            ({"schema_version": 3, "capability_subscription_ok": True,
-              "classify_drop_subscription_ok": True, "unsubscribe_ok": True,
-              "network_events_collected": False, "matched_capability_drop_count": 1,
-              "matched_classify_drop_count": 0}, 0),
-            ({"schema_version": 3, "capability_subscription_ok": True,
-              "classify_drop_subscription_ok": True, "unsubscribe_ok": True,
-              "network_events_collected": True, "matched_capability_drop_count": True,
-              "matched_classify_drop_count": 0}, 0),
-            ({"schema_version": 2, "capability_subscription_ok": True,
-              "classify_drop_subscription_ok": True, "unsubscribe_ok": True,
-              "network_events_collected": True, "matched_capability_drop_count": 1,
-              "matched_classify_drop_count": 0}, 0),
-            ({"schema_version": 3, "capability_subscription_ok": True,
-              "classify_drop_subscription_ok": True, "unsubscribe_ok": True,
-              "network_events_collected": True, "matched_capability_drop_count": 1,
-              "matched_classify_drop_count": 0}, 1),
+            ({**valid_receipt, "subscription_ok": False}, 0),
+            ({**valid_receipt, "unsubscribe_ok": False}, 0),
+            ({**valid_receipt, "network_events_collected": False}, 0),
+            ({**valid_receipt, "schema_version": 3}, 0),
+            ({**valid_receipt, "schema_version": 4.0}, 0),
+            ({**valid_receipt, "matched_capability_drop_count": True}, 0),
+            ({**valid_receipt, "capability_drop_event_count": 0}, 0),
+            ({**valid_receipt, "event_callback_count": 0}, 0),
+            ({**valid_receipt, "classify_drop_event_count": "private"}, 0),
+            ({**valid_receipt, "classify_drop_event_count": 1}, 0),
+            ({**valid_receipt, "matched_classify_drop_count": 1}, 0),
+            ({**valid_receipt, "event_callback_count": 0x10000}, 0),
+            (valid_receipt, 1),
         )
         for receipt, collector_exit_code in unavailable_cases:
             with self.subTest(receipt=receipt, exit_code=collector_exit_code):
@@ -373,11 +394,13 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             result = root / "wfp-token.json"
             ready.write_text("ready\n", encoding="ascii")
             safe_receipt = {
-                "schema_version": 3,
-                "capability_subscription_ok": True,
-                "classify_drop_subscription_ok": True,
+                "schema_version": 4,
+                "subscription_ok": True,
                 "unsubscribe_ok": True,
                 "network_events_collected": True,
+                "event_callback_count": 6,
+                "capability_drop_event_count": 2,
+                "classify_drop_event_count": 3,
                 "matched_capability_drop_count": 1,
                 "matched_classify_drop_count": 0,
             }
@@ -394,10 +417,12 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                     "started": True,
                     "ready_state": "ready",
                     "collector_exit_code": 0,
-                    "capability_subscription_ok": True,
-                    "classify_drop_subscription_ok": True,
+                    "subscription_ok": True,
                     "unsubscribe_ok": True,
                     "network_events_collected": True,
+                    "event_callback_count": 6,
+                    "capability_drop_event_count": 2,
+                    "classify_drop_event_count": 3,
                     "matched_capability_drop_count": 1,
                     "matched_classify_drop_count": 0,
                 },
@@ -435,10 +460,12 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                 "while time.monotonic() < deadline and not pathlib.Path(stop).exists():\n"
                 "    time.sleep(0.01)\n"
                 "pathlib.Path(result).write_text(json.dumps({\n"
-                "    'schema_version': 3, 'capability_subscription_ok': True,\n"
-                "    'classify_drop_subscription_ok': True,\n"
+                "    'schema_version': 4, 'subscription_ok': True,\n"
                 "    'network_events_collected': True,\n"
-                "    'unsubscribe_ok': True, 'matched_capability_drop_count': 1,\n"
+                "    'unsubscribe_ok': True, 'event_callback_count': 1,\n"
+                "    'capability_drop_event_count': 1,\n"
+                "    'classify_drop_event_count': 0,\n"
+                "    'matched_capability_drop_count': 1,\n"
                 "    'matched_classify_drop_count': 0,\n"
                 "}), encoding='ascii')\n",
                 encoding="utf-8",
