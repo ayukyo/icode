@@ -671,6 +671,71 @@ def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
         return False, "setup_invalid_state"
 
 
+def runner_pipe_open_without_synchronize_probe() -> tuple[bool, str]:
+    """Test a narrower client mask against the unchanged per-logon pipe DACL.
+
+    This is a diagnostic A/B only. It keeps the production pipe flags and the
+    server ACL unchanged, and removes only SYNCHRONIZE from the client request.
+    It does not change the production transport or its acceptance result.
+    """
+    if sys.platform != "win32":
+        return False, "unsupported_platform"
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        process_handle = api.kernel.GetCurrentProcess()
+        logon_sid = runner_process_logon_sid(process_handle)
+        with create_runner_pipe_server(logon_sid) as pipe:
+            if not api.kernel.WaitNamedPipeW(pipe.name, 2_000):
+                error = ctypes.get_last_error()
+                if error == _ERROR_ACCESS_DENIED:
+                    return False, "client_wait_access_denied"
+                return False, "client_wait_failed"
+
+            requested_access = PIPE_CLIENT_ACCESS_MASK & ~0x00100000
+            client = api.kernel.CreateFileW(
+                pipe.name,
+                requested_access,
+                0,
+                None,
+                _runner_pipe._OPEN_EXISTING,
+                _runner_pipe.FILE_FLAG_OVERLAPPED
+                | _runner_pipe._SECURITY_SQOS_PRESENT
+                | _runner_pipe._SECURITY_IMPERSONATION,
+                None,
+            )
+            if _runner_pipe._handle_is_invalid(client):
+                if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
+                    return False, "client_open_access_denied"
+                return False, "client_open_failed"
+
+            try:
+                server_pid = wintypes.DWORD(0)
+                if not api.kernel.GetNamedPipeServerProcessId(
+                    client, ctypes.byref(server_pid),
+                ) or server_pid.value == 0:
+                    return False, "server_pid_unavailable"
+                pipe._connect(2_000)
+                if not pipe._connected:
+                    return False, "server_connect_failed"
+                return True, "client_opened_without_synchronize"
+            except TimeoutError:
+                return False, "server_connect_timeout"
+            except OSError:
+                return False, "server_connect_failed"
+            finally:
+                api.kernel.CloseHandle(client)
+    except PermissionError:
+        return False, "setup_access_denied"
+    except TimeoutError:
+        return False, "setup_timeout"
+    except OSError:
+        return False, "setup_failed"
+    except (RuntimeError, ValueError):
+        return False, "setup_invalid_state"
+
+
 class _SID_AND_ATTRIBUTES(ctypes.Structure):
     _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
 
@@ -2008,6 +2073,7 @@ def _run_child_mode(
     validated_report: Path | None = None
     effective_token_diagnostic: str | None = None
     wrong_pid_probe_state: str | None = None
+    no_sync_probe_state: str | None = None
     try:
         report = Path(report_path)
         temp = os.environ.get("TEMP", "")
@@ -2028,10 +2094,9 @@ def _run_child_mode(
         if re.fullmatch(r"[0-9a-f]{32}", request_id) is None:
             return 2
         # Exercise PID mismatch from the temporary standard-user logon itself.
-        # Hosted Actions job tokens may be restricted and unable to self-open a
-        # pipe scoped only to their own logon SID; that is not the target token
-        # used by this probe. Always continue the real parent handshake so a
-        # failed negative probe becomes a bounded report instead of a timeout.
+        # If its exact DACL self-open is denied, run one diagnostic A/B that
+        # removes only SYNCHRONIZE from the requested client mask; neither test
+        # changes production permissions or replaces the parent handshake.
         pipe_rejected, _pipe_detail = runner_pipe_wrong_server_pid_probe()
         if pipe_rejected is True:
             wrong_pid_probe_state = "self_pipe_ok"
@@ -2040,6 +2105,18 @@ def _run_child_mode(
             and _pipe_detail.startswith("client_open_access_denied")
         ):
             wrong_pid_probe_state = "self_pipe_denied"
+            no_sync_opened, no_sync_detail = (
+                runner_pipe_open_without_synchronize_probe()
+            )
+            if no_sync_opened is True:
+                no_sync_probe_state = "nosync_ok"
+            elif (
+                type(no_sync_detail) is str
+                and no_sync_detail == "client_open_access_denied"
+            ):
+                no_sync_probe_state = "nosync_denied"
+            else:
+                no_sync_probe_state = "nosync_failed"
         else:
             wrong_pid_probe_state = "self_pipe_failed"
 
@@ -2071,9 +2148,14 @@ def _run_child_mode(
                 failure_detail = _safe_runner_child_exception_detail(exc)
                 if failure_detail == "client_open_access_denied":
                     diagnostic = effective_token_diagnostic or "token_unavailable"
-                    self_pipe = wrong_pid_probe_state or "self_pipe_unavailable"
+                    context_parts = [diagnostic]
+                    if wrong_pid_probe_state is not None:
+                        context_parts.append(wrong_pid_probe_state)
+                    if no_sync_probe_state is not None:
+                        context_parts.append(no_sync_probe_state)
                     error_code = _safe_windows_error_code(exc)
-                    context = diagnostic + f"+{self_pipe}+open_winerror_{error_code}"
+                    context_parts.append(f"open_winerror_{error_code}")
+                    context = "+".join(context_parts)
                     if (
                         len(context) > 120
                         or re.fullmatch(r"[A-Za-z0-9_+.-]+", context) is None

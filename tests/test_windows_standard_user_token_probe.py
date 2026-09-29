@@ -23,6 +23,7 @@ from scripts.windows_standard_user_token_probe import (
     build_runner_pipe_command_line,
     build_runner_environment_block,
     runner_pipe_wrong_server_pid_probe,
+    runner_pipe_open_without_synchronize_probe,
 )
 
 
@@ -1205,6 +1206,10 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                     return_value=(False, "client_open_access_denied"),
                 ) as wrong_pid_probe,
                 mock.patch(
+                    "scripts.windows_standard_user_token_probe.runner_pipe_open_without_synchronize_probe",
+                    return_value=(False, "client_open_access_denied"),
+                ) as no_sync_probe,
+                mock.patch(
                     "scripts.windows_standard_user_token_probe._runner_pipe."
                     "_open_runner_pipe_client_with_observer",
                     return_value=pipe,
@@ -1222,6 +1227,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
 
         self.assertEqual(result, 1)
         wrong_pid_probe.assert_called_once_with()
+        no_sync_probe.assert_called_once_with()
         open_parent_pipe.assert_called_once()
         self.assertEqual(pipe.messages[0]["type"], "spawn_ready")
         runner_probe.assert_not_called()
@@ -1301,6 +1307,10 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                     return_value=(False, "client_open_access_denied+access_allow"),
                 ),
                 mock.patch(
+                    "scripts.windows_standard_user_token_probe.runner_pipe_open_without_synchronize_probe",
+                    return_value=(True, "client_opened_without_synchronize"),
+                ) as no_sync_probe,
+                mock.patch(
                     "scripts.windows_standard_user_token_probe._runner_pipe."
                     "_open_runner_pipe_client_with_observer",
                     side_effect=deny_pipe_open,
@@ -1317,12 +1327,105 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 )
 
         self.assertEqual(result, 1)
+        no_sync_probe.assert_called_once_with()
         self.assertEqual(
             write_report.call_args.args[1],
             "failed=client_open_access_denied;detail="
             "token_process+il_medium+restricted_no+logon_enabled+nwu_yes+npm_yes"
-            "+self_pipe_denied+open_winerror_5",
+            "+self_pipe_denied+nosync_ok+open_winerror_5",
         )
+
+    def test_no_synchronize_pipe_probe_uses_same_dacl_and_rest_of_client_contract(self) -> None:
+        class FakePipe:
+            name = r"\\.\pipe\icode-runner-" + "f" * 32
+            _connected = False
+
+            def __enter__(self) -> "FakePipe":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            def _connect(self, timeout_ms: int) -> None:
+                self._connected = True
+
+        pipe = FakePipe()
+        kernel = mock.Mock()
+        kernel.WaitNamedPipeW.return_value = 1
+        kernel.CreateFileW.return_value = 456
+
+        def set_server_pid(_handle: int, output: object) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_uint32)).contents.value = 100
+            return 1
+
+        kernel.GetNamedPipeServerProcessId.side_effect = set_server_pid
+        api = mock.Mock(kernel=kernel)
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.runner_process_logon_sid",
+                return_value="S-1-5-5-123-456",
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
+                return_value=pipe,
+            ) as create_server,
+            mock.patch.object(token_probe._runner_pipe, "_load_win32_api", return_value=api),
+        ):
+            result = runner_pipe_open_without_synchronize_probe()
+
+        self.assertEqual(result, (True, "client_opened_without_synchronize"))
+        create_server.assert_called_once_with("S-1-5-5-123-456")
+        kernel.CreateFileW.assert_called_once_with(
+            pipe.name,
+            token_probe.PIPE_CLIENT_ACCESS_MASK & ~0x00100000,
+            0,
+            None,
+            token_probe._runner_pipe._OPEN_EXISTING,
+            token_probe._runner_pipe.FILE_FLAG_OVERLAPPED
+            | token_probe._runner_pipe._SECURITY_SQOS_PRESENT
+            | token_probe._runner_pipe._SECURITY_IMPERSONATION,
+            None,
+        )
+        kernel.CloseHandle.assert_called_once_with(456)
+        self.assertTrue(pipe._connected)
+
+    def test_no_synchronize_pipe_probe_classifies_access_denial_without_widening_acl(self) -> None:
+        class FakePipe:
+            name = r"\\.\pipe\icode-runner-" + "9" * 32
+
+            def __enter__(self) -> "FakePipe":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                return None
+
+            def _connect(self, timeout_ms: int) -> None:
+                raise AssertionError("a denied client must not connect")
+
+        pipe = FakePipe()
+        kernel = mock.Mock()
+        kernel.WaitNamedPipeW.return_value = 1
+        kernel.CreateFileW.return_value = token_probe._runner_pipe._INVALID_HANDLE_VALUE
+        api = mock.Mock(kernel=kernel)
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.runner_process_logon_sid",
+                return_value="S-1-5-5-123-456",
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
+                return_value=pipe,
+            ) as create_server,
+            mock.patch.object(token_probe._runner_pipe, "_load_win32_api", return_value=api),
+            mock.patch.object(token_probe.ctypes, "get_last_error", return_value=5, create=True),
+        ):
+            result = runner_pipe_open_without_synchronize_probe()
+
+        self.assertEqual(result, (False, "client_open_access_denied"))
+        create_server.assert_called_once_with("S-1-5-5-123-456")
+        kernel.CloseHandle.assert_not_called()
 
     def test_wrong_pid_success_is_required_before_standard_user_probe_passes(self) -> None:
         class FakePipe:
