@@ -340,12 +340,13 @@ class TestNoReparseOpenReceipt(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "requires native Windows handle semantics")
 class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
-    def test_extd_directory_identity_matches_relative_open_and_detects_replacement(self) -> None:
+    def test_extd_directory_identity_matches_relative_open_and_detects_aba_replacement(self) -> None:
         from ctypes import wintypes
 
         from tests.windows_tree_snapshot_probe import (
             _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS,
             _FILE_ID_INFO_CLASS,
+            _STATUS_OBJECT_NAME_NOT_FOUND,
             _FileIdInfo,
             classify_no_reparse_open_receipt,
             open_relative_without_reparse,
@@ -392,6 +393,8 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
             payload = root / "payload.bin"
             stale_path = root / "stale.bin"
             replacement_source = root / "replacement-source.bin"
+            displaced_path = root / "displaced-stale.bin"
+            replacement_away_path = root / "replacement-away.bin"
             payload.write_bytes(b"payload for identity probe")
             stale_path.write_bytes(b"stale identity probe")
             replacement_source.write_bytes(b"replacement identity probe")
@@ -472,7 +475,26 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                     "enumerated and opened payload identities differed",
                 )
 
-                self.assertTrue(kernel.DeleteFileW(str(stale_path)), "stale child removal failed")
+                self.assertTrue(
+                    kernel.MoveFileW(str(stale_path), str(displaced_path)),
+                    "stale child displacement failed",
+                )
+                missing_after_displacement = open_relative_without_reparse(
+                    int(root_handle), "stale.bin", directory=False,
+                )
+                self.assertEqual(
+                    classify_no_reparse_open_receipt(
+                        missing_after_displacement.status,
+                        missing_after_displacement.file_attributes,
+                    ),
+                    "native_open_failed",
+                    "a missing name must not reuse the old enumerated identity",
+                )
+                self.assertEqual(
+                    missing_after_displacement.status,
+                    _STATUS_OBJECT_NAME_NOT_FOUND,
+                    "the displaced child should fail specifically as a missing name",
+                )
                 self.assertTrue(
                     kernel.MoveFileW(str(replacement_source), str(stale_path)),
                     "replacement child move failed",
@@ -500,6 +522,34 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 self.assertTrue(
                     reopened_replacement.file_id != stale_entry.file_id,
                     "reopened replacement retained stale enumerated identity",
+                )
+
+                self.assertTrue(
+                    kernel.MoveFileW(str(stale_path), str(replacement_away_path)),
+                    "replacement child displacement failed",
+                )
+                self.assertTrue(
+                    kernel.MoveFileW(str(displaced_path), str(stale_path)),
+                    "original child restoration failed",
+                )
+                reopened_original = open_relative_without_reparse(
+                    int(root_handle), "stale.bin", directory=False,
+                )
+                self.assertEqual(
+                    classify_no_reparse_open_receipt(
+                        reopened_original.status, reopened_original.file_attributes,
+                    ),
+                    "opened",
+                )
+                self.assertEqual(
+                    reopened_original.file_id,
+                    stale_entry.file_id,
+                    "restored name did not resolve to the original enumerated object",
+                )
+                self.assertNotEqual(
+                    reopened_original.file_id,
+                    reopened_replacement.file_id,
+                    "A-to-B-to-A name cycle did not expose distinct file identities",
                 )
             finally:
                 if not kernel.CloseHandle(root_handle):
