@@ -447,3 +447,9 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 
 - x64 [job](https://github.com/ayukyo/icode/actions/runs/36511021557/job/109222921113) 与 ARM64 [job](https://github.com/ayukyo/icode/actions/runs/36511021557/job/109222921067) 均编译成功并通过 WFP classifier/path 自测；AppContainer 仍各 `18/20`，`network_denied=false`、Winsock `10060`，WFP 归因为 `evidence_unavailable`。因此只关闭“原生工具可构建/自测”子门，不关闭网络或 R2.3。
 - #327 notice 没有区分观察器 ready、订阅结果和匹配数。下一提交增加有限字段、无路径的状态摘要，以便区分启动失败、订阅不可用与成功订阅但无匹配事件；不会调整网络通过条件、WFP 配置或生产后端。
+
+### 2026-09-29 UTC：CI #328 观察器计数为零，读取 collection 状态
+
+- x64 [job](https://github.com/ayukyo/icode/actions/runs/36511996932/job/109225956453) 与 ARM64 [job](https://github.com/ayukyo/icode/actions/runs/36511996932/job/109225956420) 都报告 collector 正常启动/ready、订阅成功、退订成功、退出 0，但 `matched_capability_drop_count=0`；主探针两边仍是 timeout `10060`。观察器生命周期问题已排除，网络策略因果仍未知。
+- Microsoft [`FwpmEngineGetOption0`](https://learn.microsoft.com/en-us/windows/win32/api/fwpmu/nf-fwpmu-fwpmenginegetoption0) 可只读检查 `FWPM_ENGINE_COLLECT_NET_EVENTS`；`0` 表示不收集网络事件、`1` 表示正在收集，读取需要 `FWPM_ACTRL_READ`。现实现增加只读查询；返回无法访问/未知值均写 `null`，不调用 `FwpmEngineSetOption0`，不启用全局 collection。
+- 收据升级到 schema v2；只有 collection 状态明确为 `true`、订阅/退订均成功、采集器正常退出且精确匹配数量大于零，Python 才输出 `capability_drop_attributed`。其余状态全部保持 `evidence_unavailable`。Windows 网络门仍失败关闭，待 CI #329 x64/ARM64 编译与现场查询。

@@ -1110,3 +1110,9 @@
 - 提交 [`823e21c`](https://github.com/ayukyo/icode/commit/823e21c364a0ed7dcb628fb627687423c7626b01) 的 [CI #327 x64](https://github.com/ayukyo/icode/actions/runs/36511021557/job/109222921113) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36511021557/job/109222921067) 均成功编译两个 native probe，并通过 WFP classifier/path self-test；AppContainer 集成仍均为 `18/20`、`network_denied=false,error=10060`。两边 `wfp_capability_drop_evidence=evidence_unavailable`，当前 notice 未输出观察器启动/ready/订阅状态，因此不能区分订阅失败、无匹配事件或回执不完整。timeout 仍不作拒绝证据，Windows 自动模式保持关闭。
 - 下一步仅增加固定字段摘要：observer 是否启动、ready marker（限定为 ready/unavailable/missing/invalid）、退出码、订阅/退订布尔值和匹配数量；不输出路径、SID、endpoint 或原始回执文本。若 #328 仍无匹配事件，继续检查 WFP event visibility/API access，不改变网络 gate；具体策略拒绝仍需直接证据。
 - 本轮本地聚焦套件 116 项通过（17 skipped），完整 preflight 在随后阶段重跑；双架构原生编译只由 #327 证实。R2/R3 整体验收未关闭。观察日期：2026-09-29 Asia/Shanghai。
+
+### 2026-09-29 CI #328：WFP 订阅成功但没有精确匹配事件
+
+- 提交 [`c72b343`](https://github.com/ayukyo/icode/commit/c72b343) 的 [CI #328 x64](https://github.com/ayukyo/icode/actions/runs/36511996932/job/109225956453) 和 [ARM64](https://github.com/ayukyo/icode/actions/runs/36511996932/job/109225956420) 均确认观察器 `started=true,ready=ready,exit=0,subscription_ok=true,unsubscribe_ok=true,matched=0`。两架构主探针仍 `18/20`、Winsock `10060`；这证明观察器生命周期完整，但没有可归因的 capability-drop 事件，不能推断网络到底是被拒绝、允许还是 WFP 未采集。
+- Microsoft [`FwpmEngineGetOption0`](https://learn.microsoft.com/en-us/windows/win32/api/fwpmu/nf-fwpmu-fwpmenginegetoption0) 是读取过滤引擎选项的 API；对 `FWPM_ENGINE_COLLECT_NET_EVENTS` 返回 `0/1` 分别表示当前未收集/正在收集网络事件，调用方需要 `FWPM_ACTRL_READ`。[选项枚举](https://learn.microsoft.com/en-us/windows/win32/api/fwpmtypes/ne-fwpmtypes-fwpm_engine_option)还说明已启用 ETW operational log 时读回会显示 collection 已启用。采纳下一步只读查询并写入脱敏布尔/未知值；不调用 `FwpmEngineSetOption0`，不修改系统 collection 设置。collection 关闭/读取失败时仍为 `evidence_unavailable`；开启但没有事件时再查 event visibility/match 条件。
+- #329 将只扩展诊断收据 schema，不改变 `network_denied` 通过门。R2/R3 整体验收未关闭。观察日期：2026-09-29 Asia/Shanghai。

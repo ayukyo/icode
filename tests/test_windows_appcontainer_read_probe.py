@@ -283,9 +283,10 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertTrue(callable(classify), "WFP receipt classifier is missing")
 
         receipt = {
-            "schema_version": 1,
+            "schema_version": 2,
             "subscription_ok": True,
             "unsubscribe_ok": True,
+            "network_events_collected": True,
             "matched_capability_drop_count": 1,
         }
         self.assertEqual(
@@ -301,17 +302,26 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
 
         unavailable_cases = (
             (None, 0),
-            ({"schema_version": 1, "subscription_ok": False, "unsubscribe_ok": True,
+            ({"schema_version": 2, "subscription_ok": False, "unsubscribe_ok": True,
+              "network_events_collected": True,
               "matched_capability_drop_count": 1}, 0),
-            ({"schema_version": 1, "subscription_ok": True, "unsubscribe_ok": False,
+            ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": False,
+              "network_events_collected": True,
               "matched_capability_drop_count": 1}, 0),
-            ({"schema_version": 1, "subscription_ok": True, "unsubscribe_ok": True,
-              "matched_capability_drop_count": 0}, 0),
-            ({"schema_version": 1, "subscription_ok": True, "unsubscribe_ok": True,
-              "matched_capability_drop_count": True}, 0),
             ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": True,
+              "network_events_collected": True,
+              "matched_capability_drop_count": 0}, 0),
+            ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": True,
+              "network_events_collected": True,
+              "matched_capability_drop_count": True}, 0),
+            ({"schema_version": 3, "subscription_ok": True, "unsubscribe_ok": True,
+              "network_events_collected": True,
               "matched_capability_drop_count": 1}, 0),
-            ({"schema_version": 1, "subscription_ok": True, "unsubscribe_ok": True,
+            ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": True,
+              "network_events_collected": False,
+              "matched_capability_drop_count": 1}, 0),
+            ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": True,
+              "network_events_collected": True,
               "matched_capability_drop_count": 1}, 1),
         )
         for receipt, collector_exit_code in unavailable_cases:
@@ -334,9 +344,10 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             result = root / "wfp-token.json"
             ready.write_text("ready\n", encoding="ascii")
             safe_receipt = {
-                "schema_version": 1,
+                "schema_version": 2,
                 "subscription_ok": True,
                 "unsubscribe_ok": True,
+                "network_events_collected": True,
                 "matched_capability_drop_count": 1,
             }
 
@@ -354,6 +365,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                     "collector_exit_code": 0,
                     "subscription_ok": True,
                     "unsubscribe_ok": True,
+                    "network_events_collected": True,
                     "matched_capability_drop_count": 1,
                 },
             )
@@ -362,11 +374,11 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             unsafe_summary = summarize(
                 process_started=False,
                 paths=(ready, stop, result),
-                receipt={"subscription_ok": "C:\\private\\SID"},
+                receipt={"network_events_collected": "C:\\private\\SID"},
                 collector_exit_code=0,
             )
             self.assertEqual(unsafe_summary["ready_state"], "invalid")
-            self.assertIsNone(unsafe_summary["subscription_ok"])
+            self.assertIsNone(unsafe_summary["network_events_collected"])
             self.assertNotIn(str(root), json.dumps(unsafe_summary))
 
     def test_wfp_observer_stop_collects_receipt_and_reaps_its_process(self) -> None:
@@ -390,7 +402,8 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                 "while time.monotonic() < deadline and not pathlib.Path(stop).exists():\n"
                 "    time.sleep(0.01)\n"
                 "pathlib.Path(result).write_text(json.dumps({\n"
-                "    'schema_version': 1, 'subscription_ok': True,\n"
+                "    'schema_version': 2, 'subscription_ok': True,\n"
+                "    'network_events_collected': True,\n"
                 "    'unsubscribe_ok': True, 'matched_capability_drop_count': 1,\n"
                 "}), encoding='ascii')\n",
                 encoding="utf-8",

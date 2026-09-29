@@ -84,9 +84,10 @@ def _classify_wfp_capability_drop_receipt(
         type(collector_exit_code) is not int
         or collector_exit_code != 0
         or not isinstance(receipt, dict)
-        or receipt.get("schema_version") != 1
+        or receipt.get("schema_version") != 2
         or receipt.get("subscription_ok") is not True
         or receipt.get("unsubscribe_ok") is not True
+        or receipt.get("network_events_collected") is not True
     ):
         return "evidence_unavailable"
     match_count = receipt.get("matched_capability_drop_count")
@@ -135,6 +136,10 @@ def _wfp_observer_diagnostic_summary(
         "unsubscribe_ok": (
             receipt_dict.get("unsubscribe_ok")
             if type(receipt_dict.get("unsubscribe_ok")) is bool else None
+        ),
+        "network_events_collected": (
+            receipt_dict.get("network_events_collected")
+            if type(receipt_dict.get("network_events_collected")) is bool else None
         ),
         "matched_capability_drop_count": matched_count,
     }

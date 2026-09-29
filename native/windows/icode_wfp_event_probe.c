@@ -275,15 +275,21 @@ static BOOL write_result(
     const wchar_t *path,
     BOOL subscription_ok,
     BOOL unsubscribe_ok,
+    BOOL network_events_state_known,
+    BOOL network_events_collected,
     LONG matched_count
 ) {
     char json[256];
     int written = _snprintf_s(
         json, sizeof(json), _TRUNCATE,
-        "{\"schema_version\":1,\"subscription_ok\":%s,"
-        "\"unsubscribe_ok\":%s,\"matched_capability_drop_count\":%ld}\n",
+        "{\"schema_version\":2,\"subscription_ok\":%s,"
+        "\"unsubscribe_ok\":%s,\"network_events_collected\":%s,"
+        "\"matched_capability_drop_count\":%ld}\n",
         subscription_ok ? "true" : "false",
         unsubscribe_ok ? "true" : "false",
+        network_events_state_known
+            ? (network_events_collected ? "true" : "false")
+            : "null",
         matched_count
     );
     return written > 0 && (size_t)written < sizeof(json) &&
@@ -416,8 +422,12 @@ static int run_collector(
     HRESULT derive_result;
     DWORD api_result;
     DWORD close_result = ERROR_SUCCESS;
+    FWP_VALUE0 *network_event_option = NULL;
+    DWORD option_result = ERROR_SUCCESS;
     BOOL subscription_ok = FALSE;
     BOOL unsubscribe_ok = FALSE;
+    BOOL network_events_state_known = FALSE;
+    BOOL network_events_collected = FALSE;
     BOOL stop_seen = FALSE;
     BOOL ready_written = FALSE;
     BOOL result_written = FALSE;
@@ -435,6 +445,20 @@ static int run_collector(
     );
     if (api_result != ERROR_SUCCESS || engine == NULL) {
         goto cleanup;
+    }
+
+    option_result = FwpmEngineGetOption0(
+        engine, FWPM_ENGINE_COLLECT_NET_EVENTS, &network_event_option
+    );
+    if (option_result == ERROR_SUCCESS && network_event_option != NULL &&
+        network_event_option->type == FWP_UINT32 &&
+        network_event_option->uint32 <= 1) {
+        network_events_state_known = TRUE;
+        network_events_collected = network_event_option->uint32 == 1;
+    }
+    if (network_event_option != NULL) {
+        FwpmFreeMemory0((void **)&network_event_option);
+        network_event_option = NULL;
     }
 
     ZeroMemory(&event_template, sizeof(event_template));
@@ -492,7 +516,8 @@ cleanup:
     }
     matched_count = context.matched_capability_drop_count;
     result_written = write_result(
-        result_path, subscription_ok, unsubscribe_ok, matched_count
+        result_path, subscription_ok, unsubscribe_ok,
+        network_events_state_known, network_events_collected, matched_count
     );
     if (result_written && ready_written && close_result == ERROR_SUCCESS &&
         (!subscription_ok || (stop_seen && unsubscribe_ok))) {
