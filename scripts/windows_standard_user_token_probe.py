@@ -74,6 +74,7 @@ _FILE_GENERIC_READ = 0x00120089
 _FILE_GENERIC_WRITE = 0x00120116
 _FILE_GENERIC_EXECUTE = 0x001200A0
 _FILE_ALL_ACCESS = 0x001F01FF
+_PIPE_SYNCHRONIZE_ACCESS = 0x00100000
 _TOKEN_DUPLICATE = 0x0002
 _TOKEN_QUERY = 0x0008
 # TOKEN_INFORMATION_CLASS values: TokenIntegrityLevel=25, TokenMandatoryPolicy=27.
@@ -693,7 +694,7 @@ def runner_pipe_open_without_synchronize_probe() -> tuple[bool, str]:
                     return False, "client_wait_access_denied"
                 return False, "client_wait_failed"
 
-            requested_access = PIPE_CLIENT_ACCESS_MASK & ~0x00100000
+            requested_access = PIPE_CLIENT_ACCESS_MASK & ~_PIPE_SYNCHRONIZE_ACCESS
             client = api.kernel.CreateFileW(
                 pipe.name,
                 requested_access,
@@ -720,6 +721,68 @@ def runner_pipe_open_without_synchronize_probe() -> tuple[bool, str]:
                 if not pipe._connected:
                     return False, "server_connect_failed"
                 return True, "client_opened_without_synchronize"
+            except TimeoutError:
+                return False, "server_connect_timeout"
+            except OSError:
+                return False, "server_connect_failed"
+            finally:
+                api.kernel.CloseHandle(client)
+    except PermissionError:
+        return False, "setup_access_denied"
+    except TimeoutError:
+        return False, "setup_timeout"
+    except OSError:
+        return False, "setup_failed"
+    except (RuntimeError, ValueError):
+        return False, "setup_invalid_state"
+
+
+def runner_pipe_open_without_overlapped_probe() -> tuple[bool, str]:
+    """Compare a synchronous client open against the unchanged per-logon pipe.
+
+    This is a diagnostic A/B only. It keeps the production client access mask,
+    server ACL, and SQOS unchanged, removing only FILE_FLAG_OVERLAPPED.
+    """
+    if sys.platform != "win32":
+        return False, "unsupported_platform"
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        process_handle = api.kernel.GetCurrentProcess()
+        logon_sid = runner_process_logon_sid(process_handle)
+        with create_runner_pipe_server(logon_sid) as pipe:
+            if not api.kernel.WaitNamedPipeW(pipe.name, 2_000):
+                error = ctypes.get_last_error()
+                if error == _ERROR_ACCESS_DENIED:
+                    return False, "client_wait_access_denied"
+                return False, "client_wait_failed"
+
+            client = api.kernel.CreateFileW(
+                pipe.name,
+                PIPE_CLIENT_ACCESS_MASK,
+                0,
+                None,
+                _runner_pipe._OPEN_EXISTING,
+                _runner_pipe._SECURITY_SQOS_PRESENT
+                | _runner_pipe._SECURITY_IMPERSONATION,
+                None,
+            )
+            if _runner_pipe._handle_is_invalid(client):
+                if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
+                    return False, "client_open_access_denied"
+                return False, "client_open_failed"
+
+            try:
+                server_pid = wintypes.DWORD(0)
+                if not api.kernel.GetNamedPipeServerProcessId(
+                    client, ctypes.byref(server_pid),
+                ) or server_pid.value == 0:
+                    return False, "server_pid_unavailable"
+                pipe._connect(2_000)
+                if not pipe._connected:
+                    return False, "server_connect_failed"
+                return True, "client_opened_without_overlapped"
             except TimeoutError:
                 return False, "server_connect_timeout"
             except OSError:
@@ -2074,6 +2137,7 @@ def _run_child_mode(
     effective_token_diagnostic: str | None = None
     wrong_pid_probe_state: str | None = None
     no_sync_probe_state: str | None = None
+    no_overlapped_probe_state: str | None = None
     try:
         report = Path(report_path)
         temp = os.environ.get("TEMP", "")
@@ -2094,9 +2158,9 @@ def _run_child_mode(
         if re.fullmatch(r"[0-9a-f]{32}", request_id) is None:
             return 2
         # Exercise PID mismatch from the temporary standard-user logon itself.
-        # If its exact DACL self-open is denied, run one diagnostic A/B that
-        # removes only SYNCHRONIZE from the requested client mask; neither test
-        # changes production permissions or replaces the parent handshake.
+        # If its exact DACL self-open is denied, run diagnostic A/Bs one at a
+        # time, changing only one client open option per probe. None changes
+        # production permissions or replaces the parent handshake.
         pipe_rejected, _pipe_detail = runner_pipe_wrong_server_pid_probe()
         if pipe_rejected is True:
             wrong_pid_probe_state = "self_pipe_ok"
@@ -2115,6 +2179,18 @@ def _run_child_mode(
                 and no_sync_detail == "client_open_access_denied"
             ):
                 no_sync_probe_state = "nosync_denied"
+                no_overlapped_opened, no_overlapped_detail = (
+                    runner_pipe_open_without_overlapped_probe()
+                )
+                if no_overlapped_opened is True:
+                    no_overlapped_probe_state = "noovl_ok"
+                elif (
+                    type(no_overlapped_detail) is str
+                    and no_overlapped_detail == "client_open_access_denied"
+                ):
+                    no_overlapped_probe_state = "noovl_denied"
+                else:
+                    no_overlapped_probe_state = "noovl_failed"
             else:
                 no_sync_probe_state = "nosync_failed"
         else:
@@ -2151,7 +2227,13 @@ def _run_child_mode(
                     context_parts = [diagnostic]
                     if wrong_pid_probe_state is not None:
                         context_parts.append(wrong_pid_probe_state)
-                    if no_sync_probe_state is not None:
+                    if no_overlapped_probe_state is not None:
+                        combined_probe_state = {
+                            "noovl_ok": "nosync_noovl_ok",
+                            "noovl_denied": "nosync_noovl_denied",
+                        }.get(no_overlapped_probe_state, "nosync_noovl_failed")
+                        context_parts.append(combined_probe_state)
+                    elif no_sync_probe_state is not None:
                         context_parts.append(no_sync_probe_state)
                     error_code = _safe_windows_error_code(exc)
                     context_parts.append(f"open_winerror_{error_code}")
