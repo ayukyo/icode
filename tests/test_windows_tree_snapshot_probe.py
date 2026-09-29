@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests.windows_tree_snapshot_probe import (
     _FileIdBothDirectoryInfoHeader,
@@ -474,6 +475,8 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
             read_relative_file_if_identity_matches,
         )
 
+        probe_module = importlib.import_module("tests.windows_tree_snapshot_probe")
+
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel.CreateFileW.argtypes = [
             wintypes.LPCWSTR,
@@ -515,6 +518,7 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
             empty_payload = root / "empty.bin"
             exact_limit_payload = root / "exact-limit.bin"
             multi_chunk_payload = root / "multi-chunk.bin"
+            share_probe_payload = root / "active-reader-share.bin"
             stale_path = root / "stale.bin"
             replacement_source = root / "replacement-source.bin"
             displaced_path = root / "displaced-stale.bin"
@@ -525,6 +529,8 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
             exact_limit_payload.write_bytes(exact_limit_bytes)
             multi_chunk_bytes = b"m" * (64 * 1024 + 17)
             multi_chunk_payload.write_bytes(multi_chunk_bytes)
+            share_probe_bytes = b"active reader share probe"
+            share_probe_payload.write_bytes(share_probe_bytes)
             stale_path.write_bytes(b"stale identity probe")
             replacement_source.write_bytes(b"replacement identity probe")
 
@@ -573,6 +579,10 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 multi_chunk_entry = next(
                     (item for item in entries if item.name == "multi-chunk.bin"), None,
                 )
+                share_probe_entry = next(
+                    (item for item in entries if item.name == "active-reader-share.bin"),
+                    None,
+                )
                 stale_entry = next(
                     (item for item in entries if item.name == "stale.bin"), None,
                 )
@@ -583,6 +593,7 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 self.assertIsNotNone(empty_entry, "empty file was not enumerated")
                 self.assertIsNotNone(exact_limit_entry, "boundary file was not enumerated")
                 self.assertIsNotNone(multi_chunk_entry, "multi-chunk file was not enumerated")
+                self.assertIsNotNone(share_probe_entry, "share probe file was not enumerated")
                 self.assertIsNotNone(stale_entry, "stale child was not enumerated")
                 self.assertIsNotNone(source_entry, "replacement file was not enumerated")
                 self.assertFalse(
@@ -681,6 +692,75 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                     b"payload for identity probe",
                     "the bounded reader did not return the enumerated file content",
                 )
+
+                original_read = probe_module._read_open_file_contents
+                generic_write = 0x40000000
+                delete_access = 0x00010000
+                error_sharing_violation = 32
+
+                def assert_conflicting_access_is_denied(
+                    desired_access: int,
+                    operation: str,
+                ) -> None:
+                    ctypes.set_last_error(0)
+                    conflicting_handle = kernel.CreateFileW(
+                        str(share_probe_payload),
+                        desired_access,
+                        file_share_all,
+                        None,
+                        open_existing,
+                        0x00000080,
+                        None,
+                    )
+                    error = ctypes.get_last_error()
+                    if conflicting_handle not in (None, invalid_handle):
+                        self.assertTrue(
+                            kernel.CloseHandle(conflicting_handle),
+                            f"unexpected {operation} handle cleanup failed",
+                        )
+                    self.assertEqual(
+                        conflicting_handle,
+                        invalid_handle,
+                        f"{operation} access succeeded while the reader was active",
+                    )
+                    self.assertEqual(
+                        error,
+                        error_sharing_violation,
+                        f"{operation} access was not rejected as a sharing violation",
+                    )
+
+                def assert_live_reader_blocks_write_and_delete(
+                    kernel_api: object,
+                    live_handle: ctypes.c_void_p,
+                    *,
+                    max_bytes: int,
+                ) -> bytes:
+                    assert_conflicting_access_is_denied(generic_write, "write")
+                    assert_conflicting_access_is_denied(delete_access, "DELETE")
+                    return original_read(
+                        kernel_api,
+                        live_handle,
+                        max_bytes=max_bytes,
+                    )
+
+                with mock.patch.object(
+                    probe_module,
+                    "_read_open_file_contents",
+                    side_effect=assert_live_reader_blocks_write_and_delete,
+                ):
+                    self.assertEqual(
+                        read_relative_file_if_identity_matches(
+                            int(root_handle),
+                            "active-reader-share.bin",
+                            expected_entry=share_probe_entry,
+                            expected_volume_serial_number=int(
+                                parent_identity.volume_serial_number
+                            ),
+                            max_bytes=len(share_probe_bytes),
+                        ),
+                        share_probe_bytes,
+                        "the reader should finish after conflicting opens are rejected",
+                    )
                 writer_handle = kernel.CreateFileW(
                     str(payload),
                     0x40000000,  # GENERIC_WRITE
@@ -839,19 +919,25 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                     source_entry.file_id,
                     "re-enumerated path identity did not match moved replacement",
                 )
-                with self.assertRaisesRegex(
-                    WindowsDirectoryProbeError,
-                    "entry_identity_changed",
-                ):
-                    read_relative_file_if_identity_matches(
-                        int(root_handle),
-                        "stale.bin",
-                        expected_entry=stale_entry,
-                        expected_volume_serial_number=int(
-                            parent_identity.volume_serial_number
-                        ),
-                        max_bytes=1024,
-                    )
+                with mock.patch.object(
+                    probe_module,
+                    "_read_open_file_contents",
+                    wraps=probe_module._read_open_file_contents,
+                ) as low_level_reader:
+                    with self.assertRaisesRegex(
+                        WindowsDirectoryProbeError,
+                        "entry_identity_changed",
+                    ):
+                        read_relative_file_if_identity_matches(
+                            int(root_handle),
+                            "stale.bin",
+                            expected_entry=stale_entry,
+                            expected_volume_serial_number=int(
+                                parent_identity.volume_serial_number
+                            ),
+                            max_bytes=1024,
+                        )
+                    low_level_reader.assert_not_called()
                 self.assertEqual(
                     read_relative_file_if_identity_matches(
                         int(root_handle),
