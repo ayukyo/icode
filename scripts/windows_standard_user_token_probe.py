@@ -76,7 +76,24 @@ _FILE_GENERIC_WRITE = 0x00120116
 _FILE_GENERIC_EXECUTE = 0x001200A0
 _FILE_ALL_ACCESS = 0x001F01FF
 _FILE_CREATE_PIPE_INSTANCE = 0x00000004
+_PIPE_READ_DATA_ACCESS = 0x00000001
+_PIPE_WRITE_DATA_ACCESS = 0x00000002
 _PIPE_SYNCHRONIZE_ACCESS = 0x00100000
+_RUNNER_PIPE_ACCESS_MATRIX = (
+    ("z", 0),
+    ("r", _PIPE_READ_DATA_ACCESS),
+    ("w", _PIPE_WRITE_DATA_ACCESS),
+    ("rw", _PIPE_READ_DATA_ACCESS | _PIPE_WRITE_DATA_ACCESS),
+    ("s", _PIPE_SYNCHRONIZE_ACCESS),
+    ("rs", _PIPE_READ_DATA_ACCESS | _PIPE_SYNCHRONIZE_ACCESS),
+    ("ws", _PIPE_WRITE_DATA_ACCESS | _PIPE_SYNCHRONIZE_ACCESS),
+    (
+        "all",
+        _PIPE_READ_DATA_ACCESS
+        | _PIPE_WRITE_DATA_ACCESS
+        | _PIPE_SYNCHRONIZE_ACCESS,
+    ),
+)
 _TOKEN_DUPLICATE = 0x0002
 _TOKEN_QUERY = 0x0008
 # TOKEN_INFORMATION_CLASS values: TokenIntegrityLevel=25, TokenMandatoryPolicy=27.
@@ -686,6 +703,75 @@ def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
         return False, f"setup_winerror_{_safe_windows_error_code(exc)}"
     except (RuntimeError, ValueError):
         return False, "setup_invalid_state"
+
+
+def runner_pipe_access_mask_matrix_probe() -> str:
+    """Compare every subset of the runner client rights on disposable pipes.
+
+    Each attempt keeps the logon-SID DACL and client-open flags unchanged and
+    varies only ``dwDesiredAccess``. A successful open is immediately closed;
+    this diagnostic does not connect the server endpoint or exchange data.
+    """
+    if sys.platform != "win32":
+        return "unsupported_platform"
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        process_handle = api.kernel.GetCurrentProcess()
+        logon_sid = runner_process_logon_sid(process_handle)
+    except Exception:
+        return "matrix_setup_failed"
+
+    outcomes: list[str] = []
+    client_flags = (
+        _runner_pipe.FILE_FLAG_OVERLAPPED
+        | _runner_pipe._SECURITY_SQOS_PRESENT
+        | _runner_pipe._SECURITY_IMPERSONATION
+    )
+    for case, requested_access in _RUNNER_PIPE_ACCESS_MATRIX:
+        outcome = f"{case}_s"
+        try:
+            with create_runner_pipe_server(logon_sid) as pipe:
+                if not api.kernel.WaitNamedPipeW(pipe.name, 2_000):
+                    error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                    outcome = f"{case}_w{error:08x}"
+                else:
+                    client_handle = api.kernel.CreateFileW(
+                        pipe.name,
+                        requested_access,
+                        0,
+                        None,
+                        _runner_pipe._OPEN_EXISTING,
+                        client_flags,
+                        None,
+                    )
+                    if _runner_pipe._handle_is_invalid(client_handle):
+                        error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                        outcome = (
+                            f"{case}_d5" if error == _ERROR_ACCESS_DENIED
+                            else f"{case}_e{error:08x}"
+                        )
+                    else:
+                        outcome = f"{case}_ok"
+                        try:
+                            if not api.kernel.CloseHandle(client_handle):
+                                error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                                outcome = f"{case}_c{error:08x}"
+                        except OSError as exc:
+                            error = _safe_windows_error_code(exc)
+                            outcome = f"{case}_c{error:08x}"
+                        except Exception:
+                            outcome = f"{case}_c"
+        except OSError as exc:
+            error = _safe_windows_error_code(exc)
+            outcome = f"{case}_s{error:08x}"
+        except Exception:
+            outcome = f"{case}_s"
+        outcomes.append(outcome)
+
+    receipt = "mask_" + "+".join(outcomes)
+    return receipt if len(receipt) <= 110 else "matrix_unavailable"
 
 
 def runner_pipe_open_without_synchronize_probe() -> tuple[bool, str]:
@@ -2534,6 +2620,7 @@ def _run_child_mode(
     user_sid_dacl_probe_state: str | None = None
     user_sid_create_instance_probe_state: str | None = None
     self_pipe_access_probe_state: str | None = None
+    access_mask_matrix_state: str | None = None
     try:
         report = Path(report_path)
         temp = os.environ.get("TEMP", "")
@@ -2636,6 +2723,9 @@ def _run_child_mode(
                     no_overlapped_probe_state = "noovl_failed"
             else:
                 no_sync_probe_state = "nosync_failed"
+            # Keep the explicit logon-SID DACL and client flags fixed while
+            # exhaustively varying only the three client access bits.
+            access_mask_matrix_state = runner_pipe_access_mask_matrix_probe()
         else:
             wrong_pid_probe_state = "self_pipe_failed"
 
@@ -2814,6 +2904,34 @@ def _run_child_mode(
                             ))
                         else:
                             context = f"{minimal_token}+open_winerror_{error_code}"
+                    if access_mask_matrix_state is not None:
+                        # The full rights matrix is the highest-value bounded
+                        # evidence for this failure; retain it over earlier
+                        # ACL A/B labels if the receipt needs compaction.
+                        matrix_state = access_mask_matrix_state
+                        if (
+                            not isinstance(matrix_state, str)
+                            or len(matrix_state) > 110
+                            or re.fullmatch(
+                                r"(?:mask_[A-Za-z0-9_+.-]+|matrix_[a-z_]+)",
+                                matrix_state,
+                            ) is None
+                        ):
+                            matrix_state = "matrix_unavailable"
+                        matrix_context = "+".join((
+                            minimal_diagnostic,
+                            self_pipe_access_probe_state or "self_access_unavailable",
+                            matrix_state,
+                            f"open_winerror_{error_code}",
+                        ))
+                        if len(matrix_context) > 120:
+                            matrix_context = "+".join((
+                                matrix_state,
+                                f"open_winerror_{error_code}",
+                            ))
+                        if len(matrix_context) > 120:
+                            matrix_context = matrix_state
+                        context = matrix_context
                     failure_detail += ";detail=" + context
                 _write_report(
                     validated_report,
