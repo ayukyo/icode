@@ -105,23 +105,38 @@ def _workspace_dacl_baseline_normalization_valid(
     before: _DaclSnapshot, after: _DaclSnapshot,
 ) -> bool:
     """Require only the one-way auto-inheritance normalization on one object."""
+    return not _workspace_dacl_baseline_normalization_failure_codes(before, after)
+
+
+def _workspace_dacl_baseline_normalization_failure_codes(
+    before: _DaclSnapshot, after: _DaclSnapshot,
+) -> tuple[str, ...]:
+    """Return fixed, path-free labels for every violated normalization invariant."""
+    failures: list[str] = []
     control_delta = before.control ^ after.control
-    return (
+    if not (
         control_delta == _SE_DACL_AUTO_INHERITED
         and not before.control & _SE_DACL_AUTO_INHERITED
         and bool(after.control & _SE_DACL_AUTO_INHERITED)
-        and not before.control & _SE_DACL_PROTECTED
-        and not after.control & _SE_DACL_PROTECTED
-        and before.normalized_acl_digest == after.normalized_acl_digest
-        and before.revision == after.revision
-        and before.present is True
-        and after.present is True
-        and before.defaulted is False
-        and after.defaulted is False
-        and before.file_identity == after.file_identity
-        and before.ace_count == after.ace_count
-        and before.acl_bytes_in_use == after.acl_bytes_in_use
-    )
+    ):
+        failures.append("control")
+    if before.control & _SE_DACL_PROTECTED or after.control & _SE_DACL_PROTECTED:
+        failures.append("protected")
+    if before.normalized_acl_digest != after.normalized_acl_digest:
+        failures.append("acl_entries")
+    if before.revision != after.revision:
+        failures.append("revision")
+    if before.present is not True or after.present is not True:
+        failures.append("dacl_presence")
+    if before.defaulted is not False or after.defaulted is not False:
+        failures.append("dacl_defaulted")
+    if before.file_identity != after.file_identity:
+        failures.append("file_identity")
+    if before.ace_count != after.ace_count:
+        failures.append("ace_count")
+    if before.acl_bytes_in_use != after.acl_bytes_in_use:
+        failures.append("acl_length")
+    return tuple(failures)
 
 
 def _dacl_state_equal(before: _DaclSnapshot, after: _DaclSnapshot) -> bool:
@@ -325,6 +340,8 @@ def _normalize_disposable_workspace_dacl_baseline(workspace: Path) -> int:
         after = _dacl_snapshot(target)
         stage = "normalization_check"
         if not _workspace_dacl_baseline_normalization_valid(before, after):
+            failures = _workspace_dacl_baseline_normalization_failure_codes(before, after)
+            stage = f"normalization_check_{'_'.join(failures) or 'unknown'}"
             raise OSError("workspace DACL baseline changed outside normalization contract")
         return after.control ^ before.control
     except (OSError, RuntimeError, TypeError, ValueError) as exc:

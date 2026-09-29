@@ -8,6 +8,7 @@ import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import scripts.run_windows_appcontainer_read_probe as probe_module
 from scripts.run_windows_appcontainer_read_probe import (
     _DaclSnapshot,
     _dacl_state_equal,
@@ -132,6 +133,45 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                 original, replace(normalized, normalized_acl_digest="different"),
             ),
         )
+
+    def test_baseline_normalization_failure_codes_identify_only_mismatched_contracts(self) -> None:
+        failure_codes = getattr(
+            probe_module, "_workspace_dacl_baseline_normalization_failure_codes", None,
+        )
+        self.assertTrue(callable(failure_codes), "normalization failure classifier is missing")
+
+        original = _DaclSnapshot(
+            descriptor_digest="before",
+            acl_digest="raw-before",
+            acl_bytes=b"acl-before",
+            acl_capacity_bytes=b"acl-capacity",
+            normalized_acl_digest="normalized",
+            control=0x8004,
+            revision=1,
+            present=True,
+            defaulted=False,
+            file_identity=(1, 2),
+            ace_count=3,
+            inherited_ace_count=0,
+            acl_bytes_in_use=88,
+        )
+        normalized = replace(original, control=0x8404)
+
+        self.assertEqual(failure_codes(original, normalized), ())
+        cases = (
+            (replace(normalized, control=0x8804), ("control",)),
+            (replace(normalized, control=0x9404), ("control", "protected")),
+            (replace(normalized, normalized_acl_digest="different"), ("acl_entries",)),
+            (replace(normalized, revision=2), ("revision",)),
+            (replace(normalized, present=False), ("dacl_presence",)),
+            (replace(normalized, defaulted=True), ("dacl_defaulted",)),
+            (replace(normalized, file_identity=(1, 3)), ("file_identity",)),
+            (replace(normalized, ace_count=4), ("ace_count",)),
+            (replace(normalized, acl_bytes_in_use=96), ("acl_length",)),
+        )
+        for changed, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(failure_codes(original, changed), expected)
 
     def test_dacl_state_requires_exact_acl_bytes_and_security_control(self) -> None:
         before = _DaclSnapshot(
