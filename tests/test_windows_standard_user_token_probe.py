@@ -1017,7 +1017,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertTrue(runner_probe_succeeded(
             "runner_standard_user=PASS;server_pid_mismatch=PASS;"
             "child_restricted=PASS;child_non_admin=PASS;"
-            "child_identity=PASS;job_assignment=PASS;exit=PASS",
+            "child_identity=PASS;unreadable_executable=DENIED;"
+            "job_assignment=PASS;exit=PASS",
         ))
         self.assertFalse(runner_probe_succeeded(
             "runner_standard_user=PASS;server_pid_mismatch=PASS;"
@@ -1052,7 +1053,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(token_probe.runner_report_failure_detail(report, 0), expected)
         self.assertIsNone(token_probe.runner_report_failure_detail(
             "runner_standard_user=PASS;server_pid_mismatch=PASS;child_restricted=PASS;"
-            "child_non_admin=PASS;child_identity=PASS;job_assignment=PASS;exit=PASS",
+            "child_non_admin=PASS;child_identity=PASS;"
+            "unreadable_executable=DENIED;job_assignment=PASS;exit=PASS",
             0,
         ))
         self.assertEqual(
@@ -1293,7 +1295,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         success = (
             "runner_standard_user=PASS;server_pid_mismatch=PASS;"
             "child_restricted=PASS;child_non_admin=PASS;child_identity=PASS;"
-            "job_assignment=PASS;exit=PASS"
+            "unreadable_executable=DENIED;job_assignment=PASS;exit=PASS"
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             report = Path(temporary_directory) / "result.txt"
@@ -1350,6 +1352,158 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 self.assertFalse(
                     logon_rejection_succeeded(**{**expected, **override}),
                 )
+
+    def test_unreadable_executable_rejection_requires_no_child_marker_or_residue(self) -> None:
+        verify = getattr(
+            token_probe, "unreadable_executable_rejection_succeeded", None,
+        )
+        self.assertTrue(callable(verify), "missing unreadable executable classifier")
+        expected = {
+            "created": False,
+            "error_code": token_probe._ERROR_ACCESS_DENIED,
+            "process_started": False,
+            "marker_exists": False,
+            "process_residual": False,
+        }
+        self.assertTrue(verify(**expected))
+
+        failure_cases = (
+            {"created": True},
+            {"error_code": 193},
+            {"process_started": True},
+            {"marker_exists": True},
+            {"process_residual": True},
+        )
+        for override in failure_cases:
+            with self.subTest(override=override):
+                self.assertFalse(verify(**{**expected, **override}))
+
+    def test_failed_process_creation_never_trusts_pid_for_cleanup(self) -> None:
+        cleanup_plan = getattr(
+            token_probe, "unreadable_executable_cleanup_plan", None,
+        )
+        self.assertTrue(callable(cleanup_plan), "missing safe process cleanup planner")
+        process_handle = object()
+
+        self.assertEqual(
+            cleanup_plan(
+                create_succeeded=False,
+                process_handle=None,
+                process_information_populated=False,
+            ),
+            (None, False),
+        )
+        self.assertEqual(
+            cleanup_plan(
+                create_succeeded=False,
+                process_handle=None,
+                process_information_populated=True,
+            ),
+            (None, True),
+        )
+        self.assertEqual(
+            cleanup_plan(
+                create_succeeded=False,
+                process_handle=process_handle,
+                process_information_populated=True,
+            ),
+            (None, True),
+        )
+        self.assertEqual(
+            cleanup_plan(
+                create_succeeded=True,
+                process_handle=process_handle,
+                process_information_populated=True,
+            ),
+            (process_handle, False),
+        )
+        self.assertEqual(
+            cleanup_plan(
+                create_succeeded=True,
+                process_handle=None,
+                process_information_populated=False,
+            ),
+            (None, True),
+        )
+
+    def test_staged_unreadable_executable_is_a_private_copy_and_denial_is_exact(self) -> None:
+        stage = getattr(
+            token_probe, "stage_unreadable_executable_probe", None,
+        )
+        self.assertTrue(callable(stage), "missing disposable unreadable-executable setup")
+        user_sid = "S-1-5-21-100-200-300-400"
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            scratch = root / "scratch"
+            scratch.mkdir()
+            source = root / "system32" / "cmd.exe"
+            source.parent.mkdir()
+            source.write_bytes(b"trusted system executable fixture")
+            acl_tool = root / "icacls.exe"
+            acl_tool.write_bytes(b"tool fixture")
+
+            with (
+                mock.patch.object(
+                    token_probe, "build_system_tool_environment",
+                    return_value={"SystemRoot": "C:\\Windows"},
+                ),
+                mock.patch.object(
+                    token_probe.subprocess, "run",
+                    return_value=mock.Mock(returncode=0),
+                ) as run,
+            ):
+                staged = stage(
+                    scratch, source, acl_tool, user_sid, r"C:\Windows",
+                )
+
+            self.assertEqual(staged, scratch / "no-rx" / "cmd.exe")
+            self.assertEqual(staged.read_bytes(), source.read_bytes())
+            self.assertEqual(
+                run.call_args.args[0],
+                [str(acl_tool), str(staged), "/deny", f"*{user_sid}:(RX)"],
+            )
+            self.assertFalse(run.call_args.kwargs["check"])
+            self.assertEqual(run.call_args.kwargs["timeout"], 15)
+            self.assertEqual(source.read_bytes(), b"trusted system executable fixture")
+
+    def test_unreadable_executable_setup_fails_closed_on_acl_error_or_bad_sid(self) -> None:
+        stage = getattr(
+            token_probe, "stage_unreadable_executable_probe", None,
+        )
+        self.assertTrue(callable(stage), "missing disposable unreadable-executable setup")
+
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            scratch = root / "scratch"
+            scratch.mkdir()
+            source = root / "system32" / "cmd.exe"
+            source.parent.mkdir()
+            source.write_bytes(b"fixture")
+            acl_tool = root / "icacls.exe"
+            acl_tool.write_bytes(b"tool fixture")
+
+            with self.assertRaisesRegex(ValueError, "sid"):
+                stage(scratch, source, acl_tool, "not-a-sid", r"C:\Windows")
+            self.assertFalse((scratch / "no-rx").exists())
+
+            with (
+                mock.patch.object(
+                    token_probe, "build_system_tool_environment",
+                    return_value={"SystemRoot": "C:\\Windows"},
+                ),
+                mock.patch.object(
+                    token_probe.subprocess, "run",
+                    return_value=mock.Mock(returncode=1),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "unreadable_executable_deny_acl_failed",
+                ):
+                    stage(
+                        scratch, source, acl_tool,
+                        "S-1-5-21-100-200-300-400", r"C:\Windows",
+                    )
 
     def test_missing_account_accepts_only_documented_account_failure_codes(self) -> None:
         expected = {
