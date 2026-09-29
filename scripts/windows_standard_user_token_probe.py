@@ -75,6 +75,7 @@ _FILE_GENERIC_READ = 0x00120089
 _FILE_GENERIC_WRITE = 0x00120116
 _FILE_GENERIC_EXECUTE = 0x001200A0
 _FILE_ALL_ACCESS = 0x001F01FF
+_FILE_CREATE_PIPE_INSTANCE = 0x00000004
 _PIPE_SYNCHRONIZE_ACCESS = 0x00100000
 _TOKEN_DUPLICATE = 0x0002
 _TOKEN_QUERY = 0x0008
@@ -966,6 +967,155 @@ def runner_pipe_open_with_user_sid_dacl_probe() -> tuple[bool, str]:
                 if not api.kernel.CloseHandle(client):
                     raise _runner_pipe._winerror(
                         "close_user_sid_dacl_probe_client",
+                    )
+    except PermissionError:
+        return False, "setup_access_denied"
+    except TimeoutError:
+        return False, "setup_timeout"
+    except OSError:
+        return False, "setup_failed"
+    except (RuntimeError, ValueError):
+        return False, "setup_invalid_state"
+
+
+def _create_user_sid_pipe_server_with_create_instance_access(
+    user_sid: str,
+    api: object,
+) -> _runner_pipe.RunnerPipeServer:
+    """Create a disposable test pipe with one extra named-pipe access bit.
+
+    This deliberately does not change ``create_runner_pipe_server`` or the
+    production runner ACL. The sole ACE grants the existing client mask plus
+    FILE_CREATE_PIPE_INSTANCE to the temporary TokenUser SID.
+    """
+    sid = _runner_pipe._validate_sid(user_sid)
+    pipe_name = new_runner_pipe_name()
+    requested_mask = PIPE_CLIENT_ACCESS_MASK | _FILE_CREATE_PIPE_INSTANCE
+    sddl = f"D:P(A;;0x{requested_mask:08x};;;{sid})"
+    security_descriptor = ctypes.c_void_p()
+    converted = bool(api.advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, 1, ctypes.byref(security_descriptor), None,
+    ))
+    if not converted:
+        error = _runner_pipe._winerror(
+            "create_instance_probe_security_descriptor",
+        )
+        if security_descriptor.value and api.kernel.LocalFree(security_descriptor):
+            raise _runner_pipe._winerror(
+                "free_create_instance_probe_security_descriptor",
+            ) from error
+        raise error
+    if not security_descriptor.value:
+        raise RuntimeError("create_instance_probe_security_descriptor_missing")
+
+    attributes = _runner_pipe._SECURITY_ATTRIBUTES(
+        ctypes.sizeof(_runner_pipe._SECURITY_ATTRIBUTES),
+        security_descriptor,
+        0,
+    )
+    handle = _runner_pipe._INVALID_HANDLE_VALUE
+    try:
+        handle = api.kernel.CreateNamedPipeW(
+            pipe_name,
+            _runner_pipe.RUNNER_PIPE_OPEN_MODE,
+            _runner_pipe.RUNNER_PIPE_MODE,
+            _runner_pipe.RUNNER_PIPE_MAX_INSTANCES,
+            _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+            _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+            0,
+            ctypes.byref(attributes),
+        )
+    finally:
+        if (
+            security_descriptor.value
+            and api.kernel.LocalFree(security_descriptor)
+        ):
+            free_error = _runner_pipe._winerror(
+                "free_create_instance_probe_security_descriptor",
+            )
+            if not _runner_pipe._handle_is_invalid(handle):
+                if not api.kernel.CloseHandle(handle):
+                    raise _runner_pipe._winerror(
+                        "close_create_instance_probe_pipe_after_free_failure",
+                    ) from free_error
+            raise free_error
+
+    if _runner_pipe._handle_is_invalid(handle):
+        raise _runner_pipe._winerror("create_instance_probe_pipe")
+    return _runner_pipe.RunnerPipeServer(
+        name=pipe_name,
+        handle=handle,
+        api=api,
+    )
+
+
+def runner_pipe_open_with_user_sid_create_instance_access_probe() -> tuple[bool, str]:
+    """Test one extra DACL bit on a random, local, zero-payload pipe only."""
+    if sys.platform != "win32":
+        return False, "unsupported_platform"
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        api.kernel.GetCurrentProcessId.argtypes = []
+        api.kernel.GetCurrentProcessId.restype = wintypes.DWORD
+        process_handle = api.kernel.GetCurrentProcess()
+        current_pid = int(api.kernel.GetCurrentProcessId())
+        if not process_handle or current_pid <= 0:
+            return False, "server_pid_unavailable"
+
+        user_sid = runner_process_user_sid(process_handle)
+        with _create_user_sid_pipe_server_with_create_instance_access(
+            user_sid, api,
+        ) as pipe:
+            if not api.kernel.WaitNamedPipeW(pipe.name, 2_000):
+                if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
+                    return False, "client_wait_access_denied"
+                return False, "client_wait_failed"
+
+            client = api.kernel.CreateFileW(
+                pipe.name,
+                PIPE_CLIENT_ACCESS_MASK,
+                0,
+                None,
+                _runner_pipe._OPEN_EXISTING,
+                _runner_pipe.FILE_FLAG_OVERLAPPED
+                | _runner_pipe._SECURITY_SQOS_PRESENT
+                | _runner_pipe._SECURITY_IMPERSONATION,
+                None,
+            )
+            if _runner_pipe._handle_is_invalid(client):
+                if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
+                    return False, "client_open_access_denied"
+                return False, "client_open_failed"
+
+            try:
+                server_pid = wintypes.DWORD(0)
+                if not api.kernel.GetNamedPipeServerProcessId(
+                    client, ctypes.byref(server_pid),
+                ) or server_pid.value == 0:
+                    return False, "server_pid_unavailable"
+                if server_pid.value != current_pid:
+                    return False, "server_pid_mismatch"
+                pipe._connect(2_000)
+                if not pipe._connected:
+                    return False, "server_connect_failed"
+                client_pid = wintypes.DWORD(0)
+                if not api.kernel.GetNamedPipeClientProcessId(
+                    pipe._handle, ctypes.byref(client_pid),
+                ) or client_pid.value == 0:
+                    return False, "client_pid_unavailable"
+                if client_pid.value != current_pid:
+                    return False, "client_pid_mismatch"
+                return True, "client_opened_with_user_sid_create_instance_access"
+            except TimeoutError:
+                return False, "server_connect_timeout"
+            except OSError:
+                return False, "server_connect_failed"
+            finally:
+                if not api.kernel.CloseHandle(client):
+                    raise _runner_pipe._winerror(
+                        "close_create_instance_probe_client",
                     )
     except PermissionError:
         return False, "setup_access_denied"
@@ -2343,6 +2493,7 @@ def _run_child_mode(
     no_overlapped_probe_state: str | None = None
     default_dacl_probe_state: str | None = None
     user_sid_dacl_probe_state: str | None = None
+    user_sid_create_instance_probe_state: str | None = None
     try:
         report = Path(report_path)
         temp = os.environ.get("TEMP", "")
@@ -2416,6 +2567,24 @@ def _run_child_mode(
                         and user_sid_dacl_detail == "client_open_access_denied"
                     ):
                         user_sid_dacl_probe_state = "user_sid_dacl_denied"
+                        create_instance_opened, create_instance_detail = (
+                            runner_pipe_open_with_user_sid_create_instance_access_probe()
+                        )
+                        if create_instance_opened is True:
+                            user_sid_create_instance_probe_state = (
+                                "user_sid_create_instance_ok"
+                            )
+                        elif (
+                            type(create_instance_detail) is str
+                            and create_instance_detail == "client_open_access_denied"
+                        ):
+                            user_sid_create_instance_probe_state = (
+                                "user_sid_create_instance_denied"
+                            )
+                        else:
+                            user_sid_create_instance_probe_state = (
+                                "user_sid_create_instance_failed"
+                            )
                     else:
                         user_sid_dacl_probe_state = "user_sid_dacl_failed"
                 else:
@@ -2454,7 +2623,19 @@ def _run_child_mode(
                 if failure_detail == "client_open_access_denied":
                     diagnostic = effective_token_diagnostic or "token_unavailable"
                     context_parts = [diagnostic]
-                    if user_sid_dacl_probe_state is not None:
+                    if user_sid_create_instance_probe_state is not None:
+                        # This additional ACE changes exactly one mask bit after
+                        # the TokenUser-only ACE was denied. Keep all three DACL
+                        # outcomes visible without exposing SID values.
+                        context_parts = [
+                            _compact_runner_effective_token_diagnostic(
+                                effective_token_diagnostic,
+                            ),
+                            default_dacl_probe_state or "default_dacl_unavailable",
+                            user_sid_dacl_probe_state or "user_sid_dacl_unavailable",
+                            user_sid_create_instance_probe_state,
+                        ]
+                    elif user_sid_dacl_probe_state is not None:
                         # These ACL A/Bs already imply the preceding self-pipe,
                         # no-SYNCHRONIZE, and no-OVERLAPPED denials. Keep both
                         # changed-principal outcomes visible in the 120-char
@@ -2495,6 +2676,17 @@ def _run_child_mode(
                     context_parts.append(f"open_winerror_{error_code}")
                     context = "+".join(context_parts)
                     if (
+                        len(context) > 120
+                        and user_sid_create_instance_probe_state is not None
+                    ):
+                        context = "+".join((
+                            "token_unavailable",
+                            default_dacl_probe_state or "default_dacl_unavailable",
+                            user_sid_dacl_probe_state or "user_sid_dacl_unavailable",
+                            user_sid_create_instance_probe_state,
+                            f"open_winerror_{error_code}",
+                        ))
+                    elif (
                         len(context) > 120
                         and user_sid_dacl_probe_state is not None
                     ):
