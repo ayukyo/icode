@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import platform
+import re
 import shutil
 import socket
 import sys
@@ -26,8 +27,11 @@ from icode.windows_appcontainer import run_windows_appcontainer  # noqa: E402
 
 
 _DACL_SECURITY_INFORMATION = 0x00000004
+_INHERITED_ACE = 0x10
+_SE_DACL_AUTO_INHERITED = 0x0400
 _ERROR_INSUFFICIENT_BUFFER = 122
 _EXPECTED_SOURCE_CONTENTS = b"ICODE-READ-HANDLE-PROBE-v1\n"
+_SID_PATTERN = re.compile(r"(?i)(?<![A-Z0-9])S-\d+(?:-\d+)+(?![A-Z0-9])")
 
 
 def _file_digest(path: Path) -> str:
@@ -42,11 +46,13 @@ def _file_digest(path: Path) -> str:
 class _DaclSnapshot:
     descriptor_digest: str
     acl_digest: str
+    normalized_acl_digest: str
     control: int
     revision: int
     present: bool
     defaulted: bool
     ace_count: int
+    inherited_ace_count: int
     acl_bytes_in_use: int
 
 
@@ -55,6 +61,34 @@ def _format_network_error(value: object) -> str:
     if type(value) is int and 0 <= value <= 0xFFFF:
         return str(value)
     return "unknown"
+
+
+def _normalize_inherited_ace_flag(ace: bytes) -> bytes:
+    """Clear only the ACE-origin marker, retaining access and inheritance flags."""
+    if len(ace) < 4 or int.from_bytes(ace[2:4], "little") != len(ace):
+        raise ValueError("ACE header length is invalid")
+    normalized = bytearray(ace)
+    normalized[1] &= ~_INHERITED_ACE
+    return bytes(normalized)
+
+
+def _workspace_dacl_entries_equivalent(
+    before: _DaclSnapshot, after: _DaclSnapshot,
+) -> bool:
+    """Allow only Windows' auto-inheritance control/origin markers to differ."""
+    control_delta = before.control ^ after.control
+    auto_inherited_transition = (
+        control_delta == _SE_DACL_AUTO_INHERITED
+        and not before.control & _SE_DACL_AUTO_INHERITED
+        and bool(after.control & _SE_DACL_AUTO_INHERITED)
+    )
+    return (
+        before.normalized_acl_digest == after.normalized_acl_digest
+        and (control_delta == 0 or auto_inherited_transition)
+        and before.revision == after.revision
+        and before.present == after.present
+        and before.defaulted == after.defaulted
+    )
 
 
 def _dacl_snapshot(path: Path) -> _DaclSnapshot:
@@ -90,6 +124,10 @@ def _dacl_snapshot(path: Path) -> _DaclSnapshot:
         ctypes.c_void_p, ctypes.c_void_p, wintypes.DWORD, ctypes.c_int,
     ]
     advapi.GetAclInformation.restype = wintypes.BOOL
+    advapi.GetAce.argtypes = [
+        ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.GetAce.restype = wintypes.BOOL
     required = wintypes.DWORD()
     ctypes.set_last_error(0)
     first_ok = bool(advapi.GetFileSecurityW(
@@ -127,6 +165,35 @@ def _dacl_snapshot(path: Path) -> _DaclSnapshot:
     acl_bytes_in_use = int(size_info.AclBytesInUse)
     if acl_bytes_in_use < 8:
         raise OSError("DACL length is invalid")
+    descriptor_start = ctypes.addressof(descriptor)
+    descriptor_end = descriptor_start + int(required.value)
+    dacl_start = int(dacl.value)
+    acl_capacity = acl_bytes_in_use + int(size_info.AclBytesFree)
+    if (
+        dacl_start < descriptor_start
+        or dacl_start + acl_capacity > descriptor_end
+        or acl_bytes_in_use > acl_capacity
+    ):
+        raise OSError("DACL range is outside its security descriptor")
+    normalized_acl = bytearray(ctypes.string_at(dacl, acl_bytes_in_use))
+    inherited_ace_count = 0
+    for ace_index in range(int(size_info.AceCount)):
+        ace_pointer = ctypes.c_void_p()
+        if not advapi.GetAce(dacl, ace_index, ctypes.byref(ace_pointer)) or not ace_pointer.value:
+            raise OSError(ctypes.get_last_error(), "GetAce")
+        ace_start = int(ace_pointer.value)
+        ace_offset = ace_start - dacl_start
+        if ace_offset < 8 or ace_offset + 4 > acl_bytes_in_use:
+            raise OSError("ACE header is outside its DACL")
+        ace_header = ctypes.string_at(ace_pointer, 4)
+        ace_flags = ace_header[1]
+        ace_size = int.from_bytes(ace_header[2:4], "little")
+        if ace_offset < 8 or ace_size < 4 or ace_offset + ace_size > acl_bytes_in_use:
+            raise OSError("ACE range is outside its DACL")
+        ace = ctypes.string_at(ace_pointer, ace_size)
+        normalized_acl[ace_offset:ace_offset + ace_size] = _normalize_inherited_ace_flag(ace)
+        if ace_flags & _INHERITED_ACE:
+            inherited_ace_count += 1
     return _DaclSnapshot(
         descriptor_digest=hashlib.sha256(
             descriptor.raw[:required.value],
@@ -134,11 +201,13 @@ def _dacl_snapshot(path: Path) -> _DaclSnapshot:
         acl_digest=hashlib.sha256(
             ctypes.string_at(dacl, acl_bytes_in_use),
         ).hexdigest(),
+        normalized_acl_digest=hashlib.sha256(normalized_acl).hexdigest(),
         control=int(control.value),
         revision=int(revision.value),
         present=bool(present.value),
         defaulted=bool(defaulted.value),
         ace_count=int(size_info.AceCount),
+        inherited_ace_count=inherited_ace_count,
         acl_bytes_in_use=acl_bytes_in_use,
     )
 
@@ -186,6 +255,7 @@ def _safe_diagnostics(detail: str) -> str:
     safe_parts = [
         part for part in detail.split("; ")
         if 0 < len(part) <= 160
+        and not _SID_PATTERN.search(part)
         and all(character.isalnum() or character in "._=-" for character in part)
     ]
     return ",".join(safe_parts)[:1024] or "none"
@@ -358,9 +428,12 @@ def _run(probe_executable: Path) -> int:
                 "  workspace_dacl_diagnostics="
                 f"descriptor_equal:{workspace_dacl_before.descriptor_digest == workspace_dacl_after.descriptor_digest},"
                 f"acl_equal:{workspace_dacl_before.acl_digest == workspace_dacl_after.acl_digest},"
+                "entries_equivalent:"
+                f"{_workspace_dacl_entries_equivalent(workspace_dacl_before, workspace_dacl_after)},"
                 f"control_before:0x{workspace_dacl_before.control:04x},"
                 f"control_after:0x{workspace_dacl_after.control:04x},"
                 f"ace_count:{workspace_dacl_before.ace_count}/{workspace_dacl_after.ace_count},"
+                f"inherited_aces:{workspace_dacl_before.inherited_ace_count}/{workspace_dacl_after.inherited_ace_count},"
                 f"acl_bytes:{workspace_dacl_before.acl_bytes_in_use}/{workspace_dacl_after.acl_bytes_in_use},"
                 f"present:{workspace_dacl_before.present}/{workspace_dacl_after.present},"
                 f"defaulted:{workspace_dacl_before.defaulted}/{workspace_dacl_after.defaulted}"
