@@ -8,10 +8,20 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from unittest.mock import patch
 
+from tests import _support  # noqa: F401  # Add the repository's src/ to sys.path.
 from tests import macos_unix_socket_probe as probe
+from icode.approvals import ScriptedApprover
 from icode.isolation import MacSeatbeltSandbox
+from icode.network_destination import ResolvedNetworkTarget
+from icode.network_lease import NetworkLeaseAuthority, NetworkPurpose
+from icode.network_proxy_scope import HostConnectRuntime
+from icode.network_proxy_server import HostConnectProxyServer
+from icode.sandbox_policy import NetworkMode, SandboxPolicy
 
 
 class TestUnixSocketPolicyBuilder(unittest.TestCase):
@@ -50,6 +60,609 @@ class TestUnixSocketPolicyBuilder(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     build_url(invalid_path)
 
+@unittest.skipUnless(hasattr(socket, "AF_UNIX"), "requires AF_UNIX sockets")
+class TestSocks5LeaseConnectBridge(unittest.TestCase):
+    @staticmethod
+    def _recv_exact(connection: socket.socket, size: int) -> bytes:
+        result = bytearray()
+        while len(result) < size:
+            chunk = connection.recv(size - len(result))
+            if not chunk:
+                raise AssertionError("bridge closed a short SOCKS5 reply")
+            result.extend(chunk)
+        return bytes(result)
+
+    def _request(
+        self,
+        socket_path: Path,
+        request: bytes,
+        *,
+        client_payload: bytes = b"",
+        fragmented: bool = False,
+    ) -> tuple[int, bytes]:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(3)
+            client.connect(str(socket_path))
+            client.sendall(b"\x05\x01\x00")
+            self.assertEqual(self._recv_exact(client, 2), b"\x05\x00")
+            if fragmented:
+                for byte in request:
+                    client.sendall(bytes((byte,)))
+                    time.sleep(0.001)
+            else:
+                client.sendall(request)
+            reply = self._recv_exact(client, 10)
+            self.assertEqual(reply[0], 5)
+            self.assertEqual(reply[2], 0)
+            self.assertEqual(reply[3], 1)
+            result = reply[1]
+            if result != 0:
+                return result, b""
+            if client_payload:
+                client.sendall(client_payload)
+                client.shutdown(socket.SHUT_WR)
+            response = bytearray()
+            while True:
+                chunk = client.recv(4096)
+                if not chunk:
+                    break
+                response.extend(chunk)
+            return result, bytes(response)
+
+    def test_invalid_socks_targets_do_not_open_internal_proxy_connection(self) -> None:
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(
+            callable(bridge_type),
+            "a test-only lease CONNECT SOCKS5 UDS bridge is missing",
+        )
+        with tempfile.TemporaryDirectory(prefix="icode-socks5-lease-") as raw_root:
+            socket_path = Path(raw_root) / "bridge.sock"
+            proxy_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            proxy_listener.bind(("127.0.0.1", 0))
+            proxy_listener.listen(2)
+            proxy_listener.settimeout(0.2)
+            try:
+                with bridge_type(
+                    socket_path,
+                    proxy_listener.getsockname(),
+                    lease_check=lambda: None,
+                ) as bridge:
+                    raw_ip_request = (
+                        b"\x05\x01\x00\x01\x7f\x00\x00\x01\x01\xbb"
+                    )
+                    non_https_request = (
+                        b"\x05\x01\x00\x03\x10packages.example\x20\xfb"
+                    )
+                    unsupported_command = (
+                        b"\x05\x02\x00\x03\x10packages.example\x01\xbb"
+                    )
+                    self.assertEqual(
+                        self._request(socket_path, raw_ip_request)[0],
+                        8,
+                        "raw-IP SOCKS requests must be rejected",
+                    )
+                    self.assertEqual(
+                        self._request(socket_path, non_https_request)[0],
+                        2,
+                        "non-443 SOCKS requests must be rejected",
+                    )
+                    self.assertEqual(
+                        self._request(socket_path, unsupported_command)[0],
+                        7,
+                        "non-CONNECT SOCKS commands must be rejected",
+                    )
+                    self.assertEqual(bridge.failures, [])
+                with self.assertRaises(socket.timeout):
+                    proxy_listener.accept()
+            finally:
+                proxy_listener.close()
+
+    def test_valid_domain_request_waits_for_connect_then_relays_full_duplex(self) -> None:
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(
+            callable(bridge_type),
+            "a test-only lease CONNECT SOCKS5 UDS bridge is missing",
+        )
+        with tempfile.TemporaryDirectory(prefix="icode-socks5-lease-") as raw_root:
+            socket_path = Path(raw_root) / "bridge.sock"
+            proxy_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            proxy_listener.bind(("127.0.0.1", 0))
+            proxy_listener.listen(1)
+            proxy_listener.settimeout(3)
+            connect_heads: list[bytes] = []
+            proxy_payloads: list[bytes] = []
+            proxy_failures: list[str] = []
+
+            def serve_proxy_once() -> None:
+                try:
+                    peer, _address = proxy_listener.accept()
+                    with peer:
+                        peer.settimeout(3)
+                        request_head = bytearray()
+                        while not request_head.endswith(b"\r\n\r\n"):
+                            chunk = peer.recv(1)
+                            if not chunk:
+                                raise AssertionError("bridge sent a short CONNECT request")
+                            request_head.extend(chunk)
+                            if len(request_head) > 4096:
+                                raise AssertionError("bridge CONNECT request was unbounded")
+                        connect_heads.append(bytes(request_head))
+                        peer.sendall(
+                            b"HTTP/1.1 200 Connection Established\r\n\r\n"
+                        )
+                        incoming = bytearray()
+                        while True:
+                            chunk = peer.recv(4096)
+                            if not chunk:
+                                break
+                            incoming.extend(chunk)
+                        proxy_payloads.append(bytes(incoming))
+                        peer.sendall(b"upstream-through-connect")
+                        peer.shutdown(socket.SHUT_WR)
+                except BaseException as error:
+                    proxy_failures.append(type(error).__name__)
+
+            proxy_worker = threading.Thread(
+                target=serve_proxy_once,
+                name="icode-socks5-test-proxy",
+                daemon=True,
+            )
+            proxy_worker.start()
+            try:
+                with bridge_type(
+                    socket_path,
+                    proxy_listener.getsockname(),
+                    lease_check=lambda: None,
+                ) as bridge:
+                    request = (
+                        b"\x05\x01\x00\x03\x10packages.example\x01\xbb"
+                    )
+                    result, response = self._request(
+                        socket_path,
+                        request,
+                        client_payload=b"client-through-socks-uds",
+                        fragmented=True,
+                    )
+                    self.assertEqual(result, 0)
+                    self.assertEqual(response, b"upstream-through-connect")
+                    self.assertEqual(bridge.failures, [])
+                self.assertFalse(socket_path.exists())
+            finally:
+                proxy_listener.close()
+                proxy_worker.join(timeout=3)
+            self.assertFalse(proxy_worker.is_alive())
+            self.assertEqual(proxy_failures, [])
+            self.assertEqual(
+                connect_heads,
+                [
+                    b"CONNECT packages.example:443 HTTP/1.1\r\n"
+                    b"Host: packages.example\r\n\r\n"
+                ],
+            )
+            self.assertEqual(proxy_payloads, [b"client-through-socks-uds"])
+
+    def test_expired_lease_is_rejected_before_internal_proxy_connect(self) -> None:
+        from icode.network_lease import NetworkLeaseValidationError
+
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(callable(bridge_type), "the test-only bridge is missing")
+        with tempfile.TemporaryDirectory(prefix="icode-socks5-expired-") as raw_root:
+            socket_path = Path(raw_root) / "bridge.sock"
+            proxy_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            proxy_listener.bind(("127.0.0.1", 0))
+            proxy_listener.listen(1)
+            proxy_listener.settimeout(0.2)
+
+            def reject_lease() -> None:
+                raise NetworkLeaseValidationError("test lease expired")
+
+            try:
+                with bridge_type(
+                    socket_path,
+                    proxy_listener.getsockname(),
+                    lease_check=reject_lease,
+                ):
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                        client.settimeout(1.0)
+                        client.connect(str(socket_path))
+                        self.assertEqual(
+                            client.recv(1),
+                            b"",
+                            "an expired lease must close before SOCKS success",
+                        )
+                with self.assertRaises(socket.timeout):
+                    proxy_listener.accept()
+            finally:
+                proxy_listener.close()
+
+    def test_internal_connect_failure_returns_socks_failure_without_success(self) -> None:
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(callable(bridge_type), "the test-only bridge is missing")
+        with tempfile.TemporaryDirectory(prefix="icode-socks5-refused-") as raw_root:
+            socket_path = Path(raw_root) / "bridge.sock"
+            refused_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            refused_listener.bind(("127.0.0.1", 0))
+            proxy_address = refused_listener.getsockname()
+            refused_listener.close()
+
+            with bridge_type(
+                socket_path,
+                proxy_address,
+                lease_check=lambda: None,
+            ):
+                request = b"\x05\x01\x00\x03\x10packages.example\x01\xbb"
+                result, _response = self._request(socket_path, request)
+                self.assertEqual(result, 1, "connect failures use SOCKS general failure")
+
+    def test_lease_revoke_during_connect_response_returns_policy_failure(self) -> None:
+        from icode.network_lease import NetworkLeaseValidationError
+
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(callable(bridge_type), "the test-only bridge is missing")
+        with tempfile.TemporaryDirectory(prefix="icode-socks5-response-revoke-") as raw_root:
+            socket_path = Path(raw_root) / "bridge.sock"
+            proxy_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            proxy_listener.bind(("127.0.0.1", 0))
+            proxy_listener.listen(1)
+            response_started = threading.Event()
+            proxy_closed = threading.Event()
+            revoked = threading.Event()
+            proxy_failures: list[str] = []
+            client_results: list[tuple[int, bytes]] = []
+            client_errors: list[BaseException] = []
+
+            def lease_check() -> None:
+                if revoked.is_set():
+                    raise NetworkLeaseValidationError("test lease revoked")
+
+            def serve_proxy_once() -> None:
+                try:
+                    peer, _address = proxy_listener.accept()
+                    with peer:
+                        peer.settimeout(2)
+                        request_head = bytearray()
+                        while not request_head.endswith(b"\r\n\r\n"):
+                            chunk = peer.recv(1)
+                            if not chunk:
+                                raise AssertionError("bridge sent a short CONNECT request")
+                            request_head.extend(chunk)
+                        peer.sendall(b"H")
+                        response_started.set()
+                        while peer.recv(4096):
+                            pass
+                        proxy_closed.set()
+                except BaseException as error:
+                    proxy_failures.append(type(error).__name__)
+
+            proxy_worker = threading.Thread(
+                target=serve_proxy_once,
+                name="icode-socks5-revoke-response-proxy",
+                daemon=True,
+            )
+            proxy_worker.start()
+
+            def request_from_client() -> None:
+                try:
+                    client_results.append(self._request(
+                        socket_path,
+                        b"\x05\x01\x00\x03\x10packages.example\x01\xbb",
+                    ))
+                except BaseException as error:
+                    client_errors.append(error)
+
+            client_worker = threading.Thread(
+                target=request_from_client,
+                name="icode-socks5-revoke-response-client",
+                daemon=True,
+            )
+            try:
+                with patch.object(probe, "_BRIDGE_CONNECT_TIMEOUT_SECONDS", 0.7):
+                    with bridge_type(
+                        socket_path,
+                        proxy_listener.getsockname(),
+                        lease_check=lease_check,
+                    ) as bridge:
+                        client_worker.start()
+                        self.assertTrue(response_started.wait(2))
+                        revoke_started = time.monotonic()
+                        revoked.set()
+                        client_worker.join(timeout=0.5)
+                        self.assertFalse(
+                            client_worker.is_alive(),
+                            "lease revocation must interrupt a partial CONNECT response",
+                        )
+                        self.assertEqual(client_errors, [])
+                        self.assertEqual(client_results, [(2, b"")])
+                        self.assertLess(time.monotonic() - revoke_started, 0.5)
+                    self.assertEqual(bridge.failures, [])
+                self.assertTrue(proxy_closed.wait(1))
+            finally:
+                revoked.set()
+                proxy_listener.close()
+                if client_worker.ident is not None:
+                    client_worker.join(timeout=2)
+                proxy_worker.join(timeout=2)
+            self.assertFalse(client_worker.is_alive())
+            self.assertFalse(proxy_worker.is_alive())
+            self.assertEqual(proxy_failures, [])
+
+    def test_slow_connect_response_uses_one_absolute_deadline(self) -> None:
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(callable(bridge_type), "the test-only bridge is missing")
+        with tempfile.TemporaryDirectory(prefix="icode-socks5-response-deadline-") as raw_root:
+            socket_path = Path(raw_root) / "bridge.sock"
+            proxy_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            proxy_listener.bind(("127.0.0.1", 0))
+            proxy_listener.listen(1)
+            second_fragment_sent = threading.Event()
+            proxy_closed = threading.Event()
+            proxy_failures: list[str] = []
+            client_results: list[tuple[int, bytes]] = []
+            client_errors: list[BaseException] = []
+
+            def serve_proxy_once() -> None:
+                try:
+                    peer, _address = proxy_listener.accept()
+                    with peer:
+                        peer.settimeout(2)
+                        request_head = bytearray()
+                        while not request_head.endswith(b"\r\n\r\n"):
+                            chunk = peer.recv(1)
+                            if not chunk:
+                                raise AssertionError("bridge sent a short CONNECT request")
+                            request_head.extend(chunk)
+                        peer.sendall(b"H")
+                        time.sleep(0.45)
+                        peer.sendall(b"T")
+                        second_fragment_sent.set()
+                        while peer.recv(4096):
+                            pass
+                        proxy_closed.set()
+                except BaseException as error:
+                    proxy_failures.append(type(error).__name__)
+
+            proxy_worker = threading.Thread(
+                target=serve_proxy_once,
+                name="icode-socks5-slow-response-proxy",
+                daemon=True,
+            )
+            proxy_worker.start()
+
+            def request_from_client() -> None:
+                try:
+                    client_results.append(self._request(
+                        socket_path,
+                        b"\x05\x01\x00\x03\x10packages.example\x01\xbb",
+                    ))
+                except BaseException as error:
+                    client_errors.append(error)
+
+            client_worker = threading.Thread(
+                target=request_from_client,
+                name="icode-socks5-slow-response-client",
+                daemon=True,
+            )
+            try:
+                with patch.object(probe, "_BRIDGE_CONNECT_TIMEOUT_SECONDS", 0.75):
+                    with bridge_type(
+                        socket_path,
+                        proxy_listener.getsockname(),
+                        lease_check=lambda: None,
+                    ) as bridge:
+                        client_worker.start()
+                        self.assertTrue(second_fragment_sent.wait(2))
+                        deadline_remaining_started = time.monotonic()
+                        client_worker.join(timeout=0.5)
+                        self.assertFalse(
+                            client_worker.is_alive(),
+                            "a later response byte must not reset the CONNECT deadline",
+                        )
+                        self.assertEqual(client_errors, [])
+                        self.assertEqual(client_results, [(1, b"")])
+                        self.assertLess(
+                            time.monotonic() - deadline_remaining_started,
+                            0.5,
+                        )
+                    self.assertEqual(bridge.failures, [])
+                self.assertTrue(proxy_closed.wait(1))
+            finally:
+                proxy_listener.close()
+                if client_worker.ident is not None:
+                    client_worker.join(timeout=2)
+                proxy_worker.join(timeout=2)
+            self.assertFalse(client_worker.is_alive())
+            self.assertFalse(proxy_worker.is_alive())
+            self.assertEqual(proxy_failures, [])
+
+    def test_revoked_lease_is_checked_when_connect_response_eof_arrives(self) -> None:
+        from icode.network_lease import NetworkLeaseValidationError
+
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(callable(bridge_type), "the test-only bridge is missing")
+        reader, writer = socket.socketpair()
+        writer.close()
+
+        def reject_lease() -> None:
+            raise NetworkLeaseValidationError("test lease revoked before EOF")
+
+        try:
+            with self.assertRaises(NetworkLeaseValidationError):
+                bridge_type._read_connect_response(
+                    reader,
+                    deadline=time.monotonic() + 1.0,
+                    lease_check=reject_lease,
+                )
+        finally:
+            reader.close()
+
+    def test_lease_revoke_during_partial_request_closes_without_proxy_connect(self) -> None:
+        from icode.network_lease import NetworkLeaseValidationError
+
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(callable(bridge_type), "the test-only bridge is missing")
+        with tempfile.TemporaryDirectory(prefix="icode-socks5-partial-revoke-") as raw_root:
+            socket_path = Path(raw_root) / "bridge.sock"
+            proxy_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            proxy_listener.bind(("127.0.0.1", 0))
+            proxy_listener.listen(1)
+            proxy_listener.settimeout(0.25)
+            revoked = threading.Event()
+
+            def lease_check() -> None:
+                if revoked.is_set():
+                    raise NetworkLeaseValidationError("test lease revoked")
+
+            try:
+                with bridge_type(
+                    socket_path,
+                    proxy_listener.getsockname(),
+                    lease_check=lease_check,
+                ) as bridge:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                        client.settimeout(1.0)
+                        client.connect(str(socket_path))
+                        client.sendall(b"\x05\x01\x00")
+                        self.assertEqual(self._recv_exact(client, 2), b"\x05\x00")
+                        client.sendall(b"\x05")
+                        revoked.set()
+                        self.assertEqual(
+                            self._recv_exact(client, 10)[1],
+                            2,
+                            "revocation must reject a partial SOCKS request",
+                        )
+                        self.assertEqual(client.recv(1), b"")
+                    self.assertEqual(bridge.failures, [])
+                with self.assertRaises(socket.timeout):
+                    proxy_listener.accept()
+            finally:
+                proxy_listener.close()
+
+    def test_slow_partial_request_is_bound_by_an_absolute_handshake_deadline(self) -> None:
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(callable(bridge_type), "the test-only bridge is missing")
+        with tempfile.TemporaryDirectory(prefix="icode-socks5-deadline-") as raw_root:
+            socket_path = Path(raw_root) / "bridge.sock"
+            with patch.object(probe, "_BRIDGE_CLIENT_TIMEOUT_SECONDS", 0.6):
+                with bridge_type(
+                    socket_path,
+                    ("127.0.0.1", 9),
+                    lease_check=lambda: None,
+                ):
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                        client.settimeout(1.0)
+                        client.connect(str(socket_path))
+                        client.sendall(b"\x05\x01\x00")
+                        self.assertEqual(self._recv_exact(client, 2), b"\x05\x00")
+                        client.sendall(b"\x05")
+                        time.sleep(0.45)
+                        client.sendall(b"\x01")
+                        partial_elapsed = time.monotonic()
+                        self.assertEqual(client.recv(1), b"")
+                        self.assertLess(
+                            time.monotonic() - partial_elapsed,
+                            0.4,
+                            "each received byte must not reset the handshake deadline",
+                        )
+
+    def test_close_cancels_partial_handshake_and_removes_owned_socket(self) -> None:
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(callable(bridge_type), "the test-only bridge is missing")
+        with tempfile.TemporaryDirectory(prefix="icode-socks5-close-") as raw_root:
+            socket_path = Path(raw_root) / "bridge.sock"
+            bridge = bridge_type(
+                socket_path,
+                ("127.0.0.1", 9),
+                lease_check=lambda: None,
+            )
+            bridge.__enter__()
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(2)
+            try:
+                client.connect(str(socket_path))
+                client.sendall(b"\x05\x01")
+                self.assertTrue(bridge.close())
+                try:
+                    self.assertEqual(client.recv(1), b"")
+                except OSError:
+                    pass
+                self.assertFalse(socket_path.exists())
+            finally:
+                client.close()
+                bridge.close()
+
+    def test_close_does_not_unlink_a_replaced_socket_path(self) -> None:
+        bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)
+        self.assertTrue(callable(bridge_type), "the test-only bridge is missing")
+        with tempfile.TemporaryDirectory(prefix="icode-socks5-replace-") as raw_root:
+            socket_path = Path(raw_root) / "bridge.sock"
+            bridge = bridge_type(
+                socket_path,
+                ("127.0.0.1", 9),
+                lease_check=lambda: None,
+            )
+            bridge.__enter__()
+            socket_path.unlink()
+            socket_path.write_text("replacement belongs to the test", encoding="utf-8")
+            self.assertFalse(bridge.close())
+            self.assertEqual(
+                socket_path.read_text(encoding="utf-8"),
+                "replacement belongs to the test",
+            )
+
+
+class TestUnixSocketCanaryAndProfile(unittest.TestCase):
+    @staticmethod
+    def _recv_exact(client: socket.socket, size: int) -> bytes:
+        result = bytearray()
+        while len(result) < size:
+            chunk = client.recv(size - len(result))
+            if not chunk:
+                raise AssertionError("test canary closed a short SOCKS5 reply")
+            result.extend(chunk)
+        return bytes(result)
+
+    @staticmethod
+    def _socks5_canary_request(
+        socket_path: Path, hostname: str, port: int,
+    ) -> tuple[int, bytes]:
+        domain = hostname.encode("ascii")
+        request = (
+            b"\x05\x01\x00\x03" + bytes((len(domain),)) + domain
+            + port.to_bytes(2, "big")
+        )
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(2)
+            client.connect(str(socket_path))
+            client.sendall(b"\x05\x01\x00")
+            if TestUnixSocketCanaryAndProfile._recv_exact(client, 2) != b"\x05\x00":
+                raise AssertionError("test canary rejected no-auth SOCKS5 negotiation")
+            client.sendall(request)
+            reply_head = TestUnixSocketCanaryAndProfile._recv_exact(client, 4)
+            if reply_head[0] != 5 or reply_head[2] != 0:
+                raise AssertionError("test canary returned a malformed SOCKS5 reply")
+            address_length = {1: 4, 4: 16}.get(reply_head[3])
+            if reply_head[3] == 3:
+                address_length_byte = TestUnixSocketCanaryAndProfile._recv_exact(client, 1)
+                address_length = address_length_byte[0]
+            if address_length is None:
+                raise AssertionError("test canary returned an unknown SOCKS5 address type")
+            remaining = address_length + 2
+            TestUnixSocketCanaryAndProfile._recv_exact(client, remaining)
+            if reply_head[1] != 0:
+                return reply_head[1], b""
+
+            client.sendall(
+                b"GET /canary HTTP/1.1\r\nHost: approved.example\r\n"
+                b"Connection: close\r\n\r\n"
+            )
+            response = bytearray()
+            while len(response) <= 4096:
+                chunk = client.recv(min(512, 4097 - len(response)))
+                if not chunk:
+                    break
+                response.extend(chunk)
+            return reply_head[1], bytes(response)
+
     def test_test_only_socks5_uds_canary_allows_only_approved_domain(self) -> None:
         canary_type = getattr(probe, "Socks5UdsCanary", None)
         self.assertTrue(callable(canary_type), "test-only SOCKS5 UDS canary is missing")
@@ -76,58 +689,6 @@ class TestUnixSocketPolicyBuilder(unittest.TestCase):
                 canary.observed_targets,
                 [("approved.example", 45678), ("blocked.example", 45678)],
             )
-
-    @staticmethod
-    def _recv_exact(client: socket.socket, size: int) -> bytes:
-        result = bytearray()
-        while len(result) < size:
-            chunk = client.recv(size - len(result))
-            if not chunk:
-                raise AssertionError("test canary closed a short SOCKS5 reply")
-            result.extend(chunk)
-        return bytes(result)
-
-    @staticmethod
-    def _socks5_canary_request(
-        socket_path: Path, hostname: str, port: int,
-    ) -> tuple[int, bytes]:
-        domain = hostname.encode("ascii")
-        request = (
-            b"\x05\x01\x00\x03" + bytes((len(domain),)) + domain
-            + port.to_bytes(2, "big")
-        )
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout(2)
-            client.connect(str(socket_path))
-            client.sendall(b"\x05\x01\x00")
-            if TestUnixSocketPolicyBuilder._recv_exact(client, 2) != b"\x05\x00":
-                raise AssertionError("test canary rejected no-auth SOCKS5 negotiation")
-            client.sendall(request)
-            reply_head = TestUnixSocketPolicyBuilder._recv_exact(client, 4)
-            if reply_head[0] != 5 or reply_head[2] != 0:
-                raise AssertionError("test canary returned a malformed SOCKS5 reply")
-            address_length = {1: 4, 4: 16}.get(reply_head[3])
-            if reply_head[3] == 3:
-                address_length_byte = TestUnixSocketPolicyBuilder._recv_exact(client, 1)
-                address_length = address_length_byte[0]
-            if address_length is None:
-                raise AssertionError("test canary returned an unknown SOCKS5 address type")
-            remaining = address_length + 2
-            TestUnixSocketPolicyBuilder._recv_exact(client, remaining)
-            if reply_head[1] != 0:
-                return reply_head[1], b""
-
-            client.sendall(
-                b"GET /canary HTTP/1.1\r\nHost: approved.example\r\n"
-                b"Connection: close\r\n\r\n"
-            )
-            response = bytearray()
-            while len(response) <= 4096:
-                chunk = client.recv(min(512, 4097 - len(response)))
-                if not chunk:
-                    break
-                response.extend(chunk)
-            return reply_head[1], bytes(response)
 
     def test_policy_grants_only_outbound_unix_socket_beneath_approved_root(self) -> None:
         builder = getattr(probe, "build_test_profile", None)
@@ -435,6 +996,218 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             "::notice::macos-seatbelt-curl-socks-uds "
             "curl_supported=yes socks5h_domain_preserved=yes "
             "approved_canary=yes blocked_target=denied conformance_credit=none",
+            flush=True,
+        )
+
+    def test_sandboxed_curl_uses_test_bridge_and_live_lease_scope(self) -> None:
+        sandbox_exec = shutil.which("sandbox-exec") or "/usr/bin/sandbox-exec"
+        curl_path = shutil.which("curl")
+        if not Path(sandbox_exec).is_file() or curl_path is None:
+            self.skipTest("curl or sandbox-exec is unavailable; no conformance credit")
+        try:
+            version_result = subprocess.run(
+                [curl_path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            self.skipTest("curl version probe failed; no conformance credit")
+        if version_result.returncode != 0 or not probe.supports_curl_socks5_uds(
+            version_result.stdout,
+        ):
+            self.skipTest("curl lacks SOCKS5 UDS support; no conformance credit")
+
+        with tempfile.TemporaryDirectory(
+            prefix="icode-seatbelt-live-lease-", dir="/private/tmp",
+        ) as raw_root:
+            root = Path(raw_root)
+            workspace = root / "workspace"
+            approved_root = root / "proxy"
+            workspace.mkdir()
+            approved_root.mkdir()
+            socket_path = approved_root / "socks.sock"
+            sandbox = MacSeatbeltSandbox(sandbox_exec=sandbox_exec)
+            profile = probe.build_test_profile(
+                sandbox._profile(workspace, False), approved_root,
+            )
+            environment = {
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(workspace),
+                "LC_ALL": "C",
+                "ALL_PROXY": probe.curl_socks5_uds_proxy_url(socket_path),
+                "NO_PROXY": "",
+                "no_proxy": "",
+            }
+
+            policy = SandboxPolicy(
+                schema_version=1,
+                run_id="run-macos-socks-lease-test",
+                ticket_id="ICODE-MACOS-SOCKS-LEASE-1",
+                step="code",
+                workspace_root=workspace,
+                read_roots=(workspace,),
+                write_roots=(workspace,),
+                deny_read_roots=(workspace / ".git",),
+                deny_write_roots=(workspace / ".git",),
+                network_mode=NetworkMode.DENY,
+                allowed_domains=(),
+                process_limit=8,
+                wall_timeout_seconds=60,
+                output_limit_bytes=4096,
+                protected_paths=(workspace / ".git",),
+            )
+            authority = NetworkLeaseAuthority()
+            issued = authority.request_lease(
+                policy,
+                approver=ScriptedApprover([True]),
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("packages.example",),
+                ttl_seconds=60,
+            )
+            runtime = HostConnectRuntime(authority, sweep_interval_seconds=0.01)
+            runtime.start()
+            scope = runtime.create_scope(
+                issued,
+                policy,
+                NetworkPurpose.PACKAGE_INSTALL,
+            )
+
+            proxy_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            proxy_listener.bind(("127.0.0.1", 0))
+            proxy_listener.listen(4)
+            proxy_listener.setblocking(False)
+            proxy_server = HostConnectProxyServer(proxy_listener, scope)
+            upstream_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            upstream_listener.bind(("127.0.0.1", 0))
+            upstream_listener.listen(2)
+            upstream_listener.settimeout(0.2)
+            upstream_address = upstream_listener.getsockname()
+            upstream_body = b"live-test-lease-bridge\n"
+            upstream_requests: list[bytes] = []
+            upstream_failures: list[str] = []
+            resolved_hosts: list[str] = []
+            ready = threading.Event()
+            stop = threading.Event()
+
+            def serve_upstream_once() -> None:
+                try:
+                    connection, _address = upstream_listener.accept()
+                    with connection:
+                        connection.settimeout(3.0)
+                        request_head = bytearray()
+                        while not request_head.endswith(b"\r\n\r\n"):
+                            chunk = connection.recv(1)
+                            if not chunk:
+                                raise AssertionError("curl request ended before HTTP headers")
+                            request_head.extend(chunk)
+                            if len(request_head) > 8192:
+                                raise AssertionError("curl HTTP request exceeded test bound")
+                        upstream_requests.append(bytes(request_head))
+                        connection.sendall(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: "
+                            + str(len(upstream_body)).encode("ascii")
+                            + b"\r\nConnection: close\r\n\r\n"
+                            + upstream_body
+                        )
+                        connection.shutdown(socket.SHUT_WR)
+                except BaseException as error:
+                    upstream_failures.append(type(error).__name__)
+
+            def resolve_to_test_upstream(
+                hostname: str,
+                port: int,
+                *,
+                resolver: object = None,
+            ) -> tuple[ResolvedNetworkTarget, ...]:
+                del resolver
+                resolved_hosts.append(hostname)
+                self.assertEqual(port, 443)
+                return (
+                    ResolvedNetworkTarget(
+                        family=socket.AF_INET,
+                        socket_type=socket.SOCK_STREAM,
+                        protocol=socket.IPPROTO_TCP,
+                        sockaddr=upstream_address,
+                    ),
+                )
+
+            proxy_failures: list[str] = []
+
+            def serve_proxy() -> None:
+                try:
+                    proxy_server.serve_forever(stop, ready_event=ready)
+                except BaseException as error:
+                    proxy_failures.append(type(error).__name__)
+
+            upstream_worker = threading.Thread(
+                target=serve_upstream_once,
+                name="icode-macos-live-lease-upstream",
+                daemon=True,
+            )
+            proxy_worker = threading.Thread(
+                target=serve_proxy,
+                name="icode-macos-live-lease-proxy",
+                daemon=True,
+            )
+            resolver_patch = patch(
+                "icode.network_connector.resolve_public_tcp_targets",
+                side_effect=resolve_to_test_upstream,
+            )
+            resolver_patch.start()
+            self.addCleanup(resolver_patch.stop)
+            upstream_worker.start()
+            proxy_worker.start()
+            try:
+                self.assertTrue(ready.wait(1.0), "live lease CONNECT server did not start")
+                with probe.Socks5UdsLeaseConnectBridge(
+                    socket_path,
+                    proxy_listener.getsockname(),
+                    lease_check=scope.verify_lease,
+                ) as bridge:
+                    allowed_status, allowed_body = self._run_sandboxed_curl(
+                        sandbox_exec,
+                        profile,
+                        curl_path,
+                        workspace,
+                        environment,
+                        "http://packages.example:443/canary",
+                    )
+                    blocked_status, blocked_body = self._run_sandboxed_curl(
+                        sandbox_exec,
+                        profile,
+                        curl_path,
+                        workspace,
+                        environment,
+                        "http://blocked.example:443/canary",
+                    )
+                    self.assertEqual(bridge.failures, [])
+                self.assertEqual(allowed_status, 0)
+                self.assertEqual(allowed_body, upstream_body)
+                self.assertNotEqual(blocked_status, 0)
+                self.assertEqual(blocked_body, b"")
+                upstream_worker.join(timeout=2.0)
+                self.assertFalse(upstream_worker.is_alive())
+                self.assertEqual(len(upstream_requests), 1)
+                self.assertIn(b"GET /canary ", upstream_requests[0])
+                self.assertEqual(resolved_hosts, ["packages.example"])
+                self.assertEqual(upstream_failures, [])
+            finally:
+                stop.set()
+                proxy_server.close()
+                proxy_worker.join(timeout=2.0)
+                upstream_listener.close()
+                upstream_worker.join(timeout=2.0)
+                self.assertTrue(proxy_server.close())
+                self.assertTrue(runtime.close())
+            self.assertFalse(proxy_worker.is_alive())
+            self.assertEqual(proxy_failures, [])
+
+        print(
+            "::notice::macos-seatbelt-live-lease-uds-test "
+            "approved_domain=http_test_tunnel=passed blocked_domain=failed_closed "
+            "direct_worker_tcp=covered_by_socket_probe conformance_credit=none",
             flush=True,
         )
 

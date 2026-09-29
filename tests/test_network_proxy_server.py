@@ -17,6 +17,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from tests import _support  # noqa: F401  # Add the repository's src/ to sys.path.
+from tests.macos_unix_socket_probe import Socks5UdsLeaseConnectBridge
 
 from icode import linux_proxy_handoff, network_proxy_server
 from icode.approvals import ScriptedApprover
@@ -169,6 +170,174 @@ class NetworkProxyServerTestCase(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(served, [True])
         self.assertTrue(server.close())
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "requires AF_UNIX sockets")
+    def test_socks_uds_bridge_reuses_the_live_lease_connect_scope(self) -> None:
+        listener = self.make_listener()
+        server = self.make_server(listener)
+        upstream_listener = self.make_listener()
+        upstream_listener.settimeout(2.0)
+        socket_path = Path(self.temp_dir.name) / "lease-socks-bridge.sock"
+        ready = threading.Event()
+        stop = threading.Event()
+        failures: list[BaseException] = []
+
+        def read_exact(connection: socket.socket, size: int) -> bytes:
+            result = bytearray()
+            while len(result) < size:
+                chunk = connection.recv(size - len(result))
+                if not chunk:
+                    raise AssertionError("SOCKS lease bridge closed a short response")
+                result.extend(chunk)
+            return bytes(result)
+
+        def serve_proxy() -> None:
+            try:
+                server.serve_forever(stop, ready_event=ready)
+            except BaseException as error:
+                failures.append(error)
+
+        host_worker = threading.Thread(
+            target=serve_proxy,
+            name="icode-lease-connect-test-server",
+            daemon=True,
+        )
+        with patch(
+            "icode.network_connector.resolve_public_tcp_targets",
+            side_effect=lambda hostname, port, resolver=None: self.local_resolver(
+                hostname,
+                port,
+                upstream_listener.getsockname(),
+            )(hostname, port),
+        ):
+            host_worker.start()
+            try:
+                self.assertTrue(ready.wait(1.0), "lease proxy did not become ready")
+                with Socks5UdsLeaseConnectBridge(
+                    socket_path,
+                    listener.getsockname(),
+                    lease_check=self.scope.verify_lease,
+                ) as bridge:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as worker:
+                        worker.settimeout(3.0)
+                        worker.connect(str(socket_path))
+                        worker.sendall(b"\x05\x01\x00")
+                        self.assertEqual(read_exact(worker, 2), b"\x05\x00")
+                        worker.sendall(
+                            b"\x05\x01\x00\x03\x10packages.example\x01\xbb"
+                        )
+                        socks_reply = read_exact(worker, 10)
+                        self.assertEqual(socks_reply, b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00")
+
+                        upstream, _address = upstream_listener.accept()
+                        upstream.settimeout(3.0)
+                        self.addCleanup(upstream.close)
+                        worker_to_origin = b"lease-proxy-uds-forward"
+                        worker.sendall(worker_to_origin)
+                        self.assertEqual(read_exact(upstream, len(worker_to_origin)), worker_to_origin)
+                        worker.shutdown(socket.SHUT_WR)
+                        self.assertEqual(upstream.recv(1), b"")
+
+                        origin_to_worker = b"lease-proxy-uds-return"
+                        upstream.sendall(origin_to_worker)
+                        upstream.shutdown(socket.SHUT_WR)
+                        response = bytearray()
+                        while True:
+                            chunk = worker.recv(4096)
+                            if not chunk:
+                                break
+                            response.extend(chunk)
+                        self.assertEqual(bytes(response), origin_to_worker)
+                self.assertEqual(bridge.failures, [])
+            finally:
+                stop.set()
+                server.close()
+                host_worker.join(timeout=2.0)
+
+        self.assertFalse(host_worker.is_alive())
+        self.assertTrue(server.close())
+        self.assertEqual(failures, [])
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "requires AF_UNIX sockets")
+    def test_socks_uds_bridge_active_revoke_closes_worker_and_origin(self) -> None:
+        listener = self.make_listener()
+        server = self.make_server(listener)
+        upstream_listener = self.make_listener()
+        upstream_listener.settimeout(2.0)
+        socket_path = Path(self.temp_dir.name) / "revoke-socks-bridge.sock"
+        ready = threading.Event()
+        stop = threading.Event()
+        failures: list[BaseException] = []
+
+        def read_exact(connection: socket.socket, size: int) -> bytes:
+            result = bytearray()
+            while len(result) < size:
+                chunk = connection.recv(size - len(result))
+                if not chunk:
+                    raise AssertionError("SOCKS revoke probe closed a short response")
+                result.extend(chunk)
+            return bytes(result)
+
+        def serve_proxy() -> None:
+            try:
+                server.serve_forever(stop, ready_event=ready)
+            except BaseException as error:
+                failures.append(error)
+
+        host_worker = threading.Thread(
+            target=serve_proxy,
+            name="icode-lease-connect-revoke-test-server",
+            daemon=True,
+        )
+        with patch(
+            "icode.network_connector.resolve_public_tcp_targets",
+            side_effect=lambda hostname, port, resolver=None: self.local_resolver(
+                hostname,
+                port,
+                upstream_listener.getsockname(),
+            )(hostname, port),
+        ):
+            host_worker.start()
+            try:
+                self.assertTrue(ready.wait(1.0), "lease proxy did not become ready")
+                with Socks5UdsLeaseConnectBridge(
+                    socket_path,
+                    listener.getsockname(),
+                    lease_check=self.scope.verify_lease,
+                ) as bridge:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as worker:
+                        worker.settimeout(3.0)
+                        worker.connect(str(socket_path))
+                        worker.sendall(b"\x05\x01\x00")
+                        self.assertEqual(read_exact(worker, 2), b"\x05\x00")
+                        worker.sendall(
+                            b"\x05\x01\x00\x03\x10packages.example\x01\xbb"
+                        )
+                        self.assertEqual(
+                            read_exact(worker, 10),
+                            b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00",
+                        )
+                        upstream, _address = upstream_listener.accept()
+                        upstream.settimeout(3.0)
+                        self.addCleanup(upstream.close)
+                        marker = b"revoke-from-live-socks-uds"
+                        worker.sendall(marker)
+                        self.assertEqual(read_exact(upstream, len(marker)), marker)
+
+                        self.assertGreater(self.authority.revoke(self.policy), 0)
+                        self.assert_peer_closed(worker)
+                        self.assert_peer_closed(upstream)
+                self.assertEqual(bridge.failures, [])
+                stop.set()
+                host_worker.join(timeout=2.0)
+            finally:
+                stop.set()
+                server.close()
+                host_worker.join(timeout=2.0)
+
+        self.assertFalse(host_worker.is_alive())
+        self.assertTrue(server.close())
+        self.assertEqual(failures, [])
 
     def test_serve_forever_can_signal_readiness_before_payload_ack(self) -> None:
         server = self.make_server(self.make_listener())
