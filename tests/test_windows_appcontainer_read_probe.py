@@ -278,51 +278,80 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
 
     def test_wfp_receipt_attributes_only_completed_exact_native_subscription(self) -> None:
         classify = getattr(
-            probe_module, "_classify_wfp_capability_drop_receipt", None,
+            probe_module, "_classify_wfp_target_drop_receipt", None,
         )
-        self.assertTrue(callable(classify), "WFP receipt classifier is missing")
+        self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
 
         receipt = {
-            "schema_version": 2,
-            "subscription_ok": True,
+            "schema_version": 3,
+            "capability_subscription_ok": True,
+            "classify_drop_subscription_ok": True,
             "unsubscribe_ok": True,
             "network_events_collected": True,
             "matched_capability_drop_count": 1,
+            "matched_classify_drop_count": 0,
         }
         self.assertEqual(
             classify(receipt, collector_exit_code=0),
             "capability_drop_attributed",
         )
 
+    def test_wfp_receipt_can_attribute_an_exact_classify_drop(self) -> None:
+        classify = getattr(
+            probe_module, "_classify_wfp_target_drop_receipt", None,
+        )
+        self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
+
+        receipt = {
+            "schema_version": 3,
+            "capability_subscription_ok": True,
+            "classify_drop_subscription_ok": True,
+            "unsubscribe_ok": True,
+            "network_events_collected": True,
+            "matched_capability_drop_count": 0,
+            "matched_classify_drop_count": 1,
+        }
+        self.assertEqual(
+            classify(receipt, collector_exit_code=0),
+            "classify_drop_attributed",
+        )
+
     def test_wfp_receipt_without_complete_match_remains_evidence_unavailable(self) -> None:
         classify = getattr(
-            probe_module, "_classify_wfp_capability_drop_receipt", None,
+            probe_module, "_classify_wfp_target_drop_receipt", None,
         )
-        self.assertTrue(callable(classify), "WFP receipt classifier is missing")
+        self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
 
         unavailable_cases = (
             (None, 0),
-            ({"schema_version": 2, "subscription_ok": False, "unsubscribe_ok": True,
-              "network_events_collected": True,
-              "matched_capability_drop_count": 1}, 0),
-            ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": False,
-              "network_events_collected": True,
-              "matched_capability_drop_count": 1}, 0),
-            ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": True,
-              "network_events_collected": True,
-              "matched_capability_drop_count": 0}, 0),
-            ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": True,
-              "network_events_collected": True,
-              "matched_capability_drop_count": True}, 0),
-            ({"schema_version": 3, "subscription_ok": True, "unsubscribe_ok": True,
-              "network_events_collected": True,
-              "matched_capability_drop_count": 1}, 0),
-            ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": True,
-              "network_events_collected": False,
-              "matched_capability_drop_count": 1}, 0),
-            ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": True,
-              "network_events_collected": True,
-              "matched_capability_drop_count": 1}, 1),
+            ({"schema_version": 3, "capability_subscription_ok": False,
+              "classify_drop_subscription_ok": True, "unsubscribe_ok": True,
+              "network_events_collected": True, "matched_capability_drop_count": 1,
+              "matched_classify_drop_count": 0}, 0),
+            ({"schema_version": 3, "capability_subscription_ok": True,
+              "classify_drop_subscription_ok": False, "unsubscribe_ok": True,
+              "network_events_collected": True, "matched_capability_drop_count": 0,
+              "matched_classify_drop_count": 1}, 0),
+            ({"schema_version": 3, "capability_subscription_ok": True,
+              "classify_drop_subscription_ok": True, "unsubscribe_ok": False,
+              "network_events_collected": True, "matched_capability_drop_count": 1,
+              "matched_classify_drop_count": 0}, 0),
+            ({"schema_version": 3, "capability_subscription_ok": True,
+              "classify_drop_subscription_ok": True, "unsubscribe_ok": True,
+              "network_events_collected": False, "matched_capability_drop_count": 1,
+              "matched_classify_drop_count": 0}, 0),
+            ({"schema_version": 3, "capability_subscription_ok": True,
+              "classify_drop_subscription_ok": True, "unsubscribe_ok": True,
+              "network_events_collected": True, "matched_capability_drop_count": True,
+              "matched_classify_drop_count": 0}, 0),
+            ({"schema_version": 2, "capability_subscription_ok": True,
+              "classify_drop_subscription_ok": True, "unsubscribe_ok": True,
+              "network_events_collected": True, "matched_capability_drop_count": 1,
+              "matched_classify_drop_count": 0}, 0),
+            ({"schema_version": 3, "capability_subscription_ok": True,
+              "classify_drop_subscription_ok": True, "unsubscribe_ok": True,
+              "network_events_collected": True, "matched_capability_drop_count": 1,
+              "matched_classify_drop_count": 0}, 1),
         )
         for receipt, collector_exit_code in unavailable_cases:
             with self.subTest(receipt=receipt, exit_code=collector_exit_code):
@@ -344,11 +373,13 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             result = root / "wfp-token.json"
             ready.write_text("ready\n", encoding="ascii")
             safe_receipt = {
-                "schema_version": 2,
-                "subscription_ok": True,
+                "schema_version": 3,
+                "capability_subscription_ok": True,
+                "classify_drop_subscription_ok": True,
                 "unsubscribe_ok": True,
                 "network_events_collected": True,
                 "matched_capability_drop_count": 1,
+                "matched_classify_drop_count": 0,
             }
 
             summary = summarize(
@@ -363,10 +394,12 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                     "started": True,
                     "ready_state": "ready",
                     "collector_exit_code": 0,
-                    "subscription_ok": True,
+                    "capability_subscription_ok": True,
+                    "classify_drop_subscription_ok": True,
                     "unsubscribe_ok": True,
                     "network_events_collected": True,
                     "matched_capability_drop_count": 1,
+                    "matched_classify_drop_count": 0,
                 },
             )
 
@@ -384,7 +417,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
     def test_wfp_observer_stop_collects_receipt_and_reaps_its_process(self) -> None:
         start = getattr(probe_module, "_start_wfp_event_probe", None)
         stop = getattr(probe_module, "_stop_wfp_event_probe", None)
-        classify = probe_module._classify_wfp_capability_drop_receipt
+        classify = probe_module._classify_wfp_target_drop_receipt
         self.assertTrue(callable(start), "WFP observer launcher is missing")
         self.assertTrue(callable(stop), "WFP observer cleanup is missing")
 
@@ -402,9 +435,11 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                 "while time.monotonic() < deadline and not pathlib.Path(stop).exists():\n"
                 "    time.sleep(0.01)\n"
                 "pathlib.Path(result).write_text(json.dumps({\n"
-                "    'schema_version': 2, 'subscription_ok': True,\n"
+                "    'schema_version': 3, 'capability_subscription_ok': True,\n"
+                "    'classify_drop_subscription_ok': True,\n"
                 "    'network_events_collected': True,\n"
                 "    'unsubscribe_ok': True, 'matched_capability_drop_count': 1,\n"
+                "    'matched_classify_drop_count': 0,\n"
                 "}), encoding='ascii')\n",
                 encoding="utf-8",
             )

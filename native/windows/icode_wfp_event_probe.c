@@ -21,6 +21,7 @@ typedef struct WfpProbeContext {
     PSID expected_package_sid;
     UINT16 expected_remote_port;
     volatile LONG matched_capability_drop_count;
+    volatile LONG matched_classify_drop_count;
 } WfpProbeContext;
 
 static BOOL is_generated_profile_name(const wchar_t *value) {
@@ -55,12 +56,11 @@ static BOOL parse_port(const wchar_t *value, UINT16 *port_out) {
     return TRUE;
 }
 
-static BOOL event_matches_target(
+static BOOL event_header_matches_target(
     const FWPM_NET_EVENT3 *event,
     const WfpProbeContext *context
 ) {
     const FWPM_NET_EVENT_HEADER3 *header;
-    const FWPM_NET_EVENT_CAPABILITY_DROP0 *drop;
     const UINT32 required_flags =
         FWPM_NET_EVENT_FLAG_IP_VERSION_SET |
         FWPM_NET_EVENT_FLAG_IP_PROTOCOL_SET |
@@ -69,23 +69,40 @@ static BOOL event_matches_target(
         FWPM_NET_EVENT_FLAG_PACKAGE_ID_SET;
 
     if (event == NULL || context == NULL || context->expected_package_sid == NULL ||
-        event->type != FWPM_NET_EVENT_TYPE_CAPABILITY_DROP ||
-        event->capabilityDrop == NULL) {
+        event->header.packageSid == NULL) {
         return FALSE;
     }
     header = &event->header;
-    drop = event->capabilityDrop;
     if ((header->flags & required_flags) != required_flags ||
         header->packageSid == NULL || !IsValidSid(header->packageSid) ||
         !EqualSid(header->packageSid, context->expected_package_sid) ||
         header->ipVersion != FWP_IP_VERSION_V4 ||
         header->ipProtocol != IPPROTO_TCP ||
         header->remoteAddrV4 != INADDR_LOOPBACK ||
-        header->remotePort != context->expected_remote_port ||
-        !drop->isLoopback) {
+        header->remotePort != context->expected_remote_port) {
         return FALSE;
     }
     return TRUE;
+}
+
+static BOOL event_matches_target(
+    const FWPM_NET_EVENT3 *event,
+    const WfpProbeContext *context
+) {
+    return event != NULL &&
+        event->type == FWPM_NET_EVENT_TYPE_CAPABILITY_DROP &&
+        event->capabilityDrop != NULL && event->capabilityDrop->isLoopback &&
+        event_header_matches_target(event, context);
+}
+
+static BOOL event_matches_classify_drop(
+    const FWPM_NET_EVENT3 *event,
+    const WfpProbeContext *context
+) {
+    return event != NULL &&
+        event->type == FWPM_NET_EVENT_TYPE_CLASSIFY_DROP &&
+        event->classifyDrop != NULL && event->classifyDrop->isLoopback &&
+        event_header_matches_target(event, context);
 }
 
 static void CALLBACK on_net_event(void *raw_context, const FWPM_NET_EVENT3 *event) {
@@ -94,6 +111,8 @@ static void CALLBACK on_net_event(void *raw_context, const FWPM_NET_EVENT3 *even
     /* The callback reads only borrowed event data and retains no event pointer. */
     if (event_matches_target(event, context)) {
         InterlockedIncrement(&context->matched_capability_drop_count);
+    } else if (event_matches_classify_drop(event, context)) {
+        InterlockedIncrement(&context->matched_classify_drop_count);
     }
 }
 
@@ -273,24 +292,30 @@ static BOOL wait_for_stop(const wchar_t *path) {
 
 static BOOL write_result(
     const wchar_t *path,
-    BOOL subscription_ok,
+    BOOL capability_subscription_ok,
+    BOOL classify_drop_subscription_ok,
     BOOL unsubscribe_ok,
     BOOL network_events_state_known,
     BOOL network_events_collected,
-    LONG matched_count
+    LONG matched_capability_drop_count,
+    LONG matched_classify_drop_count
 ) {
-    char json[256];
+    char json[512];
     int written = _snprintf_s(
         json, sizeof(json), _TRUNCATE,
-        "{\"schema_version\":2,\"subscription_ok\":%s,"
+        "{\"schema_version\":3,\"capability_subscription_ok\":%s,"
+        "\"classify_drop_subscription_ok\":%s,"
         "\"unsubscribe_ok\":%s,\"network_events_collected\":%s,"
-        "\"matched_capability_drop_count\":%ld}\n",
-        subscription_ok ? "true" : "false",
+        "\"matched_capability_drop_count\":%ld,"
+        "\"matched_classify_drop_count\":%ld}\n",
+        capability_subscription_ok ? "true" : "false",
+        classify_drop_subscription_ok ? "true" : "false",
         unsubscribe_ok ? "true" : "false",
         network_events_state_known
             ? (network_events_collected ? "true" : "false")
             : "null",
-        matched_count
+        matched_capability_drop_count,
+        matched_classify_drop_count
     );
     return written > 0 && (size_t)written < sizeof(json) &&
         write_ascii_file(path, json);
@@ -299,6 +324,7 @@ static BOOL write_result(
 static BOOL classifier_self_test(void) {
     FWPM_NET_EVENT3 event;
     FWPM_NET_EVENT_CAPABILITY_DROP0 drop;
+    FWPM_NET_EVENT_CLASSIFY_DROP2 classify_drop;
     WfpProbeContext context = {0};
     PSID expected_sid = NULL;
     PSID other_sid = NULL;
@@ -316,6 +342,7 @@ static BOOL classifier_self_test(void) {
     }
     ZeroMemory(&event, sizeof(event));
     ZeroMemory(&drop, sizeof(drop));
+    ZeroMemory(&classify_drop, sizeof(classify_drop));
     ZeroMemory(&context, sizeof(context));
     context.expected_package_sid = expected_sid;
     context.expected_remote_port = 54321;
@@ -333,15 +360,21 @@ static BOOL classifier_self_test(void) {
     event.header.remotePort = context.expected_remote_port;
     event.capabilityDrop = &drop;
     drop.isLoopback = TRUE;
+    classify_drop.isLoopback = TRUE;
 
     if (!event_matches_target(&event, &context)) {
         goto cleanup;
     }
     event.type = FWPM_NET_EVENT_TYPE_CLASSIFY_DROP;
+    event.classifyDrop = &classify_drop;
+    if (!event_matches_classify_drop(&event, &context)) {
+        goto cleanup;
+    }
     if (event_matches_target(&event, &context)) {
         goto cleanup;
     }
     event.type = FWPM_NET_EVENT_TYPE_CAPABILITY_DROP;
+    event.capabilityDrop = &drop;
     event.header.packageSid = other_sid;
     if (event_matches_target(&event, &context)) {
         goto cleanup;
@@ -414,24 +447,30 @@ static int run_collector(
 ) {
     PSID expected_sid = NULL;
     HANDLE engine = NULL;
-    HANDLE subscription_handle = NULL;
-    FWPM_NET_EVENT_ENUM_TEMPLATE0 event_template;
-    FWPM_FILTER_CONDITION0 event_type_condition;
-    FWPM_NET_EVENT_SUBSCRIPTION0 subscription;
+    HANDLE capability_subscription_handle = NULL;
+    HANDLE classify_drop_subscription_handle = NULL;
+    FWPM_NET_EVENT_ENUM_TEMPLATE0 capability_event_template;
+    FWPM_NET_EVENT_ENUM_TEMPLATE0 classify_drop_event_template;
+    FWPM_FILTER_CONDITION0 capability_event_type_condition;
+    FWPM_FILTER_CONDITION0 classify_drop_event_type_condition;
+    FWPM_NET_EVENT_SUBSCRIPTION0 capability_subscription;
+    FWPM_NET_EVENT_SUBSCRIPTION0 classify_drop_subscription;
     WfpProbeContext context = {0};
     HRESULT derive_result;
     DWORD api_result;
     DWORD close_result = ERROR_SUCCESS;
     FWP_VALUE0 *network_event_option = NULL;
     DWORD option_result = ERROR_SUCCESS;
-    BOOL subscription_ok = FALSE;
+    BOOL capability_subscription_ok = FALSE;
+    BOOL classify_drop_subscription_ok = FALSE;
     BOOL unsubscribe_ok = FALSE;
     BOOL network_events_state_known = FALSE;
     BOOL network_events_collected = FALSE;
     BOOL stop_seen = FALSE;
     BOOL ready_written = FALSE;
     BOOL result_written = FALSE;
-    LONG matched_count = 0;
+    LONG matched_capability_drop_count = 0;
+    LONG matched_classify_drop_count = 0;
     int exit_code = 1;
 
     derive_result = DeriveAppContainerSidFromAppContainerName(
@@ -461,28 +500,51 @@ static int run_collector(
         network_event_option = NULL;
     }
 
-    ZeroMemory(&event_template, sizeof(event_template));
-    ZeroMemory(&event_type_condition, sizeof(event_type_condition));
-    ZeroMemory(&subscription, sizeof(subscription));
+    ZeroMemory(&capability_event_template, sizeof(capability_event_template));
+    ZeroMemory(&classify_drop_event_template, sizeof(classify_drop_event_template));
+    ZeroMemory(&capability_event_type_condition, sizeof(capability_event_type_condition));
+    ZeroMemory(&classify_drop_event_type_condition, sizeof(classify_drop_event_type_condition));
+    ZeroMemory(&capability_subscription, sizeof(capability_subscription));
+    ZeroMemory(&classify_drop_subscription, sizeof(classify_drop_subscription));
     ZeroMemory(&context, sizeof(context));
     context.expected_package_sid = expected_sid;
     context.expected_remote_port = remote_port;
 
-    event_type_condition.fieldKey = FWPM_CONDITION_NET_EVENT_TYPE;
-    event_type_condition.matchType = FWP_MATCH_EQUAL;
-    event_type_condition.conditionValue.type = FWP_UINT32;
-    event_type_condition.conditionValue.uint32 = FWPM_NET_EVENT_TYPE_CAPABILITY_DROP;
-    event_template.numFilterConditions = 1;
-    event_template.filterCondition = &event_type_condition;
-    subscription.enumTemplate = &event_template;
+    capability_event_type_condition.fieldKey = FWPM_CONDITION_NET_EVENT_TYPE;
+    capability_event_type_condition.matchType = FWP_MATCH_EQUAL;
+    capability_event_type_condition.conditionValue.type = FWP_UINT32;
+    capability_event_type_condition.conditionValue.uint32 =
+        FWPM_NET_EVENT_TYPE_CAPABILITY_DROP;
+    capability_event_template.numFilterConditions = 1;
+    capability_event_template.filterCondition = &capability_event_type_condition;
+    capability_subscription.enumTemplate = &capability_event_template;
+
+    classify_drop_event_type_condition.fieldKey = FWPM_CONDITION_NET_EVENT_TYPE;
+    classify_drop_event_type_condition.matchType = FWP_MATCH_EQUAL;
+    classify_drop_event_type_condition.conditionValue.type = FWP_UINT32;
+    classify_drop_event_type_condition.conditionValue.uint32 =
+        FWPM_NET_EVENT_TYPE_CLASSIFY_DROP;
+    classify_drop_event_template.numFilterConditions = 1;
+    classify_drop_event_template.filterCondition = &classify_drop_event_type_condition;
+    classify_drop_subscription.enumTemplate = &classify_drop_event_template;
 
     api_result = FwpmNetEventSubscribe2(
-        engine, &subscription, on_net_event, &context, &subscription_handle
+        engine, &capability_subscription, on_net_event, &context,
+        &capability_subscription_handle
     );
-    if (api_result != ERROR_SUCCESS || subscription_handle == NULL) {
+    capability_subscription_ok = api_result == ERROR_SUCCESS &&
+        capability_subscription_handle != NULL;
+
+    api_result = FwpmNetEventSubscribe2(
+        engine, &classify_drop_subscription, on_net_event, &context,
+        &classify_drop_subscription_handle
+    );
+    classify_drop_subscription_ok = api_result == ERROR_SUCCESS &&
+        classify_drop_subscription_handle != NULL;
+
+    if (!capability_subscription_ok && !classify_drop_subscription_ok) {
         goto cleanup;
     }
-    subscription_ok = TRUE;
     ready_written = write_ascii_file(ready_path, "ready\n");
     if (!ready_written) {
         goto cleanup;
@@ -490,13 +552,21 @@ static int run_collector(
     stop_seen = wait_for_stop(stop_path);
 
 cleanup:
-    if (subscription_handle != NULL && engine != NULL) {
-        /* Unsubscribe drains an executing callback before context/SID release. */
-        api_result = FwpmNetEventUnsubscribe0(engine, subscription_handle);
-        unsubscribe_ok = api_result == ERROR_SUCCESS;
-        subscription_handle = NULL;
-    } else {
-        unsubscribe_ok = TRUE;
+    unsubscribe_ok = TRUE;
+    if (capability_subscription_handle != NULL && engine != NULL) {
+        /* Unsubscribe drains callbacks before shared context/SID release. */
+        api_result = FwpmNetEventUnsubscribe0(engine, capability_subscription_handle);
+        if (api_result != ERROR_SUCCESS) {
+            unsubscribe_ok = FALSE;
+        }
+        capability_subscription_handle = NULL;
+    }
+    if (classify_drop_subscription_handle != NULL && engine != NULL) {
+        api_result = FwpmNetEventUnsubscribe0(engine, classify_drop_subscription_handle);
+        if (api_result != ERROR_SUCCESS) {
+            unsubscribe_ok = FALSE;
+        }
+        classify_drop_subscription_handle = NULL;
     }
     if (engine != NULL) {
         close_result = FwpmEngineClose0(engine);
@@ -506,21 +576,26 @@ cleanup:
         FreeSid(expected_sid);
         expected_sid = NULL;
     }
-    if (subscription_ok && (!stop_seen || !unsubscribe_ok || close_result != ERROR_SUCCESS)) {
+    if ((capability_subscription_ok || classify_drop_subscription_ok) &&
+        (!stop_seen || !unsubscribe_ok || close_result != ERROR_SUCCESS)) {
         unsubscribe_ok = FALSE;
-    } else if (!subscription_ok && close_result != ERROR_SUCCESS) {
+    } else if (close_result != ERROR_SUCCESS) {
         unsubscribe_ok = FALSE;
     }
-    if (!subscription_ok && !ready_written) {
+    if (!capability_subscription_ok && !classify_drop_subscription_ok &&
+        !ready_written) {
         ready_written = write_ascii_file(ready_path, "unavailable\n");
     }
-    matched_count = context.matched_capability_drop_count;
+    matched_capability_drop_count = context.matched_capability_drop_count;
+    matched_classify_drop_count = context.matched_classify_drop_count;
     result_written = write_result(
-        result_path, subscription_ok, unsubscribe_ok,
-        network_events_state_known, network_events_collected, matched_count
+        result_path, capability_subscription_ok, classify_drop_subscription_ok,
+        unsubscribe_ok, network_events_state_known, network_events_collected,
+        matched_capability_drop_count, matched_classify_drop_count
     );
     if (result_written && ready_written && close_result == ERROR_SUCCESS &&
-        (!subscription_ok || (stop_seen && unsubscribe_ok))) {
+        (!(capability_subscription_ok || classify_drop_subscription_ok) ||
+         (stop_seen && unsubscribe_ok))) {
         exit_code = 0;
     }
     return exit_code;

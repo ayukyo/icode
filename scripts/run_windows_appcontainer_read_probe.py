@@ -76,24 +76,33 @@ def _format_network_error(value: object) -> str:
     return "unknown"
 
 
-def _classify_wfp_capability_drop_receipt(
+def _classify_wfp_target_drop_receipt(
     receipt: object, *, collector_exit_code: int | None,
 ) -> str:
-    """Attribute only a completed, unsubscribed native exact-match receipt."""
+    """Attribute only completed exact capability/classify-drop evidence."""
     if (
         type(collector_exit_code) is not int
         or collector_exit_code != 0
         or not isinstance(receipt, dict)
-        or receipt.get("schema_version") != 2
-        or receipt.get("subscription_ok") is not True
+        or receipt.get("schema_version") != 3
         or receipt.get("unsubscribe_ok") is not True
         or receipt.get("network_events_collected") is not True
+        or type(receipt.get("capability_subscription_ok")) is not bool
+        or type(receipt.get("classify_drop_subscription_ok")) is not bool
     ):
         return "evidence_unavailable"
-    match_count = receipt.get("matched_capability_drop_count")
-    if type(match_count) is not int or not 1 <= match_count <= 0xFFFF:
+    capability_count = receipt.get("matched_capability_drop_count")
+    classify_count = receipt.get("matched_classify_drop_count")
+    if (
+        type(capability_count) is not int or not 0 <= capability_count <= 0xFFFF
+        or type(classify_count) is not int or not 0 <= classify_count <= 0xFFFF
+    ):
         return "evidence_unavailable"
-    return "capability_drop_attributed"
+    if receipt["capability_subscription_ok"] and capability_count > 0:
+        return "capability_drop_attributed"
+    if receipt["classify_drop_subscription_ok"] and classify_count > 0:
+        return "classify_drop_attributed"
+    return "evidence_unavailable"
 
 
 def _wfp_observer_diagnostic_summary(
@@ -120,18 +129,23 @@ def _wfp_observer_diagnostic_summary(
             ready_state = "missing"
 
     receipt_dict = receipt if isinstance(receipt, dict) else {}
-    matched_count = receipt_dict.get("matched_capability_drop_count")
-    if type(matched_count) is not int or not 0 <= matched_count <= 0xFFFF:
-        matched_count = None
+    def bounded_count(key: str) -> int | None:
+        value = receipt_dict.get(key)
+        return value if type(value) is int and 0 <= value <= 0xFFFF else None
+
     return {
         "started": process_started is True,
         "ready_state": ready_state,
         "collector_exit_code": (
             collector_exit_code if type(collector_exit_code) is int else None
         ),
-        "subscription_ok": (
-            receipt_dict.get("subscription_ok")
-            if type(receipt_dict.get("subscription_ok")) is bool else None
+        "capability_subscription_ok": (
+            receipt_dict.get("capability_subscription_ok")
+            if type(receipt_dict.get("capability_subscription_ok")) is bool else None
+        ),
+        "classify_drop_subscription_ok": (
+            receipt_dict.get("classify_drop_subscription_ok")
+            if type(receipt_dict.get("classify_drop_subscription_ok")) is bool else None
         ),
         "unsubscribe_ok": (
             receipt_dict.get("unsubscribe_ok")
@@ -141,7 +155,8 @@ def _wfp_observer_diagnostic_summary(
             receipt_dict.get("network_events_collected")
             if type(receipt_dict.get("network_events_collected")) is bool else None
         ),
-        "matched_capability_drop_count": matched_count,
+        "matched_capability_drop_count": bounded_count("matched_capability_drop_count"),
+        "matched_classify_drop_count": bounded_count("matched_classify_drop_count"),
     }
 
 
@@ -783,8 +798,8 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                 f"error:{_format_network_error(receipt.get('network_error'))}"
             )
             print(
-                "  wfp_capability_drop_evidence="
-                f"{_classify_wfp_capability_drop_receipt(wfp_receipt, collector_exit_code=wfp_exit_code)}"
+                "  wfp_target_drop_evidence="
+                f"{_classify_wfp_target_drop_receipt(wfp_receipt, collector_exit_code=wfp_exit_code)}"
             )
             print(
                 "  wfp_observer_diagnostics="
