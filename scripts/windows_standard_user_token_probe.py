@@ -591,7 +591,7 @@ def _safe_standard_user_probe_error(exc: Exception) -> str:
     if re.fullmatch(r"[a-z_]+:winerror=\d+", safe):
         return safe
     if len(safe) <= 400 and re.fullmatch(
-        r"standard_user_restricted_child_failed:[a-z_+]+"
+        r"standard_user_restricted_child_failed:[a-z0-9_+]+"
         r"(?::winerror=\d+)?(?::[A-Za-z0-9_+.-]{1,120})?",
         safe,
     ):

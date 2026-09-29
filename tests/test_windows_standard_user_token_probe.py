@@ -1171,6 +1171,19 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             diagnostic,
         )
 
+    def test_parent_error_filter_preserves_numeric_access_mask_receipt(self) -> None:
+        matrix = "mask_z_d5+r_d5+w_d5+rw_d5+s_d5+rs_d5+ws_d5+all_d5"
+        diagnostic = (
+            "standard_user_restricted_child_failed:"
+            "client_open_access_denied+token_process+logon_enabled+"
+            "self_access_allow+" + matrix + ":winerror=5"
+        )
+
+        self.assertEqual(
+            token_probe._safe_standard_user_probe_error(RuntimeError(diagnostic)),
+            diagnostic,
+        )
+
     def test_parent_error_filter_keeps_arbitrary_details_private(self) -> None:
         self.assertEqual(
             token_probe._safe_standard_user_probe_error(
