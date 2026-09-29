@@ -2,6 +2,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <netfw.h>
 
 #include <errno.h>
 #include <stdint.h>
@@ -50,9 +51,19 @@ typedef struct ProbeReceipt {
     BOOL marker_create_denied;
     BOOL network_denied;
     int network_error;
+    BOOL network_connect_attempted;
+    BOOL network_connected;
+    BOOL network_isolation_diagnostic_ok;
+    DWORD network_isolation_status;
+    DWORD network_isolation_error_type;
     BOOL report_written;
     unsigned completed_stage;
 } ProbeReceipt;
+
+typedef DWORD (WINAPI *NetworkIsolationDiagnoseConnectFailureAndGetInfoFn)(
+    LPCWSTR server_name,
+    NETISO_ERROR_TYPE *network_isolation_error
+);
 
 static BOOL parse_handle(const wchar_t *value, HANDLE *handle_out) {
     wchar_t *end = NULL;
@@ -222,7 +233,52 @@ static BOOL marker_create_is_denied(const wchar_t *path) {
     return error == ERROR_ACCESS_DENIED;
 }
 
-static BOOL network_connect_is_denied(const ProbeArguments *arguments, int *error_out) {
+static BOOL diagnose_missing_network_capability(
+    const wchar_t *server_name,
+    BOOL *diagnostic_ok_out,
+    DWORD *diagnostic_status_out,
+    DWORD *error_type_out
+) {
+    HMODULE firewall_api;
+    NetworkIsolationDiagnoseConnectFailureAndGetInfoFn diagnose;
+    NETISO_ERROR_TYPE error_type = NETISO_ERROR_TYPE_NONE;
+    DWORD status;
+
+    if (server_name == NULL || diagnostic_ok_out == NULL ||
+        diagnostic_status_out == NULL || error_type_out == NULL) {
+        return FALSE;
+    }
+    *diagnostic_ok_out = FALSE;
+    *diagnostic_status_out = ERROR_INVALID_PARAMETER;
+    *error_type_out = NETISO_ERROR_TYPE_NONE;
+    firewall_api = LoadLibraryW(L"FirewallAPI.dll");
+    if (firewall_api == NULL) {
+        *diagnostic_status_out = GetLastError();
+        return FALSE;
+    }
+    diagnose = (NetworkIsolationDiagnoseConnectFailureAndGetInfoFn)GetProcAddress(
+        firewall_api, "NetworkIsolationDiagnoseConnectFailureAndGetInfo"
+    );
+    if (diagnose == NULL) {
+        *diagnostic_status_out = GetLastError();
+        FreeLibrary(firewall_api);
+        return FALSE;
+    }
+
+    status = diagnose(server_name, &error_type);
+    *diagnostic_status_out = status;
+    FreeLibrary(firewall_api);
+    *diagnostic_ok_out = status == ERROR_SUCCESS;
+    *error_type_out = (DWORD)error_type;
+    return *diagnostic_ok_out && error_type == NETISO_ERROR_TYPE_PRIVATE_NETWORK;
+}
+
+static BOOL network_connect_is_denied(
+    const ProbeArguments *arguments,
+    int *error_out,
+    BOOL *connect_attempted_out,
+    BOOL *connected_out
+) {
     WSADATA winsock_data;
     SOCKET client = INVALID_SOCKET;
     struct sockaddr_in address;
@@ -239,6 +295,13 @@ static BOOL network_connect_is_denied(const ProbeArguments *arguments, int *erro
     BOOL denied = FALSE;
     BOOL connected = FALSE;
 
+    if (arguments == NULL || arguments->network_address == NULL || error_out == NULL ||
+        connect_attempted_out == NULL || connected_out == NULL) {
+        return FALSE;
+    }
+    *error_out = 0;
+    *connect_attempted_out = FALSE;
+    *connected_out = FALSE;
     startup_result = WSAStartup(MAKEWORD(2, 2), &winsock_data);
     if (startup_result != 0) {
         *error_out = startup_result;
@@ -257,6 +320,7 @@ static BOOL network_connect_is_denied(const ProbeArguments *arguments, int *erro
         } else if (ioctlsocket(client, FIONBIO, &nonblocking) == SOCKET_ERROR) {
             error = WSAGetLastError();
         } else {
+            *connect_attempted_out = TRUE;
             connect_result = connect(client, (const struct sockaddr *)&address, sizeof(address));
             if (connect_result == SOCKET_ERROR) {
                 error = WSAGetLastError();
@@ -307,11 +371,12 @@ static BOOL network_connect_is_denied(const ProbeArguments *arguments, int *erro
     if (client != INVALID_SOCKET) closesocket(client);
     WSACleanup();
     *error_out = error;
+    *connected_out = connected;
     return denied;
 }
 
 static BOOL write_receipt(const wchar_t *path, ProbeReceipt *receipt, unsigned stage) {
-    char json[768];
+    char json[1024];
     int length;
     DWORD bytes_written = 0;
     HANDLE output;
@@ -322,7 +387,11 @@ static BOOL write_receipt(const wchar_t *path, ProbeReceipt *receipt, unsigned s
         "\"handle_write_denied\":%s,\"source_path_denied\":%s,"
         "\"sibling_path_denied\":%s,\"outside_path_denied\":%s,"
         "\"profile_path_denied\":%s,\"marker_create_denied\":%s,"
-        "\"network_denied\":%s,\"network_error\":%d,\"stage\":%u}\n",
+        "\"network_denied\":%s,\"network_error\":%d,"
+        "\"network_connect_attempted\":%s,\"network_connected\":%s,"
+        "\"network_isolation_diagnostic_ok\":%s,"
+        "\"network_isolation_status\":%lu,"
+        "\"network_isolation_error_type\":%lu,\"stage\":%u}\n",
         receipt->token_is_appcontainer ? "true" : "false",
         receipt->handle_read_ok ? "true" : "false",
         receipt->handle_write_denied ? "true" : "false",
@@ -333,6 +402,11 @@ static BOOL write_receipt(const wchar_t *path, ProbeReceipt *receipt, unsigned s
         receipt->marker_create_denied ? "true" : "false",
         receipt->network_denied ? "true" : "false",
         receipt->network_error,
+        receipt->network_connect_attempted ? "true" : "false",
+        receipt->network_connected ? "true" : "false",
+        receipt->network_isolation_diagnostic_ok ? "true" : "false",
+        (unsigned long)receipt->network_isolation_status,
+        (unsigned long)receipt->network_isolation_error_type,
         stage
     );
     if (length <= 0 || (size_t)length >= sizeof(json)) return FALSE;
@@ -385,7 +459,18 @@ int wmain(int argc, wchar_t **argv) {
         arguments.report_path, &receipt, receipt.completed_stage
     );
 
-    receipt.network_denied = network_connect_is_denied(&arguments, &receipt.network_error);
+    receipt.network_denied = network_connect_is_denied(
+        &arguments, &receipt.network_error,
+        &receipt.network_connect_attempted, &receipt.network_connected
+    );
+    if (receipt.network_connect_attempted && !receipt.network_connected) {
+        (void)diagnose_missing_network_capability(
+            arguments.network_address,
+            &receipt.network_isolation_diagnostic_ok,
+            &receipt.network_isolation_status,
+            &receipt.network_isolation_error_type
+        );
+    }
     receipt.completed_stage = 5;
     receipt.report_written = write_receipt(
         arguments.report_path, &receipt, receipt.completed_stage
@@ -395,7 +480,11 @@ int wmain(int argc, wchar_t **argv) {
         receipt.handle_write_denied && receipt.source_path_denied &&
         receipt.sibling_path_denied && receipt.outside_path_denied &&
         receipt.profile_path_denied && receipt.marker_create_denied &&
-        receipt.network_denied && receipt.network_error == WSAEACCES &&
+        receipt.network_connect_attempted && !receipt.network_connected &&
+        (receipt.network_error == WSAEACCES || receipt.network_error == WSAETIMEDOUT) &&
+        receipt.network_isolation_diagnostic_ok &&
+        receipt.network_isolation_status == ERROR_SUCCESS &&
+        receipt.network_isolation_error_type == NETISO_ERROR_TYPE_PRIVATE_NETWORK &&
         receipt.report_written;
     return all_checks ? 0 : 1;
 }

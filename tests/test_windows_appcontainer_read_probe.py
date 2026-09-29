@@ -24,6 +24,59 @@ from scripts.run_windows_appcontainer_read_probe import (
 
 
 class TestWindowsAppContainerReadProbe(unittest.TestCase):
+    def test_network_isolation_denial_requires_exact_native_and_host_evidence(self) -> None:
+        verify = getattr(
+            probe_module, "_network_isolation_denial_verified", None,
+        )
+        self.assertTrue(callable(verify), "network isolation denial verifier is missing")
+        private_network_error = getattr(
+            probe_module, "_NETISO_ERROR_TYPE_PRIVATE_NETWORK", 1,
+        )
+        receipt = {
+            "token_is_appcontainer": True,
+            "network_connect_attempted": True,
+            "network_connected": False,
+            "network_error": 10060,
+            "network_isolation_diagnostic_ok": True,
+            "network_isolation_status": 0,
+            "network_isolation_error_type": private_network_error,
+        }
+
+        self.assertTrue(
+            verify(receipt, host_listener_control=True, no_network_connection=True),
+        )
+
+        invalid_receipts = (
+            {**receipt, "token_is_appcontainer": False},
+            {**receipt, "network_connect_attempted": False},
+            {**receipt, "network_connected": True},
+            {**receipt, "network_error": 10061},
+            {**receipt, "network_isolation_diagnostic_ok": False},
+            {**receipt, "network_isolation_status": 5},
+            {**receipt, "network_isolation_status": True},
+            {**receipt, "network_isolation_error_type": 0},
+            {**receipt, "network_isolation_error_type": True},
+        )
+        for invalid in invalid_receipts:
+            with self.subTest(receipt=invalid):
+                self.assertFalse(
+                    verify(invalid, host_listener_control=True, no_network_connection=True),
+                )
+
+        self.assertFalse(
+            verify(receipt, host_listener_control=False, no_network_connection=True),
+        )
+        self.assertFalse(
+            verify(receipt, host_listener_control=True, no_network_connection=False),
+        )
+        self.assertTrue(
+            verify(
+                {**receipt, "network_error": 10013},
+                host_listener_control=True,
+                no_network_connection=True,
+            ),
+        )
+
     def test_network_error_diagnostic_accepts_only_bounded_integer_codes(self) -> None:
         self.assertEqual(_format_network_error(10013), "10013")
         self.assertEqual(_format_network_error(10051), "10051")

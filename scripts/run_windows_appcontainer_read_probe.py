@@ -37,6 +37,9 @@ _SE_DACL_AUTO_INHERITED = 0x0400
 _SE_DACL_PROTECTED = 0x1000
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 _ERROR_INSUFFICIENT_BUFFER = 122
+_ERROR_SUCCESS = 0
+_NETISO_ERROR_TYPE_PRIVATE_NETWORK = 1
+_NETWORK_ISOLATION_FAILURE_CODES = frozenset({10013, 10060})
 _EXPECTED_SOURCE_CONTENTS = b"ICODE-READ-HANDLE-PROBE-v1\n"
 _DISPOSABLE_WORKSPACE_PREFIX = "icode-appcontainer-read-handle-"
 _SID_PATTERN = re.compile(r"(?i)(?<![A-Z0-9])S-\d+(?:-\d+)+(?![A-Z0-9])")
@@ -74,6 +77,33 @@ def _format_network_error(value: object) -> str:
     if type(value) is int and 0 <= value <= 0xFFFF:
         return str(value)
     return "unknown"
+
+
+def _network_isolation_denial_verified(
+    receipt: object, *, host_listener_control: bool, no_network_connection: bool,
+) -> bool:
+    """Require a native missing-capability diagnosis and a failed live-listener probe."""
+    if not isinstance(receipt, dict):
+        return False
+    network_error = receipt.get("network_error")
+    isolation_status = receipt.get("network_isolation_status")
+    isolation_error = receipt.get("network_isolation_error_type")
+    if (
+        receipt.get("token_is_appcontainer") is not True
+        or receipt.get("network_connect_attempted") is not True
+        or receipt.get("network_connected") is not False
+        or receipt.get("network_isolation_diagnostic_ok") is not True
+        or type(isolation_status) is not int
+        or isolation_status != _ERROR_SUCCESS
+        or type(network_error) is not int
+        or network_error not in _NETWORK_ISOLATION_FAILURE_CODES
+        or type(isolation_error) is not int
+        or isolation_error != _NETISO_ERROR_TYPE_PRIVATE_NETWORK
+        or host_listener_control is not True
+        or no_network_connection is not True
+    ):
+        return False
+    return True
 
 
 def _classify_wfp_target_drop_receipt(
@@ -691,7 +721,8 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                 listener.bind(("127.0.0.1", 0))
                 listener.listen(2)
                 listener.settimeout(3)
-                if not _host_listener_is_live(listener):
+                host_listener_control = _host_listener_is_live(listener)
+                if not host_listener_control:
                     print("host_listener_control=false")
                     return 1
                 network_port = listener.getsockname()[1]
@@ -748,6 +779,7 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                 else:
                     unexpected_network_client = True
                     accepted.close()
+                no_network_connection = not unexpected_network_client
 
             if not report.is_file():
                 receipt: dict[str, object] = {}
@@ -777,12 +809,13 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                 "outside_path_denied": receipt.get("outside_path_denied") is True,
                 "profile_path_denied": receipt.get("profile_path_denied") is True,
                 "marker_create_denied": receipt.get("marker_create_denied") is True,
-                "network_denied": (
-                    receipt.get("network_denied") is True
-                    and receipt.get("network_error") == 10013
+                "network_isolation_denied": _network_isolation_denial_verified(
+                    receipt,
+                    host_listener_control=host_listener_control,
+                    no_network_connection=no_network_connection,
                 ),
-                "host_listener_control": True,
-                "no_network_connection": not unexpected_network_client,
+                "host_listener_control": host_listener_control,
+                "no_network_connection": no_network_connection,
                 "protected_content_unchanged": file_digests_before == file_digests_after,
                 "protected_dacls_unchanged": all(
                     _dacl_state_equal(
@@ -810,8 +843,13 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
             workspace_dacl_after = dacl_snapshots_after[workspace]
             print(
                 "  native_network_receipt="
-                f"denied:{receipt.get('network_denied') is True},"
-                f"error:{_format_network_error(receipt.get('network_error'))}"
+                f"connect_attempted:{receipt.get('network_connect_attempted') is True},"
+                f"connected:{receipt.get('network_connected') is True},"
+                f"winsock_error:{_format_network_error(receipt.get('network_error'))},"
+                f"winsock_access_denied:{receipt.get('network_error') == 10013},"
+                f"isolation_diagnostic_ok:{receipt.get('network_isolation_diagnostic_ok') is True},"
+                f"isolation_status:{_format_network_error(receipt.get('network_isolation_status'))},"
+                f"isolation_error_type:{_format_network_error(receipt.get('network_isolation_error_type'))}"
             )
             print(
                 "  wfp_target_drop_evidence="
