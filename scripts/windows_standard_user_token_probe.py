@@ -799,6 +799,101 @@ def runner_pipe_open_without_overlapped_probe() -> tuple[bool, str]:
         return False, "setup_invalid_state"
 
 
+def runner_pipe_open_with_default_dacl_probe() -> tuple[bool, str]:
+    """Compare self-open with the token's default DACL on a disposable pipe.
+
+    Only the pipe security descriptor differs from the existing self-pipe
+    diagnostic. The random local pipe carries no data; it keeps the same
+    first-instance, remote-client rejection, client access mask, SQOS, and
+    overlapped flags as the runner transport. This is diagnostic-only and must
+    never be used by the production pipe factory.
+    """
+    if sys.platform != "win32":
+        return False, "unsupported_platform"
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcessId.argtypes = []
+        api.kernel.GetCurrentProcessId.restype = wintypes.DWORD
+        current_pid = int(api.kernel.GetCurrentProcessId())
+        if current_pid <= 0:
+            return False, "server_pid_unavailable"
+
+        pipe_name = new_runner_pipe_name()
+        server_handle = api.kernel.CreateNamedPipeW(
+            pipe_name,
+            _runner_pipe.RUNNER_PIPE_OPEN_MODE,
+            _runner_pipe.RUNNER_PIPE_MODE,
+            _runner_pipe.RUNNER_PIPE_MAX_INSTANCES,
+            _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+            _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+            0,
+            None,
+        )
+        if _runner_pipe._handle_is_invalid(server_handle):
+            raise _runner_pipe._winerror("create_default_dacl_probe_pipe")
+
+        with _runner_pipe.RunnerPipeServer(
+            name=pipe_name, handle=server_handle, api=api,
+        ) as pipe:
+            if not api.kernel.WaitNamedPipeW(pipe.name, 2_000):
+                if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
+                    return False, "client_wait_access_denied"
+                return False, "client_wait_failed"
+
+            client = api.kernel.CreateFileW(
+                pipe.name,
+                PIPE_CLIENT_ACCESS_MASK,
+                0,
+                None,
+                _runner_pipe._OPEN_EXISTING,
+                _runner_pipe.FILE_FLAG_OVERLAPPED
+                | _runner_pipe._SECURITY_SQOS_PRESENT
+                | _runner_pipe._SECURITY_IMPERSONATION,
+                None,
+            )
+            if _runner_pipe._handle_is_invalid(client):
+                if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
+                    return False, "client_open_access_denied"
+                return False, "client_open_failed"
+
+            try:
+                server_pid = wintypes.DWORD(0)
+                if not api.kernel.GetNamedPipeServerProcessId(
+                    client, ctypes.byref(server_pid),
+                ) or server_pid.value == 0:
+                    return False, "server_pid_unavailable"
+                if server_pid.value != current_pid:
+                    return False, "server_pid_mismatch"
+                pipe._connect(2_000)
+                if not pipe._connected:
+                    return False, "server_connect_failed"
+                client_pid = wintypes.DWORD(0)
+                if not api.kernel.GetNamedPipeClientProcessId(
+                    pipe._handle, ctypes.byref(client_pid),
+                ) or client_pid.value == 0:
+                    return False, "client_pid_unavailable"
+                if client_pid.value != current_pid:
+                    return False, "client_pid_mismatch"
+                return True, "client_opened_with_default_dacl"
+            except TimeoutError:
+                return False, "server_connect_timeout"
+            except OSError:
+                return False, "server_connect_failed"
+            finally:
+                if not api.kernel.CloseHandle(client):
+                    raise _runner_pipe._winerror(
+                        "close_default_dacl_probe_client",
+                    )
+    except PermissionError:
+        return False, "setup_access_denied"
+    except TimeoutError:
+        return False, "setup_timeout"
+    except OSError:
+        return False, "setup_failed"
+    except (RuntimeError, ValueError):
+        return False, "setup_invalid_state"
+
+
 class _SID_AND_ATTRIBUTES(ctypes.Structure):
     _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
 
@@ -2138,6 +2233,7 @@ def _run_child_mode(
     wrong_pid_probe_state: str | None = None
     no_sync_probe_state: str | None = None
     no_overlapped_probe_state: str | None = None
+    default_dacl_probe_state: str | None = None
     try:
         report = Path(report_path)
         temp = os.environ.get("TEMP", "")
@@ -2189,6 +2285,18 @@ def _run_child_mode(
                     and no_overlapped_detail == "client_open_access_denied"
                 ):
                     no_overlapped_probe_state = "noovl_denied"
+                    default_dacl_opened, default_dacl_detail = (
+                        runner_pipe_open_with_default_dacl_probe()
+                    )
+                    if default_dacl_opened is True:
+                        default_dacl_probe_state = "default_dacl_ok"
+                    elif (
+                        type(default_dacl_detail) is str
+                        and default_dacl_detail == "client_open_access_denied"
+                    ):
+                        default_dacl_probe_state = "default_dacl_denied"
+                    else:
+                        default_dacl_probe_state = "default_dacl_failed"
                 else:
                     no_overlapped_probe_state = "noovl_failed"
             else:
@@ -2227,7 +2335,12 @@ def _run_child_mode(
                     context_parts = [diagnostic]
                     if wrong_pid_probe_state is not None:
                         context_parts.append(wrong_pid_probe_state)
-                    if no_overlapped_probe_state is not None:
+                    if default_dacl_probe_state is not None:
+                        # This final A/B only runs after the self, no-SYNCHRONIZE,
+                        # and no-OVERLAPPED probes all returned access denied.
+                        # Keep the bounded receipt focused on the changed DACL.
+                        context_parts.append(default_dacl_probe_state)
+                    elif no_overlapped_probe_state is not None:
                         combined_probe_state = {
                             "noovl_ok": "nosync_noovl_ok",
                             "noovl_denied": "nosync_noovl_denied",
