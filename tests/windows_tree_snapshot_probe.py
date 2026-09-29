@@ -796,9 +796,11 @@ def collect_extd_directory_entries(
 
     The caller supplies a test-only Win32 page reader bound to one open handle.
     A fresh scan starts with the restart information class; subsequent calls
-    continue with the ordinary information class. Only ERROR_NO_MORE_FILES is
-    accepted as the end marker. This does not lock the namespace or make the
-    returned entries a point-in-time snapshot.
+    continue with the ordinary information class. EOF candidates are limited
+    to ERROR_NO_MORE_FILES or a strictly zero-filled successful response;
+    one nonzero restart page with no usable entries may continue once. This
+    does not lock the namespace or make the returned entries a point-in-time
+    snapshot.
     """
 
     if not callable(read_page):
@@ -845,6 +847,18 @@ def collect_extd_directory_entries(
 
         page = parse_file_id_extd_directory_info(payload)
         if not page:
+            if (
+                information_class
+                == _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS
+                and api_calls == 1
+                and not entries
+                and any(payload)
+            ):
+                # The restart response can contain only dot entries, which
+                # the parser intentionally filters. Continue once with the
+                # ordinary class instead of treating it as EOF or looping.
+                information_class = _FILE_ID_EXTD_DIRECTORY_INFO_CLASS
+                continue
             if not any(payload):
                 if api_calls == 1 and not entries:
                     return ()

@@ -369,6 +369,36 @@ class TestFileIdExtdDirectoryPagination(unittest.TestCase):
         self.assertEqual([entry.name for entry in entries], ["one.txt"])
         self.assertEqual(pages, [])
 
+    def test_collector_continues_after_filtered_restart_page(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        collect = getattr(module, "collect_extd_directory_entries", None)
+        self.assertTrue(callable(collect), "bounded directory page collector is missing")
+        dot_page = _extd_entry_record(
+            ".", file_id=bytes.fromhex("00000000000000000000000000000002"),
+        )
+        file_page = _extd_entry_record(
+            "one.txt", file_id=bytes.fromhex("00000000000000000000000000000003"),
+        )
+        pages = [(True, 0, dot_page), (True, 0, file_page), (False, 18, b"")]
+        information_classes = []
+
+        def read_page(information_class: int, _size: int):
+            information_classes.append(information_class)
+            return pages.pop(0)
+
+        entries = collect(read_page, buffer_bytes=512)
+
+        self.assertEqual([entry.name for entry in entries], ["one.txt"])
+        self.assertEqual(
+            information_classes,
+            [
+                module._FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS,
+                module._FILE_ID_EXTD_DIRECTORY_INFO_CLASS,
+                module._FILE_ID_EXTD_DIRECTORY_INFO_CLASS,
+            ],
+        )
+        self.assertEqual(pages, [])
+
     def test_collector_rejects_unknown_errors_duplicate_names_and_empty_continuation(self) -> None:
         module = importlib.import_module("tests.windows_tree_snapshot_probe")
         collect = getattr(module, "collect_extd_directory_entries", None)
@@ -404,16 +434,28 @@ class TestFileIdExtdDirectoryPagination(unittest.TestCase):
                 "directory_enumeration_no_progress",
             ),
             (
-                [(
-                    True,
-                    0,
-                    _extd_entry_record(
-                        ".",
-                        file_id=bytes.fromhex(
-                            "00000000000000000000000000000002",
+                [
+                    (
+                        True,
+                        0,
+                        _extd_entry_record(
+                            ".",
+                            file_id=bytes.fromhex(
+                                "00000000000000000000000000000002",
+                            ),
                         ),
                     ),
-                )],
+                    (
+                        True,
+                        0,
+                        _extd_entry_record(
+                            "..",
+                            file_id=bytes.fromhex(
+                                "00000000000000000000000000000003",
+                            ),
+                        ),
+                    ),
+                ],
                 "directory_enumeration_no_progress",
             ),
             (
