@@ -1017,8 +1017,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertTrue(runner_probe_succeeded(
             "runner_standard_user=PASS;server_pid_mismatch=PASS;"
             "child_restricted=PASS;child_non_admin=PASS;"
-            "child_identity=PASS;unreadable_executable=DENIED;"
-            "job_assignment=PASS;exit=PASS",
+            "child_identity=PASS;job_assignment=PASS;exit=PASS",
         ))
         self.assertFalse(runner_probe_succeeded(
             "runner_standard_user=PASS;server_pid_mismatch=PASS;"
@@ -1054,7 +1053,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertIsNone(token_probe.runner_report_failure_detail(
             "runner_standard_user=PASS;server_pid_mismatch=PASS;child_restricted=PASS;"
             "child_non_admin=PASS;child_identity=PASS;"
-            "unreadable_executable=DENIED;job_assignment=PASS;exit=PASS",
+            "job_assignment=PASS;exit=PASS",
             0,
         ))
         self.assertEqual(
@@ -1295,7 +1294,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         success = (
             "runner_standard_user=PASS;server_pid_mismatch=PASS;"
             "child_restricted=PASS;child_non_admin=PASS;child_identity=PASS;"
-            "unreadable_executable=DENIED;job_assignment=PASS;exit=PASS"
+            "job_assignment=PASS;exit=PASS"
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             report = Path(temporary_directory) / "result.txt"
@@ -1425,6 +1424,267 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             ),
             (None, True),
         )
+
+    def test_unreadable_executable_probe_runs_as_target_user_and_checks_exact_denial(self) -> None:
+        probe = getattr(
+            token_probe, "attempt_unreadable_executable_launch", None,
+        )
+        self.assertTrue(callable(probe), "missing direct standard-user no-RX probe")
+
+        with tempfile.TemporaryDirectory() as raw:
+            scratch = Path(raw)
+            executable = scratch / "no-rx" / "cmd.exe"
+            executable.parent.mkdir()
+            executable.write_bytes(b"private denied executable")
+            marker = scratch / "marker.txt"
+            calls: list[tuple[object, ...]] = []
+            cleared: list[bool] = []
+
+            def create_process(*args: object) -> int:
+                calls.append(args)
+                process_info = ctypes.cast(
+                    args[-1], ctypes.POINTER(token_probe._PROCESS_INFORMATION),
+                ).contents
+                self.assertFalse(process_info.hProcess)
+                self.assertFalse(process_info.hThread)
+                self.assertEqual(process_info.dwProcessId, 0)
+                self.assertEqual(process_info.dwThreadId, 0)
+                return 0
+
+            kernel = mock.Mock()
+            with mock.patch.object(
+                token_probe, "build_runner_environment_block",
+                return_value="SystemRoot=C:\\Windows\0\0",
+            ), mock.patch.object(
+                token_probe.ctypes, "get_last_error", return_value=5, create=True,
+            ):
+                result = probe(
+                    create_process=create_process,
+                    kernel=kernel,
+                    username="icodeprobe_1234",
+                    password_buffer=ctypes.create_unicode_buffer("probe-only"),
+                    python_executable=r"C:\Python\python.exe",
+                    executable_path=executable,
+                    marker_path=marker,
+                    scratch_path=scratch,
+                    system_root=r"C:\\Windows",
+                    clear_last_error=lambda: cleared.append(True),
+                )
+
+            self.assertEqual(result, (False, 5, False, False, False))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][0], "icodeprobe_1234")
+            self.assertEqual(calls[0][1], ".")
+            self.assertEqual(calls[0][4], str(executable))
+            self.assertTrue(calls[0][6] & token_probe._CREATE_SUSPENDED)
+            self.assertEqual(cleared, [True])
+            kernel.WaitForSingleObject.assert_not_called()
+            kernel.TerminateProcess.assert_not_called()
+            kernel.CloseHandle.assert_not_called()
+            self.assertFalse(marker.exists())
+
+    def test_unreadable_executable_failed_call_with_output_is_untrusted_residual(self) -> None:
+        probe = getattr(
+            token_probe, "attempt_unreadable_executable_launch", None,
+        )
+        self.assertTrue(callable(probe), "missing direct standard-user no-RX probe")
+
+        with tempfile.TemporaryDirectory() as raw:
+            scratch = Path(raw)
+            executable = scratch / "cmd.exe"
+            executable.write_bytes(b"fixture")
+            marker = scratch / "marker.txt"
+
+            def create_process(*args: object) -> int:
+                process_info = ctypes.cast(
+                    args[-1], ctypes.POINTER(token_probe._PROCESS_INFORMATION),
+                ).contents
+                process_info.dwProcessId = 4321
+                return 0
+
+            kernel = mock.Mock()
+            with (
+                mock.patch.object(
+                    token_probe, "build_runner_environment_block",
+                    return_value="SystemRoot=C:\\Windows\0\0",
+                ),
+                mock.patch.object(
+                    token_probe.ctypes, "get_last_error", return_value=5, create=True,
+                ),
+            ):
+                result = probe(
+                    create_process=create_process,
+                    kernel=kernel,
+                    username="icodeprobe_1234",
+                    password_buffer=ctypes.create_unicode_buffer("probe-only"),
+                    python_executable=r"C:\Python\python.exe",
+                    executable_path=executable,
+                    marker_path=marker,
+                    scratch_path=scratch,
+                    system_root=r"C:\\Windows",
+                    clear_last_error=lambda: None,
+                )
+
+        self.assertEqual(result, (False, 5, True, False, True))
+        kernel.WaitForSingleObject.assert_not_called()
+        kernel.TerminateProcess.assert_not_called()
+        kernel.CloseHandle.assert_not_called()
+
+    def test_unreadable_executable_unexpected_success_terminates_by_returned_handle(self) -> None:
+        probe = getattr(
+            token_probe, "attempt_unreadable_executable_launch", None,
+        )
+        self.assertTrue(callable(probe), "missing direct standard-user no-RX probe")
+
+        with tempfile.TemporaryDirectory() as raw:
+            scratch = Path(raw)
+            executable = scratch / "cmd.exe"
+            executable.write_bytes(b"fixture")
+            marker = scratch / "marker.txt"
+            closed: list[int] = []
+
+            def create_process(*args: object) -> int:
+                process_info = ctypes.cast(
+                    args[-1], ctypes.POINTER(token_probe._PROCESS_INFORMATION),
+                ).contents
+                process_info.hProcess = 100
+                process_info.hThread = 101
+                process_info.dwProcessId = 4321
+                process_info.dwThreadId = 4322
+                return 1
+
+            kernel = mock.Mock()
+            kernel.WaitForSingleObject.side_effect = [
+                token_probe._WAIT_TIMEOUT, token_probe._WAIT_OBJECT_0,
+            ]
+            kernel.TerminateProcess.return_value = 1
+            kernel.CloseHandle.side_effect = lambda handle: closed.append(handle) or 1
+            with (
+                mock.patch.object(
+                    token_probe, "build_runner_environment_block",
+                    return_value="SystemRoot=C:\\Windows\0\0",
+                ),
+                mock.patch.object(
+                    token_probe.ctypes, "get_last_error", return_value=0, create=True,
+                ),
+            ):
+                result = probe(
+                    create_process=create_process,
+                    kernel=kernel,
+                    username="icodeprobe_1234",
+                    password_buffer=ctypes.create_unicode_buffer("probe-only"),
+                    python_executable=r"C:\Python\python.exe",
+                    executable_path=executable,
+                    marker_path=marker,
+                    scratch_path=scratch,
+                    system_root=r"C:\\Windows",
+                    clear_last_error=lambda: None,
+                )
+
+        self.assertEqual(result, (True, 0, True, False, False))
+        kernel.TerminateProcess.assert_called_once_with(100, 1)
+        self.assertEqual(closed, [101, 100])
+        self.assertFalse(marker.exists())
+
+    def test_unreadable_executable_close_handle_failure_is_residual(self) -> None:
+        probe = token_probe.attempt_unreadable_executable_launch
+        with tempfile.TemporaryDirectory() as raw:
+            scratch = Path(raw)
+            executable = scratch / "cmd.exe"
+            executable.write_bytes(b"fixture")
+            marker = scratch / "marker.txt"
+            closed: list[int] = []
+
+            def create_process(*args: object) -> int:
+                process_info = ctypes.cast(
+                    args[-1], ctypes.POINTER(token_probe._PROCESS_INFORMATION),
+                ).contents
+                process_info.hProcess = 100
+                process_info.hThread = 101
+                return 1
+
+            def close_handle(handle: int) -> int:
+                closed.append(handle)
+                return 0 if handle == 101 else 1
+
+            kernel = mock.Mock()
+            kernel.WaitForSingleObject.return_value = token_probe._WAIT_OBJECT_0
+            kernel.CloseHandle.side_effect = close_handle
+            with (
+                mock.patch.object(
+                    token_probe, "build_runner_environment_block",
+                    return_value="SystemRoot=C:\\Windows\0\0",
+                ),
+                mock.patch.object(
+                    token_probe.ctypes, "get_last_error", return_value=0, create=True,
+                ),
+            ):
+                result = probe(
+                    create_process=create_process,
+                    kernel=kernel,
+                    username="icodeprobe_1234",
+                    password_buffer=ctypes.create_unicode_buffer("probe-only"),
+                    python_executable=r"C:\Python\python.exe",
+                    executable_path=executable,
+                    marker_path=marker,
+                    scratch_path=scratch,
+                    system_root=r"C:\\Windows",
+                    clear_last_error=lambda: None,
+                )
+
+        self.assertEqual(result, (True, 0, True, False, True))
+        self.assertEqual(closed, [101, 100])
+
+    def test_unreadable_executable_still_closes_process_if_thread_close_raises(self) -> None:
+        probe = token_probe.attempt_unreadable_executable_launch
+        with tempfile.TemporaryDirectory() as raw:
+            scratch = Path(raw)
+            executable = scratch / "cmd.exe"
+            executable.write_bytes(b"fixture")
+            marker = scratch / "marker.txt"
+            closed: list[int] = []
+
+            def create_process(*args: object) -> int:
+                process_info = ctypes.cast(
+                    args[-1], ctypes.POINTER(token_probe._PROCESS_INFORMATION),
+                ).contents
+                process_info.hProcess = 100
+                process_info.hThread = 101
+                return 1
+
+            def close_handle(handle: int) -> int:
+                closed.append(handle)
+                if handle == 101:
+                    raise OSError("synthetic CloseHandle failure")
+                return 1
+
+            kernel = mock.Mock()
+            kernel.WaitForSingleObject.return_value = token_probe._WAIT_OBJECT_0
+            kernel.CloseHandle.side_effect = close_handle
+            with (
+                mock.patch.object(
+                    token_probe, "build_runner_environment_block",
+                    return_value="SystemRoot=C:\\Windows\0\0",
+                ),
+                mock.patch.object(
+                    token_probe.ctypes, "get_last_error", return_value=0, create=True,
+                ),
+            ):
+                result = probe(
+                    create_process=create_process,
+                    kernel=kernel,
+                    username="icodeprobe_1234",
+                    password_buffer=ctypes.create_unicode_buffer("probe-only"),
+                    python_executable=r"C:\Python\python.exe",
+                    executable_path=executable,
+                    marker_path=marker,
+                    scratch_path=scratch,
+                    system_root=r"C:\\Windows",
+                    clear_last_error=lambda: None,
+                )
+
+        self.assertEqual(result, (True, 0, True, False, True))
+        self.assertEqual(closed, [101, 100])
 
     def test_staged_unreadable_executable_is_a_private_copy_and_denial_is_exact(self) -> None:
         stage = getattr(

@@ -101,8 +101,7 @@ _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 _RUNNER_SUCCESS_RESULT = (
     "runner_standard_user=PASS;server_pid_mismatch=PASS;"
     "child_restricted=PASS;child_non_admin=PASS;"
-    "child_identity=PASS;unreadable_executable=DENIED;"
-    "job_assignment=PASS;exit=PASS"
+    "child_identity=PASS;job_assignment=PASS;exit=PASS"
 )
 
 
@@ -246,8 +245,8 @@ def unreadable_executable_cleanup_plan(
     """Use only a process handle returned by a successful creation call.
 
     Win32 does not promise usable PROCESS_INFORMATION fields after a failed
-    CreateProcessAsUserW call. Treat any such output as ambiguous; never reopen
-    a PID or close a handle whose ownership the API did not establish.
+    process-creation call. Treat any such output as ambiguous; never reopen a
+    PID or close a handle whose ownership the API did not establish.
     """
     if not create_succeeded:
         return None, process_information_populated
@@ -296,6 +295,121 @@ def stage_unreadable_executable_probe(
     if result.returncode != 0:
         raise RuntimeError("unreadable_executable_deny_acl_failed")
     return target
+
+
+def attempt_unreadable_executable_launch(
+    *,
+    create_process: object,
+    kernel: object,
+    username: str,
+    password_buffer: object,
+    python_executable: str,
+    executable_path: Path,
+    marker_path: Path,
+    scratch_path: Path,
+    system_root: str,
+    clear_last_error: object,
+) -> tuple[bool, int, bool, bool, bool]:
+    """Test a denied executable directly under the temporary account's token.
+
+    This narrow native test runs before the separate runner-pipe handshake, so
+    a pipe failure cannot conceal whether the same temporary user's ACL blocks
+    execution of the disposable file copy.
+    """
+    if type(username) is not str or _USERNAME_RE.fullmatch(username) is None:
+        raise ValueError("unreadable_executable_probe_username_invalid")
+    if not callable(create_process) or not callable(clear_last_error):
+        raise ValueError("unreadable_executable_probe_api_invalid")
+    scratch = Path(scratch_path)
+    executable = Path(executable_path)
+    marker = Path(marker_path)
+    if (
+        not scratch.is_dir()
+        or executable.is_symlink()
+        or not executable.is_file()
+        or not marker.parent.is_dir()
+    ):
+        raise RuntimeError("unreadable_executable_probe_input_unavailable")
+    try:
+        if marker.exists():
+            raise RuntimeError("unreadable_executable_marker_preexists")
+    except OSError:
+        raise RuntimeError("unreadable_executable_marker_state_unavailable") from None
+
+    command_line = subprocess.list2cmdline([
+        str(executable), "/d", "/c", f"echo launched > {marker}",
+    ])
+    if len(command_line) >= 1024:
+        raise RuntimeError("unreadable_executable_command_too_long")
+    environment = build_runner_environment_block(
+        python_executable=python_executable,
+        scratch=str(scratch),
+        system_root=system_root,
+    )
+    environment_buffer = _make_environment_buffer(environment)
+    startup = _STARTUPINFO()
+    startup.cb = ctypes.sizeof(startup)
+    process = _PROCESS_INFORMATION()
+    ctypes_last_error = getattr(ctypes, "get_last_error", None)
+    if not callable(ctypes_last_error):
+        raise RuntimeError("unreadable_executable_last_error_unavailable")
+
+    try:
+        clear_last_error()
+        created = bool(create_process(
+            username,
+            ".",
+            password_buffer,
+            0,
+            str(executable),
+            ctypes.create_unicode_buffer(command_line),
+            _CREATE_SUSPENDED | _CREATE_UNICODE_ENVIRONMENT | _CREATE_NO_WINDOW,
+            ctypes.cast(environment_buffer, ctypes.c_void_p),
+            str(scratch),
+            ctypes.byref(startup),
+            ctypes.byref(process),
+        ))
+        error_code = 0 if created else int(ctypes_last_error())
+    except Exception:
+        raise RuntimeError("unreadable_executable_process_creation_failed") from None
+
+    process_information_populated = bool(
+        process.hProcess or process.hThread
+        or process.dwProcessId or process.dwThreadId
+    )
+    cleanup_handle, process_residual = unreadable_executable_cleanup_plan(
+        create_succeeded=created,
+        process_handle=process.hProcess,
+        process_information_populated=process_information_populated,
+    )
+    try:
+        if cleanup_handle:
+            wait = kernel.WaitForSingleObject(cleanup_handle, 0)
+            if wait != _WAIT_OBJECT_0:
+                kernel.TerminateProcess(cleanup_handle, 1)
+                wait = kernel.WaitForSingleObject(cleanup_handle, 5_000)
+            process_residual = wait != _WAIT_OBJECT_0
+    except Exception:
+        process_residual = True
+    finally:
+        if created:
+            for handle in (process.hThread, process.hProcess):
+                if not handle:
+                    continue
+                try:
+                    if not kernel.CloseHandle(handle):
+                        process_residual = True
+                except Exception:
+                    # A thread-handle close failure must not skip the process
+                    # handle, which is the only safe cleanup authority here.
+                    process_residual = True
+
+    try:
+        marker_exists = marker.exists()
+    except OSError:
+        marker_exists = True
+    process_started = created or process_information_populated
+    return created, error_code, process_started, marker_exists, process_residual
 
 
 def stage_runner_script(source_path: Path, scratch_path: Path) -> Path:
@@ -1456,75 +1570,6 @@ def _runner_probe(report_path: Path) -> str:
         if exit_code.value != 37:
             raise RuntimeError(f"restricted_child_exit={exit_code.value}")
 
-        scratch_path = Path(report_path).parent
-        blocked_executable = scratch_path / "no-rx" / "cmd.exe"
-        marker = scratch_path / "unreadable-executable-marker.txt"
-        if marker.exists():
-            raise RuntimeError("unreadable_executable_marker_preexists")
-        blocked_command = subprocess.list2cmdline([
-            str(blocked_executable), "/d", "/c", f"echo launched > {marker}",
-        ])
-        blocked_command_buffer = ctypes.create_unicode_buffer(blocked_command)
-        blocked_startup = _STARTUPINFO()
-        blocked_startup.cb = ctypes.sizeof(blocked_startup)
-        blocked_process = _PROCESS_INFORMATION()
-        ctypes.set_last_error(0)
-        blocked_created = bool(advapi.CreateProcessAsUserW(
-            restricted_token,
-            str(blocked_executable),
-            blocked_command_buffer,
-            None,
-            None,
-            False,
-            _CREATE_SUSPENDED | _CREATE_NO_WINDOW | _CREATE_UNICODE_ENVIRONMENT,
-            ctypes.cast(environment_buffer, ctypes.c_void_p),
-            system32,
-            ctypes.byref(blocked_startup),
-            ctypes.byref(blocked_process),
-        ))
-        blocked_error = 0 if blocked_created else ctypes.get_last_error()
-        blocked_started = bool(
-            blocked_process.hProcess or blocked_process.hThread
-            or blocked_process.dwProcessId or blocked_process.dwThreadId
-        )
-        cleanup_handle, blocked_residual = unreadable_executable_cleanup_plan(
-            create_succeeded=blocked_created,
-            process_handle=blocked_process.hProcess,
-            process_information_populated=blocked_started,
-        )
-        try:
-            if cleanup_handle:
-                wait = kernel.WaitForSingleObject(cleanup_handle, 0)
-                if wait != _WAIT_OBJECT_0:
-                    kernel.TerminateProcess(cleanup_handle, 1)
-                    wait = kernel.WaitForSingleObject(cleanup_handle, 5_000)
-                blocked_residual = wait != _WAIT_OBJECT_0
-        finally:
-            if blocked_created:
-                if blocked_process.hThread:
-                    kernel.CloseHandle(blocked_process.hThread)
-                if blocked_process.hProcess:
-                    kernel.CloseHandle(blocked_process.hProcess)
-        try:
-            marker_exists = marker.exists()
-        except OSError:
-            marker_exists = True
-        if not unreadable_executable_rejection_succeeded(
-            created=blocked_created,
-            error_code=blocked_error,
-            process_started=blocked_started,
-            marker_exists=marker_exists,
-            process_residual=blocked_residual,
-        ):
-            if blocked_residual:
-                raise RuntimeError("unreadable_executable_process_residual")
-            if marker_exists:
-                raise RuntimeError("unreadable_executable_marker_created")
-            if blocked_created or blocked_started:
-                raise RuntimeError("unreadable_executable_started")
-            raise RuntimeError(
-                f"unreadable_executable_error:winerror={blocked_error}"
-            )
         return _RUNNER_SUCCESS_RESULT
     finally:
         if membership_token:
@@ -1709,11 +1754,6 @@ def _run_as_standard_user() -> int:
             system_root=system_root,
         )
         environment_buffer = _make_environment_buffer(environment)
-        password_buffer = ctypes.create_unicode_buffer(password)
-        password = ""
-        startup = _STARTUPINFO()
-        startup.cb = ctypes.sizeof(startup)
-        process = _PROCESS_INFORMATION()
         advapi = ctypes.WinDLL("advapi32", use_last_error=True)
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         advapi.CreateProcessWithLogonW.argtypes = [
@@ -1734,6 +1774,54 @@ def _run_as_standard_user() -> int:
         kernel.ResumeThread.argtypes = [wintypes.HANDLE]
         kernel.ResumeThread.restype = wintypes.DWORD
         kernel.GetCurrentProcessId.restype = wintypes.DWORD
+
+        unreadable_password_buffer = ctypes.create_unicode_buffer(password)
+        try:
+            unreadable_observation = attempt_unreadable_executable_launch(
+                create_process=advapi.CreateProcessWithLogonW,
+                kernel=kernel,
+                username=username,
+                password_buffer=unreadable_password_buffer,
+                python_executable=sys.executable,
+                executable_path=scratch / "no-rx" / "cmd.exe",
+                marker_path=scratch / "unreadable-executable-marker.txt",
+                scratch_path=scratch,
+                system_root=system_root,
+                clear_last_error=lambda: ctypes.set_last_error(0),
+            )
+        finally:
+            ctypes.memset(
+                unreadable_password_buffer, 0,
+                ctypes.sizeof(unreadable_password_buffer),
+            )
+        if not unreadable_executable_rejection_succeeded(
+            created=unreadable_observation[0],
+            error_code=unreadable_observation[1],
+            process_started=unreadable_observation[2],
+            marker_exists=unreadable_observation[3],
+            process_residual=unreadable_observation[4],
+        ):
+            password = ""
+            if unreadable_observation[4]:
+                raise RuntimeError("unreadable_executable_process_residual")
+            if unreadable_observation[3]:
+                raise RuntimeError("unreadable_executable_marker_created")
+            if unreadable_observation[0] or unreadable_observation[2]:
+                raise RuntimeError("unreadable_executable_started")
+            raise RuntimeError(
+                "unreadable_executable_error:winerror="
+                f"{unreadable_observation[1]}"
+            )
+        print(
+            "::notice::unreadable_executable=DENIED;"
+            "target=temporary_standard_user;marker=ABSENT;residual=ABSENT"
+        )
+
+        password_buffer = ctypes.create_unicode_buffer(password)
+        password = ""
+        startup = _STARTUPINFO()
+        startup.cb = ctypes.sizeof(startup)
+        process = _PROCESS_INFORMATION()
         try:
             created = advapi.CreateProcessWithLogonW(
                 username, ".", password_buffer, 0, sys.executable,
