@@ -353,6 +353,22 @@ class TestFileIdExtdDirectoryPagination(unittest.TestCase):
             (),
         )
 
+    def test_collector_accepts_zero_filled_success_as_eof_after_entries(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        collect = getattr(module, "collect_extd_directory_entries", None)
+        self.assertTrue(callable(collect), "bounded directory page collector is missing")
+        first = _extd_entry_record(
+            "one.txt", file_id=bytes.fromhex("00000000000000000000000000000001"),
+        )
+        pages = [(True, 0, first), (True, 0, bytes(512))]
+
+        entries = collect(
+            lambda _info_class, _size: pages.pop(0), buffer_bytes=512,
+        )
+
+        self.assertEqual([entry.name for entry in entries], ["one.txt"])
+        self.assertEqual(pages, [])
+
     def test_collector_rejects_unknown_errors_duplicate_names_and_empty_continuation(self) -> None:
         module = importlib.import_module("tests.windows_tree_snapshot_probe")
         collect = getattr(module, "collect_extd_directory_entries", None)
@@ -372,7 +388,19 @@ class TestFileIdExtdDirectoryPagination(unittest.TestCase):
                 "directory_buffer_too_small",
             ),
             (
-                [(True, 0, first), (True, 0, bytes(512))],
+                [
+                    (True, 0, first),
+                    (
+                        True,
+                        0,
+                        _extd_entry_record(
+                            ".",
+                            file_id=bytes.fromhex(
+                                "00000000000000000000000000000003",
+                            ),
+                        ),
+                    ),
+                ],
                 "directory_enumeration_no_progress",
             ),
             (
@@ -737,6 +765,7 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
 
             def collect(handle: int):
                 information_classes = []
+                page_signals = []
 
                 def read_page(information_class: int, requested_bytes: int):
                     information_classes.append(information_class)
@@ -748,17 +777,33 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                         )
                     )
                     error = 0 if succeeded else int(ctypes.get_last_error())
+                    page_signals.append((information_class, succeeded, error, any(buffer.raw)))
                     return succeeded, error, buffer.raw
 
-                entries = collect_extd_directory_entries(
-                    read_page, buffer_bytes=buffer_bytes,
+                try:
+                    entries = collect_extd_directory_entries(
+                        read_page, buffer_bytes=buffer_bytes,
+                    )
+                except Exception as exc:
+                    raise AssertionError(
+                        f"bounded enumeration failed: {exc}; page_signals={page_signals}"
+                    ) from exc
+                return entries, information_classes, page_signals
+
+            def assert_known_eof(page_signals) -> None:
+                self.assertTrue(page_signals, "enumeration issued no native query")
+                _info_class, succeeded, error, has_nonzero_data = page_signals[-1]
+                self.assertTrue(
+                    (succeeded and error == 0 and not has_nonzero_data)
+                    or (not succeeded and error == 18),
+                    f"unexpected native enumeration terminal response: {page_signals[-1]}",
                 )
-                return entries, information_classes
 
             handle = open_directory(root)
             try:
-                first_pass, first_classes = collect(handle)
+                first_pass, first_classes, first_signals = collect(handle)
                 self.assertEqual({entry.name for entry in first_pass}, expected_names)
+                assert_known_eof(first_signals)
                 self.assertEqual(first_classes[0], _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS)
                 self.assertGreater(len(first_classes), 2, "fixture did not cross buffer pages")
                 self.assertTrue(
@@ -769,8 +814,9 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                     "continuation pages did not use FileIdExtdDirectoryInfo",
                 )
 
-                second_pass, second_classes = collect(handle)
+                second_pass, second_classes, second_signals = collect(handle)
                 self.assertEqual(second_classes[0], _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS)
+                assert_known_eof(second_signals)
                 self.assertEqual(
                     classify_directory_listing_drift(first_pass, second_pass),
                     "same_observation",
@@ -783,8 +829,9 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
             empty.mkdir()
             empty_handle = open_directory(empty)
             try:
-                empty_entries, empty_classes = collect(empty_handle)
+                empty_entries, empty_classes, empty_signals = collect(empty_handle)
                 self.assertEqual(empty_entries, ())
+                assert_known_eof(empty_signals)
                 self.assertEqual(
                     empty_classes,
                     [_FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS],

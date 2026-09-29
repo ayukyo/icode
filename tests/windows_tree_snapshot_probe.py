@@ -845,8 +845,15 @@ def collect_extd_directory_entries(
 
         page = parse_file_id_extd_directory_info(payload)
         if not page:
-            if api_calls == 1 and not entries and not any(payload):
-                return ()
+            if not any(payload):
+                if api_calls == 1 and not entries:
+                    return ()
+                if entries:
+                    # Keep this candidate narrow: some providers may signal EOF
+                    # with a successful zero-filled buffer after useful entries.
+                    # Native CI records the terminal response shape; nonzero
+                    # filtered or malformed pages remain a no-progress failure.
+                    return tuple(entries)
             raise WindowsDirectoryProbeError("directory_enumeration_no_progress")
         for entry in page:
             if entry.name in names:
