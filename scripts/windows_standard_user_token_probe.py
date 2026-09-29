@@ -2007,6 +2007,7 @@ def _run_child_mode(
         return 2
     validated_report: Path | None = None
     effective_token_diagnostic: str | None = None
+    wrong_pid_probe_state: str | None = None
     try:
         report = Path(report_path)
         temp = os.environ.get("TEMP", "")
@@ -2032,6 +2033,15 @@ def _run_child_mode(
         # used by this probe. Always continue the real parent handshake so a
         # failed negative probe becomes a bounded report instead of a timeout.
         pipe_rejected, _pipe_detail = runner_pipe_wrong_server_pid_probe()
+        if pipe_rejected is True:
+            wrong_pid_probe_state = "self_pipe_ok"
+        elif (
+            type(_pipe_detail) is str
+            and _pipe_detail.startswith("client_open_access_denied")
+        ):
+            wrong_pid_probe_state = "self_pipe_denied"
+        else:
+            wrong_pid_probe_state = "self_pipe_failed"
 
         def capture_effective_token() -> None:
             nonlocal effective_token_diagnostic
@@ -2061,8 +2071,9 @@ def _run_child_mode(
                 failure_detail = _safe_runner_child_exception_detail(exc)
                 if failure_detail == "client_open_access_denied":
                     diagnostic = effective_token_diagnostic or "token_unavailable"
+                    self_pipe = wrong_pid_probe_state or "self_pipe_unavailable"
                     error_code = _safe_windows_error_code(exc)
-                    context = diagnostic + f"+open_winerror_{error_code}"
+                    context = diagnostic + f"+{self_pipe}+open_winerror_{error_code}"
                     if (
                         len(context) > 120
                         or re.fullmatch(r"[A-Za-z0-9_+.-]+", context) is None

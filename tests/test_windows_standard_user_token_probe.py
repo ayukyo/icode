@@ -1277,7 +1277,51 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             report,
             "failed=client_open_access_denied;detail="
             + effective_token
+            + "+self_pipe_ok"
             + "+open_winerror_5",
+        )
+
+    def test_parent_pipe_denial_records_failed_self_pipe_negative_probe(self) -> None:
+        def deny_pipe_open(*_args, **kwargs):
+            observer = kwargs.get("observer")
+            self.assertTrue(callable(observer))
+            observer()
+            raise PermissionError(5, "runner_pipe_open_access_denied")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "result.txt"
+            with (
+                mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+                mock.patch.dict(os.environ, {
+                    "TEMP": temporary_directory,
+                    "ICODE_R2_PROBE_MODE": "runner",
+                }),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe.runner_pipe_wrong_server_pid_probe",
+                    return_value=(False, "client_open_access_denied+access_allow"),
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._runner_pipe."
+                    "_open_runner_pipe_client_with_observer",
+                    side_effect=deny_pipe_open,
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._runner_effective_token_diagnostic",
+                    return_value="token_process+il_medium+restricted_no+logon_enabled+nwu_yes+npm_yes",
+                ),
+                mock.patch("scripts.windows_standard_user_token_probe._write_report") as write_report,
+            ):
+                result = _run_child_mode(
+                    str(report), r"\\.\pipe\icode-runner-" + "1" * 32,
+                    "4321", "2" * 32,
+                )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(
+            write_report.call_args.args[1],
+            "failed=client_open_access_denied;detail="
+            "token_process+il_medium+restricted_no+logon_enabled+nwu_yes+npm_yes"
+            "+self_pipe_denied+open_winerror_5",
         )
 
     def test_wrong_pid_success_is_required_before_standard_user_probe_passes(self) -> None:
