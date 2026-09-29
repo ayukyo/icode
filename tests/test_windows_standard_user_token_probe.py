@@ -385,8 +385,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 return True
 
         child_context = (
-            "token_unavailable+default_dacl_denied+user_sid_dacl_denied+"
-            "user_sid_create_instance_ok+open_winerror_5"
+            "token_process+logon_enabled+default_dacl_ok+"
+            "user_sid_create_instance_ok+self_access_allow+open_winerror_5"
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             report = Path(temporary_directory) / "result.txt"
@@ -409,8 +409,9 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(
             detail,
             "client_open_access_denied+"
-            "token_unavailable+default_dacl_denied+user_sid_dacl_denied+"
-            "user_sid_create_instance_ok+dacl_present+ace_match:winerror=5",
+            "token_process+logon_enabled+default_dacl_ok+"
+            "user_sid_create_instance_ok+self_access_allow+"
+            "dacl_present+ace_match:winerror=5",
         )
         exposed = "standard_user_restricted_child_failed:" + str(detail)
         self.assertLessEqual(len(exposed), 400)
@@ -1386,7 +1387,13 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 }),
                 mock.patch(
                     "scripts.windows_standard_user_token_probe.runner_pipe_wrong_server_pid_probe",
-                    return_value=(False, "client_open_access_denied+access_allow"),
+                    return_value=(
+                        False,
+                        "client_open_access_denied+dacl_present+ace_match+"
+                        "token_process+logon_enabled+restricted_no+access_allow+"
+                        "client_il_medium+pipe_il_absent+pipe_nwu_unavailable+"
+                        "token_nwu_yes",
+                    ),
                 ),
                 mock.patch(
                     "scripts.windows_standard_user_token_probe.runner_pipe_open_without_synchronize_probe",
@@ -1413,8 +1420,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(
             write_report.call_args.args[1],
             "failed=client_open_access_denied;detail="
-            "token_process+il_medium+restricted_no+logon_enabled+nwu_yes+npm_yes"
-            "+self_pipe_denied+nosync_ok+open_winerror_5",
+            "token_process+logon_enabled+self_pipe_denied+self_access_allow"
+            "+nosync_ok+open_winerror_5",
         )
 
     def test_no_synchronize_pipe_probe_uses_same_dacl_and_rest_of_client_contract(self) -> None:
@@ -2370,9 +2377,35 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(
             write_report.call_args.args[1],
             "failed=client_open_access_denied;detail="
-            "token_process+logon_enabled"
-            "+default_dacl_ok+user_sid_dacl_denied"
-            "+user_sid_create_instance_denied+open_winerror_5",
+            "token_process+logon_enabled+default_dacl_ok"
+            "+user_sid_create_instance_denied+self_access_allow"
+            "+open_winerror_5",
+        )
+        report = write_report.call_args.args[1]
+        self.assertLessEqual(len(report.partition(";detail=")[2]), 120)
+        self.assertIn("+open_winerror_5", report)
+
+    def test_self_pipe_access_receipt_uses_only_fixed_accesscheck_labels(self) -> None:
+        label = token_probe._self_pipe_access_receipt_label
+        self.assertEqual(
+            label("client_open_access_denied+dacl_present+access_allow+client_il_medium"),
+            "self_access_allow",
+        )
+        self.assertEqual(
+            label("client_open_access_denied+access_deny"),
+            "self_access_deny",
+        )
+        self.assertEqual(
+            label("client_open_access_denied+access_unavailable"),
+            "self_access_unavailable",
+        )
+        self.assertEqual(
+            label("client_open_access_denied+access_allow+access_deny"),
+            "self_access_allow",
+        )
+        self.assertEqual(
+            label("client_open_access_denied+access_unknown+path_secret"),
+            "self_access_unavailable",
         )
 
     def test_wrong_pid_success_is_required_before_standard_user_probe_passes(self) -> None:

@@ -597,6 +597,20 @@ def _safe_runner_child_exception_detail(exc: Exception) -> str:
     return label if re.fullmatch(r"[a-z_]+", label) else "unclassified"
 
 
+def _self_pipe_access_receipt_label(detail: object) -> str:
+    """Reduce a self-pipe diagnostic to one fixed AccessCheck outcome tag."""
+    labels = {
+        "access_allow": "self_access_allow",
+        "access_deny": "self_access_deny",
+        "access_unavailable": "self_access_unavailable",
+    }
+    if isinstance(detail, str):
+        for part in detail.split("+"):
+            if part in labels:
+                return labels[part]
+    return "self_access_unavailable"
+
+
 def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
     """Reject a false expected server PID and return only a safe stage code."""
     if sys.platform != "win32":
@@ -2519,6 +2533,7 @@ def _run_child_mode(
     default_dacl_probe_state: str | None = None
     user_sid_dacl_probe_state: str | None = None
     user_sid_create_instance_probe_state: str | None = None
+    self_pipe_access_probe_state: str | None = None
     try:
         report = Path(report_path)
         temp = os.environ.get("TEMP", "")
@@ -2550,6 +2565,11 @@ def _run_child_mode(
             and _pipe_detail.startswith("client_open_access_denied")
         ):
             wrong_pid_probe_state = "self_pipe_denied"
+            # Keep only the fixed AccessCheck result. The same temporary
+            # self-pipe CreateFileW attempt has just returned access denied.
+            self_pipe_access_probe_state = _self_pipe_access_receipt_label(
+                _pipe_detail,
+            )
             no_sync_opened, no_sync_detail = (
                 runner_pipe_open_without_synchronize_probe()
             )
@@ -2678,6 +2698,8 @@ def _run_child_mode(
                         ]
                     elif wrong_pid_probe_state is not None:
                         context_parts.append(wrong_pid_probe_state)
+                    if self_pipe_access_probe_state is not None:
+                        context_parts.append(self_pipe_access_probe_state)
                     if (
                         default_dacl_probe_state is not None
                         and user_sid_dacl_probe_state is None
@@ -2706,23 +2728,69 @@ def _run_child_mode(
                     context = "+".join(context_parts)
                     if (
                         len(context) > 120
+                        and self_pipe_access_probe_state is not None
+                    ):
+                        compact_parts = [minimal_diagnostic]
+                        if user_sid_create_instance_probe_state is not None:
+                            # Reaching this probe proves the preceding
+                            # TokenUser-only DACL open was denied; omit that
+                            # redundant outcome to retain the bounded receipt.
+                            compact_parts.extend((
+                                default_dacl_probe_state or "default_dacl_unavailable",
+                                user_sid_create_instance_probe_state,
+                                self_pipe_access_probe_state,
+                            ))
+                        elif user_sid_dacl_probe_state is not None:
+                            compact_parts.extend((
+                                default_dacl_probe_state or "default_dacl_unavailable",
+                                user_sid_dacl_probe_state,
+                                self_pipe_access_probe_state,
+                            ))
+                        elif default_dacl_probe_state is not None:
+                            compact_parts.extend((
+                                default_dacl_probe_state,
+                                self_pipe_access_probe_state,
+                            ))
+                        elif no_overlapped_probe_state is not None:
+                            combined_probe_state = {
+                                "noovl_ok": "nosync_noovl_ok",
+                                "noovl_denied": "nosync_noovl_denied",
+                            }.get(no_overlapped_probe_state, "nosync_noovl_failed")
+                            compact_parts.extend((
+                                "self_pipe_denied",
+                                self_pipe_access_probe_state,
+                                combined_probe_state,
+                            ))
+                        elif no_sync_probe_state is not None:
+                            compact_parts.extend((
+                                "self_pipe_denied",
+                                self_pipe_access_probe_state,
+                                no_sync_probe_state,
+                            ))
+                        else:
+                            compact_parts.extend((
+                                "self_pipe_denied",
+                                self_pipe_access_probe_state,
+                            ))
+                        compact_parts.append(f"open_winerror_{error_code}")
+                        context = "+".join(compact_parts)
+                        if len(context) > 120:
+                            context = "+".join((
+                                minimal_diagnostic,
+                                "self_pipe_denied",
+                                self_pipe_access_probe_state,
+                                f"open_winerror_{error_code}",
+                            ))
+                    elif (
+                        len(context) > 120
                         and user_sid_create_instance_probe_state is not None
                     ):
                         context = "+".join((
                             minimal_diagnostic,
                             default_dacl_probe_state or "default_dacl_unavailable",
-                            user_sid_dacl_probe_state or "user_sid_dacl_unavailable",
                             user_sid_create_instance_probe_state,
                             f"open_winerror_{error_code}",
                         ))
-                        if len(context) > 120:
-                            context = "+".join((
-                                minimal_token,
-                                default_dacl_probe_state or "default_dacl_unavailable",
-                                user_sid_dacl_probe_state or "user_sid_dacl_unavailable",
-                                user_sid_create_instance_probe_state,
-                                f"open_winerror_{error_code}",
-                            ))
                     elif (
                         len(context) > 120
                         and user_sid_dacl_probe_state is not None
@@ -2733,18 +2801,19 @@ def _run_child_mode(
                             user_sid_dacl_probe_state,
                             f"open_winerror_{error_code}",
                         ))
-                        if len(context) > 120:
-                            context = "+".join((
-                                minimal_token,
-                                default_dacl_probe_state or "default_dacl_unavailable",
-                                user_sid_dacl_probe_state,
-                                f"open_winerror_{error_code}",
-                            ))
                     if (
                         len(context) > 120
                         or re.fullmatch(r"[A-Za-z0-9_+.-]+", context) is None
                     ):
-                        context = f"{minimal_token}+open_winerror_{error_code}"
+                        if self_pipe_access_probe_state is not None:
+                            context = "+".join((
+                                minimal_diagnostic,
+                                "self_pipe_denied",
+                                self_pipe_access_probe_state,
+                                f"open_winerror_{error_code}",
+                            ))
+                        else:
+                            context = f"{minimal_token}+open_winerror_{error_code}"
                     failure_detail += ";detail=" + context
                 _write_report(
                     validated_report,
