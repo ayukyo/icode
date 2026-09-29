@@ -275,6 +275,103 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             ("explicit_aces", "inherited_aces"),
         )
 
+    def test_wfp_receipt_attributes_only_completed_exact_native_subscription(self) -> None:
+        classify = getattr(
+            probe_module, "_classify_wfp_capability_drop_receipt", None,
+        )
+        self.assertTrue(callable(classify), "WFP receipt classifier is missing")
+
+        receipt = {
+            "schema_version": 1,
+            "subscription_ok": True,
+            "unsubscribe_ok": True,
+            "matched_capability_drop_count": 1,
+        }
+        self.assertEqual(
+            classify(receipt, collector_exit_code=0),
+            "capability_drop_attributed",
+        )
+
+    def test_wfp_receipt_without_complete_match_remains_evidence_unavailable(self) -> None:
+        classify = getattr(
+            probe_module, "_classify_wfp_capability_drop_receipt", None,
+        )
+        self.assertTrue(callable(classify), "WFP receipt classifier is missing")
+
+        unavailable_cases = (
+            (None, 0),
+            ({"schema_version": 1, "subscription_ok": False, "unsubscribe_ok": True,
+              "matched_capability_drop_count": 1}, 0),
+            ({"schema_version": 1, "subscription_ok": True, "unsubscribe_ok": False,
+              "matched_capability_drop_count": 1}, 0),
+            ({"schema_version": 1, "subscription_ok": True, "unsubscribe_ok": True,
+              "matched_capability_drop_count": 0}, 0),
+            ({"schema_version": 1, "subscription_ok": True, "unsubscribe_ok": True,
+              "matched_capability_drop_count": True}, 0),
+            ({"schema_version": 2, "subscription_ok": True, "unsubscribe_ok": True,
+              "matched_capability_drop_count": 1}, 0),
+            ({"schema_version": 1, "subscription_ok": True, "unsubscribe_ok": True,
+              "matched_capability_drop_count": 1}, 1),
+        )
+        for receipt, collector_exit_code in unavailable_cases:
+            with self.subTest(receipt=receipt, exit_code=collector_exit_code):
+                self.assertEqual(
+                    classify(receipt, collector_exit_code=collector_exit_code),
+                    "evidence_unavailable",
+                )
+
+    def test_wfp_observer_stop_collects_receipt_and_reaps_its_process(self) -> None:
+        start = getattr(probe_module, "_start_wfp_event_probe", None)
+        stop = getattr(probe_module, "_stop_wfp_event_probe", None)
+        classify = probe_module._classify_wfp_capability_drop_receipt
+        self.assertTrue(callable(start), "WFP observer launcher is missing")
+        self.assertTrue(callable(stop), "WFP observer cleanup is missing")
+
+        with tempfile.TemporaryDirectory(prefix="icode-wfp-observer-test-") as raw:
+            root = Path(raw)
+            fake_observer = root / "fake-wfp-observer"
+            fake_observer.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, pathlib, sys, time\n"
+                "profile, port, ready, stop, result = sys.argv[1:]\n"
+                "if profile != 'icode-0123456789abcdef0123456789abcdef' or port != '54321':\n"
+                "    raise SystemExit(7)\n"
+                "pathlib.Path(ready).write_text('ready\\n', encoding='ascii')\n"
+                "deadline = time.monotonic() + 4\n"
+                "while time.monotonic() < deadline and not pathlib.Path(stop).exists():\n"
+                "    time.sleep(0.01)\n"
+                "pathlib.Path(result).write_text(json.dumps({\n"
+                "    'schema_version': 1, 'subscription_ok': True,\n"
+                "    'unsubscribe_ok': True, 'matched_capability_drop_count': 1,\n"
+                "}), encoding='ascii')\n",
+                encoding="utf-8",
+            )
+            fake_observer.chmod(0o755)
+
+            process, paths = start(
+                fake_observer,
+                "icode-0123456789abcdef0123456789abcdef",
+                54321,
+                root,
+            )
+            self.assertIsNotNone(process)
+            self.assertIsNotNone(paths)
+            ready_path, stop_path, result_path = paths
+            token = "0123456789abcdef0123456789abcdef"
+            self.assertEqual(ready_path.parent, root)
+            self.assertEqual(stop_path.parent, root)
+            self.assertEqual(result_path.parent, root)
+            self.assertEqual(ready_path.name, f"wfp-{token}.ready")
+            self.assertEqual(stop_path.name, f"wfp-{token}.stop")
+            self.assertEqual(result_path.name, f"wfp-{token}.json")
+            receipt, exit_code = stop(process, paths)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            classify(receipt, collector_exit_code=exit_code),
+            "capability_drop_attributed",
+        )
+
     def test_dacl_state_requires_exact_acl_bytes_and_security_control(self) -> None:
         before = _DaclSnapshot(
             descriptor_digest="layout-before",

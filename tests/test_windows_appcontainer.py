@@ -534,6 +534,22 @@ def _compact_path_resolution_probe_notice(
 
 
 class TestWindowsAppContainer(unittest.TestCase):
+    def test_diagnostic_profile_name_accepts_only_generated_shape(self) -> None:
+        validator = getattr(
+            windows_appcontainer, "_is_diagnostic_profile_name", None,
+        )
+        self.assertTrue(callable(validator), "diagnostic profile-name validator is missing")
+        self.assertTrue(validator("icode-0123456789abcdef0123456789abcdef"))
+        for invalid in (
+            None,
+            "other-0123456789abcdef0123456789abcdef",
+            "icode-0123456789abcdef0123456789abcdeg",
+            "icode-0123456789abcdef0123456789abcde",
+            "icode-0123456789ABCDEF0123456789ABCDEF",
+        ):
+            with self.subTest(invalid=invalid):
+                self.assertFalse(validator(invalid))
+
     def test_只读句柄POC缺少显式optin时默认拒绝(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-read-handle-gate-") as raw, \
              mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
@@ -545,11 +561,25 @@ class TestWindowsAppContainer(unittest.TestCase):
             result = run_windows_appcontainer(
                 [sys.executable], cwd=raw, timeout_seconds=2,
                 _diagnostic_read_handle=123,
+                _diagnostic_profile_name="icode-0123456789abcdef0123456789abcdef",
             )
 
         self.assertFalse(result.executed)
         self.assertEqual(result.error, "invalid_diagnostic_probe")
         self.assertFalse(result.cleanup_ok)
+        load_api.assert_not_called()
+
+    def test_诊断profile名称不能脱离只读句柄探针单独指定(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-appcontainer-profile-name-gate-") as raw, \
+             mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+             mock.patch("ctypes.WinDLL", create=True) as load_api:
+            result = run_windows_appcontainer(
+                [sys.executable], cwd=raw, timeout_seconds=2,
+                _diagnostic_profile_name="icode-0123456789abcdef0123456789abcdef",
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
         load_api.assert_not_called()
 
     def test_只读句柄POC即使有optin也拒绝非GitHubWindowsrunner(self) -> None:

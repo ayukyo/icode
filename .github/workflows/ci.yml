@@ -309,7 +309,10 @@ jobs:
           cmake --build $buildDirectory --config Release --parallel 1
           if ($LASTEXITCODE -ne 0) { throw "Native probe build failed: $LASTEXITCODE" }
           $probe = Join-Path $buildDirectory 'Release/icode-appcontainer-read-probe.exe'
-          python scripts/run_windows_appcontainer_read_probe.py $probe
+          $wfpProbe = Join-Path $buildDirectory 'Release/icode-wfp-event-probe.exe'
+          & $wfpProbe --self-test
+          if ($LASTEXITCODE -ne 0) { throw "WFP event classifier self-test failed: $LASTEXITCODE" }
+          python scripts/run_windows_appcontainer_read_probe.py $probe $wfpProbe
           if ($LASTEXITCODE -ne 0) { throw "AppContainer read-handle probe failed: $LASTEXITCODE" }
 
   windows-standard-user-token-probe:

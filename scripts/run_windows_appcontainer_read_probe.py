@@ -16,8 +16,11 @@ import re
 import shutil
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
+import time
+import uuid
 from ctypes import wintypes
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -71,6 +74,25 @@ def _format_network_error(value: object) -> str:
     if type(value) is int and 0 <= value <= 0xFFFF:
         return str(value)
     return "unknown"
+
+
+def _classify_wfp_capability_drop_receipt(
+    receipt: object, *, collector_exit_code: int | None,
+) -> str:
+    """Attribute only a completed, unsubscribed native exact-match receipt."""
+    if (
+        type(collector_exit_code) is not int
+        or collector_exit_code != 0
+        or not isinstance(receipt, dict)
+        or receipt.get("schema_version") != 1
+        or receipt.get("subscription_ok") is not True
+        or receipt.get("unsubscribe_ok") is not True
+    ):
+        return "evidence_unavailable"
+    match_count = receipt.get("matched_capability_drop_count")
+    if type(match_count) is not int or not 1 <= match_count <= 0xFFFF:
+        return "evidence_unavailable"
+    return "capability_drop_attributed"
 
 
 def _normalize_inherited_ace_flag(ace: bytes) -> bytes:
@@ -421,6 +443,83 @@ def _host_listener_is_live(listener: socket.socket) -> bool:
         return False
 
 
+def _start_wfp_event_probe(
+    executable: Path, profile_name: str, remote_port: int, root: Path,
+) -> tuple[subprocess.Popen[bytes] | None, tuple[Path, Path, Path] | None]:
+    """Start the bounded host-side observer; failure is diagnostic-only."""
+    if not isinstance(profile_name, str) or re.fullmatch(r"icode-[0-9a-f]{32}", profile_name) is None:
+        return None, None
+    token = profile_name[6:]
+    ready_path = root / f"wfp-{token}.ready"
+    stop_path = root / f"wfp-{token}.stop"
+    result_path = root / f"wfp-{token}.json"
+    try:
+        process = subprocess.Popen(
+            [
+                str(executable), profile_name, str(remote_port),
+                str(ready_path), str(stop_path), str(result_path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError:
+        return None, None
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not ready_path.is_file():
+        if process.poll() is not None:
+            break
+        time.sleep(0.025)
+    return process, (ready_path, stop_path, result_path)
+
+
+def _stop_wfp_event_probe(
+    process: subprocess.Popen[bytes] | None,
+    paths: tuple[Path, Path, Path] | None,
+) -> tuple[dict[str, object] | None, int | None]:
+    """Request unsubscribe, bound the wait, and parse only the tiny fixed receipt."""
+    if process is None or paths is None:
+        return None, None
+    _ready_path, stop_path, result_path = paths
+    try:
+        stop_path.touch(exist_ok=True)
+    except OSError:
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    try:
+        exit_code = process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            process.terminate()
+        except OSError:
+            pass
+        try:
+            exit_code = process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                exit_code = process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                exit_code = None
+
+    receipt: dict[str, object] | None = None
+    try:
+        if result_path.is_file() and result_path.stat().st_size <= 4096:
+            decoded = json.loads(result_path.read_text(encoding="ascii"))
+            if isinstance(decoded, dict):
+                receipt = decoded
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        receipt = None
+    return receipt, exit_code
+
+
 def _safe_diagnostics(detail: str) -> str:
     """Keep only path-free key/value diagnostics from the native wrapper."""
     safe_parts = [
@@ -432,7 +531,7 @@ def _safe_diagnostics(detail: str) -> str:
     return ",".join(safe_parts)[:1024] or "none"
 
 
-def _run(probe_executable: Path) -> int:
+def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
     if sys.platform != "win32":
         print("windows_platform=false")
         return 2
@@ -441,12 +540,15 @@ def _run(probe_executable: Path) -> int:
         return 2
     try:
         probe_executable = probe_executable.resolve(strict=True)
+        wfp_probe_executable = wfp_probe_executable.resolve(strict=True)
     except OSError:
-        print("probe_executable_available=false")
+        print("native_probe_executables_available=false")
         return 2
     if not probe_executable.is_file() or probe_executable.name.casefold() != (
         "icode-appcontainer-read-probe.exe"
-    ):
+    ) or not wfp_probe_executable.is_file() or wfp_probe_executable.name.casefold() != (
+        "icode-wfp-event-probe.exe"
+    ) or probe_executable.parent != wfp_probe_executable.parent:
         print("probe_executable_contract=false")
         return 2
 
@@ -512,35 +614,47 @@ def _run(probe_executable: Path) -> int:
                     print("host_listener_control=false")
                     return 1
                 network_port = listener.getsockname()[1]
+                profile_name = f"icode-{uuid.uuid4().hex}"
+                wfp_process, wfp_paths = _start_wfp_event_probe(
+                    wfp_probe_executable, profile_name, network_port, root,
+                )
+                wfp_receipt: dict[str, object] | None = None
+                wfp_exit_code: int | None = None
 
-                with _open_read_handle(source) as read_handle:
-                    argv = [
-                        str(helper),
-                        "--input-handle", _READ_HANDLE_PLACEHOLDER,
-                        "--source-path", str(source),
-                        "--sibling-path", str(sibling),
-                        "--outside-path", str(outside_file),
-                        "--profile-path", str(profile_file),
-                        "--marker-path", str(marker),
-                        "--report-path", str(report),
-                        "--network-address", "127.0.0.1",
-                        "--network-port", str(network_port),
-                    ]
-                    prior_opt_in = os.environ.get("ICODE_DIAGNOSTIC_READ_HANDLE")
-                    os.environ["ICODE_DIAGNOSTIC_READ_HANDLE"] = "true"
-                    try:
-                        result = run_windows_appcontainer(
-                            argv,
-                            cwd=workspace,
-                            timeout_seconds=12,
-                            process_limit=2,
-                            _diagnostic_read_handle=read_handle,
-                        )
-                    finally:
-                        if prior_opt_in is None:
-                            os.environ.pop("ICODE_DIAGNOSTIC_READ_HANDLE", None)
-                        else:
-                            os.environ["ICODE_DIAGNOSTIC_READ_HANDLE"] = prior_opt_in
+                try:
+                    with _open_read_handle(source) as read_handle:
+                        argv = [
+                            str(helper),
+                            "--input-handle", _READ_HANDLE_PLACEHOLDER,
+                            "--source-path", str(source),
+                            "--sibling-path", str(sibling),
+                            "--outside-path", str(outside_file),
+                            "--profile-path", str(profile_file),
+                            "--marker-path", str(marker),
+                            "--report-path", str(report),
+                            "--network-address", "127.0.0.1",
+                            "--network-port", str(network_port),
+                        ]
+                        prior_opt_in = os.environ.get("ICODE_DIAGNOSTIC_READ_HANDLE")
+                        os.environ["ICODE_DIAGNOSTIC_READ_HANDLE"] = "true"
+                        try:
+                            result = run_windows_appcontainer(
+                                argv,
+                                cwd=workspace,
+                                timeout_seconds=12,
+                                process_limit=2,
+                                _diagnostic_read_handle=read_handle,
+                                _diagnostic_profile_name=profile_name,
+                            )
+                        finally:
+                            if prior_opt_in is None:
+                                os.environ.pop("ICODE_DIAGNOSTIC_READ_HANDLE", None)
+                            else:
+                                os.environ["ICODE_DIAGNOSTIC_READ_HANDLE"] = prior_opt_in
+                finally:
+                    wfp_receipt, wfp_exit_code = _stop_wfp_event_probe(
+                        wfp_process, wfp_paths,
+                    )
 
                 unexpected_network_client = False
                 listener.settimeout(0.25)
@@ -619,6 +733,10 @@ def _run(probe_executable: Path) -> int:
                 f"error:{_format_network_error(receipt.get('network_error'))}"
             )
             print(
+                "  wfp_capability_drop_evidence="
+                f"{_classify_wfp_capability_drop_receipt(wfp_receipt, collector_exit_code=wfp_exit_code)}"
+            )
+            print(
                 "  workspace_dacl_baseline="
                 f"normalization_delta:0x{workspace_dacl_normalization_delta:04x}"
             )
@@ -656,10 +774,10 @@ def _run(probe_executable: Path) -> int:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: run_windows_appcontainer_read_probe.py <probe-exe>")
+    if len(sys.argv) != 3:
+        print("usage: run_windows_appcontainer_read_probe.py <probe-exe> <wfp-probe-exe>")
         return 2
-    return _run(Path(sys.argv[1]))
+    return _run(Path(sys.argv[1]), Path(sys.argv[2]))
 
 
 if __name__ == "__main__":
