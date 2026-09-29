@@ -62,6 +62,8 @@ class _DaclSnapshot:
     ace_count: int
     inherited_ace_count: int
     acl_bytes_in_use: int
+    explicit_aces: tuple[bytes, ...] = ()
+    inherited_aces: tuple[bytes, ...] = ()
 
 
 def _format_network_error(value: object) -> str:
@@ -122,8 +124,31 @@ def _workspace_dacl_baseline_normalization_failure_codes(
         failures.append("control")
     if before.control & _SE_DACL_PROTECTED or after.control & _SE_DACL_PROTECTED:
         failures.append("protected")
-    if before.normalized_acl_digest != after.normalized_acl_digest:
-        failures.append("acl_entries")
+    if before.explicit_aces != after.explicit_aces:
+        failures.append("explicit_aces")
+    inherited_after = iter(after.inherited_aces)
+    inherited_preserved = all(
+        any(candidate == previous for candidate in inherited_after)
+        for previous in before.inherited_aces
+    )
+    if not inherited_preserved:
+        failures.append("inherited_aces")
+    added_inherited: list[bytes] = []
+    inherited_before_index = 0
+    for ace in after.inherited_aces:
+        if (
+            inherited_before_index < len(before.inherited_aces)
+            and ace == before.inherited_aces[inherited_before_index]
+        ):
+            inherited_before_index += 1
+        else:
+            added_inherited.append(ace)
+    if inherited_preserved:
+        if after.ace_count - before.ace_count != len(added_inherited):
+            failures.append("ace_count")
+        added_inherited_bytes = sum(len(ace) for ace in added_inherited)
+        if after.acl_bytes_in_use - before.acl_bytes_in_use != added_inherited_bytes:
+            failures.append("acl_length")
     if before.revision != after.revision:
         failures.append("revision")
     if before.present is not True or after.present is not True:
@@ -132,10 +157,6 @@ def _workspace_dacl_baseline_normalization_failure_codes(
         failures.append("dacl_defaulted")
     if before.file_identity != after.file_identity:
         failures.append("file_identity")
-    if before.ace_count != after.ace_count:
-        failures.append("ace_count")
-    if before.acl_bytes_in_use != after.acl_bytes_in_use:
-        failures.append("acl_length")
     return tuple(failures)
 
 
@@ -251,6 +272,8 @@ def _dacl_snapshot(path: Path) -> _DaclSnapshot:
     normalized_acl = bytearray(acl_bytes)
     file_info = path.lstat()
     inherited_ace_count = 0
+    explicit_aces: list[bytes] = []
+    inherited_aces: list[bytes] = []
     for ace_index in range(int(size_info.AceCount)):
         ace_pointer = ctypes.c_void_p()
         if not advapi.GetAce(dacl, ace_index, ctypes.byref(ace_pointer)) or not ace_pointer.value:
@@ -265,9 +288,13 @@ def _dacl_snapshot(path: Path) -> _DaclSnapshot:
         if ace_offset < 8 or ace_size < 4 or ace_offset + ace_size > acl_bytes_in_use:
             raise OSError("ACE range is outside its DACL")
         ace = ctypes.string_at(ace_pointer, ace_size)
-        normalized_acl[ace_offset:ace_offset + ace_size] = _normalize_inherited_ace_flag(ace)
+        normalized_ace = _normalize_inherited_ace_flag(ace)
+        normalized_acl[ace_offset:ace_offset + ace_size] = normalized_ace
         if ace_flags & _INHERITED_ACE:
             inherited_ace_count += 1
+            inherited_aces.append(normalized_ace)
+        else:
+            explicit_aces.append(ace)
     return _DaclSnapshot(
         descriptor_digest=hashlib.sha256(
             descriptor.raw[:required.value],
@@ -284,6 +311,8 @@ def _dacl_snapshot(path: Path) -> _DaclSnapshot:
         ace_count=int(size_info.AceCount),
         inherited_ace_count=inherited_ace_count,
         acl_bytes_in_use=acl_bytes_in_use,
+        explicit_aces=tuple(explicit_aces),
+        inherited_aces=tuple(inherited_aces),
     )
 
 

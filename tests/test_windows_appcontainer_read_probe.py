@@ -130,7 +130,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         )
         self.assertFalse(
             _workspace_dacl_baseline_normalization_valid(
-                original, replace(normalized, normalized_acl_digest="different"),
+                original, replace(normalized, explicit_aces=(b"changed",)),
             ),
         )
 
@@ -161,7 +161,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         cases = (
             (replace(normalized, control=0x8804), ("control",)),
             (replace(normalized, control=0x9404), ("control", "protected")),
-            (replace(normalized, normalized_acl_digest="different"), ("acl_entries",)),
+            (replace(normalized, explicit_aces=(b"changed",)), ("explicit_aces",)),
             (replace(normalized, revision=2), ("revision",)),
             (replace(normalized, present=False), ("dacl_presence",)),
             (replace(normalized, defaulted=True), ("dacl_defaulted",)),
@@ -172,6 +172,108 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         for changed, expected in cases:
             with self.subTest(expected=expected):
                 self.assertEqual(failure_codes(original, changed), expected)
+
+    def test_baseline_normalization_allows_only_inherited_ace_additions(self) -> None:
+        failure_codes = getattr(
+            probe_module, "_workspace_dacl_baseline_normalization_failure_codes", None,
+        )
+        self.assertTrue(callable(failure_codes), "normalization failure classifier is missing")
+        before = SimpleNamespace(
+            control=0x8004,
+            normalized_acl_digest="before-whole-dacl",
+            explicit_aces=(b"explicit-a", b"explicit-b"),
+            inherited_aces=(b"i" * 20,),
+            revision=1,
+            present=True,
+            defaulted=False,
+            file_identity=(1, 2),
+            ace_count=3,
+            acl_bytes_in_use=88,
+        )
+        after = SimpleNamespace(
+            control=0x8404,
+            normalized_acl_digest="after-whole-dacl",
+            explicit_aces=(b"explicit-a", b"explicit-b"),
+            inherited_aces=(b"a" * 20, b"i" * 20, b"b" * 20),
+            revision=1,
+            present=True,
+            defaulted=False,
+            file_identity=(1, 2),
+            ace_count=5,
+            acl_bytes_in_use=128,
+        )
+
+        self.assertEqual(failure_codes(before, after), ())
+        self.assertEqual(
+            failure_codes(
+                before,
+                SimpleNamespace(**{
+                    **vars(after),
+                    "explicit_aces": (b"changed-explicit", b"explicit-b"),
+                }),
+            ),
+            ("explicit_aces",),
+        )
+        self.assertEqual(
+            failure_codes(
+                before,
+                SimpleNamespace(**{
+                    **vars(after),
+                    "inherited_aces": (b"c" * 20, b"b" * 20),
+                }),
+            ),
+            ("inherited_aces",),
+        )
+        reordered_before = SimpleNamespace(**{
+            **vars(before),
+            "inherited_aces": (b"i" * 20, b"j" * 20),
+            "ace_count": 4,
+            "acl_bytes_in_use": 128,
+        })
+        reordered_after = SimpleNamespace(**{
+            **vars(after),
+            "inherited_aces": (b"j" * 20, b"i" * 20, b"c" * 20),
+            "ace_count": 5,
+            "acl_bytes_in_use": 148,
+        })
+        self.assertEqual(
+            failure_codes(reordered_before, reordered_after),
+            ("inherited_aces",),
+        )
+
+    def test_baseline_normalization_compares_raw_ace_bytes_not_digest_surrogates(self) -> None:
+        failure_codes = probe_module._workspace_dacl_baseline_normalization_failure_codes
+        before = SimpleNamespace(
+            control=0x8004,
+            explicit_ace_digests=("same-explicit-digest",),
+            inherited_ace_digests=(("same-inherited-digest", 20),),
+            explicit_aces=(b"explicit-before",),
+            inherited_aces=(b"inherited-before",),
+            revision=1,
+            present=True,
+            defaulted=False,
+            file_identity=(1, 2),
+            ace_count=2,
+            acl_bytes_in_use=48,
+        )
+        after = SimpleNamespace(
+            control=0x8404,
+            explicit_ace_digests=("same-explicit-digest",),
+            inherited_ace_digests=(("same-inherited-digest", 20),),
+            explicit_aces=(b"explicit-after",),
+            inherited_aces=(b"inherited-after",),
+            revision=1,
+            present=True,
+            defaulted=False,
+            file_identity=(1, 2),
+            ace_count=2,
+            acl_bytes_in_use=48,
+        )
+
+        self.assertEqual(
+            failure_codes(before, after),
+            ("explicit_aces", "inherited_aces"),
+        )
 
     def test_dacl_state_requires_exact_acl_bytes_and_security_control(self) -> None:
         before = _DaclSnapshot(
