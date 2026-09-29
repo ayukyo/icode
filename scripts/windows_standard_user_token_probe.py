@@ -33,6 +33,7 @@ from icode.windows_runner_pipe import (
     new_runner_pipe_name,
     open_runner_pipe_client,
     runner_process_logon_sid,
+    runner_process_user_sid,
     validate_runner_pipe_name,
 )
 
@@ -894,6 +895,88 @@ def runner_pipe_open_with_default_dacl_probe() -> tuple[bool, str]:
         return False, "setup_invalid_state"
 
 
+def runner_pipe_open_with_user_sid_dacl_probe() -> tuple[bool, str]:
+    """Compare a narrow explicit user-SID ACL on a disposable pipe.
+
+    This diagnostic changes only the DACL principal from the runner's logon
+    SID to its primary user SID. The production client mask and all pipe/open
+    flags remain unchanged; the temporary pipe carries no data and is never
+    used by the production factory.
+    """
+    if sys.platform != "win32":
+        return False, "unsupported_platform"
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        api.kernel.GetCurrentProcessId.argtypes = []
+        api.kernel.GetCurrentProcessId.restype = wintypes.DWORD
+        process_handle = api.kernel.GetCurrentProcess()
+        current_pid = int(api.kernel.GetCurrentProcessId())
+        if not process_handle or current_pid <= 0:
+            return False, "server_pid_unavailable"
+
+        user_sid = runner_process_user_sid(process_handle)
+        with create_runner_pipe_server(user_sid) as pipe:
+            if not api.kernel.WaitNamedPipeW(pipe.name, 2_000):
+                if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
+                    return False, "client_wait_access_denied"
+                return False, "client_wait_failed"
+
+            client = api.kernel.CreateFileW(
+                pipe.name,
+                PIPE_CLIENT_ACCESS_MASK,
+                0,
+                None,
+                _runner_pipe._OPEN_EXISTING,
+                _runner_pipe.FILE_FLAG_OVERLAPPED
+                | _runner_pipe._SECURITY_SQOS_PRESENT
+                | _runner_pipe._SECURITY_IMPERSONATION,
+                None,
+            )
+            if _runner_pipe._handle_is_invalid(client):
+                if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
+                    return False, "client_open_access_denied"
+                return False, "client_open_failed"
+
+            try:
+                server_pid = wintypes.DWORD(0)
+                if not api.kernel.GetNamedPipeServerProcessId(
+                    client, ctypes.byref(server_pid),
+                ) or server_pid.value == 0:
+                    return False, "server_pid_unavailable"
+                if server_pid.value != current_pid:
+                    return False, "server_pid_mismatch"
+                pipe._connect(2_000)
+                if not pipe._connected:
+                    return False, "server_connect_failed"
+                client_pid = wintypes.DWORD(0)
+                if not api.kernel.GetNamedPipeClientProcessId(
+                    pipe._handle, ctypes.byref(client_pid),
+                ) or client_pid.value == 0:
+                    return False, "client_pid_unavailable"
+                if client_pid.value != current_pid:
+                    return False, "client_pid_mismatch"
+                return True, "client_opened_with_user_sid_dacl"
+            except TimeoutError:
+                return False, "server_connect_timeout"
+            except OSError:
+                return False, "server_connect_failed"
+            finally:
+                if not api.kernel.CloseHandle(client):
+                    raise _runner_pipe._winerror(
+                        "close_user_sid_dacl_probe_client",
+                    )
+    except PermissionError:
+        return False, "setup_access_denied"
+    except TimeoutError:
+        return False, "setup_timeout"
+    except OSError:
+        return False, "setup_failed"
+    except (RuntimeError, ValueError):
+        return False, "setup_invalid_state"
+
+
 class _SID_AND_ATTRIBUTES(ctypes.Structure):
     _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
 
@@ -1236,6 +1319,31 @@ def _format_runner_effective_token_diagnostic(
     if len(summary) > 120:
         raise ValueError("effective_token_diagnostic_too_long")
     return summary
+
+
+def _compact_runner_effective_token_diagnostic(summary: str | None) -> str:
+    """Keep only identity, integrity, restriction, and logon tags for a DACL A/B."""
+    if not isinstance(summary, str):
+        return "token_unavailable"
+    allowed = {
+        "token_thread", "token_process", "token_unavailable",
+        "il_untrusted", "il_low", "il_medium", "il_medium_plus", "il_high",
+        "il_system", "il_protected_process", "il_other", "il_unavailable",
+        "restricted_yes", "restricted_no", "restricted_unavailable",
+        "logon_enabled", "logon_disabled", "logon_deny_only", "logon_absent",
+        "logon_unavailable",
+    }
+    selected: list[str] = []
+    categories: set[str] = set()
+    for part in summary.split("+"):
+        if part not in allowed:
+            continue
+        category = part.split("_", 1)[0]
+        if category not in categories:
+            categories.add(category)
+            selected.append(part)
+    compact = "+".join(selected) or "token_unavailable"
+    return compact if len(compact) <= 72 else "token_unavailable"
 
 
 def _runner_effective_token_diagnostic() -> str:
@@ -2234,6 +2342,7 @@ def _run_child_mode(
     no_sync_probe_state: str | None = None
     no_overlapped_probe_state: str | None = None
     default_dacl_probe_state: str | None = None
+    user_sid_dacl_probe_state: str | None = None
     try:
         report = Path(report_path)
         temp = os.environ.get("TEMP", "")
@@ -2297,6 +2406,18 @@ def _run_child_mode(
                         default_dacl_probe_state = "default_dacl_denied"
                     else:
                         default_dacl_probe_state = "default_dacl_failed"
+                    user_sid_dacl_opened, user_sid_dacl_detail = (
+                        runner_pipe_open_with_user_sid_dacl_probe()
+                    )
+                    if user_sid_dacl_opened is True:
+                        user_sid_dacl_probe_state = "user_sid_dacl_ok"
+                    elif (
+                        type(user_sid_dacl_detail) is str
+                        and user_sid_dacl_detail == "client_open_access_denied"
+                    ):
+                        user_sid_dacl_probe_state = "user_sid_dacl_denied"
+                    else:
+                        user_sid_dacl_probe_state = "user_sid_dacl_failed"
                 else:
                     no_overlapped_probe_state = "noovl_failed"
             else:
@@ -2333,24 +2454,56 @@ def _run_child_mode(
                 if failure_detail == "client_open_access_denied":
                     diagnostic = effective_token_diagnostic or "token_unavailable"
                     context_parts = [diagnostic]
-                    if wrong_pid_probe_state is not None:
+                    if user_sid_dacl_probe_state is not None:
+                        # These ACL A/Bs already imply the preceding self-pipe,
+                        # no-SYNCHRONIZE, and no-OVERLAPPED denials. Keep both
+                        # changed-principal outcomes visible in the 120-char
+                        # receipt without leaking SID values.
+                        context_parts = [
+                            _compact_runner_effective_token_diagnostic(
+                                effective_token_diagnostic,
+                            ),
+                            default_dacl_probe_state or "default_dacl_unavailable",
+                            user_sid_dacl_probe_state,
+                        ]
+                    elif wrong_pid_probe_state is not None:
                         context_parts.append(wrong_pid_probe_state)
-                    if default_dacl_probe_state is not None:
+                    if (
+                        default_dacl_probe_state is not None
+                        and user_sid_dacl_probe_state is None
+                    ):
                         # This final A/B only runs after the self, no-SYNCHRONIZE,
                         # and no-OVERLAPPED probes all returned access denied.
                         # Keep the bounded receipt focused on the changed DACL.
                         context_parts.append(default_dacl_probe_state)
-                    elif no_overlapped_probe_state is not None:
+                    elif (
+                        user_sid_dacl_probe_state is None
+                        and no_overlapped_probe_state is not None
+                    ):
                         combined_probe_state = {
                             "noovl_ok": "nosync_noovl_ok",
                             "noovl_denied": "nosync_noovl_denied",
                         }.get(no_overlapped_probe_state, "nosync_noovl_failed")
                         context_parts.append(combined_probe_state)
-                    elif no_sync_probe_state is not None:
+                    elif (
+                        user_sid_dacl_probe_state is None
+                        and default_dacl_probe_state is None
+                        and no_sync_probe_state is not None
+                    ):
                         context_parts.append(no_sync_probe_state)
                     error_code = _safe_windows_error_code(exc)
                     context_parts.append(f"open_winerror_{error_code}")
                     context = "+".join(context_parts)
+                    if (
+                        len(context) > 120
+                        and user_sid_dacl_probe_state is not None
+                    ):
+                        context = "+".join((
+                            "token_unavailable",
+                            default_dacl_probe_state or "default_dacl_unavailable",
+                            user_sid_dacl_probe_state,
+                            f"open_winerror_{error_code}",
+                        ))
                     if (
                         len(context) > 120
                         or re.fullmatch(r"[A-Za-z0-9_+.-]+", context) is None
