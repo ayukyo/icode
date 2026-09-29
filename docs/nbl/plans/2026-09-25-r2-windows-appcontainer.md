@@ -1,6 +1,7 @@
 # R2.3 Windows AppContainer 与 Job Object 实验计划
 
 - 日期：2026-09-25 UTC
+- 最新复验（2026-09-29，CI #349）：x64 [job](https://github.com/ayukyo/icode/actions/runs/36570938004/job/109414476386) 与 ARM64 [job](https://github.com/ayukyo/icode/actions/runs/36570938004/job/109414476669) native helper 编译并运行至 stage 5，各 `18/20`；AppContainer 活跃 listener 与同地址绑定但未 listen 的控制端口均为 Winsock `10060`，所以一次性端口对照为 `inconclusive`，不得解释为连接被拒或 WFP 根因。NetIso 返回 `INTERNET_CLIENT=2`，严格要求的 `PRIVATE_NETWORK=1` 未满足；WFP 精确观察无匹配回调。维持网络/自动模式关闭，不改变硬门。官网 [#349](https://github.com/ayukyo/icode/actions/runs/36570938035) 成功。
 - 状态：**AppContainer 仅作诊断，不是生产后端；Windows 自动模式不开放。** CI #158 x64/ARM64 综合步骤仍失败，公开 Actions annotations/logs 无法确认具体触发断言。独立 disposable staged-Python 子项两架构通过，包含候选运行、临时 ACL 精确恢复、原 runtime ACL 未变及 loopback 未连接断言；不证明任意 toolchain 的依赖闭包、性能或生产清理。原宿主 Python 子进程仍退出 `0xC0000135`；profile `LOCALAPPDATA` marker 仍缺失，SID 启动/子进程精确匹配也尚未证明。`listener reachable` 是宿主正向对照，不是容器连通证据。结合官方架构对开放式开发工具链的限制，本候选不再推进为产品执行后端；恢复正式设计中的一次 UAC helper 路线。详见下方 2026-09-26 决策记录。
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §6.3、§14；[持续竞品对照](../../agent-landscape-live.md)
 

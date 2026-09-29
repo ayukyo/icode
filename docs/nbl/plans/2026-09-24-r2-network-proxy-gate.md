@@ -1,6 +1,8 @@
 # R2.4 临时网络授权与代理门禁
 
 - 日期：2026-09-24
+- 最新状态（2026-09-29，CI #349）：macOS Intel/Apple Silicon 的网络 canary 在 `HostConnectProxyServer` 构造处失败；所有已记录 listener 前置条件为真，只有 `SO_ACCEPTCONN` 整数 getter 产生 `OSError`，还没进入 SOCKS/relay。XNU 源码审阅提示 Darwin `getsockopt(SO_ACCEPTCONN)` 可能不受支持，待只读 errno 与 `buflen=4` 对照由下一次双架构 runner 确认；不能把异常映射为 listener 已验证。Windows AppContainer x64/ARM64 对活跃/未监听端口均超时 `10060`，只记 inconclusive。相关主 CI [#349](https://github.com/ayukyo/icode/actions/runs/36570938004)，官网 [#349](https://github.com/ayukyo/icode/actions/runs/36570938035)。默认网络 DENY、NetIso `PRIVATE_NETWORK=1` 门和 worker 网络保持关闭。
+- **实现边界：**诊断仅在 test-only native canary；不得放宽生产 listener 检查。若确认 Darwin 不支持 getter，只允许以 canary 自己刚创建并成功执行 `listen()` 的 socket 来源建立测试端，不接受不明来源 socket，不把主动 `connect/accept` 当只读侦测。
 - 状态：已新增 v2 host-only lease overlay（绑定默认 DENY 基线）、本机审批/HMAC/撤销 authority 契约、真实 socket 关闭测试适配器及 Linux native loopback-only namespace probe；没有生产代理或 OS 强制路由，自动模式保持默认断网
 - 依据：[R2 正式设计](../specs/2026-09-23-r2-cross-platform-isolation-design.md) §8、§14；[持续竞品对照](../../agent-landscape-live.md)
 

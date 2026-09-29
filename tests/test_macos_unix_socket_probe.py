@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import os
+import platform
 from pathlib import Path
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -1089,9 +1092,50 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             ) -> None:
                 try:
                     fact_value = probe_fact()
+                except OSError as error:
+                    error_number = error.errno
+                    safe_error_number = (
+                        error_number if type(error_number) is int else "unknown"
+                    )
+                    error_name = (
+                        errno.errorcode.get(error_number, "UNKNOWN")
+                        if type(error_number) is int
+                        else "UNKNOWN"
+                    )
+                    fact_value = (
+                        f"error:OSError:errno={safe_error_number},name={error_name}"
+                    )
                 except Exception as error:
                     fact_value = f"error:{type(error).__name__}"
                 listener_facts.append(f"{name}={fact_value}")
+
+            def listening_buffer_fact() -> str:
+                option_value = proxy_listener.getsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_ACCEPTCONN,
+                    4,
+                )
+                if type(option_value) is not bytes or len(option_value) != 4:
+                    return "unexpected_buffer_shape"
+                return (
+                    "matches_one"
+                    if option_value == struct.pack("@i", 1)
+                    else "differs_from_one"
+                )
+
+            def stream_socket_buffer_fact() -> str:
+                option_value = proxy_listener.getsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_TYPE,
+                    4,
+                )
+                if type(option_value) is not bytes or len(option_value) != 4:
+                    return "unexpected_buffer_shape"
+                return (
+                    "matches_stream"
+                    if option_value == struct.pack("@i", socket.SOCK_STREAM)
+                    else "differs_from_stream"
+                )
 
             record_listener_fact(
                 "exact_socket_type",
@@ -1108,6 +1152,12 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                     socket.SO_TYPE,
                 ) == socket.SOCK_STREAM,
             )
+            record_listener_fact("acceptconn_level", lambda: socket.SOL_SOCKET)
+            record_listener_fact("acceptconn_option", lambda: socket.SO_ACCEPTCONN)
+            record_listener_fact(
+                "stream_socket_buffer_form",
+                stream_socket_buffer_fact,
+            )
             record_listener_fact(
                 "listening",
                 lambda: proxy_listener.getsockopt(
@@ -1115,6 +1165,7 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                     socket.SO_ACCEPTCONN,
                 ) == 1,
             )
+            record_listener_fact("listening_buffer_form", listening_buffer_fact)
             record_listener_fact(
                 "ipv4_loopback",
                 lambda: proxy_listener.getsockname()[0] == "127.0.0.1",
@@ -1142,6 +1193,9 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             )
             print(
                 "::notice::macos-live-lease-listener-contract "
+                f"python={platform.python_version()} "
+                f"macos={platform.mac_ver()[0] or 'unknown'} "
+                f"arch={platform.machine()} "
                 + " ".join(listener_facts),
                 flush=True,
             )
