@@ -29,17 +29,59 @@ class _FileIdBothDirectoryInfoHeader(ctypes.LittleEndianStructure):
     ]
 
 
+class _FileIdExtdDirectoryInfoHeader(ctypes.LittleEndianStructure):
+    """Fixed FILE_ID_EXTD_DIR_INFO fields; the variable name follows this header."""
+
+    _fields_ = [
+        ("next_entry_offset", ctypes.c_uint32),
+        ("file_index", ctypes.c_uint32),
+        ("creation_time", ctypes.c_int64),
+        ("last_access_time", ctypes.c_int64),
+        ("last_write_time", ctypes.c_int64),
+        ("change_time", ctypes.c_int64),
+        ("end_of_file", ctypes.c_int64),
+        ("allocation_size", ctypes.c_int64),
+        ("file_attributes", ctypes.c_uint32),
+        ("file_name_length", ctypes.c_uint32),
+        ("ea_size", ctypes.c_uint32),
+        ("reparse_point_tag", ctypes.c_uint32),
+        ("file_id", ctypes.c_uint8 * 16),
+    ]
+
+
+class _FileIdInfo(ctypes.Structure):
+    """FILE_ID_INFO with its volume serial and full 128-bit identifier."""
+
+    _fields_ = [
+        ("volume_serial_number", ctypes.c_uint64),
+        ("file_id", ctypes.c_uint8 * 16),
+    ]
+
+
 _FILE_ID_BOTH_DIR_INFO_HEADER_BYTES = ctypes.sizeof(_FileIdBothDirectoryInfoHeader)
+_FILE_ID_EXTD_DIR_INFO_HEADER_BYTES = ctypes.sizeof(_FileIdExtdDirectoryInfoHeader)
 _MAX_DIRECTORY_ENTRIES = 250_000
 _MAX_DIRECTORY_BUFFER_BYTES = 16 * 1024 * 1024
 _STATUS_SUCCESS = 0
 _STATUS_REPARSE_POINT_ENCOUNTERED = 0xC000050B
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 _FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
+_FILE_ID_INFO_CLASS = 0x12
+_FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS = 0x14
 
 
 class WindowsDirectoryProbeError(RuntimeError):
     """A test-only Windows directory record could not be safely interpreted."""
+
+
+def _validate_file_id(file_id: bytes) -> bytes:
+    """Reject FILE_ID_128 sentinel values that do not identify an object."""
+
+    if type(file_id) is not bytes or len(file_id) != 16:
+        raise WindowsDirectoryProbeError("file_id_invalid")
+    if file_id in (bytes(16), bytes([0xFF]) * 16):
+        raise WindowsDirectoryProbeError("file_id_unavailable")
+    return file_id
 
 
 @dataclass(frozen=True)
@@ -50,10 +92,19 @@ class DirectoryInfoEntry:
 
 
 @dataclass(frozen=True)
+class ExtendedDirectoryInfoEntry:
+    name: str
+    attributes: int
+    reparse_tag: int
+    file_id: bytes
+
+
+@dataclass(frozen=True)
 class NtRelativeOpenResult:
     status: int
     file_attributes: int | None
-    file_id: int | None
+    file_id: bytes | None
+    volume_serial_number: int | None
 
 
 def classify_no_reparse_open_receipt(status: object, file_attributes: object) -> str:
@@ -81,8 +132,9 @@ def open_relative_without_reparse(
     """Open a disposable Windows probe entry relative to a held directory handle.
 
     The test-only helper combines OBJ_DONT_REPARSE with
-    FILE_OPEN_REPARSE_POINT. It returns only a fixed NTSTATUS, file attributes,
-    and file ID; it never reads entry contents or exposes the supplied name.
+    FILE_OPEN_REPARSE_POINT. It returns a fixed NTSTATUS, file attributes,
+    volume serial number, and the full 128-bit file ID; it never reads entry
+    contents or exposes the supplied name.
     """
 
     if type(directory_handle) is not int or directory_handle <= 0:
@@ -137,23 +189,6 @@ def open_relative_without_reparse(
         _fields_ = [
             ("FileAttributes", wintypes.DWORD),
             ("ReparseTag", wintypes.DWORD),
-        ]
-
-    class FileTime(ctypes.Structure):
-        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
-
-    class ByHandleFileInformation(ctypes.Structure):
-        _fields_ = [
-            ("attributes", wintypes.DWORD),
-            ("creation_time", FileTime),
-            ("access_time", FileTime),
-            ("write_time", FileTime),
-            ("volume_serial", wintypes.DWORD),
-            ("size_high", wintypes.DWORD),
-            ("size_low", wintypes.DWORD),
-            ("links", wintypes.DWORD),
-            ("index_high", wintypes.DWORD),
-            ("index_low", wintypes.DWORD),
         ]
 
     encoded_name = relative_name.encode("utf-16-le", errors="strict")
@@ -217,7 +252,7 @@ def open_relative_without_reparse(
             kernel.CloseHandle.restype = wintypes.BOOL
             if not kernel.CloseHandle(file_handle):
                 raise OSError("failed_native_handle_cleanup")
-        return NtRelativeOpenResult(status, None, None)
+        return NtRelativeOpenResult(status, None, None, None)
     if file_handle.value in (None, ctypes.c_void_p(-1).value):
         raise OSError("native_open_missing_handle")
 
@@ -226,10 +261,6 @@ def open_relative_without_reparse(
         ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
     ]
     kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
-    kernel.GetFileInformationByHandle.argtypes = [
-        ctypes.c_void_p, ctypes.POINTER(ByHandleFileInformation),
-    ]
-    kernel.GetFileInformationByHandle.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [ctypes.c_void_p]
     kernel.CloseHandle.restype = wintypes.BOOL
     try:
@@ -241,16 +272,20 @@ def open_relative_without_reparse(
             ctypes.sizeof(tag_info),
         ):
             raise OSError("file_attribute_query_failed")
-        file_information = ByHandleFileInformation()
-        if not kernel.GetFileInformationByHandle(
-            file_handle, ctypes.byref(file_information),
+        file_id_info = _FileIdInfo()
+        if not kernel.GetFileInformationByHandleEx(
+            file_handle,
+            _FILE_ID_INFO_CLASS,
+            ctypes.byref(file_id_info),
+            ctypes.sizeof(file_id_info),
         ):
             raise OSError("file_identity_query_failed")
-        file_id = (int(file_information.index_high) << 32) | int(file_information.index_low)
+        file_id = _validate_file_id(bytes(file_id_info.file_id))
         return NtRelativeOpenResult(
-            status,
-            int(tag_info.FileAttributes),
-            file_id,
+            status=status,
+            file_attributes=int(tag_info.FileAttributes),
+            file_id=file_id,
+            volume_serial_number=int(file_id_info.volume_serial_number),
         )
     finally:
         if not kernel.CloseHandle(file_handle):
@@ -308,6 +343,90 @@ def parse_file_id_both_directory_info(buffer: bytes) -> tuple[DirectoryInfoEntry
             entries.append(DirectoryInfoEntry(name, attributes, file_id))
             if len(entries) > _MAX_DIRECTORY_ENTRIES:
                 raise WindowsDirectoryProbeError("directory_entry_limit")
+
+        if next_offset == 0:
+            break
+        offset += next_offset
+
+    return tuple(entries)
+
+
+def parse_file_id_extd_directory_info(
+    buffer: bytes,
+) -> tuple[ExtendedDirectoryInfoEntry, ...]:
+    """Parse bounded FILE_ID_EXTD_DIR_INFO records without trusting offsets."""
+
+    if not isinstance(buffer, bytes):
+        raise WindowsDirectoryProbeError("directory_buffer_invalid")
+    if len(buffer) > _MAX_DIRECTORY_BUFFER_BYTES:
+        raise WindowsDirectoryProbeError("directory_buffer_too_large")
+    if not buffer:
+        return ()
+    if _FILE_ID_EXTD_DIR_INFO_HEADER_BYTES != 88:
+        raise WindowsDirectoryProbeError("directory_header_layout_invalid")
+
+    entries: list[ExtendedDirectoryInfoEntry] = []
+    record_count = 0
+    offset = 0
+    while offset < len(buffer):
+        if len(buffer) - offset < _FILE_ID_EXTD_DIR_INFO_HEADER_BYTES:
+            raise WindowsDirectoryProbeError("directory_header_truncated")
+
+        header = _FileIdExtdDirectoryInfoHeader.from_buffer_copy(
+            buffer[offset:offset + _FILE_ID_EXTD_DIR_INFO_HEADER_BYTES]
+        )
+        next_offset = int(header.next_entry_offset)
+        attributes = int(header.file_attributes)
+        name_length = int(header.file_name_length)
+        reparse_tag = int(header.reparse_point_tag)
+        file_id = bytes(header.file_id)
+        if (
+            next_offset == 0
+            and name_length == 0
+            and attributes == 0
+            and reparse_tag == 0
+            and file_id == bytes(16)
+        ):
+            if not entries and not any(buffer[offset:]):
+                return ()
+            raise WindowsDirectoryProbeError("directory_record_empty")
+        file_id = _validate_file_id(file_id)
+        if name_length == 0 or name_length % 2:
+            raise WindowsDirectoryProbeError("directory_name_length_invalid")
+
+        remaining = len(buffer) - offset
+        record_end = offset + _FILE_ID_EXTD_DIR_INFO_HEADER_BYTES + name_length
+        if record_end > len(buffer):
+            raise WindowsDirectoryProbeError("directory_name_truncated")
+        if next_offset and (
+            next_offset % 8
+            or next_offset < _FILE_ID_EXTD_DIR_INFO_HEADER_BYTES + name_length
+            or next_offset >= remaining
+        ):
+            raise WindowsDirectoryProbeError("directory_next_offset_invalid")
+
+        try:
+            name = buffer[
+                offset + _FILE_ID_EXTD_DIR_INFO_HEADER_BYTES:record_end
+            ].decode("utf-16-le", errors="strict")
+        except UnicodeDecodeError:
+            raise WindowsDirectoryProbeError("directory_name_invalid") from None
+        if (
+            not name
+            or "\x00" in name
+            or "/" in name
+            or "\\" in name
+            or ":" in name
+        ):
+            raise WindowsDirectoryProbeError("directory_name_invalid")
+
+        record_count += 1
+        if record_count > _MAX_DIRECTORY_ENTRIES:
+            raise WindowsDirectoryProbeError("directory_entry_limit")
+        if name not in (".", ".."):
+            entries.append(
+                ExtendedDirectoryInfoEntry(name, attributes, reparse_tag, file_id)
+            )
 
         if next_offset == 0:
             break
