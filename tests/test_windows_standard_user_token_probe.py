@@ -596,6 +596,23 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 new_process_min="no",
             )
 
+    def test_minimal_effective_token_diagnostic_survives_overlong_context(self) -> None:
+        compact = getattr(
+            token_probe, "_minimal_runner_effective_token_diagnostic", None,
+        )
+        self.assertTrue(callable(compact))
+
+        result = compact(
+            "token_process+il_protected_process+restricted_unavailable+logon_deny_only",
+        )
+
+        self.assertEqual(result, "token_process+logon_deny_only")
+        self.assertLessEqual(len(result), 72)
+        self.assertEqual(
+            compact("token_unavailable+token_thread+logon_unavailable+logon_enabled"),
+            "token_unavailable+logon_unavailable",
+        )
+
     def test_effective_token_diagnostic_reads_current_thread_facts_and_closes_handle(self) -> None:
         capture = getattr(token_probe, "_runner_effective_token_diagnostic", None)
         self.assertTrue(callable(capture))
@@ -2286,7 +2303,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         create_server.assert_called_once_with("S-1-5-5-123-456")
         kernel.CloseHandle.assert_not_called()
 
-    def test_parent_pipe_denial_records_overlapped_negative_probe(self) -> None:
+    def test_parent_pipe_denial_keeps_true_token_in_bounded_acl_receipt(self) -> None:
         def deny_pipe_open(*_args, **kwargs):
             observer = kwargs.get("observer")
             self.assertTrue(callable(observer))
@@ -2315,7 +2332,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 ) as no_overlapped_probe,
                 mock.patch(
                     "scripts.windows_standard_user_token_probe.runner_pipe_open_with_default_dacl_probe",
-                    return_value=(False, "client_open_access_denied"),
+                    return_value=(True, "client_opened_with_default_dacl"),
                     create=True,
                 ) as default_dacl_probe,
                 mock.patch(
@@ -2325,7 +2342,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 ) as user_sid_dacl_probe,
                 mock.patch(
                     "scripts.windows_standard_user_token_probe.runner_pipe_open_with_user_sid_create_instance_access_probe",
-                    return_value=(True, "client_opened_with_user_sid_create_instance_access"),
+                    return_value=(False, "client_open_access_denied"),
                     create=True,
                 ) as create_instance_probe,
                 mock.patch(
@@ -2353,9 +2370,9 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(
             write_report.call_args.args[1],
             "failed=client_open_access_denied;detail="
-            "token_unavailable"
-            "+default_dacl_denied+user_sid_dacl_denied"
-            "+user_sid_create_instance_ok+open_winerror_5",
+            "token_process+logon_enabled"
+            "+default_dacl_ok+user_sid_dacl_denied"
+            "+user_sid_create_instance_denied+open_winerror_5",
         )
 
     def test_wrong_pid_success_is_required_before_standard_user_probe_passes(self) -> None:

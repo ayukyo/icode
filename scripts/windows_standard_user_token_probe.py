@@ -1496,6 +1496,31 @@ def _compact_runner_effective_token_diagnostic(summary: str | None) -> str:
     return compact if len(compact) <= 72 else "token_unavailable"
 
 
+def _minimal_runner_effective_token_diagnostic(summary: str | None) -> str:
+    """Keep the observed token source and logon-SID state in tight receipts."""
+    choices = {
+        "token": {"thread", "process", "unavailable"},
+        "logon": {"enabled", "disabled", "deny_only", "absent", "unavailable"},
+    }
+    values = {"token": "unavailable", "logon": "unavailable"}
+    observed: set[str] = set()
+    if isinstance(summary, str):
+        for part in summary.split("+"):
+            category, separator, value = part.partition("_")
+            if (
+                separator
+                and category in choices
+                and value in choices[category]
+                and category not in observed
+            ):
+                values[category] = value
+                observed.add(category)
+    return "+".join((
+        f"token_{values['token']}",
+        f"logon_{values['logon']}",
+    ))
+
+
 def _runner_effective_token_diagnostic() -> str:
     """Observe the current thread token immediately before the pipe open."""
     token_source = logon_state = restricted_state = "unavailable"
@@ -2622,6 +2647,10 @@ def _run_child_mode(
                 failure_detail = _safe_runner_child_exception_detail(exc)
                 if failure_detail == "client_open_access_denied":
                     diagnostic = effective_token_diagnostic or "token_unavailable"
+                    minimal_diagnostic = _minimal_runner_effective_token_diagnostic(
+                        effective_token_diagnostic,
+                    )
+                    minimal_token = minimal_diagnostic.partition("+")[0]
                     context_parts = [diagnostic]
                     if user_sid_create_instance_probe_state is not None:
                         # This additional ACE changes exactly one mask bit after
@@ -2680,27 +2709,42 @@ def _run_child_mode(
                         and user_sid_create_instance_probe_state is not None
                     ):
                         context = "+".join((
-                            "token_unavailable",
+                            minimal_diagnostic,
                             default_dacl_probe_state or "default_dacl_unavailable",
                             user_sid_dacl_probe_state or "user_sid_dacl_unavailable",
                             user_sid_create_instance_probe_state,
                             f"open_winerror_{error_code}",
                         ))
+                        if len(context) > 120:
+                            context = "+".join((
+                                minimal_token,
+                                default_dacl_probe_state or "default_dacl_unavailable",
+                                user_sid_dacl_probe_state or "user_sid_dacl_unavailable",
+                                user_sid_create_instance_probe_state,
+                                f"open_winerror_{error_code}",
+                            ))
                     elif (
                         len(context) > 120
                         and user_sid_dacl_probe_state is not None
                     ):
                         context = "+".join((
-                            "token_unavailable",
+                            minimal_diagnostic,
                             default_dacl_probe_state or "default_dacl_unavailable",
                             user_sid_dacl_probe_state,
                             f"open_winerror_{error_code}",
                         ))
+                        if len(context) > 120:
+                            context = "+".join((
+                                minimal_token,
+                                default_dacl_probe_state or "default_dacl_unavailable",
+                                user_sid_dacl_probe_state,
+                                f"open_winerror_{error_code}",
+                            ))
                     if (
                         len(context) > 120
                         or re.fullmatch(r"[A-Za-z0-9_+.-]+", context) is None
                     ):
-                        context = f"token_unavailable+open_winerror_{error_code}"
+                        context = f"{minimal_token}+open_winerror_{error_code}"
                     failure_detail += ";detail=" + context
                 _write_report(
                     validated_report,
