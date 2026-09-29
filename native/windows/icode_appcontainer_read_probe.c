@@ -2,6 +2,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <iphlpapi.h>
 #include <netfw.h>
 
 #include <errno.h>
@@ -98,6 +99,138 @@ static BOOL parse_port(const wchar_t *value, unsigned short *port_out) {
     return TRUE;
 }
 
+static BOOL is_rfc1918_octets(const unsigned int octets[4]) {
+    if (octets == NULL) return FALSE;
+    return octets[0] == 10 ||
+        (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) ||
+        (octets[0] == 192 && octets[1] == 168);
+}
+
+static BOOL parse_ipv4_octets(const wchar_t *value, unsigned int octets[4]) {
+    const wchar_t *cursor = value;
+    unsigned int index;
+
+    if (cursor == NULL || octets == NULL) return FALSE;
+    for (index = 0; index < 4; ++index) {
+        const wchar_t *component_start = cursor;
+        unsigned int octet = 0;
+        unsigned int digits = 0;
+
+        while (*cursor >= L'0' && *cursor <= L'9') {
+            unsigned int digit = (unsigned int)(*cursor - L'0');
+            if (octet > 25 || (octet == 25 && digit > 5)) return FALSE;
+            octet = (octet * 10) + digit;
+            ++digits;
+            ++cursor;
+        }
+        if (digits == 0 || (digits > 1 && component_start[0] == L'0')) {
+            return FALSE;
+        }
+        octets[index] = octet;
+        if (index < 3) {
+            if (*cursor != L'.') return FALSE;
+            ++cursor;
+        } else if (*cursor != L'\0') {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+static BOOL is_rfc1918_ipv4(const wchar_t *value) {
+    unsigned int octets[4];
+
+    if (!parse_ipv4_octets(value, octets)) return FALSE;
+    return is_rfc1918_octets(octets);
+}
+
+static int print_private_network_target(void) {
+    const ULONG flags = GAA_FLAG_SKIP_ANYCAST |
+        GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    ULONG buffer_size = 15u * 1024u;
+    BYTE *buffer = (BYTE *)HeapAlloc(GetProcessHeap(), 0, buffer_size);
+    ULONG status;
+    PIP_ADAPTER_ADDRESSES adapters;
+    PIP_ADAPTER_ADDRESSES adapter;
+
+    if (buffer == NULL) return 1;
+    adapters = (PIP_ADAPTER_ADDRESSES)buffer;
+    status = GetAdaptersAddresses(AF_INET, flags, NULL, adapters, &buffer_size);
+    if (status == ERROR_BUFFER_OVERFLOW && buffer_size != 0 &&
+        buffer_size <= 1024u * 1024u) {
+        HeapFree(GetProcessHeap(), 0, buffer);
+        buffer = (BYTE *)HeapAlloc(GetProcessHeap(), 0, buffer_size);
+        if (buffer == NULL) return 1;
+        adapters = (PIP_ADAPTER_ADDRESSES)buffer;
+        status = GetAdaptersAddresses(AF_INET, flags, NULL, adapters, &buffer_size);
+    }
+    if (status != NO_ERROR) {
+        HeapFree(GetProcessHeap(), 0, buffer);
+        return 1;
+    }
+
+    for (adapter = adapters; adapter != NULL; adapter = adapter->Next) {
+        PIP_ADAPTER_UNICAST_ADDRESS unicast;
+        if (adapter->OperStatus != IfOperStatusUp) continue;
+        for (unicast = adapter->FirstUnicastAddress;
+             unicast != NULL; unicast = unicast->Next) {
+            const SOCKADDR *socket_address = unicast->Address.lpSockaddr;
+            const SOCKADDR_IN *ipv4_address;
+            unsigned long address;
+            unsigned int octets[4];
+            char formatted[16];
+            int formatted_length;
+
+            if (unicast->DadState != IpDadStatePreferred || socket_address == NULL ||
+                socket_address->sa_family != AF_INET) {
+                continue;
+            }
+            ipv4_address = (const SOCKADDR_IN *)socket_address;
+            address = ntohl(ipv4_address->sin_addr.s_addr);
+            octets[0] = (unsigned int)((address >> 24) & 0xffu);
+            octets[1] = (unsigned int)((address >> 16) & 0xffu);
+            octets[2] = (unsigned int)((address >> 8) & 0xffu);
+            octets[3] = (unsigned int)(address & 0xffu);
+            if (!is_rfc1918_octets(octets)) continue;
+            formatted_length = snprintf(
+                formatted, sizeof(formatted), "%u.%u.%u.%u",
+                octets[0], octets[1], octets[2], octets[3]
+            );
+            if (formatted_length <= 0 ||
+                (size_t)formatted_length >= sizeof(formatted)) {
+                HeapFree(GetProcessHeap(), 0, buffer);
+                return 1;
+            }
+            printf("%s\n", formatted);
+            HeapFree(GetProcessHeap(), 0, buffer);
+            return 0;
+        }
+    }
+
+    HeapFree(GetProcessHeap(), 0, buffer);
+    return 1;
+}
+
+static int self_test_network_target_parser(void) {
+    static const wchar_t *const allowed[] = {
+        L"10.0.0.1", L"172.16.0.1", L"172.31.255.254", L"192.168.1.9"
+    };
+    static const wchar_t *const rejected[] = {
+        L"127.0.0.1", L"8.8.8.8", L"172.15.255.1", L"172.32.0.1",
+        L"192.167.1.1", L"192.0.2.1", L"10.256.0.1", L"010.0.0.1",
+        L"10.0.0", L"10.0.0.1.2", L"10.0.0.1suffix", L"10..0.1"
+    };
+    size_t index;
+
+    for (index = 0; index < sizeof(allowed) / sizeof(allowed[0]); ++index) {
+        if (!is_rfc1918_ipv4(allowed[index])) return 1;
+    }
+    for (index = 0; index < sizeof(rejected) / sizeof(rejected[0]); ++index) {
+        if (is_rfc1918_ipv4(rejected[index])) return 1;
+    }
+    return 0;
+}
+
 static BOOL assign_argument(
     ProbeArguments *arguments,
     const wchar_t *name,
@@ -151,8 +284,7 @@ static BOOL parse_arguments(int argc, wchar_t **argv, ProbeArguments *arguments)
     for (index = 1; index < argc; index += 2) {
         if (!assign_argument(arguments, argv[index], argv[index + 1], &seen)) return FALSE;
     }
-    return seen == ARG_ALL && arguments->network_address != NULL &&
-        wcscmp(arguments->network_address, L"127.0.0.1") == 0;
+    return seen == ARG_ALL && is_rfc1918_ipv4(arguments->network_address);
 }
 
 static BOOL token_is_appcontainer(void) {
@@ -426,6 +558,14 @@ int wmain(int argc, wchar_t **argv) {
     ProbeReceipt receipt;
     BOOL all_checks;
 
+    if (argc == 2 && argv != NULL &&
+        wcscmp(argv[1], L"--self-test-network-target") == 0) {
+        return self_test_network_target_parser();
+    }
+    if (argc == 2 && argv != NULL &&
+        wcscmp(argv[1], L"--select-private-network-target") == 0) {
+        return print_private_network_target();
+    }
     ZeroMemory(&receipt, sizeof(receipt));
     if (!parse_arguments(argc, argv, &arguments)) return 2;
 

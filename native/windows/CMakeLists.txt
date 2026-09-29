@@ -17,7 +17,7 @@ target_compile_definitions(icode_appcontainer_read_probe PRIVATE
   _UNICODE
   _WIN32_WINNT=0x0A00
 )
-target_link_libraries(icode_appcontainer_read_probe PRIVATE ws2_32)
+target_link_libraries(icode_appcontainer_read_probe PRIVATE iphlpapi ws2_32)
 
 add_executable(icode_wfp_event_probe icode_wfp_event_probe.c)
 set_target_properties(icode_wfp_event_probe PROPERTIES

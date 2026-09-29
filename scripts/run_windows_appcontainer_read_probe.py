@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import ipaddress
 import json
 import os
 from collections.abc import Iterator
@@ -40,6 +41,11 @@ _ERROR_INSUFFICIENT_BUFFER = 122
 _ERROR_SUCCESS = 0
 _NETISO_ERROR_TYPE_PRIVATE_NETWORK = 1
 _NETWORK_ISOLATION_FAILURE_CODES = frozenset({10013, 10060})
+_RFC1918_NETWORKS = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
 _EXPECTED_SOURCE_CONTENTS = b"ICODE-READ-HANDLE-PROBE-v1\n"
 _DISPOSABLE_WORKSPACE_PREFIX = "icode-appcontainer-read-handle-"
 _SID_PATTERN = re.compile(r"(?i)(?<![A-Z0-9])S-\d+(?:-\d+)+(?![A-Z0-9])")
@@ -79,8 +85,45 @@ def _format_network_error(value: object) -> str:
     return "unknown"
 
 
+def _is_rfc1918_ipv4(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        address = ipaddress.IPv4Address(value)
+    except ipaddress.AddressValueError:
+        return False
+    return any(address in network for network in _RFC1918_NETWORKS)
+
+
+def _select_private_network_probe_address(probe_executable: Path) -> str:
+    """Choose a configured RFC1918 address through read-only Win32 enumeration."""
+
+    try:
+        result = subprocess.run(
+            [str(probe_executable), "--select-private-network-target"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise OSError("private_network_probe_address_unavailable") from None
+
+    selected_lines = result.stdout.splitlines() if isinstance(result.stdout, str) else []
+    if result.returncode != 0 or len(selected_lines) != 1:
+        raise OSError("private_network_probe_address_unavailable")
+    local_address = selected_lines[0]
+    if not _is_rfc1918_ipv4(local_address):
+        raise OSError("private_network_probe_address_unavailable")
+    return local_address
+
+
 def _network_isolation_denial_verified(
-    receipt: object, *, host_listener_control: bool, no_network_connection: bool,
+    receipt: object,
+    *,
+    network_target_is_private: bool,
+    host_listener_control: bool,
+    no_network_connection: bool,
 ) -> bool:
     """Require a native missing-capability diagnosis and a failed live-listener probe."""
     if not isinstance(receipt, dict):
@@ -99,6 +142,7 @@ def _network_isolation_denial_verified(
         or network_error not in _NETWORK_ISOLATION_FAILURE_CODES
         or type(isolation_error) is not int
         or isolation_error != _NETISO_ERROR_TYPE_PRIVATE_NETWORK
+        or network_target_is_private is not True
         or host_listener_control is not True
         or no_network_connection is not True
     ):
@@ -717,8 +761,9 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
             workspace_dacl_before = dacl_snapshots_before[workspace]
             workspace_helper_dacl_before = dacl_snapshots_before[helper]
 
+            network_address = _select_private_network_probe_address(probe_executable)
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
-                listener.bind(("127.0.0.1", 0))
+                listener.bind((network_address, 0))
                 listener.listen(2)
                 listener.settimeout(3)
                 host_listener_control = _host_listener_is_live(listener)
@@ -727,9 +772,8 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                     return 1
                 network_port = listener.getsockname()[1]
                 profile_name = f"icode-{uuid.uuid4().hex}"
-                wfp_process, wfp_paths = _start_wfp_event_probe(
-                    wfp_probe_executable, profile_name, network_port, root,
-                )
+                # This observer is loopback-specific; the candidate target is private IPv4.
+                wfp_process, wfp_paths = None, None
                 wfp_receipt: dict[str, object] | None = None
                 wfp_exit_code: int | None = None
 
@@ -744,7 +788,7 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                             "--profile-path", str(profile_file),
                             "--marker-path", str(marker),
                             "--report-path", str(report),
-                            "--network-address", "127.0.0.1",
+                            "--network-address", network_address,
                             "--network-port", str(network_port),
                         ]
                         prior_opt_in = os.environ.get("ICODE_DIAGNOSTIC_READ_HANDLE")
@@ -811,6 +855,7 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                 "marker_create_denied": receipt.get("marker_create_denied") is True,
                 "network_isolation_denied": _network_isolation_denial_verified(
                     receipt,
+                    network_target_is_private=_is_rfc1918_ipv4(network_address),
                     host_listener_control=host_listener_control,
                     no_network_connection=no_network_connection,
                 ),
@@ -847,6 +892,7 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                 f"connected:{receipt.get('network_connected') is True},"
                 f"winsock_error:{_format_network_error(receipt.get('network_error'))},"
                 f"winsock_access_denied:{receipt.get('network_error') == 10013},"
+                f"target_is_rfc1918:{_is_rfc1918_ipv4(network_address)},"
                 f"isolation_diagnostic_ok:{receipt.get('network_isolation_diagnostic_ok') is True},"
                 f"isolation_status:{_format_network_error(receipt.get('network_isolation_status'))},"
                 f"isolation_error_type:{_format_network_error(receipt.get('network_isolation_error_type'))}"
@@ -894,7 +940,9 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
         diagnostic = "unclassified"
         if len(exc.args) == 1 and type(exc.args[0]) is str:
             candidate = exc.args[0]
-            if re.fullmatch(
+            if candidate == "private_network_probe_address_unavailable":
+                diagnostic = candidate
+            elif re.fullmatch(
                 r"dacl_baseline_[a-z_]+(?:_(?:win|errno)_\d+)?", candidate,
             ):
                 diagnostic = candidate

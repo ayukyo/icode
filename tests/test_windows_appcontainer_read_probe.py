@@ -43,7 +43,12 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         }
 
         self.assertTrue(
-            verify(receipt, host_listener_control=True, no_network_connection=True),
+            verify(
+                receipt,
+                network_target_is_private=True,
+                host_listener_control=True,
+                no_network_connection=True,
+            ),
         )
 
         invalid_receipts = (
@@ -60,22 +65,119 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         for invalid in invalid_receipts:
             with self.subTest(receipt=invalid):
                 self.assertFalse(
-                    verify(invalid, host_listener_control=True, no_network_connection=True),
+                    verify(
+                        invalid,
+                        network_target_is_private=True,
+                        host_listener_control=True,
+                        no_network_connection=True,
+                    ),
                 )
 
         self.assertFalse(
-            verify(receipt, host_listener_control=False, no_network_connection=True),
+            verify(
+                receipt,
+                network_target_is_private=True,
+                host_listener_control=False,
+                no_network_connection=True,
+            ),
         )
         self.assertFalse(
-            verify(receipt, host_listener_control=True, no_network_connection=False),
-        )
-        self.assertTrue(
             verify(
-                {**receipt, "network_error": 10013},
+                receipt,
+                network_target_is_private=True,
+                host_listener_control=True,
+                no_network_connection=False,
+            ),
+        )
+        self.assertFalse(
+            verify(
+                receipt,
+                network_target_is_private=False,
                 host_listener_control=True,
                 no_network_connection=True,
             ),
         )
+        self.assertTrue(
+            verify(
+                {**receipt, "network_error": 10013},
+                network_target_is_private=True,
+                host_listener_control=True,
+                no_network_connection=True,
+            ),
+        )
+
+    def test_private_network_probe_address_uses_local_adapter_enumeration(self) -> None:
+        select = getattr(probe_module, "_select_private_network_probe_address", None)
+        self.assertTrue(callable(select), "private-network target selector is missing")
+        probe_path = Path("probe.exe")
+        with patch.object(
+            probe_module.subprocess,
+            "run",
+            return_value=SimpleNamespace(returncode=0, stdout="10.12.34.56\n"),
+        ) as run, patch.object(probe_module.socket, "socket") as socket_factory:
+            address = select(probe_path)
+
+        self.assertEqual(address, "10.12.34.56")
+        run.assert_called_once_with(
+            [str(probe_path), "--select-private-network-target"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        socket_factory.assert_not_called()
+
+    def test_private_network_probe_address_rejects_bad_native_enumeration(self) -> None:
+        select = getattr(probe_module, "_select_private_network_probe_address", None)
+        self.assertTrue(callable(select), "private-network target selector is missing")
+
+        invalid_results = (
+            SimpleNamespace(returncode=0, stdout="8.8.8.8\n"),
+            SimpleNamespace(returncode=0, stdout="127.0.0.1\n"),
+            SimpleNamespace(returncode=0, stdout="169.254.1.2\n"),
+            SimpleNamespace(returncode=0, stdout="192.0.2.8\n"),
+            SimpleNamespace(returncode=0, stdout="10.0.0.1\n192.168.0.1\n"),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=1, stdout="10.0.0.1\n"),
+        )
+        for native_result in invalid_results:
+            with self.subTest(native_result=native_result), patch.object(
+                probe_module.subprocess, "run", return_value=native_result,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "private_network_probe_address_unavailable",
+                ):
+                    select(Path("probe.exe"))
+
+        launch_failures = (
+            OSError("native helper path must not leak"),
+            probe_module.subprocess.TimeoutExpired("native helper", 5),
+        )
+        for failure in launch_failures:
+            with self.subTest(failure=type(failure).__name__), patch.object(
+                probe_module.subprocess, "run", side_effect=failure,
+            ):
+                with self.assertRaisesRegex(
+                    OSError, "private_network_probe_address_unavailable",
+                ):
+                    select(Path("probe.exe"))
+
+    def test_rfc1918_address_gate_uses_exact_private_ranges(self) -> None:
+        is_private = getattr(probe_module, "_is_rfc1918_ipv4", None)
+        self.assertTrue(callable(is_private), "RFC1918 address gate is missing")
+        for address in (
+            "10.0.0.1", "10.255.255.254", "172.16.0.1", "172.31.255.254",
+            "192.168.0.1", "192.168.255.254",
+        ):
+            with self.subTest(address=address):
+                self.assertTrue(is_private(address))
+        for address in (
+            "9.255.255.255", "172.15.255.254", "172.32.0.1", "192.167.255.254",
+            "127.0.0.1", "169.254.1.2", "192.0.2.1", "8.8.8.8", "010.0.0.1",
+        ):
+            with self.subTest(address=address):
+                self.assertFalse(is_private(address))
+        self.assertFalse(is_private(True))
 
     def test_network_error_diagnostic_accepts_only_bounded_integer_codes(self) -> None:
         self.assertEqual(_format_network_error(10013), "10013")
