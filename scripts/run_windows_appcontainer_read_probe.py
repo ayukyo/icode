@@ -40,6 +40,8 @@ _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 _ERROR_INSUFFICIENT_BUFFER = 122
 _ERROR_SUCCESS = 0
 _NETISO_ERROR_TYPE_PRIVATE_NETWORK = 1
+_WSAE_CONNECTION_REFUSED = 10061
+_WSAE_TIMED_OUT = 10060
 _NETWORK_ISOLATION_FAILURE_CODES = frozenset({10013, 10060})
 _WFP_NETWORK_CAPABILITY_LABELS = {
     0: "internet_client",
@@ -153,6 +155,36 @@ def _network_isolation_denial_verified(
     ):
         return False
     return True
+
+
+def _classify_listener_port_comparison(
+    receipt: object,
+    *,
+    live_listener_control: bool,
+    control_port_reserved: bool,
+) -> str:
+    """Narrow the result only against a same-address closed-port control."""
+    if (
+        not isinstance(receipt, dict)
+        or live_listener_control is not True
+        or control_port_reserved is not True
+        or receipt.get("network_connect_attempted") is not True
+        or receipt.get("network_connected") is not False
+        or receipt.get("network_control_connect_attempted") is not True
+        or receipt.get("network_control_connected") is not False
+    ):
+        return "inconclusive"
+
+    live_error = receipt.get("network_error")
+    control_error = receipt.get("network_control_error")
+    if (
+        type(live_error) is int
+        and live_error == _WSAE_TIMED_OUT
+        and type(control_error) is int
+        and control_error == _WSAE_CONNECTION_REFUSED
+    ):
+        return "listener_path_narrowed"
+    return "inconclusive"
 
 
 def _classify_wfp_target_drop_receipt(
@@ -814,15 +846,33 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
             workspace_helper_dacl_before = dacl_snapshots_before[helper]
 
             network_address = _select_private_network_probe_address(probe_executable)
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            with (
+                socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener,
+                socket.socket(socket.AF_INET, socket.SOCK_STREAM) as control_socket,
+            ):
                 listener.bind((network_address, 0))
                 listener.listen(2)
                 listener.settimeout(3)
+                control_socket.bind((network_address, 0))
                 host_listener_control = _host_listener_is_live(listener)
                 if not host_listener_control:
                     print("host_listener_control=false")
                     return 1
                 network_port = listener.getsockname()[1]
+                control_host, control_port = control_socket.getsockname()
+                control_port_reserved = (
+                    control_host == network_address
+                    and type(control_port) is int
+                    and 0 < control_port <= 65535
+                    and control_port != network_port
+                    and control_socket.getsockopt(
+                        socket.SOL_SOCKET,
+                        socket.SO_ACCEPTCONN,
+                    ) == 0
+                )
+                if not control_port_reserved:
+                    print("control_port_reserved=false")
+                    return 1
                 profile_name = f"icode-{uuid.uuid4().hex}"
                 wfp_process, wfp_paths = None, None
                 wfp_receipt: dict[str, object] | None = None
@@ -848,6 +898,7 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                             "--report-path", str(report),
                             "--network-address", network_address,
                             "--network-port", str(network_port),
+                            "--network-control-port", str(control_port),
                         ]
                         prior_opt_in = os.environ.get("ICODE_DIAGNOSTIC_READ_HANDLE")
                         os.environ["ICODE_DIAGNOSTIC_READ_HANDLE"] = "true"
@@ -893,6 +944,12 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                     )
                 except (OSError, UnicodeError, json.JSONDecodeError):
                     receipt = {}
+
+            listener_port_comparison = _classify_listener_port_comparison(
+                receipt,
+                live_listener_control=host_listener_control,
+                control_port_reserved=control_port_reserved,
+            )
 
             file_digests_after = {path: _file_digest(path) for path in protected_files}
             dacl_snapshots_after = {
@@ -950,6 +1007,11 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                 f"connected:{receipt.get('network_connected') is True},"
                 f"winsock_error:{_format_network_error(receipt.get('network_error'))},"
                 f"winsock_access_denied:{receipt.get('network_error') == 10013},"
+                f"control_connect_attempted:{receipt.get('network_control_connect_attempted') is True},"
+                f"control_connected:{receipt.get('network_control_connected') is True},"
+                "control_winsock_error:"
+                f"{_format_network_error(receipt.get('network_control_error'))},"
+                f"listener_port_comparison:{listener_port_comparison},"
                 f"target_is_rfc1918:{_is_rfc1918_ipv4(network_address)},"
                 f"isolation_diagnostic_ok:{receipt.get('network_isolation_diagnostic_ok') is True},"
                 f"isolation_status:{_format_network_error(receipt.get('network_isolation_status'))},"

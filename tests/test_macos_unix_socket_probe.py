@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shutil
 import socket
@@ -11,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from typing import Callable
 from unittest.mock import patch
 
 from tests import _support  # noqa: F401  # Add the repository's src/ to sys.path.
@@ -19,7 +21,7 @@ from icode.approvals import ScriptedApprover
 from icode.isolation import MacSeatbeltSandbox
 from icode.network_destination import ResolvedNetworkTarget
 from icode.network_lease import NetworkLeaseAuthority, NetworkPurpose
-from icode.network_proxy_scope import HostConnectRuntime
+from icode.network_proxy_scope import HostConnectRuntime, HostHttpsConnectScope
 from icode.network_proxy_server import HostConnectProxyServer
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 
@@ -1078,6 +1080,71 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             proxy_listener.bind(("127.0.0.1", 0))
             proxy_listener.listen(4)
             proxy_listener.setblocking(False)
+
+            listener_facts: list[str] = []
+
+            def record_listener_fact(
+                name: str,
+                probe_fact: Callable[[], object],
+            ) -> None:
+                try:
+                    fact_value = probe_fact()
+                except Exception as error:
+                    fact_value = f"error:{type(error).__name__}"
+                listener_facts.append(f"{name}={fact_value}")
+
+            record_listener_fact(
+                "exact_socket_type",
+                lambda: type(proxy_listener) is socket.socket,
+            )
+            record_listener_fact(
+                "ipv4_family",
+                lambda: proxy_listener.family == socket.AF_INET,
+            )
+            record_listener_fact(
+                "stream_socket",
+                lambda: proxy_listener.getsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_TYPE,
+                ) == socket.SOCK_STREAM,
+            )
+            record_listener_fact(
+                "listening",
+                lambda: proxy_listener.getsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_ACCEPTCONN,
+                ) == 1,
+            )
+            record_listener_fact(
+                "ipv4_loopback",
+                lambda: proxy_listener.getsockname()[0] == "127.0.0.1",
+            )
+            record_listener_fact(
+                "positive_port",
+                lambda: type(proxy_listener.getsockname()[1]) is int
+                and proxy_listener.getsockname()[1] > 0,
+            )
+            record_listener_fact(
+                "wrapper_nonblocking",
+                lambda: proxy_listener.gettimeout() == 0.0,
+            )
+            record_listener_fact(
+                "fd_nonblocking",
+                lambda: not os.get_blocking(proxy_listener.fileno()),
+            )
+            record_listener_fact(
+                "scope_type",
+                lambda: isinstance(scope, HostHttpsConnectScope),
+            )
+            record_listener_fact(
+                "already_noninheritable",
+                lambda: not proxy_listener.get_inheritable(),
+            )
+            print(
+                "::notice::macos-live-lease-listener-contract "
+                + " ".join(listener_facts),
+                flush=True,
+            )
             proxy_server = HostConnectProxyServer(proxy_listener, scope)
             upstream_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             upstream_listener.bind(("127.0.0.1", 0))

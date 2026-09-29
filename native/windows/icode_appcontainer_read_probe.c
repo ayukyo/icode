@@ -22,7 +22,8 @@ enum {
     ARG_REPORT = 1u << 6,
     ARG_ADDRESS = 1u << 7,
     ARG_PORT = 1u << 8,
-    ARG_ALL = (1u << 9) - 1u,
+    ARG_CONTROL_PORT = 1u << 9,
+    ARG_ALL = (1u << 10) - 1u,
 };
 
 static const unsigned char kExpectedContents[] = "ICODE-READ-HANDLE-PROBE-v1\n";
@@ -39,6 +40,7 @@ typedef struct ProbeArguments {
     const wchar_t *report_path;
     const wchar_t *network_address;
     unsigned short network_port;
+    unsigned short network_control_port;
 } ProbeArguments;
 
 typedef struct ProbeReceipt {
@@ -54,6 +56,9 @@ typedef struct ProbeReceipt {
     int network_error;
     BOOL network_connect_attempted;
     BOOL network_connected;
+    int network_control_error;
+    BOOL network_control_connect_attempted;
+    BOOL network_control_connected;
     BOOL network_isolation_diagnostic_ok;
     DWORD network_isolation_status;
     DWORD network_isolation_error_type;
@@ -266,6 +271,9 @@ static BOOL assign_argument(
     } else if (wcscmp(name, L"--network-port") == 0) {
         bit = ARG_PORT;
         if (!parse_port(value, &arguments->network_port)) return FALSE;
+    } else if (wcscmp(name, L"--network-control-port") == 0) {
+        bit = ARG_CONTROL_PORT;
+        if (!parse_port(value, &arguments->network_control_port)) return FALSE;
     } else {
         return FALSE;
     }
@@ -279,12 +287,14 @@ static BOOL parse_arguments(int argc, wchar_t **argv, ProbeArguments *arguments)
     unsigned seen = 0;
     int index;
 
-    if (argc != 1 + (2 * 9) || argv == NULL || arguments == NULL) return FALSE;
+    if (argc != 1 + (2 * 10) || argv == NULL || arguments == NULL) return FALSE;
     ZeroMemory(arguments, sizeof(*arguments));
     for (index = 1; index < argc; index += 2) {
         if (!assign_argument(arguments, argv[index], argv[index + 1], &seen)) return FALSE;
     }
-    return seen == ARG_ALL && is_rfc1918_ipv4(arguments->network_address);
+    return seen == ARG_ALL &&
+        arguments->network_port != arguments->network_control_port &&
+        is_rfc1918_ipv4(arguments->network_address);
 }
 
 static BOOL token_is_appcontainer(void) {
@@ -405,8 +415,10 @@ static BOOL diagnose_missing_network_capability(
     return *diagnostic_ok_out && error_type == NETISO_ERROR_TYPE_PRIVATE_NETWORK;
 }
 
-static BOOL network_connect_is_denied(
-    const ProbeArguments *arguments,
+static BOOL network_connect_to_port(
+    const wchar_t *network_address,
+    unsigned short network_port,
+    BOOL send_probe_payload,
     int *error_out,
     BOOL *connect_attempted_out,
     BOOL *connected_out
@@ -427,7 +439,7 @@ static BOOL network_connect_is_denied(
     BOOL denied = FALSE;
     BOOL connected = FALSE;
 
-    if (arguments == NULL || arguments->network_address == NULL || error_out == NULL ||
+    if (network_address == NULL || network_port == 0 || error_out == NULL ||
         connect_attempted_out == NULL || connected_out == NULL) {
         return FALSE;
     }
@@ -446,8 +458,8 @@ static BOOL network_connect_is_denied(
     } else {
         ZeroMemory(&address, sizeof(address));
         address.sin_family = AF_INET;
-        address.sin_port = htons(arguments->network_port);
-        if (InetPtonW(AF_INET, arguments->network_address, &address.sin_addr) != 1) {
+        address.sin_port = htons(network_port);
+        if (InetPtonW(AF_INET, network_address, &address.sin_addr) != 1) {
             error = WSAEINVAL;
         } else if (ioctlsocket(client, FIONBIO, &nonblocking) == SOCKET_ERROR) {
             error = WSAGetLastError();
@@ -495,7 +507,7 @@ static BOOL network_connect_is_denied(
             } else {
                 connected = TRUE;
             }
-            if (connected) {
+            if (connected && send_probe_payload) {
                 (void)send(client, kNetworkProbe, (int)(sizeof(kNetworkProbe) - 1), 0);
             }
         }
@@ -508,7 +520,7 @@ static BOOL network_connect_is_denied(
 }
 
 static BOOL write_receipt(const wchar_t *path, ProbeReceipt *receipt, unsigned stage) {
-    char json[1024];
+    char json[1536];
     int length;
     DWORD bytes_written = 0;
     HANDLE output;
@@ -521,6 +533,9 @@ static BOOL write_receipt(const wchar_t *path, ProbeReceipt *receipt, unsigned s
         "\"profile_path_denied\":%s,\"marker_create_denied\":%s,"
         "\"network_denied\":%s,\"network_error\":%d,"
         "\"network_connect_attempted\":%s,\"network_connected\":%s,"
+        "\"network_control_error\":%d,"
+        "\"network_control_connect_attempted\":%s,"
+        "\"network_control_connected\":%s,"
         "\"network_isolation_diagnostic_ok\":%s,"
         "\"network_isolation_status\":%lu,"
         "\"network_isolation_error_type\":%lu,\"stage\":%u}\n",
@@ -536,6 +551,9 @@ static BOOL write_receipt(const wchar_t *path, ProbeReceipt *receipt, unsigned s
         receipt->network_error,
         receipt->network_connect_attempted ? "true" : "false",
         receipt->network_connected ? "true" : "false",
+        receipt->network_control_error,
+        receipt->network_control_connect_attempted ? "true" : "false",
+        receipt->network_control_connected ? "true" : "false",
         receipt->network_isolation_diagnostic_ok ? "true" : "false",
         (unsigned long)receipt->network_isolation_status,
         (unsigned long)receipt->network_isolation_error_type,
@@ -599,8 +617,9 @@ int wmain(int argc, wchar_t **argv) {
         arguments.report_path, &receipt, receipt.completed_stage
     );
 
-    receipt.network_denied = network_connect_is_denied(
-        &arguments, &receipt.network_error,
+    receipt.network_denied = network_connect_to_port(
+        arguments.network_address, arguments.network_port, TRUE,
+        &receipt.network_error,
         &receipt.network_connect_attempted, &receipt.network_connected
     );
     if (receipt.network_connect_attempted && !receipt.network_connected) {
@@ -611,6 +630,12 @@ int wmain(int argc, wchar_t **argv) {
             &receipt.network_isolation_error_type
         );
     }
+    (void)network_connect_to_port(
+        arguments.network_address, arguments.network_control_port, FALSE,
+        &receipt.network_control_error,
+        &receipt.network_control_connect_attempted,
+        &receipt.network_control_connected
+    );
     receipt.completed_stage = 5;
     receipt.report_written = write_receipt(
         arguments.report_path, &receipt, receipt.completed_stage

@@ -24,6 +24,60 @@ from scripts.run_windows_appcontainer_read_probe import (
 
 
 class TestWindowsAppContainerReadProbe(unittest.TestCase):
+    def test_listener_port_diagnostic_only_narrows_timeout_vs_refused_control(self) -> None:
+        classify = getattr(
+            probe_module, "_classify_listener_port_comparison", None,
+        )
+        self.assertTrue(
+            callable(classify), "listener port comparison classifier is missing",
+        )
+        receipt = {
+            "network_connect_attempted": True,
+            "network_connected": False,
+            "network_error": 10060,
+            "network_control_connect_attempted": True,
+            "network_control_connected": False,
+            "network_control_error": 10061,
+        }
+
+        self.assertEqual(
+            classify(
+                receipt,
+                live_listener_control=True,
+                control_port_reserved=True,
+            ),
+            "listener_path_narrowed",
+        )
+
+        inconclusive_receipts = (
+            {**receipt, "network_error": 10061},
+            {**receipt, "network_control_error": 10060},
+            {**receipt, "network_control_connected": True},
+            {**receipt, "network_control_connect_attempted": False},
+            {**receipt, "network_error": True},
+            {key: value for key, value in receipt.items() if key != "network_error"},
+        )
+        for candidate in inconclusive_receipts:
+            with self.subTest(receipt=candidate):
+                self.assertEqual(
+                    classify(
+                        candidate,
+                        live_listener_control=True,
+                        control_port_reserved=True,
+                    ),
+                    "inconclusive",
+                )
+
+        for host_control in (
+            {"live_listener_control": False, "control_port_reserved": True},
+            {"live_listener_control": True, "control_port_reserved": False},
+        ):
+            with self.subTest(host_control=host_control):
+                self.assertEqual(
+                    classify(receipt, **host_control),
+                    "inconclusive",
+                )
+
     def test_network_isolation_denial_requires_exact_native_and_host_evidence(self) -> None:
         verify = getattr(
             probe_module, "_network_isolation_denial_verified", None,
