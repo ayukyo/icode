@@ -10,6 +10,11 @@ on:
         required: false
         default: false
         type: boolean
+      run_windows_appcontainer_read_handle_probe:
+        description: Run the retired AppContainer read-handle experiment (diagnostic only)
+        required: false
+        default: false
+        type: boolean
       run_windows_standard_user_token_probe:
         description: Verify restricted-token process creation from a temporary standard Windows user
         required: false
@@ -275,6 +280,7 @@ jobs:
         run: python scripts/run_network_lease_ci.py
 
   windows-appcontainer-read-handle-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_windows_appcontainer_read_handle_probe
     name: R2 Windows AppContainer read-handle probe (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15

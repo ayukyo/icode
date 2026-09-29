@@ -103,5 +103,25 @@ class TestLinuxReviewerBoundaryCi(unittest.TestCase):
         self.assertNotIn("sysctl -w", workflow)
 
 
+class TestRetiredAppContainerProbeCi(unittest.TestCase):
+    def test_retired_windows_appcontainer_probe_is_opt_in_only(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        expected_input = """      run_windows_appcontainer_read_handle_probe:
+        description: Run the retired AppContainer read-handle experiment (diagnostic only)
+        required: false
+        default: false
+        type: boolean
+"""
+        expected_job_gate = """  windows-appcontainer-read-handle-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_windows_appcontainer_read_handle_probe
+"""
+
+        self.assertIn(expected_input, workflow)
+        self.assertIn(expected_job_gate, workflow)
+
+
 if __name__ == "__main__":
     unittest.main()
