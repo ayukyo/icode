@@ -95,6 +95,51 @@ def _classify_wfp_capability_drop_receipt(
     return "capability_drop_attributed"
 
 
+def _wfp_observer_diagnostic_summary(
+    *,
+    process_started: bool,
+    paths: tuple[Path, Path, Path] | None,
+    receipt: object,
+    collector_exit_code: int | None,
+) -> dict[str, object]:
+    """Return fixed-schema observer state without disclosing paths or raw receipt data."""
+    ready_state = "missing"
+    if paths is not None:
+        ready_path, _stop_path, _result_path = paths
+        try:
+            if ready_path.stat().st_size > 64:
+                ready_state = "invalid"
+            else:
+                marker = ready_path.read_bytes()
+                ready_state = {
+                    b"ready\n": "ready",
+                    b"unavailable\n": "unavailable",
+                }.get(marker, "invalid")
+        except OSError:
+            ready_state = "missing"
+
+    receipt_dict = receipt if isinstance(receipt, dict) else {}
+    matched_count = receipt_dict.get("matched_capability_drop_count")
+    if type(matched_count) is not int or not 0 <= matched_count <= 0xFFFF:
+        matched_count = None
+    return {
+        "started": process_started is True,
+        "ready_state": ready_state,
+        "collector_exit_code": (
+            collector_exit_code if type(collector_exit_code) is int else None
+        ),
+        "subscription_ok": (
+            receipt_dict.get("subscription_ok")
+            if type(receipt_dict.get("subscription_ok")) is bool else None
+        ),
+        "unsubscribe_ok": (
+            receipt_dict.get("unsubscribe_ok")
+            if type(receipt_dict.get("unsubscribe_ok")) is bool else None
+        ),
+        "matched_capability_drop_count": matched_count,
+    }
+
+
 def _normalize_inherited_ace_flag(ace: bytes) -> bytes:
     """Clear only the ACE-origin marker, retaining access and inheritance flags."""
     if len(ace) < 4 or int.from_bytes(ace[2:4], "little") != len(ace):
@@ -735,6 +780,19 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
             print(
                 "  wfp_capability_drop_evidence="
                 f"{_classify_wfp_capability_drop_receipt(wfp_receipt, collector_exit_code=wfp_exit_code)}"
+            )
+            print(
+                "  wfp_observer_diagnostics="
+                + json.dumps(
+                    _wfp_observer_diagnostic_summary(
+                        process_started=wfp_process is not None,
+                        paths=wfp_paths,
+                        receipt=wfp_receipt,
+                        collector_exit_code=wfp_exit_code,
+                    ),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
             )
             print(
                 "  workspace_dacl_baseline="

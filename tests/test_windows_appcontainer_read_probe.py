@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
+import stat
+import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
-import stat
-import tempfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -319,6 +320,54 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                     classify(receipt, collector_exit_code=collector_exit_code),
                     "evidence_unavailable",
                 )
+
+    def test_wfp_observer_diagnostics_show_only_bounded_phase_fields(self) -> None:
+        summarize = getattr(
+            probe_module, "_wfp_observer_diagnostic_summary", None,
+        )
+        self.assertTrue(callable(summarize), "WFP observer diagnostic summary is missing")
+
+        with tempfile.TemporaryDirectory(prefix="icode-wfp-diagnostic-summary-") as raw:
+            root = Path(raw)
+            ready = root / "wfp-token.ready"
+            stop = root / "wfp-token.stop"
+            result = root / "wfp-token.json"
+            ready.write_text("ready\n", encoding="ascii")
+            safe_receipt = {
+                "schema_version": 1,
+                "subscription_ok": True,
+                "unsubscribe_ok": True,
+                "matched_capability_drop_count": 1,
+            }
+
+            summary = summarize(
+                process_started=True,
+                paths=(ready, stop, result),
+                receipt=safe_receipt,
+                collector_exit_code=0,
+            )
+            self.assertEqual(
+                summary,
+                {
+                    "started": True,
+                    "ready_state": "ready",
+                    "collector_exit_code": 0,
+                    "subscription_ok": True,
+                    "unsubscribe_ok": True,
+                    "matched_capability_drop_count": 1,
+                },
+            )
+
+            ready.write_text("C:\\private\\runner path\n", encoding="ascii")
+            unsafe_summary = summarize(
+                process_started=False,
+                paths=(ready, stop, result),
+                receipt={"subscription_ok": "C:\\private\\SID"},
+                collector_exit_code=0,
+            )
+            self.assertEqual(unsafe_summary["ready_state"], "invalid")
+            self.assertIsNone(unsafe_summary["subscription_ok"])
+            self.assertNotIn(str(root), json.dumps(unsafe_summary))
 
     def test_wfp_observer_stop_collects_receipt_and_reaps_its_process(self) -> None:
         start = getattr(probe_module, "_start_wfp_event_probe", None)
