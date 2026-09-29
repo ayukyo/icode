@@ -46,6 +46,26 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertEqual(failed.status, "failed")
         self.assertIn("lease expiry was not enforced", failed.detail)
 
+    def test_unittest探针执行测试类级资源生命周期(self) -> None:
+        class FixtureCase(unittest.TestCase):
+            class_resource_ready = False
+
+            @classmethod
+            def setUpClass(cls) -> None:
+                cls.class_resource_ready = True
+
+            @classmethod
+            def tearDownClass(cls) -> None:
+                cls.class_resource_ready = False
+
+            def runTest(self) -> None:
+                self.assertTrue(type(self).class_resource_ready)
+
+        result = run_native_probe_ci._run_unittest_probe(FixtureCase())
+
+        self.assertEqual(result.status, "passed", result.detail)
+        self.assertFalse(FixtureCase.class_resource_ready)
+
     def _run_linux_check_with_lease_expiry(self, lease_result):
         sandbox = LandlockSandbox(helper="/tmp/icode-landlock")
         native = NativeProbeResult(True, {"workspace_write": True}, "native ok")
@@ -110,6 +130,79 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("linux-network-allowlist-expiry status=failed", output)
         self.assertIn("network allowlist expiry", output)
+
+    def _run_linux_check_with_seccomp_receipt(self, violation_result):
+        sandbox = LandlockSandbox(helper="/tmp/icode-landlock")
+        native = NativeProbeResult(True, {"workspace_write": True}, "native ok")
+        protected = LinuxProtectedPathProbeResult(
+            executed=True, passed=True,
+            checks={
+                "workspace_write_allowed": True,
+                "protected_write_denied": True,
+                "protected_rename_denied": True,
+            },
+            detail="protected paths ok",
+        )
+        cleanup = LinuxProcessTreeCleanupProbeResult(
+            executed=True, passed=True,
+            checks={
+                "descendant_started": True,
+                "descendant_detached": True,
+                "descendant_exited": True,
+                "no_delayed_write": True,
+            },
+            detail="tree cleanup ok",
+        )
+        output = StringIO()
+        with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
+             mock.patch.object(run_native_probe_ci, "probe_native_sandbox",
+                               return_value=native), \
+             mock.patch.object(run_native_probe_ci, "probe_linux_protected_paths",
+                               return_value=protected), \
+             mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
+                               return_value=cleanup), \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_seccomp_receipt",
+                 return_value=violation_result, create=True,
+             ) as violation_probe, \
+             mock.patch.object(run_native_probe_ci, "_probe_linux_network_lease_expiry",
+                               return_value=SimpleNamespace(status="passed", detail="ok"),
+                               create=True), \
+             mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
+             redirect_stdout(output):
+            result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
+        return result, violation_probe, score, output.getvalue()
+
+    def test_linux多类别原生回执运行但不冒充统一违规评分(self) -> None:
+        result, violation_probe, score, output = self._run_linux_check_with_seccomp_receipt(
+            SimpleNamespace(status="passed", detail="two denied syscall categories"),
+        )
+
+        violation_probe.assert_called_once_with()
+        self.assertNotIn("uniform_violation", score.call_args.kwargs)
+        self.assertEqual(result, 0)
+        self.assertIn("linux-seccomp-receipt-probe status=passed", output)
+
+    def test_linux原生回执探针跳过时保持未验证(self) -> None:
+        result, violation_probe, score, output = self._run_linux_check_with_seccomp_receipt(
+            SimpleNamespace(status="skipped", detail="user notification unavailable"),
+        )
+
+        violation_probe.assert_called_once_with()
+        self.assertNotIn("uniform_violation", score.call_args.kwargs)
+        self.assertEqual(result, 0)
+        self.assertIn("linux-seccomp-receipt-probe status=skipped", output)
+
+    def test_linux原生回执回归失败时原生作业失败(self) -> None:
+        result, violation_probe, score, output = self._run_linux_check_with_seccomp_receipt(
+            SimpleNamespace(status="failed", detail="uniform receipt mismatch"),
+        )
+
+        violation_probe.assert_called_once_with()
+        self.assertNotIn("uniform_violation", score.call_args.kwargs)
+        self.assertEqual(result, 1)
+        self.assertIn("linux-seccomp-receipt-probe status=failed", output)
+        self.assertIn("native seccomp receipt probe", output)
 
     def test_conformance来源字符串不会被拆成单字符(self) -> None:
         report = {

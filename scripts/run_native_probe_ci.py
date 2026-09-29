@@ -48,7 +48,7 @@ class ProbeExecution:
 def _run_unittest_probe(test_case: unittest.TestCase) -> ProbeExecution:
     """执行一个行为用例并保留 unittest 的显式 skip/failure 语义。"""
     result = unittest.TestResult()
-    test_case.run(result)
+    unittest.TestSuite((test_case,)).run(result)
     if result.testsRun != 1:
         return ProbeExecution("failed", f"expected one test, ran {result.testsRun}")
     if result.skipped:
@@ -74,6 +74,34 @@ def _probe_linux_network_lease_expiry() -> ProbeExecution:
     except Exception as exc:
         return ProbeExecution("failed", f"could not load Linux lease expiry test: {exc}")
     return _run_unittest_probe(test_case)
+
+
+def _probe_linux_seccomp_receipt() -> ProbeExecution:
+    """Run a diagnostic for bounded Linux seccomp receipt categories.
+
+    This does not satisfy the platform-wide uniform-violation capability:
+    Landlock file denials and other platform enforcement sources are not
+    currently captured by this USER_NOTIF observer.
+    """
+    if not sys.platform.startswith("linux"):
+        return ProbeExecution("skipped", "linux_only")
+    repository_root = str(Path(__file__).resolve().parents[1])
+    if repository_root not in sys.path:
+        sys.path.insert(0, repository_root)
+    try:
+        from tests.test_linux_violation_receipt import TestLinuxViolationReceipt
+
+        test_case = TestLinuxViolationReceipt(
+            "test_multiple_os_denials_share_minimized_receipt_without_raw_syscall_data",
+        )
+    except Exception:  # noqa: BLE001 - CI receipt probe must not leak import details.
+        return ProbeExecution("failed", "native_receipt_probe_unavailable")
+    execution = _run_unittest_probe(test_case)
+    if execution.status == "passed":
+        return ProbeExecution("passed", "multiple_categories_observed")
+    if execution.status == "skipped":
+        return ProbeExecution("skipped", "native_receipt_environment_unavailable")
+    return ProbeExecution("failed", "native_violation_receipt_mismatch")
 
 
 def _emit_conformance_score(
@@ -163,6 +191,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     protected_result = None
     process_tree_result = None
     lease_expiry_result = None
+    seccomp_receipt_result = None
     if platform == "macos":
         protected_result = probe_macos_protected_paths(backend)
         group_result = probe_macos_process_group_cleanup(backend)
@@ -171,6 +200,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         protected_result = probe_linux_protected_paths(backend)
         process_tree_result = probe_linux_process_tree_cleanup(backend)
         lease_expiry_result = _probe_linux_network_lease_expiry()
+        seccomp_receipt_result = _probe_linux_seccomp_receipt()
         protected_checks = LINUX_PROTECTED_PATH_CHECKS
     else:
         protected_checks = ()
@@ -198,6 +228,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     if protected_result is not None:
         checks.update(protected_result.checks)
     lease_expiry_failed = False
+    violation_receipt_failed = False
     if lease_expiry_result is not None:
         lease_status = lease_expiry_result.status
         if lease_status not in {"passed", "skipped", "failed"}:
@@ -207,6 +238,23 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         print(f"::notice::linux-network-allowlist-expiry status={lease_status}")
         safe_detail = " ".join(lease_expiry_result.detail.split())[:500] or "-"
         print(f"{backend.name} network_allowlist_expiry: {lease_status.upper()} ({safe_detail})")
+    if seccomp_receipt_result is not None:
+        violation_status = seccomp_receipt_result.status
+        if violation_status not in {"passed", "skipped", "failed"}:
+            violation_status = "failed"
+        violation_receipt_failed = violation_status == "failed"
+        print(f"::notice::linux-seccomp-receipt-probe status={violation_status}")
+        safe_detail = (
+            "multiple_categories_observed"
+            if violation_status == "passed"
+            else "native_receipt_environment_unavailable"
+            if violation_status == "skipped"
+            else "native_violation_receipt_mismatch"
+        )
+        print(
+            f"{backend.name} seccomp_receipt_probe: {violation_status.upper()} "
+            f"({safe_detail})"
+        )
     for name, passed in result.checks.items():
         print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
     _emit_conformance_score(checks, platform=platform,
@@ -231,7 +279,10 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         and (not process_tree_result.executed or not process_tree_result.passed)
     )
     native_ready = result.ready and not protected_failed and not process_tree_failed
-    if not native_ready or group_failed or lease_expiry_failed:
+    if (
+        not native_ready or group_failed or lease_expiry_failed
+        or violation_receipt_failed
+    ):
         if not native_ready and isinstance(backend, MacSeatbeltSandbox):
             true_path = shutil.which("true")
             if true_path is not None:
@@ -265,6 +316,8 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         if lease_expiry_failed:
             safe_detail = " ".join(lease_expiry_result.detail.split())[:500]
             failures.append(f"network allowlist expiry: {safe_detail}")
+        if violation_receipt_failed:
+            failures.append("native seccomp receipt probe: failed")
         print(f"::error::{backend.name} native probe failed: {'; '.join(failures)}")
         return 1
     return 0

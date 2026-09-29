@@ -141,6 +141,77 @@ class TestLinuxViolationReceipt(unittest.TestCase):
             },
         )
 
+    def test_multiple_os_denials_share_minimized_receipt_without_raw_syscall_data(self) -> None:
+        with temp_workspace() as root:
+            result = self._run_python(
+                root,
+                "import ctypes, errno, platform, socket\n"
+                "try:\n"
+                "    socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+                "except PermissionError as exc:\n"
+                "    assert exc.errno == errno.EPERM, exc.errno\n"
+                "else:\n"
+                "    raise AssertionError('network socket was not denied')\n"
+                "syscall_numbers = {'x86_64': 53, 'amd64': 53, "
+                "'aarch64': 199, 'arm64': 199}\n"
+                "syscall_number = syscall_numbers[platform.machine().lower()]\n"
+                "libc = ctypes.CDLL(None, use_errno=True)\n"
+                "libc.syscall.restype = ctypes.c_long\n"
+                "sockets = (ctypes.c_int * 2)()\n"
+                "ctypes.set_errno(0)\n"
+                "status = libc.syscall(syscall_number, socket.AF_INET, "
+                "socket.SOCK_STREAM, 0, sockets)\n"
+                "assert status == -1 and ctypes.get_errno() == errno.EPERM, "
+                "(status, ctypes.get_errno())\n",
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.content, POLICY_DENIED_USER_MESSAGE)
+        self.assertEqual(result.meta["violation_observer_status"], "complete")
+        self.assertEqual(result.meta["error_code"], "policy_denied")
+        receipt = result.meta["violation_receipt"]
+        self.assertEqual(
+            receipt,
+            {
+                "schema_version": 1,
+                "enforcement_layer": "os_seccomp_user_notif",
+                "os_enforced": True,
+                "category": "multiple",
+                "source": "seccomp_user_notif",
+                "count": 2,
+            },
+        )
+        self.assertNotIn("syscall_number", repr(receipt))
+        self.assertNotIn("AF_INET", repr(receipt))
+
+    def test_application_output_permission_denied_is_not_os_receipt(self) -> None:
+        with temp_workspace() as root:
+            result = self._run_python(
+                root,
+                "print('Permission denied')\n"
+                "raise SystemExit(13)\n",
+            )
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta["exit_code"], 13)
+        self.assertEqual(result.meta["violation_observer_status"], "complete")
+        self.assertNotIn("violation_receipt", result.meta)
+
+    def test_landlock_file_write_denial_is_not_misattributed_to_seccomp(self) -> None:
+        with temp_workspace() as root:
+            outside = root.parent / f"icode-landlock-denied-{os.getpid()}-{time.time_ns()}"
+            result = self._run_python(
+                root,
+                "from pathlib import Path\n"
+                f"Path({str(outside)!r}).write_text('must not be written')\n",
+            )
+
+            self.assertFalse(outside.exists(), "Landlock did not deny the outside write")
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.meta["violation_observer_status"], "complete")
+        self.assertNotIn("violation_receipt", result.meta)
+
     def test_AgentLoop事件保留真实原生回执和统一用户提示(self) -> None:
         with temp_workspace() as root:
             context = self._context(root)
