@@ -17,15 +17,26 @@
 #define COLLECTOR_TIMEOUT_MS 30000
 #define EVENT_DRAIN_DELAY_MS 200
 #define MAX_RECEIPT_EVENT_COUNT 65536
+#define TARGET_FILTER_CONDITION_COUNT 3
+#define RFC1918_10_ADDRESS 0x0A000000U
+#define RFC1918_10_MASK 0xFF000000U
+#define RFC1918_172_ADDRESS 0xAC100000U
+#define RFC1918_172_MASK 0xFFF00000U
+#define RFC1918_192_ADDRESS 0xC0A80000U
+#define RFC1918_192_MASK 0xFFFF0000U
+#define TEST_PRIVATE_TARGET_ADDRESS 0xC0A83811U
 
 typedef struct WfpProbeContext {
     PSID expected_package_sid;
+    UINT32 expected_remote_address;
     UINT16 expected_remote_port;
     volatile LONG event_callback_count;
     volatile LONG capability_drop_event_count;
     volatile LONG classify_drop_event_count;
     volatile LONG matched_capability_drop_count;
     volatile LONG matched_classify_drop_count;
+    volatile LONG matched_network_capability_id;
+    volatile LONG network_capability_id_consistent;
 } WfpProbeContext;
 
 static BOOL is_generated_profile_name(const wchar_t *value) {
@@ -58,6 +69,86 @@ static BOOL parse_port(const wchar_t *value, UINT16 *port_out) {
     }
     *port_out = (UINT16)parsed;
     return TRUE;
+}
+
+static BOOL parse_private_ipv4(const wchar_t *value, UINT32 *address_out) {
+    UINT32 address = 0;
+    unsigned int octet_index;
+    const wchar_t *cursor = value;
+
+    if (cursor == NULL || address_out == NULL) {
+        return FALSE;
+    }
+    for (octet_index = 0; octet_index < 4; ++octet_index) {
+        UINT32 octet = 0;
+        size_t digit_count = 0;
+
+        if (*cursor < L'0' || *cursor > L'9') {
+            return FALSE;
+        }
+        if (*cursor == L'0' && cursor[1] >= L'0' && cursor[1] <= L'9') {
+            return FALSE;
+        }
+        while (*cursor >= L'0' && *cursor <= L'9') {
+            UINT32 digit = (UINT32)(*cursor - L'0');
+            if (octet > (255U - digit) / 10U) {
+                return FALSE;
+            }
+            octet = octet * 10U + digit;
+            ++cursor;
+            ++digit_count;
+        }
+        if (digit_count == 0) {
+            return FALSE;
+        }
+        address = (address << 8) | octet;
+        if (octet_index < 3) {
+            if (*cursor != L'.') {
+                return FALSE;
+            }
+            ++cursor;
+        } else if (*cursor != L'\0') {
+            return FALSE;
+        }
+    }
+
+    /* WFP IPv4 UINT32 values use host-order numeric addresses, not socket byte order. */
+    if ((address & RFC1918_10_MASK) != RFC1918_10_ADDRESS &&
+        (address & RFC1918_172_MASK) != RFC1918_172_ADDRESS &&
+        (address & RFC1918_192_MASK) != RFC1918_192_ADDRESS) {
+        return FALSE;
+    }
+    *address_out = address;
+    return TRUE;
+}
+
+static void initialize_target_event_template(
+    FWPM_NET_EVENT_ENUM_TEMPLATE0 *event_template,
+    FWPM_FILTER_CONDITION0 conditions[TARGET_FILTER_CONDITION_COUNT],
+    UINT32 remote_address,
+    UINT16 remote_port
+) {
+    ZeroMemory(event_template, sizeof(*event_template));
+    ZeroMemory(conditions, sizeof(FWPM_FILTER_CONDITION0) *
+        TARGET_FILTER_CONDITION_COUNT);
+
+    conditions[0].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+    conditions[0].matchType = FWP_MATCH_EQUAL;
+    conditions[0].conditionValue.type = FWP_UINT32;
+    conditions[0].conditionValue.uint32 = remote_address;
+
+    conditions[1].fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
+    conditions[1].matchType = FWP_MATCH_EQUAL;
+    conditions[1].conditionValue.type = FWP_UINT16;
+    conditions[1].conditionValue.uint16 = remote_port;
+
+    conditions[2].fieldKey = FWPM_CONDITION_IP_PROTOCOL;
+    conditions[2].matchType = FWP_MATCH_EQUAL;
+    conditions[2].conditionValue.type = FWP_UINT8;
+    conditions[2].conditionValue.uint8 = IPPROTO_TCP;
+
+    event_template->numFilterConditions = TARGET_FILTER_CONDITION_COUNT;
+    event_template->filterCondition = conditions;
 }
 
 static void increment_saturating(volatile LONG *value) {
@@ -94,7 +185,7 @@ static BOOL event_header_matches_target(
         !EqualSid(header->packageSid, context->expected_package_sid) ||
         header->ipVersion != FWP_IP_VERSION_V4 ||
         header->ipProtocol != IPPROTO_TCP ||
-        header->remoteAddrV4 != INADDR_LOOPBACK ||
+        header->remoteAddrV4 != context->expected_remote_address ||
         header->remotePort != context->expected_remote_port) {
         return FALSE;
     }
@@ -107,7 +198,7 @@ static BOOL event_matches_target(
 ) {
     return event != NULL &&
         event->type == FWPM_NET_EVENT_TYPE_CAPABILITY_DROP &&
-        event->capabilityDrop != NULL && event->capabilityDrop->isLoopback &&
+        event->capabilityDrop != NULL && !event->capabilityDrop->isLoopback &&
         event_header_matches_target(event, context);
 }
 
@@ -117,8 +208,29 @@ static BOOL event_matches_classify_drop(
 ) {
     return event != NULL &&
         event->type == FWPM_NET_EVENT_TYPE_CLASSIFY_DROP &&
-        event->classifyDrop != NULL && event->classifyDrop->isLoopback &&
+        event->classifyDrop != NULL && !event->classifyDrop->isLoopback &&
         event_header_matches_target(event, context);
+}
+
+static void record_matched_network_capability(
+    WfpProbeContext *context,
+    FWPM_APPC_NETWORK_CAPABILITY_TYPE capability_id
+) {
+    LONG capability_value = (LONG)capability_id;
+    LONG previous;
+
+    increment_saturating(&context->matched_capability_drop_count);
+    if (capability_value < FWPM_APPC_NETWORK_CAPABILITY_INTERNET_CLIENT ||
+        capability_value > FWPM_APPC_NETWORK_CAPABILITY_INTERNET_PRIVATE_NETWORK) {
+        InterlockedExchange(&context->network_capability_id_consistent, FALSE);
+        return;
+    }
+    previous = InterlockedCompareExchange(
+        &context->matched_network_capability_id, capability_value, -1
+    );
+    if (previous != -1 && previous != capability_value) {
+        InterlockedExchange(&context->network_capability_id_consistent, FALSE);
+    }
 }
 
 static void CALLBACK on_net_event(void *raw_context, const FWPM_NET_EVENT3 *event) {
@@ -135,7 +247,9 @@ static void CALLBACK on_net_event(void *raw_context, const FWPM_NET_EVENT3 *even
     if (event->type == FWPM_NET_EVENT_TYPE_CAPABILITY_DROP) {
         increment_saturating(&context->capability_drop_event_count);
         if (event_matches_target(event, context)) {
-            increment_saturating(&context->matched_capability_drop_count);
+            record_matched_network_capability(
+                context, event->capabilityDrop->networkCapabilityId
+            );
         }
     } else if (event->type == FWPM_NET_EVENT_TYPE_CLASSIFY_DROP) {
         increment_saturating(&context->classify_drop_event_count);
@@ -329,18 +443,35 @@ static BOOL write_result(
     LONG capability_drop_event_count,
     LONG classify_drop_event_count,
     LONG matched_capability_drop_count,
-    LONG matched_classify_drop_count
+    LONG matched_classify_drop_count,
+    LONG matched_network_capability_id,
+    BOOL network_capability_id_consistent
 ) {
     char json[512];
-    int written = _snprintf_s(
+    char capability_id_text[16];
+    int written;
+    if (matched_network_capability_id >=
+            FWPM_APPC_NETWORK_CAPABILITY_INTERNET_CLIENT &&
+        matched_network_capability_id <=
+            FWPM_APPC_NETWORK_CAPABILITY_INTERNET_PRIVATE_NETWORK) {
+        _snprintf_s(
+            capability_id_text, sizeof(capability_id_text), _TRUNCATE,
+            "%ld", matched_network_capability_id
+        );
+    } else {
+        strcpy_s(capability_id_text, sizeof(capability_id_text), "null");
+    }
+    written = _snprintf_s(
         json, sizeof(json), _TRUNCATE,
-        "{\"schema_version\":4,\"subscription_ok\":%s,"
+        "{\"schema_version\":5,\"subscription_ok\":%s,"
         "\"unsubscribe_ok\":%s,\"network_events_collected\":%s,"
         "\"event_callback_count\":%ld,"
         "\"capability_drop_event_count\":%ld,"
         "\"classify_drop_event_count\":%ld,"
         "\"matched_capability_drop_count\":%ld,"
-        "\"matched_classify_drop_count\":%ld}\n",
+        "\"matched_classify_drop_count\":%ld,"
+        "\"matched_network_capability_id\":%s,"
+        "\"network_capability_id_consistent\":%s}\n",
         subscription_ok ? "true" : "false",
         unsubscribe_ok ? "true" : "false",
         network_events_state_known
@@ -350,7 +481,9 @@ static BOOL write_result(
         capability_drop_event_count,
         classify_drop_event_count,
         matched_capability_drop_count,
-        matched_classify_drop_count
+        matched_classify_drop_count,
+        capability_id_text,
+        network_capability_id_consistent ? "true" : "false"
     );
     return written > 0 && (size_t)written < sizeof(json) &&
         write_ascii_file(path, json);
@@ -360,6 +493,8 @@ static BOOL classifier_self_test(void) {
     FWPM_NET_EVENT3 event;
     FWPM_NET_EVENT_CAPABILITY_DROP0 drop;
     FWPM_NET_EVENT_CLASSIFY_DROP2 classify_drop;
+    FWPM_NET_EVENT_ENUM_TEMPLATE0 event_template;
+    FWPM_FILTER_CONDITION0 filter_conditions[TARGET_FILTER_CONDITION_COUNT];
     WfpProbeContext context = {0};
     PSID expected_sid = NULL;
     PSID other_sid = NULL;
@@ -369,8 +504,43 @@ static BOOL classifier_self_test(void) {
     wchar_t result_path[MAX_PROBE_PATH];
     wchar_t mismatched_path[MAX_PROBE_PATH];
     DWORD temp_length;
+    UINT32 parsed_target = 0;
     BOOL passed = FALSE;
 
+    if (FWPM_APPC_NETWORK_CAPABILITY_INTERNET_CLIENT != 0 ||
+        FWPM_APPC_NETWORK_CAPABILITY_INTERNET_CLIENT_SERVER != 1 ||
+        FWPM_APPC_NETWORK_CAPABILITY_INTERNET_PRIVATE_NETWORK != 2 ||
+        !parse_private_ipv4(L"192.168.56.17", &parsed_target) ||
+        parsed_target != TEST_PRIVATE_TARGET_ADDRESS ||
+        parse_private_ipv4(L"127.0.0.1", &parsed_target) ||
+        parse_private_ipv4(L"172.32.1.2", &parsed_target) ||
+        parse_private_ipv4(L"192.168.056.17", &parsed_target) ||
+        parse_private_ipv4(L"192.168.56.256", &parsed_target)) {
+        goto cleanup;
+    }
+    initialize_target_event_template(
+        &event_template, filter_conditions,
+        TEST_PRIVATE_TARGET_ADDRESS, 54321
+    );
+    if (event_template.numFilterConditions != TARGET_FILTER_CONDITION_COUNT ||
+        event_template.filterCondition != filter_conditions ||
+        !IsEqualGUID(
+            &filter_conditions[0].fieldKey,
+            &FWPM_CONDITION_IP_REMOTE_ADDRESS
+        ) || filter_conditions[0].conditionValue.type != FWP_UINT32 ||
+        filter_conditions[0].conditionValue.uint32 != TEST_PRIVATE_TARGET_ADDRESS ||
+        !IsEqualGUID(
+            &filter_conditions[1].fieldKey,
+            &FWPM_CONDITION_IP_REMOTE_PORT
+        ) || filter_conditions[1].conditionValue.type != FWP_UINT16 ||
+        filter_conditions[1].conditionValue.uint16 != 54321 ||
+        !IsEqualGUID(
+            &filter_conditions[2].fieldKey,
+            &FWPM_CONDITION_IP_PROTOCOL
+        ) || filter_conditions[2].conditionValue.type != FWP_UINT8 ||
+        filter_conditions[2].conditionValue.uint8 != IPPROTO_TCP) {
+        goto cleanup;
+    }
     if (!ConvertStringSidToSidW(L"S-1-15-2-1", &expected_sid) ||
         !ConvertStringSidToSidW(L"S-1-15-2-2", &other_sid)) {
         goto cleanup;
@@ -380,7 +550,10 @@ static BOOL classifier_self_test(void) {
     ZeroMemory(&classify_drop, sizeof(classify_drop));
     ZeroMemory(&context, sizeof(context));
     context.expected_package_sid = expected_sid;
+    context.expected_remote_address = TEST_PRIVATE_TARGET_ADDRESS;
     context.expected_remote_port = 54321;
+    context.matched_network_capability_id = -1;
+    context.network_capability_id_consistent = TRUE;
     event.type = FWPM_NET_EVENT_TYPE_CAPABILITY_DROP;
     event.header.flags =
         FWPM_NET_EVENT_FLAG_IP_VERSION_SET |
@@ -391,11 +564,13 @@ static BOOL classifier_self_test(void) {
     event.header.packageSid = expected_sid;
     event.header.ipVersion = FWP_IP_VERSION_V4;
     event.header.ipProtocol = IPPROTO_TCP;
-    event.header.remoteAddrV4 = INADDR_LOOPBACK;
+    event.header.remoteAddrV4 = context.expected_remote_address;
     event.header.remotePort = context.expected_remote_port;
     event.capabilityDrop = &drop;
-    drop.isLoopback = TRUE;
-    classify_drop.isLoopback = TRUE;
+    drop.isLoopback = FALSE;
+    drop.networkCapabilityId =
+        FWPM_APPC_NETWORK_CAPABILITY_INTERNET_PRIVATE_NETWORK;
+    classify_drop.isLoopback = FALSE;
 
     if (!event_matches_target(&event, &context)) {
         goto cleanup;
@@ -403,7 +578,10 @@ static BOOL classifier_self_test(void) {
     on_net_event(&context, &event);
     if (context.event_callback_count != 1 ||
         context.capability_drop_event_count != 1 ||
-        context.matched_capability_drop_count != 1) {
+        context.matched_capability_drop_count != 1 ||
+        context.matched_network_capability_id !=
+            FWPM_APPC_NETWORK_CAPABILITY_INTERNET_PRIVATE_NETWORK ||
+        context.network_capability_id_consistent != TRUE) {
         goto cleanup;
     }
     event.type = FWPM_NET_EVENT_TYPE_CLASSIFY_DROP;
@@ -434,19 +612,50 @@ static BOOL classifier_self_test(void) {
         goto cleanup;
     }
     event.header.remotePort = context.expected_remote_port;
-    event.header.remoteAddrV4 = 0x7f000002;
+    event.header.remoteAddrV4 = context.expected_remote_address + 1U;
     if (event_matches_target(&event, &context)) {
         goto cleanup;
     }
-    event.header.remoteAddrV4 = INADDR_LOOPBACK;
+    event.header.remoteAddrV4 = context.expected_remote_address;
+    event.header.ipProtocol = IPPROTO_UDP;
+    if (event_matches_target(&event, &context)) {
+        goto cleanup;
+    }
+    event.header.ipProtocol = IPPROTO_TCP;
+    event.header.ipVersion = FWP_IP_VERSION_V6;
+    if (event_matches_target(&event, &context)) {
+        goto cleanup;
+    }
+    event.header.ipVersion = FWP_IP_VERSION_V4;
     event.header.flags &= ~FWPM_NET_EVENT_FLAG_PACKAGE_ID_SET;
     if (event_matches_target(&event, &context)) {
         goto cleanup;
     }
     event.header.flags |= FWPM_NET_EVENT_FLAG_PACKAGE_ID_SET;
-    drop.isLoopback = FALSE;
+    drop.isLoopback = TRUE;
     if (event_matches_target(&event, &context)) {
         goto cleanup;
+    }
+    drop.isLoopback = FALSE;
+    {
+        WfpProbeContext mixed_context = {0};
+        mixed_context.expected_package_sid = expected_sid;
+        mixed_context.expected_remote_address = context.expected_remote_address;
+        mixed_context.expected_remote_port = context.expected_remote_port;
+        mixed_context.matched_network_capability_id = -1;
+        mixed_context.network_capability_id_consistent = TRUE;
+        drop.networkCapabilityId =
+            FWPM_APPC_NETWORK_CAPABILITY_INTERNET_PRIVATE_NETWORK;
+        on_net_event(&mixed_context, &event);
+        drop.networkCapabilityId =
+            FWPM_APPC_NETWORK_CAPABILITY_INTERNET_CLIENT;
+        on_net_event(&mixed_context, &event);
+        if (mixed_context.matched_capability_drop_count != 2 ||
+            mixed_context.matched_network_capability_id !=
+                FWPM_APPC_NETWORK_CAPABILITY_INTERNET_PRIVATE_NETWORK ||
+            mixed_context.network_capability_id_consistent != FALSE) {
+            goto cleanup;
+        }
     }
 
     temp_length = GetTempPathW(MAX_PROBE_PATH, temp_path);
@@ -489,6 +698,7 @@ cleanup:
 
 static int run_collector(
     const wchar_t *profile_name,
+    UINT32 remote_address,
     UINT16 remote_port,
     const wchar_t *ready_path,
     const wchar_t *stop_path,
@@ -498,6 +708,7 @@ static int run_collector(
     HANDLE engine = NULL;
     HANDLE subscription_handle = NULL;
     FWPM_NET_EVENT_ENUM_TEMPLATE0 event_template;
+    FWPM_FILTER_CONDITION0 filter_conditions[TARGET_FILTER_CONDITION_COUNT];
     FWPM_NET_EVENT_SUBSCRIPTION0 subscription;
     WfpProbeContext context = {0};
     HRESULT derive_result;
@@ -517,8 +728,12 @@ static int run_collector(
     LONG classify_drop_event_count = 0;
     LONG matched_capability_drop_count = 0;
     LONG matched_classify_drop_count = 0;
+    LONG matched_network_capability_id = -1;
+    BOOL network_capability_id_consistent = FALSE;
     int exit_code = 1;
 
+    context.matched_network_capability_id = -1;
+    context.network_capability_id_consistent = TRUE;
     derive_result = DeriveAppContainerSidFromAppContainerName(
         profile_name, &expected_sid
     );
@@ -546,13 +761,18 @@ static int run_collector(
         network_event_option = NULL;
     }
 
-    ZeroMemory(&event_template, sizeof(event_template));
     ZeroMemory(&subscription, sizeof(subscription));
     ZeroMemory(&context, sizeof(context));
     context.expected_package_sid = expected_sid;
+    context.expected_remote_address = remote_address;
     context.expected_remote_port = remote_port;
+    context.matched_network_capability_id = -1;
+    context.network_capability_id_consistent = TRUE;
 
-    /* Zero conditions means all event types; callback retains no payload. */
+    initialize_target_event_template(
+        &event_template, filter_conditions, remote_address, remote_port
+    );
+    /* The subscription is limited to this endpoint; callback checks package SID. */
     subscription.enumTemplate = &event_template;
     api_result = FwpmNetEventSubscribe2(
         engine, &subscription, on_net_event, &context, &subscription_handle
@@ -599,12 +819,16 @@ cleanup:
     classify_drop_event_count = context.classify_drop_event_count;
     matched_capability_drop_count = context.matched_capability_drop_count;
     matched_classify_drop_count = context.matched_classify_drop_count;
+    matched_network_capability_id = context.matched_network_capability_id;
+    network_capability_id_consistent =
+        context.network_capability_id_consistent != FALSE;
     result_written = write_result(
         result_path, subscription_ok,
         unsubscribe_ok, network_events_state_known, network_events_collected,
         event_callback_count, capability_drop_event_count,
         classify_drop_event_count,
-        matched_capability_drop_count, matched_classify_drop_count
+        matched_capability_drop_count, matched_classify_drop_count,
+        matched_network_capability_id, network_capability_id_consistent
     );
     if (result_written && ready_written && close_result == ERROR_SUCCESS &&
         (!subscription_ok || (stop_seen && unsubscribe_ok))) {
@@ -614,20 +838,24 @@ cleanup:
 }
 
 int wmain(int argc, wchar_t **argv) {
+    UINT32 remote_address;
     UINT16 remote_port;
 
     if (argc == 2 && wcscmp(argv[1], L"--self-test") == 0) {
         return classifier_self_test() ? 0 : 1;
     }
-    if (argc != 6 || !is_generated_profile_name(argv[1]) ||
-        !parse_port(argv[2], &remote_port) ||
-        argv[3][0] == L'\0' || argv[4][0] == L'\0' || argv[5][0] == L'\0' ||
-        _wcsicmp(argv[3], argv[4]) == 0 || _wcsicmp(argv[3], argv[5]) == 0 ||
-        _wcsicmp(argv[4], argv[5]) == 0) {
+    if (argc != 7 || !is_generated_profile_name(argv[1]) ||
+        !parse_private_ipv4(argv[2], &remote_address) ||
+        !parse_port(argv[3], &remote_port) ||
+        argv[4][0] == L'\0' || argv[5][0] == L'\0' || argv[6][0] == L'\0' ||
+        _wcsicmp(argv[4], argv[5]) == 0 || _wcsicmp(argv[4], argv[6]) == 0 ||
+        _wcsicmp(argv[5], argv[6]) == 0) {
         return 2;
     }
-    if (!probe_paths_are_safe(argv[1], argv[3], argv[4], argv[5])) {
+    if (!probe_paths_are_safe(argv[1], argv[4], argv[5], argv[6])) {
         return 2;
     }
-    return run_collector(argv[1], remote_port, argv[3], argv[4], argv[5]);
+    return run_collector(
+        argv[1], remote_address, remote_port, argv[4], argv[5], argv[6]
+    );
 }

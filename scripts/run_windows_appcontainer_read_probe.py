@@ -41,6 +41,11 @@ _ERROR_INSUFFICIENT_BUFFER = 122
 _ERROR_SUCCESS = 0
 _NETISO_ERROR_TYPE_PRIVATE_NETWORK = 1
 _NETWORK_ISOLATION_FAILURE_CODES = frozenset({10013, 10060})
+_WFP_NETWORK_CAPABILITY_LABELS = {
+    0: "internet_client",
+    1: "internet_client_server",
+    2: "private_network",
+}
 _RFC1918_NETWORKS = (
     ipaddress.IPv4Network("10.0.0.0/8"),
     ipaddress.IPv4Network("172.16.0.0/12"),
@@ -159,7 +164,7 @@ def _classify_wfp_target_drop_receipt(
         or collector_exit_code != 0
         or not isinstance(receipt, dict)
         or type(receipt.get("schema_version")) is not int
-        or receipt.get("schema_version") != 4
+        or receipt.get("schema_version") != 5
         or receipt.get("subscription_ok") is not True
         or receipt.get("unsubscribe_ok") is not True
         or receipt.get("network_events_collected") is not True
@@ -189,8 +194,26 @@ def _classify_wfp_target_drop_receipt(
         or classify_count > classify_event_count
     ):
         return "evidence_unavailable"
+    capability_id = receipt.get("matched_network_capability_id")
+    capability_id_consistent = receipt.get("network_capability_id_consistent")
+    if (
+        type(capability_id_consistent) is not bool
+        or (
+            capability_id is not None
+            and (
+                type(capability_id) is not int
+                or capability_id not in _WFP_NETWORK_CAPABILITY_LABELS
+            )
+        )
+    ):
+        return "evidence_unavailable"
     if capability_count > 0:
-        return "capability_drop_attributed"
+        if capability_id_consistent is not True or type(capability_id) is not int:
+            return "evidence_unavailable"
+        capability_label = _WFP_NETWORK_CAPABILITY_LABELS[capability_id]
+        return f"capability_drop_{capability_label}_attributed"
+    if capability_id is not None or capability_id_consistent is not True:
+        return "evidence_unavailable"
     if classify_count > 0:
         return "classify_drop_attributed"
     return "evidence_unavailable"
@@ -224,6 +247,9 @@ def _wfp_observer_diagnostic_summary(
         value = receipt_dict.get(key)
         return value if type(value) is int and 0 <= value <= 0xFFFF else None
 
+    capability_id = receipt_dict.get("matched_network_capability_id")
+    capability_id_consistent = receipt_dict.get("network_capability_id_consistent")
+
     return {
         "started": process_started is True,
         "ready_state": ready_state,
@@ -247,6 +273,17 @@ def _wfp_observer_diagnostic_summary(
         "classify_drop_event_count": bounded_count("classify_drop_event_count"),
         "matched_capability_drop_count": bounded_count("matched_capability_drop_count"),
         "matched_classify_drop_count": bounded_count("matched_classify_drop_count"),
+        "matched_network_capability_id": (
+            capability_id
+            if type(capability_id) is int
+            and capability_id in _WFP_NETWORK_CAPABILITY_LABELS
+            else None
+        ),
+        "network_capability_id_consistent": (
+            capability_id_consistent
+            if type(capability_id_consistent) is bool
+            else None
+        ),
     }
 
 
@@ -599,11 +636,25 @@ def _host_listener_is_live(listener: socket.socket) -> bool:
 
 
 def _start_wfp_event_probe(
-    executable: Path, profile_name: str, remote_port: int, root: Path,
+    executable: Path,
+    profile_name: str,
+    remote_address: str,
+    remote_port: int,
+    root: Path,
 ) -> tuple[subprocess.Popen[bytes] | None, tuple[Path, Path, Path] | None]:
     """Start the bounded host-side observer; failure is diagnostic-only."""
-    if not isinstance(profile_name, str) or re.fullmatch(r"icode-[0-9a-f]{32}", profile_name) is None:
+    if (
+        not isinstance(profile_name, str)
+        or re.fullmatch(r"icode-[0-9a-f]{32}", profile_name) is None
+    ):
         return None, None
+    if (
+        not _is_rfc1918_ipv4(remote_address)
+        or type(remote_port) is not int
+        or not 1 <= remote_port <= 65535
+    ):
+        return None, None
+    canonical_address = str(ipaddress.IPv4Address(remote_address))
     token = profile_name[6:]
     ready_path = root / f"wfp-{token}.ready"
     stop_path = root / f"wfp-{token}.stop"
@@ -611,7 +662,8 @@ def _start_wfp_event_probe(
     try:
         process = subprocess.Popen(
             [
-                str(executable), profile_name, str(remote_port),
+                str(executable), profile_name, canonical_address,
+                str(remote_port),
                 str(ready_path), str(stop_path), str(result_path),
             ],
             stdin=subprocess.DEVNULL,
@@ -772,12 +824,18 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                     return 1
                 network_port = listener.getsockname()[1]
                 profile_name = f"icode-{uuid.uuid4().hex}"
-                # This observer is loopback-specific; the candidate target is private IPv4.
                 wfp_process, wfp_paths = None, None
                 wfp_receipt: dict[str, object] | None = None
                 wfp_exit_code: int | None = None
 
                 try:
+                    wfp_process, wfp_paths = _start_wfp_event_probe(
+                        wfp_probe_executable,
+                        profile_name,
+                        network_address,
+                        network_port,
+                        root,
+                    )
                     with _open_read_handle(source) as read_handle:
                         argv = [
                             str(helper),

@@ -438,7 +438,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
 
         receipt = {
-            "schema_version": 4,
+            "schema_version": 5,
             "subscription_ok": True,
             "unsubscribe_ok": True,
             "network_events_collected": True,
@@ -447,11 +447,46 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             "classify_drop_event_count": 0,
             "matched_capability_drop_count": 1,
             "matched_classify_drop_count": 0,
+            "matched_network_capability_id": 2,
+            "network_capability_id_consistent": True,
         }
         self.assertEqual(
             classify(receipt, collector_exit_code=0),
-            "capability_drop_attributed",
+            "capability_drop_private_network_attributed",
         )
+
+    def test_wfp_receipt_identifies_private_network_capability_drop(self) -> None:
+        classify = probe_module._classify_wfp_target_drop_receipt
+        receipt = {
+            "schema_version": 5,
+            "subscription_ok": True,
+            "unsubscribe_ok": True,
+            "network_events_collected": True,
+            "event_callback_count": 1,
+            "capability_drop_event_count": 1,
+            "classify_drop_event_count": 0,
+            "matched_capability_drop_count": 1,
+            "matched_classify_drop_count": 0,
+            "matched_network_capability_id": 2,
+            "network_capability_id_consistent": True,
+        }
+        self.assertEqual(
+            classify(receipt, collector_exit_code=0),
+            "capability_drop_private_network_attributed",
+        )
+        for capability_id, label in (
+            (0, "internet_client"),
+            (1, "internet_client_server"),
+            (2, "private_network"),
+        ):
+            with self.subTest(capability_id=capability_id):
+                self.assertEqual(
+                    classify(
+                        {**receipt, "matched_network_capability_id": capability_id},
+                        collector_exit_code=0,
+                    ),
+                    f"capability_drop_{label}_attributed",
+                )
 
     def test_wfp_receipt_can_attribute_an_exact_classify_drop(self) -> None:
         classify = getattr(
@@ -460,7 +495,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
 
         receipt = {
-            "schema_version": 4,
+            "schema_version": 5,
             "subscription_ok": True,
             "unsubscribe_ok": True,
             "network_events_collected": True,
@@ -469,6 +504,8 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             "classify_drop_event_count": 1,
             "matched_capability_drop_count": 0,
             "matched_classify_drop_count": 1,
+            "matched_network_capability_id": None,
+            "network_capability_id_consistent": True,
         }
         self.assertEqual(
             classify(receipt, collector_exit_code=0),
@@ -481,7 +518,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         )
         self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
         receipt = {
-            "schema_version": 4,
+            "schema_version": 5,
             "subscription_ok": True,
             "unsubscribe_ok": True,
             "network_events_collected": True,
@@ -490,6 +527,8 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             "classify_drop_event_count": 0,
             "matched_capability_drop_count": 0,
             "matched_classify_drop_count": 0,
+            "matched_network_capability_id": None,
+            "network_capability_id_consistent": True,
         }
         self.assertEqual(
             classify(receipt, collector_exit_code=0),
@@ -503,7 +542,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
 
         valid_receipt = {
-            "schema_version": 4,
+            "schema_version": 5,
             "subscription_ok": True,
             "unsubscribe_ok": True,
             "network_events_collected": True,
@@ -512,15 +551,22 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             "classify_drop_event_count": 0,
             "matched_capability_drop_count": 1,
             "matched_classify_drop_count": 0,
+            "matched_network_capability_id": 2,
+            "network_capability_id_consistent": True,
         }
         unavailable_cases = (
             (None, 0),
             ({**valid_receipt, "subscription_ok": False}, 0),
             ({**valid_receipt, "unsubscribe_ok": False}, 0),
             ({**valid_receipt, "network_events_collected": False}, 0),
-            ({**valid_receipt, "schema_version": 3}, 0),
-            ({**valid_receipt, "schema_version": 4.0}, 0),
+            ({**valid_receipt, "schema_version": 4}, 0),
+            ({**valid_receipt, "schema_version": 5.0}, 0),
             ({**valid_receipt, "matched_capability_drop_count": True}, 0),
+            ({**valid_receipt, "matched_network_capability_id": None}, 0),
+            ({**valid_receipt, "matched_network_capability_id": True}, 0),
+            ({**valid_receipt, "matched_network_capability_id": 3}, 0),
+            ({**valid_receipt, "network_capability_id_consistent": False}, 0),
+            ({**valid_receipt, "network_capability_id_consistent": 1}, 0),
             ({**valid_receipt, "capability_drop_event_count": 0}, 0),
             ({**valid_receipt, "event_callback_count": 0}, 0),
             ({**valid_receipt, "classify_drop_event_count": "private"}, 0),
@@ -549,7 +595,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             result = root / "wfp-token.json"
             ready.write_text("ready\n", encoding="ascii")
             safe_receipt = {
-                "schema_version": 4,
+                "schema_version": 5,
                 "subscription_ok": True,
                 "unsubscribe_ok": True,
                 "network_events_collected": True,
@@ -558,6 +604,8 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                 "classify_drop_event_count": 3,
                 "matched_capability_drop_count": 1,
                 "matched_classify_drop_count": 0,
+                "matched_network_capability_id": 2,
+                "network_capability_id_consistent": True,
             }
 
             summary = summarize(
@@ -580,6 +628,8 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                     "classify_drop_event_count": 3,
                     "matched_capability_drop_count": 1,
                     "matched_classify_drop_count": 0,
+                    "matched_network_capability_id": 2,
+                    "network_capability_id_consistent": True,
                 },
             )
 
@@ -607,29 +657,51 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             fake_observer.write_text(
                 "#!/usr/bin/env python3\n"
                 "import json, pathlib, sys, time\n"
-                "profile, port, ready, stop, result = sys.argv[1:]\n"
-                "if profile != 'icode-0123456789abcdef0123456789abcdef' or port != '54321':\n"
+                "profile, target, port, ready, stop, result = sys.argv[1:]\n"
+                "if profile != 'icode-0123456789abcdef0123456789abcdef' or target != '192.168.56.17' or port != '54321':\n"
                 "    raise SystemExit(7)\n"
                 "pathlib.Path(ready).write_text('ready\\n', encoding='ascii')\n"
                 "deadline = time.monotonic() + 4\n"
                 "while time.monotonic() < deadline and not pathlib.Path(stop).exists():\n"
                 "    time.sleep(0.01)\n"
                 "pathlib.Path(result).write_text(json.dumps({\n"
-                "    'schema_version': 4, 'subscription_ok': True,\n"
+                "    'schema_version': 5, 'subscription_ok': True,\n"
                 "    'network_events_collected': True,\n"
                 "    'unsubscribe_ok': True, 'event_callback_count': 1,\n"
                 "    'capability_drop_event_count': 1,\n"
                 "    'classify_drop_event_count': 0,\n"
                 "    'matched_capability_drop_count': 1,\n"
                 "    'matched_classify_drop_count': 0,\n"
+                "    'matched_network_capability_id': 2,\n"
+                "    'network_capability_id_consistent': True,\n"
                 "}), encoding='ascii')\n",
                 encoding="utf-8",
             )
             fake_observer.chmod(0o755)
 
+            invalid_process, invalid_paths = start(
+                fake_observer,
+                "icode-0123456789abcdef0123456789abcdef",
+                "127.0.0.1",
+                54321,
+                root,
+            )
+            self.assertIsNone(invalid_process)
+            self.assertIsNone(invalid_paths)
+            invalid_port_process, invalid_port_paths = start(
+                fake_observer,
+                "icode-0123456789abcdef0123456789abcdef",
+                "192.168.56.17",
+                0,
+                root,
+            )
+            self.assertIsNone(invalid_port_process)
+            self.assertIsNone(invalid_port_paths)
+
             process, paths = start(
                 fake_observer,
                 "icode-0123456789abcdef0123456789abcdef",
+                "192.168.56.17",
                 54321,
                 root,
             )
@@ -648,7 +720,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(
             classify(receipt, collector_exit_code=exit_code),
-            "capability_drop_attributed",
+            "capability_drop_private_network_attributed",
         )
 
     def test_dacl_state_requires_exact_acl_bytes_and_security_control(self) -> None:
