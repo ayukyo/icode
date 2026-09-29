@@ -274,6 +274,7 @@ def _dacl_snapshot(path: Path) -> _DaclSnapshot:
 
 def _normalize_disposable_workspace_dacl_baseline(workspace: Path) -> int:
     """Normalize only an empty CI workspace before capturing its DACL baseline."""
+    stage = "path_guard"
     try:
         temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
         raw_workspace = Path(os.path.abspath(os.fspath(workspace)))
@@ -294,7 +295,9 @@ def _normalize_disposable_workspace_dacl_baseline(workspace: Path) -> int:
             or next(target.iterdir(), None) is not None
         ):
             raise OSError("workspace is not an empty disposable execution directory")
+        stage = "before_snapshot"
         before = _dacl_snapshot(target)
+        stage = "precondition_check"
         if (
             not before.present
             or before.defaulted
@@ -304,6 +307,7 @@ def _normalize_disposable_workspace_dacl_baseline(workspace: Path) -> int:
         if before.control & _SE_DACL_AUTO_INHERITED:
             return 0
 
+        stage = "set_dacl"
         advapi = ctypes.WinDLL("advapi32", use_last_error=True)
         advapi.SetNamedSecurityInfoW.argtypes = [
             wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
@@ -317,12 +321,20 @@ def _normalize_disposable_workspace_dacl_baseline(workspace: Path) -> int:
         )
         if status != 0:
             raise OSError(int(status), "SetNamedSecurityInfoW")
+        stage = "after_snapshot"
         after = _dacl_snapshot(target)
+        stage = "normalization_check"
         if not _workspace_dacl_baseline_normalization_valid(before, after):
             raise OSError("workspace DACL baseline changed outside normalization contract")
         return after.control ^ before.control
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
-        raise OSError("disposable workspace DACL normalization failed") from exc
+        diagnostic = f"dacl_baseline_{stage}"
+        for attribute, label in (("winerror", "win"), ("errno", "errno")):
+            code = getattr(exc, attribute, None)
+            if type(code) is int and 0 <= code <= 0xFFFF:
+                diagnostic += f"_{label}_{code}"
+                break
+        raise OSError(diagnostic) from exc
 
 
 @contextmanager
@@ -583,7 +595,17 @@ def _run(probe_executable: Path) -> int:
                 print(f"  {name}={'pass' if passed else 'fail'}")
             return 0 if all(checks.values()) else 1
     except Exception as exc:  # noqa: BLE001 - keep runner output path-free and bounded
-        print(f"windows_appcontainer_read_handle_probe error={type(exc).__name__}")
+        diagnostic = "unclassified"
+        if len(exc.args) == 1 and type(exc.args[0]) is str:
+            candidate = exc.args[0]
+            if re.fullmatch(
+                r"dacl_baseline_[a-z_]+(?:_(?:win|errno)_\d+)?", candidate,
+            ):
+                diagnostic = candidate
+        print(
+            "windows_appcontainer_read_handle_probe "
+            f"error={type(exc).__name__} code={diagnostic}"
+        )
         return 1
 
 

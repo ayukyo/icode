@@ -198,6 +198,21 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                         linked_root / "execution",
                     )
 
+    def test_baseline_normalization_reports_path_free_snapshot_failure_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "icode-appcontainer-read-handle-diagnostic"
+            root.mkdir()
+            workspace = root / "execution"
+            workspace.mkdir()
+            with patch(
+                "scripts.run_windows_appcontainer_read_probe._dacl_snapshot",
+                side_effect=OSError(5, "access denied", "sensitive-path"),
+            ):
+                with self.assertRaises(OSError) as raised:
+                    _normalize_disposable_workspace_dacl_baseline(workspace)
+
+        self.assertEqual(raised.exception.args, ("dacl_baseline_before_snapshot_errno_5",))
+
     def test_stat_reparse_detection_includes_windows_junction_attribute(self) -> None:
         regular_directory = SimpleNamespace(
             st_mode=stat.S_IFDIR | 0o755,
