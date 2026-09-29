@@ -301,6 +301,155 @@ class TestFileIdExtdDirectoryInfoParser(unittest.TestCase):
                 parser(pair)
 
 
+class TestFileIdExtdDirectoryPagination(unittest.TestCase):
+    def test_collector_uses_restart_then_continuation_and_requires_explicit_eof(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        collect = getattr(module, "collect_extd_directory_entries", None)
+        self.assertTrue(callable(collect), "bounded directory page collector is missing")
+
+        def record(name: str, file_id: int) -> bytes:
+            return _extd_entry_record(
+                name, file_id=file_id.to_bytes(16, "little"),
+            )
+
+        pages = [
+            (True, 0, record("one.txt", 1)),
+            (True, 0, record("two.txt", 2)),
+            (False, 18, b""),  # ERROR_NO_MORE_FILES
+        ]
+        information_classes = []
+
+        def read_page(information_class: int, buffer_bytes: int):
+            information_classes.append((information_class, buffer_bytes))
+            return pages.pop(0)
+
+        entries = collect(read_page, buffer_bytes=512)
+
+        self.assertEqual([entry.name for entry in entries], ["one.txt", "two.txt"])
+        self.assertEqual(
+            information_classes,
+            [
+                (module._FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS, 512),
+                (module._FILE_ID_EXTD_DIRECTORY_INFO_CLASS, 512),
+                (module._FILE_ID_EXTD_DIRECTORY_INFO_CLASS, 512),
+            ],
+        )
+        self.assertEqual(pages, [])
+
+    def test_collector_accepts_only_empty_first_page_or_explicit_empty_eof(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        collect = getattr(module, "collect_extd_directory_entries", None)
+        self.assertTrue(callable(collect), "bounded directory page collector is missing")
+
+        self.assertEqual(
+            collect(lambda _info_class, _size: (False, 18, b""), buffer_bytes=512),
+            (),
+        )
+        self.assertEqual(
+            collect(
+                lambda _info_class, size: (True, 0, bytes(size)),
+                buffer_bytes=512,
+            ),
+            (),
+        )
+
+    def test_collector_rejects_unknown_errors_duplicate_names_and_empty_continuation(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        collect = getattr(module, "collect_extd_directory_entries", None)
+        self.assertTrue(callable(collect), "bounded directory page collector is missing")
+        error_type = getattr(module, "WindowsDirectoryProbeError")
+        first = _extd_entry_record(
+            "same.txt", file_id=bytes.fromhex("00000000000000000000000000000001"),
+        )
+
+        scenarios = [
+            (
+                [(True, 0, first), (False, 5, b"")],
+                "directory_enumeration_failed",
+            ),
+            (
+                [(False, 234, b"")],
+                "directory_buffer_too_small",
+            ),
+            (
+                [(True, 0, first), (True, 0, bytes(512))],
+                "directory_enumeration_no_progress",
+            ),
+            (
+                [(
+                    True,
+                    0,
+                    _extd_entry_record(
+                        ".",
+                        file_id=bytes.fromhex(
+                            "00000000000000000000000000000002",
+                        ),
+                    ),
+                )],
+                "directory_enumeration_no_progress",
+            ),
+            (
+                [(True, 0, first), (True, 0, first)],
+                "directory_duplicate_name",
+            ),
+        ]
+        for pages, expected_reason in scenarios:
+            with self.subTest(expected_reason=expected_reason):
+                responses = list(pages)
+
+                def read_page(_info_class: int, _size: int):
+                    return responses.pop(0)
+
+                with self.assertRaisesRegex(error_type, expected_reason):
+                    collect(read_page, buffer_bytes=512)
+
+    def test_collector_validates_buffer_page_and_response_limits_before_success(self) -> None:
+        from unittest.mock import patch
+
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        collect = getattr(module, "collect_extd_directory_entries", None)
+        self.assertTrue(callable(collect), "bounded directory page collector is missing")
+        error_type = getattr(module, "WindowsDirectoryProbeError")
+
+        for response in (
+            (True, 0, bytearray(512)),
+            (True, 0, bytes(513)),
+            (1, 0, bytes(512)),
+            (False, -1, b""),
+            [False, 18, b""],
+        ):
+            with self.subTest(response=type(response).__name__):
+                with self.assertRaises(error_type):
+                    collect(lambda _info_class, _size: response, buffer_bytes=512)
+
+        callback_calls = []
+        with self.assertRaisesRegex(error_type, "directory_buffer_size_invalid"):
+            collect(
+                lambda *args: callback_calls.append(args),
+                buffer_bytes=64,
+            )
+        self.assertEqual(callback_calls, [])
+
+        with patch.object(module, "_MAX_DIRECTORY_ENUMERATION_PAGES", 1):
+            responses = [
+                (
+                    True,
+                    0,
+                    _extd_entry_record(
+                        "one.txt",
+                        file_id=bytes.fromhex("00000000000000000000000000000001"),
+                    ),
+                ),
+                (False, 18, b""),
+            ]
+
+            def read_page(_info_class: int, _size: int):
+                return responses.pop(0)
+
+            with self.assertRaisesRegex(error_type, "directory_page_limit"):
+                collect(read_page, buffer_bytes=512)
+
+
 class TestNoReparseOpenReceipt(unittest.TestCase):
     def test_open_receipt_requires_success_without_a_reparse_attribute(self) -> None:
         module = importlib.import_module("tests.windows_tree_snapshot_probe")
@@ -538,6 +687,113 @@ class TestEnumeratedEntryIdentityGate(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "requires native Windows handle semantics")
 class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
+    def test_extd_directory_enumeration_paginates_and_restarts_on_same_handle(self) -> None:
+        from ctypes import wintypes
+
+        from tests.windows_tree_snapshot_probe import (
+            _FILE_ID_EXTD_DIRECTORY_INFO_CLASS,
+            _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS,
+            collect_extd_directory_entries,
+            classify_directory_listing_drift,
+        )
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        ]
+        kernel.CreateFileW.restype = ctypes.c_void_p
+        kernel.GetFileInformationByHandleEx.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+        ]
+        kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel.CloseHandle.restype = wintypes.BOOL
+
+        invalid_handle = ctypes.c_void_p(-1).value
+        file_list_directory = 0x00000001
+        file_read_attributes = 0x00000080
+        file_share_all = 0x00000007
+        file_open_existing = 3
+        file_flag_backup_semantics = 0x02000000
+        file_flag_open_reparse_point = 0x00200000
+        buffer_bytes = 512
+
+        with tempfile.TemporaryDirectory(prefix="icode-r3-dir-pages-") as raw:
+            root = Path(raw) / "many"
+            root.mkdir()
+            expected_names = {f"item-{index:03d}.txt" for index in range(96)}
+            for name in expected_names:
+                (root / name).write_bytes(b"page probe")
+
+            def open_directory(path: Path) -> int:
+                handle = kernel.CreateFileW(
+                    str(path), file_list_directory | file_read_attributes,
+                    file_share_all, None, file_open_existing,
+                    file_flag_backup_semantics | file_flag_open_reparse_point, None,
+                )
+                self.assertNotIn(handle, (None, invalid_handle), "directory open failed")
+                return int(handle)
+
+            def collect(handle: int):
+                information_classes = []
+
+                def read_page(information_class: int, requested_bytes: int):
+                    information_classes.append(information_class)
+                    buffer = ctypes.create_string_buffer(requested_bytes)
+                    ctypes.set_last_error(0)
+                    succeeded = bool(
+                        kernel.GetFileInformationByHandleEx(
+                            handle, information_class, buffer, requested_bytes,
+                        )
+                    )
+                    error = 0 if succeeded else int(ctypes.get_last_error())
+                    return succeeded, error, buffer.raw
+
+                entries = collect_extd_directory_entries(
+                    read_page, buffer_bytes=buffer_bytes,
+                )
+                return entries, information_classes
+
+            handle = open_directory(root)
+            try:
+                first_pass, first_classes = collect(handle)
+                self.assertEqual({entry.name for entry in first_pass}, expected_names)
+                self.assertEqual(first_classes[0], _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS)
+                self.assertGreater(len(first_classes), 2, "fixture did not cross buffer pages")
+                self.assertTrue(
+                    all(
+                        info_class == _FILE_ID_EXTD_DIRECTORY_INFO_CLASS
+                        for info_class in first_classes[1:]
+                    ),
+                    "continuation pages did not use FileIdExtdDirectoryInfo",
+                )
+
+                second_pass, second_classes = collect(handle)
+                self.assertEqual(second_classes[0], _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS)
+                self.assertEqual(
+                    classify_directory_listing_drift(first_pass, second_pass),
+                    "same_observation",
+                )
+            finally:
+                if not kernel.CloseHandle(handle):
+                    raise OSError("failed_native_handle_cleanup")
+
+            empty = root / "empty"
+            empty.mkdir()
+            empty_handle = open_directory(empty)
+            try:
+                empty_entries, empty_classes = collect(empty_handle)
+                self.assertEqual(empty_entries, ())
+                self.assertEqual(
+                    empty_classes,
+                    [_FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS],
+                    "empty-directory query made unnecessary continuation calls",
+                )
+            finally:
+                if not kernel.CloseHandle(empty_handle):
+                    raise OSError("failed_native_handle_cleanup")
+
     def test_held_directory_restart_list_detects_add_remove_and_same_name_replacement(self) -> None:
         from ctypes import wintypes
 

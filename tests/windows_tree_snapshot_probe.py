@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ctypes
 from pathlib import PureWindowsPath
+from typing import Callable
 
 
 class _FileIdBothDirectoryInfoHeader(ctypes.LittleEndianStructure):
@@ -62,6 +63,8 @@ _FILE_ID_BOTH_DIR_INFO_HEADER_BYTES = ctypes.sizeof(_FileIdBothDirectoryInfoHead
 _FILE_ID_EXTD_DIR_INFO_HEADER_BYTES = ctypes.sizeof(_FileIdExtdDirectoryInfoHeader)
 _MAX_DIRECTORY_ENTRIES = 250_000
 _MAX_DIRECTORY_BUFFER_BYTES = 16 * 1024 * 1024
+_MAX_DIRECTORY_ENUMERATION_PAGES = 4_096
+_MIN_DIRECTORY_ENUM_BUFFER_BYTES = _FILE_ID_EXTD_DIR_INFO_HEADER_BYTES + 2
 _MAX_RELATIVE_FILE_READ_BYTES = 8 * 1024 * 1024
 _RELATIVE_FILE_READ_CHUNK_BYTES = 64 * 1024
 _STATUS_SUCCESS = 0
@@ -75,7 +78,10 @@ _FILE_SHARE_WRITE = 0x00000002
 _FILE_SHARE_DELETE = 0x00000004
 _FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
 _FILE_ID_INFO_CLASS = 0x12
+_FILE_ID_EXTD_DIRECTORY_INFO_CLASS = 0x13
 _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS = 0x14
+_ERROR_NO_MORE_FILES = 18
+_ERROR_MORE_DATA = 234
 
 
 class WindowsDirectoryProbeError(RuntimeError):
@@ -779,3 +785,74 @@ def parse_file_id_extd_directory_info(
         offset += next_offset
 
     return tuple(entries)
+
+
+def collect_extd_directory_entries(
+    read_page: Callable[[int, int], tuple[bool, int, bytes]],
+    *,
+    buffer_bytes: int,
+) -> tuple[ExtendedDirectoryInfoEntry, ...]:
+    """Collect one held directory handle's bounded ExtdDirectoryInfo pages.
+
+    The caller supplies a test-only Win32 page reader bound to one open handle.
+    A fresh scan starts with the restart information class; subsequent calls
+    continue with the ordinary information class. Only ERROR_NO_MORE_FILES is
+    accepted as the end marker. This does not lock the namespace or make the
+    returned entries a point-in-time snapshot.
+    """
+
+    if not callable(read_page):
+        raise WindowsDirectoryProbeError("directory_page_reader_invalid")
+    if (
+        type(buffer_bytes) is not int
+        or not _MIN_DIRECTORY_ENUM_BUFFER_BYTES <= buffer_bytes
+        <= _MAX_DIRECTORY_BUFFER_BYTES
+    ):
+        raise WindowsDirectoryProbeError("directory_buffer_size_invalid")
+
+    entries: list[ExtendedDirectoryInfoEntry] = []
+    names: set[str] = set()
+    information_class = _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS
+    api_calls = 0
+    while True:
+        if api_calls >= _MAX_DIRECTORY_ENUMERATION_PAGES:
+            raise WindowsDirectoryProbeError("directory_page_limit")
+        api_calls += 1
+        try:
+            response = read_page(information_class, buffer_bytes)
+        except Exception:
+            raise WindowsDirectoryProbeError("directory_enumeration_failed") from None
+        if type(response) is not tuple or len(response) != 3:
+            raise WindowsDirectoryProbeError("directory_page_response_invalid")
+
+        succeeded, winerror, payload = response
+        if (
+            type(succeeded) is not bool
+            or type(winerror) is not int
+            or not 0 <= winerror <= 0xFFFFFFFF
+            or type(payload) is not bytes
+            or len(payload) > buffer_bytes
+            or (succeeded and winerror != 0)
+            or (not succeeded and winerror == 0)
+        ):
+            raise WindowsDirectoryProbeError("directory_page_response_invalid")
+        if not succeeded:
+            if winerror == _ERROR_NO_MORE_FILES:
+                return tuple(entries)
+            if winerror == _ERROR_MORE_DATA:
+                raise WindowsDirectoryProbeError("directory_buffer_too_small")
+            raise WindowsDirectoryProbeError("directory_enumeration_failed")
+
+        page = parse_file_id_extd_directory_info(payload)
+        if not page:
+            if api_calls == 1 and not entries and not any(payload):
+                return ()
+            raise WindowsDirectoryProbeError("directory_enumeration_no_progress")
+        for entry in page:
+            if entry.name in names:
+                raise WindowsDirectoryProbeError("directory_duplicate_name")
+            names.add(entry.name)
+            if len(names) > _MAX_DIRECTORY_ENTRIES:
+                raise WindowsDirectoryProbeError("directory_entry_limit")
+            entries.append(entry)
+        information_class = _FILE_ID_EXTD_DIRECTORY_INFO_CLASS
