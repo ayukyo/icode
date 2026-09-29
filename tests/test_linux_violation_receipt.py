@@ -212,6 +212,51 @@ class TestLinuxViolationReceipt(unittest.TestCase):
         self.assertEqual(result.meta["violation_observer_status"], "complete")
         self.assertNotIn("violation_receipt", result.meta)
 
+    def test_deny_only_run_command_enforces_output_and_timeout_without_os_denial_receipt(
+        self,
+    ) -> None:
+        with temp_workspace() as root:
+            context = self._context(root)
+            context.policy = replace(context.policy, output_limit_bytes=128)
+            output_result = self._run_with_context(
+                context,
+                "import os; os.write(1, b'x' * 1000000)",
+            )
+
+        self.assertFalse(output_result.ok)
+        self.assertEqual(output_result.meta["error"], "output_limit")
+        self.assertEqual(output_result.meta["output_bytes"], 128)
+        self.assertTrue(output_result.meta["output_truncated"])
+        self.assertLess(len(output_result.content), 512)
+        self.assertNotIn("violation_receipt", output_result.meta)
+
+        with temp_workspace() as root:
+            marker = root / "timeout-descendant-survived"
+            context = self._context(root)
+            context.policy = replace(context.policy, wall_timeout_seconds=2)
+            child_code = (
+                "import pathlib, time; time.sleep(2.5); "
+                f"pathlib.Path({str(marker)!r}).touch()"
+            )
+            parent_code = (
+                "import subprocess, sys, time; "
+                f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+                "time.sleep(10)"
+            )
+            started = time.monotonic()
+            timeout_result = self._run_with_context(context, parent_code, timeout=8)
+            self.assertLess(time.monotonic() - started, 5.5)
+            time.sleep(1.0)
+            self.assertFalse(
+                marker.exists(), "timeout left a same-group descendant running",
+            )
+
+        self.assertFalse(timeout_result.ok)
+        self.assertEqual(timeout_result.meta["error"], "timeout")
+        self.assertTrue(timeout_result.meta["cleanup_ok"])
+        self.assertEqual(timeout_result.meta["cleanup_scope"], "process_group")
+        self.assertNotIn("violation_receipt", timeout_result.meta)
+
     def test_AgentLoop事件保留真实原生回执和统一用户提示(self) -> None:
         with temp_workspace() as root:
             context = self._context(root)

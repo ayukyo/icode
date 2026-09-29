@@ -471,3 +471,9 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 - push CI [#331 x64](https://github.com/ayukyo/icode/actions/runs/36516524582/job/109239929372) 的 x64 原生编译、自测及 WFP observer 已运行；workflow 在手动诊断 #332 启动后被 concurrency 取消，ARM64 尚未完成，不能记作双架构通过。手动 [#332 x64](https://github.com/ayukyo/icode/actions/runs/36516674411/job/109240569993) 和 [ARM64](https://github.com/ayukyo/icode/actions/runs/36516674411/job/109240570221) 均完成编译、自测及 observer 运行，但整体网络门保持失败。
 - #332 收据中总 callback 分别为 x64 `2`、ARM64 `1`，两架构的 capability-drop/classify-drop 类型计数和精确匹配数均为 `0`；collection、订阅、退订与 collector 退出正常。主 AppContainer 仍 `18/20`，`network_denied=false`，Winsock 错误为 `10060` timeout。结论仅为“存在少量 callback、没有目标归因事件”，不证明允许或拒绝。
 - **后续取舍：**本轮无过滤 observer 的可见性问题已回答；没有新的受证据支持的 WFP 假设，停止继续扩大这条 CI-only 诊断，不扩大元数据采集、不改 WFP 全局选项/策略，不放宽 network gate。Windows AppContainer 仍非产品后端，R2.3、R2/R3 readiness 与自动模式继续关闭。观察日期：2026-09-29 Asia/Shanghai。
+
+### 2026-09-29 UTC：push CI #333 Windows AppContainer read-handle jobs 失败
+
+- 提交 [`d721d83`](https://github.com/ayukyo/icode/commit/d721d83) 的 [CI #333 x64](https://github.com/ayukyo/icode/actions/runs/36520245581/job/109251298401) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36520245581/job/109251298384) 两个 Windows AppContainer read-handle jobs 均失败；Actions 对应 annotation 只给出合并构建/运行步骤的通用 exit code 1，本轮未取得更细的步骤输出，故不据此推断单一根因或允许/拒绝语义。该提交没有修改 Windows probe 源码。
+- 同一 run 的 Linux Ubuntu 22.04/24.04 x64/ARM64 native jobs、macOS Intel/Apple Silicon native jobs、Windows Job cleanup 与 R3 directory-handle 双架构 probe、Python 3.11/3.12 及 presentation 均 success；整体 CI #333 因上述两个 Windows jobs 为 failure。官网 [#229](https://github.com/ayukyo/icode/actions/runs/36520245588) success。
+- **门槛不变：**本轮不把其他 jobs 的绿色结果外推为 AppContainer 文件/网络隔离通过；Windows 网络策略与产品后端仍未验证，network gate、R2.3、R2/R3 readiness 及自动模式继续关闭。应先取得该双架构步骤的可读失败诊断，再决定是否有新的受证据支持的修复方向。

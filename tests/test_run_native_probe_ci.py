@@ -131,7 +131,11 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertIn("linux-network-allowlist-expiry status=failed", output)
         self.assertIn("network allowlist expiry", output)
 
-    def _run_linux_check_with_seccomp_receipt(self, violation_result):
+    def _run_linux_check_with_seccomp_receipt(
+        self,
+        violation_result,
+        bounds_result=SimpleNamespace(status="passed", detail="bounded commands observed"),
+    ):
         sandbox = LandlockSandbox(helper="/tmp/icode-landlock")
         native = NativeProbeResult(True, {"workspace_write": True}, "native ok")
         protected = LinuxProtectedPathProbeResult(
@@ -165,16 +169,20 @@ class TestNativeProbeCi(unittest.TestCase):
                  run_native_probe_ci, "_probe_linux_seccomp_receipt",
                  return_value=violation_result, create=True,
              ) as violation_probe, \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_observed_command_bounds",
+                 return_value=bounds_result, create=True,
+             ) as bounds_probe, \
              mock.patch.object(run_native_probe_ci, "_probe_linux_network_lease_expiry",
                                return_value=SimpleNamespace(status="passed", detail="ok"),
                                create=True), \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
              redirect_stdout(output):
             result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
-        return result, violation_probe, score, output.getvalue()
+        return result, violation_probe, bounds_probe, score, output.getvalue()
 
     def test_linux多类别原生回执运行但不冒充统一违规评分(self) -> None:
-        result, violation_probe, score, output = self._run_linux_check_with_seccomp_receipt(
+        result, violation_probe, _bounds_probe, score, output = self._run_linux_check_with_seccomp_receipt(
             SimpleNamespace(status="passed", detail="two denied syscall categories"),
         )
 
@@ -184,7 +192,7 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertIn("linux-seccomp-receipt-probe status=passed", output)
 
     def test_linux原生回执探针跳过时保持未验证(self) -> None:
-        result, violation_probe, score, output = self._run_linux_check_with_seccomp_receipt(
+        result, violation_probe, _bounds_probe, score, output = self._run_linux_check_with_seccomp_receipt(
             SimpleNamespace(status="skipped", detail="user notification unavailable"),
         )
 
@@ -194,7 +202,7 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertIn("linux-seccomp-receipt-probe status=skipped", output)
 
     def test_linux原生回执回归失败时原生作业失败(self) -> None:
-        result, violation_probe, score, output = self._run_linux_check_with_seccomp_receipt(
+        result, violation_probe, _bounds_probe, score, output = self._run_linux_check_with_seccomp_receipt(
             SimpleNamespace(status="failed", detail="uniform receipt mismatch"),
         )
 
@@ -203,6 +211,50 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("linux-seccomp-receipt-probe status=failed", output)
         self.assertIn("native seccomp receipt probe", output)
+
+    def test_linux实命令资源界限探针进入native作业但不冒充评分(self) -> None:
+        bounds = SimpleNamespace(status="passed", detail="bounded commands observed")
+        result, violation_probe, bounds_probe, score, output = (
+            self._run_linux_check_with_seccomp_receipt(
+                SimpleNamespace(status="passed", detail="receipt observed"),
+                bounds_result=bounds,
+            )
+        )
+
+        violation_probe.assert_called_once_with()
+        bounds_probe.assert_called_once_with()
+        self.assertNotIn("resource_limits", score.call_args.kwargs)
+        self.assertEqual(result, 0)
+        self.assertIn("linux-observed-command-bounds status=passed", output)
+
+    def test_linux实命令资源界限环境跳过时不计分(self) -> None:
+        bounds = SimpleNamespace(status="skipped", detail="namespace unavailable")
+        result, _violation_probe, bounds_probe, score, output = (
+            self._run_linux_check_with_seccomp_receipt(
+                SimpleNamespace(status="passed", detail="receipt observed"),
+                bounds_result=bounds,
+            )
+        )
+
+        bounds_probe.assert_called_once_with()
+        self.assertNotIn("resource_limits", score.call_args.kwargs)
+        self.assertEqual(result, 0)
+        self.assertIn("linux-observed-command-bounds status=skipped", output)
+
+    def test_linux实命令资源界限探针回归失败时native作业失败(self) -> None:
+        bounds = SimpleNamespace(status="failed", detail="bounded command mismatch")
+        result, _violation_probe, bounds_probe, score, output = (
+            self._run_linux_check_with_seccomp_receipt(
+                SimpleNamespace(status="passed", detail="receipt observed"),
+                bounds_result=bounds,
+            )
+        )
+
+        bounds_probe.assert_called_once_with()
+        self.assertNotIn("resource_limits", score.call_args.kwargs)
+        self.assertEqual(result, 1)
+        self.assertIn("linux-observed-command-bounds status=failed", output)
+        self.assertIn("native observed command bounds probe", output)
 
     def test_conformance来源字符串不会被拆成单字符(self) -> None:
         report = {
@@ -265,6 +317,11 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=protected), \
              mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
                                return_value=cleanup), \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_observed_command_bounds",
+                 return_value=SimpleNamespace(status="passed", detail="ok"),
+                 create=True,
+             ), \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
              redirect_stdout(success_output):
             result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
@@ -292,6 +349,11 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=failed), \
              mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
                                return_value=cleanup), \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_observed_command_bounds",
+                 return_value=SimpleNamespace(status="passed", detail="ok"),
+                 create=True,
+             ), \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
              redirect_stdout(failure_output):
             result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
@@ -333,6 +395,11 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=protected), \
              mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
                                return_value=cleanup), \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_observed_command_bounds",
+                 return_value=SimpleNamespace(status="passed", detail="ok"),
+                 create=True,
+             ), \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
              redirect_stdout(failure_output):
             result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")

@@ -104,6 +104,29 @@ def _probe_linux_seccomp_receipt() -> ProbeExecution:
     return ProbeExecution("failed", "native_violation_receipt_mismatch")
 
 
+def _probe_linux_observed_command_bounds() -> ProbeExecution:
+    """Verify timeout/output bounds on the actual deny-only run_command path."""
+    if not sys.platform.startswith("linux"):
+        return ProbeExecution("skipped", "linux_only")
+    repository_root = str(Path(__file__).resolve().parents[1])
+    if repository_root not in sys.path:
+        sys.path.insert(0, repository_root)
+    try:
+        from tests.test_linux_violation_receipt import TestLinuxViolationReceipt
+
+        test_case = TestLinuxViolationReceipt(
+            "test_deny_only_run_command_enforces_output_and_timeout_without_os_denial_receipt",
+        )
+    except Exception:  # noqa: BLE001 - Do not expose import paths or diagnostics.
+        return ProbeExecution("failed", "native_command_bounds_probe_unavailable")
+    execution = _run_unittest_probe(test_case)
+    if execution.status == "passed":
+        return ProbeExecution("passed", "timeout_and_output_bounds_observed")
+    if execution.status == "skipped":
+        return ProbeExecution("skipped", "native_command_bounds_environment_unavailable")
+    return ProbeExecution("failed", "native_command_bounds_mismatch")
+
+
 def _emit_conformance_score(
     checks: dict[str, bool],
     *,
@@ -192,6 +215,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     process_tree_result = None
     lease_expiry_result = None
     seccomp_receipt_result = None
+    observed_command_bounds_result = None
     if platform == "macos":
         protected_result = probe_macos_protected_paths(backend)
         group_result = probe_macos_process_group_cleanup(backend)
@@ -201,6 +225,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         process_tree_result = probe_linux_process_tree_cleanup(backend)
         lease_expiry_result = _probe_linux_network_lease_expiry()
         seccomp_receipt_result = _probe_linux_seccomp_receipt()
+        observed_command_bounds_result = _probe_linux_observed_command_bounds()
         protected_checks = LINUX_PROTECTED_PATH_CHECKS
     else:
         protected_checks = ()
@@ -229,6 +254,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         checks.update(protected_result.checks)
     lease_expiry_failed = False
     violation_receipt_failed = False
+    observed_command_bounds_failed = False
     if lease_expiry_result is not None:
         lease_status = lease_expiry_result.status
         if lease_status not in {"passed", "skipped", "failed"}:
@@ -253,6 +279,23 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         )
         print(
             f"{backend.name} seccomp_receipt_probe: {violation_status.upper()} "
+            f"({safe_detail})"
+        )
+    if observed_command_bounds_result is not None:
+        bounds_status = observed_command_bounds_result.status
+        if bounds_status not in {"passed", "skipped", "failed"}:
+            bounds_status = "failed"
+        observed_command_bounds_failed = bounds_status == "failed"
+        print(f"::notice::linux-observed-command-bounds status={bounds_status}")
+        safe_detail = (
+            "timeout_and_output_bounds_observed"
+            if bounds_status == "passed"
+            else "native_command_bounds_environment_unavailable"
+            if bounds_status == "skipped"
+            else "native_command_bounds_mismatch"
+        )
+        print(
+            f"{backend.name} observed_command_bounds: {bounds_status.upper()} "
             f"({safe_detail})"
         )
     for name, passed in result.checks.items():
@@ -281,7 +324,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     native_ready = result.ready and not protected_failed and not process_tree_failed
     if (
         not native_ready or group_failed or lease_expiry_failed
-        or violation_receipt_failed
+        or violation_receipt_failed or observed_command_bounds_failed
     ):
         if not native_ready and isinstance(backend, MacSeatbeltSandbox):
             true_path = shutil.which("true")
@@ -318,6 +361,8 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
             failures.append(f"network allowlist expiry: {safe_detail}")
         if violation_receipt_failed:
             failures.append("native seccomp receipt probe: failed")
+        if observed_command_bounds_failed:
+            failures.append("native observed command bounds probe: failed")
         print(f"::error::{backend.name} native probe failed: {'; '.join(failures)}")
         return 1
     return 0
