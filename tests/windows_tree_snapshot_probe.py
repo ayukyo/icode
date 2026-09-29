@@ -82,6 +82,22 @@ class WindowsDirectoryProbeError(RuntimeError):
     """A test-only Windows directory record could not be safely interpreted."""
 
 
+def classify_namespace_operation_result(succeeded: object, winerror: object) -> str:
+    """Map a native namespace operation to a bounded, non-sensitive label."""
+
+    if type(succeeded) is not bool:
+        return "receipt_incomplete"
+    if succeeded:
+        return "allowed"
+    if type(winerror) is not int or not 1 <= winerror <= 0xFFFFFFFF:
+        return "receipt_incomplete"
+    if winerror == 32:  # ERROR_SHARING_VIOLATION
+        return "blocked_sharing_violation"
+    if winerror == 5:  # ERROR_ACCESS_DENIED
+        return "blocked_access_denied"
+    return "blocked_other"
+
+
 def _validate_file_id(file_id: bytes) -> bytes:
     """Reject FILE_ID_128 sentinel values that do not identify an object."""
 

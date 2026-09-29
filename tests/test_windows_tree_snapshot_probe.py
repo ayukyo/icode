@@ -339,6 +339,24 @@ class TestNoReparseOpenReceipt(unittest.TestCase):
             open_relative_without_reparse(1, "child", directory=1)  # type: ignore[arg-type]
 
 
+class TestNamespaceOperationReceipt(unittest.TestCase):
+    def test_classifier_only_emits_bounded_success_and_error_categories(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        classify = getattr(module, "classify_namespace_operation_result", None)
+        self.assertTrue(
+            callable(classify),
+            "namespace operation receipt classifier is missing",
+        )
+
+        self.assertEqual(classify(True, 0), "allowed")
+        self.assertEqual(classify(False, 32), "blocked_sharing_violation")
+        self.assertEqual(classify(False, 5), "blocked_access_denied")
+        self.assertEqual(classify(False, 2), "blocked_other")
+        self.assertEqual(classify(False, 0), "receipt_incomplete")
+        self.assertEqual(classify(1, 32), "receipt_incomplete")
+        self.assertEqual(classify(False, -1), "receipt_incomplete")
+
+
 class TestEnumeratedEntryIdentityGate(unittest.TestCase):
     def test_checked_reader_uses_the_exact_enumerated_child_name(self) -> None:
         module = importlib.import_module("tests.windows_tree_snapshot_probe")
@@ -1254,6 +1272,270 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 for handle in (unexpected_handle, payload_handle, root_handle):
                     if handle not in (None, invalid_handle):
                         kernel.CloseHandle(handle)
+
+    def test_parent_directory_share_mode_namespace_mutation_matrix(self) -> None:
+        from ctypes import wintypes
+
+        from tests.windows_tree_snapshot_probe import (
+            classify_namespace_operation_result,
+        )
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ]
+        kernel.CreateFileW.restype = ctypes.c_void_p
+        for name in ("DeleteFileW", "RemoveDirectoryW"):
+            function = getattr(kernel, name)
+            function.argtypes = [wintypes.LPCWSTR]
+            function.restype = wintypes.BOOL
+        kernel.MoveFileW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+        kernel.MoveFileW.restype = wintypes.BOOL
+        kernel.MoveFileExW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+        ]
+        kernel.MoveFileExW.restype = wintypes.BOOL
+        kernel.GetVolumeInformationW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD),
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+        ]
+        kernel.GetVolumeInformationW.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel.CloseHandle.restype = wintypes.BOOL
+
+        invalid_handle = ctypes.c_void_p(-1).value
+        file_list_directory = 0x00000001
+        file_read_attributes = 0x00000080
+        file_share_read = 0x00000001
+        file_share_write = 0x00000002
+        file_share_delete = 0x00000004
+        file_share_all = file_share_read | file_share_write | file_share_delete
+        file_flag_backup_semantics = 0x02000000
+        file_flag_open_reparse_point = 0x00200000
+        create_new = 1
+        open_existing = 3
+        file_attribute_normal = 0x00000080
+        movefile_replace_existing = 0x00000001
+
+        with tempfile.TemporaryDirectory(prefix="icode-r3-win-share-matrix-") as raw:
+            temporary_root = Path(raw)
+            filesystem_name = ctypes.create_unicode_buffer(64)
+            volume_serial = wintypes.DWORD()
+            max_component_length = wintypes.DWORD()
+            filesystem_flags = wintypes.DWORD()
+            self.assertTrue(
+                kernel.GetVolumeInformationW(
+                    str(temporary_root.anchor),
+                    None,
+                    0,
+                    ctypes.byref(volume_serial),
+                    ctypes.byref(max_component_length),
+                    ctypes.byref(filesystem_flags),
+                    filesystem_name,
+                    len(filesystem_name),
+                ),
+                "filesystem query failed",
+            )
+            filesystem_label = filesystem_name.value
+            if (
+                not 1 <= len(filesystem_label) <= 16
+                or not filesystem_label.isascii()
+                or not all(char.isalnum() or char in "_-" for char in filesystem_label)
+            ):
+                filesystem_label = "other"
+
+            observations: list[str] = []
+            share_modes = (
+                ("baseline", None),
+                ("read", file_share_read),
+                ("read_write", file_share_read | file_share_write),
+                ("all", file_share_all),
+            )
+            for mode_name, share_mode in share_modes:
+                root = temporary_root / mode_name
+                root.mkdir()
+                outside = temporary_root / f"{mode_name}-outside"
+                outside.mkdir()
+                delete_path = root / "delete.bin"
+                rename_source = root / "rename-source.bin"
+                replace_source = root / "replace-source.bin"
+                replace_target = root / "replace-target.bin"
+                reparse_slot = root / "reparse-slot"
+                delete_path.write_bytes(b"delete")
+                rename_source.write_bytes(b"rename")
+                replace_source.write_bytes(b"new")
+                replace_target.write_bytes(b"old")
+                reparse_slot.mkdir()
+
+                parent_handle = None
+                junction_created = False
+                reparse_create_attempted = False
+                try:
+                    if share_mode is not None:
+                        parent_handle = kernel.CreateFileW(
+                            str(root),
+                            file_list_directory | file_read_attributes,
+                            share_mode,
+                            None,
+                            open_existing,
+                            file_flag_backup_semantics | file_flag_open_reparse_point,
+                            None,
+                        )
+                        self.assertNotIn(
+                            parent_handle,
+                            (None, invalid_handle),
+                            f"could not hold the {mode_name} parent-directory handle",
+                        )
+
+                    def label_boolean_result(succeeded: bool) -> str:
+                        winerror = 0 if succeeded else ctypes.get_last_error()
+                        return classify_namespace_operation_result(succeeded, winerror)
+
+                    ctypes.set_last_error(0)
+                    create_handle = kernel.CreateFileW(
+                        str(root / "create.bin"),
+                        0x40000000,
+                        file_share_all,
+                        None,
+                        create_new,
+                        file_attribute_normal,
+                        None,
+                    )
+                    create_succeeded = create_handle not in (None, invalid_handle)
+                    create_winerror = 0 if create_succeeded else ctypes.get_last_error()
+                    create_result = classify_namespace_operation_result(
+                        create_succeeded,
+                        create_winerror,
+                    )
+                    if create_succeeded:
+                        self.assertTrue(kernel.CloseHandle(create_handle))
+
+                    ctypes.set_last_error(0)
+                    delete_result = label_boolean_result(
+                        bool(kernel.DeleteFileW(str(delete_path))),
+                    )
+
+                    ctypes.set_last_error(0)
+                    rename_result = label_boolean_result(
+                        bool(kernel.MoveFileW(
+                            str(rename_source),
+                            str(root / "rename-target.bin"),
+                        )),
+                    )
+
+                    ctypes.set_last_error(0)
+                    replace_result = label_boolean_result(
+                        bool(kernel.MoveFileExW(
+                            str(replace_source),
+                            str(replace_target),
+                            movefile_replace_existing,
+                        )),
+                    )
+                    if replace_result == "allowed":
+                        self.assertEqual(replace_target.read_bytes(), b"new")
+
+                    ctypes.set_last_error(0)
+                    reparse_remove_result = label_boolean_result(
+                        bool(kernel.RemoveDirectoryW(str(reparse_slot))),
+                    )
+                    reparse_create_result = "not_attempted"
+                    if reparse_remove_result == "allowed":
+                        reparse_create_attempted = True
+                        junction = subprocess.run(
+                            [
+                                "cmd.exe",
+                                "/d",
+                                "/c",
+                                "mklink",
+                                "/J",
+                                str(reparse_slot),
+                                str(outside),
+                            ],
+                            check=False,
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
+                        junction_created = junction.returncode == 0
+                        reparse_create_result = (
+                            "allowed" if junction_created else "blocked_or_failed"
+                        )
+
+                    results = (
+                        create_result,
+                        delete_result,
+                        rename_result,
+                        replace_result,
+                        reparse_remove_result,
+                        reparse_create_result,
+                    )
+                    self.assertNotIn("receipt_incomplete", results)
+                    if mode_name == "baseline":
+                        self.assertEqual(
+                            results,
+                            ("allowed",) * len(results),
+                            "uncontended namespace mutation baseline failed",
+                        )
+                    observations.append(
+                        f"mode={mode_name} "
+                        f"create={create_result} "
+                        f"delete={delete_result} "
+                        f"rename={rename_result} "
+                        f"replace={replace_result} "
+                        f"reparse_remove={reparse_remove_result} "
+                        f"reparse_create={reparse_create_result}"
+                    )
+                finally:
+                    try:
+                        if parent_handle not in (None, invalid_handle):
+                            self.assertTrue(
+                                kernel.CloseHandle(parent_handle),
+                                "parent-directory handle cleanup failed",
+                            )
+                    finally:
+                        if reparse_create_attempted:
+                            ctypes.set_last_error(0)
+                            cleanup_succeeded = bool(
+                                kernel.RemoveDirectoryW(str(reparse_slot)),
+                            )
+                            cleanup_error = ctypes.get_last_error()
+                            if junction_created:
+                                self.assertTrue(
+                                    cleanup_succeeded,
+                                    "junction cleanup failed",
+                                )
+                            elif not cleanup_succeeded:
+                                self.assertIn(
+                                    cleanup_error,
+                                    (2, 3),  # ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND
+                                    "failed reparse create left an unexpected filesystem object",
+                                )
+
+            probe_result = (
+                "windows-tree-share-matrix "
+                f"filesystem={filesystem_label} "
+                + " ".join(observations)
+            )
+            print(probe_result)
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                print(
+                    "::notice title=R3 Windows namespace share-mode matrix::"
+                    f"{probe_result}"
+                )
 
     def test_relative_native_open_rejects_reparse_and_replaced_child(self) -> None:
         from ctypes import wintypes
