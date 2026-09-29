@@ -369,6 +369,32 @@ class TestFileIdExtdDirectoryPagination(unittest.TestCase):
         self.assertEqual([entry.name for entry in entries], ["one.txt"])
         self.assertEqual(pages, [])
 
+    def test_collector_accepts_zero_filled_continuation_after_filtered_restart(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        collect = getattr(module, "collect_extd_directory_entries", None)
+        self.assertTrue(callable(collect), "bounded directory page collector is missing")
+        dot_page = _extd_entry_record(
+            ".", file_id=bytes.fromhex("00000000000000000000000000000004"),
+        )
+        pages = [(True, 0, dot_page), (True, 0, bytes(512))]
+        information_classes = []
+
+        def read_page(information_class: int, _size: int):
+            information_classes.append(information_class)
+            return pages.pop(0)
+
+        entries = collect(read_page, buffer_bytes=512)
+
+        self.assertEqual(entries, ())
+        self.assertEqual(
+            information_classes,
+            [
+                module._FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS,
+                module._FILE_ID_EXTD_DIRECTORY_INFO_CLASS,
+            ],
+        )
+        self.assertEqual(pages, [])
+
     def test_collector_continues_after_filtered_restart_page(self) -> None:
         module = importlib.import_module("tests.windows_tree_snapshot_probe")
         collect = getattr(module, "collect_extd_directory_entries", None)
@@ -874,10 +900,14 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 empty_entries, empty_classes, empty_signals = collect(empty_handle)
                 self.assertEqual(empty_entries, ())
                 assert_known_eof(empty_signals)
-                self.assertEqual(
-                    empty_classes,
-                    [_FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS],
-                    "empty-directory query made unnecessary continuation calls",
+                self.assertEqual(empty_classes[0], _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS)
+                self.assertLessEqual(len(empty_classes), 2)
+                self.assertTrue(
+                    all(
+                        info_class == _FILE_ID_EXTD_DIRECTORY_INFO_CLASS
+                        for info_class in empty_classes[1:]
+                    ),
+                    "empty-directory continuation used the wrong information class",
                 )
             finally:
                 if not kernel.CloseHandle(empty_handle):

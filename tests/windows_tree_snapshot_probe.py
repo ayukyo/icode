@@ -860,14 +860,10 @@ def collect_extd_directory_entries(
                 information_class = _FILE_ID_EXTD_DIRECTORY_INFO_CLASS
                 continue
             if not any(payload):
-                if api_calls == 1 and not entries:
-                    return ()
-                if entries:
-                    # Keep this candidate narrow: some providers may signal EOF
-                    # with a successful zero-filled buffer after useful entries.
-                    # Native CI records the terminal response shape; nonzero
-                    # filtered or malformed pages remain a no-progress failure.
-                    return tuple(entries)
+                # Keep this candidate narrow: a successful page with no bytes
+                # is the only accepted non-error EOF shape, with or without
+                # previously collected usable entries.
+                return tuple(entries)
             raise WindowsDirectoryProbeError("directory_enumeration_no_progress")
         for entry in page:
             if entry.name in names:
