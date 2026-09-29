@@ -6,6 +6,7 @@ import ctypes
 import importlib
 import os
 import struct
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -117,6 +118,44 @@ class TestFileIdDirectoryInfoParser(unittest.TestCase):
             with self.subTest(next_offset=next_offset):
                 with self.assertRaises(error_type):
                     parser(bytes(malformed))
+
+
+class TestNoReparseOpenReceipt(unittest.TestCase):
+    def test_open_receipt_requires_success_without_a_reparse_attribute(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        classify = getattr(module, "classify_no_reparse_open_receipt", None)
+        self.assertTrue(callable(classify), "no-reparse receipt classifier is missing")
+
+        status_success = getattr(module, "_STATUS_SUCCESS", 0)
+        status_reparse = getattr(module, "_STATUS_REPARSE_POINT_ENCOUNTERED", 0xC000050B)
+        reparse_attribute = getattr(module, "_FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+        self.assertEqual(classify(status_success, 0x80), "opened")
+        self.assertEqual(
+            classify(status_success, reparse_attribute), "reparse_opened",
+        )
+        self.assertEqual(classify(status_reparse, None), "reparse_rejected")
+        self.assertEqual(classify(status_success, None), "receipt_incomplete")
+        self.assertEqual(classify(0xC0000022, None), "native_open_failed")
+        self.assertEqual(classify(True, 0x80), "receipt_incomplete")
+
+    def test_relative_open_rejects_non_child_names_before_native_calls(self) -> None:
+        from tests.windows_tree_snapshot_probe import open_relative_without_reparse
+
+        for name in (
+            "",
+            ".",
+            "..",
+            "C:\\outside",
+            "\\\\server\\share",
+            "folder\\..\\outside.txt",
+            "file:stream",
+            "embedded\x00nul",
+        ):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "relative_name_invalid"):
+                    open_relative_without_reparse(1, name, directory=False)
+        with self.assertRaisesRegex(ValueError, "directory_flag_invalid"):
+            open_relative_without_reparse(1, "child", directory=1)  # type: ignore[arg-type]
 
 
 @unittest.skipUnless(os.name == "nt", "requires native Windows handle semantics")
@@ -376,6 +415,140 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 for handle in (unexpected_handle, payload_handle, root_handle):
                     if handle not in (None, invalid_handle):
                         kernel.CloseHandle(handle)
+
+    def test_relative_native_open_rejects_reparse_and_replaced_child(self) -> None:
+        from ctypes import wintypes
+
+        from tests.windows_tree_snapshot_probe import (
+            classify_no_reparse_open_receipt,
+            open_relative_without_reparse,
+        )
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.c_void_p,
+        ]
+        kernel.CreateFileW.restype = ctypes.c_void_p
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        kernel.CloseHandle.restype = wintypes.BOOL
+
+        invalid_handle = ctypes.c_void_p(-1).value
+        file_list_directory = 0x00000001
+        file_read_attributes = 0x00000080
+        file_share_all = 0x00000007
+        open_existing = 3
+        file_flag_backup_semantics = 0x02000000
+        file_flag_open_reparse_point = 0x00200000
+        reparse_attribute = 0x00000400
+
+        with tempfile.TemporaryDirectory(prefix="icode-r3-relative-open-") as temporary:
+            root = Path(temporary) / "workspace"
+            outside = Path(temporary) / "outside"
+            root.mkdir()
+            outside.mkdir()
+            (root / "plain.txt").write_text("disposable probe", encoding="utf-8")
+            (root / "child").mkdir()
+            (outside / "outside.txt").write_text("not opened", encoding="utf-8")
+            (root / "replace-me").mkdir()
+
+            def create_junction(junction: Path, target: Path) -> None:
+                result = subprocess.run(
+                    ["cmd.exe", "/d", "/c", "mklink", "/J", str(junction), str(target)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(
+                    result.returncode,
+                    0,
+                    "could not create native test junction",
+                )
+
+            root_handle = kernel.CreateFileW(
+                str(root),
+                file_list_directory | file_read_attributes,
+                file_share_all,
+                None,
+                open_existing,
+                file_flag_backup_semantics | file_flag_open_reparse_point,
+                None,
+            )
+            self.assertNotIn(root_handle, (None, invalid_handle), "directory open failed")
+            try:
+                normal_file = open_relative_without_reparse(
+                    int(root_handle), "plain.txt", directory=False,
+                )
+                self.assertEqual(
+                    classify_no_reparse_open_receipt(
+                        normal_file.status, normal_file.file_attributes,
+                    ),
+                    "opened",
+                )
+                self.assertIsNotNone(normal_file.file_id)
+
+                normal_directory = open_relative_without_reparse(
+                    int(root_handle), "child", directory=True,
+                )
+                self.assertEqual(
+                    classify_no_reparse_open_receipt(
+                        normal_directory.status, normal_directory.file_attributes,
+                    ),
+                    "opened",
+                )
+                self.assertIsNotNone(normal_directory.file_id)
+
+                original_child = open_relative_without_reparse(
+                    int(root_handle), "replace-me", directory=True,
+                )
+                self.assertEqual(
+                    classify_no_reparse_open_receipt(
+                        original_child.status, original_child.file_attributes,
+                    ),
+                    "opened",
+                )
+                self.assertIsNotNone(original_child.file_id)
+                (root / "replace-me").rmdir()
+                create_junction(root / "replace-me", outside)
+
+                replaced_child = open_relative_without_reparse(
+                    int(root_handle), "replace-me", directory=True,
+                )
+                replaced_classification = classify_no_reparse_open_receipt(
+                    replaced_child.status, replaced_child.file_attributes,
+                )
+                self.assertIn(
+                    replaced_classification,
+                    ("reparse_rejected", "reparse_opened"),
+                    "a child replaced by a junction must not be treated as a normal directory",
+                )
+                if replaced_classification == "reparse_opened":
+                    self.assertTrue(replaced_child.file_attributes & reparse_attribute)
+                    self.assertNotEqual(replaced_child.file_id, original_child.file_id)
+
+                create_junction(root / "junction", outside)
+                traversed_junction = open_relative_without_reparse(
+                    int(root_handle), "junction\\outside.txt", directory=False,
+                )
+                self.assertEqual(
+                    classify_no_reparse_open_receipt(
+                        traversed_junction.status,
+                        traversed_junction.file_attributes,
+                    ),
+                    "reparse_rejected",
+                    (
+                        "an ancestor junction must be rejected before opening its target; "
+                        f"status=0x{traversed_junction.status:08x}"
+                    ),
+                )
+            finally:
+                if not kernel.CloseHandle(root_handle):
+                    raise OSError("failed_native_handle_cleanup")
 
 
 if __name__ == "__main__":

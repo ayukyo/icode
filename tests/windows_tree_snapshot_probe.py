@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import ctypes
+from pathlib import PureWindowsPath
 
 
 class _FileIdBothDirectoryInfoHeader(ctypes.LittleEndianStructure):
@@ -31,6 +32,10 @@ class _FileIdBothDirectoryInfoHeader(ctypes.LittleEndianStructure):
 _FILE_ID_BOTH_DIR_INFO_HEADER_BYTES = ctypes.sizeof(_FileIdBothDirectoryInfoHeader)
 _MAX_DIRECTORY_ENTRIES = 250_000
 _MAX_DIRECTORY_BUFFER_BYTES = 16 * 1024 * 1024
+_STATUS_SUCCESS = 0
+_STATUS_REPARSE_POINT_ENCOUNTERED = 0xC000050B
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+_FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
 
 
 class WindowsDirectoryProbeError(RuntimeError):
@@ -42,6 +47,214 @@ class DirectoryInfoEntry:
     name: str
     attributes: int
     file_id: int
+
+
+@dataclass(frozen=True)
+class NtRelativeOpenResult:
+    status: int
+    file_attributes: int | None
+    file_id: int | None
+
+
+def classify_no_reparse_open_receipt(status: object, file_attributes: object) -> str:
+    """Classify a native open without treating an error or reparse handle as safe."""
+
+    if type(status) is not int or not 0 <= status <= 0xFFFFFFFF:
+        return "receipt_incomplete"
+    if status == _STATUS_REPARSE_POINT_ENCOUNTERED:
+        return "reparse_rejected"
+    if status != _STATUS_SUCCESS:
+        return "native_open_failed"
+    if type(file_attributes) is not int or not 0 <= file_attributes <= 0xFFFFFFFF:
+        return "receipt_incomplete"
+    if file_attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return "reparse_opened"
+    return "opened"
+
+
+def open_relative_without_reparse(
+    directory_handle: int,
+    relative_name: str,
+    *,
+    directory: bool,
+) -> NtRelativeOpenResult:
+    """Open a disposable Windows probe entry relative to a held directory handle.
+
+    The test-only helper combines OBJ_DONT_REPARSE with
+    FILE_OPEN_REPARSE_POINT. It returns only a fixed NTSTATUS, file attributes,
+    and file ID; it never reads entry contents or exposes the supplied name.
+    """
+
+    if type(directory_handle) is not int or directory_handle <= 0:
+        raise ValueError("directory_handle_invalid")
+    if type(directory) is not bool:
+        raise ValueError("directory_flag_invalid")
+    if not isinstance(relative_name, str) or "\x00" in relative_name:
+        raise ValueError("relative_name_invalid")
+    path = PureWindowsPath(relative_name)
+    if (
+        not relative_name
+        or path.is_absolute()
+        or path.drive
+        or not path.parts
+        or any(part in (".", "..") or ":" in part for part in path.parts)
+    ):
+        raise ValueError("relative_name_invalid")
+
+    from ctypes import wintypes
+
+    class UnicodeString(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.USHORT),
+            ("MaximumLength", wintypes.USHORT),
+            ("Buffer", wintypes.LPWSTR),
+        ]
+
+    class ObjectAttributes(ctypes.Structure):
+        _fields_ = [
+            ("Length", wintypes.ULONG),
+            ("RootDirectory", wintypes.HANDLE),
+            ("ObjectName", ctypes.POINTER(UnicodeString)),
+            ("Attributes", wintypes.ULONG),
+            ("SecurityDescriptor", ctypes.c_void_p),
+            ("SecurityQualityOfService", ctypes.c_void_p),
+        ]
+
+    class IoStatusUnion(ctypes.Union):
+        _fields_ = [
+            ("Status", wintypes.LONG),
+            ("Pointer", ctypes.c_void_p),
+        ]
+
+    class IoStatusBlock(ctypes.Structure):
+        _anonymous_ = ("Value",)
+        _fields_ = [
+            ("Value", IoStatusUnion),
+            ("Information", ctypes.c_size_t),
+        ]
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = [
+            ("FileAttributes", wintypes.DWORD),
+            ("ReparseTag", wintypes.DWORD),
+        ]
+
+    class FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    class ByHandleFileInformation(ctypes.Structure):
+        _fields_ = [
+            ("attributes", wintypes.DWORD),
+            ("creation_time", FileTime),
+            ("access_time", FileTime),
+            ("write_time", FileTime),
+            ("volume_serial", wintypes.DWORD),
+            ("size_high", wintypes.DWORD),
+            ("size_low", wintypes.DWORD),
+            ("links", wintypes.DWORD),
+            ("index_high", wintypes.DWORD),
+            ("index_low", wintypes.DWORD),
+        ]
+
+    encoded_name = relative_name.encode("utf-16-le", errors="strict")
+    if not encoded_name or len(encoded_name) + 2 > 0xFFFF:
+        raise ValueError("relative_name_invalid")
+    name_buffer = ctypes.create_unicode_buffer(relative_name)
+    unicode_name = UnicodeString(
+        len(encoded_name),
+        len(encoded_name) + 2,
+        ctypes.cast(name_buffer, wintypes.LPWSTR),
+    )
+    object_attributes = ObjectAttributes(
+        ctypes.sizeof(ObjectAttributes),
+        wintypes.HANDLE(directory_handle),
+        ctypes.pointer(unicode_name),
+        0x00000040 | 0x00001000,  # OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE
+        None,
+        None,
+    )
+    io_status = IoStatusBlock()
+    file_handle = ctypes.c_void_p()
+
+    ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+    nt_create_file = ntdll.NtCreateFile
+    nt_create_file.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p),
+        wintypes.ULONG,
+        ctypes.POINTER(ObjectAttributes),
+        ctypes.POINTER(IoStatusBlock),
+        ctypes.c_void_p,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        wintypes.ULONG,
+        ctypes.c_void_p,
+        wintypes.ULONG,
+    ]
+    nt_create_file.restype = wintypes.LONG
+    access = 0x00000080 | 0x00100000  # FILE_READ_ATTRIBUTES | SYNCHRONIZE
+    share = 0x00000001 | 0x00000002 | 0x00000004
+    create_options = 0x00200000 | 0x00000020  # FILE_OPEN_REPARSE_POINT | synchronous
+    create_options |= 0x00000001 if directory else 0x00000040
+    raw_status = nt_create_file(
+        ctypes.byref(file_handle),
+        access,
+        ctypes.byref(object_attributes),
+        ctypes.byref(io_status),
+        None,
+        0x00000080,  # FILE_ATTRIBUTE_NORMAL
+        share,
+        1,  # FILE_OPEN
+        create_options,
+        None,
+        0,
+    )
+    status = int(raw_status) & 0xFFFFFFFF
+    if status != _STATUS_SUCCESS:
+        if file_handle.value not in (None, ctypes.c_void_p(-1).value):
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            if not kernel.CloseHandle(file_handle):
+                raise OSError("failed_native_handle_cleanup")
+        return NtRelativeOpenResult(status, None, None)
+    if file_handle.value in (None, ctypes.c_void_p(-1).value):
+        raise OSError("native_open_missing_handle")
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetFileInformationByHandleEx.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+    ]
+    kernel.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel.GetFileInformationByHandle.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ByHandleFileInformation),
+    ]
+    kernel.GetFileInformationByHandle.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    try:
+        tag_info = FileAttributeTagInfo()
+        if not kernel.GetFileInformationByHandleEx(
+            file_handle,
+            _FILE_ATTRIBUTE_TAG_INFO_CLASS,
+            ctypes.byref(tag_info),
+            ctypes.sizeof(tag_info),
+        ):
+            raise OSError("file_attribute_query_failed")
+        file_information = ByHandleFileInformation()
+        if not kernel.GetFileInformationByHandle(
+            file_handle, ctypes.byref(file_information),
+        ):
+            raise OSError("file_identity_query_failed")
+        file_id = (int(file_information.index_high) << 32) | int(file_information.index_low)
+        return NtRelativeOpenResult(
+            status,
+            int(tag_info.FileAttributes),
+            file_id,
+        )
+    finally:
+        if not kernel.CloseHandle(file_handle):
+            raise OSError("failed_native_handle_cleanup")
 
 
 def parse_file_id_both_directory_info(buffer: bytes) -> tuple[DirectoryInfoEntry, ...]:

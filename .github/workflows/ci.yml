@@ -82,7 +82,7 @@ jobs:
         run: python scripts/run_network_lease_ci.py
 
   windows-tree-snapshot-probe:
-    name: R3 Windows directory-handle probe (${{ matrix.os }})
+    name: R3 Windows directory and relative-open probes (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -102,7 +102,7 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - name: Probe bounded directory records and native handle sharing
+      - name: Probe directory records, handle sharing, and no-reparse relative opens
         run: python -m unittest tests.test_windows_tree_snapshot_probe -v
 
   native-probe:
