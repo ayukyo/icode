@@ -338,6 +338,125 @@ class TestNoReparseOpenReceipt(unittest.TestCase):
             open_relative_without_reparse(1, "child", directory=1)  # type: ignore[arg-type]
 
 
+class TestEnumeratedEntryIdentityGate(unittest.TestCase):
+    def test_checked_reader_uses_the_exact_enumerated_child_name(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        require_name = getattr(module, "require_enumerated_entry_name", None)
+        self.assertTrue(
+            callable(require_name),
+            "identity-bound read must not substitute another name for the enumerated child",
+        )
+        entry_type = getattr(module, "ExtendedDirectoryInfoEntry")
+        error_type = getattr(module, "WindowsDirectoryProbeError")
+        entry = entry_type(
+            name="payload.bin", attributes=0x80, reparse_tag=0,
+            file_id=bytes.fromhex("00112233445566778899aabbccddeeff"),
+        )
+
+        self.assertIsNone(require_name(entry, "payload.bin"))
+        for alias in ("Payload.bin", "other.bin", "subdir/payload.bin", "payload.bin:stream"):
+            with self.subTest(alias=alias):
+                with self.assertRaisesRegex(error_type, "entry_name_changed"):
+                    require_name(entry, alias)
+
+    def test_content_read_requires_the_enumerated_object_identity(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        require_identity = getattr(module, "require_enumerated_entry_identity", None)
+        self.assertTrue(
+            callable(require_identity),
+            "an opened child must be checked against its enumerated identity before reading",
+        )
+        entry_type = getattr(module, "ExtendedDirectoryInfoEntry")
+        open_result_type = getattr(module, "NtRelativeOpenResult")
+        error_type = getattr(module, "WindowsDirectoryProbeError")
+        file_id_a = bytes.fromhex("00112233445566778899aabbccddeeff")
+        file_id_b = bytes.fromhex("ffeeddccbbaa99887766554433221100")
+        enumerated = entry_type(
+            name="stale.bin", attributes=0x80, reparse_tag=0, file_id=file_id_a,
+        )
+        opened = open_result_type(
+            status=0, file_attributes=0x80,
+            file_id=file_id_a, volume_serial_number=42,
+        )
+
+        self.assertIsNone(require_identity(enumerated, opened, 42))
+        with self.assertRaisesRegex(error_type, "entry_identity_changed"):
+            require_identity(
+                enumerated,
+                open_result_type(
+                    status=0, file_attributes=0x80,
+                    file_id=file_id_b, volume_serial_number=42,
+                ),
+                42,
+            )
+        with self.assertRaisesRegex(error_type, "entry_volume_changed"):
+            require_identity(
+                enumerated,
+                open_result_type(
+                    status=0, file_attributes=0x80,
+                    file_id=file_id_a, volume_serial_number=43,
+                ),
+                42,
+            )
+        with self.assertRaisesRegex(error_type, "entry_reparse_point"):
+            require_identity(
+                entry_type(
+                    name="stale.bin", attributes=0x400,
+                    reparse_tag=0xA000000C, file_id=file_id_a,
+                ),
+                opened,
+                42,
+            )
+        with self.assertRaisesRegex(error_type, "entry_type_changed"):
+            require_identity(
+                enumerated,
+                open_result_type(
+                    status=0, file_attributes=0x10,
+                    file_id=file_id_a, volume_serial_number=42,
+                ),
+                42,
+            )
+        with self.assertRaisesRegex(error_type, "entry_open_failed"):
+            require_identity(
+                enumerated,
+                open_result_type(
+                    status=0xC0000022, file_attributes=None,
+                    file_id=None, volume_serial_number=None,
+                ),
+                42,
+            )
+
+    def test_content_reader_validates_identity_inputs_before_native_calls(self) -> None:
+        module = importlib.import_module("tests.windows_tree_snapshot_probe")
+        read_checked = getattr(
+            module, "read_relative_file_if_identity_matches", None,
+        )
+        self.assertTrue(
+            callable(read_checked),
+            "Windows file content must have an identity-bound relative reader",
+        )
+        error_type = getattr(module, "WindowsDirectoryProbeError")
+        entry_type = getattr(module, "ExtendedDirectoryInfoEntry")
+        valid_entry = entry_type(
+            name="payload.bin", attributes=0x80, reparse_tag=0,
+            file_id=bytes.fromhex("00112233445566778899aabbccddeeff"),
+        )
+
+        invalid_arguments = (
+            {"expected_entry": None, "expected_volume_serial_number": 42,
+             "max_bytes": 1},
+            {"expected_entry": valid_entry, "expected_volume_serial_number": None,
+             "max_bytes": 1},
+            {"expected_entry": valid_entry, "expected_volume_serial_number": 42,
+             "max_bytes": True},
+            {"expected_entry": valid_entry, "expected_volume_serial_number": 42,
+             "max_bytes": 0},
+        )
+        for arguments in invalid_arguments:
+            with self.subTest(arguments=arguments):
+                with self.assertRaises(error_type):
+                    read_checked(1, "payload.bin", **arguments)
+
 @unittest.skipUnless(os.name == "nt", "requires native Windows handle semantics")
 class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
     def test_extd_directory_identity_matches_relative_open_and_detects_aba_replacement(self) -> None:
@@ -348,9 +467,11 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
             _FILE_ID_INFO_CLASS,
             _STATUS_OBJECT_NAME_NOT_FOUND,
             _FileIdInfo,
+            WindowsDirectoryProbeError,
             classify_no_reparse_open_receipt,
             open_relative_without_reparse,
             parse_file_id_extd_directory_info,
+            read_relative_file_if_identity_matches,
         )
 
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -391,11 +512,19 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
             root = Path(temporary) / "workspace"
             root.mkdir()
             payload = root / "payload.bin"
+            empty_payload = root / "empty.bin"
+            exact_limit_payload = root / "exact-limit.bin"
+            multi_chunk_payload = root / "multi-chunk.bin"
             stale_path = root / "stale.bin"
             replacement_source = root / "replacement-source.bin"
             displaced_path = root / "displaced-stale.bin"
             replacement_away_path = root / "replacement-away.bin"
             payload.write_bytes(b"payload for identity probe")
+            empty_payload.write_bytes(b"")
+            exact_limit_bytes = b"exact-limit-probe"
+            exact_limit_payload.write_bytes(exact_limit_bytes)
+            multi_chunk_bytes = b"m" * (64 * 1024 + 17)
+            multi_chunk_payload.write_bytes(multi_chunk_bytes)
             stale_path.write_bytes(b"stale identity probe")
             replacement_source.write_bytes(b"replacement identity probe")
 
@@ -409,6 +538,7 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 None,
             )
             self.assertNotIn(root_handle, (None, invalid_handle), "directory open failed")
+            writer_handle = None
             try:
                 parent_identity = _FileIdInfo()
                 self.assertTrue(
@@ -434,6 +564,15 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 payload_entry = next(
                     (item for item in entries if item.name == "payload.bin"), None,
                 )
+                empty_entry = next(
+                    (item for item in entries if item.name == "empty.bin"), None,
+                )
+                exact_limit_entry = next(
+                    (item for item in entries if item.name == "exact-limit.bin"), None,
+                )
+                multi_chunk_entry = next(
+                    (item for item in entries if item.name == "multi-chunk.bin"), None,
+                )
                 stale_entry = next(
                     (item for item in entries if item.name == "stale.bin"), None,
                 )
@@ -441,6 +580,9 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                     (item for item in entries if item.name == "replacement-source.bin"), None,
                 )
                 self.assertIsNotNone(payload_entry, "normal file was not enumerated")
+                self.assertIsNotNone(empty_entry, "empty file was not enumerated")
+                self.assertIsNotNone(exact_limit_entry, "boundary file was not enumerated")
+                self.assertIsNotNone(multi_chunk_entry, "multi-chunk file was not enumerated")
                 self.assertIsNotNone(stale_entry, "stale child was not enumerated")
                 self.assertIsNotNone(source_entry, "replacement file was not enumerated")
                 self.assertFalse(
@@ -454,6 +596,58 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 self.assertFalse(
                     source_entry.attributes & file_attribute_reparse_point,
                     "replacement source was not an ordinary file",
+                )
+                self.assertEqual(
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "empty.bin",
+                        expected_entry=empty_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=1,
+                    ),
+                    b"",
+                    "an empty synchronous file read should terminate at EOF",
+                )
+                self.assertEqual(
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "exact-limit.bin",
+                        expected_entry=exact_limit_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=len(exact_limit_bytes),
+                    ),
+                    exact_limit_bytes,
+                    "a file exactly at its byte limit should succeed",
+                )
+                with self.assertRaisesRegex(
+                    WindowsDirectoryProbeError,
+                    "relative_file_too_large",
+                ):
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "exact-limit.bin",
+                        expected_entry=exact_limit_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=len(exact_limit_bytes) - 1,
+                    )
+                self.assertEqual(
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "multi-chunk.bin",
+                        expected_entry=multi_chunk_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=len(multi_chunk_bytes),
+                    ),
+                    multi_chunk_bytes,
+                    "bounded reading should preserve content across chunk boundaries",
                 )
 
                 opened_payload = open_relative_without_reparse(
@@ -473,6 +667,89 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 self.assertTrue(
                     opened_payload.file_id == payload_entry.file_id,
                     "enumerated and opened payload identities differed",
+                )
+                self.assertEqual(
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "payload.bin",
+                        expected_entry=payload_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=1024,
+                    ),
+                    b"payload for identity probe",
+                    "the bounded reader did not return the enumerated file content",
+                )
+                writer_handle = kernel.CreateFileW(
+                    str(payload),
+                    0x40000000,  # GENERIC_WRITE
+                    file_share_all,
+                    None,
+                    open_existing,
+                    0x00000080,  # FILE_ATTRIBUTE_NORMAL
+                    None,
+                )
+                self.assertNotIn(
+                    writer_handle,
+                    (None, invalid_handle),
+                    "existing-writer sharing fixture could not be opened",
+                )
+                with self.assertRaisesRegex(
+                    WindowsDirectoryProbeError,
+                    "entry_open_failed",
+                ):
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "payload.bin",
+                        expected_entry=payload_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=1024,
+                    )
+                self.assertTrue(
+                    kernel.CloseHandle(writer_handle),
+                    "existing-writer fixture cleanup failed",
+                )
+                writer_handle = None
+                self.assertEqual(
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "payload.bin",
+                        expected_entry=payload_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=1024,
+                    ),
+                    b"payload for identity probe",
+                    "closing the conflicting writer did not restore the bounded read",
+                )
+                with self.assertRaisesRegex(
+                    WindowsDirectoryProbeError,
+                    "relative_file_too_large",
+                ):
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "payload.bin",
+                        expected_entry=payload_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=1,
+                    )
+                self.assertTrue(
+                    kernel.MoveFileW(
+                        str(payload), str(root / "payload-after-read-error.bin"),
+                    ),
+                    "oversize read failure left the source handle open",
+                )
+                self.assertTrue(
+                    kernel.MoveFileW(
+                        str(root / "payload-after-read-error.bin"), str(payload),
+                    ),
+                    "oversize read failure cleanup could not restore the fixture",
                 )
 
                 self.assertTrue(
@@ -495,6 +772,19 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                     _STATUS_OBJECT_NAME_NOT_FOUND,
                     "the displaced child should fail specifically as a missing name",
                 )
+                with self.assertRaisesRegex(
+                    WindowsDirectoryProbeError,
+                    "entry_open_failed",
+                ):
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "stale.bin",
+                        expected_entry=stale_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=1024,
+                    )
                 self.assertTrue(
                     kernel.MoveFileW(str(replacement_source), str(stale_path)),
                     "replacement child move failed",
@@ -522,6 +812,58 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                 self.assertTrue(
                     reopened_replacement.file_id != stale_entry.file_id,
                     "reopened replacement retained stale enumerated identity",
+                )
+                refreshed_directory_buffer = ctypes.create_string_buffer(64 * 1024)
+                self.assertTrue(
+                    kernel.GetFileInformationByHandleEx(
+                        root_handle,
+                        _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS,
+                        refreshed_directory_buffer,
+                        len(refreshed_directory_buffer),
+                    ),
+                    "replacement identity re-enumeration failed",
+                )
+                refreshed_entries = parse_file_id_extd_directory_info(
+                    refreshed_directory_buffer.raw,
+                )
+                replacement_at_stale = next(
+                    (item for item in refreshed_entries if item.name == "stale.bin"),
+                    None,
+                )
+                self.assertIsNotNone(
+                    replacement_at_stale,
+                    "replacement path was not visible after re-enumeration",
+                )
+                self.assertEqual(
+                    replacement_at_stale.file_id,
+                    source_entry.file_id,
+                    "re-enumerated path identity did not match moved replacement",
+                )
+                with self.assertRaisesRegex(
+                    WindowsDirectoryProbeError,
+                    "entry_identity_changed",
+                ):
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "stale.bin",
+                        expected_entry=stale_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=1024,
+                    )
+                self.assertEqual(
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "stale.bin",
+                        expected_entry=replacement_at_stale,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=1024,
+                    ),
+                    b"replacement identity probe",
+                    "the replacement must be readable only under its enumerated identity",
                 )
 
                 self.assertTrue(
@@ -551,7 +893,23 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                     reopened_replacement.file_id,
                     "A-to-B-to-A name cycle did not expose distinct file identities",
                 )
+                self.assertEqual(
+                    read_relative_file_if_identity_matches(
+                        int(root_handle),
+                        "stale.bin",
+                        expected_entry=stale_entry,
+                        expected_volume_serial_number=int(
+                            parent_identity.volume_serial_number
+                        ),
+                        max_bytes=1024,
+                    ),
+                    b"stale identity probe",
+                    "the original object should be readable again after restoration",
+                )
             finally:
+                if writer_handle not in (None, invalid_handle):
+                    if not kernel.CloseHandle(writer_handle):
+                        raise OSError("failed_writer_handle_cleanup")
                 if not kernel.CloseHandle(root_handle):
                     raise OSError("failed_native_handle_cleanup")
 

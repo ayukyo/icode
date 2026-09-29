@@ -62,10 +62,17 @@ _FILE_ID_BOTH_DIR_INFO_HEADER_BYTES = ctypes.sizeof(_FileIdBothDirectoryInfoHead
 _FILE_ID_EXTD_DIR_INFO_HEADER_BYTES = ctypes.sizeof(_FileIdExtdDirectoryInfoHeader)
 _MAX_DIRECTORY_ENTRIES = 250_000
 _MAX_DIRECTORY_BUFFER_BYTES = 16 * 1024 * 1024
+_MAX_RELATIVE_FILE_READ_BYTES = 8 * 1024 * 1024
+_RELATIVE_FILE_READ_CHUNK_BYTES = 64 * 1024
 _STATUS_SUCCESS = 0
 _STATUS_OBJECT_NAME_NOT_FOUND = 0xC0000034
 _STATUS_REPARSE_POINT_ENCOUNTERED = 0xC000050B
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
+_FILE_ATTRIBUTE_DIRECTORY = 0x0010
+_FILE_READ_DATA = 0x00000001
+_FILE_SHARE_READ = 0x00000001
+_FILE_SHARE_WRITE = 0x00000002
+_FILE_SHARE_DELETE = 0x00000004
 _FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
 _FILE_ID_INFO_CLASS = 0x12
 _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS = 0x14
@@ -83,6 +90,33 @@ def _validate_file_id(file_id: bytes) -> bytes:
     if file_id in (bytes(16), bytes([0xFF]) * 16):
         raise WindowsDirectoryProbeError("file_id_unavailable")
     return file_id
+
+
+def require_enumerated_entry_name(
+    entry: ExtendedDirectoryInfoEntry,
+    relative_name: str,
+) -> None:
+    """Require a read name to be the exact single child enumerated by its parent."""
+
+    if not isinstance(entry, ExtendedDirectoryInfoEntry):
+        raise WindowsDirectoryProbeError("directory_entry_invalid")
+    if not isinstance(relative_name, str) or "\x00" in relative_name:
+        raise WindowsDirectoryProbeError("entry_name_changed")
+    expected = PureWindowsPath(entry.name)
+    requested = PureWindowsPath(relative_name)
+    if (
+        not entry.name
+        or expected.is_absolute()
+        or expected.drive
+        or len(expected.parts) != 1
+        or any(part in (".", "..") or ":" in part for part in expected.parts)
+        or relative_name != entry.name
+        or requested.is_absolute()
+        or requested.drive
+        or len(requested.parts) != 1
+        or any(part in (".", "..") or ":" in part for part in requested.parts)
+    ):
+        raise WindowsDirectoryProbeError("entry_name_changed")
 
 
 @dataclass(frozen=True)
@@ -106,6 +140,7 @@ class NtRelativeOpenResult:
     file_attributes: int | None
     file_id: bytes | None
     volume_serial_number: int | None
+    file_contents: bytes | None = None
 
 
 def classify_no_reparse_open_receipt(status: object, file_attributes: object) -> str:
@@ -124,24 +159,206 @@ def classify_no_reparse_open_receipt(status: object, file_attributes: object) ->
     return "opened"
 
 
+def require_enumerated_entry_identity(
+    entry: ExtendedDirectoryInfoEntry,
+    opened: NtRelativeOpenResult,
+    expected_volume_serial_number: int,
+) -> None:
+    """Fail closed unless an opened child is the enumerated ordinary object.
+
+    A caller must run this check before reading from the handle. Names are not
+    compared because a controlled rename can change the current name while the
+    expected record still identifies the object originally enumerated.
+    """
+
+    if not isinstance(entry, ExtendedDirectoryInfoEntry):
+        raise WindowsDirectoryProbeError("directory_entry_invalid")
+    if not isinstance(opened, NtRelativeOpenResult):
+        raise WindowsDirectoryProbeError("entry_open_receipt_invalid")
+    if (
+        type(expected_volume_serial_number) is not int
+        or not 0 <= expected_volume_serial_number <= 0xFFFFFFFFFFFFFFFF
+    ):
+        raise WindowsDirectoryProbeError("entry_volume_invalid")
+    if type(entry.attributes) is not int or not 0 <= entry.attributes <= 0xFFFFFFFF:
+        raise WindowsDirectoryProbeError("directory_entry_invalid")
+    if type(entry.reparse_tag) is not int or not 0 <= entry.reparse_tag <= 0xFFFFFFFF:
+        raise WindowsDirectoryProbeError("directory_entry_invalid")
+    if (
+        entry.attributes & _FILE_ATTRIBUTE_REPARSE_POINT
+        or entry.reparse_tag != 0
+    ):
+        raise WindowsDirectoryProbeError("entry_reparse_point")
+
+    receipt = classify_no_reparse_open_receipt(
+        opened.status,
+        opened.file_attributes,
+    )
+    if receipt == "reparse_rejected" or receipt == "reparse_opened":
+        raise WindowsDirectoryProbeError("entry_reparse_point")
+    if receipt == "native_open_failed":
+        raise WindowsDirectoryProbeError("entry_open_failed")
+    if receipt != "opened":
+        raise WindowsDirectoryProbeError("entry_open_incomplete")
+
+    enumerated_file_id = _validate_file_id(entry.file_id)
+    opened_file_id = _validate_file_id(opened.file_id)
+    if enumerated_file_id != opened_file_id:
+        raise WindowsDirectoryProbeError("entry_identity_changed")
+    if (
+        type(opened.volume_serial_number) is not int
+        or not 0 <= opened.volume_serial_number <= 0xFFFFFFFFFFFFFFFF
+    ):
+        raise WindowsDirectoryProbeError("entry_open_incomplete")
+    if opened.volume_serial_number != expected_volume_serial_number:
+        raise WindowsDirectoryProbeError("entry_volume_changed")
+    if (
+        type(opened.file_attributes) is not int
+        or not 0 <= opened.file_attributes <= 0xFFFFFFFF
+    ):
+        raise WindowsDirectoryProbeError("entry_open_incomplete")
+    if bool(entry.attributes & _FILE_ATTRIBUTE_DIRECTORY) != bool(
+        opened.file_attributes & _FILE_ATTRIBUTE_DIRECTORY
+    ):
+        raise WindowsDirectoryProbeError("entry_type_changed")
+
+
 def open_relative_without_reparse(
     directory_handle: int,
     relative_name: str,
     *,
     directory: bool,
 ) -> NtRelativeOpenResult:
+    """Return metadata for a child opened relative to a held directory handle."""
+
+    return _open_relative_without_reparse(
+        directory_handle,
+        relative_name,
+        directory=directory,
+        expected_entry=None,
+        expected_volume_serial_number=None,
+        max_file_bytes=None,
+    )
+
+
+def read_relative_file_if_identity_matches(
+    directory_handle: int,
+    relative_name: str,
+    *,
+    expected_entry: ExtendedDirectoryInfoEntry,
+    expected_volume_serial_number: int,
+    max_bytes: int,
+) -> bytes:
+    """Read one bounded file only after matching its enumerated handle identity.
+
+    The open denies concurrent write/delete handles, rejects reparse objects,
+    compares the full file ID plus volume serial before exposing bytes, and
+    checks the same handle again afterward. This is test-only evidence, not an
+    atomic namespace snapshot guarantee.
+    """
+
+    require_enumerated_entry_name(expected_entry, relative_name)
+    result = _open_relative_without_reparse(
+        directory_handle,
+        relative_name,
+        directory=False,
+        expected_entry=expected_entry,
+        expected_volume_serial_number=expected_volume_serial_number,
+        max_file_bytes=max_bytes,
+    )
+    require_enumerated_entry_identity(
+        expected_entry,
+        result,
+        expected_volume_serial_number,
+    )
+    if result.file_contents is None:
+        raise WindowsDirectoryProbeError("relative_file_read_incomplete")
+    return result.file_contents
+
+
+def _read_open_file_contents(
+    kernel: object,
+    file_handle: ctypes.c_void_p,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Read at most max_bytes plus one sentinel byte from a native handle."""
+
+    from ctypes import wintypes
+
+    read_file = kernel.ReadFile  # type: ignore[attr-defined]
+    read_file.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+    ]
+    read_file.restype = wintypes.BOOL
+    output = bytearray()
+    while True:
+        request_size = min(
+            _RELATIVE_FILE_READ_CHUNK_BYTES,
+            max_bytes + 1 - len(output),
+        )
+        buffer = ctypes.create_string_buffer(request_size)
+        bytes_read = wintypes.DWORD()
+        if not read_file(
+            file_handle,
+            buffer,
+            request_size,
+            ctypes.byref(bytes_read),
+            None,
+        ):
+            raise WindowsDirectoryProbeError("relative_file_read_failed")
+        if bytes_read.value > request_size:
+            raise WindowsDirectoryProbeError("relative_file_read_incomplete")
+        if bytes_read.value == 0:
+            return bytes(output)
+        output.extend(buffer.raw[:bytes_read.value])
+        if len(output) > max_bytes:
+            raise WindowsDirectoryProbeError("relative_file_too_large")
+
+
+def _open_relative_without_reparse(
+    directory_handle: int,
+    relative_name: str,
+    *,
+    directory: bool,
+    expected_entry: ExtendedDirectoryInfoEntry | None,
+    expected_volume_serial_number: int | None,
+    max_file_bytes: int | None,
+) -> NtRelativeOpenResult:
     """Open a disposable Windows probe entry relative to a held directory handle.
 
     The test-only helper combines OBJ_DONT_REPARSE with
     FILE_OPEN_REPARSE_POINT. It returns a fixed NTSTATUS, file attributes,
-    volume serial number, and the full 128-bit file ID; it never reads entry
-    contents or exposes the supplied name.
+    volume serial number, and the full 128-bit file ID. Content reads are
+    available only when an enumerated identity and byte limit are supplied.
     """
 
     if type(directory_handle) is not int or directory_handle <= 0:
         raise ValueError("directory_handle_invalid")
     if type(directory) is not bool:
         raise ValueError("directory_flag_invalid")
+    if max_file_bytes is None:
+        if expected_entry is not None or expected_volume_serial_number is not None:
+            raise WindowsDirectoryProbeError("read_identity_required")
+    else:
+        if directory:
+            raise WindowsDirectoryProbeError("relative_read_requires_file")
+        if not isinstance(expected_entry, ExtendedDirectoryInfoEntry):
+            raise WindowsDirectoryProbeError("directory_entry_invalid")
+        if (
+            type(expected_volume_serial_number) is not int
+            or not 0 <= expected_volume_serial_number <= 0xFFFFFFFFFFFFFFFF
+        ):
+            raise WindowsDirectoryProbeError("entry_volume_invalid")
+        if (
+            type(max_file_bytes) is not int
+            or not 1 <= max_file_bytes <= _MAX_RELATIVE_FILE_READ_BYTES
+        ):
+            raise WindowsDirectoryProbeError("relative_read_limit_invalid")
     if not isinstance(relative_name, str) or "\x00" in relative_name:
         raise ValueError("relative_name_invalid")
     path = PureWindowsPath(relative_name)
@@ -229,7 +446,13 @@ def open_relative_without_reparse(
     ]
     nt_create_file.restype = wintypes.LONG
     access = 0x00000080 | 0x00100000  # FILE_READ_ATTRIBUTES | SYNCHRONIZE
-    share = 0x00000001 | 0x00000002 | 0x00000004
+    if max_file_bytes is not None:
+        access |= _FILE_READ_DATA
+    share = (
+        _FILE_SHARE_READ
+        if max_file_bytes is not None
+        else _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE
+    )  # Bounded reads deny concurrent write/delete handle opens.
     create_options = 0x00200000 | 0x00000020  # FILE_OPEN_REPARSE_POINT | synchronous
     create_options |= 0x00000001 if directory else 0x00000040
     raw_status = nt_create_file(
@@ -282,6 +505,61 @@ def open_relative_without_reparse(
         ):
             raise OSError("file_identity_query_failed")
         file_id = _validate_file_id(bytes(file_id_info.file_id))
+        opened_result = NtRelativeOpenResult(
+            status=status,
+            file_attributes=int(tag_info.FileAttributes),
+            file_id=file_id,
+            volume_serial_number=int(file_id_info.volume_serial_number),
+        )
+        if max_file_bytes is not None:
+            assert expected_entry is not None
+            assert expected_volume_serial_number is not None
+            require_enumerated_entry_identity(
+                expected_entry,
+                opened_result,
+                expected_volume_serial_number,
+            )
+            file_contents = _read_open_file_contents(
+                kernel,
+                file_handle,
+                max_bytes=max_file_bytes,
+            )
+            current_tag_info = FileAttributeTagInfo()
+            if not kernel.GetFileInformationByHandleEx(
+                file_handle,
+                _FILE_ATTRIBUTE_TAG_INFO_CLASS,
+                ctypes.byref(current_tag_info),
+                ctypes.sizeof(current_tag_info),
+            ):
+                raise WindowsDirectoryProbeError("file_attribute_recheck_failed")
+            current_file_id_info = _FileIdInfo()
+            if not kernel.GetFileInformationByHandleEx(
+                file_handle,
+                _FILE_ID_INFO_CLASS,
+                ctypes.byref(current_file_id_info),
+                ctypes.sizeof(current_file_id_info),
+            ):
+                raise WindowsDirectoryProbeError("file_identity_recheck_failed")
+            current_handle = NtRelativeOpenResult(
+                status=status,
+                file_attributes=int(current_tag_info.FileAttributes),
+                file_id=_validate_file_id(bytes(current_file_id_info.file_id)),
+                volume_serial_number=int(
+                    current_file_id_info.volume_serial_number
+                ),
+            )
+            require_enumerated_entry_identity(
+                expected_entry,
+                current_handle,
+                expected_volume_serial_number,
+            )
+            return NtRelativeOpenResult(
+                status=status,
+                file_attributes=opened_result.file_attributes,
+                file_id=opened_result.file_id,
+                volume_serial_number=opened_result.volume_serial_number,
+                file_contents=file_contents,
+            )
         return NtRelativeOpenResult(
             status=status,
             file_attributes=int(tag_info.FileAttributes),
