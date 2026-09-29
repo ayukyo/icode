@@ -15,6 +15,7 @@ import platform
 import re
 import shutil
 import socket
+import stat
 import sys
 import tempfile
 from ctypes import wintypes
@@ -27,10 +28,14 @@ from icode.windows_appcontainer import run_windows_appcontainer  # noqa: E402
 
 
 _DACL_SECURITY_INFORMATION = 0x00000004
+_SE_FILE_OBJECT = 1
 _INHERITED_ACE = 0x10
 _SE_DACL_AUTO_INHERITED = 0x0400
+_SE_DACL_PROTECTED = 0x1000
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
 _ERROR_INSUFFICIENT_BUFFER = 122
 _EXPECTED_SOURCE_CONTENTS = b"ICODE-READ-HANDLE-PROBE-v1\n"
+_DISPOSABLE_WORKSPACE_PREFIX = "icode-appcontainer-read-handle-"
 _SID_PATTERN = re.compile(r"(?i)(?<![A-Z0-9])S-\d+(?:-\d+)+(?![A-Z0-9])")
 
 
@@ -46,11 +51,14 @@ def _file_digest(path: Path) -> str:
 class _DaclSnapshot:
     descriptor_digest: str
     acl_digest: str
+    acl_bytes: bytes
+    acl_capacity_bytes: bytes
     normalized_acl_digest: str
     control: int
     revision: int
     present: bool
     defaulted: bool
+    file_identity: tuple[int, int]
     ace_count: int
     inherited_ace_count: int
     acl_bytes_in_use: int
@@ -88,6 +96,52 @@ def _workspace_dacl_entries_equivalent(
         and before.revision == after.revision
         and before.present == after.present
         and before.defaulted == after.defaulted
+        and before.file_identity == after.file_identity
+        and before.acl_bytes_in_use == after.acl_bytes_in_use
+    )
+
+
+def _workspace_dacl_baseline_normalization_valid(
+    before: _DaclSnapshot, after: _DaclSnapshot,
+) -> bool:
+    """Require only the one-way auto-inheritance normalization on one object."""
+    control_delta = before.control ^ after.control
+    return (
+        control_delta == _SE_DACL_AUTO_INHERITED
+        and not before.control & _SE_DACL_AUTO_INHERITED
+        and bool(after.control & _SE_DACL_AUTO_INHERITED)
+        and not before.control & _SE_DACL_PROTECTED
+        and not after.control & _SE_DACL_PROTECTED
+        and before.normalized_acl_digest == after.normalized_acl_digest
+        and before.revision == after.revision
+        and before.present is True
+        and after.present is True
+        and before.defaulted is False
+        and after.defaulted is False
+        and before.file_identity == after.file_identity
+        and before.ace_count == after.ace_count
+        and before.acl_bytes_in_use == after.acl_bytes_in_use
+    )
+
+
+def _dacl_state_equal(before: _DaclSnapshot, after: _DaclSnapshot) -> bool:
+    """Compare the complete DACL state without relying on SD serialization offsets."""
+    return (
+        before.acl_bytes == after.acl_bytes
+        and before.control == after.control
+        and before.revision == after.revision
+        and before.present == after.present
+        and before.defaulted == after.defaulted
+        and before.file_identity == after.file_identity
+        and before.ace_count == after.ace_count
+        and before.acl_bytes_in_use == after.acl_bytes_in_use
+    )
+
+
+def _stat_is_reparse_point(file_info: os.stat_result) -> bool:
+    """Detect symlinks and Windows junction/reparse attributes without following them."""
+    return stat.S_ISLNK(file_info.st_mode) or bool(
+        getattr(file_info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
     )
 
 
@@ -175,7 +229,12 @@ def _dacl_snapshot(path: Path) -> _DaclSnapshot:
         or acl_bytes_in_use > acl_capacity
     ):
         raise OSError("DACL range is outside its security descriptor")
-    normalized_acl = bytearray(ctypes.string_at(dacl, acl_bytes_in_use))
+    acl_capacity_bytes = ctypes.string_at(dacl, acl_capacity)
+    if int.from_bytes(acl_capacity_bytes[2:4], "little") != acl_capacity:
+        raise OSError("DACL size does not match its allocated range")
+    acl_bytes = acl_capacity_bytes[:acl_bytes_in_use]
+    normalized_acl = bytearray(acl_bytes)
+    file_info = path.lstat()
     inherited_ace_count = 0
     for ace_index in range(int(size_info.AceCount)):
         ace_pointer = ctypes.c_void_p()
@@ -198,18 +257,72 @@ def _dacl_snapshot(path: Path) -> _DaclSnapshot:
         descriptor_digest=hashlib.sha256(
             descriptor.raw[:required.value],
         ).hexdigest(),
-        acl_digest=hashlib.sha256(
-            ctypes.string_at(dacl, acl_bytes_in_use),
-        ).hexdigest(),
+        acl_digest=hashlib.sha256(acl_bytes).hexdigest(),
+        acl_bytes=acl_bytes,
+        acl_capacity_bytes=acl_capacity_bytes,
         normalized_acl_digest=hashlib.sha256(normalized_acl).hexdigest(),
         control=int(control.value),
         revision=int(revision.value),
         present=bool(present.value),
         defaulted=bool(defaulted.value),
+        file_identity=(int(file_info.st_dev), int(file_info.st_ino)),
         ace_count=int(size_info.AceCount),
         inherited_ace_count=inherited_ace_count,
         acl_bytes_in_use=acl_bytes_in_use,
     )
+
+
+def _normalize_disposable_workspace_dacl_baseline(workspace: Path) -> int:
+    """Normalize only an empty CI workspace before capturing its DACL baseline."""
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        raw_workspace = Path(os.path.abspath(os.fspath(workspace)))
+        raw_root = raw_workspace.parent
+        if _stat_is_reparse_point(raw_root.lstat()) or _stat_is_reparse_point(
+            raw_workspace.lstat(),
+        ):
+            raise OSError("workspace path contains a reparse point")
+        root = raw_root.resolve(strict=True)
+        target = raw_workspace.resolve(strict=True)
+        if (
+            target.name != "execution"
+            or target.parent != root
+            or not root.name.startswith(_DISPOSABLE_WORKSPACE_PREFIX)
+            or not root.is_relative_to(temp_root)
+            or root == temp_root
+            or not target.is_dir()
+            or next(target.iterdir(), None) is not None
+        ):
+            raise OSError("workspace is not an empty disposable execution directory")
+        before = _dacl_snapshot(target)
+        if (
+            not before.present
+            or before.defaulted
+            or before.control & _SE_DACL_PROTECTED
+        ):
+            raise OSError("workspace DACL cannot be normalized safely")
+        if before.control & _SE_DACL_AUTO_INHERITED:
+            return 0
+
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        advapi.SetNamedSecurityInfoW.argtypes = [
+            wintypes.LPWSTR, ctypes.c_int, wintypes.DWORD,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        advapi.SetNamedSecurityInfoW.restype = wintypes.DWORD
+        original_acl = ctypes.create_string_buffer(before.acl_capacity_bytes)
+        status = advapi.SetNamedSecurityInfoW(
+            str(target), _SE_FILE_OBJECT, _DACL_SECURITY_INFORMATION,
+            None, None, ctypes.cast(original_acl, ctypes.c_void_p), None,
+        )
+        if status != 0:
+            raise OSError(int(status), "SetNamedSecurityInfoW")
+        after = _dacl_snapshot(target)
+        if not _workspace_dacl_baseline_normalization_valid(before, after):
+            raise OSError("workspace DACL baseline changed outside normalization contract")
+        return after.control ^ before.control
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise OSError("disposable workspace DACL normalization failed") from exc
 
 
 @contextmanager
@@ -292,7 +405,6 @@ def _run(probe_executable: Path) -> int:
             synthetic_profile.mkdir()
 
             helper = workspace / probe_executable.name
-            shutil.copyfile(probe_executable, helper)
             source = protected / "approved.bin"
             sibling = protected / "sibling.bin"
             outside_file = outside / "outside.bin"
@@ -307,11 +419,32 @@ def _run(probe_executable: Path) -> int:
             protected_files = (source, sibling, outside_file, profile_file)
             protected_directories = (root, protected, outside, synthetic_profile)
             file_digests_before = {path: _file_digest(path) for path in protected_files}
+            protected_dacl_paths = (*protected_directories, *protected_files)
+            protected_dacls_before_normalization = {
+                path: _dacl_snapshot(path) for path in protected_dacl_paths
+            }
+            workspace_dacl_normalization_delta = (
+                _normalize_disposable_workspace_dacl_baseline(workspace)
+            )
+            protected_dacls_after_normalization = {
+                path: _dacl_snapshot(path) for path in protected_dacl_paths
+            }
+            if not all(
+                _dacl_state_equal(
+                    protected_dacls_before_normalization[path],
+                    protected_dacls_after_normalization[path],
+                )
+                for path in protected_dacl_paths
+            ):
+                raise OSError("workspace DACL normalization changed protected sample state")
+
+            shutil.copyfile(probe_executable, helper)
             dacl_snapshots_before = {
                 path: _dacl_snapshot(path)
-                for path in (*protected_directories, *protected_files, workspace)
+                for path in (*protected_dacl_paths, workspace, helper)
             }
             workspace_dacl_before = dacl_snapshots_before[workspace]
+            workspace_helper_dacl_before = dacl_snapshots_before[helper]
 
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
                 listener.bind(("127.0.0.1", 0))
@@ -377,7 +510,7 @@ def _run(probe_executable: Path) -> int:
             file_digests_after = {path: _file_digest(path) for path in protected_files}
             dacl_snapshots_after = {
                 path: _dacl_snapshot(path)
-                for path in (*protected_directories, *protected_files, workspace)
+                for path in (*protected_dacl_paths, workspace, helper)
             }
             checks = {
                 "process_executed": result.executed,
@@ -399,13 +532,16 @@ def _run(probe_executable: Path) -> int:
                 "no_network_connection": not unexpected_network_client,
                 "protected_content_unchanged": file_digests_before == file_digests_after,
                 "protected_dacls_unchanged": all(
-                    dacl_snapshots_before[path].descriptor_digest
-                    == dacl_snapshots_after[path].descriptor_digest
-                    for path in (*protected_directories, *protected_files)
+                    _dacl_state_equal(
+                        dacl_snapshots_before[path], dacl_snapshots_after[path],
+                    )
+                    for path in protected_dacl_paths
                 ),
-                "workspace_dacl_restored": (
-                    workspace_dacl_before.descriptor_digest
-                    == dacl_snapshots_after[workspace].descriptor_digest
+                "workspace_dacl_restored": _dacl_state_equal(
+                    workspace_dacl_before, dacl_snapshots_after[workspace],
+                ),
+                "workspace_helper_dacl_restored": _dacl_state_equal(
+                    workspace_helper_dacl_before, dacl_snapshots_after[helper],
                 ),
                 "no_write_marker": not marker.exists(),
                 "native_receipt_finalized": receipt.get("stage") == 5,
@@ -425,9 +561,14 @@ def _run(probe_executable: Path) -> int:
                 f"error:{_format_network_error(receipt.get('network_error'))}"
             )
             print(
+                "  workspace_dacl_baseline="
+                f"normalization_delta:0x{workspace_dacl_normalization_delta:04x}"
+            )
+            print(
                 "  workspace_dacl_diagnostics="
-                f"descriptor_equal:{workspace_dacl_before.descriptor_digest == workspace_dacl_after.descriptor_digest},"
+                f"descriptor_blob_equal:{workspace_dacl_before.descriptor_digest == workspace_dacl_after.descriptor_digest},"
                 f"acl_equal:{workspace_dacl_before.acl_digest == workspace_dacl_after.acl_digest},"
+                f"dacl_state_equal:{_dacl_state_equal(workspace_dacl_before, workspace_dacl_after)},"
                 "entries_equivalent:"
                 f"{_workspace_dacl_entries_equivalent(workspace_dacl_before, workspace_dacl_after)},"
                 f"control_before:0x{workspace_dacl_before.control:04x},"
