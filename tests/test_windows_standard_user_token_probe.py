@@ -2574,13 +2574,13 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(
             write_report.call_args.args[1],
             "failed=client_open_access_denied;detail="
-            "token_process+logon_enabled+self_access_allow+"
-            "mask_z_d5+r_d5+w_d5+rw_d5+s_d5+rs_d5+ws_d5+all_d5"
-            "+open_winerror_5",
+            "token_process+logon_enabled+default_dacl_ok+"
+            "user_sid_dacl_denied+user_sid_create_instance_denied+"
+            "mask_all_d5+winerror_5",
         )
         report = write_report.call_args.args[1]
         self.assertLessEqual(len(report.partition(";detail=")[2]), 120)
-        self.assertIn("+open_winerror_5", report)
+        self.assertIn("+winerror_5", report)
 
     def test_self_pipe_access_receipt_uses_only_fixed_accesscheck_labels(self) -> None:
         label = token_probe._self_pipe_access_receipt_label

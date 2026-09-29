@@ -94,6 +94,9 @@ _RUNNER_PIPE_ACCESS_MATRIX = (
         | _PIPE_SYNCHRONIZE_ACCESS,
     ),
 )
+_RUNNER_PIPE_ACCESS_MATRIX_ALL_D5_RECEIPT = (
+    "mask_z_d5+r_d5+w_d5+rw_d5+s_d5+rs_d5+ws_d5+all_d5"
+)
 _TOKEN_DUPLICATE = 0x0002
 _TOKEN_QUERY = 0x0008
 # TOKEN_INFORMATION_CLASS values: TokenIntegrityLevel=25, TokenMandatoryPolicy=27.
@@ -2907,7 +2910,9 @@ def _run_child_mode(
                     if access_mask_matrix_state is not None:
                         # The full rights matrix is the highest-value bounded
                         # evidence for this failure; retain it over earlier
-                        # ACL A/B labels if the receipt needs compaction.
+                        # ACL A/B labels unless it repeats the same denial for
+                        # all eight rights. In that case a fixed summary leaves
+                        # room for the ACL controls already run in this child.
                         matrix_state = access_mask_matrix_state
                         if (
                             not isinstance(matrix_state, str)
@@ -2918,20 +2923,58 @@ def _run_child_mode(
                             ) is None
                         ):
                             matrix_state = "matrix_unavailable"
-                        matrix_context = "+".join((
-                            minimal_diagnostic,
-                            self_pipe_access_probe_state or "self_access_unavailable",
-                            matrix_state,
-                            f"open_winerror_{error_code}",
-                        ))
-                        if len(matrix_context) > 120:
+                        if (
+                            matrix_state == _RUNNER_PIPE_ACCESS_MATRIX_ALL_D5_RECEIPT
+                            and default_dacl_probe_state is not None
+                            and user_sid_dacl_probe_state is not None
+                        ):
+                            context_parts = [
+                                minimal_diagnostic,
+                                default_dacl_probe_state,
+                                user_sid_dacl_probe_state,
+                            ]
+                            if user_sid_create_instance_probe_state is not None:
+                                context_parts.append(
+                                    user_sid_create_instance_probe_state,
+                                )
+                            context_parts.extend((
+                                "mask_all_d5",
+                                f"winerror_{error_code}",
+                            ))
+                            context = "+".join(context_parts)
+                            if len(context) > 120:
+                                # Preserve the DACL comparisons and the actual
+                                # client-open error over a repeated matrix.
+                                context_parts.remove("mask_all_d5")
+                                context = "+".join(context_parts)
+                            if len(context) > 120:
+                                # The parent independently records the child
+                                # token; keep the exact ACL outcomes first.
+                                context_parts = [
+                                    default_dacl_probe_state,
+                                    user_sid_dacl_probe_state,
+                                ]
+                                if user_sid_create_instance_probe_state is not None:
+                                    context_parts.append(
+                                        user_sid_create_instance_probe_state,
+                                    )
+                                context_parts.append(f"winerror_{error_code}")
+                                context = "+".join(context_parts)
+                        else:
                             matrix_context = "+".join((
+                                minimal_diagnostic,
+                                self_pipe_access_probe_state or "self_access_unavailable",
                                 matrix_state,
                                 f"open_winerror_{error_code}",
                             ))
-                        if len(matrix_context) > 120:
-                            matrix_context = matrix_state
-                        context = matrix_context
+                            if len(matrix_context) > 120:
+                                matrix_context = "+".join((
+                                    matrix_state,
+                                    f"open_winerror_{error_code}",
+                                ))
+                            if len(matrix_context) > 120:
+                                matrix_context = matrix_state
+                            context = matrix_context
                     failure_detail += ";detail=" + context
                 _write_report(
                     validated_report,
