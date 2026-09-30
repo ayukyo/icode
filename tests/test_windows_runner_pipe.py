@@ -52,6 +52,16 @@ _NATIVE_PIPE_FAILURE_DETAILS = re.compile(
     r"(?:errno=[0-9]{1,10}:stage=[a-z0-9_]{1,64}|"
     r"type=[A-Za-z][A-Za-z0-9_]{0,63})\Z",
 )
+_NATIVE_PIPE_DESCRIPTOR_SHAPE = re.compile(
+    r"sd_control=[0-9A-F]{4};sd_revision=[0-9]{1,3};"
+    r"owner=(?:user|logon|other|absent|unavailable);"
+    r"group=(?:user|logon|other|absent|unavailable);"
+    r"dacl=(?:present|absent|null|unavailable);"
+    r"acl_revision=(?:[0-9]{1,3}|x);ace_count=(?:[0-9]{1,3}|x);"
+    r"aces=(?:-|(?:[0-9A-F]{2}\.[0-9A-F]{2}\.(?:[0-9A-F]{8}|--------))"
+    r"(?:,(?:[0-9A-F]{2}\.[0-9A-F]{2}\.(?:[0-9A-F]{8}|--------)))*);"
+    r"truncated=[01]\Z",
+)
 
 
 def _parse_pipe_direction_receipt(receipt: str) -> tuple[str, str] | None:
@@ -208,6 +218,19 @@ def _format_native_pipe_failure_annotation(
     if len(receipt) > 384:
         return "native_pipe_client_failed:diagnostic_unavailable;target_access=unavailable"
     return receipt
+
+
+def _format_native_pipe_descriptor_notice(descriptor: object) -> str:
+    """Expose only the descriptor helper's fixed, SID-free shape summary."""
+    if descriptor == "sd=unavailable":
+        return "server_descriptor=unavailable"
+    if (
+        type(descriptor) is not str
+        or len(descriptor) > 384
+        or _NATIVE_PIPE_DESCRIPTOR_SHAPE.fullmatch(descriptor) is None
+    ):
+        return "server_descriptor=unavailable"
+    return f"server_descriptor={descriptor}"
 
 
 def _format_server_connect_receipt(result: object, last_error: object) -> str:
@@ -529,6 +552,34 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         )
         self.assertNotIn("private", receipt)
         self.assertNotIn("secret", receipt)
+
+    def test_native_pipe_descriptor_notice_is_bounded_and_sid_free(self) -> None:
+        formatter = globals().get("_format_native_pipe_descriptor_notice")
+        self.assertTrue(
+            callable(formatter),
+            "native_pipe_descriptor_notice_formatter_missing",
+        )
+        descriptor = (
+            "sd_control=8004;sd_revision=1;owner=user;group=other;"
+            "dacl=present;acl_revision=2;ace_count=1;"
+            "aces=00.00.00100003;truncated=0"
+        )
+
+        self.assertEqual(
+            formatter(descriptor),
+            f"server_descriptor={descriptor}",
+        )
+        for unsafe in (
+            "sd=unavailable",
+            descriptor + ";sid=S-1-5-21-secret",
+            descriptor + "\n::error::injected",
+            "x" * 385,
+        ):
+            with self.subTest(unsafe=unsafe[:32]):
+                self.assertEqual(
+                    formatter(unsafe),
+                    "server_descriptor=unavailable",
+                )
 
     def test_server_connect_receipt_uses_only_fixed_result_labels(self) -> None:
         formatter = globals().get("_format_server_connect_receipt")
@@ -1338,6 +1389,12 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
                 )
                 connect_suffix = f";{connect_receipt}"
                 print(f"::notice::{connect_receipt}")
+                print(
+                    "::notice::"
+                    + _format_native_pipe_descriptor_notice(
+                        server_descriptor_shape,
+                    ),
+                )
                 print(
                     "::error::" + _format_native_pipe_failure_annotation(
                         details, target_access.removeprefix(";")
