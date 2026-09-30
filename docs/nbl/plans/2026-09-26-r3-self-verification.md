@@ -392,6 +392,12 @@ R3 核心能力（本切片）：
 - **目录 symlink 与原生严格门：**递归器新增 directory-symlink 投影测试；Windows Git 对照同时覆盖 file/directory symlink。生产 Windows workflow 显式要求 symlink 创建成功（CI 无权限时测试失败，不把 skip 算通过）；SHA-256 原生 Git fixture 也不再对任意命令错误 skip。扩展 UNC device prefix 按 Windows 大小写不敏感规则规范化并有便携单测。
 - **修正后验证：**`tests.test_windows_worktree_tree_oid`、`tests.test_ci_workflow_contracts`、`tests.test_r3_regression` 共 105 项通过，6 项真实 Windows/junction 用例在 Linux 主机跳过；完整 `scripts/preflight.py` 三道门通过，Python 3.11 compileall、`git diff --check`、site/governance/Agent-landscape checks 均通过。Windows x64/ARM64 原生结果仍需新 SHA CI，不以本机 fake backend 代替。
 
+## 2026-09-30 Asia/Shanghai：CI #401 Windows 快照/tree x64 复验失败
+
+- **原生结果：**commit [`555001c`](https://github.com/ayukyo/icode/commit/555001c90f902f725119012c16f7d3996a264f75) 的 [CI #401](https://github.com/ayukyo/icode/actions/runs/36696603232) 中，Windows ARM64 [R3 job](https://github.com/ayukyo/icode/actions/runs/36696603232/job/109825959054) 成功；Windows x64 [R3 job](https://github.com/ayukyo/icode/actions/runs/36696603232/job/109825959048) 的目录记录/相对打开前置 probe 成功，但生产 `tests.test_windows_worktree_tree_oid` 步骤失败。
+- **证据边界：**公开 annotations 只暴露步骤 exit code 与前置 probe notices；原始 unittest 日志当前受 GitHub 登录权限限制，无法确定具体失败用例或根因。CI #399 两架构通过是较早 SHA 的事实，不能抵消这次 x64 失败；也不把相邻的目录/share/pagination notice 当成生产测试通过证据。
+- **阶段门：**Windows R3 生产 snapshot/tree 原生子门暂不关闭。需要拿到失败用例的可核对输出并在新 SHA 上复验 x64/ARM64；在此之前本机 fake backend、普通 workflow 成功或 ARM64 单边通过均不能代替 x64 证据。R3 overall、R2 readiness 与自动模式状态不变。
+
 ## 2026-09-30 Asia/Shanghai：CI #395 目录 EOF 交叉比较修正
 
 - **失败定位：**commit [`38071ee`](https://github.com/ayukyo/icode/commit/38071ee03868e335c13f548a79cd4702047d0f6f) 的 Windows x64 [job](https://github.com/ayukyo/icode/actions/runs/36677728209/job/109766256113) 和 ARM64 [job](https://github.com/ayukyo/icode/actions/runs/36677728209/job/109766256226) 均报告 `.git` 真实目录枚举 `EndOfFile=0`、opened handle `EndOfFile=4096`，volume/FileId/ChangeTime/类型/删除状态/属性/tag 全匹配。原先泛化错误已由 test-only 诊断捕获为具体字段。
