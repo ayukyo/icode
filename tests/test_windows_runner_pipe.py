@@ -71,6 +71,45 @@ def _authenticated_server() -> RunnerPipeServer:
     return server
 
 
+def _native_pipe_access_control_receipt() -> str:
+    """Run existing no-payload ACL controls and return only fixed labels."""
+    try:
+        from scripts.windows_standard_user_token_probe import (
+            _runner_pipe_probe_receipt_code,
+            _self_pipe_access_receipt_label,
+            runner_pipe_open_with_default_dacl_probe,
+            runner_pipe_open_with_user_sid_dacl_probe,
+            runner_pipe_wrong_server_pid_probe,
+        )
+
+        self_opened, self_detail = runner_pipe_wrong_server_pid_probe()
+        if self_opened is True:
+            self_state = "self_pipe_ok"
+        elif (
+            type(self_detail) is str
+            and self_detail.startswith("client_open_access_denied")
+        ):
+            self_state = "self_pipe_denied"
+        else:
+            self_state = "self_pipe_other"
+        self_access = _self_pipe_access_receipt_label(self_detail)
+
+        default_opened, default_detail = runner_pipe_open_with_default_dacl_probe()
+        user_opened, user_detail = runner_pipe_open_with_user_sid_dacl_probe()
+        default_receipt = _runner_pipe_probe_receipt_code(
+            "d", default_opened, default_detail,
+        )
+        user_receipt = _runner_pipe_probe_receipt_code(
+            "u", user_opened, user_detail,
+        )
+        return (
+            f"self_pipe={self_state}:{self_access};"
+            f"temporary_dacl={default_receipt}_{user_receipt}"
+        )
+    except Exception:
+        return "self_pipe=unavailable;temporary_dacl=unavailable"
+
+
 class TestWindowsRunnerPipePolicy(unittest.TestCase):
     def test_server_refuses_to_send_or_receive_before_runner_authentication(self) -> None:
         api = windows_runner_pipe._Win32Api(
@@ -283,6 +322,17 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
                 server.send_message(_spawn_request())
 
         write_all.assert_not_called()
+
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "Linux only: fixed unavailable-host receipt",
+    )
+    def test_native_pipe_diagnostic_receipt_is_fixed_when_unavailable(self) -> None:
+        self.assertEqual(
+            _native_pipe_access_control_receipt(),
+            "self_pipe=self_pipe_other:self_access_unavailable;"
+            "temporary_dacl=dfuuuu_ufuuuu",
+        )
 
     def test_server_accepts_client_that_connected_before_connect_named_pipe(self) -> None:
         kernel = SimpleNamespace(
@@ -565,7 +615,12 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
                 )
             else:
                 details = f"type={type(client_error).__name__}"
-            self.fail(f"native_pipe_client_failed:{details}")
+            controls = (
+                f";{_native_pipe_access_control_receipt()}"
+                if isinstance(client_error, PermissionError)
+                else ""
+            )
+            self.fail(f"native_pipe_client_failed:{details}{controls}")
         if server_error is not None:
             raise server_error
         self.assertEqual(client_errors, [])
