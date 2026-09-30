@@ -117,6 +117,31 @@ _FILE_CREATE_PIPE_INSTANCE = 0x00000004
 _PIPE_READ_DATA_ACCESS = 0x00000001
 _PIPE_WRITE_DATA_ACCESS = 0x00000002
 _PIPE_SYNCHRONIZE_ACCESS = 0x00100000
+_GENERIC_READ = 0x80000000
+_PIPE_ACCESS_MODE_MASK = 0x00000003
+_PIPE_ACCESS_DUPLEX = 0x00000003
+_PIPE_ACCESS_OUTBOUND = 0x00000002
+_PIPE_DIRECTION_PROBE_TIMEOUT_MS = 2_000
+_PIPE_DIRECTION_PROBE_STATES = frozenset({
+    "opened",
+    "open_access_denied",
+    "open_pipe_busy",
+    "open_pipe_not_found",
+    "open_failed",
+    "wait_access_denied",
+    "wait_timeout",
+    "wait_failed",
+    "server_create_access_denied",
+    "server_create_failed",
+    "server_close_failed",
+    "client_close_failed",
+    "security_descriptor_failed",
+    "security_descriptor_free_failed",
+    "invalid_logon_sid",
+    "unsupported_platform",
+    "probe_failed",
+    "unavailable",
+})
 _RUNNER_PIPE_ACCESS_MATRIX = (
     ("z", 0),
     ("r", _PIPE_READ_DATA_ACCESS),
@@ -2338,6 +2363,195 @@ def _format_pipe_security_descriptor_shape(
         f"aces={items};truncated={int(truncated)}"
     )
     return receipt if len(receipt) <= 384 else "sd=unavailable"
+
+
+def _runner_pipe_direction_probe_sddl(logon_sid: str) -> str:
+    """Return the same narrowly scoped read-only DACL for both test arms."""
+    sid = _runner_pipe._validate_sid(logon_sid)
+    return f"D:P(A;;GR;;;{sid})"
+
+
+def _format_runner_pipe_direction_receipt(
+    duplex_state: object,
+    outbound_state: object,
+) -> str:
+    """Format fixed states only; never place SID or native error text in CI."""
+    if (
+        not isinstance(duplex_state, str)
+        or duplex_state not in _PIPE_DIRECTION_PROBE_STATES
+    ):
+        duplex_state = "unavailable"
+    if (
+        not isinstance(outbound_state, str)
+        or outbound_state not in _PIPE_DIRECTION_PROBE_STATES
+    ):
+        outbound_state = "unavailable"
+    return (
+        f"pipe_direction=duplex_{duplex_state}_outbound_{outbound_state}"
+    )
+
+
+def _runner_pipe_direction_probe_arm(
+    api: object,
+    security_descriptor: ctypes.c_void_p,
+    access_mode: int,
+) -> str:
+    """Open one disposable pipe and make no connection or data API calls."""
+    pipe_name = new_runner_pipe_name()
+    open_mode = (
+        _runner_pipe.RUNNER_PIPE_OPEN_MODE & ~_PIPE_ACCESS_MODE_MASK
+    ) | access_mode
+    attributes = _runner_pipe._SECURITY_ATTRIBUTES(
+        ctypes.sizeof(_runner_pipe._SECURITY_ATTRIBUTES),
+        security_descriptor,
+        0,
+    )
+    server = _runner_pipe._INVALID_HANDLE_VALUE
+    client = _runner_pipe._INVALID_HANDLE_VALUE
+    state = "probe_failed"
+    try:
+        server = api.kernel.CreateNamedPipeW(
+            pipe_name,
+            open_mode,
+            _runner_pipe.RUNNER_PIPE_MODE,
+            _runner_pipe.RUNNER_PIPE_MAX_INSTANCES,
+            _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+            _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+            0,
+            ctypes.byref(attributes),
+        )
+        if _runner_pipe._handle_is_invalid(server):
+            state = (
+                "server_create_access_denied"
+                if ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+                else "server_create_failed"
+            )
+        elif not api.kernel.WaitNamedPipeW(
+            pipe_name, _PIPE_DIRECTION_PROBE_TIMEOUT_MS,
+        ):
+            error = ctypes.get_last_error()
+            if error == _ERROR_ACCESS_DENIED:
+                state = "wait_access_denied"
+            elif error == _ERROR_SEM_TIMEOUT:
+                state = "wait_timeout"
+            else:
+                state = "wait_failed"
+        else:
+            client = api.kernel.CreateFileW(
+                pipe_name,
+                _GENERIC_READ,
+                0,
+                None,
+                _runner_pipe._OPEN_EXISTING,
+                _runner_pipe.FILE_FLAG_OVERLAPPED
+                | _runner_pipe._SECURITY_SQOS_PRESENT
+                | _runner_pipe._SECURITY_IMPERSONATION,
+                None,
+            )
+            if _runner_pipe._handle_is_invalid(client):
+                error = ctypes.get_last_error()
+                if error == _ERROR_ACCESS_DENIED:
+                    state = "open_access_denied"
+                elif error == _ERROR_PIPE_BUSY:
+                    state = "open_pipe_busy"
+                elif error == _ERROR_FILE_NOT_FOUND:
+                    state = "open_pipe_not_found"
+                else:
+                    state = "open_failed"
+            else:
+                state = "opened"
+    except Exception:
+        state = "probe_failed"
+    finally:
+        if not _runner_pipe._handle_is_invalid(client):
+            try:
+                if not api.kernel.CloseHandle(client):
+                    state = "client_close_failed"
+            except Exception:
+                state = "client_close_failed"
+        if not _runner_pipe._handle_is_invalid(server):
+            try:
+                if not api.kernel.CloseHandle(server):
+                    state = "server_close_failed"
+            except Exception:
+                state = "server_close_failed"
+    return state
+
+
+def runner_pipe_server_direction_probe() -> str:
+    """Compare duplex/outbound client-open behavior without production impact.
+
+    Both random temporary pipes use the same per-logon SID DACL, server flags,
+    modes, buffers, and client GENERIC_READ open. Only the server direction
+    differs. The probe does not connect through ConnectNamedPipe, inspect PIDs,
+    or read/write pipe data; it records only the client CreateFileW result.
+    """
+    unavailable = _format_runner_pipe_direction_receipt(
+        "unavailable", "unavailable",
+    )
+    if sys.platform != "win32":
+        return _format_runner_pipe_direction_receipt(
+            "unsupported_platform", "unsupported_platform",
+        )
+
+    security_descriptor = ctypes.c_void_p()
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        process_handle = api.kernel.GetCurrentProcess()
+        if not process_handle:
+            return _format_runner_pipe_direction_receipt(
+                "probe_failed", "probe_failed",
+            )
+        try:
+            logon_sid = _runner_pipe._validate_sid(
+                runner_process_logon_sid(process_handle),
+            )
+        except ValueError:
+            return _format_runner_pipe_direction_receipt(
+                "invalid_logon_sid", "invalid_logon_sid",
+            )
+
+        sddl = _runner_pipe_direction_probe_sddl(logon_sid)
+        if not api.advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl, 1, ctypes.byref(security_descriptor), None,
+        ) or not security_descriptor.value:
+            if security_descriptor.value:
+                free_result = api.kernel.LocalFree(security_descriptor)
+                security_descriptor = ctypes.c_void_p()
+                if free_result:
+                    return _format_runner_pipe_direction_receipt(
+                        "security_descriptor_free_failed",
+                        "security_descriptor_free_failed",
+                    )
+            return _format_runner_pipe_direction_receipt(
+                "security_descriptor_failed", "security_descriptor_failed",
+            )
+
+        duplex_state = _runner_pipe_direction_probe_arm(
+            api, security_descriptor, _PIPE_ACCESS_DUPLEX,
+        )
+        outbound_state = _runner_pipe_direction_probe_arm(
+            api, security_descriptor, _PIPE_ACCESS_OUTBOUND,
+        )
+        free_result = api.kernel.LocalFree(security_descriptor)
+        security_descriptor = ctypes.c_void_p()
+        if free_result:
+            return _format_runner_pipe_direction_receipt(
+                "security_descriptor_free_failed",
+                "security_descriptor_free_failed",
+            )
+        return _format_runner_pipe_direction_receipt(
+            duplex_state, outbound_state,
+        )
+    except Exception:
+        if security_descriptor.value:
+            try:
+                api.kernel.LocalFree(security_descriptor)
+            except Exception:
+                pass
+        return unavailable
 
 
 def runner_pipe_security_descriptor_shape(

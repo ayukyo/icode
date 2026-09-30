@@ -404,6 +404,144 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
             "sd=unavailable",
         )
 
+    def test_pipe_direction_receipt_is_fixed_and_bounded(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        formatter = getattr(
+            probe, "_format_runner_pipe_direction_receipt", None,
+        )
+        self.assertTrue(callable(formatter), "direction_receipt_formatter_missing")
+        self.assertEqual(
+            formatter("opened", "open_access_denied"),
+            "pipe_direction=duplex_opened_outbound_open_access_denied",
+        )
+        self.assertEqual(
+            formatter("S-1-5-21-secret", "open_access_denied"),
+            "pipe_direction=duplex_unavailable_outbound_open_access_denied",
+        )
+        bounded = formatter("x" * 10_000, "open_failed")
+        self.assertEqual(
+            bounded,
+            "pipe_direction=duplex_unavailable_outbound_open_failed",
+        )
+        self.assertEqual(
+            formatter([], "open_failed"),
+            "pipe_direction=duplex_unavailable_outbound_open_failed",
+        )
+        self.assertLessEqual(len(bounded), 128)
+
+    def test_pipe_direction_probe_dacl_is_sid_bound_and_read_only(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        builder = getattr(
+            probe, "_runner_pipe_direction_probe_sddl", None,
+        )
+        self.assertTrue(callable(builder), "direction_probe_sddl_builder_missing")
+        logon_sid = "S-1-5-5-100-200"
+        self.assertEqual(
+            builder(logon_sid),
+            f"D:P(A;;GR;;;{logon_sid})",
+        )
+        with self.assertRaisesRegex(ValueError, "invalid_runner_sid"):
+            builder("S-1-5-21-secret")
+
+    def test_pipe_direction_probe_changes_only_server_direction(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        descriptor_conversion = mock.Mock(
+            side_effect=lambda _sddl, _revision, output, _size: (
+                setattr(output._obj, "value", 0x7777) or 1
+            ),
+        )
+        created_pipes: list[tuple[object, ...]] = []
+        opened_clients: list[tuple[object, ...]] = []
+        kernel = SimpleNamespace(
+            GetCurrentProcess=mock.Mock(return_value=0x1111),
+            CreateNamedPipeW=mock.Mock(
+                side_effect=lambda *args: (
+                    created_pipes.append(args) or (0x2000 + len(created_pipes))
+                ),
+            ),
+            WaitNamedPipeW=mock.Mock(return_value=1),
+            CreateFileW=mock.Mock(
+                side_effect=lambda *args: (
+                    opened_clients.append(args) or (0x3000 + len(opened_clients))
+                ),
+            ),
+            CloseHandle=mock.Mock(return_value=1),
+            LocalFree=mock.Mock(return_value=0),
+        )
+        api = SimpleNamespace(
+            kernel=kernel,
+            advapi=SimpleNamespace(
+                ConvertStringSecurityDescriptorToSecurityDescriptorW=(
+                    descriptor_conversion
+                ),
+            ),
+        )
+
+        with (
+            mock.patch.object(probe, "sys", SimpleNamespace(platform="win32")),
+            mock.patch(
+                "icode.windows_runner_pipe._load_win32_api",
+                return_value=api,
+            ),
+            mock.patch.object(
+                probe, "runner_process_logon_sid", return_value="S-1-5-5-100-200",
+            ),
+        ):
+            receipt = probe.runner_pipe_server_direction_probe()
+
+        self.assertEqual(
+            receipt,
+            "pipe_direction=duplex_opened_outbound_opened",
+        )
+        self.assertEqual(len(created_pipes), 2)
+        server_open_modes = [arguments[1] for arguments in created_pipes]
+        self.assertEqual(
+            [mode & 0x3 for mode in server_open_modes],
+            [0x3, 0x2],
+        )
+        self.assertEqual(
+            server_open_modes[0] & ~0x3,
+            server_open_modes[1] & ~0x3,
+        )
+        self.assertEqual(created_pipes[0][2:7], created_pipes[1][2:7])
+        descriptor_conversion.assert_called_once()
+        self.assertEqual(
+            descriptor_conversion.call_args.args[:2],
+            ("D:P(A;;GR;;;S-1-5-5-100-200)", 1),
+        )
+        self.assertEqual(
+            opened_clients[0][1:],
+            (
+                0x80000000,
+                0,
+                None,
+                windows_runner_pipe._OPEN_EXISTING,
+                FILE_FLAG_OVERLAPPED
+                | windows_runner_pipe._SECURITY_SQOS_PRESENT
+                | windows_runner_pipe._SECURITY_IMPERSONATION,
+                None,
+            ),
+        )
+        self.assertEqual(
+            opened_clients[0][1:],
+            opened_clients[1][1:],
+        )
+        self.assertEqual(kernel.WaitNamedPipeW.call_count, 2)
+        self.assertEqual(kernel.CloseHandle.call_count, 4)
+
+    def test_pipe_direction_probe_is_fixed_unavailable_off_windows(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        with mock.patch.object(probe, "sys", SimpleNamespace(platform="linux")):
+            self.assertEqual(
+                probe.runner_pipe_server_direction_probe(),
+                "pipe_direction=duplex_unsupported_platform_"
+                "outbound_unsupported_platform",
+            )
+
     def test_server_accepts_client_that_connected_before_connect_named_pipe(self) -> None:
         kernel = SimpleNamespace(
             CreateEventW=mock.Mock(return_value=0x1234),
@@ -594,6 +732,43 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform == "win32", "需要 Windows 原生 named-pipe 双向验证")
 class TestWindowsRunnerPipeNative(unittest.TestCase):
+    def test_temporary_server_direction_ab_emits_fixed_receipt(self) -> None:
+        from scripts.windows_standard_user_token_probe import (
+            runner_pipe_server_direction_probe,
+        )
+
+        receipt = runner_pipe_server_direction_probe()
+        print(f"::notice::{receipt}")
+        prefix, _, states = receipt.partition("pipe_direction=")
+        self.assertEqual(prefix, "")
+        duplex_state, separator, outbound_state = states.partition(
+            "_outbound_",
+        )
+        allowed_states = {
+            "opened",
+            "open_access_denied",
+            "open_pipe_busy",
+            "open_pipe_not_found",
+            "open_failed",
+            "wait_access_denied",
+            "wait_timeout",
+            "wait_failed",
+            "server_create_access_denied",
+            "server_create_failed",
+            "security_descriptor_failed",
+            "server_close_failed",
+            "client_close_failed",
+            "invalid_logon_sid",
+            "security_descriptor_free_failed",
+            "unsupported_platform",
+            "probe_failed",
+            "unavailable",
+        }
+        self.assertEqual(separator, "_outbound_")
+        self.assertIn(duplex_state, allowed_states)
+        self.assertIn(outbound_state, allowed_states)
+        self.assertLessEqual(len(receipt), 128)
+
     def test_authenticated_pipe_round_trip_carries_one_bounded_request(self) -> None:
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel.GetCurrentProcess.argtypes = []
