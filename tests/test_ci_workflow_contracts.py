@@ -171,5 +171,27 @@ class TestWindowsWorktreeTreeOidCi(unittest.TestCase):
         self.assertIn(required_step, workflow)
 
 
+class TestWindowsRunnerPipeNativeCi(unittest.TestCase):
+    def test_authenticated_pipe_round_trip_runs_on_x64_and_arm64(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        expected_job = """  windows-runner-pipe:
+    name: R2 authenticated runner pipe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+"""
+        self.assertIn(expected_job, workflow)
+        self.assertIn(
+            "run: python -m unittest tests.test_windows_runner_pipe.TestWindowsRunnerPipeNative -v",
+            workflow,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

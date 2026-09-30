@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import ctypes
+import os
+import sys
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest import mock
@@ -14,14 +18,272 @@ from icode.windows_runner_pipe import (
     create_runner_pipe_server,
     new_runner_pipe_name,
     open_runner_pipe_client,
+    runner_process_logon_sid,
     runner_process_user_sid,
     RunnerPipeServer,
     select_logon_sid,
     validate_runner_pipe_name,
 )
+from icode.windows_runner_protocol import RunnerProtocolError
+
+
+REQUEST_ID = "0123456789abcdef0123456789abcdef"
+
+
+def _spawn_request(request_id: str = REQUEST_ID) -> dict[str, object]:
+    return {
+        "version": 1,
+        "type": "spawn_request",
+        "request_id": request_id,
+        "argv": ["python", "-c", "print('ready')"],
+        "cwd_rel": ".",
+        "timeout_ms": 1_000,
+        "output_limit_bytes": 1_024,
+    }
+
+
+def _authenticated_server() -> RunnerPipeServer:
+    api = windows_runner_pipe._Win32Api(
+        kernel=SimpleNamespace(),
+        advapi=SimpleNamespace(),
+    )
+    server = RunnerPipeServer(
+        name=r"\\.\pipe\icode-runner-" + "a" * 32,
+        handle=0x5678,
+        api=api,
+    )
+    def mark_connected(_timeout_ms: int) -> None:
+        server._connected = True
+
+    server._connect = mock.Mock(side_effect=mark_connected)
+    server._receive_wire_message = mock.Mock(return_value={
+        "version": 1,
+        "type": "spawn_ready",
+        "request_id": REQUEST_ID,
+    })
+    with mock.patch("icode.windows_runner_pipe._authenticate_client"):
+        server.wait_for_runner_ready(
+            expected_process_handle=123,
+            expected_user_sid="S-1-5-21-1-2-3-1001",
+            expected_logon_sid="S-1-5-5-100-200",
+            request_id=REQUEST_ID,
+        )
+    return server
 
 
 class TestWindowsRunnerPipePolicy(unittest.TestCase):
+    def test_server_refuses_to_send_or_receive_before_runner_authentication(self) -> None:
+        api = windows_runner_pipe._Win32Api(
+            kernel=SimpleNamespace(),
+            advapi=SimpleNamespace(),
+        )
+        server = RunnerPipeServer(
+            name=r"\\.\pipe\icode-runner-" + "b" * 32,
+            handle=0x5678,
+            api=api,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "runner_pipe_not_authenticated"):
+            server.send_message(_spawn_request())
+        with self.assertRaisesRegex(RuntimeError, "runner_pipe_not_authenticated"):
+            server.receive_message()
+
+    def test_ready_handshake_is_correlated_and_cannot_be_replayed(self) -> None:
+        api = windows_runner_pipe._Win32Api(
+            kernel=SimpleNamespace(),
+            advapi=SimpleNamespace(),
+        )
+        server = RunnerPipeServer(
+            name=r"\\.\pipe\icode-runner-" + "c" * 32,
+            handle=0x5678,
+            api=api,
+        )
+        server._connect = mock.Mock(side_effect=lambda _timeout_ms: setattr(server, "_connected", True))
+        server._receive_wire_message = mock.Mock(return_value={
+            "version": 1,
+            "type": "spawn_ready",
+            "request_id": "f" * 32,
+        })
+        with mock.patch("icode.windows_runner_pipe._authenticate_client") as authenticate:
+            with self.assertRaisesRegex(RunnerProtocolError, "request_id_mismatch"):
+                server.wait_for_runner_ready(
+                    expected_process_handle=123,
+                    expected_user_sid="S-1-5-21-1-2-3-1001",
+                    expected_logon_sid="S-1-5-5-100-200",
+                    request_id=REQUEST_ID,
+                )
+            authenticate.assert_not_called()
+
+        with self.assertRaisesRegex(RuntimeError, "runner_ready_already_attempted"):
+            server.wait_for_runner_ready(
+                expected_process_handle=123,
+                expected_user_sid="S-1-5-21-1-2-3-1001",
+                expected_logon_sid="S-1-5-5-100-200",
+                request_id=REQUEST_ID,
+            )
+
+    def test_authenticated_server_sends_one_correlated_spawn_request(self) -> None:
+        server = _authenticated_server()
+        message = _spawn_request()
+
+        with mock.patch("icode.windows_runner_pipe._write_all") as write_all:
+            server.send_message(message, timeout_ms=1_000)
+
+            write_all.assert_called_once_with(
+                server._api,
+                server._handle,
+                windows_runner_pipe.encode_frame(message),
+                1_000,
+            )
+            with self.assertRaisesRegex(RunnerProtocolError, "spawn_request_already_sent"):
+                server.send_message(message, timeout_ms=1_000)
+
+    def test_server_rejects_wrong_request_id_and_runner_to_host_message_types(self) -> None:
+        server = _authenticated_server()
+        wrong_request = _spawn_request("f" * 32)
+        runner_message = {
+            "version": 1,
+            "type": "spawn_ready",
+            "request_id": REQUEST_ID,
+        }
+
+        with mock.patch("icode.windows_runner_pipe._write_all") as write_all:
+            with self.assertRaisesRegex(RunnerProtocolError, "request_id_mismatch"):
+                server.send_message(wrong_request)
+            with self.assertRaisesRegex(
+                RunnerProtocolError,
+                "unsupported_server_message_type",
+            ):
+                server.send_message(runner_message)
+
+        write_all.assert_not_called()
+
+    def test_cancel_before_spawn_prevents_later_spawn(self) -> None:
+        server = _authenticated_server()
+        cancel = {
+            "version": 1,
+            "type": "cancel_request",
+            "request_id": REQUEST_ID,
+        }
+
+        with mock.patch("icode.windows_runner_pipe._write_all") as write_all:
+            server.send_message(cancel)
+            with self.assertRaisesRegex(RunnerProtocolError, "runner_request_cancelled"):
+                server.send_message(_spawn_request())
+
+        self.assertEqual(write_all.call_count, 1)
+
+    def test_output_sequence_correlation_and_terminal_state_are_enforced(self) -> None:
+        server = _authenticated_server()
+        with mock.patch("icode.windows_runner_pipe._write_all"):
+            server.send_message(_spawn_request())
+        messages = iter((
+            {
+                "version": 1,
+                "type": "output",
+                "request_id": REQUEST_ID,
+                "sequence": 1,
+                "data_b64": "aGVsbG8=",
+            },
+            {
+                "version": 1,
+                "type": "output",
+                "request_id": REQUEST_ID,
+                "sequence": 2,
+                "data_b64": "d29ybGQ=",
+            },
+        ))
+        server._receive_wire_message = mock.Mock(
+            side_effect=lambda **_kwargs: next(messages),
+        )
+        self.assertEqual(server.receive_message()["sequence"], 1)
+        self.assertEqual(server.receive_message()["sequence"], 2)
+
+        server._receive_wire_message = mock.Mock(return_value={
+            "version": 1,
+            "type": "output",
+            "request_id": "f" * 32,
+            "sequence": 3,
+            "data_b64": "d29ybGQ=",
+        })
+        with self.assertRaisesRegex(RunnerProtocolError, "request_id_mismatch"):
+            server.receive_message()
+
+    def test_server_requires_contiguous_output_and_one_terminal_response(self) -> None:
+        server = _authenticated_server()
+        with mock.patch("icode.windows_runner_pipe._write_all"):
+            server.send_message(_spawn_request())
+
+        server._receive_wire_message = mock.Mock(return_value={
+            "version": 1,
+            "type": "output",
+            "request_id": REQUEST_ID,
+            "sequence": 2,
+            "data_b64": "d29ybGQ=",
+        })
+        with self.assertRaisesRegex(RunnerProtocolError, "output_sequence_mismatch"):
+            server.receive_message()
+
+        terminal_server = _authenticated_server()
+        with mock.patch("icode.windows_runner_pipe._write_all"):
+            terminal_server.send_message(_spawn_request())
+        exit_message = {
+            "version": 1,
+            "type": "exit",
+            "request_id": REQUEST_ID,
+            "exit_code": 0,
+            "timed_out": False,
+            "output_truncated": False,
+            "cleanup_ok": True,
+        }
+        terminal_server._receive_wire_message = mock.Mock(return_value=exit_message)
+        self.assertEqual(terminal_server.receive_message(), exit_message)
+        with self.assertRaisesRegex(
+            RunnerProtocolError,
+            "runner_pipe_session_failed|runner_pipe_terminal_message_received",
+        ):
+            terminal_server.receive_message()
+
+    def test_cancel_ack_requires_a_cancel_and_cannot_be_repeated(self) -> None:
+        cancel_ack = {
+            "version": 1,
+            "type": "cancel_ack",
+            "request_id": REQUEST_ID,
+            "cancelled": True,
+        }
+        server = _authenticated_server()
+        server._receive_wire_message = mock.Mock(return_value=cancel_ack)
+        with self.assertRaisesRegex(RunnerProtocolError, "unsolicited_cancel_ack"):
+            server.receive_message()
+
+        cancelled_server = _authenticated_server()
+        with mock.patch("icode.windows_runner_pipe._write_all"):
+            cancelled_server.send_message({
+                "version": 1,
+                "type": "cancel_request",
+                "request_id": REQUEST_ID,
+            })
+        cancelled_server._receive_wire_message = mock.Mock(return_value=cancel_ack)
+        self.assertEqual(cancelled_server.receive_message(), cancel_ack)
+        with self.assertRaisesRegex(RunnerProtocolError, "duplicate_cancel_ack"):
+            cancelled_server.receive_message()
+
+    def test_failed_partial_send_poisons_server_transport(self) -> None:
+        server = _authenticated_server()
+
+        with mock.patch(
+            "icode.windows_runner_pipe._write_all",
+            side_effect=OSError("partial write"),
+        ):
+            with self.assertRaisesRegex(OSError, "partial write"):
+                server.send_message(_spawn_request())
+
+        with mock.patch("icode.windows_runner_pipe._write_all") as write_all:
+            with self.assertRaisesRegex(RunnerProtocolError, "runner_pipe_session_failed"):
+                server.send_message(_spawn_request())
+
+        write_all.assert_not_called()
+
     def test_server_accepts_client_that_connected_before_connect_named_pipe(self) -> None:
         kernel = SimpleNamespace(
             CreateEventW=mock.Mock(return_value=0x1234),
@@ -208,6 +470,79 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
             | windows_runner_pipe._SECURITY_IMPERSONATION,
         )
         self.assertIsNone(template)
+
+
+@unittest.skipUnless(sys.platform == "win32", "需要 Windows 原生 named-pipe 双向验证")
+class TestWindowsRunnerPipeNative(unittest.TestCase):
+    def test_authenticated_pipe_round_trip_carries_one_bounded_request(self) -> None:
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetCurrentProcess.argtypes = []
+        kernel.GetCurrentProcess.restype = ctypes.c_void_p
+        process_handle = kernel.GetCurrentProcess()
+        process_id = os.getpid()
+        user_sid = runner_process_user_sid(process_handle)
+        logon_sid = runner_process_logon_sid(process_handle)
+        server = create_runner_pipe_server(logon_sid)
+        request_id = os.urandom(16).hex()
+        ready = {
+            "version": 1,
+            "type": "spawn_ready",
+            "request_id": request_id,
+        }
+        spawn = _spawn_request(request_id)
+        output = {
+            "version": 1,
+            "type": "output",
+            "request_id": request_id,
+            "sequence": 1,
+            "data_b64": "aGVsbG8=",
+        }
+        exit_message = {
+            "version": 1,
+            "type": "exit",
+            "request_id": request_id,
+            "exit_code": 0,
+            "timed_out": False,
+            "output_truncated": False,
+            "cleanup_ok": True,
+        }
+        client_results: list[dict[str, object]] = []
+        client_errors: list[BaseException] = []
+
+        def run_client() -> None:
+            try:
+                with open_runner_pipe_client(
+                    server.name,
+                    process_id,
+                    timeout_ms=5_000,
+                ) as client:
+                    client.send_message(ready, timeout_ms=5_000)
+                    client_results.append(client.receive_message(timeout_ms=5_000))
+                    client.send_message(output, timeout_ms=5_000)
+                    client.send_message(exit_message, timeout_ms=5_000)
+            except BaseException as exc:  # relay thread failures to the test thread
+                client_errors.append(exc)
+
+        client_thread = threading.Thread(target=run_client, daemon=True)
+        try:
+            client_thread.start()
+            server.wait_for_runner_ready(
+                expected_process_handle=process_handle,
+                expected_user_sid=user_sid,
+                expected_logon_sid=logon_sid,
+                request_id=request_id,
+                timeout_ms=5_000,
+            )
+            server.send_message(spawn, timeout_ms=5_000)
+            self.assertEqual(server.receive_message(timeout_ms=5_000), output)
+            self.assertEqual(server.receive_message(timeout_ms=5_000), exit_message)
+        finally:
+            server.close()
+            client_thread.join(timeout=6)
+
+        self.assertFalse(client_thread.is_alive(), "named-pipe client thread leaked")
+        self.assertEqual(client_errors, [])
+        self.assertEqual(client_results, [spawn])
 
 
 if __name__ == "__main__":

@@ -541,6 +541,14 @@ class RunnerPipeServer:
         self._handle = handle
         self._api = api
         self._connected = False
+        self._ready_attempted = False
+        self._authenticated_request_id: str | None = None
+        self._spawn_request_sent = False
+        self._cancel_request_sent = False
+        self._cancel_ack_received = False
+        self._next_output_sequence = 1
+        self._terminal_received = False
+        self._protocol_failed = False
 
     def _connect(self, timeout_ms: int) -> None:
         _validate_timeout(timeout_ms)
@@ -595,7 +603,7 @@ class RunnerPipeServer:
             if not _event_has_pending_storage(event):
                 self._api.kernel.CloseHandle(event)
 
-    def receive_message(self, *, timeout_ms: int = 15_000) -> dict[str, object]:
+    def _receive_wire_message(self, *, timeout_ms: int = 15_000) -> dict[str, object]:
         if not self._connected:
             raise RuntimeError("runner_pipe_not_connected")
         _validate_timeout(timeout_ms)
@@ -605,6 +613,83 @@ class RunnerPipeServer:
             raise RunnerProtocolError("frame_too_large_or_empty")
         body = _read_exact(self._api, self._handle, body_length, timeout_ms)
         return decode_frame(header + body)
+
+    def _require_authenticated(self) -> str:
+        request_id = self._authenticated_request_id
+        if request_id is None:
+            raise RuntimeError("runner_pipe_not_authenticated")
+        if self._protocol_failed:
+            raise RunnerProtocolError("runner_pipe_session_failed")
+        if self._terminal_received:
+            raise RunnerProtocolError("runner_pipe_terminal_message_received")
+        return request_id
+
+    def send_message(
+        self,
+        message: dict[str, object],
+        *,
+        timeout_ms: int = 15_000,
+    ) -> None:
+        """Send one correlated host request after the runner identity handshake."""
+        request_id = self._require_authenticated()
+        _validate_timeout(timeout_ms)
+        validate_correlation(message, request_id)
+        message_type = message.get("type")
+        if message_type not in ("spawn_request", "cancel_request"):
+            raise RunnerProtocolError("unsupported_server_message_type")
+        if message_type == "spawn_request":
+            if self._cancel_request_sent:
+                raise RunnerProtocolError("runner_request_cancelled")
+            if self._spawn_request_sent:
+                raise RunnerProtocolError("spawn_request_already_sent")
+        elif self._cancel_request_sent:
+            raise RunnerProtocolError("cancel_request_already_sent")
+
+        frame = encode_frame(message)
+        try:
+            _write_all(self._api, self._handle, frame, timeout_ms)
+        except BaseException:
+            # A byte-mode pipe may have accepted a prefix. Do not retry on a
+            # stream whose frame boundary can no longer be trusted.
+            self._protocol_failed = True
+            raise
+
+        if message_type == "spawn_request":
+            self._spawn_request_sent = True
+        else:
+            self._cancel_request_sent = True
+
+    def receive_message(self, *, timeout_ms: int = 15_000) -> dict[str, object]:
+        """Receive and validate one runner response in the active request state."""
+        request_id = self._require_authenticated()
+        try:
+            message = self._receive_wire_message(timeout_ms=timeout_ms)
+            validate_correlation(message, request_id)
+            message_type = message["type"]
+            if message_type not in ("output", "exit", "error", "cancel_ack"):
+                raise RunnerProtocolError("unsupported_runner_message_type")
+
+            if message_type == "cancel_ack":
+                if not self._cancel_request_sent:
+                    raise RunnerProtocolError("unsolicited_cancel_ack")
+                if self._cancel_ack_received:
+                    raise RunnerProtocolError("duplicate_cancel_ack")
+                self._cancel_ack_received = True
+            else:
+                if not self._spawn_request_sent:
+                    raise RunnerProtocolError("runner_response_before_spawn")
+                if message_type == "output":
+                    if message["sequence"] != self._next_output_sequence:
+                        raise RunnerProtocolError("output_sequence_mismatch")
+                    self._next_output_sequence += 1
+                else:
+                    self._terminal_received = True
+            return message
+        except BaseException:
+            # A decode, correlation, state, or I/O failure means the peer can no
+            # longer be safely continued on this byte stream.
+            self._protocol_failed = True
+            raise
 
     def wait_for_runner_ready(
         self,
@@ -620,15 +705,23 @@ class RunnerPipeServer:
         if type(request_id) is not str or _REQUEST_ID_RE.fullmatch(request_id) is None:
             raise ValueError("invalid_request_id")
         _validate_timeout(timeout_ms)
-        self._connect(timeout_ms)
-        message = self.receive_message(timeout_ms=timeout_ms)
-        if message.get("type") != "spawn_ready":
-            raise RunnerProtocolError("runner_ready_message_required")
-        validate_correlation(message, request_id)
-        _authenticate_client(
-            self._api, self._handle, expected_process_handle,
-            expected_user_sid, expected_logon_sid,
-        )
+        if self._ready_attempted:
+            raise RuntimeError("runner_ready_already_attempted")
+        self._ready_attempted = True
+        try:
+            self._connect(timeout_ms)
+            message = self._receive_wire_message(timeout_ms=timeout_ms)
+            if message.get("type") != "spawn_ready":
+                raise RunnerProtocolError("runner_ready_message_required")
+            validate_correlation(message, request_id)
+            _authenticate_client(
+                self._api, self._handle, expected_process_handle,
+                expected_user_sid, expected_logon_sid,
+            )
+            self._authenticated_request_id = request_id
+        except BaseException:
+            self._protocol_failed = True
+            raise
 
     def close(self) -> None:
         if self._handle:
