@@ -661,6 +661,40 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         self.assertIn("truncated=1", bounded)
         self.assertLessEqual(len(bounded), 384)
 
+    def test_pipe_descriptor_dacl_protection_state_is_fixed_and_fail_closed(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        state_reader = getattr(
+            probe, "_pipe_descriptor_dacl_protected_state", None,
+        )
+        self.assertTrue(callable(state_reader), "dacl_protection_reader_missing")
+        self.assertEqual(
+            state_reader(
+                "sd_control=9004;sd_revision=1;owner=other;group=other;"
+                "dacl=present;acl_revision=2;ace_count=1;"
+                "aces=00.00.00100003;truncated=0"
+            ),
+            "on",
+        )
+        self.assertEqual(
+            state_reader(
+                "sd_control=8004;sd_revision=1;owner=other;group=other;"
+                "dacl=present;acl_revision=2;ace_count=1;"
+                "aces=00.00.00100003;truncated=0"
+            ),
+            "off",
+        )
+        for malformed in (
+            "sd=unavailable",
+            "sd_control=xyz;private-path",
+            "sd_control=9004;private-path",
+            "private-path;sd_control=9004",
+            "sd_control=9004;" + ("x" * 400),
+            None,
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertEqual(state_reader(malformed), "unavailable")
+
     @unittest.skipIf(sys.platform == "win32", "非 Windows 固定降级回执")
     def test_pipe_security_descriptor_probe_is_unavailable_off_windows(self) -> None:
         from scripts.windows_standard_user_token_probe import (
@@ -1028,7 +1062,7 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         descriptor_shape = (
             "sd_control=9004;sd_revision=1;owner=user;group=other;"
             "dacl=present;acl_revision=2;ace_count=2;"
-            "aces=00.00.001f01ff,00.00.00120089;truncated=0"
+            "aces=00.00.001F01FF,00.00.00120089;truncated=0"
         )
         created_pipe_arguments: list[tuple[object, ...]] = []
         client_open_arguments: list[tuple[object, ...]] = []
@@ -1089,7 +1123,8 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
 
         self.assertEqual(
             receipt,
-            "pipe_sd_copy=default_opened_explicit_access_denied_shape_match",
+            "pipe_sd_copy=default_opened_explicit_access_denied_shape_match_"
+            "dacl_protected=d_on,e_on",
         )
         self.assertEqual(len(created_pipe_arguments), 2)
         first, second = created_pipe_arguments
@@ -1120,7 +1155,14 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         self.assertTrue(
             callable(diagnostic), "default_descriptor_copy_probe_missing",
         )
-        descriptor_shapes = iter(("sd_control=9004;dacl=present", "sd_control=8004;dacl=present"))
+        descriptor_shapes = iter((
+            "sd_control=9004;sd_revision=1;owner=other;group=other;"
+            "dacl=present;acl_revision=2;ace_count=1;"
+            "aces=00.00.00100003;truncated=0",
+            "sd_control=8004;sd_revision=1;owner=other;group=other;"
+            "dacl=present;acl_revision=2;ace_count=1;"
+            "aces=00.00.00100003;truncated=0",
+        ))
         server_handles = iter((0x2100, 0x2101))
         kernel = SimpleNamespace(
             GetCurrentProcess=mock.Mock(return_value=0x1111),
@@ -1166,7 +1208,8 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
 
         self.assertEqual(
             receipt,
-            "pipe_sd_copy=default_opened_explicit_not_run_shape_mismatch",
+            "pipe_sd_copy=default_opened_explicit_not_run_shape_mismatch_"
+            "dacl_protected=d_on,e_off",
         )
         self.assertEqual(kernel.CreateFileW.call_count, 1)
         self.assertEqual(kernel.CloseHandle.call_count, 3)
@@ -1186,7 +1229,8 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
             receipt,
             r"\Apipe_sd_copy=default_(opened|access_denied|failed|not_run|unsupported_platform)"
             r"_explicit_(opened|access_denied|failed|not_run|unsupported_platform)"
-            r"_shape_(match|mismatch|unavailable|setup_failed|cleanup_failed)\Z",
+            r"_shape_(match|mismatch|unavailable|setup_failed|cleanup_failed)"
+            r"_dacl_protected=d_(on|off|unavailable),e_(on|off|unavailable)\Z",
         )
         self.assertNotIn("_shape_cleanup_failed", receipt)
         self.assertLessEqual(len(receipt), 128)

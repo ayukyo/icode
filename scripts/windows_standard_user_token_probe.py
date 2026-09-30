@@ -55,6 +55,7 @@ _ERROR_PIPE_BUSY = 231
 _ERROR_SEM_TIMEOUT = 121
 _ERROR_NO_TOKEN = 1008
 _SE_KERNEL_OBJECT = 6
+_SE_DACL_PROTECTED = 0x1000
 _ACCESS_ALLOWED_ACE_TYPE = 0x00
 _ACCESS_DENIED_ACE_TYPE = 0x01
 _SYSTEM_AUDIT_ACE_TYPE = 0x02
@@ -108,6 +109,16 @@ _SE_GROUP_LOGON_ID = 0xC0000000
 _SECURITY_IMPERSONATION_LEVEL = 2
 _DIAGNOSTIC_MAX_ACE_COUNT = 256
 _PIPE_DESCRIPTOR_MAX_ACE_REPORT = 8
+_PIPE_SECURITY_DESCRIPTOR_SHAPE_RE = re.compile(
+    r"sd_control=([0-9A-F]{4});sd_revision=[0-9]{1,3};"
+    r"owner=(?:user|logon|other|absent|unavailable);"
+    r"group=(?:user|logon|other|absent|unavailable);"
+    r"dacl=(?:present|absent|null|unavailable);"
+    r"acl_revision=(?:[0-9]{1,3}|x);ace_count=(?:[0-9]{1,3}|x);"
+    r"aces=(?:-|(?:[0-9A-F]{2}\.[0-9A-F]{2}\.(?:[0-9A-F]{8}|--------))"
+    r"(?:,(?:[0-9A-F]{2}\.[0-9A-F]{2}\.(?:[0-9A-F]{8}|--------)))*);"
+    r"truncated=[01]\Z",
+)
 _DIAGNOSTIC_PRIVILEGE_BUFFER_BYTES = 4096
 _FILE_GENERIC_READ = 0x00120089
 _FILE_GENERIC_WRITE = 0x00120116
@@ -1312,10 +1323,23 @@ def runner_pipe_open_with_default_dacl_probe() -> tuple[bool, str]:
         return False, "setup_invalid_state"
 
 
+def _pipe_descriptor_dacl_protected_state(descriptor_shape: object) -> str:
+    """Read only the fixed DACL-protection bit from a safe descriptor shape."""
+    if type(descriptor_shape) is not str or len(descriptor_shape) > 384:
+        return "unavailable"
+    match = _PIPE_SECURITY_DESCRIPTOR_SHAPE_RE.fullmatch(descriptor_shape)
+    if match is None:
+        return "unavailable"
+    control = int(match.group(1), 16)
+    return "on" if control & _SE_DACL_PROTECTED else "off"
+
+
 def _format_pipe_default_dacl_copy_receipt(
     default_open_state: object,
     explicit_open_state: object,
     descriptor_state: object,
+    default_protected_state: object = "unavailable",
+    explicit_protected_state: object = "unavailable",
 ) -> str:
     """Keep the disposable descriptor-copy observation fixed and bounded."""
     open_states = {
@@ -1324,15 +1348,21 @@ def _format_pipe_default_dacl_copy_receipt(
     descriptor_states = {
         "match", "mismatch", "unavailable", "setup_failed", "cleanup_failed",
     }
+    protected_states = {"on", "off", "unavailable"}
     if not isinstance(default_open_state, str) or default_open_state not in open_states:
         default_open_state = "unavailable"
     if not isinstance(explicit_open_state, str) or explicit_open_state not in open_states:
         explicit_open_state = "unavailable"
     if not isinstance(descriptor_state, str) or descriptor_state not in descriptor_states:
         descriptor_state = "unavailable"
+    if not isinstance(default_protected_state, str) or default_protected_state not in protected_states:
+        default_protected_state = "unavailable"
+    if not isinstance(explicit_protected_state, str) or explicit_protected_state not in protected_states:
+        explicit_protected_state = "unavailable"
     receipt = (
         f"pipe_sd_copy=default_{default_open_state}_"
-        f"explicit_{explicit_open_state}_shape_{descriptor_state}"
+        f"explicit_{explicit_open_state}_shape_{descriptor_state}_"
+        f"dacl_protected=d_{default_protected_state},e_{explicit_protected_state}"
     )
     return receipt if len(receipt) <= 128 else "pipe_sd_copy=unavailable"
 
@@ -1385,6 +1415,8 @@ def runner_pipe_default_dacl_copy_probe() -> str:
     default_state = "not_run"
     explicit_state = "not_run"
     descriptor_state = "unavailable"
+    default_protected_state = "unavailable"
+    explicit_protected_state = "unavailable"
     setup_failed = False
     cleanup_failed = False
     try:
@@ -1461,6 +1493,12 @@ def runner_pipe_default_dacl_copy_probe() -> str:
         explicit_shape = runner_pipe_security_descriptor_shape(
             explicit_pipe._handle, user_sid, logon_sid,
         )
+        default_protected_state = _pipe_descriptor_dacl_protected_state(
+            default_shape,
+        )
+        explicit_protected_state = _pipe_descriptor_dacl_protected_state(
+            explicit_shape,
+        )
         if (
             default_shape == "sd=unavailable"
             or explicit_shape == "sd=unavailable"
@@ -1494,6 +1532,7 @@ def runner_pipe_default_dacl_copy_probe() -> str:
         descriptor_state = "setup_failed"
     return _format_pipe_default_dacl_copy_receipt(
         default_state, explicit_state, descriptor_state,
+        default_protected_state, explicit_protected_state,
     )
 
 
