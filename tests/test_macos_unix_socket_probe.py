@@ -1536,13 +1536,23 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             direct_network_source = (
                 "import errno, socket, sys\n"
                 "sock = None\n"
+                "family = int(sys.argv[1])\n"
+                "port = int(sys.argv[2])\n"
+                "target = ('127.0.0.1', port) if family == socket.AF_INET else ('::1', port, 0, 0)\n"
                 "try:\n"
-                "    sock = socket.socket(int(sys.argv[1]), socket.SOCK_STREAM)\n"
+                "    sock = socket.socket(family, socket.SOCK_STREAM)\n"
                 "except OSError as exc:\n"
-                "    print('probe:denied' if exc.errno in (errno.EPERM, errno.EACCES) "
+                "    print('probe:socket-denied' if exc.errno in (errno.EPERM, errno.EACCES) "
                 "else 'probe:unexpected')\n"
                 "else:\n"
-                "    print('probe:socket-created')\n"
+                "    try:\n"
+                "        sock.settimeout(1.0)\n"
+                "        sock.connect(target)\n"
+                "    except OSError as exc:\n"
+                "        print('probe:connect-denied' if exc.errno in (errno.EPERM, errno.EACCES) "
+                "else 'probe:unexpected')\n"
+                "    else:\n"
+                "        print('probe:connected')\n"
                 "finally:\n"
                 "    if sock is not None: sock.close()\n"
             )
@@ -1557,6 +1567,25 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                 name="icode-macos-production-uds-proxy",
                 daemon=True,
             )
+            direct_listeners: dict[int, tuple[socket.socket, int]] = {}
+            for family, bind_address in (
+                (socket.AF_INET, ("127.0.0.1", 0)),
+                (socket.AF_INET6, ("::1", 0, 0, 0)),
+            ):
+                listener = socket.socket(family, socket.SOCK_STREAM)
+                self.addCleanup(listener.close)
+                listener.settimeout(2.0)
+                listener.bind(bind_address)
+                listener.listen(1)
+                endpoint = listener.getsockname()
+                with socket.socket(family, socket.SOCK_STREAM) as host_control:
+                    host_control.settimeout(2.0)
+                    host_control.connect(endpoint)
+                    accepted_control, _address = listener.accept()
+                    accepted_control.close()
+                listener.settimeout(0.2)
+                direct_listeners[family] = (listener, int(endpoint[1]))
+
             resolver_patch = patch(
                 "icode.network_connector.resolve_public_tcp_targets",
                 side_effect=resolve_to_test_upstream,
@@ -1565,21 +1594,36 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             self.addCleanup(resolver_patch.stop)
             upstream_worker.start()
             proxy_worker.start()
+
             try:
                 self.assertTrue(ready.wait(1.0), "lease UDS proxy did not become ready")
                 self.assertEqual(socket_path.stat().st_mode & 0o777, 0o600)
+                direct_results: dict[int, str] = {}
                 for family in (socket.AF_INET, socket.AF_INET6):
-                    self.assertEqual(
-                        self._run_probe(
-                            sandbox_exec,
-                            profile,
-                            workspace,
-                            direct_network_source,
-                            str(family),
-                        ),
-                        "probe:denied",
-                        f"Seatbelt profile allowed direct socket family {family}",
+                    listener, direct_port = direct_listeners[family]
+                    direct_result = self._run_probe(
+                        sandbox_exec,
+                        profile,
+                        workspace,
+                        direct_network_source,
+                        str(family),
+                        str(direct_port),
                     )
+                    direct_results[family] = direct_result
+                    self.assertIn(
+                        direct_result,
+                        ("probe:socket-denied", "probe:connect-denied"),
+                        f"Seatbelt profile allowed direct outbound TCP family {family}",
+                    )
+                    try:
+                        unexpected_peer, _address = listener.accept()
+                    except TimeoutError:
+                        pass
+                    else:
+                        unexpected_peer.close()
+                        self.fail(
+                            f"Seatbelt listener accepted direct TCP family {family}"
+                        )
                 allowed_status, allowed_body = self._run_sandboxed_curl(
                     sandbox_exec,
                     profile,
@@ -1621,7 +1665,9 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
         print(
             "::notice::macos-seatbelt-production-uds-lease-test "
             "approved_domain=passed blocked_domain=failed_closed "
-            "ticket_socket_only=yes ipv4_ipv6_socket=denied conformance_credit=none",
+            f"ipv4_tcp={direct_results[socket.AF_INET]} "
+            f"ipv6_tcp={direct_results[socket.AF_INET6]} "
+            "ticket_socket_only=yes conformance_credit=none",
             flush=True,
         )
 
