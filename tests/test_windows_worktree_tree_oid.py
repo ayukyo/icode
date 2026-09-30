@@ -1428,6 +1428,54 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
             ),
         })
 
+    def test_native_change_time_sampler_rechecks_open_file_and_parent_directory(
+        self,
+    ) -> None:
+        from icode.windows_worktree import _WindowsNativeWorktreeBackend
+
+        sample_probe = globals().get("_safe_windows_sample_change_time_probe")
+        self.assertTrue(callable(sample_probe), "change_time_sampler_missing")
+
+        with tempfile.TemporaryDirectory(prefix="icode-r3-change-time-") as temporary:
+            root = Path(temporary)
+            (root / "sample.txt").write_bytes(b"stable sample\n")
+            backend = _WindowsNativeWorktreeBackend()
+            root_handle = None
+            child_handle = None
+            receipt = "unavailable"
+            try:
+                root_handle = backend.open_root(root)
+                entries = backend.enumerate_directory(root_handle)
+                matches = tuple(
+                    entry for entry in entries if entry.name == "sample.txt"
+                )
+                self.assertEqual(len(matches), 1)
+                entry = matches[0]
+                child_handle = backend.open_child(
+                    root_handle, entry, directory=False,
+                )
+                opened_info = backend.query_info(child_handle)
+                receipt = sample_probe(
+                    {
+                        "backend": backend,
+                        "directory_handle": root_handle,
+                        "last_query_handle": child_handle,
+                        "last_query_info": opened_info,
+                    },
+                    entry,
+                    opened_info.volume_serial_number,
+                    opened_info,
+                )
+            finally:
+                try:
+                    if child_handle is not None:
+                        backend.close_handle(child_handle)
+                finally:
+                    if root_handle is not None:
+                        backend.close_root(root_handle)
+
+        self.assertEqual(receipt, "eh_eq+hr_same+dr_same+rh_eq")
+
     def test_native_worktree_oid_matches_git_symlink_entry(self) -> None:
         from icode.workspace_snapshot import worktree_git_tree_oid
 
