@@ -66,10 +66,83 @@ class TestWindowsTreeCiFailureAnnotations(unittest.TestCase):
                 "::error title=windows-tree-test-failure::"
                 "tests.test_windows_worktree_tree_oid.test_snapshot (failure)",
                 "::error title=windows-tree-test-error::"
-                "tests.test_windows_worktree_tree_oid.test_git_oid (error)",
+                "tests.test_windows_worktree_tree_oid.test_git_oid "
+                "(error;exception=unknown)",
             ],
         )
         self.assertNotIn("private", output.getvalue())
+
+    def test_error_summary_keeps_only_allowlisted_class_and_code(self) -> None:
+        from scripts import run_windows_tree_ci as wrapper
+
+        summarize = getattr(wrapper, "_safe_error_summary", None)
+        self.assertTrue(callable(summarize), "safe_error_summary_missing")
+        self.assertEqual(
+            summarize(
+                "Traceback (most recent call last):\n"
+                "WorktreeTreeUnavailable: "
+                "windows_directory_entry_change_time_changed:"
+                "name=private.txt entry_id=deadbeef"
+            ),
+            "exception=WorktreeTreeUnavailable;"
+            "code=windows_directory_entry_change_time_changed",
+        )
+        self.assertEqual(
+            summarize(
+                "Traceback (most recent call last):\n"
+                "OSError: snapshot unavailable "
+                "(windows_entry_identity_changed:name=private.txt "
+                "volume=42 entry_id=deadbeef)"
+            ),
+            "exception=OSError;phase=snapshot;"
+            "code=windows_entry_identity_changed",
+        )
+        self.assertEqual(
+            summarize(
+                "OSError: snapshot unavailable "
+                "(unrecognized_private_code:name=private.txt)"
+            ),
+            "exception=OSError",
+        )
+        self.assertEqual(
+            summarize(
+                "Traceback (most recent call last):\n"
+                "PermissionError: [WinError 5] Access is denied: "
+                "'C:\\\\private\\\\repo\\\\secret.txt'"
+            ),
+            "exception=PermissionError;winerror=5",
+        )
+        self.assertEqual(
+            summarize("AssertionError: private message and ::error injection"),
+            "exception=AssertionError",
+        )
+
+    def test_error_annotation_emits_safe_summary_without_traceback_fields(self) -> None:
+        result = unittest.TestResult()
+        result.errors.append(
+            (
+                _TestIdentity("tests.test_windows_worktree_tree_oid.test_tree"),
+                "Traceback (most recent call last):\n"
+                "OSError: snapshot unavailable "
+                "(windows_directory_entry_change_time_changed:"
+                "name=private.txt volume=42 entry_id=deadbeef) "
+                "::error::private-injection",
+            ),
+        )
+        output = StringIO()
+
+        emit_failure_annotations(result, output)
+
+        text = output.getvalue()
+        self.assertIn(
+            "(error;exception=OSError;phase=snapshot;"
+            "code=windows_directory_entry_change_time_changed)",
+            text,
+        )
+        for private_value in (
+            "private.txt", "volume=42", "deadbeef", "private-injection",
+        ):
+            self.assertNotIn(private_value, text)
 
     def test_annotation_neutralizes_controls_unicode_and_bounds_test_id(self) -> None:
         result = unittest.TestResult()

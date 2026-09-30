@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+import re
 import secrets
 import sys
 import unittest
@@ -15,6 +16,28 @@ _SAFE_TEST_ID_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._"
 )
 _WINDOWS_TREE_TEST_MODULES = ("tests.test_windows_worktree_tree_oid",)
+_SAFE_EXCEPTION_TYPES = frozenset({
+    "AssertionError",
+    "CalledProcessError",
+    "FileNotFoundError",
+    "IndexError",
+    "KeyError",
+    "NotImplementedError",
+    "OSError",
+    "OverflowError",
+    "PermissionError",
+    "RuntimeError",
+    "TimeoutError",
+    "TypeError",
+    "UnicodeError",
+    "ValueError",
+    "WorktreeTreeUnavailable",
+})
+_SAFE_WORKTREE_ERROR_CODES = frozenset({
+    "windows_directory_entry_change_time_changed",
+    "windows_entry_identity_changed",
+})
+_WINERROR_RE = re.compile(r"\[WinError ([0-9]{1,6})\]")
 
 
 def _safe_test_id(value: object) -> str:
@@ -29,17 +52,58 @@ def _safe_test_id(value: object) -> str:
     return safe or "unknown_test"
 
 
+def _safe_error_summary(formatted_traceback: object) -> str:
+    """Expose bounded error categories while dropping message/path data."""
+    if type(formatted_traceback) is not str:
+        return "exception=unknown"
+    final_line = next(
+        (line.strip() for line in reversed(formatted_traceback.splitlines())
+         if line.strip()),
+        "",
+    )
+    exception_name, separator, message = final_line.partition(": ")
+    if not separator:
+        return "exception=unknown"
+    exception_name = exception_name.rsplit(".", 1)[-1]
+    if exception_name not in _SAFE_EXCEPTION_TYPES:
+        exception_name = "OtherError"
+    summary = f"exception={exception_name}"
+    if exception_name == "WorktreeTreeUnavailable":
+        error_code = message.split(":", 1)[0]
+        if error_code in _SAFE_WORKTREE_ERROR_CODES:
+            summary += f";code={error_code}"
+    elif exception_name == "OSError" and message.startswith(
+        "snapshot unavailable (",
+    ):
+        reason_text = message[len("snapshot unavailable ("):].rstrip(")")
+        error_code = reason_text.split(":", 1)[0]
+        if error_code in _SAFE_WORKTREE_ERROR_CODES:
+            summary += f";phase=snapshot;code={error_code}"
+    winerror_match = _WINERROR_RE.search(message)
+    if winerror_match is not None and exception_name in {
+        "FileNotFoundError", "OSError", "PermissionError", "TimeoutError",
+    }:
+        summary += f";winerror={winerror_match.group(1)}"
+    return summary[:128]
+
+
 def emit_failure_annotations(result: unittest.TestResult, stream: TextIO) -> None:
-    """Emit safe test IDs only; never forward unittest's traceback text."""
+    """Emit safe test IDs and bounded error categories, never tracebacks."""
 
     for kind, failed_tests in (
         ("failure", result.failures),
         ("error", result.errors),
     ):
-        for test, _traceback in failed_tests:
+        for test, formatted_traceback in failed_tests:
             test_id = _safe_test_id(test.id())
+            detail = (
+                ""
+                if kind == "failure"
+                else f";{_safe_error_summary(formatted_traceback)}"
+            )
             print(
-                f"::error title=windows-tree-test-{kind}::{test_id} ({kind})",
+                f"::error title=windows-tree-test-{kind}::"
+                f"{test_id} ({kind}{detail})",
                 file=stream,
             )
 
