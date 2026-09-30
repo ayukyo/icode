@@ -3358,6 +3358,125 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         kernel.CreateFileW.assert_not_called()
         kernel.CloseHandle.assert_not_called()
 
+    def test_control_access_matrix_varies_only_read_control_and_write_dac(self) -> None:
+        self.assertTrue(hasattr(
+            token_probe, "runner_pipe_control_access_matrix_probe",
+        ), "the test-only control-rights diagnostic has not been implemented yet")
+
+        class FakePipe:
+            def __init__(self, index: int) -> None:
+                self.name = r"\\.\pipe\icode-runner-" + format(index + 1, "032x")
+                self.closed = False
+
+            def __enter__(self) -> "FakePipe":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                self.closed = True
+
+        pipes = [FakePipe(index) for index in range(4)]
+        invalid = token_probe._runner_pipe._INVALID_HANDLE_VALUE
+        kernel = mock.Mock()
+        kernel.WaitNamedPipeW.return_value = 1
+        kernel.CreateFileW.side_effect = [invalid, 900, invalid, invalid]
+        api = mock.Mock(kernel=kernel)
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.runner_process_logon_sid",
+                return_value="S-1-5-5-123-456",
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
+                side_effect=pipes,
+            ) as create_server,
+            mock.patch.object(token_probe._runner_pipe, "_load_win32_api", return_value=api),
+            mock.patch.object(token_probe.ctypes, "get_last_error", return_value=5, create=True),
+        ):
+            result = token_probe.runner_pipe_control_access_matrix_probe()
+
+        self.assertEqual(
+            result,
+            "control_base_d5+rc_ok+wd_d5+both_d5",
+        )
+        self.assertEqual(create_server.call_args_list, [
+            mock.call("S-1-5-5-123-456") for _ in range(4)
+        ])
+        expected_masks = [0x00100003, 0x00120003, 0x00140003, 0x00160003]
+        self.assertEqual(
+            [call.args[1] for call in kernel.CreateFileW.call_args_list],
+            expected_masks,
+        )
+        expected_open_arguments = (
+            0,
+            None,
+            token_probe._runner_pipe._OPEN_EXISTING,
+            token_probe._runner_pipe.FILE_FLAG_OVERLAPPED
+            | token_probe._runner_pipe._SECURITY_SQOS_PRESENT
+            | token_probe._runner_pipe._SECURITY_IMPERSONATION,
+            None,
+        )
+        for call, pipe in zip(kernel.CreateFileW.call_args_list, pipes):
+            self.assertEqual(call.args[0], pipe.name)
+            self.assertEqual(call.args[2:], expected_open_arguments)
+        self.assertTrue(all(pipe.closed for pipe in pipes))
+        kernel.CloseHandle.assert_called_once_with(900)
+        kernel.ReadFile.assert_not_called()
+        kernel.WriteFile.assert_not_called()
+
+    def test_control_access_matrix_bounds_wait_failures_and_skips_open(self) -> None:
+        class FakePipe:
+            def __init__(self, index: int) -> None:
+                self.name = r"\\.\pipe\icode-runner-" + format(index + 1, "032x")
+                self.closed = False
+
+            def __enter__(self) -> "FakePipe":
+                return self
+
+            def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+                self.closed = True
+
+        pipes = [FakePipe(index) for index in range(4)]
+        kernel = mock.Mock()
+        kernel.WaitNamedPipeW.return_value = 0
+        api = mock.Mock(kernel=kernel)
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.runner_process_logon_sid",
+                return_value="S-1-5-5-123-456",
+            ),
+            mock.patch(
+                "scripts.windows_standard_user_token_probe.create_runner_pipe_server",
+                side_effect=pipes,
+            ),
+            mock.patch.object(token_probe._runner_pipe, "_load_win32_api", return_value=api),
+            mock.patch.object(token_probe.ctypes, "get_last_error", return_value=5, create=True),
+        ):
+            result = token_probe.runner_pipe_control_access_matrix_probe()
+
+        self.assertEqual(
+            result,
+            "control_base_w00000005+rc_w00000005+wd_w00000005+both_w00000005",
+        )
+        self.assertLessEqual(len(result), 128)
+        self.assertTrue(all(pipe.closed for pipe in pipes))
+        kernel.CreateFileW.assert_not_called()
+
+    def test_control_access_matrix_fails_closed_when_token_setup_errors(self) -> None:
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch.object(
+                token_probe._runner_pipe,
+                "_load_win32_api",
+                side_effect=RuntimeError("private details must not escape"),
+            ),
+        ):
+            result = token_probe.runner_pipe_control_access_matrix_probe()
+
+        self.assertEqual(result, "control_setup_failed")
+        self.assertNotIn("private", result)
+
     def test_access_mask_matrix_preserves_non_access_winerror_in_bounded_receipt(self) -> None:
         class FakePipe:
             def __init__(self, index: int) -> None:

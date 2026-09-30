@@ -58,6 +58,10 @@ _NATIVE_PIPE_FAILURE_DETAILS = re.compile(
     r"(?:errno=[0-9]{1,10}:stage=[a-z0-9_]{1,64}|"
     r"type=[A-Za-z][A-Za-z0-9_]{0,63})\Z",
 )
+_NATIVE_PIPE_CONTROL_ACCESS = re.compile(
+    r"control_(?:base|rc|wd|both)_(?:ok|d5|[ewcs][0-9a-f]{8}|[cs])"
+    r"(?:\+(?:rc|wd|both)_(?:ok|d5|[ewcs][0-9a-f]{8}|[cs])){3}\Z",
+)
 _NATIVE_PIPE_DESCRIPTOR_SHAPE = re.compile(
     r"sd_control=[0-9A-F]{4};sd_revision=[0-9]{1,3};"
     r"owner=(?:user|logon|other|absent|unavailable);"
@@ -228,6 +232,17 @@ def _format_native_pipe_failure_annotation(
     if len(receipt) > 384:
         return "native_pipe_client_failed:diagnostic_unavailable;target_access=unavailable"
     return receipt
+
+
+def _format_native_pipe_control_access_notice(result: object) -> str:
+    """Keep the failure-only desired-access experiment fixed and bounded."""
+    if (
+        type(result) is not str
+        or len(result) > 128
+        or _NATIVE_PIPE_CONTROL_ACCESS.fullmatch(result) is None
+    ):
+        result = "control_unavailable"
+    return f"pipe_control_access={result}"
 
 
 def _format_native_pipe_descriptor_notice(descriptor: object) -> str:
@@ -558,6 +573,28 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
             f"{target_access}",
         )
         self.assertLessEqual(len(receipt), 320)
+
+    def test_native_pipe_control_access_notice_accepts_only_fixed_matrix(self) -> None:
+        formatter = globals().get("_format_native_pipe_control_access_notice")
+        self.assertTrue(callable(formatter), "control_access_notice_formatter_missing")
+
+        receipt = "control_base_d5+rc_ok+wd_d5+both_d5"
+        self.assertEqual(
+            formatter(receipt),
+            f"pipe_control_access={receipt}",
+        )
+        for unsafe in (
+            "control_base_d5+rc_ok+wd_d5+both_d5;token=secret",
+            "control_base_d5+rc_ok+wd_d5",
+            "control_unavailable",
+            "x" * 129,
+            None,
+        ):
+            with self.subTest(unsafe=unsafe):
+                self.assertEqual(
+                    formatter(unsafe),
+                    "pipe_control_access=control_unavailable",
+                )
 
     def test_native_pipe_failure_annotation_redacts_untrusted_fields(self) -> None:
         formatter = globals().get("_format_native_pipe_failure_annotation")
@@ -1452,6 +1489,18 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
             )
             connect_suffix = ""
             if isinstance(client_error, PermissionError):
+                try:
+                    from scripts.windows_standard_user_token_probe import (
+                        runner_pipe_control_access_matrix_probe,
+                    )
+
+                    control_access = runner_pipe_control_access_matrix_probe()
+                except Exception:
+                    control_access = "control_unavailable"
+                print(
+                    "::notice::"
+                    + _format_native_pipe_control_access_notice(control_access),
+                )
                 connect_receipt = (
                     server_connect_receipts[-1]
                     if server_connect_receipts

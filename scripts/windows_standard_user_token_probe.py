@@ -135,6 +135,8 @@ _FILE_CREATE_PIPE_INSTANCE = 0x00000004
 _PIPE_READ_DATA_ACCESS = 0x00000001
 _PIPE_WRITE_DATA_ACCESS = 0x00000002
 _PIPE_SYNCHRONIZE_ACCESS = 0x00100000
+_PIPE_READ_CONTROL_ACCESS = 0x00020000
+_PIPE_WRITE_DAC_ACCESS = 0x00040000
 _GENERIC_READ = 0x80000000
 _PIPE_ACCESS_MODE_MASK = 0x00000003
 _PIPE_ACCESS_DUPLEX = 0x00000003
@@ -1052,6 +1054,85 @@ def runner_pipe_access_mask_matrix_probe() -> str:
 
     receipt = "mask_" + "+".join(outcomes)
     return receipt if len(receipt) <= 110 else "matrix_unavailable"
+
+
+def runner_pipe_control_access_matrix_probe() -> str:
+    """Compare the base client mask with owner control-right combinations.
+
+    This failure-only diagnostic creates one disposable pipe per case, keeps
+    its per-logon DACL and all CreateFileW flags fixed, and varies only
+    READ_CONTROL/WRITE_DAC. Opened handles are closed immediately; the probe
+    never changes the descriptor, connects, or exchanges pipe data.
+    """
+    if sys.platform != "win32":
+        return "control_unsupported_platform"
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        process_handle = api.kernel.GetCurrentProcess()
+        logon_sid = runner_process_logon_sid(process_handle)
+    except Exception:
+        return "control_setup_failed"
+
+    cases = (
+        ("base", PIPE_CLIENT_ACCESS_MASK),
+        ("rc", PIPE_CLIENT_ACCESS_MASK | _PIPE_READ_CONTROL_ACCESS),
+        ("wd", PIPE_CLIENT_ACCESS_MASK | _PIPE_WRITE_DAC_ACCESS),
+        (
+            "both",
+            PIPE_CLIENT_ACCESS_MASK
+            | _PIPE_READ_CONTROL_ACCESS
+            | _PIPE_WRITE_DAC_ACCESS,
+        ),
+    )
+    client_flags = (
+        _runner_pipe.FILE_FLAG_OVERLAPPED
+        | _runner_pipe._SECURITY_SQOS_PRESENT
+        | _runner_pipe._SECURITY_IMPERSONATION
+    )
+    outcomes: list[str] = []
+    for label, requested_access in cases:
+        outcome = f"{label}_s"
+        try:
+            with create_runner_pipe_server(logon_sid) as pipe:
+                if not api.kernel.WaitNamedPipeW(pipe.name, 2_000):
+                    error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                    outcome = f"{label}_w{error:08x}"
+                else:
+                    handle = api.kernel.CreateFileW(
+                        pipe.name,
+                        requested_access,
+                        0,
+                        None,
+                        _runner_pipe._OPEN_EXISTING,
+                        client_flags,
+                        None,
+                    )
+                    if _runner_pipe._handle_is_invalid(handle):
+                        error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                        outcome = (
+                            f"{label}_d5" if error == _ERROR_ACCESS_DENIED
+                            else f"{label}_e{error:08x}"
+                        )
+                    else:
+                        outcome = f"{label}_ok"
+                        try:
+                            if not api.kernel.CloseHandle(handle):
+                                error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                                outcome = f"{label}_c{error:08x}"
+                        except OSError as exc:
+                            outcome = f"{label}_c{_safe_windows_error_code(exc):08x}"
+                        except Exception:
+                            outcome = f"{label}_c"
+        except OSError as exc:
+            outcome = f"{label}_s{_safe_windows_error_code(exc):08x}"
+        except Exception:
+            outcome = f"{label}_s"
+        outcomes.append(outcome)
+
+    receipt = "control_" + "+".join(outcomes)
+    return receipt if len(receipt) <= 128 else "control_matrix_unavailable"
 
 
 def runner_pipe_open_without_synchronize_probe() -> tuple[bool, str]:
