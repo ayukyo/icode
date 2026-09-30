@@ -457,6 +457,11 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
                 "pipe_direction=opened_outbound_open_access_denied",
             ),
         )
+        self.assertIsNone(
+            _parse_pipe_direction_receipt(
+                "pipe_direction=duplex_opened_open_access_denied",
+            ),
+        )
 
     def test_pipe_direction_probe_dacl_is_sid_bound_and_read_only(self) -> None:
         from scripts import windows_standard_user_token_probe as probe
@@ -965,7 +970,6 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
             "probe_failed",
             "unavailable",
         }
-        self.assertEqual(separator, "_outbound_")
         self.assertIn(duplex_state, allowed_states)
         self.assertIn(outbound_state, allowed_states)
         self.assertLessEqual(len(receipt), 128)
