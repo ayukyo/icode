@@ -120,6 +120,7 @@ _PIPE_SECURITY_DESCRIPTOR_SHAPE_RE = re.compile(
     r"truncated=[01]\Z",
 )
 _DIAGNOSTIC_PRIVILEGE_BUFFER_BYTES = 4096
+_MAXIMUM_ALLOWED_ACCESS = 0x02000000
 _FILE_GENERIC_READ = 0x00120089
 _FILE_GENERIC_WRITE = 0x00120116
 _FILE_GENERIC_EXECUTE = 0x001200A0
@@ -710,19 +711,38 @@ def _self_pipe_access_receipt_label(detail: object) -> str:
     return "self_access_unavailable"
 
 
+def _maximum_access_mask_receipt(
+    call_succeeded: object,
+    granted_access: object,
+    access_status: object,
+) -> str:
+    """Render only a valid DWORD from a successful MAXIMUM_ALLOWED check."""
+    if (
+        type(call_succeeded) not in (bool, int)
+        or call_succeeded == 0
+        or type(access_status) not in (bool, int)
+        or type(granted_access) is not int
+        or not 0 <= granted_access <= 0xFFFFFFFF
+        or (not access_status and granted_access != 0)
+    ):
+        return "unavailable"
+    return f"{granted_access:08x}"
+
+
 def _runner_pipe_accesscheck_observation(
     pipe_handle: int,
     expected_sid: str | None,
     expected_ace_mask: int = PIPE_CLIENT_ACCESS_MASK,
-) -> tuple[str, str, str, str]:
-    """Return fixed AccessCheck, token, DACL, and direct-ACE labels."""
+) -> tuple[str, str, str, str, str]:
+    """Return fixed AccessCheck, token, DACL/ACE labels and maximum rights."""
     access_state = token_source = dacl_state = ace_state = "unavailable"
+    max_access = "unavailable"
     try:
         diagnostic = _diagnose_runner_pipe_access(
             pipe_handle, expected_sid, expected_ace_mask=expected_ace_mask,
         )
     except Exception:
-        return access_state, token_source, dacl_state, ace_state
+        return access_state, token_source, dacl_state, ace_state, max_access
     if isinstance(diagnostic, str):
         for part in diagnostic.split("+"):
             if part in {"access_allow", "access_deny", "access_unavailable"}:
@@ -749,14 +769,23 @@ def _runner_pipe_accesscheck_observation(
             }:
                 ace_state = part.removeprefix("ace_")
                 break
-    return access_state, token_source, dacl_state, ace_state
+    if isinstance(diagnostic, str):
+        for part in diagnostic.split("+"):
+            if part.startswith("max_access_"):
+                candidate = part.removeprefix("max_access_")
+                if candidate == "unavailable" or re.fullmatch(
+                    r"[0-9a-f]{8}", candidate,
+                ):
+                    max_access = candidate
+                break
+    return access_state, token_source, dacl_state, ace_state, max_access
 
 
 def _runner_pipe_probe_detail_with_accesscheck(
     detail: str,
-    observation: tuple[str, str, str, str],
+    observation: tuple[str, str, str, str, str],
 ) -> str:
-    state, token_source, dacl_state, ace_state = observation
+    state, token_source, dacl_state, ace_state, max_access = observation
     if state not in {"allow", "deny", "unavailable"}:
         state = "unavailable"
     if token_source not in {"process", "thread", "unavailable"}:
@@ -765,10 +794,21 @@ def _runner_pipe_probe_detail_with_accesscheck(
         dacl_state = "unavailable"
     if ace_state not in {"match", "missing", "not_applicable", "unavailable"}:
         ace_state = "unavailable"
-    return (
+    if (
+        type(max_access) is not str
+        or (
+            max_access != "unavailable"
+            and re.fullmatch(r"[0-9a-f]{8}", max_access) is None
+        )
+    ):
+        max_access = "unavailable"
+    result = (
         f"{detail}+access_{state}+token_{token_source}"
         f"+dacl_{dacl_state}+ace_{ace_state}"
     )
+    if max_access != "unavailable":
+        result += f"+max_access_{max_access}"
+    return result
 
 
 def _runner_pipe_probe_receipt_code(
@@ -780,15 +820,17 @@ def _runner_pipe_probe_receipt_code(
 
     The receipt order is default DACL, TokenUser DACL, TokenUser plus the
     create-instance bit. Each item is
-    ``<kind><open><access><token><dacl><ace>`` where
+    ``<kind><open><access><token><dacl><ace><maximum-access-mask>`` where
     open is ``o`` (opened), ``d`` (access denied), or ``f`` (other failure),
     access is ``a`` (allow), ``d`` (deny), or ``u`` (unavailable), and token
     is ``p`` (process), ``t`` (thread), or ``u`` (unavailable). DACL is
     ``p`` (present), ``a`` (absent), ``n`` (NULL), or ``u`` (unavailable);
     ACE is ``m`` (matching allow ACE), ``x`` (not found), ``n`` (not
-    applicable), or ``u`` (unavailable). DACL and ACE ``n`` have distinct
-    meanings by field position. These are independent observations; neither
-    ACE matching nor AccessCheck replaces the actual open result.
+    applicable), or ``u`` (unavailable). The final field is eight lowercase
+    hex digits from AccessCheck(MAXIMUM_ALLOWED), or eight hyphens when
+    unavailable. DACL and ACE ``n`` have distinct meanings by field position.
+    These are independent observations; neither AccessCheck result replaces
+    the actual open result.
     """
     if kind not in {"d", "u", "c"}:
         raise ValueError("invalid_temporary_pipe_probe_kind")
@@ -804,6 +846,7 @@ def _runner_pipe_probe_receipt_code(
     access_state = "u"
     token_state = "u"
     dacl_state = ace_state = "u"
+    max_access = "--------"
     if isinstance(detail, str):
         for part in detail.split("+"):
             if part in {"access_allow", "access_deny", "access_unavailable"}:
@@ -834,7 +877,14 @@ def _runner_pipe_probe_receipt_code(
                     "ace_not_applicable": "n",
                     "ace_unavailable": "u",
                 }[part]
-    return f"{kind}{open_state}{access_state}{token_state}{dacl_state}{ace_state}"
+            elif part.startswith("max_access_"):
+                candidate = part.removeprefix("max_access_")
+                if re.fullmatch(r"[0-9a-f]{8}", candidate):
+                    max_access = candidate
+    return (
+        f"{kind}{open_state}{access_state}{token_state}{dacl_state}{ace_state}"
+        f"{max_access}"
+    )
 
 
 def _runner_pipe_probe_open_denied(detail: object) -> bool:
@@ -845,7 +895,8 @@ def _runner_pipe_probe_open_denied(detail: object) -> bool:
             r"(?:\+access_(?:allow|deny|unavailable))?"
             r"(?:\+token_(?:process|thread|child_process|unavailable))?"
             r"(?:\+dacl_(?:present|absent|null|unavailable))?"
-            r"(?:\+ace_(?:match|missing|not_applicable|unavailable))?",
+            r"(?:\+ace_(?:match|missing|not_applicable|unavailable))?"
+            r"(?:\+max_access_(?:unavailable|[0-9a-f]{8}))?",
             detail,
         )
     )
@@ -1885,6 +1936,7 @@ def _format_runner_pipe_access_diagnostic(
     pipe_integrity: str = "unavailable",
     pipe_no_write_up: str = "unavailable",
     client_no_write_up: str = "unavailable",
+    max_access: str = "unavailable",
 ) -> str:
     """Serialize only fixed diagnostic states, never SID or ACL contents."""
     choices = {
@@ -1919,6 +1971,14 @@ def _format_runner_pipe_access_diagnostic(
     }
     if any(value not in choices[key] for key, value in values.items()):
         raise ValueError("invalid_pipe_access_diagnostic")
+    if (
+        type(max_access) is not str
+        or (
+            max_access != "unavailable"
+            and re.fullmatch(r"[0-9a-f]{8}", max_access) is None
+        )
+    ):
+        raise ValueError("invalid_pipe_access_diagnostic")
     labels = {
         "logon_sid": "logon",
         "client_integrity": "client_il",
@@ -1929,7 +1989,8 @@ def _format_runner_pipe_access_diagnostic(
     summary = "+".join(
         f"{labels.get(key, key)}_{value}" for key, value in values.items()
     )
-    if len(summary) > 210:
+    summary += f"+max_access_{max_access}"
+    if len(summary) > 240:
         raise ValueError("pipe_access_diagnostic_too_long")
     return summary
 
@@ -2367,6 +2428,7 @@ def _diagnose_runner_pipe_access(
     dacl_state = token_source = logon_state = "unavailable"
     ace_state = "not_applicable" if logon_sid is None else "unavailable"
     restricted_state = access_state = "unavailable"
+    max_access = "unavailable"
     api = None
     security_descriptor = ctypes.c_void_p()
     expected_sid: ctypes.c_void_p | None = None
@@ -2379,7 +2441,7 @@ def _diagnose_runner_pipe_access(
             return _format_runner_pipe_access_diagnostic(
                 dacl=dacl_state, ace=ace_state, token=token_source,
                 logon_sid=logon_state, restricted=restricted_state,
-                access=access_state,
+                access=access_state, max_access=max_access,
             )
         api = _runner_pipe._load_win32_api()
         advapi = api.advapi
@@ -2477,19 +2539,35 @@ def _diagnose_runner_pipe_access(
                         _FILE_GENERIC_READ, _FILE_GENERIC_WRITE,
                         _FILE_GENERIC_EXECUTE, _FILE_ALL_ACCESS,
                     )
-                    privileges = ctypes.create_string_buffer(
-                        _DIAGNOSTIC_PRIVILEGE_BUFFER_BYTES,
-                    )
-                    privilege_length = wintypes.DWORD(ctypes.sizeof(privileges))
-                    granted_access = wintypes.DWORD()
-                    access_granted = wintypes.BOOL()
-                    if advapi.AccessCheck(
-                        security_descriptor, impersonation_token,
-                        PIPE_CLIENT_ACCESS_MASK, ctypes.byref(mapping),
-                        privileges, ctypes.byref(privilege_length),
-                        ctypes.byref(granted_access), ctypes.byref(access_granted),
+                    for desired_access in (
+                        PIPE_CLIENT_ACCESS_MASK, _MAXIMUM_ALLOWED_ACCESS,
                     ):
-                        access_state = "allow" if access_granted.value else "deny"
+                        privileges = ctypes.create_string_buffer(
+                            _DIAGNOSTIC_PRIVILEGE_BUFFER_BYTES,
+                        )
+                        privilege_length = wintypes.DWORD(
+                            ctypes.sizeof(privileges),
+                        )
+                        granted_access = wintypes.DWORD()
+                        access_granted = wintypes.BOOL()
+                        accesscheck_succeeded = advapi.AccessCheck(
+                            security_descriptor, impersonation_token,
+                            desired_access, ctypes.byref(mapping),
+                            privileges, ctypes.byref(privilege_length),
+                            ctypes.byref(granted_access),
+                            ctypes.byref(access_granted),
+                        )
+                        if desired_access == PIPE_CLIENT_ACCESS_MASK:
+                            if accesscheck_succeeded:
+                                access_state = (
+                                    "allow" if access_granted.value else "deny"
+                                )
+                        else:
+                            max_access = _maximum_access_mask_receipt(
+                                accesscheck_succeeded,
+                                int(granted_access.value),
+                                int(access_granted.value),
+                            )
     except Exception:
         # This is an observational probe. A diagnostic error must not change
         # whether the original CreateFileW negative test is attempted.
@@ -2511,6 +2589,7 @@ def _diagnose_runner_pipe_access(
         pipe_integrity=pipe_integrity_state,
         pipe_no_write_up=pipe_no_write_up_state,
         client_no_write_up=client_no_write_up_state,
+        max_access=max_access,
     )
 
 

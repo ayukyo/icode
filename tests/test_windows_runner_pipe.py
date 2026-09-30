@@ -47,6 +47,7 @@ _NATIVE_PIPE_ACCESS_RECEIPT_FIELDS = (
     }),
     ("pipe_nwu", {"yes", "no", "unavailable"}),
     ("token_nwu", {"yes", "no", "unavailable"}),
+    ("max_access", {"unavailable"}),
 )
 _NATIVE_PIPE_FAILURE_DETAILS = re.compile(
     r"(?:errno=[0-9]{1,10}:stage=[a-z0-9_]{1,64}|"
@@ -172,18 +173,28 @@ def _native_pipe_target_access_receipt(
         diagnostic = _diagnose_runner_pipe_access(pipe_handle, logon_sid)
     except Exception:
         return "target_access=unavailable"
-    if type(diagnostic) is not str or len(diagnostic) > 210:
+    if type(diagnostic) is not str or len(diagnostic) > 240:
         return "target_access=unavailable"
+    if not _native_pipe_access_diagnostic_is_safe(diagnostic):
+        return "target_access=unavailable"
+    return f"target_access={diagnostic}"
+
+
+def _native_pipe_access_diagnostic_is_safe(diagnostic: str) -> bool:
     parts = diagnostic.split("+")
     if len(parts) != len(_NATIVE_PIPE_ACCESS_RECEIPT_FIELDS):
-        return "target_access=unavailable"
+        return False
     for part, (field, allowed_values) in zip(
         parts, _NATIVE_PIPE_ACCESS_RECEIPT_FIELDS, strict=True,
     ):
+        if field == "max_access":
+            if re.fullmatch(r"max_access_(?:unavailable|[0-9a-f]{8})", part) is None:
+                return False
+            continue
         prefix = field + "_"
         if not part.startswith(prefix) or part[len(prefix):] not in allowed_values:
-            return "target_access=unavailable"
-    return f"target_access={diagnostic}"
+            return False
+    return True
 
 
 def _format_native_pipe_failure_annotation(
@@ -198,20 +209,14 @@ def _format_native_pipe_failure_annotation(
         else "diagnostic_unavailable"
     )
     safe_target_access = "target_access=unavailable"
-    if type(target_access) is str and len(target_access) <= 224:
+    if type(target_access) is str and len(target_access) <= 260:
         prefix, separator, diagnostic = target_access.partition("=")
-        parts = diagnostic.split("+")
-        if prefix == "target_access" and separator and len(parts) == len(
-            _NATIVE_PIPE_ACCESS_RECEIPT_FIELDS
+        if (
+            prefix == "target_access"
+            and separator
+            and _native_pipe_access_diagnostic_is_safe(diagnostic)
         ):
-            if all(
-                part.startswith(field + "_")
-                and part[len(field) + 1:] in allowed_values
-                for part, (field, allowed_values) in zip(
-                    parts, _NATIVE_PIPE_ACCESS_RECEIPT_FIELDS, strict=True,
-                )
-            ):
-                safe_target_access = target_access
+            safe_target_access = target_access
     receipt = (
         f"native_pipe_client_failed:{safe_details};{safe_target_access}"
     )
@@ -469,7 +474,7 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         self.assertEqual(
             _native_pipe_access_control_receipt(),
             "self_pipe=self_pipe_other:self_access_unavailable;"
-            "temporary_dacl=dfuuuu_ufuuuu",
+            "temporary_dacl=dfuuuu--------_ufuuuu--------",
         )
 
     def test_native_pipe_target_access_receipt_uses_actual_handle(self) -> None:
@@ -478,7 +483,7 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         diagnostic = (
             "dacl_present+ace_match+token_thread+logon_enabled+restricted_no+"
             "access_allow+client_il_medium+pipe_il_absent+pipe_nwu_unavailable+"
-            "token_nwu_no"
+            "token_nwu_no+max_access_00120089"
         )
         receipt_builder = globals().get("_native_pipe_target_access_receipt")
         self.assertTrue(
@@ -494,6 +499,20 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         self.assertLessEqual(len(receipt), 224)
         self.assertNotIn("S-1-5-5-100-200", receipt)
         diagnose.assert_called_once_with(0x1234, "S-1-5-5-100-200")
+
+        for unsafe in (
+            diagnostic.removesuffix("+max_access_00120089"),
+            diagnostic.removesuffix("00120089") + "not-a-mask",
+            diagnostic.removesuffix("00120089") + "0012008g",
+        ):
+            with self.subTest(unsafe=unsafe):
+                with mock.patch.object(
+                    probe, "_diagnose_runner_pipe_access", return_value=unsafe,
+                ):
+                    self.assertEqual(
+                        receipt_builder(0x1234, "S-1-5-5-100-200"),
+                        "target_access=unavailable",
+                    )
 
     def test_native_pipe_target_access_receipt_rejects_unbounded_fields(self) -> None:
         from scripts import windows_standard_user_token_probe as probe
@@ -521,7 +540,7 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         target_access = (
             "target_access=dacl_present+ace_match+token_thread+logon_enabled+"
             "restricted_no+access_allow+client_il_medium+pipe_il_absent+"
-            "pipe_nwu_unavailable+token_nwu_no"
+            "pipe_nwu_unavailable+token_nwu_no+max_access_00120089"
         )
 
         receipt = formatter("errno=5:stage=runner_pipe_open", target_access)
