@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import hashlib
 import array
 from dataclasses import replace
@@ -14,11 +16,14 @@ import tempfile
 import time
 import unittest
 import threading
+from types import SimpleNamespace
 from unittest import mock
+from unittest.mock import patch
 from pathlib import Path
 
 from tests._support import temp_workspace
 
+from icode.cli import _build_runner
 from icode.approvals import ScriptedApprover
 from icode.backends import FakeBackend
 from icode.guard import Guard, Scope
@@ -315,6 +320,90 @@ class TestLinuxViolationReceipt(unittest.TestCase):
             event["meta"]["violation_receipt"]["category"], "network_socket",
         )
         self.assertEqual(event["user_message"], POLICY_DENIED_USER_MESSAGE)
+
+    def test_真实多类别回执贯穿AgentLoop到CLI摘要(self) -> None:
+        cli_args = SimpleNamespace(
+            backend="fake", key_file="", model="", base_url="", proxy="",
+            no_proxy=None, approve=False, budget_tokens=1000, quiet=False,
+            isolation="auto",
+        )
+        rendered_output = io.StringIO()
+        with temp_workspace() as root:
+            context = self._context(root)
+            probe_script = root / "multiple_network_denial_probe.py"
+            probe_script.write_text(
+                "import ctypes, errno, platform, socket\n"
+                "try:\n"
+                "    socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+                "except PermissionError as exc:\n"
+                "    assert exc.errno == errno.EPERM\n"
+                "else:\n"
+                "    raise AssertionError('network socket was not denied')\n"
+                "numbers = {'x86_64': 53, 'amd64': 53, 'aarch64': 199, 'arm64': 199}\n"
+                "syscall_number = numbers[platform.machine().lower()]\n"
+                "libc = ctypes.CDLL(None, use_errno=True)\n"
+                "libc.syscall.restype = ctypes.c_long\n"
+                "sockets = (ctypes.c_int * 2)()\n"
+                "ctypes.set_errno(0)\n"
+                "status = libc.syscall(syscall_number, socket.AF_INET, "
+                "socket.SOCK_STREAM, 0, sockets)\n"
+                "assert status == -1 and ctypes.get_errno() == errno.EPERM\n",
+                encoding="utf-8",
+            )
+            events: list[tuple[str, dict]] = []
+            with (
+                patch("icode.backends.build_backend", return_value=object()),
+                patch("icode.isolation.select_sandbox", return_value=object()),
+                contextlib.redirect_stdout(rendered_output),
+            ):
+                _, _, _, cli_on_event, _ = _build_runner(cli_args)
+
+                def tee_event(kind: str, payload: dict) -> None:
+                    events.append((kind, payload))
+                    cli_on_event(kind, payload)
+
+                loop = AgentLoop(
+                    backend=FakeBackend([
+                        {
+                            "content": "",
+                            "tool_calls": [{
+                                "id": "native-multiple-denial",
+                                "name": "run_command",
+                                "arguments": {
+                                    "argv": [sys.executable, str(probe_script)],
+                                    "timeout": 8,
+                                },
+                            }],
+                        },
+                        "已根据隔离策略停止。",
+                    ]),
+                    registry=default_registry(),
+                    guard=Guard(Scope(workspace_root=root)),
+                    ctx=context,
+                    approver=ScriptedApprover(answers=[True]),
+                    config=LoopConfig(max_turns=3, max_tool_calls_per_turn=1),
+                    on_event=tee_event,
+                )
+                result = loop.run([
+                    {"role": "user", "content": "验证多类别网络操作默认拒绝"},
+                ])
+
+        self.assertTrue(result.ok)
+        tool_results = [payload for kind, payload in events if kind == "tool_result"]
+        self.assertEqual(len(tool_results), 1)
+        event = tool_results[0]
+        self.assertFalse(event["ok"])
+        self.assertEqual(event["meta"]["error_code"], "policy_denied")
+        self.assertEqual(event["meta"]["violation_observer_status"], "complete")
+        receipt = event["meta"]["violation_receipt"]
+        self.assertTrue(receipt["os_enforced"])
+        self.assertEqual(receipt["source"], "seccomp_user_notif")
+        self.assertEqual(receipt["enforcement_layer"], "os_seccomp_user_notif")
+        self.assertEqual(receipt["category"], "multiple")
+        self.assertEqual(receipt["count"], 2)
+
+        self.assertIn("[系统隔离拦截] multiple × 2", rendered_output.getvalue())
+        self.assertNotIn("multiple_network_denial_probe.py", rendered_output.getvalue())
 
     def test_allowed_unix_socketpair_does_not_emit_violation_receipt(self) -> None:
         with temp_workspace() as root:

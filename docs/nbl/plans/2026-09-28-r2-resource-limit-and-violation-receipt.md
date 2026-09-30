@@ -1,7 +1,7 @@
 # R2 资源限制与统一违规回执实施门
 
 - 日期：2026-09-29 Asia/Shanghai
-- 状态：R2 资源限制和跨平台统一违规回执验收未完成；Linux deny-only `run_command` 已接入 USER_NOTIF 原生回执并通过 CLI 展示；非 POSIX 不支持路径新增固定 CLI 提示和明确的未启动字段，但 MCP adapter、macOS/Windows 来源 parity、文件拒绝覆盖、`process_limit` 语义和平台门槛仍未闭合，能力评分不变
+- 状态：R2 资源限制和跨平台统一违规回执验收未完成；Linux deny-only `run_command` 已接入 USER_NOTIF 原生回执，CLI 对单类别和多类别回执均可展示；非 POSIX 不支持路径新增固定 CLI 提示和明确的未启动字段，但 MCP adapter、macOS/Windows 来源 parity、文件拒绝覆盖、`process_limit` 语义和平台门槛仍未闭合，能力评分不变
 - 目标：把十项合同中的 `resource_limits`、`uniform_violation` 接入真实隔离命令路径，并提供跨平台可核验回执。
 - 依据：[R2 跨平台隔离设计 §12.2、§13、§14](../specs/2026-09-23-r2-cross-platform-isolation-design.md)
 
@@ -195,3 +195,9 @@ Codex 固定快照 [`21eb35513df478a2a090bfc2c0293caaf435b36d`](https://github.c
 - **上游取舍：**Codex 固定 `0d7b8117d3cc6d9ffe21d22375d70307133e9f16` 以执行 timeout 清理进程组、另设 I/O drain 窗口；输出保留 cap 后 drain 到 EOF 而非终止命令。Anthropic `sandbox-runtime@3ed97390547bdd3d5cec5097d123f3a5fb741c6b` 的所查 CLI 不设通用 deadline/output cap，signal forwarding 面向直接子进程。均为 Apache-2.0。ICODE 采纳期限/保留量/清理期限应分开验收以及 timeout 后代 marker 测试；保留超输出即停止的本项目既有合同，不把上游“截断后继续”当强制资源限制。固定源码链接和观察结论见[持续竞品对照](../../agent-landscape-live.md)。
 - **TDD 与直接证据：**新增原生 runner 合同测试先因 `_check()` 未调用 deny-only 资源界限探针而失败，再接入 Linux 专项探针。真实 `ToolContext → run_command → execute_linux_violation_observed_command → execution_broker` 调用中，将 policy 输出 cap 设为 128 bytes，持续输出命令以 `error=output_limit` 终止，`output_bytes=128`、`output_truncated=true`；另将 policy `wall_timeout_seconds=2`、工具请求 timeout 设为 8 秒，命令启动同组子进程后挂起，2 秒期限返回 `timeout`，broker cleanup 成功且延后 marker 不出现。两条均不产生 `violation_receipt`。聚焦 runner/receipt 32 项通过；完整本机 Linux native probe 中 `linux-observed-command-bounds status=passed`。
 - **评分与失败边界：**这个子探针只确认 deny-only Linux 执行链上的墙钟超时、输出字节预算和同组清理；它不验证 per-task `process_limit` 或所有平台的资源上限，因此不向 `resource_limits` 传证据、不改变 `8/10`、`ready=false`、`process_limit` 待确认、`uniform_violation=false`、自动模式关闭或 R2/R3 未完成状态。probe 故障让 Linux native job 失败，环境显式 skip 不加分；CI x64/ARM64 结果随下一次本切片 push 后复验。
+
+## 2026-09-30 Asia/Shanghai：CLI 多类别原生回执摘要对齐
+
+- **问题与 RED：**Linux USER_NOTIF broker 可在同一命令中记录两个受限 socket syscall，并生成固定 `category=multiple`、`count>=2` 的 OS-enforced 回执；CLI 显示白名单此前只接受 `network_socket`，因此这类真实 OS 回执被降级成普通 `[拒绝]`。合成 CLI event formatter 回归在旧逻辑上失败；随后新增一条真实多类别命令贯穿 `run_command → ToolResult → AgentLoop → CLI event callback` 的原生集成回归。
+- **最小修正：**CLI 现在仅接受既有固定来源/schema/enforcement 字段完整匹配的 `network_socket` 或 `multiple`，并要求 `multiple` 至少计数 2；摘要仍由固定 allowlist 字段构成，不输出命令参数或任意回执附加字段。应用层回执、未知来源/类别和异常计数继续显示通用安全提示。
+- **验收与边界：**CLI 8 项与 Linux USER_NOTIF receipt 15 项定向测试通过；真实多类别 `run_command → ToolResult → AgentLoop → CLI event callback` 同条路径产生固定摘要，另覆盖 `multiple/count=1` 与 list/dict 类别畸形值失败关闭及脱敏。MCP adapter/parity 仍未覆盖。此改动只修复 CLI 安全投影的一致性，不增加新 OS 证据、不改变 `uniform_violation`/`resource_limits` 评分。上游仍引用本计划已固定的 Codex denial 与 OpenHands 通用结果快照；本次未复制代码、未增加依赖。R2/R3 readiness、网络 DENY 与自动模式不变。

@@ -8,7 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from icode.cli import _build_runner
+from icode.cli import _build_runner, _native_violation_summary
 
 
 class TestCliToolEvents(unittest.TestCase):
@@ -73,6 +73,67 @@ class TestCliToolEvents(unittest.TestCase):
         self.assertIn("此操作超出当前任务范围，已阻止。", rendered)
         self.assertNotIn("PRIVATE_COMMAND_MARKER", rendered)
         self.assertNotIn("PRIVATE_RECEIPT_MARKER", rendered)
+
+    def test_多类别原生拒绝回执仍显示系统隔离摘要(self) -> None:
+        args = SimpleNamespace(
+            backend="fake", key_file="", model="", base_url="", proxy="",
+            no_proxy=None, approve=False, budget_tokens=1000, quiet=False,
+            isolation="auto",
+        )
+        output = io.StringIO()
+
+        with (
+            patch("icode.backends.build_backend", return_value=object()),
+            patch("icode.isolation.select_sandbox", return_value=object()),
+            contextlib.redirect_stdout(output),
+        ):
+            _, _, _, on_event, _ = _build_runner(args)
+            on_event("tool_result", {
+                "tool": "run_command",
+                "ok": False,
+                "meta": {
+                    "error_code": "policy_denied",
+                    "violation_receipt": {
+                        "schema_version": 1,
+                        "enforcement_layer": "os_seccomp_user_notif",
+                        "os_enforced": True,
+                        "category": "multiple",
+                        "source": "seccomp_user_notif",
+                        "count": 2,
+                    },
+                },
+                "user_message": "此操作超出当前任务范围，已阻止。",
+            })
+
+        self.assertIn("[系统隔离拦截] multiple × 2", output.getvalue())
+
+    def test_多类别回执计数不足时不认作原生隔离摘要(self) -> None:
+        receipt = {
+            "schema_version": 1,
+            "enforcement_layer": "os_seccomp_user_notif",
+            "os_enforced": True,
+            "category": "multiple",
+            "source": "seccomp_user_notif",
+            "count": 1,
+        }
+
+        self.assertIsNone(_native_violation_summary({"violation_receipt": receipt}))
+
+    def test_畸形类别类型的回执安全降级且不抛异常(self) -> None:
+        base_receipt = {
+            "schema_version": 1,
+            "enforcement_layer": "os_seccomp_user_notif",
+            "os_enforced": True,
+            "source": "seccomp_user_notif",
+            "count": 2,
+        }
+
+        for category in ([], {}):
+            with self.subTest(category_type=type(category).__name__):
+                receipt = {**base_receipt, "category": category}
+                self.assertIsNone(
+                    _native_violation_summary({"violation_receipt": receipt}),
+                )
 
     def test_非零退出码不会误显示为隔离拒绝(self) -> None:
         args = SimpleNamespace(

@@ -28,6 +28,7 @@ from .handshake import run_handshake
 
 REPO_ROOT = repo_root()
 _MAX_NATIVE_VIOLATION_COUNT = 65_535
+_NATIVE_VIOLATION_CATEGORIES = frozenset({"network_socket", "multiple"})
 _INCOMPLETE_NATIVE_OBSERVER_NOTICE = (
     "[隔离结果未确认] 隔离检查未完整结束；不要据此判断命令成功。"
 )
@@ -47,13 +48,15 @@ def _native_violation_summary(meta: object) -> str | None:
         or receipt.get("enforcement_layer") != "os_seccomp_user_notif"
         or receipt.get("os_enforced") is not True
         or receipt.get("source") != "seccomp_user_notif"
-        or receipt.get("category") != "network_socket"
+        or type(receipt.get("category")) is not str
+        or receipt.get("category") not in _NATIVE_VIOLATION_CATEGORIES
         or type(receipt.get("count")) is not int
         or receipt.get("count") < 1
         or receipt.get("count") > _MAX_NATIVE_VIOLATION_COUNT
+        or (receipt.get("category") == "multiple" and receipt.get("count") < 2)
     ):
         return None
-    return f"network_socket × {receipt['count']}"
+    return f"{receipt['category']} × {receipt['count']}"
 
 
 def _nonnegative_int(value: str) -> int:
