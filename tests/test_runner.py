@@ -770,6 +770,124 @@ class TestReviewStepReadOnlyContext(unittest.TestCase):
                          report.turns[0].invocations[1].result.content)
         self.assertTrue(report.turns[0].invocations[2].result.ok)
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux")
+        and os.environ.get("ICODE_RUN_POLICY_REVIEWER_PROBE") == "1",
+        "策略化 Reviewer runner 原生链路由 Linux CI 显式启用",
+    )
+    def test_bwrap策略化reviewer由runner派生策略并隐藏宿主账本(self) -> None:
+        from types import SimpleNamespace
+
+        from icode.backends import FakeBackend
+        from icode.contracts import ContractSet
+        from icode.handshake import next_out_dir
+        from icode.isolation import BubblewrapSandbox
+        from icode.runner import _run_agent
+        from icode.sandbox_policy import (
+            NetworkMode,
+            SandboxPolicy,
+            derive_read_only_reviewer_policy,
+        )
+
+        settings = require_skill()
+        if not shutil.which("bwrap"):
+            self.fail("策略化 Reviewer runner 探针要求 Bubblewrap 已安装")
+        with temp_workspace() as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            source = workspace / "calc.py"
+            source.write_text("ORIGINAL = True\n", encoding="utf-8")
+            out_dir = next_out_dir(workspace)
+            private_ledger = out_dir / ".ico_metadata.json"
+            private_ledger.write_text("RUNNER_POLICY_LEDGER_SECRET\n", encoding="utf-8")
+            contract = ContractSet.load(settings.gates_json).step("review")
+            base_policy = SandboxPolicy(
+                schema_version=1,
+                run_id="review-runner-policy",
+                ticket_id="REVIEW-RUNNER-POLICY",
+                step="review",
+                workspace_root=workspace,
+                read_roots=(workspace,),
+                write_roots=(workspace,),
+                deny_read_roots=(),
+                deny_write_roots=(),
+                network_mode=NetworkMode.PROXY_ALLOWLIST,
+                allowed_domains=("example.org",),
+                process_limit=8,
+                wall_timeout_seconds=20,
+                output_limit_bytes=4096,
+                protected_paths=(),
+            )
+            effective_policy = derive_read_only_reviewer_policy(
+                base_policy,
+                workspace_root=workspace,
+                deny_read_roots=(workspace / ".icode_output", out_dir),
+            )
+            hidden_relative = private_ledger.relative_to(workspace).as_posix()
+            probe_code = (
+                "print('ledger-hidden' if not "
+                f"__import__('pathlib').Path({hidden_relative!r}).exists() "
+                "else 'ledger-visible')"
+            )
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [
+                    {"id": "policy-probe", "name": "run_command", "arguments": {
+                        "argv": ["python3", "-c", probe_code],
+                    }},
+                    {"id": "submit-review", "name": "submit_artifact", "arguments": {
+                        "name": "02_review.md", "content": "# Review\n\nNo findings.\n",
+                    }},
+                ]},
+                "策略化审查已完成",
+            ])
+
+            class _Operations:
+                def start(self, **_kwargs):
+                    return SimpleNamespace(can_execute=True, attempt="attempt-1", detail="")
+
+                def finish(self, *_args, **_kwargs):
+                    return True
+
+            report = _run_agent(
+                backend=backend,
+                workspace=workspace,
+                out_dir=out_dir,
+                ticket_id="REVIEW-RUNNER-POLICY",
+                step="review",
+                brief="Review the current changes.",
+                contract=contract,
+                requirement="Keep the Reviewer read-only.",
+                approver=None,
+                loop_config=None,
+                budget=None,
+                on_event=None,
+                sandbox=BubblewrapSandbox(),
+                operations=_Operations(),
+                policy=base_policy,
+            )
+
+            self.assertEqual(source.read_text(encoding="utf-8"), "ORIGINAL = True\n")
+            self.assertEqual(
+                private_ledger.read_text(encoding="utf-8"),
+                "RUNNER_POLICY_LEDGER_SECRET\n",
+            )
+            self.assertEqual(
+                (out_dir / "02_review.md").read_text(encoding="utf-8"),
+                "# Review\n\nNo findings.\n",
+            )
+
+        invocations = report.turns[0].invocations
+        command_result = invocations[0].result
+        self.assertTrue(
+            command_result.ok,
+            f"decision={invocations[0].decision} note={invocations[0].note} "
+            f"meta={command_result.meta} content={command_result.content}",
+        )
+        self.assertIn("ledger-hidden", command_result.content)
+        self.assertNotIn("RUNNER_POLICY_LEDGER_SECRET", command_result.content)
+        self.assertEqual(command_result.meta.get("policy_hash"), effective_policy.policy_hash)
+        self.assertTrue(invocations[1].result.ok, invocations[1].result.content)
+
 
 if __name__ == "__main__":
     unittest.main()

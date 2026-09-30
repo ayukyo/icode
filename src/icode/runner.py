@@ -44,7 +44,7 @@ from .loop import AgentLoop, LoopConfig, LoopResult, Turn
 from .operations import OperationRecorder
 from .reasoning import ReasoningGate, TraceRow, append_trace, run_deliberation
 from .recovery import Recoverer
-from .sandbox_policy import SandboxPolicy
+from .sandbox_policy import SandboxPolicy, derive_read_only_reviewer_policy
 from .self_verify import (
     AUTO_REPAIRABLE_CATEGORIES,
     VerificationEvidence,
@@ -814,16 +814,26 @@ def _run_agent(
     workspace_session: WorkspaceSession | None = None,
 ) -> LoopResult:
     read_only_workspace = step == "review"
-    artifact_broker = _artifact_broker_for_step(out_dir, contract, step, policy)
     deny_read_roots = list(policy.deny_read_roots if policy is not None else ())
+    reviewer_hidden_roots: list[Path] = []
     if read_only_workspace:
         # next_out_dir() creates host-controlled ticket data below this root.
         # Reviewers receive only contract-approved files through ArtifactBroker.
-        deny_read_roots.append(Path(workspace) / ".icode_output")
+        reviewer_hidden_roots.append(Path(workspace) / ".icode_output")
         output_root = Path(out_dir)
         if not output_root.is_absolute():
             output_root = Path(workspace) / output_root
-        deny_read_roots.append(output_root)
+        reviewer_hidden_roots.append(output_root)
+        if policy is not None:
+            policy = derive_read_only_reviewer_policy(
+                policy,
+                workspace_root=Path(workspace),
+                deny_read_roots=tuple(reviewer_hidden_roots),
+            )
+            deny_read_roots = list(policy.deny_read_roots)
+        else:
+            deny_read_roots.extend(reviewer_hidden_roots)
+    artifact_broker = _artifact_broker_for_step(out_dir, contract, step, policy)
     scope = Scope(
         workspace_root=workspace,
         allowed_read_roots=policy.read_roots if policy is not None else None,

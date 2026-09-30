@@ -109,6 +109,8 @@ def execute_policy_command(
     return _execute_policy_command(
         argv, cwd=cwd, policy=policy, timeout=timeout,
         git_status=git_status, output_limit_bytes=output_limit_bytes,
+        launch_cwd=getattr(argv, "cwd", None),
+        pass_fds=getattr(argv, "pass_fds", ()),
     )
 
 
@@ -242,6 +244,7 @@ def _execute_policy_command(
     argv: list[str], *, cwd: Path, policy: SandboxPolicy, timeout: int | float,
     git_status: bool = False, output_limit_bytes: int | None = None,
     pass_fds: tuple[int, ...] = (),
+    launch_cwd: str | Path | None = None,
     on_spawn: Callable[[subprocess.Popen[bytes], float], None] | None = None,
 ) -> ExecutionResult:
     """Private process core with a narrowly scoped trusted-launch hook."""
@@ -253,6 +256,16 @@ def _execute_policy_command(
         or len(set(pass_fds)) != len(pass_fds)
     ):
         return ExecutionResult(None, "", 0, "invalid_handoff", False, True, None)
+    launch_directory = cwd
+    if launch_cwd is not None:
+        if not isinstance(launch_cwd, (str, Path)):
+            return ExecutionResult(None, "", 0, "invalid_handoff", False, True, None)
+        try:
+            launch_directory = Path(launch_cwd).resolve(strict=True)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return ExecutionResult(None, "", 0, "invalid_handoff", False, True, None)
+        if not launch_directory.is_dir():
+            return ExecutionResult(None, "", 0, "invalid_handoff", False, True, None)
 
     if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
         return ExecutionResult(None, "", 0, "invalid_timeout", False, True, None)
@@ -283,7 +296,7 @@ def _execute_policy_command(
     try:
         launch_options = {"pass_fds": pass_fds} if pass_fds else {}
         process = subprocess.Popen(  # noqa: S603 - argv 经原生策略包装且 shell=False
-            argv, cwd=str(cwd),
+            argv, cwd=str(launch_directory),
             env=_policy_environment(policy.workspace_root, git_status=git_status),
             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             shell=False, start_new_session=True, **launch_options,

@@ -1436,6 +1436,45 @@ class BubblewrapSandbox:
             deny_read_roots=exclusions,
         )
 
+    def wrap_read_only_policy_excluding(
+        self,
+        argv: Sequence[str],
+        *,
+        workspace: Path,
+        workspace_fd: int,
+        policy: SandboxPolicy,
+    ) -> PreparedCommand:
+        """Compile the supported policy intersection for a Reviewer command."""
+        if not sys.platform.startswith("linux"):
+            raise ValueError("策略化 Reviewer 目前仅支持 Linux Bubblewrap")
+        if not isinstance(policy, SandboxPolicy) or policy.step != "review":
+            raise ValueError("策略化 Reviewer 要求 review 步骤策略")
+
+        workspace_path = Path(os.path.abspath(workspace))
+        if policy.workspace_root != workspace_path:
+            raise ValueError("Reviewer policy 与固定工作区根不匹配")
+        if policy.read_roots != (workspace_path,):
+            raise ValueError("Bubblewrap Reviewer 只支持精确工作区读根")
+        if policy.write_roots:
+            raise ValueError("Bubblewrap Reviewer 策略必须没有写授权")
+        if policy.network_mode is not NetworkMode.DENY or policy.allowed_domains:
+            raise ValueError("Bubblewrap Reviewer 策略必须完全断网")
+        ledger_root = workspace_path / ".icode_output"
+        if ledger_root not in policy.deny_read_roots:
+            raise ValueError("Bubblewrap Reviewer 策略必须隐藏工单账本")
+
+        exclusions = _validated_read_only_exclusions(
+            workspace_path, policy.deny_read_roots, workspace_fd=workspace_fd,
+        )
+        return self._wrap(
+            argv,
+            workspace=workspace_path,
+            workspace_fd=workspace_fd,
+            network=False,
+            read_only=True,
+            deny_read_roots=exclusions,
+        )
+
     def _wrap(
         self, argv: Sequence[str], *, workspace: Path, network: bool, read_only: bool,
         workspace_fd: int | None = None,

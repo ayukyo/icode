@@ -50,7 +50,11 @@ from icode.isolation import (
 )
 from icode.tools import IsolationUnavailable, ToolContext, default_registry
 from icode.tools.builtin import run_command
-from icode.sandbox_policy import NetworkMode, SandboxPolicy
+from icode.sandbox_policy import (
+    NetworkMode,
+    SandboxPolicy,
+    derive_read_only_reviewer_policy,
+)
 from icode.workspace import WorkspaceManager
 from icode.execution_broker import execute_policy_command
 
@@ -2972,21 +2976,166 @@ class TestContextIntegration(unittest.TestCase):
             str(output_root.resolve()),
         )
 
-    def test_策略化Reviewer命令因缺少可证明的只读策略交集而拒绝(self) -> None:
-        policy = SandboxPolicy(
+    def test_策略化Reviewer命令使用Bubblewrap专用只读策略包装(self) -> None:
+        output_root = self.ws / ".icode_output"
+        out_dir = output_root / "ticket-1" / "review"
+        out_dir.mkdir(parents=True)
+        base_policy = SandboxPolicy(
             schema_version=1, run_id="review-policy", ticket_id="review-policy",
             step="review", workspace_root=self.ws,
             read_roots=(self.ws,), write_roots=(self.ws,),
             deny_read_roots=(), deny_write_roots=(),
-            network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+            network_mode=NetworkMode.PROXY_ALLOWLIST,
+            allowed_domains=("example.org",), process_limit=8,
             wall_timeout_seconds=10, output_limit_bytes=4096, protected_paths=(),
+        )
+        policy = derive_read_only_reviewer_policy(
+            base_policy,
+            workspace_root=self.ws,
+            deny_read_roots=(output_root, out_dir),
         )
         ctx = ToolContext(
             root=self.ws, sandbox=BubblewrapSandbox(), policy=policy,
-            read_only_workspace=True,
+            read_only_workspace=True, deny_read_roots=policy.deny_read_roots,
         )
-        with self.assertRaises(IsolationUnavailable):
-            ctx.wrap_command(["python", "-m", "unittest"])
+        try:
+            ctx.pin_read_only_workspace()
+            try:
+                prepared = ctx.wrap_command(["python", "-m", "unittest"])
+            except IsolationUnavailable as error:
+                self.fail(f"Bubblewrap 的策略化 Reviewer wrapper 应可用：{error}")
+
+            self.assertEqual(prepared[0], "bwrap")
+            self.assertIn("--ro-bind-fd", prepared)
+            self.assertIn("--unshare-net", prepared)
+            self.assertEqual(
+                prepared.pass_fds,
+                (ctx.read_only_workspace_fd,),
+            )
+            hidden_targets = [
+                prepared[index + 1]
+                for index, argument in enumerate(prepared[:-1])
+                if argument == "--tmpfs"
+            ]
+            self.assertIn(str(output_root), hidden_targets)
+            self.assertTrue(out_dir.is_relative_to(output_root))
+            with self.assertRaises(IsolationUnavailable):
+                ctx.wrap_command(["python", "-m", "unittest"], network=True)
+        finally:
+            ctx.close()
+
+    @unittest.skipUnless(
+        sys.platform.startswith("linux")
+        and os.environ.get("ICODE_RUN_POLICY_REVIEWER_PROBE") == "1",
+        "真实策略化 Reviewer OS 探针由 Linux 原生 CI 显式启用",
+    )
+    def test_bwrap策略化Reviewer真实拒读写入与网络(self) -> None:
+        if not shutil.which(BubblewrapSandbox().bwrap):
+            self.fail("原生策略化 Reviewer 探针要求 Bubblewrap 已安装")
+
+        workspace = self.ws / "review-workspace"
+        workspace.mkdir()
+        output_root = workspace / ".icode_output"
+        ticket_root = output_root / "ticket-1"
+        out_dir = ticket_root / "review"
+        out_dir.mkdir(parents=True)
+        source = workspace / "reviewed.py"
+        source.write_text("source-original\n", encoding="utf-8")
+        ledger = ticket_root / "ledger.json"
+        ledger.write_text("private-ledger-marker\n", encoding="utf-8")
+        (workspace / "ledger-alias").symlink_to(
+            ".icode_output/ticket-1/ledger.json",
+        )
+        outside_secret = self.ws / "outside-secret.txt"
+        outside_secret.write_text("outside-secret-marker\n", encoding="utf-8")
+
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        server.settimeout(0.25)
+        port = server.getsockname()[1]
+
+        base_policy = SandboxPolicy(
+            schema_version=1,
+            run_id="review-native",
+            ticket_id="review-native",
+            step="review",
+            workspace_root=workspace,
+            read_roots=(workspace,),
+            write_roots=(workspace,),
+            deny_read_roots=(),
+            deny_write_roots=(),
+            network_mode=NetworkMode.PROXY_ALLOWLIST,
+            allowed_domains=("example.org",),
+            process_limit=8,
+            wall_timeout_seconds=20,
+            output_limit_bytes=4096,
+            protected_paths=(),
+        )
+        policy = derive_read_only_reviewer_policy(
+            base_policy,
+            workspace_root=workspace,
+            deny_read_roots=(output_root, out_dir),
+        )
+        ctx = ToolContext(
+            root=workspace,
+            sandbox=BubblewrapSandbox(),
+            policy=policy,
+            read_only_workspace=True,
+            deny_read_roots=policy.deny_read_roots,
+        )
+        code = "\n".join((
+            "import os, socket",
+            "from pathlib import Path",
+            "assert Path('reviewed.py').read_text() == 'source-original\\n'",
+            "for hidden in (Path('.icode_output/ticket-1/ledger.json'), Path('ledger-alias')):",
+            "    try: hidden.read_text()",
+            "    except OSError: pass",
+            "    else: raise AssertionError('reviewer read hidden ledger')",
+            "def denied(action):",
+            "    try: action()",
+            "    except OSError: return",
+            "    raise AssertionError('reviewer write succeeded')",
+            "source = Path('reviewed.py')",
+            "denied(lambda: source.write_text('tampered'))",
+            "denied(lambda: source.unlink())",
+            "denied(lambda: source.chmod(0o600))",
+            "denied(lambda: source.rename(Path('moved.py'))) ",
+            "denied(lambda: Path('.icode_output/new.json').write_text('tampered'))",
+            f"outside = Path({str(outside_secret)!r})",
+            "try: outside.read_text()",
+            "except OSError: pass",
+            "else: raise AssertionError('outside workspace readable')",
+            "try: socket.create_connection(('127.0.0.1', " + str(port) + "), timeout=1)",
+            "except OSError: pass",
+            "else: raise AssertionError('Reviewer reached host loopback listener')",
+            "print('policy-reviewer-boundary-ok')",
+        ))
+        reviewer_python = str(
+            Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+        )
+        try:
+            ctx.pin_read_only_workspace()
+            result = run_command(
+                ctx, [reviewer_python, "-c", code], timeout=15,
+            )
+            self.assertTrue(result.ok, result.content)
+            self.assertIn("policy-reviewer-boundary-ok", result.content)
+            self.assertNotIn("private-ledger-marker", result.content)
+            self.assertNotIn("outside-secret-marker", result.content)
+            with self.assertRaises(TimeoutError):
+                server.accept()
+            self.assertEqual(source.read_text(encoding="utf-8"), "source-original\n")
+            self.assertEqual(ledger.read_text(encoding="utf-8"), "private-ledger-marker\n")
+            self.assertEqual(
+                outside_secret.read_text(encoding="utf-8"),
+                "outside-secret-marker\n",
+            )
+            self.assertFalse((workspace / "moved.py").exists())
+            self.assertFalse((output_root / "new.json").exists())
+        finally:
+            server.close()
+            ctx.close()
 
     def test_不支持排除目录的只读后端拒绝Reviewer命令(self) -> None:
         class _WouldExposeExcludedRoot:

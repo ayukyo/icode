@@ -9,7 +9,7 @@ import hashlib
 import ipaddress
 import json
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from enum import Enum
 from pathlib import Path
 from typing import Iterable, Mapping, cast
@@ -529,3 +529,40 @@ def tighten_policy(base: SandboxPolicy, candidate: SandboxPolicy) -> SandboxPoli
             raise PolicyValidationError("candidate policy broadens allowed domains")
 
     return candidate
+
+
+def derive_read_only_reviewer_policy(
+    base: SandboxPolicy,
+    *,
+    workspace_root: Path,
+    deny_read_roots: Iterable[Path],
+) -> SandboxPolicy:
+    """Intersect a step policy with the immutable Reviewer read-only boundary.
+
+    This is a static policy transformation only. A native backend must still
+    prove that it can enforce the returned policy before Reviewer commands run.
+    """
+
+    if not isinstance(base, SandboxPolicy):
+        raise PolicyValidationError("Reviewer base policy is invalid")
+    if base.step != "review":
+        raise PolicyValidationError("Reviewer policy must belong to the review step")
+    try:
+        workspace = Path(workspace_root).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise PolicyValidationError("Reviewer workspace root is unavailable") from error
+    if not workspace.is_dir() or base.workspace_root != workspace:
+        raise PolicyValidationError("Reviewer workspace root does not match policy")
+    if any(not _is_within(root, workspace) for root in base.read_roots):
+        raise PolicyValidationError(
+            "Reviewer policy contains a read root outside the workspace"
+        )
+
+    candidate = replace(
+        base,
+        write_roots=(),
+        deny_read_roots=tuple((*base.deny_read_roots, *deny_read_roots)),
+        network_mode=NetworkMode.DENY,
+        allowed_domains=(),
+    )
+    return tighten_policy(base, candidate)

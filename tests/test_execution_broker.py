@@ -13,6 +13,7 @@ from unittest import mock
 from tests._support import temp_workspace
 
 from icode.execution_broker import execute_policy_command
+from icode.isolation import PreparedCommand
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.tools import ToolContext, default_registry
 
@@ -77,6 +78,33 @@ class TestUnsupportedPolicyCommandBackend(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "posix", "R2.2 仅覆盖 POSIX 策略命令")
 class TestPolicyCommandBroker(unittest.TestCase):
+    def test_prepared_policy_command_preserves_descriptor_and_launcher_cwd(self) -> None:
+        with temp_workspace() as raw_root:
+            root = raw_root.resolve()
+            descriptor = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            policy = _context(root).policy
+            assert policy is not None
+            prepared = PreparedCommand(
+                [
+                    sys.executable,
+                    "-c",
+                    f"import os; assert os.fstat({descriptor}); "
+                    "assert os.getcwd() == '/'; print('launch-contract-ok')",
+                ],
+                pass_fds=(descriptor,),
+                cwd="/",
+            )
+            try:
+                result = execute_policy_command(
+                    prepared, cwd=root, policy=policy, timeout=5,
+                )
+            finally:
+                os.close(descriptor)
+
+        self.assertIsNone(result.error)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(result.output.strip(), "launch-contract-ok")
+
     def test_普通命令非零退出不伪报策略拒绝(self) -> None:
         with temp_workspace() as root:
             context = _context(root.resolve())

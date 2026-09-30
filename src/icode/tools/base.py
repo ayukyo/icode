@@ -162,10 +162,43 @@ class ToolContext:
     def wrap_command(self, argv: list[str], *, network: bool = False) -> list[str]:
         """把命令包进沙箱（没有后端时原样返回）。"""
         if self.read_only_workspace:
-            # Review 命令必须由操作系统强制只读。策略化 Reviewer 需要同时
-            # 绑定策略拒读路径；当前后端接口不能证明这两种限制的交集，因此拒绝。
+            # Review 命令必须由操作系统强制只读；策略模式只能使用独立
+            # Reviewer 策略编译接口，绝不回退到可写的普通策略 wrapper。
             if self.policy is not None:
-                raise IsolationUnavailable("策略化 Reviewer 命令尚无可验证的只读策略绑定")
+                wrap_policy_read_only = getattr(
+                    self.sandbox, "wrap_read_only_policy_excluding", None,
+                )
+                pinned = self._pinned_read_only_workspace
+                pinned_fd = getattr(pinned, "fd", None)
+                pinned_path = getattr(pinned, "path", None)
+                if (
+                    network
+                    or not self.needs_real_isolation()
+                    or not callable(wrap_policy_read_only)
+                    or not isinstance(pinned_fd, int)
+                    or not isinstance(pinned_path, Path)
+                    or self.policy.workspace_root != pinned_path
+                ):
+                    raise IsolationUnavailable(
+                        "当前后端不能验证策略与只读 Reviewer 边界的交集"
+                    )
+                try:
+                    prepared = wrap_policy_read_only(
+                        argv,
+                        workspace=Path(pinned.path),
+                        workspace_fd=pinned_fd,
+                        policy=self.policy,
+                    )
+                    if getattr(prepared, "pass_fds", None) != (pinned_fd,):
+                        raise IsolationUnavailable(
+                            "策略化 Reviewer 未保留固定工作区 FD 启动合同"
+                        )
+                    return prepared
+                except Exception:  # noqa: BLE001 - 策略/只读边界不能降级
+                    raise IsolationUnavailable(
+                        f"隔离后端 {getattr(self.sandbox, 'name', '?')} "
+                        "无法绑定策略化只读 Reviewer；命令已拒绝"
+                    ) from None
             if self.deny_read_roots:
                 # 只有显式提供 OS 级排除目录能力的后端才可运行 Reviewer。
                 # 普通只读挂载无法隐藏工作区内的工单账本，不能仅靠提示或 Guard。

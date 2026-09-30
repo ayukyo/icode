@@ -269,6 +269,16 @@ jobs:
       - name: Verify Linux Reviewer pinned workspace root survives path replacement
         if: runner.os == 'Linux'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_bwrap只读Reviewer在启动前根路径被替换仍绑定已固定目录 -v
+      - name: Verify Linux policy-bound Reviewer intersection
+        if: runner.os == 'Linux'
+        run: python -m unittest tests.test_isolation.TestContextIntegration.test_bwrap策略化Reviewer真实拒读写入与网络 -v
+        env:
+          ICODE_RUN_POLICY_REVIEWER_PROBE: "1"
+      - name: Verify Linux policy-bound Reviewer runner chain
+        if: runner.os == 'Linux'
+        run: python -m unittest tests.test_runner.TestReviewStepReadOnlyContext.test_bwrap策略化reviewer由runner派生策略并隐藏宿主账本 -v
+        env:
+          ICODE_RUN_POLICY_REVIEWER_PROBE: "1"
       - name: Verify mapped and mapless Linux sandbox branches
         if: runner.os == 'Linux'
         run: python -m unittest tests.test_linux_mapless -v

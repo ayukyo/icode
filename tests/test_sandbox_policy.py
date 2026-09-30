@@ -591,6 +591,91 @@ class SandboxPolicyTestCase(unittest.TestCase):
 
         self.assertIsInstance(raised.exception.__cause__, PolicyValidationError)
 
+    def test_read_only_reviewer_policy_intersects_workspace_authority(self) -> None:
+        import icode.sandbox_policy as policy_module
+
+        derive_policy = getattr(
+            policy_module, "derive_read_only_reviewer_policy", None,
+        )
+        self.assertTrue(
+            callable(derive_policy),
+            "策略化 Reviewer 必须有独立的收紧策略派生器",
+        )
+
+        base = self.make_policy(
+            step="review",
+            read_roots=(self.workspace,),
+            write_roots=(self.workspace / "src",),
+            deny_read_roots=(self.workspace / ".git",),
+            network_mode=NetworkMode.PROXY_ALLOWLIST,
+            allowed_domains=("example.org",),
+            process_limit=8,
+            wall_timeout_seconds=90,
+            output_limit_bytes=4096,
+        )
+        ledger_root = self.workspace / ".icode_output"
+        review_root = ledger_root / "ticket-1" / "review"
+
+        effective = derive_policy(
+            base,
+            workspace_root=self.workspace,
+            deny_read_roots=(ledger_root, review_root),
+        )
+
+        self.assertEqual(effective.run_id, base.run_id)
+        self.assertEqual(effective.ticket_id, base.ticket_id)
+        self.assertEqual(effective.step, "review")
+        self.assertEqual(effective.workspace_root, base.workspace_root)
+        self.assertEqual(effective.read_roots, base.read_roots)
+        self.assertEqual(effective.write_roots, ())
+        self.assertEqual(
+            set(effective.deny_read_roots),
+            {self.workspace / ".git", ledger_root, review_root},
+        )
+        self.assertEqual(effective.deny_write_roots, base.deny_write_roots)
+        self.assertEqual(effective.protected_paths, base.protected_paths)
+        self.assertIs(effective.network_mode, NetworkMode.DENY)
+        self.assertEqual(effective.allowed_domains, ())
+        self.assertEqual(effective.process_limit, base.process_limit)
+        self.assertEqual(effective.wall_timeout_seconds, base.wall_timeout_seconds)
+        self.assertEqual(effective.output_limit_bytes, base.output_limit_bytes)
+        self.assertIs(tighten_policy(base, effective), effective)
+
+    def test_read_only_reviewer_policy_rejects_nonreview_or_foreign_root(self) -> None:
+        import icode.sandbox_policy as policy_module
+
+        derive_policy = getattr(
+            policy_module, "derive_read_only_reviewer_policy", None,
+        )
+        self.assertTrue(callable(derive_policy))
+        with self.assertRaisesRegex(PolicyValidationError, "review"):
+            derive_policy(
+                self.make_policy(step="code"),
+                workspace_root=self.workspace,
+                deny_read_roots=(),
+            )
+
+        with self.assertRaisesRegex(PolicyValidationError, "workspace"):
+            derive_policy(
+                self.make_policy(step="review"),
+                workspace_root=self.workspace.parent,
+                deny_read_roots=(),
+            )
+
+    def test_read_only_reviewer_policy_rejects_external_read_root(self) -> None:
+        import icode.sandbox_policy as policy_module
+
+        derive_policy = getattr(
+            policy_module, "derive_read_only_reviewer_policy", None,
+        )
+        self.assertTrue(callable(derive_policy))
+        with self.assertRaisesRegex(PolicyValidationError, "read root"):
+            derive_policy(
+                self.make_policy(step="review", read_roots=(self.workspace, Path("/"))),
+                workspace_root=self.workspace,
+                deny_read_roots=(),
+            )
+
 
 class SandboxPolicySchemaTestCase(unittest.TestCase):
     @classmethod
