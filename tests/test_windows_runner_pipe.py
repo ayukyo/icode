@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import sys
 import threading
 import unittest
@@ -46,6 +47,10 @@ _NATIVE_PIPE_ACCESS_RECEIPT_FIELDS = (
     }),
     ("pipe_nwu", {"yes", "no", "unavailable"}),
     ("token_nwu", {"yes", "no", "unavailable"}),
+)
+_NATIVE_PIPE_FAILURE_DETAILS = re.compile(
+    r"(?:errno=[0-9]{1,10}:stage=[a-z0-9_]{1,64}|"
+    r"type=[A-Za-z][A-Za-z0-9_]{0,63})\Z",
 )
 
 
@@ -169,6 +174,40 @@ def _native_pipe_target_access_receipt(
         if not part.startswith(prefix) or part[len(prefix):] not in allowed_values:
             return "target_access=unavailable"
     return f"target_access={diagnostic}"
+
+
+def _format_native_pipe_failure_annotation(
+    details: str,
+    target_access: str,
+) -> str:
+    """Format a GitHub error annotation from bounded, fixed pipe diagnostics."""
+    safe_details = (
+        details
+        if type(details) is str
+        and _NATIVE_PIPE_FAILURE_DETAILS.fullmatch(details)
+        else "diagnostic_unavailable"
+    )
+    safe_target_access = "target_access=unavailable"
+    if type(target_access) is str and len(target_access) <= 224:
+        prefix, separator, diagnostic = target_access.partition("=")
+        parts = diagnostic.split("+")
+        if prefix == "target_access" and separator and len(parts) == len(
+            _NATIVE_PIPE_ACCESS_RECEIPT_FIELDS
+        ):
+            if all(
+                part.startswith(field + "_")
+                and part[len(field) + 1:] in allowed_values
+                for part, (field, allowed_values) in zip(
+                    parts, _NATIVE_PIPE_ACCESS_RECEIPT_FIELDS, strict=True,
+                )
+            ):
+                safe_target_access = target_access
+    receipt = (
+        f"native_pipe_client_failed:{safe_details};{safe_target_access}"
+    )
+    if len(receipt) > 384:
+        return "native_pipe_client_failed:diagnostic_unavailable;target_access=unavailable"
+    return receipt
 
 
 class TestWindowsRunnerPipePolicy(unittest.TestCase):
@@ -434,6 +473,47 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
             receipt = receipt_builder(0x1234, "S-1-5-5-100-200")
 
         self.assertEqual(receipt, "target_access=unavailable")
+
+    def test_native_pipe_failure_annotation_preserves_only_safe_receipt(self) -> None:
+        formatter = globals().get("_format_native_pipe_failure_annotation")
+        self.assertTrue(
+            callable(formatter),
+            "native_pipe_failure_annotation_formatter_missing",
+        )
+        target_access = (
+            "target_access=dacl_present+ace_match+token_thread+logon_enabled+"
+            "restricted_no+access_allow+client_il_medium+pipe_il_absent+"
+            "pipe_nwu_unavailable+token_nwu_no"
+        )
+
+        receipt = formatter("errno=5:stage=runner_pipe_open", target_access)
+
+        self.assertEqual(
+            receipt,
+            "native_pipe_client_failed:errno=5:stage=runner_pipe_open;"
+            f"{target_access}",
+        )
+        self.assertLessEqual(len(receipt), 320)
+
+    def test_native_pipe_failure_annotation_redacts_untrusted_fields(self) -> None:
+        formatter = globals().get("_format_native_pipe_failure_annotation")
+        self.assertTrue(
+            callable(formatter),
+            "native_pipe_failure_annotation_formatter_missing",
+        )
+
+        receipt = formatter(
+            "errno=5:stage=C:\\private\\token.txt",
+            "target_access=dacl_private_path=/tmp/secret",
+        )
+
+        self.assertEqual(
+            receipt,
+            "native_pipe_client_failed:diagnostic_unavailable;"
+            "target_access=unavailable",
+        )
+        self.assertNotIn("private", receipt)
+        self.assertNotIn("secret", receipt)
 
     def test_pipe_security_descriptor_shape_receipt_is_bounded_and_sid_free(self) -> None:
         from scripts import windows_standard_user_token_probe as probe
@@ -1186,6 +1266,14 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
                 if isinstance(client_error, PermissionError)
                 else ""
             )
+            if isinstance(client_error, PermissionError):
+                print(
+                    "::error::" + _format_native_pipe_failure_annotation(
+                        details, target_access.removeprefix(";")
+                        if target_access.startswith(";")
+                        else target_access,
+                    ),
+                )
             self.fail(
                 f"native_pipe_client_failed:{details}{target_access}"
                 f"{controls}{descriptor}"
