@@ -99,6 +99,27 @@ class TestWindowsTreeCiFailureAnnotations(unittest.TestCase):
         )
         self.assertEqual(
             summarize(
+                "Traceback (most recent call last):\n"
+                "OSError: snapshot unavailable "
+                "(windows_directory_entry_change_time_changed:"
+                "name=private.txt);safe_diag="
+                "try1_repo_root_git_child+try2_git_metadata_descendant"
+            ),
+            "exception=OSError;phase=snapshot;"
+            "code=windows_directory_entry_change_time_changed;"
+            "loc=try1_root_git+try2_git_desc",
+        )
+        self.assertEqual(
+            summarize(
+                "OSError: snapshot unavailable "
+                "(windows_directory_entry_change_time_changed:private);safe_diag="
+                "try1_private.txt+try2_other_descendant"
+            ),
+            "exception=OSError;phase=snapshot;"
+            "code=windows_directory_entry_change_time_changed",
+        )
+        self.assertEqual(
+            summarize(
                 "OSError: snapshot unavailable "
                 "(unrecognized_private_code:name=private.txt)"
             ),

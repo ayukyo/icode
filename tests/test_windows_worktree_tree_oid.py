@@ -15,6 +15,54 @@ from icode import windows_worktree, workspace_snapshot
 from icode.workspace_snapshot import WorktreeTreeUnavailable
 
 
+_SAFE_WINDOWS_SNAPSHOT_LOCATIONS = frozenset({
+    "repo_root_git_child",
+    "repo_root_target_dir_child",
+    "git_metadata_descendant",
+    "target_dir_descendant",
+    "other_descendant",
+    "unavailable",
+})
+
+
+def _safe_windows_snapshot_change_location(
+    snapshot_parts: object,
+    entry_name: object,
+) -> str:
+    """Collapse a native mismatch location to a fixed, non-path label."""
+    if (
+        type(snapshot_parts) is not tuple
+        or any(type(part) is not str for part in snapshot_parts)
+        or type(entry_name) is not str
+    ):
+        return "unavailable"
+    if not snapshot_parts:
+        if entry_name == ".git":
+            return "repo_root_git_child"
+        if entry_name == "target-dir":
+            return "repo_root_target_dir_child"
+        return "other_descendant"
+    if snapshot_parts[0] == ".git":
+        return "git_metadata_descendant"
+    if snapshot_parts[0] == "target-dir":
+        return "target_dir_descendant"
+    return "other_descendant"
+
+
+def _safe_windows_snapshot_change_receipt(observations: object) -> str:
+    """Serialize only the two bounded retry labels, never path components."""
+    if type(observations) is not dict:
+        return "unavailable"
+    if any(type(attempt) is not int or attempt not in (1, 2) for attempt in observations):
+        return "unavailable"
+    labels = {1: "unobserved", 2: "unobserved"}
+    for attempt, location in observations.items():
+        if type(location) is not str or location not in _SAFE_WINDOWS_SNAPSHOT_LOCATIONS:
+            return "unavailable"
+        labels[attempt] = location
+    return f"try1_{labels[1]}+try2_{labels[2]}"
+
+
 def _parse(buffer: bytes):
     parser = getattr(workspace_snapshot, "_parse_windows_directory_entries", None)
     if not callable(parser):
@@ -66,6 +114,53 @@ def _symlink_reparse_buffer(target: str, *, flags: int = 1) -> bytes:
     struct.pack_into("<HHHHI", record, 8, 0, len(encoded_target), 0, 0, flags)
     record[20:] = path_buffer
     return bytes(record)
+
+
+class TestWindowsSnapshotChangeDiagnostic(unittest.TestCase):
+    def test_location_collapses_paths_to_fixed_categories(self) -> None:
+        locate = globals().get("_safe_windows_snapshot_change_location")
+        self.assertTrue(callable(locate), "safe_snapshot_location_helper_missing")
+
+        self.assertEqual(locate((), ".git"), "repo_root_git_child")
+        self.assertEqual(
+            locate((), "target-dir"), "repo_root_target_dir_child",
+        )
+        self.assertEqual(
+            locate((".git",), "objects"), "git_metadata_descendant",
+        )
+        self.assertEqual(
+            locate(("target-dir",), "inside.txt"),
+            "target_dir_descendant",
+        )
+        self.assertEqual(locate(("private",), "secret.txt"), "other_descendant")
+        self.assertEqual(locate((object(),), "secret.txt"), "unavailable")
+
+    def test_change_receipt_is_bounded_to_two_attempts_and_fixed_labels(self) -> None:
+        format_receipt = globals().get("_safe_windows_snapshot_change_receipt")
+        self.assertTrue(
+            callable(format_receipt), "safe_snapshot_receipt_helper_missing",
+        )
+
+        self.assertEqual(
+            format_receipt({1: "repo_root_git_child", 2: "other_descendant"}),
+            "try1_repo_root_git_child+try2_other_descendant",
+        )
+        self.assertEqual(
+            format_receipt({1: "repo_root_git_child"}),
+            "try1_repo_root_git_child+try2_unobserved",
+        )
+        self.assertEqual(
+            format_receipt({1: "private.txt", 2: "other_descendant"}),
+            "unavailable",
+        )
+        self.assertEqual(
+            format_receipt({
+                1: "other_descendant",
+                2: "other_descendant",
+                3: "other_descendant",
+            }),
+            "unavailable",
+        )
 
 
 class TestProductionWindowsDirectoryEntryParser(unittest.TestCase):
@@ -1003,6 +1098,20 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
             # actionable in CI logs instead of reporting only a generic reason.
             check_entry_identity = workspace_snapshot._require_windows_entry_identity
             check_symlink_identity = workspace_snapshot._require_windows_symlink_identity
+            walk_windows_directory = windows_worktree._walk_windows_directory
+            snapshot_diagnostic = {"attempt": 0, "parts": ()}
+            change_time_locations: dict[int, str] = {}
+
+            def observe_snapshot_walk(*args, **kwargs):
+                parts = kwargs.get("snapshot_parts", ())
+                if parts == ():
+                    snapshot_diagnostic["attempt"] += 1
+                previous_parts = snapshot_diagnostic["parts"]
+                snapshot_diagnostic["parts"] = parts
+                try:
+                    return walk_windows_directory(*args, **kwargs)
+                finally:
+                    snapshot_diagnostic["parts"] = previous_parts
 
             def report_identity_mismatch(check, entry, info, *args, **kwargs):
                 try:
@@ -1013,6 +1122,17 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
                         "windows_directory_entry_change_time_changed",
                     }:
                         raise
+                    attempt = snapshot_diagnostic["attempt"]
+                    if (
+                        exc.reason == "windows_directory_entry_change_time_changed"
+                        and attempt in (1, 2)
+                    ):
+                        change_time_locations.setdefault(
+                            attempt,
+                            _safe_windows_snapshot_change_location(
+                                snapshot_diagnostic["parts"], entry.name,
+                            ),
+                        )
                     expected_volume = args[0] if args else None
                     expected_directory = kwargs.get("is_directory")
                     raise WorktreeTreeUnavailable(
@@ -1043,8 +1163,26 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
                         check_symlink_identity, *args, **kwargs,
                     ),
                 ),
+                patch.object(
+                    workspace_snapshot,
+                    "_walk_windows_directory",
+                    side_effect=observe_snapshot_walk,
+                ),
+                patch.object(
+                    windows_worktree,
+                    "_walk_windows_directory",
+                    side_effect=observe_snapshot_walk,
+                ),
             ):
-                snapshot = workspace_snapshot.snapshot_workspace(repo)
+                try:
+                    snapshot = workspace_snapshot.snapshot_workspace(repo)
+                except OSError as exc:
+                    if change_time_locations:
+                        receipt = _safe_windows_snapshot_change_receipt(
+                            change_time_locations,
+                        )
+                        raise OSError(f"{exc};safe_diag={receipt}") from None
+                    raise
 
             self.assertEqual(
                 snapshot["alias"],

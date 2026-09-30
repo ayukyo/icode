@@ -38,6 +38,15 @@ _SAFE_WORKTREE_ERROR_CODES = frozenset({
     "windows_entry_identity_changed",
 })
 _WINERROR_RE = re.compile(r"\[WinError ([0-9]{1,6})\]")
+_SAFE_SNAPSHOT_LOCATION = (
+    r"(?:repo_root_git_child|repo_root_target_dir_child|"
+    r"git_metadata_descendant|target_dir_descendant|other_descendant|"
+    r"unavailable|unobserved)"
+)
+_SAFE_SNAPSHOT_DIAGNOSTIC_RE = re.compile(
+    rf";safe_diag=(try1_{_SAFE_SNAPSHOT_LOCATION}"
+    rf"\+try2_{_SAFE_SNAPSHOT_LOCATION})\Z",
+)
 
 
 def _safe_test_id(value: object) -> str:
@@ -79,6 +88,21 @@ def _safe_error_summary(formatted_traceback: object) -> str:
         error_code = reason_text.split(":", 1)[0]
         if error_code in _SAFE_WORKTREE_ERROR_CODES:
             summary += f";phase=snapshot;code={error_code}"
+            if error_code == "windows_directory_entry_change_time_changed":
+                location_match = _SAFE_SNAPSHOT_DIAGNOSTIC_RE.search(message)
+                if location_match is not None:
+                    locations = location_match.group(1)
+                    for long_label, short_label in (
+                        ("repo_root_git_child", "root_git"),
+                        ("repo_root_target_dir_child", "root_target"),
+                        ("git_metadata_descendant", "git_desc"),
+                        ("target_dir_descendant", "target_desc"),
+                        ("other_descendant", "other"),
+                        ("unavailable", "na"),
+                        ("unobserved", "none"),
+                    ):
+                        locations = locations.replace(long_label, short_label)
+                    summary += f";loc={locations}"
     winerror_match = _WINERROR_RE.search(message)
     if winerror_match is not None and exception_name in {
         "FileNotFoundError", "OSError", "PermissionError", "TimeoutError",
