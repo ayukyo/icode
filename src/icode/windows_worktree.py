@@ -42,6 +42,7 @@ _FILE_STANDARD_INFO_CLASS = 1
 _FILE_ATTRIBUTE_TAG_INFO_CLASS = 9
 _FILE_ID_INFO_CLASS = 0x12
 _NATIVE_DIRECTORY_PAGE_BYTES = 1024 * 1024
+_WINDOWS_WORKSPACE_SNAPSHOT_ATTEMPTS = 2
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 _FSCTL_GET_REPARSE_POINT = 0x000900A8
 
@@ -460,25 +461,38 @@ def worktree_git_tree_oid_windows(root: Path, *, object_format: str) -> str:
 
 def snapshot_windows_workspace_windows(root: Path) -> dict[str, str]:
     """Return a bounded, handle-relative Windows workspace observation."""
-    backend = _WindowsNativeWorktreeBackend()
-    root_handle = backend.open_root(Path(root))
-    snapshot: dict[str, str] = {}
-    try:
-        _walk_windows_directory(
-            root_handle,
-            backend,
-            object_format=None,
-            include_in_tree=False,
-            snapshot_output=snapshot,
-            snapshot_parts=(),
-            snapshot_enabled=True,
-            is_root=True,
-            depth=0,
-        )
-    except WorktreeTreeUnavailable:
-        raise
-    except Exception:
-        raise WorktreeTreeUnavailable("windows_workspace_snapshot_unavailable") from None
-    finally:
-        backend.close_root(root_handle)
-    return snapshot
+    for attempt in range(_WINDOWS_WORKSPACE_SNAPSHOT_ATTEMPTS):
+        backend = _WindowsNativeWorktreeBackend()
+        root_handle = backend.open_root(Path(root))
+        snapshot: dict[str, str] = {}
+        retry_after_close = False
+        try:
+            _walk_windows_directory(
+                root_handle,
+                backend,
+                object_format=None,
+                include_in_tree=False,
+                snapshot_output=snapshot,
+                snapshot_parts=(),
+                snapshot_enabled=True,
+                is_root=True,
+                depth=0,
+            )
+        except WorktreeTreeUnavailable as exc:
+            if (
+                exc.reason != "windows_directory_entry_change_time_changed"
+                or attempt + 1 >= _WINDOWS_WORKSPACE_SNAPSHOT_ATTEMPTS
+            ):
+                raise
+            # No partial hashes escape: close every handle before reopening
+            # the root and rebuilding a fresh snapshot on the one retry.
+            retry_after_close = True
+        except Exception:
+            raise WorktreeTreeUnavailable(
+                "windows_workspace_snapshot_unavailable",
+            ) from None
+        finally:
+            backend.close_root(root_handle)
+        if not retry_after_close:
+            return snapshot
+    raise WorktreeTreeUnavailable("windows_workspace_snapshot_unavailable")

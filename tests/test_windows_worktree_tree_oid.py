@@ -326,6 +326,126 @@ class TestWindowsWorkspaceSnapshotDispatch(unittest.TestCase):
         self.assertEqual(backend.read_calls, 1)
         self.assertTrue(all(handle.closed for handle in backend.opened))
 
+    def test_snapshot_retries_once_after_directory_change_time_race(self) -> None:
+        root = _FakeWindowsNode("", bytes.fromhex("7a" * 16))
+        directory = _FakeWindowsNode("changing", bytes.fromhex("7b" * 16))
+        directory.children["safe.py"] = _FakeWindowsNode(
+            "safe.py", bytes.fromhex("7c" * 16), content=b"stable\n",
+        )
+        root.children["changing"] = directory
+        backends: list[_FakeWindowsTreeBackend] = []
+
+        class ChangeOnceBackend(_FakeWindowsTreeBackend):
+            def open_child(self, parent, entry, *, directory, reparse=False):
+                handle = super().open_child(
+                    parent, entry, directory=directory, reparse=reparse,
+                )
+                if not backends[:-1]:
+                    handle.node.change_time += 1
+                return handle
+
+        def create_backend():
+            backend = ChangeOnceBackend(root)
+            backends.append(backend)
+            return backend
+
+        with patch.object(
+            windows_worktree, "_WindowsNativeWorktreeBackend",
+            side_effect=create_backend,
+        ):
+            actual = windows_worktree.snapshot_windows_workspace_windows(
+                Path("C:/source"),
+            )
+
+        self.assertEqual(actual, {
+            "changing/safe.py": workspace_snapshot._entry_hash(
+                "file", "100644", b"stable\n",
+            ),
+        })
+        self.assertEqual(len(backends), 2)
+        self.assertTrue(all(
+            handle.closed
+            for backend in backends
+            for handle in (*backend.opened, *backend.root_handles)
+        ))
+
+    def test_snapshot_still_fails_closed_after_second_directory_change_time_race(self) -> None:
+        root = _FakeWindowsNode("", bytes.fromhex("7d" * 16))
+        directory = _FakeWindowsNode("changing", bytes.fromhex("7e" * 16))
+        directory.children["safe.py"] = _FakeWindowsNode(
+            "safe.py", bytes.fromhex("7f" * 16), content=b"stable\n",
+        )
+        root.children["changing"] = directory
+        backends: list[_FakeWindowsTreeBackend] = []
+
+        class AlwaysChangingBackend(_FakeWindowsTreeBackend):
+            def open_child(self, parent, entry, *, directory, reparse=False):
+                handle = super().open_child(
+                    parent, entry, directory=directory, reparse=reparse,
+                )
+                handle.node.change_time += 1
+                return handle
+
+        def create_backend():
+            backend = AlwaysChangingBackend(root)
+            backends.append(backend)
+            return backend
+
+        with patch.object(
+            windows_worktree, "_WindowsNativeWorktreeBackend",
+            side_effect=create_backend,
+        ), self.assertRaises(WorktreeTreeUnavailable) as raised:
+            windows_worktree.snapshot_windows_workspace_windows(
+                Path("C:/source"),
+            )
+
+        self.assertEqual(
+            raised.exception.reason,
+            "windows_directory_entry_change_time_changed",
+        )
+        self.assertEqual(len(backends), 2)
+        self.assertTrue(all(
+            handle.closed
+            for backend in backends
+            for handle in (*backend.opened, *backend.root_handles)
+        ))
+
+    def test_snapshot_does_not_retry_file_identity_change(self) -> None:
+        root = _FakeWindowsNode("", bytes.fromhex("80" * 16))
+        root.children["unsafe.py"] = _FakeWindowsNode(
+            "unsafe.py", bytes.fromhex("81" * 16), content=b"unstable\n",
+        )
+        backends: list[_FakeWindowsTreeBackend] = []
+
+        class FileIdentityChangeBackend(_FakeWindowsTreeBackend):
+            def open_child(self, parent, entry, *, directory, reparse=False):
+                handle = super().open_child(
+                    parent, entry, directory=directory, reparse=reparse,
+                )
+                handle.node.file_id = bytes.fromhex("82" * 16)
+                return handle
+
+        def create_backend():
+            backend = FileIdentityChangeBackend(root)
+            backends.append(backend)
+            return backend
+
+        with patch.object(
+            windows_worktree, "_WindowsNativeWorktreeBackend",
+            side_effect=create_backend,
+        ), self.assertRaises(WorktreeTreeUnavailable) as raised:
+            windows_worktree.snapshot_windows_workspace_windows(
+                Path("C:/source"),
+            )
+
+        self.assertEqual(raised.exception.reason, "windows_entry_identity_changed")
+        self.assertEqual(len(backends), 1)
+        self.assertTrue(all(
+            handle.closed
+            for backend in backends
+            for handle in (*backend.opened, *backend.root_handles)
+        ))
+
     def test_workspace_snapshot_is_not_limited_by_git_tree_oid_byte_budget(self) -> None:
         root = _FakeWindowsNode("", bytes.fromhex("78" * 16))
         root.children[".git"] = _FakeWindowsNode(
@@ -888,7 +1008,10 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
                 try:
                     check(entry, info, *args, **kwargs)
                 except WorktreeTreeUnavailable as exc:
-                    if exc.reason != "windows_entry_identity_changed":
+                    if exc.reason not in {
+                        "windows_entry_identity_changed",
+                        "windows_directory_entry_change_time_changed",
+                    }:
                         raise
                     expected_volume = args[0] if args else None
                     expected_directory = kwargs.get("is_directory")
