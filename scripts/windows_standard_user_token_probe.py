@@ -634,13 +634,16 @@ def _self_pipe_access_receipt_label(detail: object) -> str:
 def _runner_pipe_accesscheck_observation(
     pipe_handle: int,
     expected_sid: str | None,
-) -> tuple[str, str]:
-    """Return fixed AccessCheck and effective-token source labels."""
-    access_state = token_source = "unavailable"
+    expected_ace_mask: int = PIPE_CLIENT_ACCESS_MASK,
+) -> tuple[str, str, str, str]:
+    """Return fixed AccessCheck, token, DACL, and direct-ACE labels."""
+    access_state = token_source = dacl_state = ace_state = "unavailable"
     try:
-        diagnostic = _diagnose_runner_pipe_access(pipe_handle, expected_sid)
+        diagnostic = _diagnose_runner_pipe_access(
+            pipe_handle, expected_sid, expected_ace_mask=expected_ace_mask,
+        )
     except Exception:
-        return access_state, token_source
+        return access_state, token_source, dacl_state, ace_state
     if isinstance(diagnostic, str):
         for part in diagnostic.split("+"):
             if part in {"access_allow", "access_deny", "access_unavailable"}:
@@ -651,19 +654,42 @@ def _runner_pipe_accesscheck_observation(
             if part in {"token_process", "token_thread"}:
                 token_source = part.removeprefix("token_")
                 break
-    return access_state, token_source
+    if isinstance(diagnostic, str):
+        for part in diagnostic.split("+"):
+            if part in {
+                "dacl_present", "dacl_absent", "dacl_null",
+                "dacl_unavailable",
+            }:
+                dacl_state = part.removeprefix("dacl_")
+                break
+    if isinstance(diagnostic, str):
+        for part in diagnostic.split("+"):
+            if part in {
+                "ace_match", "ace_missing", "ace_not_applicable",
+                "ace_unavailable",
+            }:
+                ace_state = part.removeprefix("ace_")
+                break
+    return access_state, token_source, dacl_state, ace_state
 
 
 def _runner_pipe_probe_detail_with_accesscheck(
     detail: str,
-    observation: tuple[str, str],
+    observation: tuple[str, str, str, str],
 ) -> str:
-    state, token_source = observation
+    state, token_source, dacl_state, ace_state = observation
     if state not in {"allow", "deny", "unavailable"}:
         state = "unavailable"
     if token_source not in {"process", "thread", "unavailable"}:
         token_source = "unavailable"
-    return f"{detail}+access_{state}+token_{token_source}"
+    if dacl_state not in {"present", "absent", "null", "unavailable"}:
+        dacl_state = "unavailable"
+    if ace_state not in {"match", "missing", "not_applicable", "unavailable"}:
+        ace_state = "unavailable"
+    return (
+        f"{detail}+access_{state}+token_{token_source}"
+        f"+dacl_{dacl_state}+ace_{ace_state}"
+    )
 
 
 def _runner_pipe_probe_receipt_code(
@@ -671,13 +697,19 @@ def _runner_pipe_probe_receipt_code(
     opened: bool,
     detail: object,
 ) -> str:
-    """Compactly encode open, AccessCheck, and token source for temporary A/Bs.
+    """Compactly encode open, AccessCheck, token, DACL, and ACE for A/Bs.
 
     The receipt order is default DACL, TokenUser DACL, TokenUser plus the
-    create-instance bit. Each item is ``<kind><open><access><token>`` where
+    create-instance bit. Each item is
+    ``<kind><open><access><token><dacl><ace>`` where
     open is ``o`` (opened), ``d`` (access denied), or ``f`` (other failure),
     access is ``a`` (allow), ``d`` (deny), or ``u`` (unavailable), and token
-    is ``p`` (process), ``t`` (thread), or ``u`` (unavailable).
+    is ``p`` (process), ``t`` (thread), or ``u`` (unavailable). DACL is
+    ``p`` (present), ``a`` (absent), ``n`` (NULL), or ``u`` (unavailable);
+    ACE is ``m`` (matching allow ACE), ``x`` (not found), ``n`` (not
+    applicable), or ``u`` (unavailable). DACL and ACE ``n`` have distinct
+    meanings by field position. These are independent observations; neither
+    ACE matching nor AccessCheck replaces the actual open result.
     """
     if kind not in {"d", "u", "c"}:
         raise ValueError("invalid_temporary_pipe_probe_kind")
@@ -692,6 +724,7 @@ def _runner_pipe_probe_receipt_code(
         open_state = "f"
     access_state = "u"
     token_state = "u"
+    dacl_state = ace_state = "u"
     if isinstance(detail, str):
         for part in detail.split("+"):
             if part in {"access_allow", "access_deny", "access_unavailable"}:
@@ -702,7 +735,27 @@ def _runner_pipe_probe_receipt_code(
                 }[part]
             elif part in {"token_process", "token_thread"}:
                 token_state = {"token_process": "p", "token_thread": "t"}[part]
-    return f"{kind}{open_state}{access_state}{token_state}"
+            elif part in {
+                "dacl_present", "dacl_absent", "dacl_null",
+                "dacl_unavailable",
+            }:
+                dacl_state = {
+                    "dacl_present": "p",
+                    "dacl_absent": "a",
+                    "dacl_null": "n",
+                    "dacl_unavailable": "u",
+                }[part]
+            elif part in {
+                "ace_match", "ace_missing", "ace_not_applicable",
+                "ace_unavailable",
+            }:
+                ace_state = {
+                    "ace_match": "m",
+                    "ace_missing": "x",
+                    "ace_not_applicable": "n",
+                    "ace_unavailable": "u",
+                }[part]
+    return f"{kind}{open_state}{access_state}{token_state}{dacl_state}{ace_state}"
 
 
 def _runner_pipe_probe_open_denied(detail: object) -> bool:
@@ -711,7 +764,9 @@ def _runner_pipe_probe_open_denied(detail: object) -> bool:
         or re.fullmatch(
             r"client_open_access_denied"
             r"(?:\+access_(?:allow|deny|unavailable))?"
-            r"(?:\+token_(?:process|thread|child_process|unavailable))?",
+            r"(?:\+token_(?:process|thread|child_process|unavailable))?"
+            r"(?:\+dacl_(?:present|absent|null|unavailable))?"
+            r"(?:\+ace_(?:match|missing|not_applicable|unavailable))?",
             detail,
         )
     )
@@ -1312,6 +1367,7 @@ def runner_pipe_open_with_user_sid_create_instance_access_probe() -> tuple[bool,
 
             accesscheck_state = _runner_pipe_accesscheck_observation(
                 pipe._handle, user_sid,
+                PIPE_CLIENT_ACCESS_MASK | _FILE_CREATE_PIPE_INSTANCE,
             )
             client = api.kernel.CreateFileW(
                 pipe.name,
@@ -1461,8 +1517,8 @@ def _format_runner_pipe_access_diagnostic(
 ) -> str:
     """Serialize only fixed diagnostic states, never SID or ACL contents."""
     choices = {
-        "dacl": {"present", "absent", "unavailable"},
-        "ace": {"match", "missing", "unavailable"},
+        "dacl": {"present", "absent", "null", "unavailable"},
+        "ace": {"match", "missing", "not_applicable", "unavailable"},
         "token": {"thread", "process", "child_process", "unavailable"},
         "logon_sid": {"enabled", "disabled", "deny_only", "absent", "unavailable"},
         "restricted": {"yes", "no", "unavailable"},
@@ -1844,18 +1900,105 @@ def _runner_effective_token_diagnostic() -> str:
     )
 
 
+def _runner_pipe_dacl_observation(
+    api: object,
+    security_descriptor: ctypes.c_void_p,
+    expected_sid: ctypes.c_void_p | None,
+    *,
+    expected_ace_mask: int,
+) -> tuple[str, str]:
+    """Observe DACL shape and an allow ACE without inferring access.
+
+    ``expected_sid=None`` means this probe has no single principal whose ACE
+    should be matched. A non-None but null pointer means that principal was
+    requested but could not be resolved, so the ACE check is unavailable.
+    """
+    ace_unresolved = "not_applicable" if expected_sid is None else "unavailable"
+    if (
+        type(expected_ace_mask) is not int
+        or not 0 < expected_ace_mask <= 0xFFFFFFFF
+    ):
+        return "unavailable", ace_unresolved
+
+    advapi = api.advapi
+    try:
+        advapi.GetSecurityDescriptorDacl.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL),
+        ]
+        advapi.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+        present = wintypes.BOOL()
+        dacl_pointer = ctypes.c_void_p()
+        defaulted = wintypes.BOOL()
+        if not advapi.GetSecurityDescriptorDacl(
+            security_descriptor, ctypes.byref(present),
+            ctypes.byref(dacl_pointer), ctypes.byref(defaulted),
+        ):
+            return "unavailable", ace_unresolved
+        if not present.value:
+            # The API says the other outputs are invalid when no DACL exists.
+            return "absent", "not_applicable"
+        if not dacl_pointer.value:
+            # A present bit plus a null ACL pointer is a NULL DACL, not an
+            # allocated empty DACL; preserve that distinction in the receipt.
+            return "null", "not_applicable"
+        if expected_sid is None:
+            return "present", "not_applicable"
+        if not expected_sid.value:
+            return "present", "unavailable"
+
+        header = ctypes.cast(
+            dacl_pointer, ctypes.POINTER(_ACL_HEADER),
+        ).contents
+        if header.AceCount > _DIAGNOSTIC_MAX_ACE_COUNT:
+            return "present", "unavailable"
+
+        advapi.GetAce.argtypes = [
+            ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi.GetAce.restype = wintypes.BOOL
+        ace_state = "missing"
+        for index in range(int(header.AceCount)):
+            ace_pointer = ctypes.c_void_p()
+            if not advapi.GetAce(
+                dacl_pointer, index, ctypes.byref(ace_pointer),
+            ) or not ace_pointer.value:
+                return "present", "unavailable"
+            ace_header = ctypes.cast(
+                ace_pointer, ctypes.POINTER(_ACE_HEADER),
+            ).contents
+            if ace_header.AceType != _ACCESS_ALLOWED_ACE_TYPE:
+                continue
+            allowed = ctypes.cast(
+                ace_pointer, ctypes.POINTER(_ACCESS_ALLOWED_ACE),
+            ).contents
+            sid_offset = _ACCESS_ALLOWED_ACE.SidStart.offset
+            ace_sid = ctypes.c_void_p(ace_pointer.value + sid_offset)
+            if (
+                (allowed.Mask & expected_ace_mask) == expected_ace_mask
+                and advapi.EqualSid(ace_sid, expected_sid)
+            ):
+                ace_state = "match"
+                break
+        return "present", ace_state
+    except Exception:
+        return "unavailable", ace_unresolved
+
+
 def _diagnose_runner_pipe_access(
     pipe_handle: int,
     logon_sid: str | None,
     *,
     client_process_handle: int | None = None,
+    expected_ace_mask: int = PIPE_CLIENT_ACCESS_MASK,
 ) -> str:
     """Read the pipe DACL and the actual client token without changing either."""
-    dacl_state = ace_state = token_source = logon_state = "unavailable"
+    dacl_state = token_source = logon_state = "unavailable"
+    ace_state = "not_applicable" if logon_sid is None else "unavailable"
     restricted_state = access_state = "unavailable"
     api = None
     security_descriptor = ctypes.c_void_p()
-    expected_sid = ctypes.c_void_p()
+    expected_sid: ctypes.c_void_p | None = None
     effective_token = ctypes.c_void_p()
     impersonation_token = ctypes.c_void_p()
     client_integrity_state = client_no_write_up_state = "unavailable"
@@ -1902,10 +2045,12 @@ def _diagnose_runner_pipe_access(
         ]
         advapi.ConvertStringSidToSidW.restype = wintypes.BOOL
 
-        if isinstance(logon_sid, str) and not advapi.ConvertStringSidToSidW(
-            logon_sid, ctypes.byref(expected_sid),
-        ):
+        if isinstance(logon_sid, str):
             expected_sid = ctypes.c_void_p()
+            if not advapi.ConvertStringSidToSidW(
+                logon_sid, ctypes.byref(expected_sid),
+            ):
+                expected_sid = ctypes.c_void_p()
 
         # AccessCheck rejects a descriptor without owner and group SIDs.
         status = advapi.GetSecurityInfo(
@@ -1913,49 +2058,11 @@ def _diagnose_runner_pipe_access(
             None, None, None, None, ctypes.byref(security_descriptor),
         )
         if status == 0 and security_descriptor:
-            dacl_present = wintypes.BOOL()
-            dacl_pointer = ctypes.c_void_p()
-            dacl_defaulted = wintypes.BOOL()
-            if advapi.GetSecurityDescriptorDacl(
-                security_descriptor, ctypes.byref(dacl_present),
-                ctypes.byref(dacl_pointer), ctypes.byref(dacl_defaulted),
-            ):
-                dacl_state = "present" if dacl_present.value else "absent"
-                if dacl_present.value and dacl_pointer and expected_sid:
-                    header = ctypes.cast(
-                        dacl_pointer, ctypes.POINTER(_ACL_HEADER),
-                    ).contents
-                    if header.AceCount <= _DIAGNOSTIC_MAX_ACE_COUNT:
-                        ace_state = "missing"
-                        for index in range(int(header.AceCount)):
-                            ace_pointer = ctypes.c_void_p()
-                            if not advapi.GetAce(
-                                dacl_pointer, index, ctypes.byref(ace_pointer),
-                            ) or not ace_pointer:
-                                ace_state = "unavailable"
-                                break
-                            ace_header = ctypes.cast(
-                                ace_pointer, ctypes.POINTER(_ACE_HEADER),
-                            ).contents
-                            if ace_header.AceType != _ACCESS_ALLOWED_ACE_TYPE:
-                                continue
-                            allowed = ctypes.cast(
-                                ace_pointer, ctypes.POINTER(_ACCESS_ALLOWED_ACE),
-                            ).contents
-                            sid_offset = _ACCESS_ALLOWED_ACE.SidStart.offset
-                            ace_sid = ctypes.c_void_p(ace_pointer.value + sid_offset)
-                            if (
-                                allowed.Mask & PIPE_CLIENT_ACCESS_MASK
-                                == PIPE_CLIENT_ACCESS_MASK
-                                and advapi.EqualSid(ace_sid, expected_sid)
-                            ):
-                                ace_state = "match"
-                                break
-                    else:
-                        ace_state = "unavailable"
-            else:
-                dacl_state = "unavailable"
-        elif status != 0:
+            dacl_state, ace_state = _runner_pipe_dacl_observation(
+                api, security_descriptor, expected_sid,
+                expected_ace_mask=expected_ace_mask,
+            )
+        elif status != 0 or not security_descriptor:
             dacl_state = "unavailable"
 
         effective_token, token_source = _open_pipe_diagnostic_token(

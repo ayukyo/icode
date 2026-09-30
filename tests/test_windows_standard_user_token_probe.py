@@ -75,6 +75,17 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertIn("token_child", child_summary)
         self.assertIn("client_il_low+pipe_il_high+pipe_nwu_yes+token_nwu_yes", child_summary)
         self.assertLessEqual(len(child_summary), 210)
+        self.assertIn(
+            "dacl_null+ace_not_applicable",
+            token_probe._format_runner_pipe_access_diagnostic(
+                dacl="null",
+                ace="not_applicable",
+                token="process",
+                logon_sid="absent",
+                restricted="no",
+                access="allow",
+            ),
+        )
 
     def test_token_integrity_rid_maps_only_to_fixed_labels(self) -> None:
         integrity_level = getattr(token_probe, "_integrity_level_from_rid", None)
@@ -324,6 +335,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
 
         self.assertIn("access_allow", summary)
         self.assertIn("token_process", summary)
+        self.assertIn("dacl_present+ace_not_applicable", summary)
         api.advapi.ConvertStringSidToSidW.assert_not_called()
         api.advapi.AccessCheck.assert_called_once()
         self.assertEqual(
@@ -332,12 +344,179 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         )
         api.kernel.LocalFree.assert_called_once()
 
+    def test_pipe_diagnostic_keeps_accesscheck_and_ace_masks_independent(self) -> None:
+        api = mock.Mock()
+        descriptor = ctypes.c_void_p(222)
+        expected_sid = ctypes.c_void_p(666)
+        acl = token_probe._ACL_HEADER()
+        acl.AceCount = 1
+        acl_pointer = ctypes.cast(ctypes.pointer(acl), ctypes.c_void_p).value
+        ace = token_probe._ACCESS_ALLOWED_ACE()
+        ace.Header.AceType = token_probe._ACCESS_ALLOWED_ACE_TYPE
+        ace.Mask = (
+            token_probe.PIPE_CLIENT_ACCESS_MASK
+            | token_probe._FILE_CREATE_PIPE_INSTANCE
+        )
+        ace_pointer = ctypes.cast(ctypes.pointer(ace), ctypes.c_void_p).value
+
+        def get_security_info(*args: object) -> int:
+            args[7]._obj.value = descriptor.value
+            return 0
+
+        def get_dacl(_descriptor, present, pointer, defaulted) -> int:
+            present._obj.value = 1
+            pointer._obj.value = acl_pointer
+            defaulted._obj.value = 0
+            return 1
+
+        def convert_sid(_sid: str, output: object) -> int:
+            output._obj.value = expected_sid.value
+            return 1
+
+        def get_ace(_acl, _index, output) -> int:
+            output._obj.value = ace_pointer
+            return 1
+
+        def duplicate_token(_token, _level, output) -> int:
+            output._obj.value = 555
+            return 1
+
+        def access_check(*args: object) -> int:
+            self.assertEqual(args[2], token_probe.PIPE_CLIENT_ACCESS_MASK)
+            args[6]._obj.value = token_probe.PIPE_CLIENT_ACCESS_MASK
+            args[7]._obj.value = 1
+            return 1
+
+        api.advapi.GetSecurityInfo.side_effect = get_security_info
+        api.advapi.GetSecurityDescriptorDacl.side_effect = get_dacl
+        api.advapi.ConvertStringSidToSidW.side_effect = convert_sid
+        api.advapi.GetAce.side_effect = get_ace
+        api.advapi.EqualSid.return_value = 1
+        api.advapi.DuplicateToken.side_effect = duplicate_token
+        api.advapi.AccessCheck.side_effect = access_check
+        api.advapi.IsTokenRestricted.return_value = 0
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch.object(token_probe._runner_pipe, "_load_win32_api", return_value=api),
+            mock.patch.object(
+                token_probe, "_open_pipe_diagnostic_token",
+                return_value=(ctypes.c_void_p(111), "process"),
+            ),
+            mock.patch.object(
+                token_probe, "_pipe_integrity_details",
+                return_value=("absent", "unavailable"),
+            ),
+            mock.patch.object(
+                token_probe, "_token_integrity_level", return_value="medium",
+            ),
+            mock.patch.object(
+                token_probe, "_token_mandatory_no_write_up", return_value="yes",
+            ),
+            mock.patch.object(
+                token_probe._runner_pipe, "_get_token_information",
+                return_value=object(),
+            ),
+            mock.patch.object(
+                token_probe._runner_pipe, "_token_group_entries",
+                return_value=(object(), []),
+            ),
+        ):
+            summary = token_probe._diagnose_runner_pipe_access(
+                123, "S-1-5-21-100-200-300-400",
+                expected_ace_mask=(
+                    token_probe.PIPE_CLIENT_ACCESS_MASK
+                    | token_probe._FILE_CREATE_PIPE_INSTANCE
+                ),
+            )
+
+        self.assertIn("dacl_present+ace_match", summary)
+        self.assertIn("access_allow", summary)
+        api.advapi.AccessCheck.assert_called_once()
+        self.assertEqual(api.advapi.AccessCheck.call_args.args[2], token_probe.PIPE_CLIENT_ACCESS_MASK)
+
     def test_pipe_access_diagnostic_structures_match_windows_layout(self) -> None:
         self.assertEqual(token_probe._ACL_HEADER.AceCount.offset, 4)
         self.assertEqual(token_probe._ACCESS_ALLOWED_ACE.SidStart.offset, 8)
         self.assertEqual(ctypes.sizeof(token_probe._ACCESS_ALLOWED_ACE), 12)
         self.assertEqual(token_probe._SYSTEM_MANDATORY_LABEL_ACE.SidStart.offset, 8)
         self.assertEqual(ctypes.sizeof(token_probe._SYSTEM_MANDATORY_LABEL_ACE), 12)
+
+    def test_pipe_dacl_observation_distinguishes_absent_null_and_allocated(self) -> None:
+        observe = token_probe._runner_pipe_dacl_observation
+        api = mock.Mock()
+        descriptor = ctypes.c_void_p(111)
+        expected_sid = ctypes.c_void_p(222)
+
+        def set_dacl(present_value: int, pointer_value: int) -> int:
+            def get_dacl(_descriptor, present, pointer, defaulted) -> int:
+                present._obj.value = present_value
+                pointer._obj.value = pointer_value
+                defaulted._obj.value = 0
+                return 1
+
+            api.advapi.GetSecurityDescriptorDacl.side_effect = get_dacl
+            return 0
+
+        set_dacl(0, 999)  # Other outputs are invalid when DACL-present is false.
+        self.assertEqual(
+            observe(api, descriptor, expected_sid, expected_ace_mask=7),
+            ("absent", "not_applicable"),
+        )
+        set_dacl(1, 0)
+        self.assertEqual(
+            observe(api, descriptor, expected_sid, expected_ace_mask=7),
+            ("null", "not_applicable"),
+        )
+
+        acl = token_probe._ACL_HEADER()
+        acl.AceCount = 1
+        acl_pointer = ctypes.cast(ctypes.pointer(acl), ctypes.c_void_p).value
+        ace = token_probe._ACCESS_ALLOWED_ACE()
+        ace.Header.AceType = token_probe._ACCESS_ALLOWED_ACE_TYPE
+        ace.Mask = token_probe.PIPE_CLIENT_ACCESS_MASK
+        ace_pointer = ctypes.cast(ctypes.pointer(ace), ctypes.c_void_p).value
+        set_dacl(1, acl_pointer)
+
+        def get_ace(_acl, _index, output) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = ace_pointer
+            return 1
+
+        api.advapi.GetAce.side_effect = get_ace
+        api.advapi.EqualSid.return_value = 1
+        self.assertEqual(
+            observe(api, descriptor, None, expected_ace_mask=7),
+            ("present", "not_applicable"),
+        )
+        self.assertEqual(
+            observe(api, descriptor, ctypes.c_void_p(), expected_ace_mask=7),
+            ("present", "unavailable"),
+        )
+        self.assertEqual(
+            observe(api, descriptor, expected_sid, expected_ace_mask=7),
+            ("present", "missing"),
+        )
+        ace.Mask = 7
+        self.assertEqual(
+            observe(api, descriptor, expected_sid, expected_ace_mask=7),
+            ("present", "match"),
+        )
+        api.advapi.GetAce.side_effect = lambda *_args: 0
+        self.assertEqual(
+            observe(api, descriptor, expected_sid, expected_ace_mask=7),
+            ("present", "unavailable"),
+        )
+        api.advapi.GetAce.side_effect = get_ace
+        acl.AceCount = token_probe._DIAGNOSTIC_MAX_ACE_COUNT + 1
+        self.assertEqual(
+            observe(api, descriptor, expected_sid, expected_ace_mask=7),
+            ("present", "unavailable"),
+        )
+
+        api.advapi.GetSecurityDescriptorDacl.side_effect = RuntimeError("private")
+        self.assertEqual(
+            observe(api, descriptor, expected_sid, expected_ace_mask=7),
+            ("unavailable", "unavailable"),
+        )
 
     def test_pipe_security_information_includes_dacl_and_mandatory_label(self) -> None:
         self.assertEqual(
@@ -1271,6 +1450,17 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             diagnostic,
         )
 
+    def test_parent_error_filter_preserves_not_applicable_dacl_receipt(self) -> None:
+        diagnostic = (
+            "standard_user_restricted_child_failed:client_open_access_denied+"
+            "token_process+logon_enabled+tmp_doappn_udappm_cddppm+"
+            "mask_all_d5+winerror_5"
+        )
+        self.assertEqual(
+            token_probe._safe_standard_user_probe_error(RuntimeError(diagnostic)),
+            diagnostic,
+        )
+
     def test_parent_error_filter_keeps_arbitrary_details_private(self) -> None:
         self.assertEqual(
             token_probe._safe_standard_user_probe_error(
@@ -1734,7 +1924,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             mock.patch.object(
                 token_probe, "_runner_pipe_accesscheck_observation",
                 side_effect=lambda handle, sid: (
-                    order.append("accesscheck"), ("allow", "process"),
+                    order.append("accesscheck"),
+                    ("allow", "process", "present", "not_applicable"),
                 )[1],
             ) as accesscheck,
         ):
@@ -1744,7 +1935,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             result,
             (
                 True,
-                "client_opened_with_default_dacl+access_allow+token_process",
+                "client_opened_with_default_dacl+access_allow+token_process+"
+                "dacl_present+ace_not_applicable",
             ),
         )
         self.assertEqual(order, ["accesscheck", "open"])
@@ -1829,7 +2021,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             mock.patch.object(
                 token_probe, "_runner_pipe_accesscheck_observation",
                 side_effect=lambda handle, sid: (
-                    order.append("accesscheck"), ("allow", "process"),
+                    order.append("accesscheck"),
+                    ("allow", "process", "present", "match"),
                 )[1],
             ) as accesscheck,
         ):
@@ -1839,7 +2032,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             result,
             (
                 True,
-                "client_opened_with_user_sid_dacl+access_allow+token_process",
+                "client_opened_with_user_sid_dacl+access_allow+token_process+"
+                "dacl_present+ace_match",
             ),
         )
         kernel.GetCurrentProcess.assert_called_once_with()
@@ -1888,10 +2082,13 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         )[1]
         api = mock.Mock(kernel=kernel)
 
-        def access_check(handle: int, expected_sid: str) -> str:
+        def access_check(
+            handle: int, expected_sid: str, *, expected_ace_mask: int,
+        ) -> str:
             order.append("accesscheck")
             self.assertEqual(handle, pipe._handle)
             self.assertEqual(expected_sid, "S-1-5-21-100-200-300-400")
+            self.assertEqual(expected_ace_mask, token_probe.PIPE_CLIENT_ACCESS_MASK)
             return "dacl_present+ace_match+token_process+access_deny"
 
         with (
@@ -1912,12 +2109,16 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             result = token_probe.runner_pipe_open_with_user_sid_dacl_probe()
 
         self.assertEqual(order, ["accesscheck", "open"])
-        diagnose.assert_called_once_with(pipe._handle, "S-1-5-21-100-200-300-400")
+        diagnose.assert_called_once_with(
+            pipe._handle, "S-1-5-21-100-200-300-400",
+            expected_ace_mask=token_probe.PIPE_CLIENT_ACCESS_MASK,
+        )
         self.assertEqual(
             result,
             (
                 False,
-                "client_open_access_denied+access_deny+token_process",
+                "client_open_access_denied+access_deny+token_process+"
+                "dacl_present+ace_match",
             ),
         )
 
@@ -2158,8 +2359,9 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             ) as create_server,
             mock.patch.object(
                 token_probe, "_runner_pipe_accesscheck_observation",
-                side_effect=lambda handle, sid: (
-                    order.append("accesscheck"), ("allow", "process"),
+                side_effect=lambda handle, sid, mask: (
+                    order.append("accesscheck"),
+                    ("allow", "process", "present", "match"),
                 )[1],
             ) as accesscheck,
         ):
@@ -2170,10 +2372,15 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             (
                 True,
                 "client_opened_with_user_sid_create_instance_access+"
-                "access_allow+token_process",
+                "access_allow+token_process+dacl_present+ace_match",
             ),
         )
         self.assertEqual(order, ["accesscheck", "open"])
+        accesscheck.assert_called_once_with(
+            pipe._handle, "S-1-5-21-100-200-300-400",
+            token_probe.PIPE_CLIENT_ACCESS_MASK
+            | token_probe._FILE_CREATE_PIPE_INSTANCE,
+        )
         get_user_sid.assert_called_once_with(321)
         create_server.assert_called_once_with("S-1-5-21-100-200-300-400", api)
         kernel.CreateFileW.assert_called_once_with(
@@ -2192,9 +2399,6 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         kernel.CloseHandle.assert_called_once_with(789)
         self.assertTrue(pipe._connected)
         self.assertTrue(pipe.closed)
-        accesscheck.assert_called_once_with(
-            pipe._handle, "S-1-5-21-100-200-300-400",
-        )
 
     def test_user_sid_create_instance_probe_denial_closes_disposable_server(self) -> None:
         class FakePipe:
@@ -2237,7 +2441,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             result,
             (
                 False,
-                "client_open_access_denied+access_unavailable+token_unavailable",
+                "client_open_access_denied+access_unavailable+token_unavailable+"
+                "dacl_unavailable+ace_unavailable",
             ),
         )
         create_server.assert_called_once_with("S-1-5-21-100-200-300-400", api)
@@ -2283,7 +2488,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             result,
             (
                 False,
-                "client_open_access_denied+access_unavailable+token_unavailable",
+                "client_open_access_denied+access_unavailable+token_unavailable+"
+                "dacl_unavailable+ace_unavailable",
             ),
         )
         create_server.assert_called_once_with("S-1-5-21-100-200-300-400")
@@ -2398,7 +2604,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                     result,
                     (
                         False,
-                        expected + "+access_unavailable+token_unavailable",
+                        expected + "+access_unavailable+token_unavailable+"
+                        "dacl_unavailable+ace_unavailable",
                     ),
                 )
                 self.assertEqual(pipe._connected, mismatched_peer == "client")
@@ -2446,7 +2653,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             result,
             (
                 False,
-                "client_pid_mismatch+access_unavailable+token_unavailable",
+                "client_pid_mismatch+access_unavailable+token_unavailable+"
+                "dacl_unavailable+ace_not_applicable",
             ),
         )
         kernel.GetNamedPipeClientProcessId.assert_called_once()
@@ -2523,7 +2731,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             result,
             (
                 False,
-                "client_open_access_denied+access_unavailable+token_unavailable",
+                "client_open_access_denied+access_unavailable+token_unavailable+"
+                "dacl_unavailable+ace_not_applicable",
             ),
         )
         kernel.GetNamedPipeServerProcessId.assert_not_called()
@@ -2767,7 +2976,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                     "scripts.windows_standard_user_token_probe.runner_pipe_open_with_default_dacl_probe",
                     return_value=(
                         True,
-                        "client_opened_with_default_dacl+access_allow+token_process",
+                        "client_opened_with_default_dacl+access_allow+token_process+"
+                        "dacl_present+ace_not_applicable",
                     ),
                     create=True,
                 ) as default_dacl_probe,
@@ -2775,7 +2985,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                     "scripts.windows_standard_user_token_probe.runner_pipe_open_with_user_sid_dacl_probe",
                     return_value=(
                         False,
-                        "client_open_access_denied+access_allow+token_process",
+                        "client_open_access_denied+access_allow+token_process+"
+                        "dacl_present+ace_match",
                     ),
                     create=True,
                 ) as user_sid_dacl_probe,
@@ -2783,7 +2994,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                     "scripts.windows_standard_user_token_probe.runner_pipe_open_with_user_sid_create_instance_access_probe",
                     return_value=(
                         False,
-                        "client_open_access_denied+access_deny+token_process",
+                        "client_open_access_denied+access_deny+token_process+"
+                        "dacl_present+ace_match",
                     ),
                     create=True,
                 ) as create_instance_probe,
@@ -2813,7 +3025,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(
             write_report.call_args.args[1],
             "failed=client_open_access_denied;detail="
-            "token_process+logon_enabled+tmp_doap_udap_cddp+"
+            "token_process+logon_enabled+tmp_doappn_udappm_cddppm+"
             "mask_all_d5+winerror_5",
         )
         report = write_report.call_args.args[1]
@@ -2824,19 +3036,19 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         code = token_probe._runner_pipe_probe_receipt_code
         self.assertEqual(
             code("d", True, "client_opened_with_default_dacl+access_allow"),
-            "doau",
+            "doauuu",
         )
         self.assertEqual(
             code("u", False, "client_open_access_denied+access_deny"),
-            "uddu",
+            "udduuu",
         )
         self.assertEqual(
             code("c", False, "client_open_access_denied+access_unavailable"),
-            "cduu",
+            "cduuuu",
         )
         self.assertEqual(
             code("u", False, "client_open_access_denied+secret"),
-            "ufuu",
+            "ufuuuu",
         )
         self.assertFalse(
             token_probe._runner_pipe_probe_open_denied(
@@ -2854,20 +3066,24 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             (
                 "dacl_present+ace_match+token_process+logon_enabled+"
                 "restricted_no+access_allow",
-                ("allow", "process"),
+                ("allow", "process", "present", "match"),
             ),
             (
                 "dacl_present+ace_match+token_thread+logon_enabled+"
                 "restricted_no+access_deny",
-                ("deny", "thread"),
+                ("deny", "thread", "present", "match"),
             ),
             (
                 "dacl_unavailable+token_unavailable+access_unavailable",
-                ("unavailable", "unavailable"),
+                ("unavailable", "unavailable", "unavailable", "unavailable"),
             ),
             (
                 "dacl_present+token_child_process+access_allow",
-                ("allow", "unavailable"),
+                ("allow", "unavailable", "present", "unavailable"),
+            ),
+            (
+                "dacl_absent+ace_missing+token_process+access_deny",
+                ("deny", "process", "absent", "missing"),
             ),
         )
         for diagnostic, expected in cases:
@@ -2881,34 +3097,41 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             token_probe, "_diagnose_runner_pipe_access",
             side_effect=RuntimeError("private diagnostic text"),
         ):
-            self.assertEqual(observe(456, None), ("unavailable", "unavailable"))
+            self.assertEqual(
+                observe(456, None),
+                ("unavailable", "unavailable", "unavailable", "unavailable"),
+            )
 
     def test_temporary_pipe_acl_receipt_compacts_token_source(self) -> None:
         code = token_probe._runner_pipe_probe_receipt_code
         self.assertEqual(
             code(
                 "d", True,
-                "client_opened_with_default_dacl+access_allow+token_process",
+                "client_opened_with_default_dacl+access_allow+token_process+"
+                "dacl_present+ace_not_applicable",
             ),
-            "doap",
+            "doappn",
         )
         self.assertEqual(
             code(
                 "u", False,
-                "client_open_access_denied+access_allow+token_thread",
+                "client_open_access_denied+access_allow+token_thread+"
+                "dacl_present+ace_match",
             ),
-            "udat",
+            "udatpm",
         )
         self.assertEqual(
             code(
                 "c", False,
-                "client_open_access_denied+access_unavailable+token_child_process",
+                "client_open_access_denied+access_unavailable+token_child_process+"
+                "dacl_present+ace_missing",
             ),
-            "cduu",
+            "cduupx",
         )
         self.assertTrue(
             token_probe._runner_pipe_probe_open_denied(
-                "client_open_access_denied+access_allow+token_process",
+                "client_open_access_denied+access_allow+token_process+"
+                "dacl_present+ace_match",
             ),
         )
 
