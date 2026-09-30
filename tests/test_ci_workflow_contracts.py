@@ -163,7 +163,7 @@ class TestWindowsWorktreeTreeOidCi(unittest.TestCase):
             encoding="utf-8",
         )
         required_step = """      - name: Verify production Windows snapshots and Git tree OID
-        run: python -m unittest tests.test_windows_worktree_tree_oid -v
+        run: python scripts/run_windows_tree_ci.py
         env:
           ICODE_REQUIRE_WINDOWS_NATIVE_SYMLINKS: "1"
 """
