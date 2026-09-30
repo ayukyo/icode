@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import ctypes
+import errno
 import http.server
 import os
 import select
@@ -778,15 +779,39 @@ class Sandbox(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class PinnedWorkspaceRoot:
+    """A trusted directory handle and its stable mount destination."""
+
+    path: Path
+    fd: int
+
+
+class PreparedCommand(list[str]):
+    """Command metadata required to preserve a sandbox's launch contract."""
+
+    def __init__(self, argv: Sequence[str], *, pass_fds: Sequence[int], cwd: str):
+        super().__init__(argv)
+        self.pass_fds = tuple(pass_fds)
+        self.cwd = cwd
+
+
 def _validated_read_only_exclusions(
-    workspace: Path, deny_read_roots: Sequence[Path],
+    workspace: Path, deny_read_roots: Sequence[Path], *,
+    workspace_fd: int | None = None,
 ) -> tuple[Path, ...]:
-    """Resolve only strict, existing, non-symlink directory exclusions."""
+    """Validate existing exclusions, using the pinned root when one is supplied."""
     workspace_input = Path(workspace)
     workspace_lexical = Path(os.path.abspath(workspace_input))
-    workspace_resolved = workspace_input.resolve(strict=True)
-    if not workspace_resolved.is_dir():
-        raise ValueError("Reviewer 工作区必须是已存在的目录")
+    if workspace_fd is None:
+        workspace_resolved = workspace_input.resolve(strict=True)
+        if not workspace_resolved.is_dir():
+            raise ValueError("Reviewer 工作区必须是已存在的目录")
+    else:
+        if not stat.S_ISDIR(os.fstat(workspace_fd).st_mode):
+            raise ValueError("Reviewer 工作区句柄必须指向目录")
+        # The root handle, not a fresh path lookup, anchors all component opens.
+        workspace_resolved = workspace_lexical
 
     validated: list[Path] = []
     for denied in deny_read_roots:
@@ -803,23 +828,50 @@ def _validated_read_only_exclusions(
         if not relative.parts:
             raise ValueError("Reviewer 排除目录不能等于工作区根目录")
 
-        resolved = candidate.resolve(strict=True)
-        if not resolved.is_relative_to(workspace_resolved):
-            raise ValueError("Reviewer 排除目录解析后逃出工作区")
+        if workspace_fd is None:
+            resolved = candidate.resolve(strict=True)
+            if not resolved.is_relative_to(workspace_resolved):
+                raise ValueError("Reviewer 排除目录解析后逃出工作区")
 
-        # Reject every symlink component, including aliases that resolve back
-        # inside the workspace; otherwise the mount target could be ambiguous.
-        current = workspace_resolved
-        for component in relative.parts:
-            current = current / component
-            info = os.lstat(current)
-            if stat.S_ISLNK(info.st_mode):
-                raise ValueError("Reviewer 排除目录不能包含符号链接")
-            if not stat.S_ISDIR(info.st_mode):
-                raise ValueError("Reviewer 排除路径必须是已存在的目录")
-        if current.resolve(strict=True) != resolved:
-            raise ValueError("Reviewer 排除目录的规范路径不匹配")
-        validated.append(current)
+            # Reject every symlink component, including aliases that resolve back
+            # inside the workspace; otherwise the mount target could be ambiguous.
+            current = workspace_resolved
+            for component in relative.parts:
+                current = current / component
+                info = os.lstat(current)
+                if stat.S_ISLNK(info.st_mode):
+                    raise ValueError("Reviewer 排除目录不能包含符号链接")
+                if not stat.S_ISDIR(info.st_mode):
+                    raise ValueError("Reviewer 排除路径必须是已存在的目录")
+            if current.resolve(strict=True) != resolved:
+                raise ValueError("Reviewer 排除目录的规范路径不匹配")
+            validated.append(current)
+            continue
+
+        # Walk from the pinned root without following symlinks. A path-based
+        # resolve here would silently switch the exclusion check to a replacement
+        # workspace if its original pathname had been swapped.
+        flags = (
+            getattr(os, "O_PATH", os.O_RDONLY)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        current_fd = os.dup(workspace_fd)
+        try:
+            for component in relative.parts:
+                next_fd = os.open(component, flags, dir_fd=current_fd)
+                os.close(current_fd)
+                current_fd = next_fd
+                if not stat.S_ISDIR(os.fstat(current_fd).st_mode):
+                    raise ValueError("Reviewer 排除路径必须是已存在的目录")
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise ValueError("Reviewer 排除目录不能包含符号链接") from exc
+            raise
+        finally:
+            os.close(current_fd)
+        validated.append(workspace_lexical.joinpath(*relative.parts))
 
     # An ancestor carve-out already hides every nested exclusion. Keeping only
     # the shallowest roots also avoids overlaying below a hidden mount.
@@ -1334,39 +1386,69 @@ class BubblewrapSandbox:
     def is_real_isolation(self) -> bool:
         return True
 
+    def pin_read_only_workspace(self, workspace: Path) -> PinnedWorkspaceRoot:
+        """Pin a Reviewer root before model-controlled commands can run."""
+        path = Path(workspace).resolve(strict=True)
+        flags = (
+            getattr(os, "O_PATH", os.O_RDONLY)
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        fd = os.open(path, flags)
+        try:
+            if not stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise ValueError("Reviewer 工作区必须是目录")
+        except BaseException:
+            os.close(fd)
+            raise
+        return PinnedWorkspaceRoot(path=path, fd=fd)
+
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         return self._wrap(argv, workspace=workspace, network=network, read_only=False)
 
     def wrap_read_only(
-        self, argv: Sequence[str], *, workspace: Path, network: bool = False,
-    ) -> list[str]:
+        self, argv: Sequence[str], *, workspace: Path, workspace_fd: int,
+        network: bool = False,
+    ) -> PreparedCommand:
         """Wrap Reviewer commands with a read-only workspace bind."""
         return self._wrap(
-            argv, workspace=workspace, network=network, read_only=True,
+            argv, workspace=workspace, workspace_fd=workspace_fd,
+            network=network, read_only=True,
         )
 
     def wrap_read_only_excluding(
-        self, argv: Sequence[str], *, workspace: Path, network: bool = False,
+        self, argv: Sequence[str], *, workspace: Path, workspace_fd: int,
+        network: bool = False,
         deny_read_roots: Sequence[Path],
-    ) -> list[str]:
+    ) -> PreparedCommand:
         """Wrap a read-only Reviewer and hide validated workspace subdirectories.
 
         Each excluded directory is replaced by an empty tmpfs and remounted
         read-only inside the same mount namespace as the workspace bind.
         """
-        exclusions = _validated_read_only_exclusions(workspace, deny_read_roots)
+        exclusions = _validated_read_only_exclusions(
+            workspace, deny_read_roots, workspace_fd=workspace_fd,
+        )
         return self._wrap(
-            argv, workspace=workspace, network=network, read_only=True,
+            argv, workspace=workspace, workspace_fd=workspace_fd,
+            network=network, read_only=True,
             deny_read_roots=exclusions,
         )
 
     def _wrap(
         self, argv: Sequence[str], *, workspace: Path, network: bool, read_only: bool,
+        workspace_fd: int | None = None,
         deny_read_roots: Sequence[Path] = (),
     ) -> list[str]:
         if deny_read_roots and not read_only:
             raise ValueError("排除只读目录只能用于 Reviewer 沙箱")
-        ws = str(Path(workspace).resolve())
+        if read_only:
+            if workspace_fd is None or not stat.S_ISDIR(os.fstat(workspace_fd).st_mode):
+                raise ValueError("Reviewer 只读绑定要求已固定的工作区目录句柄")
+            ws = str(Path(os.path.abspath(workspace)))
+        else:
+            ws = str(Path(workspace).resolve())
         out = [
             self.bwrap,
             "--die-with-parent",
@@ -1379,8 +1461,11 @@ class BubblewrapSandbox:
             "--proc", "/proc",
             "--dev", "/dev",
             "--tmpfs", "/tmp",
-            "--ro-bind" if read_only else "--bind", ws, ws,
         ]
+        if read_only:
+            out += ["--ro-bind-fd", str(workspace_fd), ws]
+        else:
+            out += ["--bind", ws, ws]
         for excluded in deny_read_roots:
             excluded_path = str(excluded)
             out += ["--tmpfs", excluded_path, "--remount-ro", excluded_path]
@@ -1399,6 +1484,8 @@ class BubblewrapSandbox:
         if not network:
             out.append("--unshare-net")
         out += ["--", *argv]
+        if read_only:
+            return PreparedCommand(out, pass_fds=(workspace_fd,), cwd="/")
         return out
 
     def describe(self) -> dict:

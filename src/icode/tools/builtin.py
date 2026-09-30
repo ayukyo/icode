@@ -772,15 +772,23 @@ def run_command(
             opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
         )
 
+    pass_fds = tuple(getattr(exec_argv, "pass_fds", ()))
+    if pass_fds and os.name != "posix":
+        return ToolResult(
+            False, "当前平台不支持 Reviewer 沙箱的目录句柄传递，命令未启动。",
+            {"error": "unsupported_platform", "payload_started": False},
+            opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
+        )
     proc = subprocess.run(  # noqa: S603 - 参数列表 + shell=False
         exec_argv,
-        cwd=str(workdir),
+        cwd=str(getattr(exec_argv, "cwd", workdir)),
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
         timeout=max(1, int(timeout)),
         shell=False,
+        **({"pass_fds": pass_fds} if pass_fds else {}),
     )
     body = (proc.stdout or "") + (("\n[stderr]\n" + proc.stderr) if proc.stderr else "")
     return ToolResult(

@@ -49,6 +49,7 @@ from icode.isolation import (
     select_sandbox,
 )
 from icode.tools import IsolationUnavailable, ToolContext, default_registry
+from icode.tools.builtin import run_command
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.workspace import WorkspaceManager
 from icode.execution_broker import execute_policy_command
@@ -1593,38 +1594,44 @@ print("metadata-read-only-ok")
             self.assertNotIn((str(runtime_prefix.parent), str(runtime_prefix.parent)), mounts)
 
     def test_bwrap_只读审查包装使用只读工作区绑定(self) -> None:
-        workspace = Path("/tmp/review-ws").resolve()
-        argv = BubblewrapSandbox().wrap_read_only(
-            ["python", "-m", "unittest"], workspace=workspace,
-        )
-        self.assertIn("--ro-bind", argv)
-        mounts = [
-            tuple(argv[index + 1:index + 3])
-            for index, item in enumerate(argv[:-2]) if item == "--ro-bind"
-        ]
-        self.assertIn((str(workspace), str(workspace)), mounts)
-        self.assertNotIn("--bind", argv)
-        self.assertIn("--unshare-net", argv)
+        with temp_workspace() as workspace:
+            ctx = ToolContext(
+                root=workspace, sandbox=BubblewrapSandbox(), read_only_workspace=True,
+            )
+            try:
+                ctx.pin_read_only_workspace()
+                argv = ctx.wrap_command(["python", "-m", "unittest"])
+                self.assertIn("--ro-bind-fd", argv)
+                bind = argv.index("--ro-bind-fd")
+                self.assertEqual(argv[bind + 1], str(ctx.read_only_workspace_fd))
+                self.assertEqual(argv[bind + 2], str(workspace.resolve()))
+                self.assertNotIn("--bind", argv)
+                self.assertIn("--unshare-net", argv)
+            finally:
+                ctx.close()
 
     def test_bwrap_只读审查将排除目录覆盖为空的只读挂载(self) -> None:
         with temp_workspace() as workspace:
             excluded = workspace / ".icode_output"
             nested = excluded / "ticket-1" / "out"
             nested.mkdir(parents=True)
-            wrap_excluding = getattr(BubblewrapSandbox(), "wrap_read_only_excluding", None)
-            self.assertTrue(callable(wrap_excluding), "Bubblewrap 缺少只读排除目录能力")
-            argv = wrap_excluding(
-                ["python", "-m", "unittest"], workspace=workspace,
+            ctx = ToolContext(
+                root=workspace, sandbox=BubblewrapSandbox(), read_only_workspace=True,
                 deny_read_roots=(excluded, nested),
             )
+            try:
+                ctx.pin_read_only_workspace()
+                argv = ctx.wrap_command(["python", "-m", "unittest"])
+            finally:
+                ctx.close()
 
         workspace_bind = next(
             index for index, item in enumerate(argv[:-2])
-            if item == "--ro-bind"
-            and argv[index + 1:index + 3] == [str(workspace.resolve()), str(workspace.resolve())]
+            if item == "--ro-bind-fd"
+            and argv[index + 2] == str(workspace.resolve())
         )
-        self.assertEqual(argv[workspace_bind + 1:workspace_bind + 3],
-                         [str(workspace.resolve()), str(workspace.resolve())])
+        self.assertTrue(argv[workspace_bind + 1].isdigit())
+        self.assertEqual(argv[workspace_bind + 2], str(workspace.resolve()))
         mounts = [
             tuple(argv[index + 1:index + 2])
             for index, item in enumerate(argv[:-2]) if item == "--tmpfs"
@@ -1639,34 +1646,38 @@ print("metadata-read-only-ok")
         with temp_workspace() as temporary_root:
             workspace = temporary_root / "workspace"
             workspace.mkdir()
-            wrap_excluding = getattr(BubblewrapSandbox(), "wrap_read_only_excluding", None)
-            self.assertTrue(callable(wrap_excluding), "Bubblewrap 缺少只读排除目录能力")
-            missing = workspace / ".icode_output" / "missing"
-            with self.assertRaises((OSError, ValueError)):
-                wrap_excluding(
-                    ["/bin/true"], workspace=workspace,
-                    deny_read_roots=(missing,),
+            sandbox = BubblewrapSandbox()
+            pinned = sandbox.pin_read_only_workspace(workspace)
+
+            def wrap_excluding(deny_read_roots):
+                return sandbox.wrap_read_only_excluding(
+                    ["/bin/true"], workspace=pinned.path, workspace_fd=pinned.fd,
+                    deny_read_roots=deny_read_roots,
                 )
 
-            outside = workspace.parent / "outside-ledger"
-            outside.mkdir()
-            internal = workspace / "private-target"
-            internal.mkdir()
-            outside_link = workspace / "outside-alias"
-            outside_link.symlink_to(outside, target_is_directory=True)
-            inside_link = workspace / "inside-alias"
-            inside_link.symlink_to(internal, target_is_directory=True)
-            file_root = workspace / "ordinary-file"
-            file_root.write_text("not a directory", encoding="utf-8")
-            for invalid in (
-                workspace, workspace.parent, outside, workspace / ".." / "outside-ledger",
-                outside_link, inside_link, file_root,
-            ):
-                with self.subTest(invalid=invalid), self.assertRaises((OSError, ValueError)):
-                    wrap_excluding(
-                        ["/bin/true"], workspace=workspace,
-                        deny_read_roots=(invalid,),
-                    )
+            try:
+                missing = workspace / ".icode_output" / "missing"
+                with self.assertRaises((OSError, ValueError)):
+                    wrap_excluding((missing,))
+
+                outside = workspace.parent / "outside-ledger"
+                outside.mkdir()
+                internal = workspace / "private-target"
+                internal.mkdir()
+                outside_link = workspace / "outside-alias"
+                outside_link.symlink_to(outside, target_is_directory=True)
+                inside_link = workspace / "inside-alias"
+                inside_link.symlink_to(internal, target_is_directory=True)
+                file_root = workspace / "ordinary-file"
+                file_root.write_text("not a directory", encoding="utf-8")
+                for invalid in (
+                    workspace, workspace.parent, outside, workspace / ".." / "outside-ledger",
+                    outside_link, inside_link, file_root,
+                ):
+                    with self.subTest(invalid=invalid), self.assertRaises((OSError, ValueError)):
+                        wrap_excluding((invalid,))
+            finally:
+                os.close(pinned.fd)
 
     @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"),
                          "需要 Linux bubblewrap")
@@ -1675,13 +1686,73 @@ print("metadata-read-only-ok")
             target = workspace / "reviewed.py"
             target.write_text("original\n", encoding="utf-8")
             python = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
-            wrapped = BubblewrapSandbox().wrap_read_only(
-                [python, "-c", "from pathlib import Path; Path('reviewed.py').write_text('changed')"],
-                workspace=workspace,
+            ctx = ToolContext(
+                root=workspace, sandbox=BubblewrapSandbox(), read_only_workspace=True,
             )
-            result = subprocess.run(wrapped, capture_output=True, text=True, check=False)
+            ctx.pin_read_only_workspace()
+            wrapped = ctx.wrap_command(
+                [python, "-c", "from pathlib import Path; Path('reviewed.py').write_text('changed')"],
+            )
+            try:
+                result = subprocess.run(
+                    wrapped, cwd=wrapped.cwd, pass_fds=wrapped.pass_fds,
+                    capture_output=True, text=True, check=False,
+                )
+            finally:
+                ctx.close()
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertEqual(target.read_text(encoding="utf-8"), "original\n")
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"),
+                         "需要 Linux bubblewrap")
+    def test_bwrap只读Reviewer在启动前根路径被替换仍绑定已固定目录(self) -> None:
+        with temp_workspace() as temporary_root:
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            original = temporary_root / "workspace-original"
+            decoy = temporary_root / "workspace-decoy"
+            decoy.mkdir()
+            (workspace / "marker.txt").write_text("approved-root\n", encoding="utf-8")
+            (decoy / "marker.txt").write_text("replacement-root\n", encoding="utf-8")
+            ctx = ToolContext(
+                root=workspace, sandbox=BubblewrapSandbox(), read_only_workspace=True,
+            )
+            ctx.pin_read_only_workspace()
+            python = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+            code = (
+                "from pathlib import Path\n"
+                "marker = Path('marker.txt')\n"
+                "assert marker.read_text() == 'approved-root\\n'\n"
+                "try: marker.write_text('tampered')\n"
+                "except OSError: pass\n"
+                "else: raise AssertionError('workspace root is writable')\n"
+                "print(marker.read_text().strip())\n"
+            )
+            real_run = subprocess.run
+
+            def replace_workspace_then_launch(*args, **kwargs):
+                workspace.rename(original)
+                workspace.symlink_to(decoy, target_is_directory=True)
+                return real_run(*args, **kwargs)
+
+            try:
+                with mock.patch("subprocess.run", side_effect=replace_workspace_then_launch):
+                    result = run_command(ctx, [python, "-c", code], timeout=15)
+            finally:
+                ctx.close()
+
+            self.assertTrue(result.ok, result.content)
+            self.assertEqual(result.meta["exit_code"], 0)
+            self.assertIn("approved-root", result.content)
+            self.assertNotIn("replacement-root", result.content)
+            self.assertEqual(
+                (original / "marker.txt").read_text(encoding="utf-8"),
+                "approved-root\n",
+            )
+            self.assertEqual(
+                (decoy / "marker.txt").read_text(encoding="utf-8"),
+                "replacement-root\n",
+            )
 
     @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"),
                          "需要 Linux bubblewrap")
@@ -1711,6 +1782,10 @@ print("metadata-read-only-ok")
                 "else: raise AssertionError('ledger was readable')\n"
                 "assert Path('.icode_output').is_dir()\n"
                 "assert not any(Path('.icode_output').iterdir())\n"
+                "for fd_path in Path('/proc/self/fd').iterdir():\n"
+                "    try: (fd_path / '.icode_output/ticket-1/ledger.json').read_text()\n"
+                "    except OSError: pass\n"
+                "    else: raise AssertionError('ledger was readable through inherited fd')\n"
                 "for path in (source, Path('.icode_output/new.json')):\n"
                 "    try: path.write_text('tampered')\n"
                 "    except OSError: pass\n"
@@ -1726,12 +1801,17 @@ print("metadata-read-only-ok")
                 deny_read_roots=(output_root, out_dir),
             )
             try:
+                ctx.pin_read_only_workspace()
                 python = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
                 wrapped = ctx.wrap_command([python, "-c", code])
+                result = subprocess.run(
+                    wrapped, cwd=wrapped.cwd, pass_fds=wrapped.pass_fds,
+                    capture_output=True, text=True, check=False,
+                )
             except IsolationUnavailable as exc:
                 self.fail(f"Bubblewrap 只读排除目录未能包装命令：{exc}")
-
-            result = subprocess.run(wrapped, capture_output=True, text=True, check=False)
+            finally:
+                ctx.close()
             self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
             self.assertEqual(result.stdout.strip(), "review-boundary-ok")
             self.assertEqual(source.read_text(encoding="utf-8"), "source-original\n")
@@ -2528,17 +2608,23 @@ print("metadata-read-only-ok")
                 "else: raise AssertionError('outside workspace was readable')\n"
                 "print('bwrap-review-boundary-ok')\n"
             )
-            sandbox = BubblewrapSandbox()
-            wrapped = sandbox.wrap_read_only_excluding(
-                [str(Path(getattr(sys, "_base_executable", sys.executable)).resolve()),
-                 "-c", code],
-                workspace=workspace,
+            ctx = ToolContext(
+                root=workspace, sandbox=BubblewrapSandbox(), read_only_workspace=True,
                 deny_read_roots=(output_root, out_dir),
             )
-            result = subprocess.run(
-                wrapped, cwd=workspace, capture_output=True, text=True,
-                timeout=15, check=False,
-            )
+            try:
+                ctx.pin_read_only_workspace()
+                wrapped = ctx.wrap_command(
+                    [str(Path(getattr(sys, "_base_executable", sys.executable)).resolve()),
+                     "-c", code],
+                )
+                result = subprocess.run(
+                    wrapped, cwd=wrapped.cwd, pass_fds=wrapped.pass_fds,
+                    capture_output=True, text=True,
+                    timeout=15, check=False,
+                )
+            finally:
+                ctx.close()
             self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
             self.assertEqual(result.stdout.strip(), "bwrap-review-boundary-ok")
             self.assertNotIn(
@@ -2676,6 +2762,29 @@ class TestContextIntegration(unittest.TestCase):
         ctx = ToolContext(root=self.ws, sandbox=NoIsolation(), read_only_workspace=True)
         with self.assertRaises(IsolationUnavailable):
             ctx.wrap_command(["python", "-m", "unittest"])
+
+    def test_bwrap只读Reviewer保留工作区目录FD直到启动合同(self) -> None:
+        ctx = ToolContext(
+            root=self.ws, sandbox=BubblewrapSandbox(), read_only_workspace=True,
+        )
+        try:
+            ctx.pin_read_only_workspace()
+            prepared = ctx.wrap_command(["/usr/bin/true"])
+
+            self.assertIn("--ro-bind-fd", prepared)
+            self.assertEqual(prepared.pass_fds, (ctx.read_only_workspace_fd,))
+            self.assertEqual(prepared.cwd, "/")
+        finally:
+            close = getattr(ctx, "close", None)
+            if callable(close):
+                close()
+
+    def test_bwrap只读Reviewer未提前固定工作区时拒绝命令(self) -> None:
+        ctx = ToolContext(
+            root=self.ws, sandbox=BubblewrapSandbox(), read_only_workspace=True,
+        )
+        with self.assertRaises(IsolationUnavailable):
+            ctx.wrap_command(["/usr/bin/true"])
 
     def test_Seatbelt工作流Reviewer命令绑定工单账本拒读根(self) -> None:
         output_root = self.ws / ".icode_output"

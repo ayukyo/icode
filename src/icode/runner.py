@@ -967,7 +967,14 @@ def _run_agent(
         {"role": "system", "content": system},
         {"role": "user", "content": user_instruction},
     ]
-    return loop.run(messages)
+    try:
+        if read_only_workspace:
+            # Capture Linux Reviewer roots before the first model/tool turn; this
+            # is the identity later passed through Bubblewrap's FD bind.
+            ctx.pin_read_only_workspace()
+        return loop.run(messages)
+    finally:
+        ctx.close()
 
 
 def _ensure_gate_metadata(

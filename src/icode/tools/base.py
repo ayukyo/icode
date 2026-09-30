@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
@@ -89,6 +90,12 @@ class ToolContext:
     # None preserves ordinary workspace/policy behavior; an empty tuple denies
     # every file read.
     allowed_read_files: tuple[Path, ...] | None = None
+    _pinned_read_only_workspace: object | None = field(
+        default=None, init=False, repr=False,
+    )
+    _read_only_workspace_pin_attempted: bool = field(
+        default=False, init=False, repr=False,
+    )
 
     def __post_init__(self) -> None:
         if self.allowed_read_files is None:
@@ -110,6 +117,39 @@ class ToolContext:
 
     def needs_real_isolation(self) -> bool:
         return bool(getattr(self.sandbox, "is_real_isolation", False))
+
+    @property
+    def read_only_workspace_fd(self) -> int | None:
+        """Return the pinned Reviewer root FD, if this backend uses one."""
+        return getattr(self._pinned_read_only_workspace, "fd", None)
+
+    def pin_read_only_workspace(self) -> None:
+        """Capture the Reviewer root before model-controlled commands can run."""
+        if not self.read_only_workspace:
+            raise IsolationUnavailable("只有只读 Reviewer 上下文可以固定工作区句柄")
+        pin = getattr(self.sandbox, "pin_read_only_workspace", None)
+        if not callable(pin):
+            return
+        if self._pinned_read_only_workspace is not None:
+            return
+        if self._read_only_workspace_pin_attempted:
+            raise IsolationUnavailable("Reviewer 工作区目录句柄已关闭或固定失败")
+        self._read_only_workspace_pin_attempted = True
+        try:
+            self._pinned_read_only_workspace = pin(self.root)
+        except Exception as exc:  # noqa: BLE001 - root capture failure is fail-closed
+            raise IsolationUnavailable("Reviewer 工作区目录句柄固定失败") from exc
+
+    def close(self) -> None:
+        """Release any backend resources acquired for this tool context."""
+        pinned = self._pinned_read_only_workspace
+        self._pinned_read_only_workspace = None
+        fd = getattr(pinned, "fd", None)
+        if isinstance(fd, int):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
     def isolation_label(self) -> str:
         if self.sandbox is None:
@@ -137,12 +177,30 @@ class ToolContext:
                     "Reviewer 命令要求真实只读沙箱及可验证的排除目录能力，已拒绝执行"
                 )
             try:
+                pin = getattr(self.sandbox, "pin_read_only_workspace", None)
+                workspace = self.root
+                arguments: dict[str, object] = {
+                    "workspace": workspace, "network": network,
+                }
+                if callable(pin):
+                    if self._pinned_read_only_workspace is None:
+                        raise IsolationUnavailable(
+                            "Reviewer 工作区目录未在上下文建立阶段固定"
+                        )
+                    workspace = Path(self._pinned_read_only_workspace.path)
+                    arguments["workspace"] = workspace
+                    arguments["workspace_fd"] = self._pinned_read_only_workspace.fd
                 if self.deny_read_roots:
-                    return list(wrap_read_only(
-                        argv, workspace=self.root, network=network,
-                        deny_read_roots=self.deny_read_roots,
-                    ))
-                return list(wrap_read_only(argv, workspace=self.root, network=network))
+                    arguments["deny_read_roots"] = self.deny_read_roots
+                prepared = wrap_read_only(argv, **arguments)
+                if callable(pin):
+                    expected_fds = (self._pinned_read_only_workspace.fd,)
+                    if getattr(prepared, "pass_fds", None) != expected_fds:
+                        raise IsolationUnavailable(
+                            "Reviewer 沙箱未保留工作区 FD 启动合同"
+                        )
+                    return prepared
+                return list(prepared)
             except Exception:  # noqa: BLE001 - 只读边界失败时不允许降级执行
                 raise IsolationUnavailable(
                     f"隔离后端 {getattr(self.sandbox, 'name', '?')} 无法绑定只读 Reviewer；"
