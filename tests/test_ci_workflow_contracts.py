@@ -156,5 +156,20 @@ class TestWindowsStandardUserSqosProbeCi(unittest.TestCase):
         self.assertIn(expected_job, workflow)
 
 
+class TestWindowsWorktreeTreeOidCi(unittest.TestCase):
+    def test_native_windows_jobs_run_production_worktree_tree_oid_contract(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        required_step = """      - name: Verify production Windows snapshots and Git tree OID
+        run: python -m unittest tests.test_windows_worktree_tree_oid -v
+        env:
+          ICODE_REQUIRE_WINDOWS_NATIVE_SYMLINKS: "1"
+"""
+
+        self.assertIn(required_step, workflow)
+
+
 if __name__ == "__main__":
     unittest.main()

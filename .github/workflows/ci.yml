@@ -114,6 +114,10 @@ jobs:
           python-version: "3.11"
       - name: Probe directory records, handle sharing, and no-reparse relative opens
         run: python -m unittest tests.test_windows_tree_snapshot_probe -v
+      - name: Verify production Windows snapshots and Git tree OID
+        run: python -m unittest tests.test_windows_worktree_tree_oid -v
+        env:
+          ICODE_REQUIRE_WINDOWS_NATIVE_SYMLINKS: "1"
 
   native-probe:
     name: R2.2 native probe (${{ matrix.os }})

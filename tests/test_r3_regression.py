@@ -28,6 +28,72 @@ from icode.workspace_snapshot import (
 )
 
 
+class _FakeWindowsSnapshotBackend:
+    def __init__(self, *, root_info, entries=()):
+        self.root_handle = object()
+        self.root_info = root_info
+        self.entries = tuple(entries)
+        self.enumerations = 0
+        self.opened_children = 0
+        self.closed_root = False
+
+    def open_root(self, _root):
+        return self.root_handle
+
+    def query_info(self, handle):
+        assert handle is self.root_handle
+        return self.root_info
+
+    def enumerate_directory(self, handle):
+        assert handle is self.root_handle
+        self.enumerations += 1
+        return self.entries
+
+    def open_child(self, *_args, **_kwargs):
+        self.opened_children += 1
+        raise AssertionError("unsupported snapshot entry must not be opened")
+
+    def close_handle(self, _handle):
+        pass
+
+    def close_root(self, _handle):
+        self.closed_root = True
+
+
+def _fake_windows_directory_info(*, attributes: int = 0x10, reparse_tag: int = 0):
+    from icode.workspace_snapshot import _WindowsHandleInfo
+
+    return _WindowsHandleInfo(
+        volume_serial_number=7,
+        file_id=bytes.fromhex("11" * 16),
+        attributes=attributes,
+        reparse_tag=reparse_tag,
+        change_time=1,
+        end_of_file=0,
+        is_directory=True,
+        delete_pending=False,
+    )
+
+
+def _fake_windows_directory_entry(
+    name: str,
+    *,
+    attributes: int,
+    reparse_tag: int = 0,
+    file_id_byte: int = 0x22,
+):
+    from icode.workspace_snapshot import _WindowsDirectoryEntry
+
+    return _WindowsDirectoryEntry(
+        name=name,
+        attributes=attributes,
+        reparse_tag=reparse_tag,
+        file_id=bytes([file_id_byte]) * 16,
+        change_time=1,
+        end_of_file=0,
+    )
+
+
 class TestDiffFingerprint(unittest.TestCase):
     def test_无改动时为空指纹(self) -> None:
         snap = {"a.py": "h1"}
@@ -151,55 +217,46 @@ class TestSnapshotGitFileSemantics(unittest.TestCase):
         from icode import workspace_snapshot as snapshot_module
 
         with temp_workspace() as ws:
-            class FakeEntry:
-                name = "untracked-pipe"
-                path = str(ws / name)
-
-                def stat(self, *, follow_symlinks: bool = True):
-                    return SimpleNamespace(st_mode=stat.S_IFIFO, st_file_attributes=0)
-
-            class FakeScandir:
-                def __init__(self, _directory) -> None:
-                    pass
-
-                def __enter__(self):
-                    return iter((FakeEntry(),))
-
-                def __exit__(self, *_args) -> None:
-                    return None
-
-            fake_os = SimpleNamespace(name="nt", scandir=FakeScandir)
-            with patch.object(snapshot_module, "os", fake_os):
+            backend = _FakeWindowsSnapshotBackend(
+                root_info=_fake_windows_directory_info(),
+                entries=(
+                    _fake_windows_directory_entry(
+                        "untracked-pipe", attributes=0x40,
+                    ),
+                ),
+            )
+            with patch.object(snapshot_module, "os", SimpleNamespace(name="nt")), patch(
+                "icode.windows_worktree._WindowsNativeWorktreeBackend",
+                return_value=backend,
+            ):
                 with self.assertRaisesRegex(OSError, "unsupported file type"):
                     snapshot_workspace(ws)
+            self.assertEqual(backend.opened_children, 0)
+            self.assertTrue(backend.closed_root)
 
     def test_windows_snapshot被排除名称的特殊类型仍必须失败关闭(self) -> None:
         from icode import workspace_snapshot as snapshot_module
 
         for excluded_name in (".icode_output", "__pycache__"):
             with self.subTest(name=excluded_name), temp_workspace() as ws:
-                class FakeEntry:
-                    def __init__(self, name: str) -> None:
-                        self.name = name
-                        self.path = str(ws / name)
-
-                    def stat(self, *, follow_symlinks: bool = True):
-                        return SimpleNamespace(st_mode=stat.S_IFIFO, st_file_attributes=0)
-
-                class FakeScandir:
-                    def __init__(self, _directory) -> None:
-                        pass
-
-                    def __enter__(self):
-                        return iter((FakeEntry(excluded_name),))
-
-                    def __exit__(self, *_args) -> None:
-                        return None
-
-                fake_os = SimpleNamespace(name="nt", scandir=FakeScandir)
-                with patch.object(snapshot_module, "os", fake_os):
+                backend = _FakeWindowsSnapshotBackend(
+                    root_info=_fake_windows_directory_info(),
+                    entries=(
+                        _fake_windows_directory_entry(
+                            excluded_name, attributes=0x40,
+                        ),
+                    ),
+                )
+                with patch.object(
+                    snapshot_module, "os", SimpleNamespace(name="nt"),
+                ), patch(
+                    "icode.windows_worktree._WindowsNativeWorktreeBackend",
+                    return_value=backend,
+                ):
                     with self.assertRaisesRegex(OSError, "unsupported file type"):
                         snapshot_workspace(ws)
+                self.assertEqual(backend.opened_children, 0)
+                self.assertTrue(backend.closed_root)
 
 
 class TestWindowsSnapshotReparseSafety(unittest.TestCase):
@@ -238,96 +295,55 @@ class TestWindowsSnapshotReparseSafety(unittest.TestCase):
         from icode import workspace_snapshot as snapshot_module
 
         with temp_workspace() as ws:
-            real_lstat = Path.lstat
-            scanned: list[Path] = []
-
-            def fake_lstat(path: Path):
-                if path == ws:
-                    return SimpleNamespace(
-                        st_mode=stat.S_IFDIR,
-                        st_file_attributes=self.REPARSE_POINT_ATTRIBUTE,
-                    )
-                return real_lstat(path)
-
-            def fake_scandir(directory):
-                scanned.append(Path(directory))
-                raise AssertionError("reparse workspace root must not be scanned")
-
-            fake_os = SimpleNamespace(name="nt", scandir=fake_scandir)
-            def is_junction(_path: Path) -> bool:
-                raise AssertionError("snapshot must use stat reparse attributes")
-
-            with patch.object(snapshot_module, "os", fake_os), patch.object(
-                Path, "lstat", fake_lstat,
-            ), patch.object(Path, "is_junction", is_junction, create=True):
+            backend = _FakeWindowsSnapshotBackend(
+                root_info=_fake_windows_directory_info(
+                    attributes=0x10 | self.REPARSE_POINT_ATTRIBUTE,
+                    reparse_tag=0xA0000003,
+                ),
+            )
+            with patch.object(
+                snapshot_module, "os", SimpleNamespace(name="nt"),
+            ), patch(
+                "icode.windows_worktree._WindowsNativeWorktreeBackend",
+                return_value=backend,
+            ), patch.object(
+                Path, "lstat", side_effect=AssertionError("path stat was used"),
+            ):
                 with self.assertRaises(OSError):
                     snapshot_workspace(ws)
 
-            self.assertEqual(scanned, [])
+            self.assertEqual(backend.enumerations, 0)
+            self.assertEqual(backend.opened_children, 0)
+            self.assertTrue(backend.closed_root)
 
     def test_windows_snapshot_rejects_junction_before_enumerating_target(self) -> None:
         from icode import workspace_snapshot as snapshot_module
 
         with temp_workspace() as ws:
-            junction = ws / "junction"
-            junction.mkdir()
-            (junction / "outside-secret.txt").write_text("not part of workspace", encoding="utf-8")
-            scanned: list[Path] = []
-            real_scandir = os.scandir
-            reparse_point_attribute = self.REPARSE_POINT_ATTRIBUTE
-
-            class FakeEntry:
-                def __init__(self, entry) -> None:
-                    self._entry = entry
-                    self.name = entry.name
-                    self.path = entry.path
-
-                def stat(self, *, follow_symlinks: bool = True):
-                    result = self._entry.stat(follow_symlinks=follow_symlinks)
-                    if Path(self.path) == junction:
-                        return SimpleNamespace(
-                            st_mode=stat.S_IFDIR,
-                            st_file_attributes=reparse_point_attribute,
-                        )
-                    return result
-
-            class FakeScandir:
-                def __init__(self, directory) -> None:
-                    self.directory = Path(directory)
-                    self._real_iterator = None
-                    self._entries = ()
-
-                def __enter__(self):
-                    scanned.append(self.directory)
-                    self._real_iterator = real_scandir(self.directory)
-                    self._entries = tuple(
-                        FakeEntry(entry) for entry in self._real_iterator
-                    )
-                    return iter(self._entries)
-
-                def __exit__(self, *_args) -> None:
-                    assert self._real_iterator is not None
-                    self._real_iterator.close()
-
-            fake_os = SimpleNamespace(
-                name="nt",
-                scandir=FakeScandir,
-                fsencode=os.fsencode,
+            backend = _FakeWindowsSnapshotBackend(
+                root_info=_fake_windows_directory_info(),
+                entries=(
+                    _fake_windows_directory_entry(
+                        "junction",
+                        attributes=0x10 | self.REPARSE_POINT_ATTRIBUTE,
+                        reparse_tag=0xA0000003,
+                    ),
+                ),
             )
-
-            def is_junction(_path: Path) -> bool:
-                raise AssertionError("snapshot must use stat reparse attributes")
-
-            with patch.object(snapshot_module, "os", fake_os), patch.object(
-                Path,
-                "is_junction",
-                is_junction,
-                create=True,
+            with patch.object(
+                snapshot_module, "os", SimpleNamespace(name="nt"),
+            ), patch(
+                "icode.windows_worktree._WindowsNativeWorktreeBackend",
+                return_value=backend,
+            ), patch.object(
+                Path, "resolve", side_effect=AssertionError("path resolution was used"),
             ):
                 with self.assertRaises(OSError):
                     snapshot_workspace(ws)
 
-            self.assertEqual(scanned, [ws])
+            self.assertEqual(backend.enumerations, 1)
+            self.assertEqual(backend.opened_children, 0)
+            self.assertTrue(backend.closed_root)
 
 
 @unittest.skipUnless(
