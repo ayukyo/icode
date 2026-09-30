@@ -729,9 +729,182 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         )
         self.assertIsNone(template)
 
+    def test_default_descriptor_copy_probe_reuses_same_security_descriptor(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        diagnostic = getattr(
+            probe, "runner_pipe_default_dacl_copy_probe", None,
+        )
+        self.assertTrue(
+            callable(diagnostic), "default_descriptor_copy_probe_missing",
+        )
+
+        descriptor_shape = (
+            "sd_control=9004;sd_revision=1;owner=user;group=other;"
+            "dacl=present;acl_revision=2;ace_count=2;"
+            "aces=00.00.001f01ff,00.00.00120089;truncated=0"
+        )
+        created_pipe_arguments: list[tuple[object, ...]] = []
+        client_open_arguments: list[tuple[object, ...]] = []
+        server_handles = iter((0x2000, 0x2001))
+        client_handles = iter((0x3000, windows_runner_pipe._INVALID_HANDLE_VALUE))
+
+        def create_named_pipe(*arguments: object) -> int:
+            created_pipe_arguments.append(arguments)
+            return next(server_handles)
+
+        def create_file(*arguments: object) -> int:
+            client_open_arguments.append(arguments)
+            return next(client_handles)
+
+        def get_security_info(*arguments: object) -> int:
+            arguments[-1]._obj.value = 0x7777
+            return 0
+
+        def get_server_pid(_client: int, output: object) -> int:
+            output._obj.value = 4321
+            return 1
+
+        kernel = SimpleNamespace(
+            GetCurrentProcess=mock.Mock(return_value=0x1111),
+            GetCurrentProcessId=mock.Mock(return_value=4321),
+            CreateNamedPipeW=mock.Mock(side_effect=create_named_pipe),
+            WaitNamedPipeW=mock.Mock(return_value=1),
+            CreateFileW=mock.Mock(side_effect=create_file),
+            GetNamedPipeServerProcessId=mock.Mock(side_effect=get_server_pid),
+            CloseHandle=mock.Mock(return_value=1),
+            LocalFree=mock.Mock(return_value=0),
+        )
+        advapi = SimpleNamespace(GetSecurityInfo=mock.Mock(side_effect=get_security_info))
+        api = SimpleNamespace(kernel=kernel, advapi=advapi)
+
+        with (
+            mock.patch.object(windows_runner_pipe.sys, "platform", "win32"),
+            mock.patch(
+                "icode.windows_runner_pipe._load_win32_api", return_value=api,
+            ),
+            mock.patch.object(
+                probe, "runner_process_user_sid",
+                return_value="S-1-5-21-1-2-3-1001",
+            ),
+            mock.patch.object(
+                probe, "runner_process_logon_sid", return_value="S-1-5-5-100-200",
+            ),
+            mock.patch.object(
+                probe, "runner_pipe_security_descriptor_shape",
+                return_value=descriptor_shape,
+            ) as shape_reader,
+            mock.patch.object(
+                windows_runner_pipe.ctypes, "get_last_error", return_value=5,
+                create=True,
+            ),
+        ):
+            receipt = diagnostic()
+
+        self.assertEqual(
+            receipt,
+            "pipe_sd_copy=default_opened_explicit_access_denied_shape_match",
+        )
+        self.assertEqual(len(created_pipe_arguments), 2)
+        first, second = created_pipe_arguments
+        self.assertIsNone(first[7])
+        self.assertEqual(first[1:7], second[1:7])
+        security_attributes = second[7]._obj
+        self.assertEqual(security_attributes.lpSecurityDescriptor, 0x7777)
+        self.assertEqual(security_attributes.bInheritHandle, 0)
+        self.assertEqual(shape_reader.call_count, 2)
+        self.assertEqual(
+            [call.args[0] for call in shape_reader.call_args_list],
+            [0x2000, 0x2001],
+        )
+        self.assertEqual(len(client_open_arguments), 2)
+        self.assertEqual(
+            client_open_arguments[0][1:], client_open_arguments[1][1:],
+        )
+        self.assertEqual(client_open_arguments[0][1], PIPE_CLIENT_ACCESS_MASK)
+        self.assertEqual(kernel.CloseHandle.call_count, 3)
+        kernel.LocalFree.assert_called_once()
+
+    def test_default_descriptor_copy_probe_skips_open_when_shape_changes(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        diagnostic = getattr(
+            probe, "runner_pipe_default_dacl_copy_probe", None,
+        )
+        self.assertTrue(
+            callable(diagnostic), "default_descriptor_copy_probe_missing",
+        )
+        descriptor_shapes = iter(("sd_control=9004;dacl=present", "sd_control=8004;dacl=present"))
+        server_handles = iter((0x2100, 0x2101))
+        kernel = SimpleNamespace(
+            GetCurrentProcess=mock.Mock(return_value=0x1111),
+            GetCurrentProcessId=mock.Mock(return_value=4321),
+            CreateNamedPipeW=mock.Mock(side_effect=lambda *_args: next(server_handles)),
+            WaitNamedPipeW=mock.Mock(return_value=1),
+            CreateFileW=mock.Mock(return_value=0x3100),
+            GetNamedPipeServerProcessId=mock.Mock(
+                side_effect=lambda _client, output: (
+                    setattr(output._obj, "value", 4321) or 1
+                ),
+            ),
+            CloseHandle=mock.Mock(return_value=1),
+            LocalFree=mock.Mock(return_value=0),
+        )
+        advapi = SimpleNamespace(
+            GetSecurityInfo=mock.Mock(
+                side_effect=lambda *_args: (
+                    setattr(_args[-1]._obj, "value", 0x7777) or 0
+                ),
+            ),
+        )
+        api = SimpleNamespace(kernel=kernel, advapi=advapi)
+
+        with (
+            mock.patch.object(windows_runner_pipe.sys, "platform", "win32"),
+            mock.patch(
+                "icode.windows_runner_pipe._load_win32_api", return_value=api,
+            ),
+            mock.patch.object(
+                probe, "runner_process_user_sid",
+                return_value="S-1-5-21-1-2-3-1001",
+            ),
+            mock.patch.object(
+                probe, "runner_process_logon_sid", return_value="S-1-5-5-100-200",
+            ),
+            mock.patch.object(
+                probe, "runner_pipe_security_descriptor_shape",
+                side_effect=lambda *_args: next(descriptor_shapes),
+            ),
+        ):
+            receipt = diagnostic()
+
+        self.assertEqual(
+            receipt,
+            "pipe_sd_copy=default_opened_explicit_not_run_shape_mismatch",
+        )
+        self.assertEqual(kernel.CreateFileW.call_count, 1)
+        self.assertEqual(kernel.CloseHandle.call_count, 3)
+        kernel.LocalFree.assert_called_once()
+
 
 @unittest.skipUnless(sys.platform == "win32", "需要 Windows 原生 named-pipe 双向验证")
 class TestWindowsRunnerPipeNative(unittest.TestCase):
+    def test_default_and_explicit_copy_pipe_emit_bounded_receipt(self) -> None:
+        from scripts.windows_standard_user_token_probe import (
+            runner_pipe_default_dacl_copy_probe,
+        )
+
+        receipt = runner_pipe_default_dacl_copy_probe()
+        print(f"::notice::{receipt}")
+        self.assertRegex(
+            receipt,
+            r"\Apipe_sd_copy=default_(opened|access_denied|failed|not_run|unsupported_platform)"
+            r"_explicit_(opened|access_denied|failed|not_run|unsupported_platform)"
+            r"_shape_(match|mismatch|unavailable|setup_failed|cleanup_failed)\Z",
+        )
+        self.assertNotIn("_shape_cleanup_failed", receipt)
+        self.assertLessEqual(len(receipt), 128)
+
     def test_temporary_server_direction_ab_emits_fixed_receipt(self) -> None:
         from scripts.windows_standard_user_token_probe import (
             runner_pipe_server_direction_probe,

@@ -1312,6 +1312,191 @@ def runner_pipe_open_with_default_dacl_probe() -> tuple[bool, str]:
         return False, "setup_invalid_state"
 
 
+def _format_pipe_default_dacl_copy_receipt(
+    default_open_state: object,
+    explicit_open_state: object,
+    descriptor_state: object,
+) -> str:
+    """Keep the disposable descriptor-copy observation fixed and bounded."""
+    open_states = {
+        "opened", "access_denied", "failed", "not_run", "unsupported_platform",
+    }
+    descriptor_states = {
+        "match", "mismatch", "unavailable", "setup_failed", "cleanup_failed",
+    }
+    if not isinstance(default_open_state, str) or default_open_state not in open_states:
+        default_open_state = "unavailable"
+    if not isinstance(explicit_open_state, str) or explicit_open_state not in open_states:
+        explicit_open_state = "unavailable"
+    if not isinstance(descriptor_state, str) or descriptor_state not in descriptor_states:
+        descriptor_state = "unavailable"
+    receipt = (
+        f"pipe_sd_copy=default_{default_open_state}_"
+        f"explicit_{explicit_open_state}_shape_{descriptor_state}"
+    )
+    return receipt if len(receipt) <= 128 else "pipe_sd_copy=unavailable"
+
+
+def _runner_pipe_descriptor_copy_open_state(
+    pipe_name: str,
+    server_pid: int,
+) -> str:
+    """Open one diagnostic pipe with production client flags and no payload."""
+    try:
+        client = open_runner_pipe_client(
+            pipe_name, server_pid, timeout_ms=2_000,
+        )
+    except PermissionError as exc:
+        if (
+            exc.errno == _ERROR_ACCESS_DENIED
+            and exc.strerror == "runner_pipe_open_access_denied"
+        ):
+            return "access_denied"
+        return "failed"
+    except (OSError, RuntimeError, TimeoutError, ValueError):
+        return "failed"
+    except Exception:
+        return "failed"
+    try:
+        client.close()
+    except Exception:
+        return "failed"
+    return "opened"
+
+
+def runner_pipe_default_dacl_copy_probe() -> str:
+    """Compare default DACL with an explicit copy on disposable local pipes.
+
+    Both randomized, one-instance local pipes use the production open mode,
+    mode, buffer sizes, timeout, exact client mask, and client flags. The first
+    pipe uses its token default descriptor; the second receives only that
+    descriptor's owner/group/DACL projection returned by GetSecurityInfo.
+    Their read-back owner/group/DACL summaries must match before the second
+    client-open observation is considered comparable. No payload is sent.
+    """
+    if sys.platform != "win32":
+        return _format_pipe_default_dacl_copy_receipt(
+            "unsupported_platform", "unsupported_platform", "unavailable",
+        )
+
+    api = None
+    descriptor = ctypes.c_void_p()
+    servers: list[_runner_pipe.RunnerPipeServer] = []
+    default_state = "not_run"
+    explicit_state = "not_run"
+    descriptor_state = "unavailable"
+    setup_failed = False
+    cleanup_failed = False
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        api.kernel.GetCurrentProcessId.argtypes = []
+        api.kernel.GetCurrentProcessId.restype = wintypes.DWORD
+        process_handle = api.kernel.GetCurrentProcess()
+        server_pid = int(api.kernel.GetCurrentProcessId())
+        if not process_handle or not 1 <= server_pid <= 0xFFFFFFFF:
+            raise OSError("pipe_copy_probe_identity_unavailable")
+
+        try:
+            user_sid = runner_process_user_sid(process_handle)
+            logon_sid = runner_process_logon_sid(process_handle)
+        except Exception:
+            user_sid = logon_sid = None
+
+        def create_pipe(
+            name: str,
+            security_attributes: ctypes.POINTER(_runner_pipe._SECURITY_ATTRIBUTES)
+            | None,
+        ) -> _runner_pipe.RunnerPipeServer:
+            handle = api.kernel.CreateNamedPipeW(
+                name,
+                _runner_pipe.RUNNER_PIPE_OPEN_MODE,
+                _runner_pipe.RUNNER_PIPE_MODE,
+                _runner_pipe.RUNNER_PIPE_MAX_INSTANCES,
+                _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+                _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+                0,
+                security_attributes,
+            )
+            if _runner_pipe._handle_is_invalid(handle):
+                raise _runner_pipe._winerror("pipe_copy_probe_create")
+            pipe = _runner_pipe.RunnerPipeServer(
+                name=name, handle=handle, api=api,
+            )
+            servers.append(pipe)
+            return pipe
+
+        default_pipe = create_pipe(new_runner_pipe_name(), None)
+        default_state = _runner_pipe_descriptor_copy_open_state(
+            default_pipe.name, server_pid,
+        )
+
+        api.advapi.GetSecurityInfo.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, wintypes.DWORD,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        api.advapi.GetSecurityInfo.restype = wintypes.DWORD
+        status = api.advapi.GetSecurityInfo(
+            default_pipe._handle,
+            _SE_KERNEL_OBJECT,
+            _OWNER_SECURITY_INFORMATION
+            | _GROUP_SECURITY_INFORMATION
+            | _DACL_SECURITY_INFORMATION,
+            None, None, None, None, ctypes.byref(descriptor),
+        )
+        if status != 0 or not descriptor.value:
+            raise OSError("pipe_copy_probe_descriptor_unavailable")
+
+        attributes = _runner_pipe._SECURITY_ATTRIBUTES(
+            ctypes.sizeof(_runner_pipe._SECURITY_ATTRIBUTES), descriptor, 0,
+        )
+        explicit_pipe = create_pipe(
+            new_runner_pipe_name(), ctypes.byref(attributes),
+        )
+        default_shape = runner_pipe_security_descriptor_shape(
+            default_pipe._handle, user_sid, logon_sid,
+        )
+        explicit_shape = runner_pipe_security_descriptor_shape(
+            explicit_pipe._handle, user_sid, logon_sid,
+        )
+        if (
+            default_shape == "sd=unavailable"
+            or explicit_shape == "sd=unavailable"
+        ):
+            descriptor_state = "unavailable"
+        elif default_shape != explicit_shape:
+            descriptor_state = "mismatch"
+        else:
+            descriptor_state = "match"
+            explicit_state = _runner_pipe_descriptor_copy_open_state(
+                explicit_pipe.name, server_pid,
+            )
+    except Exception:
+        setup_failed = True
+    finally:
+        for server in reversed(servers):
+            try:
+                server.close()
+            except Exception:
+                cleanup_failed = True
+        if descriptor.value and api is not None:
+            try:
+                if api.kernel.LocalFree(descriptor):
+                    cleanup_failed = True
+            except Exception:
+                cleanup_failed = True
+
+    if cleanup_failed:
+        descriptor_state = "cleanup_failed"
+    elif setup_failed:
+        descriptor_state = "setup_failed"
+    return _format_pipe_default_dacl_copy_receipt(
+        default_state, explicit_state, descriptor_state,
+    )
+
+
 def runner_pipe_open_with_user_sid_dacl_probe() -> tuple[bool, str]:
     """Compare a narrow explicit user-SID ACL on a disposable pipe.
 
