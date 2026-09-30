@@ -524,6 +524,7 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
                 client_errors.append(exc)
 
         client_thread = threading.Thread(target=run_client, daemon=True)
+        server_error: BaseException | None = None
         try:
             client_thread.start()
             server.wait_for_runner_ready(
@@ -536,11 +537,37 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
             server.send_message(spawn, timeout_ms=5_000)
             self.assertEqual(server.receive_message(timeout_ms=5_000), output)
             self.assertEqual(server.receive_message(timeout_ms=5_000), exit_message)
+        except BaseException as exc:
+            server_error = exc
         finally:
             server.close()
             client_thread.join(timeout=6)
 
         self.assertFalse(client_thread.is_alive(), "named-pipe client thread leaked")
+        if client_errors:
+            client_error = client_errors[0]
+            if isinstance(client_error, OSError):
+                raw_stage = client_error.strerror or ""
+                safe_stage = (
+                    raw_stage
+                    if len(raw_stage) <= 64
+                    and raw_stage.isascii()
+                    and all(
+                        character.islower()
+                        or character.isdigit()
+                        or character == "_"
+                        for character in raw_stage
+                    )
+                    else "unavailable"
+                )
+                details = (
+                    f"errno={client_error.errno}:stage={safe_stage}"
+                )
+            else:
+                details = f"type={type(client_error).__name__}"
+            self.fail(f"native_pipe_client_failed:{details}")
+        if server_error is not None:
+            raise server_error
         self.assertEqual(client_errors, [])
         self.assertEqual(client_results, [spawn])
 
