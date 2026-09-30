@@ -1099,13 +1099,16 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
             check_entry_identity = workspace_snapshot._require_windows_entry_identity
             check_symlink_identity = workspace_snapshot._require_windows_symlink_identity
             walk_windows_directory = windows_worktree._walk_windows_directory
+            native_backend_type = windows_worktree._WindowsNativeWorktreeBackend
             snapshot_diagnostic = {"attempt": 0, "parts": ()}
             change_time_locations: dict[int, str] = {}
 
+            def observe_snapshot_backend(*args, **kwargs):
+                snapshot_diagnostic["attempt"] += 1
+                return native_backend_type(*args, **kwargs)
+
             def observe_snapshot_walk(*args, **kwargs):
                 parts = kwargs.get("snapshot_parts", ())
-                if parts == ():
-                    snapshot_diagnostic["attempt"] += 1
                 previous_parts = snapshot_diagnostic["parts"]
                 snapshot_diagnostic["parts"] = parts
                 try:
@@ -1172,6 +1175,11 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
                     windows_worktree,
                     "_walk_windows_directory",
                     side_effect=observe_snapshot_walk,
+                ),
+                patch.object(
+                    windows_worktree,
+                    "_WindowsNativeWorktreeBackend",
+                    side_effect=observe_snapshot_backend,
                 ),
             ):
                 try:
