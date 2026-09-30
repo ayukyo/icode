@@ -829,7 +829,50 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
             self.assertEqual(
                 worktree_git_tree_oid(repo, object_format="sha1"), expected,
             )
-            snapshot = workspace_snapshot.snapshot_workspace(repo)
+
+            # Keep production checks unchanged while making native mismatches
+            # actionable in CI logs instead of reporting only a generic reason.
+            check_entry_identity = workspace_snapshot._require_windows_entry_identity
+            check_symlink_identity = workspace_snapshot._require_windows_symlink_identity
+
+            def report_identity_mismatch(check, entry, info, *args, **kwargs):
+                try:
+                    check(entry, info, *args, **kwargs)
+                except WorktreeTreeUnavailable as exc:
+                    if exc.reason != "windows_entry_identity_changed":
+                        raise
+                    expected_volume = args[0] if args else None
+                    expected_directory = kwargs.get("is_directory")
+                    raise WorktreeTreeUnavailable(
+                        f"{exc.reason}:name={entry.name!r} "
+                        f"volume={expected_volume!r}/{info.volume_serial_number!r} "
+                        f"entry_id={entry.file_id.hex()} handle_id={info.file_id.hex()} "
+                        f"entry_change={entry.change_time} handle_change={info.change_time} "
+                        f"entry_size={entry.end_of_file} handle_size={info.end_of_file} "
+                        f"directory={expected_directory!r}/{info.is_directory!r} "
+                        f"delete_pending={info.delete_pending!r} "
+                        f"entry_attributes={entry.attributes:#x} "
+                        f"handle_attributes={info.attributes:#x} "
+                        f"entry_tag={entry.reparse_tag:#x} handle_tag={info.reparse_tag:#x}"
+                    ) from None
+
+            with (
+                patch.object(
+                    workspace_snapshot,
+                    "_require_windows_entry_identity",
+                    side_effect=lambda *args, **kwargs: report_identity_mismatch(
+                        check_entry_identity, *args, **kwargs,
+                    ),
+                ),
+                patch.object(
+                    workspace_snapshot,
+                    "_require_windows_symlink_identity",
+                    side_effect=lambda *args, **kwargs: report_identity_mismatch(
+                        check_symlink_identity, *args, **kwargs,
+                    ),
+                ),
+            ):
+                snapshot = workspace_snapshot.snapshot_workspace(repo)
 
             self.assertEqual(
                 snapshot["alias"],
