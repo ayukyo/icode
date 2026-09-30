@@ -726,7 +726,11 @@ def _require_windows_entry_identity(
         or type(info.change_time) is not int
         or info.change_time != entry.change_time
         or type(info.end_of_file) is not int
-        or info.end_of_file != entry.end_of_file
+        or info.end_of_file < 0
+        # Directory enumeration and an opened directory handle can report
+        # different EndOfFile values; directory contents are guarded by the
+        # before/after listing signatures and stable handle metadata instead.
+        or (not is_directory and info.end_of_file != entry.end_of_file)
         or type(info.is_directory) is not bool
         or info.is_directory is not is_directory
         or type(info.delete_pending) is not bool

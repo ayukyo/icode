@@ -300,6 +300,32 @@ class TestWindowsWorkspaceSnapshotDispatch(unittest.TestCase):
         self.assertEqual(backend.read_calls, 2)
         self.assertTrue(all(handle.closed for handle in backend.opened))
 
+    def test_directory_entry_and_handle_eof_may_differ(self) -> None:
+        root = _FakeWindowsNode("", bytes.fromhex("6a" * 16))
+        source_directory = _FakeWindowsNode("src", bytes.fromhex("6b" * 16))
+        source_directory.handle_end_of_file = 4096
+        source_directory.children["main.py"] = _FakeWindowsNode(
+            "main.py", bytes.fromhex("6c" * 16), content=b"print('ok')\n",
+        )
+        root.children["src"] = source_directory
+        backend = _FakeWindowsTreeBackend(root)
+        fake_os = type(
+            "FakeOS", (), {"name": "nt", "fsencode": staticmethod(os.fsencode)},
+        )()
+
+        with patch.object(workspace_snapshot, "os", fake_os), patch.object(
+            windows_worktree, "_WindowsNativeWorktreeBackend", return_value=backend,
+        ):
+            actual = workspace_snapshot.snapshot_workspace(Path("C:/source"))
+
+        self.assertEqual(actual, {
+            "src/main.py": workspace_snapshot._entry_hash(
+                "file", "100644", b"print('ok')\n",
+            ),
+        })
+        self.assertEqual(backend.read_calls, 1)
+        self.assertTrue(all(handle.closed for handle in backend.opened))
+
     def test_workspace_snapshot_is_not_limited_by_git_tree_oid_byte_budget(self) -> None:
         root = _FakeWindowsNode("", bytes.fromhex("78" * 16))
         root.children[".git"] = _FakeWindowsNode(
@@ -423,6 +449,7 @@ class _FakeWindowsNode:
         self.name = name
         self.file_id = file_id
         self.content = content
+        self.handle_end_of_file: int | None = None
         self.children: dict[str, _FakeWindowsNode] = {}
         self.change_time = 1
         self.reparse = False
@@ -509,7 +536,11 @@ class _FakeWindowsTreeBackend:
             attributes=attributes,
             reparse_tag=node.reparse_tag if node.is_reparse_point else 0,
             change_time=node.change_time,
-            end_of_file=0 if is_directory else len(node.content or b""),
+            end_of_file=(
+                node.handle_end_of_file
+                if node.handle_end_of_file is not None
+                else 0 if is_directory else len(node.content or b"")
+            ),
             is_directory=is_directory,
             delete_pending=False,
         )
@@ -604,6 +635,24 @@ class TestProductionWindowsWorktreeTreeBuilder(unittest.TestCase):
             "file.txt", bytes.fromhex("22" * 16), content=b"do not read",
         )
         backend = MismatchedBackend(root)
+
+        with self.assertRaises(WorktreeTreeUnavailable) as raised:
+            self._builder()(
+                _FakeWindowsHandle(root), backend, object_format="sha1",
+            )
+
+        self.assertEqual(raised.exception.reason, "windows_entry_identity_changed")
+        self.assertEqual(backend.read_calls, 0)
+        self.assertTrue(all(handle.closed for handle in backend.opened))
+
+    def test_builder_rejects_regular_file_handle_eof_mismatch(self) -> None:
+        root = _FakeWindowsNode("", bytes.fromhex("16" * 16))
+        source = _FakeWindowsNode(
+            "source.py", bytes.fromhex("17" * 16), content=b"must not read",
+        )
+        source.handle_end_of_file = len(source.content or b"") + 1
+        root.children["source.py"] = source
+        backend = _FakeWindowsTreeBackend(root)
 
         with self.assertRaises(WorktreeTreeUnavailable) as raised:
             self._builder()(
