@@ -123,5 +123,38 @@ class TestRetiredAppContainerProbeCi(unittest.TestCase):
         self.assertIn(expected_job_gate, workflow)
 
 
+class TestWindowsStandardUserSqosProbeCi(unittest.TestCase):
+    def test_sqos_probe_is_a_separate_opt_in_on_the_existing_manual_job(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        expected_input = """      run_windows_standard_user_sqos_diagnostic:
+        description: Compare default SQOS only after the temporary standard-user pipe open is denied
+        required: false
+        default: false
+        type: boolean
+"""
+        expected_job = """  windows-standard-user-token-probe:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_windows_standard_user_token_probe
+    name: Standard-user restricted token probe (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python-architecture: x64
+          - os: windows-11-arm
+            python-architecture: arm64
+    env:
+      ICODE_R2_SQOS_DIAGNOSTIC: ${{ inputs.run_windows_standard_user_sqos_diagnostic }}
+"""
+
+        self.assertIn(expected_input, workflow)
+        self.assertIn(expected_job, workflow)
+
+
 if __name__ == "__main__":
     unittest.main()

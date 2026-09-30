@@ -50,6 +50,9 @@ _CHILD_REPORT_EXIT_GRACE_MS = 2_000
 _ERROR_NO_SUCH_USER = 1317
 _ERROR_LOGON_FAILURE = 1326
 _ERROR_ACCESS_DENIED = 5
+_ERROR_FILE_NOT_FOUND = 2
+_ERROR_PIPE_BUSY = 231
+_ERROR_SEM_TIMEOUT = 121
 _ERROR_NO_TOKEN = 1008
 _SE_KERNEL_OBJECT = 6
 _OWNER_SECURITY_INFORMATION = 0x00000001
@@ -482,8 +485,11 @@ def build_system_tool_environment(system_root: str) -> dict[str, str]:
 
 def build_runner_environment_block(
     *, python_executable: str, scratch: str, system_root: str,
+    sqos_diagnostic: bool = False,
 ) -> str:
     """Return an explicit environment block; ambient credentials are never copied."""
+    if type(sqos_diagnostic) is not bool:
+        raise ValueError("invalid_sqos_diagnostic_flag")
     python_path = _validate_windows_path("python_executable", python_executable)
     scratch_path = _validate_windows_path("scratch", scratch)
     windows_root = _validate_windows_path("system_root", system_root)
@@ -504,6 +510,8 @@ def build_runner_environment_block(
         "PYTHONPATH": runner_lib,
         "ICODE_R2_PROBE_MODE": "runner",
     }
+    if sqos_diagnostic:
+        entries["ICODE_R2_SQOS_DIAGNOSTIC"] = "1"
     for path in (python_path, scratch_path, windows_root):
         drive = ntpath.splitdrive(path)[0].upper()
         entries[f"={drive}"] = scratch_path if drive.casefold() == ntpath.splitdrive(scratch_path)[0].casefold() else f"{drive}\\"
@@ -1043,6 +1051,85 @@ def runner_pipe_open_without_overlapped_probe() -> tuple[bool, str]:
         return False, "setup_failed"
     except (RuntimeError, ValueError):
         return False, "setup_invalid_state"
+
+
+def runner_pipe_open_without_sqos_probe(
+    pipe_name: str,
+    expected_server_pid: int,
+) -> str:
+    """Retry one denied parent-pipe open with only explicit SQOS bits removed.
+
+    The probe uses the existing parent pipe name and expected server PID, the
+    current child token, the production access/share/disposition values, and
+    FILE_FLAG_OVERLAPPED. It closes any returned handle without sending data.
+    """
+    if sys.platform != "win32":
+        return "unsupported_platform"
+    try:
+        pipe_name = validate_runner_pipe_name(pipe_name)
+    except ValueError:
+        return "invalid_pipe_name"
+    if (
+        type(expected_server_pid) is not int
+        or not 1 <= expected_server_pid <= 0xFFFFFFFF
+    ):
+        return "invalid_server_pid"
+
+    try:
+        api = _runner_pipe._load_win32_api()
+        if not api.kernel.WaitNamedPipeW(pipe_name, 1_000):
+            error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+            if error == _ERROR_ACCESS_DENIED:
+                return "wait_access_denied"
+            if error == _ERROR_SEM_TIMEOUT:
+                return "wait_timeout"
+            if error == _ERROR_PIPE_BUSY:
+                return "pipe_busy"
+            if error == _ERROR_FILE_NOT_FOUND:
+                return "pipe_not_found"
+            return f"wait_winerror_{error}"
+
+        set_last_error = getattr(ctypes, "set_last_error", None)
+        if callable(set_last_error):
+            set_last_error(0)
+        handle = api.kernel.CreateFileW(
+            pipe_name,
+            PIPE_CLIENT_ACCESS_MASK,
+            0,
+            None,
+            _runner_pipe._OPEN_EXISTING,
+            _runner_pipe.FILE_FLAG_OVERLAPPED,
+            None,
+        )
+        if _runner_pipe._handle_is_invalid(handle):
+            error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+            if error == _ERROR_ACCESS_DENIED:
+                return "access_denied"
+            if error == _ERROR_PIPE_BUSY:
+                return "pipe_busy"
+            return f"open_winerror_{error}"
+
+        result = "server_pid_unavailable"
+        try:
+            server_pid = wintypes.DWORD(0)
+            if api.kernel.GetNamedPipeServerProcessId(
+                handle, ctypes.byref(server_pid),
+            ) and server_pid.value != 0:
+                result = (
+                    "opened" if server_pid.value == expected_server_pid
+                    else "server_pid_mismatch"
+                )
+        except Exception:
+            result = "server_pid_unavailable"
+
+        try:
+            if not api.kernel.CloseHandle(handle):
+                return "handle_close_failed"
+        except Exception:
+            return "handle_close_failed"
+        return result
+    except (OSError, RuntimeError, ValueError):
+        return "probe_failed"
 
 
 def runner_pipe_open_with_default_dacl_probe() -> tuple[bool, str]:
@@ -2626,6 +2713,9 @@ def _run_as_standard_user() -> int:
             python_executable=sys.executable,
             scratch=str(scratch),
             system_root=system_root,
+            sqos_diagnostic=(
+                os.environ.get("ICODE_R2_SQOS_DIAGNOSTIC") == "true"
+            ),
         )
         environment_buffer = _make_environment_buffer(environment)
         advapi = ctypes.WinDLL("advapi32", use_last_error=True)
@@ -3031,6 +3121,31 @@ def _run_child_mode(
         if validated_report is not None:
             try:
                 failure_detail = _safe_runner_child_exception_detail(exc)
+                sqos_probe_receipt: str | None = None
+                if (
+                    failure_detail == "client_open_access_denied"
+                    and os.environ.get("ICODE_R2_SQOS_DIAGNOSTIC") == "1"
+                ):
+                    try:
+                        sqos_probe_result = runner_pipe_open_without_sqos_probe(
+                            pipe_name, server_pid,
+                        )
+                    except Exception:
+                        sqos_probe_result = "probe_failed"
+                    sqos_probe_receipt = {
+                        "opened": "sqos_default_opened",
+                        "access_denied": "sqos_default_access_denied",
+                        "pipe_busy": "sqos_default_pipe_busy",
+                        "wait_timeout": "sqos_default_wait_timeout",
+                        "wait_access_denied": "sqos_default_wait_access_denied",
+                        "pipe_not_found": "sqos_default_pipe_not_found",
+                        "server_pid_unavailable": "sqos_default_server_pid_unavailable",
+                        "server_pid_mismatch": "sqos_default_server_pid_mismatch",
+                        "probe_failed": "sqos_default_probe_failed",
+                        "unsupported_platform": "sqos_default_unavailable",
+                        "invalid_pipe_name": "sqos_default_invalid_pipe",
+                        "invalid_server_pid": "sqos_default_invalid_pid",
+                    }.get(sqos_probe_result, "sqos_default_unavailable")
                 if failure_detail == "client_open_access_denied":
                     diagnostic = effective_token_diagnostic or "token_unavailable"
                     minimal_diagnostic = _minimal_runner_effective_token_diagnostic(
@@ -3058,6 +3173,8 @@ def _run_child_mode(
                         context_parts.append(wrong_pid_probe_state)
                     if self_pipe_access_probe_state is not None:
                         context_parts.append(self_pipe_access_probe_state)
+                    if sqos_probe_receipt is not None:
+                        context_parts.append(sqos_probe_receipt)
                     if (
                         default_dacl_probe_state is not None
                         and user_sid_dacl_probe_state is None
@@ -3220,6 +3337,23 @@ def _run_child_mode(
                             if len(matrix_context) > 120:
                                 matrix_context = matrix_state
                             context = matrix_context
+                    if sqos_probe_receipt is not None:
+                        sqos_context = [minimal_diagnostic]
+                        if temporary_acl_probe_receipt is not None:
+                            sqos_context.append(temporary_acl_probe_receipt)
+                        if access_mask_matrix_state == _RUNNER_PIPE_ACCESS_MATRIX_ALL_D5_RECEIPT:
+                            sqos_context.append("mask_all_d5")
+                        sqos_context.extend((
+                            sqos_probe_receipt,
+                            f"open_winerror_{error_code}",
+                        ))
+                        context = "+".join(sqos_context)
+                        if len(context) > 120:
+                            context = "+".join((
+                                minimal_diagnostic,
+                                sqos_probe_receipt,
+                                f"open_winerror_{error_code}",
+                            ))
                     failure_detail += ";detail=" + context
                 _write_report(
                     validated_report,

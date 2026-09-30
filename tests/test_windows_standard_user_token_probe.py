@@ -1666,6 +1666,108 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             + "+open_winerror_5",
         )
 
+    def test_opt_in_sqos_probe_runs_on_same_parent_pipe_and_enters_safe_receipt(self) -> None:
+        pipe_name = r"\\.\pipe\icode-runner-" + "a" * 32
+        expected_token = "token_process+il_medium+restricted_no+logon_enabled"
+
+        def deny_parent_open(*_args, **kwargs):
+            observer = kwargs.get("observer")
+            self.assertTrue(callable(observer))
+            observer()
+            raise PermissionError(5, "runner_pipe_open_access_denied")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "result.txt"
+            with (
+                mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+                mock.patch.dict(os.environ, {
+                    "TEMP": temporary_directory,
+                    "ICODE_R2_PROBE_MODE": "runner",
+                    "ICODE_R2_SQOS_DIAGNOSTIC": "1",
+                }),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe.runner_pipe_wrong_server_pid_probe",
+                    return_value=(True, "server_pid_mismatch_rejected"),
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._runner_pipe."
+                    "_open_runner_pipe_client_with_observer",
+                    side_effect=deny_parent_open,
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe.runner_pipe_open_without_sqos_probe",
+                    return_value="access_denied",
+                ) as sqos_probe,
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._runner_effective_token_diagnostic",
+                    return_value=expected_token,
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._write_report",
+                ) as write_report,
+            ):
+                result = _run_child_mode(
+                    str(report), pipe_name, "1234", "b" * 32,
+                )
+
+        self.assertEqual(result, 1)
+        sqos_probe.assert_called_once_with(pipe_name, 1234)
+        write_report.assert_called_once_with(
+            report,
+            "failed=client_open_access_denied;detail="
+            "token_process+logon_enabled+sqos_default_access_denied+"
+            "open_winerror_5",
+        )
+
+    def test_opt_in_sqos_success_is_reported_as_diagnostic_not_product_success(self) -> None:
+        pipe_name = r"\\.\pipe\icode-runner-" + "c" * 32
+        expected_token = "token_process+il_medium+restricted_no+logon_enabled"
+
+        def deny_parent_open(*_args, **kwargs):
+            kwargs["observer"]()
+            raise PermissionError(5, "runner_pipe_open_access_denied")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            report = Path(temporary_directory) / "result.txt"
+            with (
+                mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+                mock.patch.dict(os.environ, {
+                    "TEMP": temporary_directory,
+                    "ICODE_R2_PROBE_MODE": "runner",
+                    "ICODE_R2_SQOS_DIAGNOSTIC": "1",
+                }),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe.runner_pipe_wrong_server_pid_probe",
+                    return_value=(True, "server_pid_mismatch_rejected"),
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._runner_pipe."
+                    "_open_runner_pipe_client_with_observer",
+                    side_effect=deny_parent_open,
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe.runner_pipe_open_without_sqos_probe",
+                    return_value="opened",
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._runner_effective_token_diagnostic",
+                    return_value=expected_token,
+                ),
+                mock.patch(
+                    "scripts.windows_standard_user_token_probe._write_report",
+                ) as write_report,
+            ):
+                result = _run_child_mode(
+                    str(report), pipe_name, "5678", "d" * 32,
+                )
+
+        self.assertEqual(result, 1)
+        write_report.assert_called_once_with(
+            report,
+            "failed=client_open_access_denied;detail="
+            "token_process+logon_enabled+sqos_default_opened+open_winerror_5",
+        )
+
     def test_parent_pipe_denial_records_failed_self_pipe_negative_probe(self) -> None:
         def deny_pipe_open(*_args, **kwargs):
             observer = kwargs.get("observer")
@@ -1880,6 +1982,109 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertEqual(result, (False, "client_open_access_denied"))
         create_server.assert_called_once_with("S-1-5-5-123-456")
         kernel.CloseHandle.assert_not_called()
+
+    def test_default_sqos_pipe_probe_changes_only_sqos_bits_on_same_named_pipe(self) -> None:
+        self.assertTrue(hasattr(
+            token_probe, "runner_pipe_open_without_sqos_probe",
+        ), "the test-only SQOS diagnostic has not been implemented yet")
+
+        pipe_name = r"\\.\pipe\icode-runner-" + "9" * 32
+        kernel = mock.Mock()
+        kernel.WaitNamedPipeW.return_value = 1
+        kernel.CreateFileW.return_value = 789
+
+        def set_server_pid(_handle: int, output: object) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_uint32)).contents.value = 4321
+            return 1
+
+        kernel.GetNamedPipeServerProcessId.side_effect = set_server_pid
+        api = mock.Mock(kernel=kernel)
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch.object(token_probe._runner_pipe, "_load_win32_api", return_value=api),
+        ):
+            result = token_probe.runner_pipe_open_without_sqos_probe(pipe_name, 4321)
+
+        self.assertEqual(result, "opened")
+        kernel.WaitNamedPipeW.assert_called_once_with(pipe_name, 1_000)
+        kernel.CreateFileW.assert_called_once_with(
+            pipe_name,
+            token_probe.PIPE_CLIENT_ACCESS_MASK,
+            0,
+            None,
+            token_probe._runner_pipe._OPEN_EXISTING,
+            token_probe._runner_pipe.FILE_FLAG_OVERLAPPED,
+            None,
+        )
+        kernel.GetNamedPipeServerProcessId.assert_called_once()
+        kernel.CloseHandle.assert_called_once_with(789)
+
+    def test_default_sqos_pipe_probe_classifies_access_denial_without_handle_leak(self) -> None:
+        self.assertTrue(hasattr(
+            token_probe, "runner_pipe_open_without_sqos_probe",
+        ), "the test-only SQOS diagnostic has not been implemented yet")
+
+        kernel = mock.Mock()
+        kernel.WaitNamedPipeW.return_value = 1
+        kernel.CreateFileW.return_value = token_probe._runner_pipe._INVALID_HANDLE_VALUE
+        api = mock.Mock(kernel=kernel)
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch.object(token_probe._runner_pipe, "_load_win32_api", return_value=api),
+            mock.patch.object(token_probe.ctypes, "get_last_error", return_value=5, create=True),
+        ):
+            result = token_probe.runner_pipe_open_without_sqos_probe(
+                r"\\.\pipe\icode-runner-" + "8" * 32, 4321,
+            )
+
+        self.assertEqual(result, "access_denied")
+        kernel.GetNamedPipeServerProcessId.assert_not_called()
+        kernel.CloseHandle.assert_not_called()
+
+    def test_default_sqos_pipe_probe_rejects_unexpected_server_and_closes_handle(self) -> None:
+        kernel = mock.Mock()
+        kernel.WaitNamedPipeW.return_value = 1
+        kernel.CreateFileW.return_value = 456
+
+        def set_server_pid(_handle: int, output: object) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_uint32)).contents.value = 9999
+            return 1
+
+        kernel.GetNamedPipeServerProcessId.side_effect = set_server_pid
+        api = mock.Mock(kernel=kernel)
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch.object(token_probe._runner_pipe, "_load_win32_api", return_value=api),
+        ):
+            result = token_probe.runner_pipe_open_without_sqos_probe(
+                r"\\.\pipe\icode-runner-" + "7" * 32, 4321,
+            )
+
+        self.assertEqual(result, "server_pid_mismatch")
+        kernel.CloseHandle.assert_called_once_with(456)
+
+    def test_default_sqos_pipe_probe_reports_handle_cleanup_failure(self) -> None:
+        kernel = mock.Mock()
+        kernel.WaitNamedPipeW.return_value = 1
+        kernel.CreateFileW.return_value = 456
+        kernel.CloseHandle.return_value = 0
+
+        def set_server_pid(_handle: int, output: object) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_uint32)).contents.value = 4321
+            return 1
+
+        kernel.GetNamedPipeServerProcessId.side_effect = set_server_pid
+        api = mock.Mock(kernel=kernel)
+        with (
+            mock.patch("scripts.windows_standard_user_token_probe.sys.platform", "win32"),
+            mock.patch.object(token_probe._runner_pipe, "_load_win32_api", return_value=api),
+        ):
+            result = token_probe.runner_pipe_open_without_sqos_probe(
+                r"\\.\pipe\icode-runner-" + "6" * 32, 4321,
+            )
+
+        self.assertEqual(result, "handle_close_failed")
+        kernel.CloseHandle.assert_called_once_with(456)
 
     def test_default_dacl_pipe_probe_preserves_pipe_and_client_contract(self) -> None:
         self.assertTrue(hasattr(
@@ -3682,6 +3887,22 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             "PYTHONPATH=C:\\Users\\Public\\icode probe\\runner-lib",
             block,
         )
+
+    def test_runner_environment_carries_sqos_diagnostic_only_when_opted_in(self) -> None:
+        common = {
+            "python_executable": r"C:\\Python\\python.exe",
+            "scratch": r"C:\\Users\\Public\\icode probe",
+            "system_root": r"C:\\Windows",
+        }
+        default_block = build_runner_environment_block(**common)
+        diagnostic_block = build_runner_environment_block(
+            **common, sqos_diagnostic=True,
+        )
+
+        self.assertNotIn("ICODE_R2_SQOS_DIAGNOSTIC", default_block)
+        self.assertIn("ICODE_R2_SQOS_DIAGNOSTIC=1", diagnostic_block)
+        with self.assertRaises(ValueError):
+            build_runner_environment_block(**common, sqos_diagnostic=1)
 
     def test_runner_command_line_quotes_paths_and_obeys_logon_api_limit(self) -> None:
         command = build_runner_command_line(
