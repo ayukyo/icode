@@ -302,6 +302,47 @@ class TestFileIdExtdDirectoryInfoParser(unittest.TestCase):
 
 
 class TestFileIdExtdDirectoryPagination(unittest.TestCase):
+    def test_receipt_parser_failure_does_not_replace_collector_error(self) -> None:
+        from tests.windows_tree_snapshot_probe import (
+            WindowsDirectoryProbeError,
+            _page_parsed_empty_for_receipt,
+            collect_extd_directory_entries,
+        )
+
+        malformed_page = _extd_entry_record(
+            "", file_id=bytes.fromhex("00000000000000000000000000000001"),
+        )
+        self.assertFalse(_page_parsed_empty_for_receipt(malformed_page))
+        with self.assertRaises(WindowsDirectoryProbeError) as context:
+            collect_extd_directory_entries(
+                lambda _information_class, _buffer_bytes: (
+                    True, 0, malformed_page,
+                ),
+                buffer_bytes=512,
+            )
+        self.assertEqual(str(context.exception), "directory_name_length_invalid")
+
+    def test_filtered_restart_receipt_requires_fixed_native_signal(self) -> None:
+        from tests.windows_tree_snapshot_probe import (
+            _first_restart_page_filtered_nonzero_receipt,
+            _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS,
+            _FILE_ID_EXTD_DIRECTORY_INFO_CLASS,
+        )
+
+        self.assertTrue(_first_restart_page_filtered_nonzero_receipt([
+            (_FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS, True, 0, True, True),
+        ]))
+        for signal in (
+            (_FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS, True, 0, False, True),
+            (_FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS, True, 0, True, False),
+            (_FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS, False, 18, True, True),
+            (_FILE_ID_EXTD_DIRECTORY_INFO_CLASS, True, 0, True, True),
+            (_FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS, True, 5, True, True),
+        ):
+            with self.subTest(signal=signal):
+                self.assertFalse(_first_restart_page_filtered_nonzero_receipt([signal]))
+        self.assertFalse(_first_restart_page_filtered_nonzero_receipt([]))
+
     def test_collector_uses_restart_then_continuation_and_requires_explicit_eof(self) -> None:
         module = importlib.import_module("tests.windows_tree_snapshot_probe")
         collect = getattr(module, "collect_extd_directory_entries", None)
@@ -789,8 +830,11 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
         from tests.windows_tree_snapshot_probe import (
             _FILE_ID_EXTD_DIRECTORY_INFO_CLASS,
             _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS,
+            _first_restart_page_filtered_nonzero_receipt,
+            _page_parsed_empty_for_receipt,
             collect_extd_directory_entries,
             classify_directory_listing_drift,
+            parse_file_id_extd_directory_info,
         )
 
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -845,7 +889,15 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                         )
                     )
                     error = 0 if succeeded else int(ctypes.get_last_error())
-                    page_signals.append((information_class, succeeded, error, any(buffer.raw)))
+                    has_nonzero_data = any(buffer.raw)
+                    parsed_empty = (
+                        _page_parsed_empty_for_receipt(buffer.raw)
+                        if succeeded else False
+                    )
+                    page_signals.append((
+                        information_class, succeeded, error,
+                        has_nonzero_data, parsed_empty,
+                    ))
                     return succeeded, error, buffer.raw
 
                 try:
@@ -858,20 +910,27 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
                     ) from exc
                 return entries, information_classes, page_signals
 
-            def assert_known_eof(page_signals) -> None:
+            def assert_known_eof(page_signals) -> str:
                 self.assertTrue(page_signals, "enumeration issued no native query")
-                _info_class, succeeded, error, has_nonzero_data = page_signals[-1]
-                self.assertTrue(
-                    (succeeded and error == 0 and not has_nonzero_data)
-                    or (not succeeded and error == 18),
-                    f"unexpected native enumeration terminal response: {page_signals[-1]}",
+                _info_class, succeeded, error, has_nonzero_data, _parsed_empty = (
+                    page_signals[-1]
+                )
+                if succeeded and error == 0 and not has_nonzero_data:
+                    return "success_zero_buffer"
+                if not succeeded and error == 18:
+                    return "error_no_more_files"
+                self.fail(
+                    f"unexpected native enumeration terminal response: {page_signals[-1]}"
                 )
 
             handle = open_directory(root)
             try:
                 first_pass, first_classes, first_signals = collect(handle)
                 self.assertEqual({entry.name for entry in first_pass}, expected_names)
-                assert_known_eof(first_signals)
+                first_eof = assert_known_eof(first_signals)
+                filtered_restart = (
+                    _first_restart_page_filtered_nonzero_receipt(first_signals)
+                )
                 self.assertEqual(first_classes[0], _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS)
                 self.assertGreater(len(first_classes), 2, "fixture did not cross buffer pages")
                 self.assertTrue(
@@ -884,7 +943,7 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
 
                 second_pass, second_classes, second_signals = collect(handle)
                 self.assertEqual(second_classes[0], _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS)
-                assert_known_eof(second_signals)
+                second_eof = assert_known_eof(second_signals)
                 self.assertEqual(
                     classify_directory_listing_drift(first_pass, second_pass),
                     "same_observation",
@@ -899,7 +958,7 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
             try:
                 empty_entries, empty_classes, empty_signals = collect(empty_handle)
                 self.assertEqual(empty_entries, ())
-                assert_known_eof(empty_signals)
+                empty_eof = assert_known_eof(empty_signals)
                 self.assertEqual(empty_classes[0], _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS)
                 self.assertLessEqual(len(empty_classes), 2)
                 self.assertTrue(
@@ -912,6 +971,20 @@ class TestNativeWindowsDirectoryHandleProbe(unittest.TestCase):
             finally:
                 if not kernel.CloseHandle(empty_handle):
                     raise OSError("failed_native_handle_cleanup")
+
+            probe_result = (
+                "windows-tree-directory-pagination "
+                "restart_first_filtered_empty_nonzero="
+                f"{str(filtered_restart).lower()} "
+                f"eof_first={first_eof} eof_rescan={second_eof} "
+                f"eof_empty={empty_eof}"
+            )
+            print(probe_result)
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                print(
+                    "::notice title=R3 Windows directory pagination::"
+                    f"{probe_result}"
+                )
 
     def test_held_directory_restart_list_detects_add_remove_and_same_name_replacement(self) -> None:
         from ctypes import wintypes

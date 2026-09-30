@@ -873,3 +873,32 @@ def collect_extd_directory_entries(
                 raise WindowsDirectoryProbeError("directory_entry_limit")
             entries.append(entry)
         information_class = _FILE_ID_EXTD_DIRECTORY_INFO_CLASS
+
+
+def _first_restart_page_filtered_nonzero_receipt(page_signals: object) -> bool:
+    """Validate a fixed-shape receipt for the filtered-restart candidate."""
+    if type(page_signals) is not list or not page_signals:
+        return False
+    signal = page_signals[0]
+    if type(signal) is not tuple or len(signal) != 5:
+        return False
+    information_class, succeeded, winerror, has_nonzero_data, parsed_empty = signal
+    return (
+        type(information_class) is int
+        and information_class == _FILE_ID_EXTD_DIRECTORY_RESTART_INFO_CLASS
+        and succeeded is True
+        and type(winerror) is int
+        and winerror == 0
+        and has_nonzero_data is True
+        and parsed_empty is True
+    )
+
+
+def _page_parsed_empty_for_receipt(payload: bytes) -> bool:
+    """Return a diagnostic-only parser result without taking over error reporting."""
+    try:
+        return not parse_file_id_extd_directory_info(payload)
+    except Exception:
+        # The collector remains authoritative and will parse the same response,
+        # preserving its established, specific malformed-page error.
+        return False
