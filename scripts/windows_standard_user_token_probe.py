@@ -1135,6 +1135,97 @@ def runner_pipe_control_access_matrix_probe() -> str:
     return receipt if len(receipt) <= 128 else "control_matrix_unavailable"
 
 
+def runner_pipe_client_flags_matrix_probe() -> str:
+    """Compare OVERLAPPED and explicit SQOS flags on disposable local pipes.
+
+    The desired-access mask, server mode, per-logon DACL, share mode, and
+    disposition stay fixed. Each case uses a fresh pipe; successful opens are
+    PID-checked and immediately closed without connecting or exchanging data.
+    """
+    if sys.platform != "win32":
+        return "flags_unsupported_platform"
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        process_handle = api.kernel.GetCurrentProcess()
+        api.kernel.GetCurrentProcessId.argtypes = []
+        api.kernel.GetCurrentProcessId.restype = wintypes.DWORD
+        expected_server_pid = int(api.kernel.GetCurrentProcessId())
+        if not 1 <= expected_server_pid <= 0xFFFFFFFF:
+            return "flags_setup_failed"
+        logon_sid = runner_process_logon_sid(process_handle)
+    except Exception:
+        return "flags_setup_failed"
+
+    sqos_flags = (
+        _runner_pipe._SECURITY_SQOS_PRESENT
+        | _runner_pipe._SECURITY_IMPERSONATION
+    )
+    cases = (
+        (
+            "base",
+            _runner_pipe.FILE_FLAG_OVERLAPPED | sqos_flags,
+        ),
+        ("noovl", sqos_flags),
+        ("nosqos", _runner_pipe.FILE_FLAG_OVERLAPPED),
+        ("neither", 0),
+    )
+    outcomes: list[str] = []
+    for label, client_flags in cases:
+        outcome = f"{label}_s"
+        try:
+            with create_runner_pipe_server(logon_sid) as pipe:
+                if not api.kernel.WaitNamedPipeW(pipe.name, 2_000):
+                    error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                    outcome = f"{label}_w{error:08x}"
+                else:
+                    handle = api.kernel.CreateFileW(
+                        pipe.name,
+                        PIPE_CLIENT_ACCESS_MASK,
+                        0,
+                        None,
+                        _runner_pipe._OPEN_EXISTING,
+                        client_flags,
+                        None,
+                    )
+                    if _runner_pipe._handle_is_invalid(handle):
+                        error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                        outcome = (
+                            f"{label}_d5" if error == _ERROR_ACCESS_DENIED
+                            else f"{label}_e{error:08x}"
+                        )
+                    else:
+                        server_pid = wintypes.DWORD(0)
+                        try:
+                            if not api.kernel.GetNamedPipeServerProcessId(
+                                handle, ctypes.byref(server_pid),
+                            ) or server_pid.value == 0:
+                                outcome = f"{label}_pid_unavailable"
+                            elif server_pid.value != expected_server_pid:
+                                outcome = f"{label}_pid_mismatch"
+                            else:
+                                outcome = f"{label}_ok"
+                        except Exception:
+                            outcome = f"{label}_pid_unavailable"
+                        try:
+                            if not api.kernel.CloseHandle(handle):
+                                error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                                outcome = f"{label}_c{error:08x}"
+                        except OSError as exc:
+                            outcome = f"{label}_c{_safe_windows_error_code(exc):08x}"
+                        except Exception:
+                            outcome = f"{label}_c"
+        except OSError as exc:
+            outcome = f"{label}_s{_safe_windows_error_code(exc):08x}"
+        except Exception:
+            outcome = f"{label}_s"
+        outcomes.append(outcome)
+
+    receipt = "flags_" + "+".join(outcomes)
+    return receipt if len(receipt) <= 128 else "flags_matrix_unavailable"
+
+
 def runner_pipe_open_without_synchronize_probe() -> tuple[bool, str]:
     """Test a narrower client mask against the unchanged per-logon pipe DACL.
 

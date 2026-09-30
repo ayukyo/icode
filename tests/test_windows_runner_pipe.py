@@ -62,6 +62,12 @@ _NATIVE_PIPE_CONTROL_ACCESS = re.compile(
     r"control_(?:base|rc|wd|both)_(?:ok|d5|[ewcs][0-9a-f]{8}|[cs])"
     r"(?:\+(?:rc|wd|both)_(?:ok|d5|[ewcs][0-9a-f]{8}|[cs])){3}\Z",
 )
+_NATIVE_PIPE_CLIENT_FLAGS = re.compile(
+    r"flags_base_(?:ok|d5|pid_unavailable|pid_mismatch|[ewcs][0-9a-f]{8}|[cs])"
+    r"\+noovl_(?:ok|d5|pid_unavailable|pid_mismatch|[ewcs][0-9a-f]{8}|[cs])"
+    r"\+nosqos_(?:ok|d5|pid_unavailable|pid_mismatch|[ewcs][0-9a-f]{8}|[cs])"
+    r"\+neither_(?:ok|d5|pid_unavailable|pid_mismatch|[ewcs][0-9a-f]{8}|[cs])\Z",
+)
 _NATIVE_PIPE_DESCRIPTOR_SHAPE = re.compile(
     r"sd_control=[0-9A-F]{4};sd_revision=[0-9]{1,3};"
     r"owner=(?:user|logon|other|absent|unavailable);"
@@ -243,6 +249,30 @@ def _format_native_pipe_control_access_notice(result: object) -> str:
     ):
         result = "control_unavailable"
     return f"pipe_control_access={result}"
+
+
+def _format_native_pipe_client_flags_notice(result: object) -> str:
+    """Keep the failure-only client-flags A/B as a fixed, bounded receipt."""
+    if (
+        type(result) is not str
+        or len(result) > 128
+        or _NATIVE_PIPE_CLIENT_FLAGS.fullmatch(result) is None
+    ):
+        result = "flags_unavailable"
+    return f"pipe_client_flags={result}"
+
+
+def _native_pipe_client_flags_diagnostic_notice() -> str:
+    """Run the diagnostic without allowing it to mask the original failure."""
+    try:
+        from scripts.windows_standard_user_token_probe import (
+            runner_pipe_client_flags_matrix_probe,
+        )
+
+        result = runner_pipe_client_flags_matrix_probe()
+    except Exception:
+        result = "flags_unavailable"
+    return _format_native_pipe_client_flags_notice(result)
 
 
 def _format_native_pipe_descriptor_notice(descriptor: object) -> str:
@@ -595,6 +625,50 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
                     formatter(unsafe),
                     "pipe_control_access=control_unavailable",
                 )
+
+    def test_native_pipe_client_flags_notice_is_fixed_and_failure_is_preserved(self) -> None:
+        formatter = globals().get("_format_native_pipe_client_flags_notice")
+        runner = globals().get("_native_pipe_client_flags_diagnostic_notice")
+        self.assertTrue(callable(formatter), "client_flags_notice_formatter_missing")
+        self.assertTrue(callable(runner), "client_flags_diagnostic_runner_missing")
+
+        receipt = "flags_base_d5+noovl_ok+nosqos_d5+neither_d5"
+        self.assertEqual(
+            formatter(receipt),
+            f"pipe_client_flags={receipt}",
+        )
+        for unsafe in (
+            "flags_base_d5+noovl_ok+nosqos_d5+neither_d5;secret",
+            "flags_base_d5+noovl_ok+nosqos_d5",
+            "flags_unavailable",
+            "x" * 129,
+            None,
+        ):
+            with self.subTest(unsafe=unsafe):
+                self.assertEqual(
+                    formatter(unsafe),
+                    "pipe_client_flags=flags_unavailable",
+                )
+
+        from scripts import windows_standard_user_token_probe as probe
+
+        with mock.patch.object(
+            probe,
+            "runner_pipe_client_flags_matrix_probe",
+            return_value=receipt,
+        ) as diagnostic:
+            self.assertEqual(
+                runner(),
+                f"pipe_client_flags={receipt}",
+            )
+        diagnostic.assert_called_once_with()
+
+        with mock.patch.object(
+            probe,
+            "runner_pipe_client_flags_matrix_probe",
+            side_effect=RuntimeError("private detail must not escape"),
+        ):
+            self.assertEqual(runner(), "pipe_client_flags=flags_unavailable")
 
     def test_native_pipe_failure_annotation_redacts_untrusted_fields(self) -> None:
         formatter = globals().get("_format_native_pipe_failure_annotation")
@@ -1500,6 +1574,9 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
                 print(
                     "::notice::"
                     + _format_native_pipe_control_access_notice(control_access),
+                )
+                print(
+                    "::notice::" + _native_pipe_client_flags_diagnostic_notice(),
                 )
                 connect_receipt = (
                     server_connect_receipts[-1]
