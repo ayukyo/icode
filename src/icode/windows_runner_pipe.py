@@ -880,7 +880,7 @@ def _open_runner_pipe_client_with_observer(
     The observer runs after a pipe instance is available and immediately before
     each ``CreateFileW`` attempt. It must not mutate the current thread token;
     observer failures do not change connection behavior. This private entry
-    point is reserved for the standard-user Windows probe.
+    point is reserved for test-only, read-only Windows pipe diagnostics.
     """
     return _open_runner_pipe_client_impl(
         name,

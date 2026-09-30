@@ -29,6 +29,25 @@ from icode.windows_runner_protocol import RunnerProtocolError
 
 REQUEST_ID = "0123456789abcdef0123456789abcdef"
 
+_NATIVE_PIPE_ACCESS_RECEIPT_FIELDS = (
+    ("dacl", {"present", "absent", "null", "unavailable"}),
+    ("ace", {"match", "missing", "not_applicable", "unavailable"}),
+    ("token", {"thread", "process", "child_process", "unavailable"}),
+    ("logon", {"enabled", "disabled", "deny_only", "absent", "unavailable"}),
+    ("restricted", {"yes", "no", "unavailable"}),
+    ("access", {"allow", "deny", "unavailable"}),
+    ("client_il", {
+        "untrusted", "low", "medium", "medium_plus", "high", "system",
+        "protected_process", "other", "unavailable",
+    }),
+    ("pipe_il", {
+        "untrusted", "low", "medium", "medium_plus", "high", "system",
+        "protected_process", "other", "absent", "unavailable",
+    }),
+    ("pipe_nwu", {"yes", "no", "unavailable"}),
+    ("token_nwu", {"yes", "no", "unavailable"}),
+)
+
 
 def _parse_pipe_direction_receipt(receipt: str) -> tuple[str, str] | None:
     """Split the fixed probe receipt without treating its role as a state."""
@@ -123,6 +142,33 @@ def _native_pipe_access_control_receipt() -> str:
         )
     except Exception:
         return "self_pipe=unavailable;temporary_dacl=unavailable"
+
+
+def _native_pipe_target_access_receipt(
+    pipe_handle: int,
+    logon_sid: str | None,
+) -> str:
+    """Observe only fixed descriptor/token labels for the actual target pipe."""
+    try:
+        from scripts.windows_standard_user_token_probe import (
+            _diagnose_runner_pipe_access,
+        )
+
+        diagnostic = _diagnose_runner_pipe_access(pipe_handle, logon_sid)
+    except Exception:
+        return "target_access=unavailable"
+    if type(diagnostic) is not str or len(diagnostic) > 210:
+        return "target_access=unavailable"
+    parts = diagnostic.split("+")
+    if len(parts) != len(_NATIVE_PIPE_ACCESS_RECEIPT_FIELDS):
+        return "target_access=unavailable"
+    for part, (field, allowed_values) in zip(
+        parts, _NATIVE_PIPE_ACCESS_RECEIPT_FIELDS, strict=True,
+    ):
+        prefix = field + "_"
+        if not part.startswith(prefix) or part[len(prefix):] not in allowed_values:
+            return "target_access=unavailable"
+    return f"target_access={diagnostic}"
 
 
 class TestWindowsRunnerPipePolicy(unittest.TestCase):
@@ -348,6 +394,46 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
             "self_pipe=self_pipe_other:self_access_unavailable;"
             "temporary_dacl=dfuuuu_ufuuuu",
         )
+
+    def test_native_pipe_target_access_receipt_uses_actual_handle(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        diagnostic = (
+            "dacl_present+ace_match+token_thread+logon_enabled+restricted_no+"
+            "access_allow+client_il_medium+pipe_il_absent+pipe_nwu_unavailable+"
+            "token_nwu_no"
+        )
+        receipt_builder = globals().get("_native_pipe_target_access_receipt")
+        self.assertTrue(
+            callable(receipt_builder),
+            "native_pipe_target_access_receipt_missing",
+        )
+        with mock.patch.object(
+            probe, "_diagnose_runner_pipe_access", return_value=diagnostic,
+        ) as diagnose:
+            receipt = receipt_builder(0x1234, "S-1-5-5-100-200")
+
+        self.assertEqual(receipt, f"target_access={diagnostic}")
+        self.assertLessEqual(len(receipt), 224)
+        self.assertNotIn("S-1-5-5-100-200", receipt)
+        diagnose.assert_called_once_with(0x1234, "S-1-5-5-100-200")
+
+    def test_native_pipe_target_access_receipt_rejects_unbounded_fields(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        receipt_builder = globals().get("_native_pipe_target_access_receipt")
+        self.assertTrue(
+            callable(receipt_builder),
+            "native_pipe_target_access_receipt_missing",
+        )
+        with mock.patch.object(
+            probe,
+            "_diagnose_runner_pipe_access",
+            return_value="dacl_present+private_path=/tmp/sensitive",
+        ):
+            receipt = receipt_builder(0x1234, "S-1-5-5-100-200")
+
+        self.assertEqual(receipt, "target_access=unavailable")
 
     def test_pipe_security_descriptor_shape_receipt_is_bounded_and_sid_free(self) -> None:
         from scripts import windows_standard_user_token_probe as probe
@@ -1008,14 +1094,23 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
         }
         client_results: list[dict[str, object]] = []
         client_errors: list[BaseException] = []
+        target_access_receipts: list[str] = []
         server_descriptor_shape = "sd=unavailable"
 
         def run_client() -> None:
             try:
-                with open_runner_pipe_client(
+                def observe_actual_pipe_access() -> None:
+                    target_access_receipts.append(
+                        _native_pipe_target_access_receipt(
+                            server._handle, logon_sid,
+                        ),
+                    )
+
+                with windows_runner_pipe._open_runner_pipe_client_with_observer(
                     server.name,
                     process_id,
                     timeout_ms=5_000,
+                    observer=observe_actual_pipe_access,
                 ) as client:
                     client.send_message(ready, timeout_ms=5_000)
                     client_results.append(client.receive_message(timeout_ms=5_000))
@@ -1078,13 +1173,22 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
                 if isinstance(client_error, PermissionError)
                 else ""
             )
+            target_access = (
+                f";{target_access_receipts[-1]}"
+                if isinstance(client_error, PermissionError)
+                and target_access_receipts
+                else ";target_access=unavailable"
+                if isinstance(client_error, PermissionError)
+                else ""
+            )
             descriptor = (
                 f";server_descriptor={server_descriptor_shape}"
                 if isinstance(client_error, PermissionError)
                 else ""
             )
             self.fail(
-                f"native_pipe_client_failed:{details}{controls}{descriptor}"
+                f"native_pipe_client_failed:{details}{target_access}"
+                f"{controls}{descriptor}"
             )
         if server_error is not None:
             raise server_error
