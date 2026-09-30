@@ -631,26 +631,39 @@ def _self_pipe_access_receipt_label(detail: object) -> str:
     return "self_access_unavailable"
 
 
-def _runner_pipe_accesscheck_state(
+def _runner_pipe_accesscheck_observation(
     pipe_handle: int,
     expected_sid: str | None,
-) -> str:
-    """Return one fixed AccessCheck state for a disposable pipe descriptor."""
+) -> tuple[str, str]:
+    """Return fixed AccessCheck and effective-token source labels."""
+    access_state = token_source = "unavailable"
     try:
         diagnostic = _diagnose_runner_pipe_access(pipe_handle, expected_sid)
     except Exception:
-        return "unavailable"
+        return access_state, token_source
     if isinstance(diagnostic, str):
         for part in diagnostic.split("+"):
             if part in {"access_allow", "access_deny", "access_unavailable"}:
-                return part.removeprefix("access_")
-    return "unavailable"
+                access_state = part.removeprefix("access_")
+                break
+    if isinstance(diagnostic, str):
+        for part in diagnostic.split("+"):
+            if part in {"token_process", "token_thread"}:
+                token_source = part.removeprefix("token_")
+                break
+    return access_state, token_source
 
 
-def _runner_pipe_probe_detail_with_accesscheck(detail: str, state: str) -> str:
+def _runner_pipe_probe_detail_with_accesscheck(
+    detail: str,
+    observation: tuple[str, str],
+) -> str:
+    state, token_source = observation
     if state not in {"allow", "deny", "unavailable"}:
         state = "unavailable"
-    return f"{detail}+access_{state}"
+    if token_source not in {"process", "thread", "unavailable"}:
+        token_source = "unavailable"
+    return f"{detail}+access_{state}+token_{token_source}"
 
 
 def _runner_pipe_probe_receipt_code(
@@ -658,12 +671,13 @@ def _runner_pipe_probe_receipt_code(
     opened: bool,
     detail: object,
 ) -> str:
-    """Compactly encode open and AccessCheck results for temporary ACL A/Bs.
+    """Compactly encode open, AccessCheck, and token source for temporary A/Bs.
 
     The receipt order is default DACL, TokenUser DACL, TokenUser plus the
-    create-instance bit. Each item is ``<kind><open><access>`` where open is
-    ``o`` (opened), ``d`` (access denied), or ``f`` (other failure), and
-    access is ``a`` (allow), ``d`` (deny), or ``u`` (unavailable).
+    create-instance bit. Each item is ``<kind><open><access><token>`` where
+    open is ``o`` (opened), ``d`` (access denied), or ``f`` (other failure),
+    access is ``a`` (allow), ``d`` (deny), or ``u`` (unavailable), and token
+    is ``p`` (process), ``t`` (thread), or ``u`` (unavailable).
     """
     if kind not in {"d", "u", "c"}:
         raise ValueError("invalid_temporary_pipe_probe_kind")
@@ -671,15 +685,13 @@ def _runner_pipe_probe_receipt_code(
         open_state = "o"
     elif isinstance(detail, str) and (
         detail == "client_open_access_denied"
-        or re.fullmatch(
-            r"client_open_access_denied\+access_(?:allow|deny|unavailable)",
-            detail,
-        )
+        or _runner_pipe_probe_open_denied(detail)
     ):
         open_state = "d"
     else:
         open_state = "f"
     access_state = "u"
+    token_state = "u"
     if isinstance(detail, str):
         for part in detail.split("+"):
             if part in {"access_allow", "access_deny", "access_unavailable"}:
@@ -688,14 +700,18 @@ def _runner_pipe_probe_receipt_code(
                     "access_deny": "d",
                     "access_unavailable": "u",
                 }[part]
-    return f"{kind}{open_state}{access_state}"
+            elif part in {"token_process", "token_thread"}:
+                token_state = {"token_process": "p", "token_thread": "t"}[part]
+    return f"{kind}{open_state}{access_state}{token_state}"
 
 
 def _runner_pipe_probe_open_denied(detail: object) -> bool:
     return isinstance(detail, str) and (
         detail == "client_open_access_denied"
         or re.fullmatch(
-            r"client_open_access_denied\+access_(?:allow|deny|unavailable)",
+            r"client_open_access_denied"
+            r"(?:\+access_(?:allow|deny|unavailable))?"
+            r"(?:\+token_(?:process|thread|child_process|unavailable))?",
             detail,
         )
     )
@@ -1017,7 +1033,7 @@ def runner_pipe_open_with_default_dacl_probe() -> tuple[bool, str]:
 
             # Compare the actual default descriptor with the same effective
             # token/mask immediately before the real disposable-pipe open.
-            accesscheck_state = _runner_pipe_accesscheck_state(
+            accesscheck_state = _runner_pipe_accesscheck_observation(
                 pipe._handle, None,
             )
             client = api.kernel.CreateFileW(
@@ -1122,7 +1138,7 @@ def runner_pipe_open_with_user_sid_dacl_probe() -> tuple[bool, str]:
                     return False, "client_wait_access_denied"
                 return False, "client_wait_failed"
 
-            accesscheck_state = _runner_pipe_accesscheck_state(
+            accesscheck_state = _runner_pipe_accesscheck_observation(
                 pipe._handle, user_sid,
             )
             client = api.kernel.CreateFileW(
@@ -1294,7 +1310,7 @@ def runner_pipe_open_with_user_sid_create_instance_access_probe() -> tuple[bool,
                     return False, "client_wait_access_denied"
                 return False, "client_wait_failed"
 
-            accesscheck_state = _runner_pipe_accesscheck_state(
+            accesscheck_state = _runner_pipe_accesscheck_observation(
                 pipe._handle, user_sid,
             )
             client = api.kernel.CreateFileW(
