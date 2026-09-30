@@ -6,6 +6,36 @@ from pathlib import Path
 import unittest
 
 
+class TestContainerReviewerBoundaryCi(unittest.TestCase):
+    def test_docker和Podman必须运行原生Reviewer隔离探针(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        required_contracts = (
+            "  container-reviewer:\n",
+            "    name: R3 container Reviewer (${{ matrix.runtime }})\n",
+            "        runtime: [docker, podman]\n",
+            '      ICODE_RUN_CONTAINER_REVIEWER_PROBE: "1"\n',
+            "      ICODE_CONTAINER_REVIEWER_RUNTIME: ${{ matrix.runtime }}\n",
+            "          sudo apt-get install --yes podman\n",
+            "          docker pull python:3.13-slim\n",
+            "          podman pull docker.io/library/python:3.13-slim\n",
+            "        run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_容器_Reviewer原生只读与账本遮蔽边界 -v\n",
+        )
+        for contract in required_contracts:
+            with self.subTest(contract=contract.splitlines()[0]):
+                self.assertIn(contract, workflow)
+
+        install = workflow.index("sudo apt-get install --yes podman")
+        pull = workflow.index("docker pull python:3.13-slim")
+        probe = workflow.index(
+            "tests.test_isolation.TestSandboxWrapping.test_容器_Reviewer原生只读与账本遮蔽边界"
+        )
+        self.assertLess(install, pull)
+        self.assertLess(pull, probe)
+
+
 class TestLinuxReviewerBoundaryCi(unittest.TestCase):
     def test_linux_native_matrix_requires_real_bubblewrap_reviewer_probe(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]

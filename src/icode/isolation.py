@@ -1778,6 +1778,69 @@ class ContainerSandbox:
         out += [self.image, *argv]
         return out
 
+    def wrap_read_only_excluding(
+        self,
+        argv: Sequence[str],
+        *,
+        workspace: Path,
+        deny_read_roots: Sequence[Path],
+        network: bool = False,
+    ) -> list[str]:
+        """Run Reviewer commands with a read-only workspace and hidden exclusions.
+
+        A read-only bind alone still exposes private ticket data under the
+        workspace. Each validated exclusion is therefore covered by an empty,
+        read-only tmpfs mount. Runtime-specific flags are intentional: Docker
+        must enforce recursive read-only mounts, while Podman must disable
+        tmpfs copy-up or it would reveal the parent bind's hidden contents.
+        """
+        if sys.platform != "linux":
+            raise ValueError("容器 Reviewer 排除挂载目前仅在 Linux 宿主机验收")
+        if self.runtime not in {"docker", "podman"}:
+            raise ValueError("容器 Reviewer 仅支持 docker 或 podman 运行时")
+
+        workspace_path = Path(workspace).resolve(strict=True)
+        exclusions = _validated_read_only_exclusions(
+            workspace_path, deny_read_roots,
+        )
+        mount_paths = (workspace_path, *exclusions)
+        if any("," in str(path) for path in mount_paths):
+            raise ValueError("容器 Reviewer 挂载路径不能包含逗号")
+        # Docker's --tmpfs and Podman's compatible --tmpfs syntax use ':' to
+        # separate the target path from mount flags. Do not pass an ambiguous
+        # path to either engine.
+        if any(":" in str(path) for path in exclusions):
+            raise ValueError("容器 Reviewer 排除挂载路径不能包含冒号")
+
+        if self.runtime == "docker":
+            bind_mount = (
+                f"type=bind,src={workspace_path},dst={workspace_path},readonly,"
+                "bind-recursive=readonly,bind-propagation=rprivate"
+            )
+        else:
+            bind_mount = (
+                f"type=bind,src={workspace_path},dst={workspace_path},ro=true,"
+                "bind-nonrecursive,bind-propagation=rprivate"
+            )
+
+        out = [
+            self.runtime, "run", "--rm", "--pull=never",
+            "--mount", bind_mount,
+        ]
+        for excluded in exclusions:
+            tmpfs_options = "ro,noexec,nosuid,nodev,size=1048576,mode=0555"
+            if self.runtime == "podman":
+                # Podman copies parent bind contents into nested tmpfs mounts
+                # by default; the empty overlay is required to hide the ledger.
+                tmpfs_options += ",notmpcopyup"
+            out += ["--tmpfs", f"{excluded}:{tmpfs_options}"]
+
+        out += ["-w", str(workspace_path)]
+        if not network:
+            out += ["--network", "none"]
+        out += [self.image, *argv]
+        return out
+
     def describe(self) -> dict:
         return {
             "backend": f"{self.name}:{self.runtime}",

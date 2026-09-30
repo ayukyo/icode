@@ -2711,6 +2711,149 @@ print("metadata-read-only-ok")
         self.assertEqual(argv[argv.index("-v") + 1], f"{workspace}:{workspace}:ro")
         self.assertEqual(argv[argv.index("--network") + 1], "none")
 
+    def test_容器_Reviewer排除挂载按Docker和Podman合同只读遮蔽(self) -> None:
+        with temp_workspace() as root:
+            workspace = root / "review-workspace"
+            workspace.mkdir()
+            excluded = workspace / ".icode_output"
+            (excluded / "ticket-1" / "review").mkdir(parents=True)
+
+            cases = (
+                (
+                    "docker",
+                    f"type=bind,src={workspace},dst={workspace},readonly,"
+                    "bind-recursive=readonly,bind-propagation=rprivate",
+                    f"{excluded}:ro,noexec,nosuid,nodev,size=1048576,mode=0555",
+                ),
+                (
+                    "podman",
+                    f"type=bind,src={workspace},dst={workspace},ro=true,"
+                    "bind-nonrecursive,bind-propagation=rprivate",
+                    f"{excluded}:ro,noexec,nosuid,nodev,size=1048576,"
+                    "mode=0555,notmpcopyup",
+                ),
+            )
+            with mock.patch("icode.isolation.sys.platform", "linux"):
+                for runtime, expected_bind, expected_hidden in cases:
+                    with self.subTest(runtime=runtime):
+                        argv = ContainerSandbox(runtime=runtime).wrap_read_only_excluding(
+                            ["python", "-c", "pass"],
+                            workspace=workspace,
+                            deny_read_roots=(excluded, excluded / "ticket-1" / "review"),
+                        )
+                        self.assertIn("--pull=never", argv)
+                        self.assertEqual(argv[argv.index("--mount") + 1], expected_bind)
+                        self.assertEqual(argv[argv.index("--tmpfs") + 1], expected_hidden)
+                        self.assertEqual(argv[argv.index("--network") + 1], "none")
+                        self.assertEqual(argv[-3:], ["python", "-c", "pass"])
+
+    def test_容器_Reviewer排除路径拒绝注入分隔符及未知运行时(self) -> None:
+        with temp_workspace() as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / ".icode_output").mkdir()
+
+            with mock.patch("icode.isolation.sys.platform", "linux"):
+                with self.assertRaisesRegex(ValueError, "运行时"):
+                    ContainerSandbox(runtime="unknown").wrap_read_only_excluding(
+                        ["true"], workspace=workspace,
+                        deny_read_roots=(workspace / ".icode_output",),
+                    )
+
+                comma_workspace = root / "workspace,comma"
+                comma_workspace.mkdir()
+                comma_excluded = comma_workspace / ".icode_output"
+                comma_excluded.mkdir()
+                with self.assertRaisesRegex(ValueError, "挂载路径"):
+                    ContainerSandbox(runtime="docker").wrap_read_only_excluding(
+                        ["true"], workspace=comma_workspace,
+                        deny_read_roots=(comma_excluded,),
+                    )
+
+                colon_excluded = workspace / "private:ledger"
+                colon_excluded.mkdir()
+                with self.assertRaisesRegex(ValueError, "挂载路径"):
+                    ContainerSandbox(runtime="podman").wrap_read_only_excluding(
+                        ["true"], workspace=workspace,
+                        deny_read_roots=(colon_excluded,),
+                    )
+
+            with mock.patch("icode.isolation.sys.platform", "darwin"):
+                with self.assertRaisesRegex(ValueError, "Linux 宿主机"):
+                    ContainerSandbox(runtime="docker").wrap_read_only_excluding(
+                        ["true"], workspace=workspace,
+                        deny_read_roots=(workspace / ".icode_output",),
+                    )
+
+    @unittest.skipUnless(
+        os.environ.get("ICODE_RUN_CONTAINER_REVIEWER_PROBE") == "1",
+        "原生容器 Reviewer 探针由必需 CI job 显式启用",
+    )
+    def test_容器_Reviewer原生只读与账本遮蔽边界(self) -> None:
+        runtime = os.environ.get("ICODE_CONTAINER_REVIEWER_RUNTIME", "")
+        if runtime not in {"docker", "podman"}:
+            self.fail("原生容器探针必须显式选择 docker 或 podman")
+        if not shutil.which(runtime):
+            self.fail("原生容器探针要求所选运行时已安装")
+
+        with temp_workspace() as temporary_root:
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            source = workspace / "reviewed.py"
+            source.write_text("source-original\n", encoding="utf-8")
+            output_root = workspace / ".icode_output"
+            ticket_dir = output_root / "ticket-1"
+            out_dir = ticket_dir / "review"
+            out_dir.mkdir(parents=True)
+            ledger = ticket_dir / "ledger.json"
+            ledger.write_text("private-ledger-marker\n", encoding="utf-8")
+            (workspace / "ledger-alias").symlink_to(
+                ".icode_output/ticket-1/ledger.json",
+            )
+            outside_secret = temporary_root / "outside-secret.txt"
+            outside_secret.write_text("outside-secret-marker\n", encoding="utf-8")
+
+            code = "\n".join((
+                "from pathlib import Path",
+                "source = Path('reviewed.py')",
+                "assert source.read_text() == 'source-original\\n'",
+                "for path in (Path('.icode_output/ticket-1/ledger.json'), Path('ledger-alias')):",
+                "    try: path.read_text()",
+                "    except OSError: pass",
+                "    else: raise AssertionError('excluded content readable')",
+                "for path in (source, Path('.icode_output/new.json')):",
+                "    try: path.write_text('tampered')",
+                "    except OSError: pass",
+                "    else: raise AssertionError('reviewer write succeeded')",
+                f"outside = Path({str(outside_secret)!r})",
+                "try: outside.read_text()",
+                "except OSError: pass",
+                "else: raise AssertionError('outside workspace readable')",
+                "print('container-review-boundary-ok')",
+            ))
+            ctx = ToolContext(
+                root=workspace,
+                sandbox=ContainerSandbox(runtime=runtime),
+                read_only_workspace=True,
+                deny_read_roots=(output_root, out_dir),
+            )
+            wrapped = ctx.wrap_command(["python", "-c", code])
+            result = subprocess.run(
+                wrapped, cwd=workspace, capture_output=True, text=True,
+                timeout=45, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+            self.assertEqual(result.stdout.strip(), "container-review-boundary-ok")
+            self.assertNotIn("private-ledger-marker", result.stdout + result.stderr)
+            self.assertNotIn("outside-secret-marker", result.stdout + result.stderr)
+            self.assertEqual(source.read_text(encoding="utf-8"), "source-original\n")
+            self.assertEqual(ledger.read_text(encoding="utf-8"), "private-ledger-marker\n")
+            self.assertEqual(
+                outside_secret.read_text(encoding="utf-8"),
+                "outside-secret-marker\n",
+            )
+            self.assertFalse((output_root / "new.json").exists())
+
 
 class TestContextIntegration(unittest.TestCase):
     def setUp(self) -> None:
@@ -2795,7 +2938,6 @@ class TestContextIntegration(unittest.TestCase):
             read_only_workspace=True,
             deny_read_roots=(output_root, out_dir),
         )
-
         wrapped = ctx.wrap_command(["python", "-c", "print('review')"])
         profile = wrapped[wrapped.index("-p") + 1]
         quoted_output_root = str(output_root.resolve()).replace('"', '\\"')
@@ -2804,6 +2946,31 @@ class TestContextIntegration(unittest.TestCase):
         self.assertIn(f'(require-not (subpath "{quoted_output_root}"))', profile)
         self.assertNotIn('(allow file-write* (subpath', profile)
         self.assertNotIn("(allow network*)", profile)
+
+    def test_容器Reviewer命令走排除只读后端(self) -> None:
+        output_root = self.ws / ".icode_output"
+        (output_root / "ticket-1" / "review").mkdir(parents=True)
+        ctx = ToolContext(
+            root=self.ws,
+            sandbox=ContainerSandbox(runtime="docker"),
+            read_only_workspace=True,
+            deny_read_roots=(output_root,),
+        )
+
+        if sys.platform != "linux":
+            with self.assertRaises(IsolationUnavailable):
+                ctx.wrap_command(["python", "-c", "print('review')"])
+            return
+
+        wrapped = ctx.wrap_command(["python", "-c", "print('review')"])
+
+        self.assertEqual(wrapped[0:4], ["docker", "run", "--rm", "--pull=never"])
+        self.assertEqual(wrapped[wrapped.index("--network") + 1], "none")
+        self.assertIn("readonly", wrapped[wrapped.index("--mount") + 1])
+        self.assertEqual(
+            wrapped[wrapped.index("--tmpfs") + 1].split(":", 1)[0],
+            str(output_root.resolve()),
+        )
 
     def test_策略化Reviewer命令因缺少可证明的只读策略交集而拒绝(self) -> None:
         policy = SandboxPolicy(

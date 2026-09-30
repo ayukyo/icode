@@ -61,6 +61,45 @@ jobs:
       - name: Run the delivery guards
         run: python scripts/preflight.py
 
+  container-reviewer:
+    name: R3 container Reviewer (${{ matrix.runtime }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [docker, podman]
+    env:
+      PYTHONPATH: src
+      ICODE_RUN_CONTAINER_REVIEWER_PROBE: "1"
+      ICODE_CONTAINER_REVIEWER_RUNTIME: ${{ matrix.runtime }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Install Podman for its native Reviewer probe
+        if: matrix.runtime == 'podman'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes podman
+      - name: Verify Docker Engine and preload Reviewer image
+        if: matrix.runtime == 'docker'
+        run: |
+          docker info --format '{{.ServerVersion}}'
+          docker pull python:3.13-slim
+      - name: Verify Podman and preload Reviewer image
+        if: matrix.runtime == 'podman'
+        run: |
+          podman info --format json > /dev/null
+          podman pull docker.io/library/python:3.13-slim
+      - name: Verify native read-only Reviewer and hidden ledger boundary
+        run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_容器_Reviewer原生只读与账本遮蔽边界 -v
+
   workspace-platforms:
     name: R2.1 workspace (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
