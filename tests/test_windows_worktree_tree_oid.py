@@ -63,6 +63,223 @@ def _safe_windows_snapshot_change_receipt(observations: object) -> str:
     return f"try1_{labels[1]}+try2_{labels[2]}"
 
 
+def _safe_windows_change_time_relation(
+    entry: object,
+    expected_volume_serial_number: object,
+    info: object,
+) -> str:
+    """Compare only ChangeTime after validating the same-volume file identity."""
+    entry_type = workspace_snapshot._WindowsDirectoryEntry
+    info_type = workspace_snapshot._WindowsHandleInfo
+    if (
+        type(entry) is not entry_type
+        or type(info) is not info_type
+        or type(expected_volume_serial_number) is not int
+        or expected_volume_serial_number < 0
+        or type(entry.file_id) is not bytes
+        or len(entry.file_id) != 16
+        or not any(entry.file_id)
+        or type(info.file_id) is not bytes
+        or len(info.file_id) != 16
+        or not any(info.file_id)
+        or type(entry.change_time) is not int
+        or entry.change_time < 0
+        or type(info.change_time) is not int
+        or info.change_time < 0
+        or type(info.volume_serial_number) is not int
+        or info.volume_serial_number < 0
+    ):
+        return "unavailable"
+    if (
+        expected_volume_serial_number != info.volume_serial_number
+        or entry.file_id != info.file_id
+    ):
+        return "identity_changed"
+    if entry.change_time == info.change_time:
+        return "equal"
+    return "entry_lower" if entry.change_time < info.change_time else "handle_lower"
+
+
+def _safe_windows_change_time_stability(before: object, after: object) -> str:
+    """Classify repeat observations without retaining or formatting raw values."""
+    info_type = workspace_snapshot._WindowsHandleInfo
+    if type(before) is not info_type or type(after) is not info_type:
+        return "unavailable"
+    if (
+        type(before.volume_serial_number) is not int
+        or before.volume_serial_number < 0
+        or type(after.volume_serial_number) is not int
+        or after.volume_serial_number < 0
+        or type(before.file_id) is not bytes
+        or len(before.file_id) != 16
+        or not any(before.file_id)
+        or type(after.file_id) is not bytes
+        or len(after.file_id) != 16
+        or not any(after.file_id)
+        or type(before.change_time) is not int
+        or before.change_time < 0
+        or type(after.change_time) is not int
+        or after.change_time < 0
+    ):
+        return "unavailable"
+    if (
+        before.volume_serial_number != after.volume_serial_number
+        or before.file_id != after.file_id
+    ):
+        return "identity_changed"
+    return "same" if before.change_time == after.change_time else "changed"
+
+
+def _safe_windows_directory_change_time_stability(
+    entry_name: object,
+    before: object,
+    after: object,
+) -> str:
+    """Compare one named child in two restart listings of the same parent."""
+    entry_type = workspace_snapshot._WindowsDirectoryEntry
+    if type(entry_name) is not str or not entry_name:
+        return "unavailable"
+
+    def find(entries: object):
+        if type(entries) is not tuple:
+            return None
+        if any(type(item) is not entry_type for item in entries):
+            return None
+        matches = tuple(item for item in entries if item.name == entry_name)
+        return matches[0] if len(matches) == 1 else None
+
+    first = find(before)
+    second = find(after)
+    if first is None or second is None:
+        return "unavailable"
+    if (
+        type(first.file_id) is not bytes
+        or len(first.file_id) != 16
+        or not any(first.file_id)
+        or type(second.file_id) is not bytes
+        or len(second.file_id) != 16
+        or not any(second.file_id)
+        or type(first.change_time) is not int
+        or first.change_time < 0
+        or type(second.change_time) is not int
+        or second.change_time < 0
+    ):
+        return "unavailable"
+    if first.file_id != second.file_id:
+        return "identity_changed"
+    return "same" if first.change_time == second.change_time else "changed"
+
+
+def _safe_windows_change_time_probe_receipt(
+    entry: object,
+    expected_volume_serial_number: object,
+    opened_info: object,
+    repeated_handle_info: object,
+    directory_entries_first: object,
+    directory_entries_second: object,
+    final_handle_info: object,
+) -> str:
+    """Return four fixed relations; never serialize names, IDs, or timestamps."""
+    relation_codes = {
+        "equal": "eq",
+        "entry_lower": "el",
+        "handle_lower": "hl",
+        "identity_changed": "id",
+        "unavailable": "na",
+    }
+    handle_code = {
+        "same": "same",
+        "changed": "changed",
+        "identity_changed": "id",
+        "unavailable": "na",
+    }
+    directory_code = handle_code
+    initial_relation = _safe_windows_change_time_relation(
+        entry, expected_volume_serial_number, opened_info,
+    )
+    handle_repeat = _safe_windows_change_time_stability(
+        opened_info, repeated_handle_info,
+    )
+    entry_name = entry.name if type(entry) is workspace_snapshot._WindowsDirectoryEntry else None
+    directory_repeat = _safe_windows_directory_change_time_stability(
+        entry_name, directory_entries_first, directory_entries_second,
+    )
+    final_relation = _safe_windows_change_time_relation(
+        _safe_windows_find_directory_entry(entry_name, directory_entries_second),
+        expected_volume_serial_number,
+        final_handle_info,
+    )
+    return (
+        f"eh_{relation_codes[initial_relation]}"
+        f"+hr_{handle_code[handle_repeat]}"
+        f"+dr_{directory_code[directory_repeat]}"
+        f"+rh_{relation_codes[final_relation]}"
+    )
+
+
+def _safe_windows_find_directory_entry(entry_name: object, entries: object):
+    """Return a unique typed entry from one bounded native directory listing."""
+    entry_type = workspace_snapshot._WindowsDirectoryEntry
+    if type(entry_name) is not str or not entry_name or type(entries) is not tuple:
+        return None
+    if any(type(item) is not entry_type for item in entries):
+        return None
+    matches = tuple(item for item in entries if item.name == entry_name)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _safe_windows_sample_change_time_probe(
+    snapshot_diagnostic: dict[str, object],
+    entry: object,
+    expected_volume_serial_number: object,
+    opened_info: object,
+) -> str:
+    """Take bounded, test-only repeat observations on the live native handles."""
+    backend = snapshot_diagnostic.get("backend")
+    parent_handle = snapshot_diagnostic.get("directory_handle")
+    opened_handle = snapshot_diagnostic.get("last_query_handle")
+    if (
+        backend is None
+        or opened_handle is None
+        or snapshot_diagnostic.get("last_query_info") is not opened_info
+    ):
+        return _safe_windows_change_time_probe_receipt(
+            entry, expected_volume_serial_number, opened_info,
+            None, None, None, None,
+        )
+
+    repeated_handle_info = None
+    directory_entries_first = None
+    directory_entries_second = None
+    final_handle_info = None
+    try:
+        repeated_handle_info = backend.query_info(opened_handle)
+    except Exception:
+        pass
+    if parent_handle is not None:
+        try:
+            directory_entries_first = backend.enumerate_directory(parent_handle)
+        except Exception:
+            pass
+        try:
+            directory_entries_second = backend.enumerate_directory(parent_handle)
+        except Exception:
+            pass
+    try:
+        final_handle_info = backend.query_info(opened_handle)
+    except Exception:
+        pass
+    return _safe_windows_change_time_probe_receipt(
+        entry,
+        expected_volume_serial_number,
+        opened_info,
+        repeated_handle_info,
+        directory_entries_first,
+        directory_entries_second,
+        final_handle_info,
+    )
+
+
 def _parse(buffer: bytes):
     parser = getattr(workspace_snapshot, "_parse_windows_directory_entries", None)
     if not callable(parser):
@@ -160,6 +377,158 @@ class TestWindowsSnapshotChangeDiagnostic(unittest.TestCase):
                 3: "other_descendant",
             }),
             "unavailable",
+        )
+
+    def test_change_time_probe_classifies_repeat_reads_without_raw_metadata(self) -> None:
+        format_probe = globals().get(
+            "_safe_windows_change_time_probe_receipt",
+        )
+        self.assertTrue(callable(format_probe), "safe_change_probe_helper_missing")
+        entry_type = workspace_snapshot._WindowsDirectoryEntry
+        info_type = workspace_snapshot._WindowsHandleInfo
+        entry = entry_type(
+            name="private-name.txt", attributes=0x80, reparse_tag=0,
+            file_id=bytes.fromhex("11" * 16), change_time=10, end_of_file=7,
+        )
+        initial = info_type(
+            volume_serial_number=7, file_id=entry.file_id,
+            attributes=0x80, reparse_tag=0, change_time=10, end_of_file=7,
+            is_directory=False, delete_pending=False,
+        )
+        repeated = info_type(
+            volume_serial_number=7, file_id=entry.file_id,
+            attributes=0x80, reparse_tag=0, change_time=10, end_of_file=7,
+            is_directory=False, delete_pending=False,
+        )
+
+        receipt = format_probe(
+            entry, 7, initial, repeated, (entry,), (entry,), repeated,
+        )
+
+        self.assertEqual(
+            receipt,
+            "eh_eq+hr_same+dr_same+rh_eq",
+        )
+        self.assertNotIn("private-name.txt", receipt)
+        self.assertNotIn(entry.file_id.hex(), receipt)
+        self.assertNotIn("change_time=10", receipt)
+
+    def test_change_time_probe_classifies_direction_and_observation_changes(self) -> None:
+        format_probe = globals().get(
+            "_safe_windows_change_time_probe_receipt",
+        )
+        self.assertTrue(callable(format_probe), "safe_change_probe_helper_missing")
+        entry_type = workspace_snapshot._WindowsDirectoryEntry
+        info_type = workspace_snapshot._WindowsHandleInfo
+        first_entry = entry_type(
+            name="private-name.txt", attributes=0x80, reparse_tag=0,
+            file_id=bytes.fromhex("22" * 16), change_time=9, end_of_file=7,
+        )
+        later_entry = entry_type(
+            name=first_entry.name, attributes=0x80, reparse_tag=0,
+            file_id=first_entry.file_id, change_time=12, end_of_file=7,
+        )
+
+        def handle(change_time: int, *, file_id: bytes | None = None):
+            return info_type(
+                volume_serial_number=7,
+                file_id=first_entry.file_id if file_id is None else file_id,
+                attributes=0x80, reparse_tag=0, change_time=change_time,
+                end_of_file=7, is_directory=False, delete_pending=False,
+            )
+
+        receipt = format_probe(
+            first_entry, 7, handle(10), handle(11),
+            (first_entry,), (later_entry,), handle(13),
+        )
+
+        self.assertEqual(
+            receipt,
+            "eh_el+hr_changed+dr_changed+rh_el",
+        )
+
+    def test_change_time_sampler_rechecks_the_same_child_and_parent_handles(self) -> None:
+        sample_probe = globals().get("_safe_windows_sample_change_time_probe")
+        self.assertTrue(callable(sample_probe), "change_time_sampler_missing")
+        entry_type = workspace_snapshot._WindowsDirectoryEntry
+        info_type = workspace_snapshot._WindowsHandleInfo
+        entry = entry_type(
+            name="private-name.txt", attributes=0x80, reparse_tag=0,
+            file_id=bytes.fromhex("66" * 16), change_time=10, end_of_file=7,
+        )
+        initial = info_type(
+            volume_serial_number=7, file_id=entry.file_id,
+            attributes=0x80, reparse_tag=0, change_time=10, end_of_file=7,
+            is_directory=False, delete_pending=False,
+        )
+        child_handle = object()
+        parent_handle = object()
+        calls: list[tuple[str, object]] = []
+
+        class Backend:
+            def query_info(self, handle):
+                calls.append(("query", handle))
+                return initial
+
+            def enumerate_directory(self, handle):
+                calls.append(("enumerate", handle))
+                return (entry,)
+
+        receipt = sample_probe(
+            {
+                "backend": Backend(),
+                "directory_handle": parent_handle,
+                "last_query_handle": child_handle,
+                "last_query_info": initial,
+            },
+            entry,
+            7,
+            initial,
+        )
+
+        self.assertEqual(receipt, "eh_eq+hr_same+dr_same+rh_eq")
+        self.assertEqual([kind for kind, _ in calls], [
+            "query", "enumerate", "enumerate", "query",
+        ])
+        self.assertIs(calls[0][1], child_handle)
+        self.assertIs(calls[1][1], parent_handle)
+        self.assertIs(calls[2][1], parent_handle)
+        self.assertIs(calls[3][1], child_handle)
+
+    def test_change_time_probe_marks_identity_changes_and_invalid_samples(self) -> None:
+        format_probe = globals().get(
+            "_safe_windows_change_time_probe_receipt",
+        )
+        self.assertTrue(callable(format_probe), "safe_change_probe_helper_missing")
+        entry_type = workspace_snapshot._WindowsDirectoryEntry
+        info_type = workspace_snapshot._WindowsHandleInfo
+        entry = entry_type(
+            name="private-name.txt", attributes=0x80, reparse_tag=0,
+            file_id=bytes.fromhex("33" * 16), change_time=10, end_of_file=7,
+        )
+        other_entry = entry_type(
+            name=entry.name, attributes=0x80, reparse_tag=0,
+            file_id=bytes.fromhex("44" * 16), change_time=10, end_of_file=7,
+        )
+
+        def handle(*, volume: int = 7, file_id: bytes = entry.file_id):
+            return info_type(
+                volume_serial_number=volume, file_id=file_id,
+                attributes=0x80, reparse_tag=0, change_time=10, end_of_file=7,
+                is_directory=False, delete_pending=False,
+            )
+
+        self.assertEqual(
+            format_probe(
+                entry, 7, handle(), handle(volume=8),
+                (entry,), (other_entry,),
+                handle(file_id=bytes.fromhex("55" * 16)),
+            ),
+            "eh_eq+hr_id+dr_id+rh_id",
+        )
+        self.assertEqual(
+            format_probe(entry, 7, handle(), None, None, (), None),
+            "eh_eq+hr_na+dr_na+rh_na",
         )
 
 
@@ -1100,21 +1469,55 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
             check_symlink_identity = workspace_snapshot._require_windows_symlink_identity
             walk_windows_directory = windows_worktree._walk_windows_directory
             native_backend_type = windows_worktree._WindowsNativeWorktreeBackend
-            snapshot_diagnostic = {"attempt": 0, "parts": ()}
+            snapshot_diagnostic = {
+                "attempt": 0,
+                "parts": (),
+                "directory_handle": None,
+                "backend": None,
+                "last_query_handle": None,
+                "last_query_info": None,
+            }
             change_time_locations: dict[int, str] = {}
+            change_time_probes: dict[int, str] = {}
 
             def observe_snapshot_backend(*args, **kwargs):
                 snapshot_diagnostic["attempt"] += 1
-                return native_backend_type(*args, **kwargs)
+                backend = native_backend_type(*args, **kwargs)
+                snapshot_diagnostic["backend"] = backend
+                query_info = backend.query_info
+                enumerate_directory = backend.enumerate_directory
+
+                def observe_query_info(handle):
+                    info = query_info(handle)
+                    snapshot_diagnostic["last_query_handle"] = handle
+                    snapshot_diagnostic["last_query_info"] = info
+                    return info
+
+                def observe_enumerate_directory(handle):
+                    return enumerate_directory(handle)
+
+                backend.query_info = observe_query_info
+                backend.enumerate_directory = observe_enumerate_directory
+                return backend
 
             def observe_snapshot_walk(*args, **kwargs):
                 parts = kwargs.get("snapshot_parts", ())
                 previous_parts = snapshot_diagnostic["parts"]
+                directory_handle = (
+                    args[0] if args else kwargs.get("directory_handle")
+                )
+                previous_directory_handle = snapshot_diagnostic[
+                    "directory_handle"
+                ]
                 snapshot_diagnostic["parts"] = parts
+                snapshot_diagnostic["directory_handle"] = directory_handle
                 try:
                     return walk_windows_directory(*args, **kwargs)
                 finally:
                     snapshot_diagnostic["parts"] = previous_parts
+                    snapshot_diagnostic["directory_handle"] = (
+                        previous_directory_handle
+                    )
 
             def report_identity_mismatch(check, entry, info, *args, **kwargs):
                 try:
@@ -1135,6 +1538,15 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
                             _safe_windows_snapshot_change_location(
                                 snapshot_diagnostic["parts"], entry.name,
                             ),
+                        )
+                        expected_volume = args[0] if args else None
+                        change_time_probes[attempt] = (
+                            _safe_windows_sample_change_time_probe(
+                                snapshot_diagnostic,
+                                entry,
+                                expected_volume,
+                                info,
+                            )
                         )
                     expected_volume = args[0] if args else None
                     expected_directory = kwargs.get("is_directory")
@@ -1189,7 +1601,16 @@ class TestNativeWindowsWorktreeTreeOID(unittest.TestCase):
                         receipt = _safe_windows_snapshot_change_receipt(
                             change_time_locations,
                         )
-                        raise OSError(f"{exc};safe_diag={receipt}") from None
+                        last_probe = change_time_probes.get(
+                            max(change_time_probes),
+                        ) if change_time_probes else None
+                        probe_suffix = (
+                            f";change_probe={last_probe}"
+                            if last_probe is not None else ""
+                        )
+                        raise OSError(
+                            f"{exc};safe_diag={receipt}{probe_suffix}"
+                        ) from None
                     raise
 
             self.assertEqual(

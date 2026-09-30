@@ -43,9 +43,16 @@ _SAFE_SNAPSHOT_LOCATION = (
     r"git_metadata_descendant|target_dir_descendant|other_descendant|"
     r"unavailable|unobserved)"
 )
+_SAFE_CHANGE_TIME_PROBE_RE = re.compile(
+    r"eh_(?:eq|el|hl|id|na)"
+    r"\+hr_(?:same|changed|id|na)"
+    r"\+dr_(?:same|changed|id|na)"
+    r"\+rh_(?:eq|el|hl|id|na)\Z"
+)
 _SAFE_SNAPSHOT_DIAGNOSTIC_RE = re.compile(
     rf";safe_diag=(try1_{_SAFE_SNAPSHOT_LOCATION}"
-    rf"\+try2_{_SAFE_SNAPSHOT_LOCATION})\Z",
+    rf"\+try2_{_SAFE_SNAPSHOT_LOCATION})"
+    r"(?:;change_probe=([A-Za-z0-9_+]{0,64}))?\Z",
 )
 
 
@@ -103,12 +110,18 @@ def _safe_error_summary(formatted_traceback: object) -> str:
                     ):
                         locations = locations.replace(long_label, short_label)
                     summary += f";loc={locations}"
+                    probe = location_match.group(2)
+                    if (
+                        probe is not None
+                        and _SAFE_CHANGE_TIME_PROBE_RE.fullmatch(probe)
+                    ):
+                        summary += f";probe={probe}"
     winerror_match = _WINERROR_RE.search(message)
     if winerror_match is not None and exception_name in {
         "FileNotFoundError", "OSError", "PermissionError", "TimeoutError",
     }:
         summary += f";winerror={winerror_match.group(1)}"
-    return summary[:128]
+    return summary[:192]
 
 
 def emit_failure_annotations(result: unittest.TestResult, stream: TextIO) -> None:
