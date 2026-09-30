@@ -55,6 +55,22 @@ _ERROR_PIPE_BUSY = 231
 _ERROR_SEM_TIMEOUT = 121
 _ERROR_NO_TOKEN = 1008
 _SE_KERNEL_OBJECT = 6
+_ACCESS_ALLOWED_ACE_TYPE = 0x00
+_ACCESS_DENIED_ACE_TYPE = 0x01
+_SYSTEM_AUDIT_ACE_TYPE = 0x02
+_SYSTEM_ALARM_ACE_TYPE = 0x03
+_ACCESS_ALLOWED_OBJECT_ACE_TYPE = 0x05
+_ACCESS_DENIED_OBJECT_ACE_TYPE = 0x06
+_SYSTEM_AUDIT_OBJECT_ACE_TYPE = 0x07
+_SYSTEM_ALARM_OBJECT_ACE_TYPE = 0x08
+_ACCESS_ALLOWED_CALLBACK_ACE_TYPE = 0x09
+_ACCESS_DENIED_CALLBACK_ACE_TYPE = 0x0A
+_ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE = 0x0B
+_ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE = 0x0C
+_SYSTEM_RESOURCE_ATTRIBUTE_ACE_TYPE = 0x12
+_SYSTEM_SCOPED_POLICY_ID_ACE_TYPE = 0x13
+_SYSTEM_PROCESS_TRUST_LABEL_ACE_TYPE = 0x14
+_SYSTEM_ACCESS_FILTER_ACE_TYPE = 0x15
 _OWNER_SECURITY_INFORMATION = 0x00000001
 _GROUP_SECURITY_INFORMATION = 0x00000002
 _DACL_SECURITY_INFORMATION = 0x00000004
@@ -65,14 +81,33 @@ _PIPE_DIAGNOSTIC_SECURITY_INFORMATION = (
     | _DACL_SECURITY_INFORMATION
     | _LABEL_SECURITY_INFORMATION
 )
-_ACCESS_ALLOWED_ACE_TYPE = 0
 _SYSTEM_MANDATORY_LABEL_ACE_TYPE = 0x11
 _SYSTEM_MANDATORY_LABEL_NO_WRITE_UP = 0x00000001
+_ACE_TYPES_WITH_ACCESS_MASK = frozenset({
+    _ACCESS_ALLOWED_ACE_TYPE,
+    _ACCESS_DENIED_ACE_TYPE,
+    _SYSTEM_AUDIT_ACE_TYPE,
+    _SYSTEM_ALARM_ACE_TYPE,
+    _ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+    _ACCESS_DENIED_OBJECT_ACE_TYPE,
+    _SYSTEM_AUDIT_OBJECT_ACE_TYPE,
+    _SYSTEM_ALARM_OBJECT_ACE_TYPE,
+    _ACCESS_ALLOWED_CALLBACK_ACE_TYPE,
+    _ACCESS_DENIED_CALLBACK_ACE_TYPE,
+    _ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE,
+    _ACCESS_DENIED_CALLBACK_OBJECT_ACE_TYPE,
+    _SYSTEM_MANDATORY_LABEL_ACE_TYPE,
+    _SYSTEM_RESOURCE_ATTRIBUTE_ACE_TYPE,
+    _SYSTEM_SCOPED_POLICY_ID_ACE_TYPE,
+    _SYSTEM_PROCESS_TRUST_LABEL_ACE_TYPE,
+    _SYSTEM_ACCESS_FILTER_ACE_TYPE,
+})
 _SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010
 _SE_GROUP_ENABLED = 0x00000004
 _SE_GROUP_LOGON_ID = 0xC0000000
 _SECURITY_IMPERSONATION_LEVEL = 2
 _DIAGNOSTIC_MAX_ACE_COUNT = 256
+_PIPE_DESCRIPTOR_MAX_ACE_REPORT = 8
 _DIAGNOSTIC_PRIVILEGE_BUFFER_BYTES = 4096
 _FILE_GENERIC_READ = 0x00120089
 _FILE_GENERIC_WRITE = 0x00120116
@@ -2228,6 +2263,290 @@ def _diagnose_runner_pipe_access(
         pipe_no_write_up=pipe_no_write_up_state,
         client_no_write_up=client_no_write_up_state,
     )
+
+
+def _format_pipe_security_descriptor_shape(
+    *,
+    control: int,
+    revision: int,
+    owner_relation: str,
+    group_relation: str,
+    dacl_state: str,
+    acl_revision: int | None,
+    ace_count: int | None,
+    ace_records: tuple[tuple[int, int, int | None], ...],
+) -> str:
+    """Encode bounded descriptor metadata without serializing any SID."""
+    relations = {"user", "logon", "other", "absent", "unavailable"}
+    dacl_states = {"present", "absent", "null", "unavailable"}
+    if (
+        type(control) is not int or not 0 <= control <= 0xFFFF
+        or type(revision) is not int or not 0 <= revision <= 0xFF
+        or type(owner_relation) is not str
+        or owner_relation not in relations
+        or type(group_relation) is not str
+        or group_relation not in relations
+        or type(dacl_state) is not str
+        or dacl_state not in dacl_states
+        or not isinstance(ace_records, tuple)
+    ):
+        return "sd=unavailable"
+    encoded_records: list[str] = []
+    truncated = False
+
+    if dacl_state == "present":
+        if (
+            type(acl_revision) is not int or not 0 <= acl_revision <= 0xFF
+            or type(ace_count) is not int
+            or not 0 <= ace_count <= _DIAGNOSTIC_MAX_ACE_COUNT
+            or len(ace_records) > ace_count
+        ):
+            return "sd=unavailable"
+        truncated = (
+            ace_count > len(ace_records)
+            or len(ace_records) > _PIPE_DESCRIPTOR_MAX_ACE_REPORT
+        )
+        for record in ace_records[:_PIPE_DESCRIPTOR_MAX_ACE_REPORT]:
+            if not isinstance(record, tuple) or len(record) != 3:
+                return "sd=unavailable"
+            ace_type, ace_flags, ace_mask = record
+            if (
+                type(ace_type) is not int or not 0 <= ace_type <= 0xFF
+                or type(ace_flags) is not int or not 0 <= ace_flags <= 0xFF
+                or (
+                    ace_mask is not None
+                    and (
+                        type(ace_mask) is not int
+                        or not 0 <= ace_mask <= 0xFFFFFFFF
+                    )
+                )
+            ):
+                return "sd=unavailable"
+            mask_text = "--------" if ace_mask is None else f"{ace_mask:08X}"
+            encoded_records.append(
+                f"{ace_type:02X}.{ace_flags:02X}.{mask_text}"
+            )
+    elif acl_revision is not None or ace_count is not None or ace_records:
+        return "sd=unavailable"
+
+    items = ",".join(encoded_records) or "-"
+    receipt = (
+        f"sd_control={control:04X};sd_revision={revision};"
+        f"owner={owner_relation};group={group_relation};dacl={dacl_state};"
+        f"acl_revision={acl_revision if acl_revision is not None else 'x'};"
+        f"ace_count={ace_count if ace_count is not None else 'x'};"
+        f"aces={items};truncated={int(truncated)}"
+    )
+    return receipt if len(receipt) <= 384 else "sd=unavailable"
+
+
+def runner_pipe_security_descriptor_shape(
+    pipe_handle: int,
+    user_sid: str | None,
+    logon_sid: str | None,
+) -> str:
+    """Read a pipe handle's descriptor into a fixed, bounded test receipt.
+
+    This diagnostic only queries the actual object descriptor. It does not
+    mutate its ACL, inspect arbitrary SID text, or participate in production
+    runner-pipe creation/open decisions.
+    """
+    if sys.platform != "win32" or not pipe_handle:
+        return "sd=unavailable"
+
+    api = None
+    descriptor = ctypes.c_void_p()
+    expected_sids: list[ctypes.c_void_p] = []
+    try:
+        api = _runner_pipe._load_win32_api()
+        advapi = api.advapi
+        advapi.GetSecurityInfo.argtypes = [
+            ctypes.c_void_p, ctypes.c_int, wintypes.DWORD,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi.GetSecurityInfo.restype = wintypes.DWORD
+        advapi.GetSecurityDescriptorControl.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(wintypes.WORD),
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        advapi.GetSecurityDescriptorControl.restype = wintypes.BOOL
+        advapi.GetSecurityDescriptorOwner.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        advapi.GetSecurityDescriptorOwner.restype = wintypes.BOOL
+        advapi.GetSecurityDescriptorGroup.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        advapi.GetSecurityDescriptorGroup.restype = wintypes.BOOL
+        advapi.GetSecurityDescriptorDacl.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL),
+        ]
+        advapi.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+        advapi.GetAce.argtypes = [
+            ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi.GetAce.restype = wintypes.BOOL
+        advapi.ConvertStringSidToSidW.argtypes = [
+            wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi.ConvertStringSidToSidW.restype = wintypes.BOOL
+        advapi.EqualSid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        advapi.EqualSid.restype = wintypes.BOOL
+        api.kernel.LocalFree.argtypes = [ctypes.c_void_p]
+        api.kernel.LocalFree.restype = ctypes.c_void_p
+
+        status = advapi.GetSecurityInfo(
+            pipe_handle,
+            _SE_KERNEL_OBJECT,
+            _OWNER_SECURITY_INFORMATION
+            | _GROUP_SECURITY_INFORMATION
+            | _DACL_SECURITY_INFORMATION,
+            None, None, None, None, ctypes.byref(descriptor),
+        )
+        if status != 0 or not descriptor.value:
+            return "sd=unavailable"
+
+        user_pointer = logon_pointer = None
+        for sid_text in (user_sid, logon_sid):
+            allocated_sid = ctypes.c_void_p()
+            if (
+                not isinstance(sid_text, str)
+                or not advapi.ConvertStringSidToSidW(
+                    sid_text, ctypes.byref(allocated_sid),
+                )
+                or not allocated_sid.value
+            ):
+                if allocated_sid.value:
+                    api.kernel.LocalFree(allocated_sid)
+                return "sd=unavailable"
+            expected_sids.append(allocated_sid)
+        user_pointer, logon_pointer = expected_sids
+
+        control = wintypes.WORD()
+        revision = wintypes.DWORD()
+        if not advapi.GetSecurityDescriptorControl(
+            descriptor, ctypes.byref(control), ctypes.byref(revision),
+        ):
+            return "sd=unavailable"
+
+        def sid_relation(pointer: ctypes.c_void_p) -> str:
+            if not pointer.value:
+                return "absent"
+            if advapi.EqualSid(pointer, user_pointer):
+                return "user"
+            if advapi.EqualSid(pointer, logon_pointer):
+                return "logon"
+            return "other"
+
+        owner_pointer = ctypes.c_void_p()
+        owner_defaulted = wintypes.BOOL()
+        group_pointer = ctypes.c_void_p()
+        group_defaulted = wintypes.BOOL()
+        if not advapi.GetSecurityDescriptorOwner(
+            descriptor, ctypes.byref(owner_pointer), ctypes.byref(owner_defaulted),
+        ) or not advapi.GetSecurityDescriptorGroup(
+            descriptor, ctypes.byref(group_pointer), ctypes.byref(group_defaulted),
+        ):
+            return "sd=unavailable"
+
+        present = wintypes.BOOL()
+        dacl_pointer = ctypes.c_void_p()
+        dacl_defaulted = wintypes.BOOL()
+        if not advapi.GetSecurityDescriptorDacl(
+            descriptor, ctypes.byref(present), ctypes.byref(dacl_pointer),
+            ctypes.byref(dacl_defaulted),
+        ):
+            return "sd=unavailable"
+        if not present.value:
+            dacl_state = "absent"
+            acl_revision = ace_count = None
+            ace_records: tuple[tuple[int, int, int | None], ...] = ()
+        elif not dacl_pointer.value:
+            dacl_state = "null"
+            acl_revision = ace_count = None
+            ace_records = ()
+        else:
+            dacl_state = "present"
+            acl = ctypes.cast(
+                dacl_pointer, ctypes.POINTER(_ACL_HEADER),
+            ).contents
+            acl_revision = int(acl.AclRevision)
+            ace_count = int(acl.AceCount)
+            if (
+                int(acl.AclSize) < ctypes.sizeof(_ACL_HEADER)
+                or ace_count > _DIAGNOSTIC_MAX_ACE_COUNT
+            ):
+                return "sd=unavailable"
+            records: list[tuple[int, int, int | None]] = []
+            acl_base = int(dacl_pointer.value)
+            for index in range(min(ace_count, _PIPE_DESCRIPTOR_MAX_ACE_REPORT)):
+                ace_pointer = ctypes.c_void_p()
+                if not advapi.GetAce(
+                    dacl_pointer, index, ctypes.byref(ace_pointer),
+                ) or not ace_pointer.value:
+                    return "sd=unavailable"
+                ace = ctypes.cast(
+                    ace_pointer, ctypes.POINTER(_ACE_HEADER),
+                ).contents
+                ace_size = int(ace.AceSize)
+                ace_offset = int(ace_pointer.value) - acl_base
+                if (
+                    ace_size < ctypes.sizeof(_ACE_HEADER)
+                    or ace_offset < ctypes.sizeof(_ACL_HEADER)
+                    or ace_offset + ace_size > int(acl.AclSize)
+                ):
+                    return "sd=unavailable"
+                ace_mask = None
+                if (
+                    ace.AceType in _ACE_TYPES_WITH_ACCESS_MASK
+                    and ace_size >= (
+                        ctypes.sizeof(_ACE_HEADER)
+                        + ctypes.sizeof(wintypes.DWORD)
+                    )
+                ):
+                    ace_mask = int.from_bytes(
+                        ctypes.string_at(
+                            int(ace_pointer.value) + ctypes.sizeof(_ACE_HEADER),
+                            ctypes.sizeof(wintypes.DWORD),
+                        ),
+                        byteorder="little",
+                        signed=False,
+                    )
+                records.append((int(ace.AceType), int(ace.AceFlags), ace_mask))
+            ace_records = tuple(records)
+
+        return _format_pipe_security_descriptor_shape(
+            control=int(control.value),
+            revision=int(revision.value),
+            owner_relation=sid_relation(owner_pointer),
+            group_relation=sid_relation(group_pointer),
+            dacl_state=dacl_state,
+            acl_revision=acl_revision,
+            ace_count=ace_count,
+            ace_records=ace_records,
+        )
+    except Exception:
+        return "sd=unavailable"
+    finally:
+        if api is not None:
+            for expected_sid in expected_sids:
+                if expected_sid.value:
+                    try:
+                        api.kernel.LocalFree(expected_sid)
+                    except Exception:
+                        # Descriptor cleanup must not obscure the pipe-open
+                        # result; this helper is confined to a short-lived test.
+                        pass
+            if descriptor.value:
+                try:
+                    api.kernel.LocalFree(descriptor)
+                except Exception:
+                    # Keep diagnostic cleanup failures out of the test receipt.
+                    pass
 
 
 class _IO_COUNTERS(ctypes.Structure):

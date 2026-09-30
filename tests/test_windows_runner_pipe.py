@@ -334,6 +334,76 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
             "temporary_dacl=dfuuuu_ufuuuu",
         )
 
+    def test_pipe_security_descriptor_shape_receipt_is_bounded_and_sid_free(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        formatter = getattr(probe, "_format_pipe_security_descriptor_shape", None)
+        self.assertTrue(callable(formatter), "descriptor_shape_formatter_missing")
+        receipt = formatter(
+            control=0x8004,
+            revision=1,
+            owner_relation="user",
+            group_relation="other",
+            dacl_state="present",
+            acl_revision=2,
+            ace_count=1,
+            ace_records=((0, 0, PIPE_CLIENT_ACCESS_MASK),),
+        )
+        self.assertEqual(
+            receipt,
+            "sd_control=8004;sd_revision=1;owner=user;group=other;"
+            "dacl=present;acl_revision=2;ace_count=1;"
+            "aces=00.00.00100003;truncated=0",
+        )
+        self.assertLessEqual(len(receipt), 384)
+        self.assertNotIn("S-1-5-", receipt)
+
+    def test_pipe_security_descriptor_shape_receipt_rejects_unbounded_fields(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        formatter = getattr(probe, "_format_pipe_security_descriptor_shape", None)
+        self.assertTrue(callable(formatter), "descriptor_shape_formatter_missing")
+        receipt = formatter(
+            control=0x8004,
+            revision=1,
+            owner_relation="S-1-5-21-1001",
+            group_relation="other",
+            dacl_state="present",
+            acl_revision=2,
+            ace_count=257,
+            ace_records=((0, 0, PIPE_CLIENT_ACCESS_MASK),),
+        )
+        self.assertEqual(receipt, "sd=unavailable")
+
+        many_aces = tuple(
+            (index, index, PIPE_CLIENT_ACCESS_MASK)
+            for index in range(9)
+        )
+        bounded = formatter(
+            control=0x8004,
+            revision=1,
+            owner_relation="user",
+            group_relation="logon",
+            dacl_state="present",
+            acl_revision=2,
+            ace_count=len(many_aces),
+            ace_records=many_aces,
+        )
+        self.assertIn("ace_count=9", bounded)
+        self.assertIn("truncated=1", bounded)
+        self.assertLessEqual(len(bounded), 384)
+
+    @unittest.skipIf(sys.platform == "win32", "非 Windows 固定降级回执")
+    def test_pipe_security_descriptor_probe_is_unavailable_off_windows(self) -> None:
+        from scripts.windows_standard_user_token_probe import (
+            runner_pipe_security_descriptor_shape,
+        )
+
+        self.assertEqual(
+            runner_pipe_security_descriptor_shape(0, None, None),
+            "sd=unavailable",
+        )
+
     def test_server_accepts_client_that_connected_before_connect_named_pipe(self) -> None:
         kernel = SimpleNamespace(
             CreateEventW=mock.Mock(return_value=0x1234),
@@ -558,6 +628,7 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
         }
         client_results: list[dict[str, object]] = []
         client_errors: list[BaseException] = []
+        server_descriptor_shape = "sd=unavailable"
 
         def run_client() -> None:
             try:
@@ -590,6 +661,13 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
         except BaseException as exc:
             server_error = exc
         finally:
+            from scripts.windows_standard_user_token_probe import (
+                runner_pipe_security_descriptor_shape,
+            )
+
+            server_descriptor_shape = runner_pipe_security_descriptor_shape(
+                server._handle, user_sid, logon_sid,
+            )
             server.close()
             client_thread.join(timeout=6)
 
@@ -620,7 +698,14 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
                 if isinstance(client_error, PermissionError)
                 else ""
             )
-            self.fail(f"native_pipe_client_failed:{details}{controls}")
+            descriptor = (
+                f";server_descriptor={server_descriptor_shape}"
+                if isinstance(client_error, PermissionError)
+                else ""
+            )
+            self.fail(
+                f"native_pipe_client_failed:{details}{controls}{descriptor}"
+            )
         if server_error is not None:
             raise server_error
         self.assertEqual(client_errors, [])
