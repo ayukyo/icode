@@ -1987,6 +1987,21 @@ print("metadata-read-only-ok")
             self.assertIn("(allow process-fork)", profile)
             self.assertIn("(allow signal (target same-sandbox))", profile)
 
+    def test_seatbelt_策略profile拒绝与隐式运行时读根重叠的拒读路径(self) -> None:
+        with temp_workspace() as root:
+            workspace = (root / "workspace").resolve()
+            workspace.mkdir()
+            runtime_root = Path(sys.base_prefix).resolve()
+            policy = SandboxPolicy(
+                schema_version=1, run_id="profile-overlap", ticket_id="profile-overlap",
+                step="review", workspace_root=workspace, read_roots=(workspace,),
+                write_roots=(), deny_read_roots=(runtime_root,), deny_write_roots=(),
+                network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=8,
+                wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+            )
+            with self.assertRaisesRegex(ValueError, "overlaps.*independently allowed"):
+                MacSeatbeltSandbox()._policy_profile(policy)
+
     def test_seatbelt_实验策略包装不开放完整_policy_接口(self) -> None:
         with temp_workspace() as root:
             workspace = (root / "workspace").resolve()

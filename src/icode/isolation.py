@@ -1656,6 +1656,18 @@ class MacSeatbeltSandbox:
         toolchain_roots = tuple(sorted(
             {Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve()}, key=str,
         ))
+        implicit_read_roots = tuple(dict.fromkeys((*system_roots, *toolchain_roots)))
+        resolved_implicit_roots = tuple(root.resolve() for root in implicit_read_roots)
+        for denied in policy.deny_read_roots:
+            resolved_denied = Path(denied).resolve()
+            if any(
+                resolved_denied.is_relative_to(root)
+                or root.is_relative_to(resolved_denied)
+                for root in resolved_implicit_roots
+            ):
+                raise ValueError(
+                    "Seatbelt deny-read root overlaps an independently allowed read root"
+                )
         read_roots = tuple(dict.fromkeys((*policy.read_roots, *system_roots, *toolchain_roots)))
         rules = [
             "(version 1)",
