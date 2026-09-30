@@ -47,6 +47,11 @@ _NATIVE_PIPE_ACCESS_RECEIPT_FIELDS = (
     }),
     ("pipe_nwu", {"yes", "no", "unavailable"}),
     ("token_nwu", {"yes", "no", "unavailable"}),
+    ("owner", {
+        "user", "enabled_group", "disabled_group", "deny_only_group",
+        "not_in_token", "unavailable",
+    }),
+    ("owner_rights", {"present", "absent", "unavailable"}),
     ("max_access", {"unavailable"}),
 )
 _NATIVE_PIPE_FAILURE_DETAILS = re.compile(
@@ -173,7 +178,7 @@ def _native_pipe_target_access_receipt(
         diagnostic = _diagnose_runner_pipe_access(pipe_handle, logon_sid)
     except Exception:
         return "target_access=unavailable"
-    if type(diagnostic) is not str or len(diagnostic) > 240:
+    if type(diagnostic) is not str or len(diagnostic) > 280:
         return "target_access=unavailable"
     if not _native_pipe_access_diagnostic_is_safe(diagnostic):
         return "target_access=unavailable"
@@ -209,7 +214,7 @@ def _format_native_pipe_failure_annotation(
         else "diagnostic_unavailable"
     )
     safe_target_access = "target_access=unavailable"
-    if type(target_access) is str and len(target_access) <= 260:
+    if type(target_access) is str and len(target_access) <= 300:
         prefix, separator, diagnostic = target_access.partition("=")
         if (
             prefix == "target_access"
@@ -483,7 +488,8 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         diagnostic = (
             "dacl_present+ace_match+token_thread+logon_enabled+restricted_no+"
             "access_allow+client_il_medium+pipe_il_absent+pipe_nwu_unavailable+"
-            "token_nwu_no+max_access_00120089"
+            "token_nwu_no+owner_enabled_group+owner_rights_absent+"
+            "max_access_00120089"
         )
         receipt_builder = globals().get("_native_pipe_target_access_receipt")
         self.assertTrue(
@@ -496,7 +502,7 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
             receipt = receipt_builder(0x1234, "S-1-5-5-100-200")
 
         self.assertEqual(receipt, f"target_access={diagnostic}")
-        self.assertLessEqual(len(receipt), 224)
+        self.assertLessEqual(len(receipt), 294)
         self.assertNotIn("S-1-5-5-100-200", receipt)
         diagnose.assert_called_once_with(0x1234, "S-1-5-5-100-200")
 
@@ -540,7 +546,8 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         target_access = (
             "target_access=dacl_present+ace_match+token_thread+logon_enabled+"
             "restricted_no+access_allow+client_il_medium+pipe_il_absent+"
-            "pipe_nwu_unavailable+token_nwu_no+max_access_00120089"
+            "pipe_nwu_unavailable+token_nwu_no+owner_enabled_group+"
+            "owner_rights_absent+max_access_00120089"
         )
 
         receipt = formatter("errno=5:stage=runner_pipe_open", target_access)

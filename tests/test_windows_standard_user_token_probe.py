@@ -28,6 +28,173 @@ from scripts.windows_standard_user_token_probe import (
 
 
 class TestWindowsStandardUserTokenProbe(unittest.TestCase):
+    def test_pipe_owner_sid_match_is_classified_without_serializing_the_sid(self) -> None:
+        classify = getattr(token_probe, "_classify_pipe_owner_sid_match", None)
+        self.assertTrue(callable(classify), "pipe_owner_sid_classifier_missing")
+
+        api = mock.Mock()
+        sid_pointer_value = lambda pointer: (
+            pointer.value if isinstance(pointer, ctypes.c_void_p) else int(pointer)
+        )
+        api.advapi.EqualSid.side_effect = lambda left, right: (
+            sid_pointer_value(left) == sid_pointer_value(right)
+        )
+        user_sid = ctypes.c_void_p(100)
+        owner_sid = ctypes.c_void_p(200)
+        enabled_group = ctypes.c_void_p(300)
+        disabled_group = ctypes.c_void_p(400)
+        deny_only_group = ctypes.c_void_p(500)
+
+        self.assertEqual(
+            classify(api, user_sid, user_sid, []), "user",
+        )
+        self.assertEqual(
+            classify(
+                api, owner_sid, user_sid,
+                [(enabled_group, token_probe._SE_GROUP_ENABLED)],
+            ),
+            "not_in_token",
+        )
+        self.assertEqual(
+            classify(
+                api, enabled_group, user_sid,
+                [(enabled_group, token_probe._SE_GROUP_ENABLED)],
+            ),
+            "enabled_group",
+        )
+        self.assertEqual(
+            classify(
+                api, disabled_group, user_sid, [(disabled_group, 0)],
+            ),
+            "disabled_group",
+        )
+        self.assertEqual(
+            classify(
+                api, deny_only_group, user_sid,
+                [(deny_only_group, token_probe._SE_GROUP_USE_FOR_DENY_ONLY)],
+            ),
+            "deny_only_group",
+        )
+        self.assertEqual(classify(api, None, user_sid, []), "unavailable")
+
+        relation = getattr(token_probe, "_pipe_owner_token_relation", None)
+        self.assertTrue(callable(relation), "pipe_owner_token_relation_missing")
+
+        def get_owner(_descriptor, owner_output, defaulted) -> int:
+            owner_output._obj.value = enabled_group.value
+            defaulted._obj.value = 0
+            return 1
+
+        api.advapi.GetSecurityDescriptorOwner.side_effect = get_owner
+        with mock.patch.object(
+            token_probe._runner_pipe, "_token_user_sid",
+            return_value=(object(), user_sid.value),
+        ):
+            self.assertEqual(
+                relation(
+                    api, ctypes.c_void_p(600), ctypes.c_void_p(700),
+                    [(enabled_group.value, token_probe._SE_GROUP_ENABLED)],
+                ),
+                "enabled_group",
+            )
+
+    def test_owner_rights_ace_observer_is_bounded_and_fails_closed(self) -> None:
+        observe = getattr(token_probe, "_pipe_owner_rights_ace_state", None)
+        self.assertTrue(callable(observe), "owner_rights_ace_observer_missing")
+
+        storage = ctypes.create_string_buffer(28)
+        acl = ctypes.cast(storage, ctypes.POINTER(token_probe._ACL_HEADER)).contents
+        acl.AclSize = len(storage)
+        acl.AceCount = 1
+        ace_address = ctypes.addressof(storage) + ctypes.sizeof(
+            token_probe._ACL_HEADER,
+        )
+        ace_header = ctypes.cast(
+            ace_address, ctypes.POINTER(token_probe._ACE_HEADER),
+        ).contents
+        ace_header.AceType = token_probe._ACCESS_ALLOWED_ACE_TYPE
+        ace_header.AceFlags = 0
+        ace_header.AceSize = 20
+        ctypes.memmove(
+            ace_address + token_probe._ACCESS_ALLOWED_ACE.SidStart.offset,
+            b"\x01\x01\x00\x00\x00\x00\x00\x03\x04\x00\x00\x00",
+            12,
+        )
+        api = mock.Mock()
+        descriptor = ctypes.c_void_p(111)
+
+        def get_dacl(_descriptor, present, pointer, defaulted) -> int:
+            present._obj.value = 1
+            pointer._obj.value = ctypes.addressof(storage)
+            defaulted._obj.value = 0
+            return 1
+
+        def get_ace(_acl, _index, output) -> int:
+            ctypes.cast(
+                output, ctypes.POINTER(ctypes.c_void_p),
+            ).contents.value = ace_address
+            return 1
+
+        def convert_owner_rights(_sid_text, output) -> int:
+            ctypes.cast(
+                output, ctypes.POINTER(ctypes.c_void_p),
+            ).contents.value = 222
+            return 1
+
+        api.advapi.GetSecurityDescriptorDacl.side_effect = get_dacl
+        api.advapi.GetAce.side_effect = get_ace
+        api.advapi.ConvertStringSidToSidW.side_effect = convert_owner_rights
+        api.advapi.IsValidSid.return_value = 1
+        api.advapi.GetLengthSid.return_value = 12
+        api.advapi.EqualSid.return_value = 1
+        self.assertEqual(observe(api, descriptor), "present")
+        self.assertEqual(
+            api.advapi.ConvertStringSidToSidW.call_args.args[0], "S-1-3-4",
+        )
+
+        api.advapi.EqualSid.return_value = 0
+        self.assertEqual(observe(api, descriptor), "absent")
+
+        api.advapi.EqualSid.return_value = 1
+        ace_header.AceFlags = token_probe._INHERIT_ONLY_ACE
+        self.assertEqual(observe(api, descriptor), "absent")
+        ace_header.AceFlags = 0
+
+        # An ACE that advertises fewer bytes than its SID header requires is
+        # unknown, never mislabeled as an ACE without OWNER RIGHTS.
+        sid_count = ctypes.c_ubyte.from_address(
+            ace_address + token_probe._ACCESS_ALLOWED_ACE.SidStart.offset + 1,
+        )
+        sid_count.value = 2
+        self.assertEqual(observe(api, descriptor), "unavailable")
+        sid_count.value = 1
+
+        # Other access ACE layouts need a different SID offset; do not guess.
+        for unsupported_type in (
+            token_probe._ACCESS_ALLOWED_COMPOUND_ACE_TYPE,
+            token_probe._ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+        ):
+            with self.subTest(ace_type=unsupported_type):
+                ace_header.AceType = unsupported_type
+                self.assertEqual(observe(api, descriptor), "unavailable")
+
+        ace_header.AceType = token_probe._ACCESS_ALLOWED_ACE_TYPE
+        ace_header.AceSize = 21
+        self.assertEqual(observe(api, descriptor), "unavailable")
+        ace_header.AceSize = 20
+
+        def get_ace_outside_acl(_acl, _index, output) -> int:
+            ctypes.cast(
+                output, ctypes.POINTER(ctypes.c_void_p),
+            ).contents.value = 1
+            return 1
+
+        api.advapi.GetAce.side_effect = get_ace_outside_acl
+        self.assertEqual(observe(api, descriptor), "unavailable")
+
+        api.advapi.GetAce.side_effect = RuntimeError("private")
+        self.assertEqual(observe(api, descriptor), "unavailable")
+
     def test_pipe_access_diagnostic_summary_is_redacted_and_bounded(self) -> None:
         summary = token_probe._format_runner_pipe_access_diagnostic(
             dacl="present",
@@ -46,9 +213,30 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             summary,
             "dacl_present+ace_match+token_thread+logon_enabled+restricted_no+"
             "access_deny+client_il_medium+pipe_il_high+pipe_nwu_yes+token_nwu_yes+"
+            "owner_unavailable+owner_rights_unavailable+"
             "max_access_unavailable",
         )
         self.assertLessEqual(len(summary), 240)
+
+        longest_summary = token_probe._format_runner_pipe_access_diagnostic(
+            dacl="unavailable",
+            ace="unavailable",
+            token="unavailable",
+            logon_sid="unavailable",
+            restricted="unavailable",
+            access="unavailable",
+            client_integrity="protected_process",
+            pipe_integrity="protected_process",
+            pipe_no_write_up="unavailable",
+            client_no_write_up="unavailable",
+            owner_match="deny_only_group",
+            owner_rights_ace="unavailable",
+            max_access="ffffffff",
+        )
+        self.assertLessEqual(
+            len(longest_summary),
+            token_probe._PIPE_ACCESS_DIAGNOSTIC_MAX_CHARS,
+        )
         self.assertNotIn("S-1-5-", summary)
         with self.assertRaises(ValueError):
             token_probe._format_runner_pipe_access_diagnostic(
@@ -87,6 +275,27 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 access="allow",
             ),
         )
+        owner_summary = token_probe._format_runner_pipe_access_diagnostic(
+            dacl="present",
+            ace="match",
+            token="process",
+            logon_sid="enabled",
+            restricted="no",
+            access="allow",
+            owner_match="enabled_group",
+            owner_rights_ace="absent",
+        )
+        self.assertIn("owner_enabled_group+owner_rights_absent", owner_summary)
+        with self.assertRaises(ValueError):
+            token_probe._format_runner_pipe_access_diagnostic(
+                dacl="present",
+                ace="match",
+                token="process",
+                logon_sid="enabled",
+                restricted="no",
+                access="allow",
+                owner_match="S-1-5-21-secret",
+            )
 
     def test_token_integrity_rid_maps_only_to_fixed_labels(self) -> None:
         integrity_level = getattr(token_probe, "_integrity_level_from_rid", None)
@@ -253,7 +462,8 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
             "dacl_unavailable+ace_unavailable+token_unavailable+"
             "logon_unavailable+restricted_unavailable+access_unavailable+"
             "client_il_unavailable+pipe_il_unavailable+pipe_nwu_unavailable+"
-            "token_nwu_unavailable+max_access_unavailable",
+            "token_nwu_unavailable+owner_unavailable+"
+            "owner_rights_unavailable+max_access_unavailable",
         )
         self.assertNotIn("not-logged", summary)
 
@@ -337,6 +547,14 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 token_probe._runner_pipe, "_token_group_entries",
                 return_value=(object(), []),
             ),
+            mock.patch.object(
+                token_probe, "_pipe_owner_token_relation",
+                return_value="not_in_token",
+            ),
+            mock.patch.object(
+                token_probe, "_pipe_owner_rights_ace_state",
+                return_value="absent",
+            ),
         ):
             summary = token_probe._diagnose_runner_pipe_access(123, None)
 
@@ -344,6 +562,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertIn("max_access_00120089", summary)
         self.assertIn("token_process", summary)
         self.assertIn("dacl_present+ace_not_applicable", summary)
+        self.assertIn("owner_not_in_token+owner_rights_absent", summary)
         api.advapi.ConvertStringSidToSidW.assert_not_called()
         self.assertEqual(
             requested_masks,
@@ -456,6 +675,14 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
                 token_probe._runner_pipe, "_token_group_entries",
                 return_value=(object(), []),
             ),
+            mock.patch.object(
+                token_probe, "_pipe_owner_token_relation",
+                return_value="enabled_group",
+            ),
+            mock.patch.object(
+                token_probe, "_pipe_owner_rights_ace_state",
+                return_value="absent",
+            ),
         ):
             summary = token_probe._diagnose_runner_pipe_access(
                 123, "S-1-5-21-100-200-300-400",
@@ -468,6 +695,7 @@ class TestWindowsStandardUserTokenProbe(unittest.TestCase):
         self.assertIn("dacl_present+ace_match", summary)
         self.assertIn("access_allow", summary)
         self.assertIn("max_access_00100007", summary)
+        self.assertIn("owner_enabled_group+owner_rights_absent", summary)
         self.assertEqual(
             [call.args[2] for call in api.advapi.AccessCheck.call_args_list],
             [token_probe.PIPE_CLIENT_ACCESS_MASK, token_probe._MAXIMUM_ALLOWED_ACCESS],

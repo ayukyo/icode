@@ -60,6 +60,7 @@ _ACCESS_ALLOWED_ACE_TYPE = 0x00
 _ACCESS_DENIED_ACE_TYPE = 0x01
 _SYSTEM_AUDIT_ACE_TYPE = 0x02
 _SYSTEM_ALARM_ACE_TYPE = 0x03
+_ACCESS_ALLOWED_COMPOUND_ACE_TYPE = 0x04
 _ACCESS_ALLOWED_OBJECT_ACE_TYPE = 0x05
 _ACCESS_DENIED_OBJECT_ACE_TYPE = 0x06
 _SYSTEM_AUDIT_OBJECT_ACE_TYPE = 0x07
@@ -87,6 +88,7 @@ _SYSTEM_MANDATORY_LABEL_NO_WRITE_UP = 0x00000001
 _ACE_TYPES_WITH_ACCESS_MASK = frozenset({
     _ACCESS_ALLOWED_ACE_TYPE,
     _ACCESS_DENIED_ACE_TYPE,
+    _ACCESS_ALLOWED_COMPOUND_ACE_TYPE,
     _SYSTEM_AUDIT_ACE_TYPE,
     _SYSTEM_ALARM_ACE_TYPE,
     _ACCESS_ALLOWED_OBJECT_ACE_TYPE,
@@ -105,9 +107,13 @@ _ACE_TYPES_WITH_ACCESS_MASK = frozenset({
 })
 _SE_GROUP_USE_FOR_DENY_ONLY = 0x00000010
 _SE_GROUP_ENABLED = 0x00000004
+_INHERIT_ONLY_ACE = 0x00000008
 _SE_GROUP_LOGON_ID = 0xC0000000
 _SECURITY_IMPERSONATION_LEVEL = 2
 _DIAGNOSTIC_MAX_ACE_COUNT = 256
+_PIPE_ACCESS_DIAGNOSTIC_MAX_CHARS = 280
+_SID_REVISION = 1
+_SID_MAX_SUB_AUTHORITIES = 15
 _PIPE_DESCRIPTOR_MAX_ACE_REPORT = 8
 _PIPE_SECURITY_DESCRIPTOR_SHAPE_RE = re.compile(
     r"sd_control=([0-9A-F]{4});sd_revision=[0-9]{1,3};"
@@ -1936,6 +1942,8 @@ def _format_runner_pipe_access_diagnostic(
     pipe_integrity: str = "unavailable",
     pipe_no_write_up: str = "unavailable",
     client_no_write_up: str = "unavailable",
+    owner_match: str = "unavailable",
+    owner_rights_ace: str = "unavailable",
     max_access: str = "unavailable",
 ) -> str:
     """Serialize only fixed diagnostic states, never SID or ACL contents."""
@@ -1956,6 +1964,11 @@ def _format_runner_pipe_access_diagnostic(
         },
         "pipe_no_write_up": {"yes", "no", "unavailable"},
         "client_no_write_up": {"yes", "no", "unavailable"},
+        "owner_match": {
+            "user", "enabled_group", "disabled_group", "deny_only_group",
+            "not_in_token", "unavailable",
+        },
+        "owner_rights_ace": {"present", "absent", "unavailable"},
     }
     values = {
         "dacl": dacl,
@@ -1968,6 +1981,8 @@ def _format_runner_pipe_access_diagnostic(
         "pipe_integrity": pipe_integrity,
         "pipe_no_write_up": pipe_no_write_up,
         "client_no_write_up": client_no_write_up,
+        "owner_match": owner_match,
+        "owner_rights_ace": owner_rights_ace,
     }
     if any(value not in choices[key] for key, value in values.items()):
         raise ValueError("invalid_pipe_access_diagnostic")
@@ -1985,12 +2000,14 @@ def _format_runner_pipe_access_diagnostic(
         "pipe_integrity": "pipe_il",
         "pipe_no_write_up": "pipe_nwu",
         "client_no_write_up": "token_nwu",
+        "owner_match": "owner",
+        "owner_rights_ace": "owner_rights",
     }
     summary = "+".join(
         f"{labels.get(key, key)}_{value}" for key, value in values.items()
     )
     summary += f"+max_access_{max_access}"
-    if len(summary) > 240:
+    if len(summary) > _PIPE_ACCESS_DIAGNOSTIC_MAX_CHARS:
         raise ValueError("pipe_access_diagnostic_too_long")
     return summary
 
@@ -2417,6 +2434,176 @@ def _runner_pipe_dacl_observation(
         return "unavailable", ace_unresolved
 
 
+def _classify_pipe_owner_sid_match(
+    api: object,
+    owner_sid: ctypes.c_void_p | int | None,
+    user_sid: ctypes.c_void_p | int | None,
+    groups: list[tuple[int, int]],
+) -> str:
+    """Classify whether the descriptor owner is the user or a token group."""
+    if not owner_sid or not user_sid or not isinstance(groups, list):
+        return "unavailable"
+    try:
+        advapi = api.advapi
+        if advapi.EqualSid(owner_sid, user_sid):
+            return "user"
+        matches: list[int] = []
+        for group_sid, attributes in groups:
+            if not group_sid or type(attributes) is not int:
+                return "unavailable"
+            if advapi.EqualSid(owner_sid, group_sid):
+                matches.append(attributes)
+        if not matches:
+            return "not_in_token"
+        if len(matches) != 1:
+            return "unavailable"
+        attributes = matches[0]
+        if attributes & _SE_GROUP_USE_FOR_DENY_ONLY:
+            return "deny_only_group"
+        if attributes & _SE_GROUP_ENABLED:
+            return "enabled_group"
+        return "disabled_group"
+    except Exception:
+        return "unavailable"
+
+
+def _pipe_owner_token_relation(
+    api: object,
+    security_descriptor: ctypes.c_void_p,
+    token: ctypes.c_void_p,
+    groups: list[tuple[int, int]],
+) -> str:
+    """Compare the object owner to the exact client token's user/groups."""
+    try:
+        advapi = api.advapi
+        advapi.GetSecurityDescriptorOwner.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.BOOL),
+        ]
+        advapi.GetSecurityDescriptorOwner.restype = wintypes.BOOL
+        owner_sid = ctypes.c_void_p()
+        owner_defaulted = wintypes.BOOL()
+        if not advapi.GetSecurityDescriptorOwner(
+            security_descriptor, ctypes.byref(owner_sid),
+            ctypes.byref(owner_defaulted),
+        ) or not owner_sid:
+            return "unavailable"
+        user_buffer, user_sid = _runner_pipe._token_user_sid(api, token)
+        _ = user_buffer
+        return _classify_pipe_owner_sid_match(
+            api, owner_sid, user_sid, groups,
+        )
+    except Exception:
+        return "unavailable"
+
+
+def _pipe_owner_rights_ace_state(
+    api: object,
+    security_descriptor: ctypes.c_void_p,
+) -> str:
+    """Detect a basic applicable OWNER RIGHTS allow/deny ACE, fail-closed."""
+    owner_rights_sid = ctypes.c_void_p()
+    try:
+        advapi = api.advapi
+        advapi.GetSecurityDescriptorDacl.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL),
+            ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(wintypes.BOOL),
+        ]
+        advapi.GetSecurityDescriptorDacl.restype = wintypes.BOOL
+        present = wintypes.BOOL()
+        dacl = ctypes.c_void_p()
+        defaulted = wintypes.BOOL()
+        if not advapi.GetSecurityDescriptorDacl(
+            security_descriptor, ctypes.byref(present),
+            ctypes.byref(dacl), ctypes.byref(defaulted),
+        ):
+            return "unavailable"
+        if not present.value or not dacl:
+            return "absent"
+        acl = ctypes.cast(dacl, ctypes.POINTER(_ACL_HEADER)).contents
+        if (
+            acl.AclSize < ctypes.sizeof(_ACL_HEADER)
+            or acl.AceCount > _DIAGNOSTIC_MAX_ACE_COUNT
+        ):
+            return "unavailable"
+
+        advapi.GetAce.argtypes = [
+            ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(ctypes.c_void_p),
+        ]
+        advapi.GetAce.restype = wintypes.BOOL
+        if not advapi.ConvertStringSidToSidW(
+            "S-1-3-4", ctypes.byref(owner_rights_sid),
+        ) or not owner_rights_sid:
+            return "unavailable"
+        acl_start = int(ctypes.cast(dacl, ctypes.c_void_p).value)
+        acl_end = acl_start + int(acl.AclSize)
+        supported_access_aces = {
+            _ACCESS_ALLOWED_ACE_TYPE, _ACCESS_DENIED_ACE_TYPE,
+        }
+        for index in range(int(acl.AceCount)):
+            ace_pointer = ctypes.c_void_p()
+            if not advapi.GetAce(dacl, index, ctypes.byref(ace_pointer)) or not ace_pointer:
+                return "unavailable"
+            ace_start = int(ace_pointer.value)
+            if (
+                ace_start < acl_start + ctypes.sizeof(_ACL_HEADER)
+                or ace_start + ctypes.sizeof(_ACE_HEADER) > acl_end
+            ):
+                return "unavailable"
+            header = ctypes.cast(
+                ace_pointer, ctypes.POINTER(_ACE_HEADER),
+            ).contents
+            ace_end = ace_start + int(header.AceSize)
+            if (
+                int(header.AceSize) < ctypes.sizeof(_ACE_HEADER)
+                or ace_start < acl_start + ctypes.sizeof(_ACL_HEADER)
+                or ace_end > acl_end
+            ):
+                return "unavailable"
+            if header.AceType not in supported_access_aces:
+                if header.AceType in _ACE_TYPES_WITH_ACCESS_MASK:
+                    # Object/callback access ACEs need additional layout or
+                    # condition parsing; do not report them as absent.
+                    return "unavailable"
+                continue
+            if header.AceFlags & _INHERIT_ONLY_ACE:
+                continue
+            sid_offset = _ACCESS_ALLOWED_ACE.SidStart.offset
+            if int(header.AceSize) < sid_offset + 8:
+                return "unavailable"
+            ace_sid_address = ace_start + sid_offset
+            sid_header = ctypes.string_at(ace_sid_address, 8)
+            if (
+                sid_header[0] != _SID_REVISION
+                or sid_header[1] > _SID_MAX_SUB_AUTHORITIES
+            ):
+                return "unavailable"
+            sid_length = 8 + 4 * sid_header[1]
+            if sid_offset + sid_length > int(header.AceSize):
+                return "unavailable"
+            ace_sid = ctypes.c_void_p(ace_sid_address)
+            advapi.IsValidSid.argtypes = [ctypes.c_void_p]
+            advapi.IsValidSid.restype = wintypes.BOOL
+            advapi.GetLengthSid.argtypes = [ctypes.c_void_p]
+            advapi.GetLengthSid.restype = wintypes.DWORD
+            if (
+                not advapi.IsValidSid(ace_sid)
+                or int(advapi.GetLengthSid(ace_sid)) != sid_length
+            ):
+                return "unavailable"
+            if advapi.EqualSid(ace_sid, owner_rights_sid):
+                return "present"
+        return "absent"
+    except Exception:
+        return "unavailable"
+    finally:
+        if owner_rights_sid:
+            try:
+                api.kernel.LocalFree(owner_rights_sid)
+            except Exception:
+                pass
+
+
 def _diagnose_runner_pipe_access(
     pipe_handle: int,
     logon_sid: str | None,
@@ -2428,6 +2615,7 @@ def _diagnose_runner_pipe_access(
     dacl_state = token_source = logon_state = "unavailable"
     ace_state = "not_applicable" if logon_sid is None else "unavailable"
     restricted_state = access_state = "unavailable"
+    owner_match = owner_rights_ace = "unavailable"
     max_access = "unavailable"
     api = None
     security_descriptor = ctypes.c_void_p()
@@ -2442,6 +2630,7 @@ def _diagnose_runner_pipe_access(
                 dacl=dacl_state, ace=ace_state, token=token_source,
                 logon_sid=logon_state, restricted=restricted_state,
                 access=access_state, max_access=max_access,
+                owner_match=owner_match, owner_rights_ace=owner_rights_ace,
             )
         api = _runner_pipe._load_win32_api()
         advapi = api.advapi
@@ -2515,6 +2704,12 @@ def _diagnose_runner_pipe_access(
                 ),
             )
             _ = groups_buffer
+            owner_match = _pipe_owner_token_relation(
+                api, security_descriptor, effective_token, groups,
+            )
+            owner_rights_ace = _pipe_owner_rights_ace_state(
+                api, security_descriptor,
+            )
             restricted_state = (
                 "yes" if advapi.IsTokenRestricted(effective_token) else "no"
             )
@@ -2589,6 +2784,8 @@ def _diagnose_runner_pipe_access(
         pipe_integrity=pipe_integrity_state,
         pipe_no_write_up=pipe_no_write_up_state,
         client_no_write_up=client_no_write_up_state,
+        owner_match=owner_match,
+        owner_rights_ace=owner_rights_ace,
         max_access=max_access,
     )
 
