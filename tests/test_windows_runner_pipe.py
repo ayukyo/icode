@@ -30,6 +30,21 @@ from icode.windows_runner_protocol import RunnerProtocolError
 REQUEST_ID = "0123456789abcdef0123456789abcdef"
 
 
+def _parse_pipe_direction_receipt(receipt: str) -> tuple[str, str] | None:
+    """Split the fixed probe receipt without treating its role as a state."""
+    if type(receipt) is not str or len(receipt) > 128:
+        return None
+    prefix, separator, states = receipt.partition("pipe_direction=duplex_")
+    if prefix or not separator:
+        return None
+    duplex_state, separator, outbound_state = states.partition("_outbound_")
+    if not separator or not duplex_state or not outbound_state:
+        return None
+    if "_outbound_" in outbound_state:
+        return None
+    return duplex_state, outbound_state
+
+
 def _spawn_request(request_id: str = REQUEST_ID) -> dict[str, object]:
     return {
         "version": 1,
@@ -429,6 +444,19 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
             "pipe_direction=duplex_unavailable_outbound_open_failed",
         )
         self.assertLessEqual(len(bounded), 128)
+
+    def test_direction_receipt_parser_strips_server_role_prefix(self) -> None:
+        self.assertEqual(
+            _parse_pipe_direction_receipt(
+                "pipe_direction=duplex_opened_outbound_open_access_denied",
+            ),
+            ("opened", "open_access_denied"),
+        )
+        self.assertIsNone(
+            _parse_pipe_direction_receipt(
+                "pipe_direction=opened_outbound_open_access_denied",
+            ),
+        )
 
     def test_pipe_direction_probe_dacl_is_sid_bound_and_read_only(self) -> None:
         from scripts import windows_standard_user_token_probe as probe
@@ -912,11 +940,11 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
 
         receipt = runner_pipe_server_direction_probe()
         print(f"::notice::{receipt}")
-        prefix, _, states = receipt.partition("pipe_direction=")
-        self.assertEqual(prefix, "")
-        duplex_state, separator, outbound_state = states.partition(
-            "_outbound_",
-        )
+        states = _parse_pipe_direction_receipt(receipt)
+        self.assertIsNotNone(states)
+        if states is None:
+            self.fail("invalid_pipe_direction_receipt")
+        duplex_state, outbound_state = states
         allowed_states = {
             "opened",
             "open_access_denied",
