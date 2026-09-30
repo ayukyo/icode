@@ -631,6 +631,76 @@ def _self_pipe_access_receipt_label(detail: object) -> str:
     return "self_access_unavailable"
 
 
+def _runner_pipe_accesscheck_state(
+    pipe_handle: int,
+    expected_sid: str | None,
+) -> str:
+    """Return one fixed AccessCheck state for a disposable pipe descriptor."""
+    try:
+        diagnostic = _diagnose_runner_pipe_access(pipe_handle, expected_sid)
+    except Exception:
+        return "unavailable"
+    if isinstance(diagnostic, str):
+        for part in diagnostic.split("+"):
+            if part in {"access_allow", "access_deny", "access_unavailable"}:
+                return part.removeprefix("access_")
+    return "unavailable"
+
+
+def _runner_pipe_probe_detail_with_accesscheck(detail: str, state: str) -> str:
+    if state not in {"allow", "deny", "unavailable"}:
+        state = "unavailable"
+    return f"{detail}+access_{state}"
+
+
+def _runner_pipe_probe_receipt_code(
+    kind: str,
+    opened: bool,
+    detail: object,
+) -> str:
+    """Compactly encode open and AccessCheck results for temporary ACL A/Bs.
+
+    The receipt order is default DACL, TokenUser DACL, TokenUser plus the
+    create-instance bit. Each item is ``<kind><open><access>`` where open is
+    ``o`` (opened), ``d`` (access denied), or ``f`` (other failure), and
+    access is ``a`` (allow), ``d`` (deny), or ``u`` (unavailable).
+    """
+    if kind not in {"d", "u", "c"}:
+        raise ValueError("invalid_temporary_pipe_probe_kind")
+    if opened is True:
+        open_state = "o"
+    elif isinstance(detail, str) and (
+        detail == "client_open_access_denied"
+        or re.fullmatch(
+            r"client_open_access_denied\+access_(?:allow|deny|unavailable)",
+            detail,
+        )
+    ):
+        open_state = "d"
+    else:
+        open_state = "f"
+    access_state = "u"
+    if isinstance(detail, str):
+        for part in detail.split("+"):
+            if part in {"access_allow", "access_deny", "access_unavailable"}:
+                access_state = {
+                    "access_allow": "a",
+                    "access_deny": "d",
+                    "access_unavailable": "u",
+                }[part]
+    return f"{kind}{open_state}{access_state}"
+
+
+def _runner_pipe_probe_open_denied(detail: object) -> bool:
+    return isinstance(detail, str) and (
+        detail == "client_open_access_denied"
+        or re.fullmatch(
+            r"client_open_access_denied\+access_(?:allow|deny|unavailable)",
+            detail,
+        )
+    )
+
+
 def runner_pipe_wrong_server_pid_probe() -> tuple[bool, str]:
     """Reject a false expected server PID and return only a safe stage code."""
     if sys.platform != "win32":
@@ -945,6 +1015,11 @@ def runner_pipe_open_with_default_dacl_probe() -> tuple[bool, str]:
                     return False, "client_wait_access_denied"
                 return False, "client_wait_failed"
 
+            # Compare the actual default descriptor with the same effective
+            # token/mask immediately before the real disposable-pipe open.
+            accesscheck_state = _runner_pipe_accesscheck_state(
+                pipe._handle, None,
+            )
             client = api.kernel.CreateFileW(
                 pipe.name,
                 PIPE_CLIENT_ACCESS_MASK,
@@ -958,32 +1033,52 @@ def runner_pipe_open_with_default_dacl_probe() -> tuple[bool, str]:
             )
             if _runner_pipe._handle_is_invalid(client):
                 if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
-                    return False, "client_open_access_denied"
-                return False, "client_open_failed"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "client_open_access_denied", accesscheck_state,
+                    )
+                return False, _runner_pipe_probe_detail_with_accesscheck(
+                    "client_open_failed", accesscheck_state,
+                )
 
             try:
                 server_pid = wintypes.DWORD(0)
                 if not api.kernel.GetNamedPipeServerProcessId(
                     client, ctypes.byref(server_pid),
                 ) or server_pid.value == 0:
-                    return False, "server_pid_unavailable"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "server_pid_unavailable", accesscheck_state,
+                    )
                 if server_pid.value != current_pid:
-                    return False, "server_pid_mismatch"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "server_pid_mismatch", accesscheck_state,
+                    )
                 pipe._connect(2_000)
                 if not pipe._connected:
-                    return False, "server_connect_failed"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "server_connect_failed", accesscheck_state,
+                    )
                 client_pid = wintypes.DWORD(0)
                 if not api.kernel.GetNamedPipeClientProcessId(
                     pipe._handle, ctypes.byref(client_pid),
                 ) or client_pid.value == 0:
-                    return False, "client_pid_unavailable"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "client_pid_unavailable", accesscheck_state,
+                    )
                 if client_pid.value != current_pid:
-                    return False, "client_pid_mismatch"
-                return True, "client_opened_with_default_dacl"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "client_pid_mismatch", accesscheck_state,
+                    )
+                return True, _runner_pipe_probe_detail_with_accesscheck(
+                    "client_opened_with_default_dacl", accesscheck_state,
+                )
             except TimeoutError:
-                return False, "server_connect_timeout"
+                return False, _runner_pipe_probe_detail_with_accesscheck(
+                    "server_connect_timeout", accesscheck_state,
+                )
             except OSError:
-                return False, "server_connect_failed"
+                return False, _runner_pipe_probe_detail_with_accesscheck(
+                    "server_connect_failed", accesscheck_state,
+                )
             finally:
                 if not api.kernel.CloseHandle(client):
                     raise _runner_pipe._winerror(
@@ -1027,6 +1122,9 @@ def runner_pipe_open_with_user_sid_dacl_probe() -> tuple[bool, str]:
                     return False, "client_wait_access_denied"
                 return False, "client_wait_failed"
 
+            accesscheck_state = _runner_pipe_accesscheck_state(
+                pipe._handle, user_sid,
+            )
             client = api.kernel.CreateFileW(
                 pipe.name,
                 PIPE_CLIENT_ACCESS_MASK,
@@ -1040,32 +1138,52 @@ def runner_pipe_open_with_user_sid_dacl_probe() -> tuple[bool, str]:
             )
             if _runner_pipe._handle_is_invalid(client):
                 if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
-                    return False, "client_open_access_denied"
-                return False, "client_open_failed"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "client_open_access_denied", accesscheck_state,
+                    )
+                return False, _runner_pipe_probe_detail_with_accesscheck(
+                    "client_open_failed", accesscheck_state,
+                )
 
             try:
                 server_pid = wintypes.DWORD(0)
                 if not api.kernel.GetNamedPipeServerProcessId(
                     client, ctypes.byref(server_pid),
                 ) or server_pid.value == 0:
-                    return False, "server_pid_unavailable"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "server_pid_unavailable", accesscheck_state,
+                    )
                 if server_pid.value != current_pid:
-                    return False, "server_pid_mismatch"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "server_pid_mismatch", accesscheck_state,
+                    )
                 pipe._connect(2_000)
                 if not pipe._connected:
-                    return False, "server_connect_failed"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "server_connect_failed", accesscheck_state,
+                    )
                 client_pid = wintypes.DWORD(0)
                 if not api.kernel.GetNamedPipeClientProcessId(
                     pipe._handle, ctypes.byref(client_pid),
                 ) or client_pid.value == 0:
-                    return False, "client_pid_unavailable"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "client_pid_unavailable", accesscheck_state,
+                    )
                 if client_pid.value != current_pid:
-                    return False, "client_pid_mismatch"
-                return True, "client_opened_with_user_sid_dacl"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "client_pid_mismatch", accesscheck_state,
+                    )
+                return True, _runner_pipe_probe_detail_with_accesscheck(
+                    "client_opened_with_user_sid_dacl", accesscheck_state,
+                )
             except TimeoutError:
-                return False, "server_connect_timeout"
+                return False, _runner_pipe_probe_detail_with_accesscheck(
+                    "server_connect_timeout", accesscheck_state,
+                )
             except OSError:
-                return False, "server_connect_failed"
+                return False, _runner_pipe_probe_detail_with_accesscheck(
+                    "server_connect_failed", accesscheck_state,
+                )
             finally:
                 if not api.kernel.CloseHandle(client):
                     raise _runner_pipe._winerror(
@@ -1176,6 +1294,9 @@ def runner_pipe_open_with_user_sid_create_instance_access_probe() -> tuple[bool,
                     return False, "client_wait_access_denied"
                 return False, "client_wait_failed"
 
+            accesscheck_state = _runner_pipe_accesscheck_state(
+                pipe._handle, user_sid,
+            )
             client = api.kernel.CreateFileW(
                 pipe.name,
                 PIPE_CLIENT_ACCESS_MASK,
@@ -1189,32 +1310,53 @@ def runner_pipe_open_with_user_sid_create_instance_access_probe() -> tuple[bool,
             )
             if _runner_pipe._handle_is_invalid(client):
                 if ctypes.get_last_error() == _ERROR_ACCESS_DENIED:
-                    return False, "client_open_access_denied"
-                return False, "client_open_failed"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "client_open_access_denied", accesscheck_state,
+                    )
+                return False, _runner_pipe_probe_detail_with_accesscheck(
+                    "client_open_failed", accesscheck_state,
+                )
 
             try:
                 server_pid = wintypes.DWORD(0)
                 if not api.kernel.GetNamedPipeServerProcessId(
                     client, ctypes.byref(server_pid),
                 ) or server_pid.value == 0:
-                    return False, "server_pid_unavailable"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "server_pid_unavailable", accesscheck_state,
+                    )
                 if server_pid.value != current_pid:
-                    return False, "server_pid_mismatch"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "server_pid_mismatch", accesscheck_state,
+                    )
                 pipe._connect(2_000)
                 if not pipe._connected:
-                    return False, "server_connect_failed"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "server_connect_failed", accesscheck_state,
+                    )
                 client_pid = wintypes.DWORD(0)
                 if not api.kernel.GetNamedPipeClientProcessId(
                     pipe._handle, ctypes.byref(client_pid),
                 ) or client_pid.value == 0:
-                    return False, "client_pid_unavailable"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "client_pid_unavailable", accesscheck_state,
+                    )
                 if client_pid.value != current_pid:
-                    return False, "client_pid_mismatch"
-                return True, "client_opened_with_user_sid_create_instance_access"
+                    return False, _runner_pipe_probe_detail_with_accesscheck(
+                        "client_pid_mismatch", accesscheck_state,
+                    )
+                return True, _runner_pipe_probe_detail_with_accesscheck(
+                    "client_opened_with_user_sid_create_instance_access",
+                    accesscheck_state,
+                )
             except TimeoutError:
-                return False, "server_connect_timeout"
+                return False, _runner_pipe_probe_detail_with_accesscheck(
+                    "server_connect_timeout", accesscheck_state,
+                )
             except OSError:
-                return False, "server_connect_failed"
+                return False, _runner_pipe_probe_detail_with_accesscheck(
+                    "server_connect_failed", accesscheck_state,
+                )
             finally:
                 if not api.kernel.CloseHandle(client):
                     raise _runner_pipe._winerror(
@@ -1688,7 +1830,7 @@ def _runner_effective_token_diagnostic() -> str:
 
 def _diagnose_runner_pipe_access(
     pipe_handle: int,
-    logon_sid: str,
+    logon_sid: str | None,
     *,
     client_process_handle: int | None = None,
 ) -> str:
@@ -1744,7 +1886,7 @@ def _diagnose_runner_pipe_access(
         ]
         advapi.ConvertStringSidToSidW.restype = wintypes.BOOL
 
-        if not advapi.ConvertStringSidToSidW(
+        if isinstance(logon_sid, str) and not advapi.ConvertStringSidToSidW(
             logon_sid, ctypes.byref(expected_sid),
         ):
             expected_sid = ctypes.c_void_p()
@@ -2622,6 +2764,7 @@ def _run_child_mode(
     default_dacl_probe_state: str | None = None
     user_sid_dacl_probe_state: str | None = None
     user_sid_create_instance_probe_state: str | None = None
+    temporary_acl_probe_receipt: str | None = None
     self_pipe_access_probe_state: str | None = None
     access_mask_matrix_state: str | None = None
     try:
@@ -2683,36 +2826,43 @@ def _run_child_mode(
                     default_dacl_opened, default_dacl_detail = (
                         runner_pipe_open_with_default_dacl_probe()
                     )
+                    temporary_acl_probe_receipt = "tmp_" + (
+                        _runner_pipe_probe_receipt_code(
+                            "d", default_dacl_opened, default_dacl_detail,
+                        )
+                    )
                     if default_dacl_opened is True:
                         default_dacl_probe_state = "default_dacl_ok"
-                    elif (
-                        type(default_dacl_detail) is str
-                        and default_dacl_detail == "client_open_access_denied"
-                    ):
+                    elif _runner_pipe_probe_open_denied(default_dacl_detail):
                         default_dacl_probe_state = "default_dacl_denied"
                     else:
                         default_dacl_probe_state = "default_dacl_failed"
                     user_sid_dacl_opened, user_sid_dacl_detail = (
                         runner_pipe_open_with_user_sid_dacl_probe()
                     )
+                    temporary_acl_probe_receipt += "_" + (
+                        _runner_pipe_probe_receipt_code(
+                            "u", user_sid_dacl_opened, user_sid_dacl_detail,
+                        )
+                    )
                     if user_sid_dacl_opened is True:
                         user_sid_dacl_probe_state = "user_sid_dacl_ok"
-                    elif (
-                        type(user_sid_dacl_detail) is str
-                        and user_sid_dacl_detail == "client_open_access_denied"
-                    ):
+                    elif _runner_pipe_probe_open_denied(user_sid_dacl_detail):
                         user_sid_dacl_probe_state = "user_sid_dacl_denied"
                         create_instance_opened, create_instance_detail = (
                             runner_pipe_open_with_user_sid_create_instance_access_probe()
+                        )
+                        temporary_acl_probe_receipt += "_" + (
+                            _runner_pipe_probe_receipt_code(
+                                "c", create_instance_opened,
+                                create_instance_detail,
+                            )
                         )
                         if create_instance_opened is True:
                             user_sid_create_instance_probe_state = (
                                 "user_sid_create_instance_ok"
                             )
-                        elif (
-                            type(create_instance_detail) is str
-                            and create_instance_detail == "client_open_access_denied"
-                        ):
+                        elif _runner_pipe_probe_open_denied(create_instance_detail):
                             user_sid_create_instance_probe_state = (
                                 "user_sid_create_instance_denied"
                             )
@@ -2766,28 +2916,20 @@ def _run_child_mode(
                     minimal_token = minimal_diagnostic.partition("+")[0]
                     context_parts = [diagnostic]
                     if user_sid_create_instance_probe_state is not None:
-                        # This additional ACE changes exactly one mask bit after
-                        # the TokenUser-only ACE was denied. Keep all three DACL
-                        # outcomes visible without exposing SID values.
+                        # The compact receipt retains each disposable DACL's
+                        # CreateFileW and same-handle AccessCheck outcome.
                         context_parts = [
                             _compact_runner_effective_token_diagnostic(
                                 effective_token_diagnostic,
                             ),
-                            default_dacl_probe_state or "default_dacl_unavailable",
-                            user_sid_dacl_probe_state or "user_sid_dacl_unavailable",
-                            user_sid_create_instance_probe_state,
+                            temporary_acl_probe_receipt or "tmp_unavailable",
                         ]
                     elif user_sid_dacl_probe_state is not None:
-                        # These ACL A/Bs already imply the preceding self-pipe,
-                        # no-SYNCHRONIZE, and no-OVERLAPPED denials. Keep both
-                        # changed-principal outcomes visible in the 120-char
-                        # receipt without leaking SID values.
                         context_parts = [
                             _compact_runner_effective_token_diagnostic(
                                 effective_token_diagnostic,
                             ),
-                            default_dacl_probe_state or "default_dacl_unavailable",
-                            user_sid_dacl_probe_state,
+                            temporary_acl_probe_receipt or "tmp_unavailable",
                         ]
                     elif wrong_pid_probe_state is not None:
                         context_parts.append(wrong_pid_probe_state)
@@ -2800,7 +2942,9 @@ def _run_child_mode(
                         # This final A/B only runs after the self, no-SYNCHRONIZE,
                         # and no-OVERLAPPED probes all returned access denied.
                         # Keep the bounded receipt focused on the changed DACL.
-                        context_parts.append(default_dacl_probe_state)
+                        context_parts.append(
+                            temporary_acl_probe_receipt or default_dacl_probe_state,
+                        )
                     elif (
                         user_sid_dacl_probe_state is None
                         and no_overlapped_probe_state is not None
@@ -2824,19 +2968,9 @@ def _run_child_mode(
                         and self_pipe_access_probe_state is not None
                     ):
                         compact_parts = [minimal_diagnostic]
-                        if user_sid_create_instance_probe_state is not None:
-                            # Reaching this probe proves the preceding
-                            # TokenUser-only DACL open was denied; omit that
-                            # redundant outcome to retain the bounded receipt.
+                        if temporary_acl_probe_receipt is not None:
                             compact_parts.extend((
-                                default_dacl_probe_state or "default_dacl_unavailable",
-                                user_sid_create_instance_probe_state,
-                                self_pipe_access_probe_state,
-                            ))
-                        elif user_sid_dacl_probe_state is not None:
-                            compact_parts.extend((
-                                default_dacl_probe_state or "default_dacl_unavailable",
-                                user_sid_dacl_probe_state,
+                                temporary_acl_probe_receipt,
                                 self_pipe_access_probe_state,
                             ))
                         elif default_dacl_probe_state is not None:
@@ -2880,8 +3014,7 @@ def _run_child_mode(
                     ):
                         context = "+".join((
                             minimal_diagnostic,
-                            default_dacl_probe_state or "default_dacl_unavailable",
-                            user_sid_create_instance_probe_state,
+                            temporary_acl_probe_receipt or "tmp_unavailable",
                             f"open_winerror_{error_code}",
                         ))
                     elif (
@@ -2890,8 +3023,7 @@ def _run_child_mode(
                     ):
                         context = "+".join((
                             minimal_diagnostic,
-                            default_dacl_probe_state or "default_dacl_unavailable",
-                            user_sid_dacl_probe_state,
+                            temporary_acl_probe_receipt or "tmp_unavailable",
                             f"open_winerror_{error_code}",
                         ))
                     if (
@@ -2930,13 +3062,8 @@ def _run_child_mode(
                         ):
                             context_parts = [
                                 minimal_diagnostic,
-                                default_dacl_probe_state,
-                                user_sid_dacl_probe_state,
+                                temporary_acl_probe_receipt or "tmp_unavailable",
                             ]
-                            if user_sid_create_instance_probe_state is not None:
-                                context_parts.append(
-                                    user_sid_create_instance_probe_state,
-                                )
                             context_parts.extend((
                                 "mask_all_d5",
                                 f"winerror_{error_code}",
@@ -2951,13 +3078,8 @@ def _run_child_mode(
                                 # The parent independently records the child
                                 # token; keep the exact ACL outcomes first.
                                 context_parts = [
-                                    default_dacl_probe_state,
-                                    user_sid_dacl_probe_state,
+                                    temporary_acl_probe_receipt or "tmp_unavailable",
                                 ]
-                                if user_sid_create_instance_probe_state is not None:
-                                    context_parts.append(
-                                        user_sid_create_instance_probe_state,
-                                    )
                                 context_parts.append(f"winerror_{error_code}")
                                 context = "+".join(context_parts)
                         else:
