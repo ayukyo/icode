@@ -210,6 +210,21 @@ def _format_native_pipe_failure_annotation(
     return receipt
 
 
+def _format_server_connect_receipt(result: object, last_error: object) -> str:
+    """Map the native BOOL/error pair to a fixed, non-sensitive label."""
+    if type(result) not in (bool, int):
+        return "server_connect=unavailable"
+    if result != 0:
+        return "server_connect=success"
+    if type(last_error) is not int or not 0 <= last_error <= 0xFFFFFFFF:
+        return "server_connect=unavailable"
+    if last_error == windows_runner_pipe._ERROR_PIPE_CONNECTED:
+        return "server_connect=pipe_connected"
+    if last_error == windows_runner_pipe._ERROR_IO_PENDING:
+        return "server_connect=io_pending"
+    return "server_connect=other"
+
+
 class TestWindowsRunnerPipePolicy(unittest.TestCase):
     def test_server_refuses_to_send_or_receive_before_runner_authentication(self) -> None:
         api = windows_runner_pipe._Win32Api(
@@ -514,6 +529,27 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         )
         self.assertNotIn("private", receipt)
         self.assertNotIn("secret", receipt)
+
+    def test_server_connect_receipt_uses_only_fixed_result_labels(self) -> None:
+        formatter = globals().get("_format_server_connect_receipt")
+        self.assertTrue(
+            callable(formatter),
+            "server_connect_receipt_formatter_missing",
+        )
+
+        cases = (
+            (1, 0, "server_connect=success"),
+            (0, windows_runner_pipe._ERROR_PIPE_CONNECTED,
+             "server_connect=pipe_connected"),
+            (0, windows_runner_pipe._ERROR_IO_PENDING,
+             "server_connect=io_pending"),
+            (0, 5, "server_connect=other"),
+            (0, "private-path", "server_connect=unavailable"),
+            ("not-a-bool", 5, "server_connect=unavailable"),
+        )
+        for result, last_error, expected in cases:
+            with self.subTest(result=result, last_error=last_error):
+                self.assertEqual(formatter(result, last_error), expected)
 
     def test_pipe_security_descriptor_shape_receipt_is_bounded_and_sid_free(self) -> None:
         from scripts import windows_standard_user_token_probe as probe
@@ -1175,7 +1211,34 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
         client_results: list[dict[str, object]] = []
         client_errors: list[BaseException] = []
         target_access_receipts: list[str] = []
+        server_connect_receipts: list[str] = []
         server_descriptor_shape = "sd=unavailable"
+
+        # Keep production pipe setup and arguments intact while recording the
+        # first server-side ConnectNamedPipe result from this same round trip.
+        native_kernel = server._api.kernel
+
+        class _ConnectNamedPipeObserver:
+            def __getattr__(self, name: str) -> object:
+                function = getattr(native_kernel, name)
+                if name != "ConnectNamedPipe":
+                    return function
+
+                def observed_connect(*args: object) -> object:
+                    result = function(*args)
+                    try:
+                        last_error = ctypes.get_last_error() if not result else 0
+                        receipt = _format_server_connect_receipt(
+                            result, last_error,
+                        )
+                    except Exception:
+                        receipt = "server_connect=unavailable"
+                    server_connect_receipts.append(receipt)
+                    return result
+
+                return observed_connect
+
+        server._api.kernel = _ConnectNamedPipeObserver()
 
         def run_client() -> None:
             try:
@@ -1266,7 +1329,15 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
                 if isinstance(client_error, PermissionError)
                 else ""
             )
+            connect_suffix = ""
             if isinstance(client_error, PermissionError):
+                connect_receipt = (
+                    server_connect_receipts[-1]
+                    if server_connect_receipts
+                    else "server_connect=unavailable"
+                )
+                connect_suffix = f";{connect_receipt}"
+                print(f"::notice::{connect_receipt}")
                 print(
                     "::error::" + _format_native_pipe_failure_annotation(
                         details, target_access.removeprefix(";")
@@ -1275,7 +1346,8 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
                     ),
                 )
             self.fail(
-                f"native_pipe_client_failed:{details}{target_access}"
+                f"native_pipe_client_failed:{details}{connect_suffix}"
+                f"{target_access}"
                 f"{controls}{descriptor}"
             )
         if server_error is not None:
