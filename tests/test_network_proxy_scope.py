@@ -294,6 +294,156 @@ class NetworkProxyScopeTestCase(unittest.TestCase):
         self.assertEqual(later_peer.recv(1), b"")
         self.assertTrue(runtime.close())
 
+    def test_unix_client_registration_revoke_closes_both_tunnel_ends(self) -> None:
+        runtime_type, scope_type = self.host_scope_types()
+        self.assertTrue(callable(runtime_type), "host CONNECT runtime is missing")
+        self.assertTrue(callable(scope_type), "host-owned CONNECT scope is missing")
+        runtime = runtime_type(self.authority, sweep_interval_seconds=0.01)
+        runtime.start()
+        self.addCleanup(runtime.close)
+        scope = runtime.create_scope(
+            self.issued,
+            self.policy,
+            NetworkPurpose.PACKAGE_INSTALL,
+        )
+
+        upstream_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        upstream_listener.settimeout(2.0)
+        upstream_listener.bind(("127.0.0.1", 0))
+        upstream_listener.listen(1)
+        self.addCleanup(upstream_listener.close)
+        client_peer, accepted_unix_client = socket.socketpair(
+            socket.AF_UNIX,
+            socket.SOCK_STREAM,
+        )
+        client_peer.settimeout(2.0)
+        self.addCleanup(client_peer.close)
+        self.addCleanup(accepted_unix_client.close)
+
+        def resolver(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    socket.IPPROTO_TCP,
+                    "",
+                    upstream_listener.getsockname(),
+                )
+            ]
+
+        with patch(
+            "icode.network_connector.resolve_public_tcp_targets",
+            side_effect=self.resolve_loopback_target,
+        ):
+            tunnel = scope.open_unix_connect(
+                accepted_unix_client,
+                self.request(),
+                resolver=resolver,
+            )
+        self.addCleanup(tunnel.close)
+        upstream_peer, _address = upstream_listener.accept()
+        upstream_peer.settimeout(2.0)
+        self.addCleanup(upstream_peer.close)
+
+        client_peer.sendall(b"unix-client")
+        self.assertEqual(tunnel.client_socket.recv(11), b"unix-client")
+        tunnel.upstream_socket.sendall(b"upstream")
+        self.assertEqual(upstream_peer.recv(8), b"upstream")
+
+        self.authority.revoke(self.policy)
+
+        self.assertEqual(client_peer.recv(1), b"")
+        self.assertEqual(upstream_peer.recv(1), b"")
+        self.assertTrue(scope.close())
+        self.assertTrue(runtime.close())
+
+    def test_unix_client_registration_expiry_closes_both_tunnel_ends(self) -> None:
+        runtime_type, scope_type = self.host_scope_types()
+        self.assertTrue(callable(runtime_type), "host CONNECT runtime is missing")
+        self.assertTrue(callable(scope_type), "host-owned CONNECT scope is missing")
+        runtime = runtime_type(self.authority, sweep_interval_seconds=0.01)
+        runtime.start()
+        self.addCleanup(runtime.close)
+        scope = runtime.create_scope(
+            self.issued,
+            self.policy,
+            NetworkPurpose.PACKAGE_INSTALL,
+        )
+
+        upstream_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        upstream_listener.settimeout(2.0)
+        upstream_listener.bind(("127.0.0.1", 0))
+        upstream_listener.listen(1)
+        self.addCleanup(upstream_listener.close)
+        client_peer, accepted_unix_client = socket.socketpair(
+            socket.AF_UNIX,
+            socket.SOCK_STREAM,
+        )
+        client_peer.settimeout(2.0)
+        self.addCleanup(client_peer.close)
+        self.addCleanup(accepted_unix_client.close)
+
+        def resolver(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    socket.IPPROTO_TCP,
+                    "",
+                    upstream_listener.getsockname(),
+                )
+            ]
+
+        with patch(
+            "icode.network_connector.resolve_public_tcp_targets",
+            side_effect=self.resolve_loopback_target,
+        ):
+            tunnel = scope.open_unix_connect(
+                accepted_unix_client,
+                self.request(),
+                resolver=resolver,
+            )
+        self.addCleanup(tunnel.close)
+        upstream_peer, _address = upstream_listener.accept()
+        upstream_peer.settimeout(2.0)
+        self.addCleanup(upstream_peer.close)
+
+        client_peer.sendall(b"unix-client")
+        self.assertEqual(tunnel.client_socket.recv(11), b"unix-client")
+        tunnel.upstream_socket.sendall(b"upstream")
+        self.assertEqual(upstream_peer.recv(8), b"upstream")
+
+        self.assertGreaterEqual(
+            self.authority.close_expired_connections(
+                self.issued.lease.expires_at_monotonic_ns
+            ),
+            1,
+        )
+
+        self.assertEqual(client_peer.recv(1), b"")
+        self.assertEqual(upstream_peer.recv(1), b"")
+        self.assertTrue(scope.close())
+        self.assertTrue(runtime.close())
+
+    def test_tcp_scope_entry_point_rejects_unix_client_transport(self) -> None:
+        runtime_type, _scope_type = self.host_scope_types()
+        runtime = runtime_type(self.authority, sweep_interval_seconds=0.01)
+        runtime.start()
+        self.addCleanup(runtime.close)
+        scope = runtime.create_scope(
+            self.issued,
+            self.policy,
+            NetworkPurpose.PACKAGE_INSTALL,
+        )
+        client_peer, unix_client = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        client_peer.settimeout(2.0)
+        self.addCleanup(client_peer.close)
+        self.addCleanup(unix_client.close)
+
+        with self.assertRaises(ConnectionError):
+            scope.open_connect(unix_client, self.request())
+        self.assertEqual(client_peer.recv(1), b"")
+
     def test_scope_close_cancels_pending_numeric_connect_on_its_owner(self) -> None:
         runtime_type, scope_type = self.host_scope_types()
         self.assertTrue(callable(runtime_type), "host CONNECT runtime is missing")

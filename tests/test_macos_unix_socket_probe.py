@@ -25,6 +25,7 @@ from icode.isolation import MacSeatbeltSandbox
 from icode.network_destination import ResolvedNetworkTarget
 from icode.network_lease import NetworkLeaseAuthority, NetworkPurpose
 from icode.network_proxy_scope import HostConnectRuntime, HostHttpsConnectScope
+from icode.network_proxy_server import HostUnixSocks5ProxyServer
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 
 
@@ -1392,6 +1393,235 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             "::notice::macos-seatbelt-live-lease-uds-test "
             "approved_domain=http_test_tunnel=passed blocked_domain=failed_closed "
             "direct_worker_tcp=covered_by_socket_probe conformance_credit=none",
+            flush=True,
+        )
+
+    def test_sandboxed_curl_uses_production_unix_lease_proxy(self) -> None:
+        sandbox_exec = shutil.which("sandbox-exec") or "/usr/bin/sandbox-exec"
+        curl_path = shutil.which("curl")
+        if not Path(sandbox_exec).is_file() or curl_path is None:
+            self.skipTest("curl or sandbox-exec is unavailable; no conformance credit")
+        try:
+            version_result = subprocess.run(
+                [curl_path, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            self.skipTest("curl version probe failed; no conformance credit")
+        if version_result.returncode != 0 or not probe.supports_curl_socks5_uds(
+            version_result.stdout,
+        ):
+            self.skipTest("curl lacks SOCKS5 UDS support; no conformance credit")
+
+        with tempfile.TemporaryDirectory(
+            prefix="icode-seatbelt-production-uds-", dir="/private/tmp",
+        ) as raw_root:
+            root = Path(raw_root).resolve()
+            workspace = root / "workspace"
+            socket_root = root / "proxy"
+            workspace.mkdir(mode=0o700)
+            socket_root.mkdir(mode=0o700)
+            socket_path = socket_root / "lease.sock"
+            sandbox = MacSeatbeltSandbox(sandbox_exec=sandbox_exec)
+            profile = probe.build_test_profile(
+                sandbox._profile(workspace, False),
+                socket_root,
+            )
+            environment = {
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(workspace),
+                "LC_ALL": "C",
+                "ALL_PROXY": probe.curl_socks5_uds_proxy_url(socket_path),
+                "NO_PROXY": "",
+                "no_proxy": "",
+            }
+
+            policy = SandboxPolicy(
+                schema_version=1,
+                run_id="run-macos-production-uds-test",
+                ticket_id="ICODE-MACOS-PRODUCTION-UDS-1",
+                step="code",
+                workspace_root=workspace,
+                read_roots=(workspace,),
+                write_roots=(workspace,),
+                deny_read_roots=(workspace / ".git",),
+                deny_write_roots=(workspace / ".git",),
+                network_mode=NetworkMode.DENY,
+                allowed_domains=(),
+                process_limit=8,
+                wall_timeout_seconds=60,
+                output_limit_bytes=4096,
+                protected_paths=(workspace / ".git",),
+            )
+            authority = NetworkLeaseAuthority()
+            issued = authority.request_lease(
+                policy,
+                approver=ScriptedApprover([True]),
+                purpose=NetworkPurpose.PACKAGE_INSTALL,
+                allowed_domains=("packages.example",),
+                ttl_seconds=60,
+            )
+            runtime = HostConnectRuntime(authority, sweep_interval_seconds=0.01)
+            runtime.start()
+            scope = runtime.create_scope(
+                issued,
+                policy,
+                NetworkPurpose.PACKAGE_INSTALL,
+            )
+            proxy_server = HostUnixSocks5ProxyServer(socket_path, scope)
+            upstream_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            upstream_listener.bind(("127.0.0.1", 0))
+            upstream_listener.listen(2)
+            upstream_listener.settimeout(3.0)
+            upstream_address = upstream_listener.getsockname()
+            upstream_body = b"production-uds-lease\n"
+            upstream_requests: list[bytes] = []
+            upstream_failures: list[str] = []
+            resolved_hosts: list[str] = []
+            ready = threading.Event()
+            stop = threading.Event()
+            proxy_failures: list[str] = []
+
+            def serve_upstream_once() -> None:
+                try:
+                    connection, _address = upstream_listener.accept()
+                    with connection:
+                        connection.settimeout(3.0)
+                        request_head = bytearray()
+                        while not request_head.endswith(b"\r\n\r\n"):
+                            chunk = connection.recv(1)
+                            if not chunk:
+                                raise AssertionError("canary request ended before headers")
+                            request_head.extend(chunk)
+                            if len(request_head) > 8192:
+                                raise AssertionError("canary request exceeded test bound")
+                        upstream_requests.append(bytes(request_head))
+                        connection.sendall(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: "
+                            + str(len(upstream_body)).encode("ascii")
+                            + b"\r\nConnection: close\r\n\r\n"
+                            + upstream_body
+                        )
+                        connection.shutdown(socket.SHUT_WR)
+                except BaseException as error:
+                    upstream_failures.append(type(error).__name__)
+
+            def resolve_to_test_upstream(
+                hostname: str,
+                port: int,
+                *,
+                resolver: object = None,
+            ) -> tuple[ResolvedNetworkTarget, ...]:
+                del resolver
+                resolved_hosts.append(hostname)
+                self.assertEqual(port, 443)
+                return (
+                    ResolvedNetworkTarget(
+                        family=socket.AF_INET,
+                        socket_type=socket.SOCK_STREAM,
+                        protocol=socket.IPPROTO_TCP,
+                        sockaddr=upstream_address,
+                    ),
+                )
+
+            def serve_proxy() -> None:
+                try:
+                    proxy_server.serve_forever(stop, ready_event=ready)
+                except BaseException as error:
+                    proxy_failures.append(type(error).__name__)
+
+            direct_network_source = (
+                "import errno, socket, sys\n"
+                "sock = None\n"
+                "try:\n"
+                "    sock = socket.socket(int(sys.argv[1]), socket.SOCK_STREAM)\n"
+                "except OSError as exc:\n"
+                "    print('probe:denied' if exc.errno in (errno.EPERM, errno.EACCES) "
+                "else 'probe:unexpected')\n"
+                "else:\n"
+                "    print('probe:socket-created')\n"
+                "finally:\n"
+                "    if sock is not None: sock.close()\n"
+            )
+
+            upstream_worker = threading.Thread(
+                target=serve_upstream_once,
+                name="icode-macos-production-uds-upstream",
+                daemon=True,
+            )
+            proxy_worker = threading.Thread(
+                target=serve_proxy,
+                name="icode-macos-production-uds-proxy",
+                daemon=True,
+            )
+            resolver_patch = patch(
+                "icode.network_connector.resolve_public_tcp_targets",
+                side_effect=resolve_to_test_upstream,
+            )
+            resolver_patch.start()
+            self.addCleanup(resolver_patch.stop)
+            upstream_worker.start()
+            proxy_worker.start()
+            try:
+                self.assertTrue(ready.wait(1.0), "lease UDS proxy did not become ready")
+                self.assertEqual(socket_path.stat().st_mode & 0o777, 0o600)
+                for family in (socket.AF_INET, socket.AF_INET6):
+                    self.assertEqual(
+                        self._run_probe(
+                            sandbox_exec,
+                            profile,
+                            workspace,
+                            direct_network_source,
+                            str(family),
+                        ),
+                        "probe:denied",
+                        f"Seatbelt profile allowed direct socket family {family}",
+                    )
+                allowed_status, allowed_body = self._run_sandboxed_curl(
+                    sandbox_exec,
+                    profile,
+                    curl_path,
+                    workspace,
+                    environment,
+                    "http://packages.example:443/canary",
+                )
+                blocked_status, blocked_body = self._run_sandboxed_curl(
+                    sandbox_exec,
+                    profile,
+                    curl_path,
+                    workspace,
+                    environment,
+                    "http://blocked.example:443/canary",
+                )
+                self.assertEqual(allowed_status, 0)
+                self.assertEqual(allowed_body, upstream_body)
+                self.assertNotEqual(blocked_status, 0)
+                self.assertEqual(blocked_body, b"")
+                upstream_worker.join(timeout=2.0)
+                self.assertFalse(upstream_worker.is_alive())
+                self.assertEqual(len(upstream_requests), 1)
+                self.assertIn(b"GET /canary ", upstream_requests[0])
+                self.assertEqual(resolved_hosts, ["packages.example"])
+                self.assertEqual(upstream_failures, [])
+            finally:
+                stop.set()
+                proxy_server.close()
+                proxy_worker.join(timeout=2.0)
+                upstream_listener.close()
+                upstream_worker.join(timeout=2.0)
+                self.assertTrue(proxy_server.close())
+                self.assertFalse(socket_path.exists())
+                self.assertTrue(runtime.close())
+            self.assertFalse(proxy_worker.is_alive())
+            self.assertEqual(proxy_failures, [])
+
+        print(
+            "::notice::macos-seatbelt-production-uds-lease-test "
+            "approved_domain=passed blocked_domain=failed_closed "
+            "ticket_socket_only=yes ipv4_ipv6_socket=denied conformance_credit=none",
             flush=True,
         )
 

@@ -258,6 +258,293 @@ class NetworkProxyServerTestCase(unittest.TestCase):
         self.assertTrue(server.close())
         self.assertEqual(failures, [])
 
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(socket, "AF_UNIX"),
+        "requires POSIX AF_UNIX sockets",
+    )
+    def test_production_unix_socks_server_uses_lease_and_removes_owned_path(self) -> None:
+        server_type = getattr(
+            network_proxy_server,
+            "HostUnixSocks5ProxyServer",
+            None,
+        )
+        self.assertTrue(callable(server_type), "lease-bound Unix SOCKS server is missing")
+
+        socket_path = Path(self.temp_dir.name) / "lease-proxy.sock"
+        server = server_type(socket_path, self.scope)
+        self.addCleanup(server.close)
+        self.assertEqual(socket_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(socket_path.parent.stat().st_mode & 0o077, 0)
+        upstream_listener = self.make_listener()
+        upstream_listener.settimeout(2.0)
+        served: list[bool] = []
+
+        def resolver(*_args: object, **_kwargs: object) -> list[tuple[object, ...]]:
+            return [
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    socket.IPPROTO_TCP,
+                    "",
+                    upstream_listener.getsockname(),
+                )
+            ]
+
+        def read_exact(connection: socket.socket, size: int) -> bytes:
+            result = bytearray()
+            while len(result) < size:
+                chunk = connection.recv(size - len(result))
+                if not chunk:
+                    raise AssertionError("lease SOCKS server closed a short response")
+                result.extend(chunk)
+            return bytes(result)
+
+        with patch(
+            "icode.network_connector.resolve_public_tcp_targets",
+            side_effect=self.local_resolver(
+                "packages.example",
+                443,
+                upstream_listener.getsockname(),
+            ),
+        ):
+            worker_thread = threading.Thread(
+                target=lambda: served.append(server.serve_once(resolver=resolver)),
+                daemon=True,
+            )
+            worker_thread.start()
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(3.0)
+                client.connect(str(socket_path))
+                client.sendall(b"\x05\x01\x00")
+                self.assertEqual(read_exact(client, 2), b"\x05\x00")
+                client.sendall(
+                    b"\x05\x01\x00\x03\x10packages.example\x01\xbb"
+                )
+                self.assertEqual(
+                    read_exact(client, 10),
+                    b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00",
+                )
+                upstream, _address = upstream_listener.accept()
+                upstream.settimeout(2.0)
+                self.addCleanup(upstream.close)
+                worker_payload = b"worker-to-upstream"
+                client.sendall(worker_payload)
+                self.assertEqual(read_exact(upstream, len(worker_payload)), worker_payload)
+                client.shutdown(socket.SHUT_WR)
+                self.assertEqual(upstream.recv(1), b"")
+                upstream_payload = b"upstream-to-worker"
+                upstream.sendall(upstream_payload)
+                upstream.shutdown(socket.SHUT_WR)
+                self.assertEqual(read_exact(client, len(upstream_payload)), upstream_payload)
+                self.assertEqual(client.recv(1), b"")
+
+        worker_thread.join(timeout=2.0)
+        self.assertFalse(worker_thread.is_alive())
+        self.assertEqual(served, [True])
+        self.assertTrue(server.close())
+        self.assertFalse(socket_path.exists())
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(socket, "AF_UNIX"),
+        "requires POSIX AF_UNIX sockets",
+    )
+    def test_unix_socks_rejects_ip_literals_and_non_https_ports_before_dns(self) -> None:
+        server_type = getattr(network_proxy_server, "HostUnixSocks5ProxyServer", None)
+        self.assertTrue(callable(server_type), "lease-bound Unix SOCKS server is missing")
+        socket_path = Path(self.temp_dir.name).resolve() / "reject-proxy.sock"
+        server = server_type(socket_path, self.scope)
+        self.addCleanup(server.close)
+        dns_calls: list[tuple[object, ...]] = []
+
+        def forbidden_resolver(*args: object, **_kwargs: object):
+            dns_calls.append(args)
+            return ()
+
+        def read_exact(connection: socket.socket, size: int) -> bytes:
+            result = bytearray()
+            while len(result) < size:
+                chunk = connection.recv(size - len(result))
+                if not chunk:
+                    raise AssertionError("SOCKS denial reply was truncated")
+                result.extend(chunk)
+            return bytes(result)
+
+        with patch(
+            "icode.network_connector.resolve_public_tcp_targets",
+            side_effect=forbidden_resolver,
+        ):
+            for request, expected_reply in (
+                (b"\x05\x01\x00\x01\x7f\x00\x00\x01\x01\xbb", 8),
+                (b"\x05\x01\x00\x03\x10packages.example\x00\x50", 2),
+            ):
+                with self.subTest(expected_reply=expected_reply):
+                    served: list[bool] = []
+                    worker_thread = threading.Thread(
+                        target=lambda: served.append(server.serve_once()),
+                        daemon=True,
+                    )
+                    worker_thread.start()
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                        client.settimeout(2.0)
+                        client.connect(str(socket_path))
+                        client.sendall(b"\x05\x01\x00")
+                        self.assertEqual(read_exact(client, 2), b"\x05\x00")
+                        client.sendall(request)
+                        reply = read_exact(client, 10)
+                        self.assertEqual(reply[:2], bytes((5, expected_reply)))
+                    worker_thread.join(timeout=2.0)
+                    self.assertFalse(worker_thread.is_alive())
+                    self.assertEqual(served, [True])
+
+        self.assertEqual(dns_calls, [])
+        self.assertTrue(server.close())
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(socket, "AF_UNIX"),
+        "requires POSIX AF_UNIX sockets",
+    )
+    def test_unix_socks_lease_revoke_closes_worker_and_upstream(self) -> None:
+        server_type = getattr(network_proxy_server, "HostUnixSocks5ProxyServer", None)
+        self.assertTrue(callable(server_type), "lease-bound Unix SOCKS server is missing")
+        socket_path = Path(self.temp_dir.name).resolve() / "revoke-proxy.sock"
+        server = server_type(socket_path, self.scope)
+        self.addCleanup(server.close)
+        upstream_listener = self.make_listener()
+        upstream_listener.settimeout(2.0)
+        served: list[bool] = []
+
+        def read_exact(connection: socket.socket, size: int) -> bytes:
+            result = bytearray()
+            while len(result) < size:
+                chunk = connection.recv(size - len(result))
+                if not chunk:
+                    raise AssertionError("SOCKS lease response was truncated")
+                result.extend(chunk)
+            return bytes(result)
+
+        with patch(
+            "icode.network_connector.resolve_public_tcp_targets",
+            side_effect=self.local_resolver(
+                "packages.example",
+                443,
+                upstream_listener.getsockname(),
+            ),
+        ):
+            worker_thread = threading.Thread(
+                target=lambda: served.append(
+                    server.serve_once(
+                        resolver=lambda *_args, **_kwargs: (),
+                    )
+                ),
+                daemon=True,
+            )
+            worker_thread.start()
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(2.0)
+                client.connect(str(socket_path))
+                client.sendall(b"\x05\x01\x00")
+                self.assertEqual(read_exact(client, 2), b"\x05\x00")
+                client.sendall(
+                    b"\x05\x01\x00\x03\x10packages.example\x01\xbb"
+                )
+                self.assertEqual(
+                    read_exact(client, 10),
+                    b"\x05\x00\x00\x01\x00\x00\x00\x00\x00\x00",
+                )
+                upstream, _address = upstream_listener.accept()
+                upstream.settimeout(2.0)
+                self.addCleanup(upstream.close)
+                self.authority.revoke(self.policy)
+                self.assertEqual(client.recv(1), b"")
+                self.assertEqual(upstream.recv(1), b"")
+
+            worker_thread.join(timeout=2.0)
+            self.assertFalse(worker_thread.is_alive())
+        self.assertTrue(server.close())
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(socket, "AF_UNIX"),
+        "requires POSIX AF_UNIX sockets",
+    )
+    def test_unix_socks_refuses_non_private_parent_and_preserves_existing_path(self) -> None:
+        server_type = getattr(network_proxy_server, "HostUnixSocks5ProxyServer", None)
+        self.assertTrue(callable(server_type), "lease-bound Unix SOCKS server is missing")
+
+        existing_path = Path(self.temp_dir.name).resolve() / "keep-me"
+        existing_path.write_text("not a socket", encoding="utf-8")
+        with self.assertRaises(HostConnectProxyError):
+            server_type(existing_path, self.scope)
+        self.assertEqual(existing_path.read_text(encoding="utf-8"), "not a socket")
+
+        shared_directory = Path(self.temp_dir.name).resolve() / "shared"
+        shared_directory.mkdir(mode=0o755)
+        shared_socket = shared_directory / "lease.sock"
+        with self.assertRaises(HostConnectProxyError):
+            server_type(shared_socket, self.scope)
+        self.assertFalse(shared_socket.exists())
+
+        special_mode_directory = Path(self.temp_dir.name).resolve() / "special-mode"
+        special_mode_directory.mkdir(mode=0o700)
+        os.chmod(special_mode_directory, 0o1700)
+        special_mode_socket = special_mode_directory / "lease.sock"
+        with self.assertRaises(HostConnectProxyError):
+            server_type(special_mode_socket, self.scope)
+        self.assertFalse(special_mode_socket.exists())
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(socket, "AF_UNIX"),
+        "requires POSIX AF_UNIX sockets",
+    )
+    def test_unix_socks_close_preserves_replaced_socket_path(self) -> None:
+        server_type = getattr(network_proxy_server, "HostUnixSocks5ProxyServer", None)
+        self.assertTrue(callable(server_type), "lease-bound Unix SOCKS server is missing")
+        socket_path = Path(self.temp_dir.name).resolve() / "replaced-proxy.sock"
+        server = server_type(socket_path, self.scope)
+        socket_path.unlink()
+        replacement = "replacement belongs to the caller"
+        socket_path.write_text(replacement, encoding="utf-8")
+
+        self.assertFalse(server.close())
+        self.assertEqual(socket_path.read_text(encoding="utf-8"), replacement)
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(socket, "AF_UNIX"),
+        "requires POSIX AF_UNIX sockets",
+    )
+    def test_unix_socks_stops_if_parent_directory_becomes_shared(self) -> None:
+        server_type = getattr(network_proxy_server, "HostUnixSocks5ProxyServer", None)
+        self.assertTrue(callable(server_type), "lease-bound Unix SOCKS server is missing")
+        private_root = Path(self.temp_dir.name).resolve()
+        socket_path = private_root / "private-proxy.sock"
+        server = server_type(socket_path, self.scope)
+        self.addCleanup(server.close)
+
+        os.chmod(private_root, 0o755)
+        try:
+            self.assertFalse(server.serve_once())
+            self.assertFalse(socket_path.exists())
+        finally:
+            os.chmod(private_root, 0o700)
+
+    @unittest.skipUnless(
+        os.name == "posix" and hasattr(socket, "AF_UNIX"),
+        "requires POSIX AF_UNIX sockets",
+    )
+    def test_unix_socks_stops_if_socket_mode_is_not_exactly_private(self) -> None:
+        server_type = getattr(network_proxy_server, "HostUnixSocks5ProxyServer", None)
+        self.assertTrue(callable(server_type), "lease-bound Unix SOCKS server is missing")
+        socket_path = Path(self.temp_dir.name).resolve() / "special-mode-proxy.sock"
+        server = server_type(socket_path, self.scope)
+        self.addCleanup(server.close)
+
+        os.chmod(socket_path, 0o1600, follow_symlinks=False)
+        try:
+            self.assertFalse(server.serve_once())
+            self.assertFalse(socket_path.exists())
+        finally:
+            if socket_path.exists():
+                os.chmod(socket_path, 0o600, follow_symlinks=False)
+
     @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "requires AF_UNIX sockets")
     def test_socks_uds_bridge_active_revoke_closes_worker_and_origin(self) -> None:
         listener = self.make_listener()

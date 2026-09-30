@@ -345,7 +345,50 @@ class HostHttpsConnectScope:
     ) -> AuthorizedHttpsTunnel:
         """Authorize and connect one accepted client without exposing a listener."""
 
+        return self._open_connect(
+            client_socket,
+            request_head,
+            resolver=resolver,
+            unix_transport=False,
+        )
+
+    def open_unix_connect(
+        self,
+        client_socket: socket.socket,
+        request_head: bytes,
+        *,
+        resolver: Resolver | None = None,
+    ) -> AuthorizedHttpsTunnel:
+        """Open a lease tunnel over one trusted AF_UNIX accepted client.
+
+        Unlike ``register_active_sockets()``, this path registers an explicit
+        host-owned close/release callback for the local stream endpoint. It is
+        intended only for a trusted Unix-socket proxy server; it does not
+        create a listener or grant any worker direct network access.
+        """
+
+        return self._open_connect(
+            client_socket,
+            request_head,
+            resolver=resolver,
+            unix_transport=True,
+        )
+
+    def _open_connect(
+        self,
+        client_socket: socket.socket,
+        request_head: bytes,
+        *,
+        resolver: Resolver | None,
+        unix_transport: bool,
+    ) -> AuthorizedHttpsTunnel:
+        """Shared authorization and lifecycle path for trusted host transports."""
+
         if type(client_socket) is not socket.socket:
+            raise HostConnectScopeError(_SCOPE_ERROR)
+        is_unix_socket = getattr(socket, "AF_UNIX", -1) == client_socket.family
+        if is_unix_socket is not unix_transport:
+            _close_socket(client_socket)
             raise HostConnectScopeError(_SCOPE_ERROR)
         with self._lock:
             if self._closed or not self._runtime._healthy:
@@ -368,16 +411,48 @@ class HostHttpsConnectScope:
                 port=target.port,
                 now_monotonic_ns=time.monotonic_ns(),
             )
-            client_handle = self._authority.register_active_sockets(
-                self._issued,
-                self._policy,
-                purpose=self._purpose,
-                hostname=target.hostname,
-                port=target.port,
-                now_monotonic_ns=time.monotonic_ns(),
-                sockets=(client_socket,),
-                clock=time.monotonic_ns,
-            )
+            if unix_transport:
+                try:
+                    valid_unix_client = (
+                        client_socket.getsockopt(
+                            socket.SOL_SOCKET,
+                            socket.SO_TYPE,
+                        )
+                        == socket.SOCK_STREAM
+                    )
+                    client_socket.getpeername()
+                except OSError:
+                    valid_unix_client = False
+                if not valid_unix_client:
+                    raise NetworkLeaseValidationError(
+                        "host Unix connection is unavailable"
+                    )
+
+                def close_unix_client() -> bool:
+                    return _close_socket(client_socket)
+
+                client_handle = self._authority.register_active_connection(
+                    self._issued,
+                    self._policy,
+                    purpose=self._purpose,
+                    hostname=target.hostname,
+                    port=target.port,
+                    now_monotonic_ns=time.monotonic_ns(),
+                    close=close_unix_client,
+                    release=close_unix_client,
+                    clock=time.monotonic_ns,
+                )
+            else:
+                client_handle = self._authority.register_active_sockets(
+                    self._issued,
+                    self._policy,
+                    purpose=self._purpose,
+                    hostname=target.hostname,
+                    port=target.port,
+                    now_monotonic_ns=time.monotonic_ns(),
+                    sockets=(client_socket,),
+                    clock=time.monotonic_ns,
+                )
             with self._lock:
                 if self._closed or self._cancel_event.is_set():
                     raise NetworkLeaseValidationError(
