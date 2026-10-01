@@ -1524,7 +1524,14 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer access diagnostics", notice_names)
         self.assertIn("Windows Reviewer handle cleanup diagnostics", notice_names)
         self.assertIn("Windows Reviewer WriteFile diagnostics", notice_names)
+        self.assertIn("Windows Reviewer write canary fingerprints", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
+        writes_notice = json.loads(next(
+            encoded
+            for name, encoded in captured_notices
+            if name == "Windows Reviewer snapshot writes and cleanup"
+        ))
+        self.assertIs(writes_notice["write_canary_before_unchanged"], True)
         max_error_notice = {
             key: {"winerror": 0xFFFFFFFF, "errno": 0xFFFFFFFF}
             for key in (
@@ -1553,6 +1560,15 @@ class TestWindowsAppContainer(unittest.TestCase):
         }
         self.assertLessEqual(
             len(json.dumps(max_write_diagnostics, separators=(",", ":"))), 500,
+        )
+        max_canary_fingerprints = {
+            "before_length": 0x7FFFFFFFFFFFFFFF,
+            "before_sha256": "f" * 64,
+            "after_length": 0x7FFFFFFFFFFFFFFF,
+            "after_sha256": "f" * 64,
+        }
+        self.assertLessEqual(
+            len(json.dumps(max_canary_fingerprints, separators=(",", ":"))), 500,
         )
         self.assertEqual(len(captured_scripts), 1)
         self.assertEqual(
@@ -1619,6 +1635,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         acceptance_end = reviewer_source.index(")), summary)", acceptance_start)
         acceptance_contract = reviewer_source[acceptance_start:acceptance_end]
         self.assertIn('"write_canary_unchanged"', acceptance_contract)
+        self.assertNotIn("write_canary_before_unchanged", acceptance_contract)
         self.assertNotIn("write_canary_matches_expected_result", acceptance_contract)
         self.assertNotIn("write_canary_matches_payload", acceptance_contract)
         self.assertIn("expected_write_result = (", reviewer_source)
@@ -1626,6 +1643,21 @@ class TestWindowsAppContainer(unittest.TestCase):
             "write_payload + write_canary_original[len(write_payload):]",
             reviewer_source,
         )
+        self.assertIn("write_canary_before_length", reviewer_source)
+        self.assertIn("write_canary_before_sha256", reviewer_source)
+        self.assertIn("write_canary_after_length", reviewer_source)
+        self.assertIn("write_canary_after_sha256", reviewer_source)
+        before_canary_read = reviewer_source.index(
+            "write_canary_before = mutable_file.read_bytes()",
+        )
+        candidate_launch = reviewer_source.index(
+            "candidate = run_windows_appcontainer(", before_canary_read,
+        )
+        after_canary_hash = reviewer_source.index(
+            "write_canary_after_sha256 = hashlib.sha256(", candidate_launch,
+        )
+        self.assertLess(before_canary_read, candidate_launch)
+        self.assertLess(candidate_launch, after_canary_hash)
         self.assertEqual(b"changed" + b"original\n"[len(b"changed"):], b"changedl\n")
 
         helper_start = captured_scripts[0].index("access_errors={}\n")
@@ -6139,6 +6171,19 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "if key not in {'child_pid','access_errors','close_errors','write_diagnostics'})): raise SystemExit(78)\n"
                 )
                 compile(script, "<reviewer-snapshot-probe>", "exec")
+                try:
+                    write_canary_before = mutable_file.read_bytes()
+                    write_canary_before_length = len(write_canary_before)
+                    write_canary_before_sha256 = hashlib.sha256(
+                        write_canary_before,
+                    ).hexdigest()
+                    write_canary_before_unchanged = (
+                        write_canary_before == write_canary_original
+                    )
+                except OSError:
+                    write_canary_before_length = -1
+                    write_canary_before_sha256 = "unavailable"
+                    write_canary_before_unchanged = False
                 candidate = run_windows_appcontainer(
                     [str(staged_executable), "-I", "-c", script],
                     cwd=scratch, timeout_seconds=20, process_limit=8,
@@ -6243,6 +6288,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                     create_cleanup_ok = False
                 try:
                     write_canary_content = mutable_file.read_bytes()
+                    write_canary_after_length = len(write_canary_content)
+                    write_canary_after_sha256 = hashlib.sha256(
+                        write_canary_content,
+                    ).hexdigest()
                     expected_write_result = (
                         write_payload + write_canary_original[len(write_payload):]
                     )
@@ -6253,6 +6302,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                 except OSError:
                     write_canary_unchanged = False
                     write_canary_matches_expected_result = False
+                    write_canary_after_length = -1
+                    write_canary_after_sha256 = "unavailable"
 
                 child_pid = facts.get("child_pid")
                 child_exited = False
@@ -6282,6 +6333,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "capabilities": token.get("capability_count"),
                     "elevated": token.get("elevated"),
                     "admin_group_enabled": token.get("admin_group_enabled"),
+                    "write_canary_before_unchanged": write_canary_before_unchanged,
                     **{
                         key: facts.get(key) is True
                         for key in (
@@ -6301,6 +6353,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "access_errors": access_errors,
                     "close_errors": close_errors,
                     "write_diagnostics": write_diagnostics,
+                    "write_canary_fingerprints": {
+                        "before_length": write_canary_before_length,
+                        "before_sha256": write_canary_before_sha256,
+                        "after_length": write_canary_after_length,
+                        "after_sha256": write_canary_after_sha256,
+                    },
                 }
                 self._workflow_json_notice(
                     "Windows Reviewer probe preflight",
@@ -6331,6 +6389,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                             "dacl_write_dac_denied", "child_started", "child_exited",
                             "snapshot_acl_restored", "runtime_acl_restored", "staged_files",
                             "write_canary_unchanged", "write_canary_matches_expected_result",
+                            "write_canary_before_unchanged",
                             "create_cleanup_ok",
                         )
                     },
@@ -6346,6 +6405,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self._workflow_json_notice(
                     "Windows Reviewer WriteFile diagnostics",
                     summary["write_diagnostics"],
+                )
+                self._workflow_json_notice(
+                    "Windows Reviewer write canary fingerprints",
+                    summary["write_canary_fingerprints"],
                 )
                 self.assertTrue(candidate.executed, candidate)
                 self.assertEqual(candidate.exit_code, 0, candidate)
