@@ -13,6 +13,7 @@ import ntpath
 import os
 from pathlib import Path
 import socket
+import socketserver
 import stat
 import subprocess
 import sys
@@ -1524,6 +1525,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer access diagnostics", notice_names)
         self.assertIn("Windows Reviewer handle cleanup diagnostics", notice_names)
         self.assertIn("Windows Reviewer WriteFile diagnostics", notice_names)
+        self.assertIn("Windows Reviewer loopback network denial", notice_names)
         self.assertIn("Windows Reviewer write canary fingerprints", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
         writes_notice = json.loads(next(
@@ -1571,6 +1573,23 @@ class TestWindowsAppContainer(unittest.TestCase):
         }
         self.assertLessEqual(
             len(json.dumps(max_canary_fingerprints, separators=(",", ":"))), 500,
+        )
+        max_network_notice = {
+            "ipv4_host_control": True,
+            "ipv4_network_attempted": True,
+            "ipv4_network_connected": False,
+            "ipv4_network_connect_denied": True,
+            "ipv4_network_error": 0xFFFFFFFF,
+            "ipv4_canary_received": False,
+            "ipv6_host_control": True,
+            "ipv6_network_attempted": True,
+            "ipv6_network_connected": False,
+            "ipv6_network_connect_denied": True,
+            "ipv6_network_error": 0xFFFFFFFF,
+            "ipv6_canary_received": False,
+        }
+        self.assertLessEqual(
+            len(json.dumps(max_network_notice, separators=(",", ":"))), 500,
         )
         self.assertEqual(len(captured_scripts), 1)
         self.assertEqual(
@@ -1622,7 +1641,18 @@ class TestWindowsAppContainer(unittest.TestCase):
             "bounded_error_code(bytes_transferred)}",
             "facts['write_diagnostics']=write_diagnostics",
             "native_access_denied('outside_snapshot',outside,0x80000000,'read')",
-            "if key not in {'child_pid','access_errors','close_errors','write_diagnostics'}",
+            "if key not in {'child_pid','access_errors','close_errors','write_diagnostics',"
+            "'ipv4_network_connected','ipv4_network_error','ipv6_network_connected',"
+            "'ipv6_network_error'}",
+            "import ctypes,hashlib,json,os,pathlib,socket,subprocess,sys,time",
+            "def network_connect_denied(family,address,port):",
+            "return True,False,code==10013,code",
+            "network_connect_denied(socket.AF_INET,'127.0.0.1',ipv4_loopback_port)",
+            "network_connect_denied(socket.AF_INET6,'::1',ipv6_loopback_port)",
+            "facts['ipv4_network_attempted']=ipv4_network_attempted",
+            "facts['ipv4_network_connect_denied']",
+            "facts['ipv6_network_attempted']=ipv6_network_attempted",
+            "facts['ipv6_network_connect_denied']",
         ):
             with self.subTest(required_probe=required_probe):
                 self.assertIn(required_probe, captured_scripts[0])
@@ -1631,6 +1661,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         reviewer_source = inspect.getsource(
             TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理,
         )
+        self.assertIn('"Windows Reviewer loopback network denial"', reviewer_source)
         acceptance_start = reviewer_source.index(
             "self.assertTrue(all(summary[key] is True for key in (",
         )
@@ -1683,10 +1714,19 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(b"changed" + b"original\n"[len(b"changed"):], b"changedl\n")
 
         helper_start = captured_scripts[0].index("access_errors={}\n")
-        helper_end = captured_scripts[0].index(
-            "def dacl_write_dac_denied(path):", helper_start,
+        network_helper_start = captured_scripts[0].index(
+            "def network_connect_denied(family,address,port):", helper_start,
         )
-        helper_source = captured_scripts[0][helper_start:helper_end]
+        access_helper_start = captured_scripts[0].index(
+            "def access_denied(key,call):", network_helper_start,
+        )
+        helper_end = captured_scripts[0].index(
+            "def dacl_write_dac_denied(path):", access_helper_start,
+        )
+        helper_source = (
+            captured_scripts[0][helper_start:network_helper_start]
+            + captured_scripts[0][access_helper_start:helper_end]
+        )
         error_helpers: dict[str, object] = {}
         exec("import errno\n" + helper_source, error_helpers)
 
@@ -5960,9 +6000,75 @@ class TestWindowsAppContainer(unittest.TestCase):
             home_temp = tempfile.TemporaryDirectory(
                 prefix="icode-reviewer-home-canary-", dir=Path.home(),
             )
+            network_servers: list[socketserver.ThreadingTCPServer] = []
+            network_threads: list[threading.Thread] = []
+            network_host_controls = {"ipv4": False, "ipv6": False}
             try:
                 home_file = Path(home_temp.name) / "sentinel.txt"
                 home_file.write_text("user home canary", encoding="ascii")
+                class _CanaryHandler(socketserver.BaseRequestHandler):
+                    def handle(self) -> None:
+                        self.request.settimeout(2)
+                        chunks: list[bytes] = []
+                        received = 0
+                        while received < 256:
+                            try:
+                                chunk = self.request.recv(256 - received)
+                            except OSError:
+                                break
+                            if not chunk:
+                                break
+                            chunks.append(chunk)
+                            received += len(chunk)
+                        payload = b"".join(chunks)
+                        self.server.received_canaries.append(payload)
+
+                class _CanaryServer(socketserver.ThreadingTCPServer):
+                    allow_reuse_address = True
+                    daemon_threads = True
+
+                    def __init__(
+                        self, address: tuple[str, int] | tuple[str, int, int, int],
+                        family: int,
+                    ) -> None:
+                        self.address_family = family
+                        self.received_canaries: list[bytes] = []
+                        super().__init__(address, _CanaryHandler)
+
+                host_positive_canary = b"icode-reviewer-host-positive-control-v1"
+                for label, family, address in (
+                    ("ipv4", socket.AF_INET, "127.0.0.1"),
+                    ("ipv6", socket.AF_INET6, "::1"),
+                ):
+                    listener = _CanaryServer((address, 0), family)
+                    network_servers.append(listener)
+                    listener_thread = threading.Thread(
+                        target=listener.serve_forever, daemon=True,
+                    )
+                    network_threads.append(listener_thread)
+                    listener_thread.start()
+                    with socket.socket(family, socket.SOCK_STREAM) as control:
+                        control.settimeout(3)
+                        control.connect(listener.server_address)
+                        control.sendall(host_positive_canary)
+                    deadline = time.monotonic() + 3
+                    while (
+                        host_positive_canary not in listener.received_canaries
+                        and time.monotonic() < deadline
+                    ):
+                        time.sleep(0.01)
+                    network_host_controls[label] = (
+                        listener.received_canaries == [host_positive_canary]
+                    )
+                    self.assertTrue(
+                        network_host_controls[label],
+                        f"{label} host listener positive control failed",
+                    )
+                    listener.received_canaries.clear()
+
+                network_canary = b"icode-reviewer-appcontainer-network-canary-v1"
+                ipv4_loopback_port = network_servers[0].server_address[1]
+                ipv6_loopback_port = network_servers[1].server_address[1]
                 original_snapshot_hash = hashlib.sha256(approved_file.read_bytes()).hexdigest()
                 stage_summary = windows_appcontainer._copy_runtime_tree_for_diagnostic(
                     source_root, staged_runtime,
@@ -5990,7 +6096,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f"Path({str(child_ready_file)!r}).write_text('ready'); time.sleep(30)"
                 )
                 script = (
-                    "import ctypes,hashlib,json,os,pathlib,subprocess,sys,time\n"
+                    "import ctypes,hashlib,json,os,pathlib,socket,subprocess,sys,time\n"
                     "import ctypes.wintypes as wintypes\n"
                     "def query_token():\n"
                     "    import ctypes.wintypes as wintypes\n"
@@ -6061,8 +6167,36 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "close_errors={}\n"
                     "write_diagnostics={}\n"
                     f"write_payload={write_payload!r}\n"
+                    f"network_canary={network_canary!r}\n"
+                    f"ipv4_loopback_port={ipv4_loopback_port!r}\n"
+                    f"ipv6_loopback_port={ipv6_loopback_port!r}\n"
                     "def bounded_error_code(value):\n"
                     "    return value if type(value) is int and -0x80000000<=value<=0xffffffff else -1\n"
+                    "def network_connect_denied(family,address,port):\n"
+                    "    try: connection=socket.socket(family,socket.SOCK_STREAM)\n"
+                    "    except OSError as exc:\n"
+                    "        code=bounded_error_code(getattr(exc,'winerror',None))\n"
+                    "        return False,False,False,code\n"
+                    "    try:\n"
+                    "        try:\n"
+                    "            connection.settimeout(3)\n"
+                    "        except OSError as exc:\n"
+                    "            code=bounded_error_code(getattr(exc,'winerror',None))\n"
+                    "            return False,False,False,code\n"
+                    "        try: connection.connect((address,port))\n"
+                    "        except OSError as exc:\n"
+                    "            code=bounded_error_code(getattr(exc,'winerror',None))\n"
+                    "            return True,False,code==10013,code\n"
+                    "        try: connection.sendall(network_canary)\n"
+                    "        except OSError: pass\n"
+                    "        return True,True,False,0\n"
+                    "    finally: connection.close()\n"
+                    "ipv4_network_attempted,ipv4_network_connected,"
+                    "ipv4_network_connect_denied,ipv4_network_error="
+                    "network_connect_denied(socket.AF_INET,'127.0.0.1',ipv4_loopback_port)\n"
+                    "ipv6_network_attempted,ipv6_network_connected,"
+                    "ipv6_network_connect_denied,ipv6_network_error="
+                    "network_connect_denied(socket.AF_INET6,'::1',ipv6_loopback_port)\n"
                     "def access_denied(key,call):\n"
                     "    try: call()\n"
                     "    except OSError as exc:\n"
@@ -6177,6 +6311,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'rename_denied':access_denied('rename',lambda:rename_source.rename(rename_target)),"
                     "'create_denied':native_access_denied('create',new_file,0x40000000,None,1),"
                     "'dacl_write_dac_denied':dacl_write_dac_denied(dacl_file)}\n"
+                    "facts['ipv4_network_attempted']=ipv4_network_attempted\n"
+                    "facts['ipv4_network_connected']=ipv4_network_connected\n"
+                    "facts['ipv4_network_connect_denied']=ipv4_network_connect_denied\n"
+                    "facts['ipv4_network_error']=bounded_error_code(ipv4_network_error)\n"
+                    "facts['ipv6_network_attempted']=ipv6_network_attempted\n"
+                    "facts['ipv6_network_connected']=ipv6_network_connected\n"
+                    "facts['ipv6_network_connect_denied']=ipv6_network_connect_denied\n"
+                    "facts['ipv6_network_error']=bounded_error_code(ipv6_network_error)\n"
                     "facts['access_errors']=access_errors\n"
                     "facts['close_errors']=close_errors\n"
                     "facts['write_diagnostics']=write_diagnostics\n"
@@ -6190,7 +6332,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "if not (token['appcontainer'] and token['package_sid'] and token['capability_count']==0 "
                     "and not token['elevated'] and not token['admin_group_enabled'] "
                     "and all(value for key,value in facts.items() "
-                    "if key not in {'child_pid','access_errors','close_errors','write_diagnostics'})): raise SystemExit(78)\n"
+                    "if key not in {'child_pid','access_errors','close_errors','write_diagnostics',"
+                    "'ipv4_network_connected','ipv4_network_error','ipv6_network_connected',"
+                    "'ipv6_network_error'})): raise SystemExit(78)\n"
                 )
                 compile(script, "<reviewer-snapshot-probe>", "exec")
                 try:
@@ -6303,6 +6447,26 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "bytes_transferred": bytes_transferred,
                 }
 
+                def network_error_code(key: str) -> int:
+                    value = facts.get(key)
+                    return (
+                        value
+                        if type(value) is int and -1 <= value <= 0xFFFFFFFF
+                        else -1
+                    )
+
+                # Give accepted loopback connections time to reach the handler before
+                # interpreting a missing canary as evidence of denial.
+                network_deadline = time.monotonic() + 0.25
+                while (
+                    time.monotonic() < network_deadline
+                    and not any(
+                        network_canary in listener.received_canaries
+                        for listener in network_servers
+                    )
+                ):
+                    time.sleep(0.01)
+
                 try:
                     new_file.unlink(missing_ok=True)
                     create_cleanup_ok = not new_file.exists() and not new_file.is_symlink()
@@ -6356,6 +6520,26 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "elevated": token.get("elevated"),
                     "admin_group_enabled": token.get("admin_group_enabled"),
                     "write_canary_before_unchanged": write_canary_before_unchanged,
+                    "ipv4_host_control": network_host_controls["ipv4"] is True,
+                    "ipv4_network_attempted": facts.get("ipv4_network_attempted") is True,
+                    "ipv4_network_connected": facts.get("ipv4_network_connected") is True,
+                    "ipv4_network_connect_denied": (
+                        facts.get("ipv4_network_connect_denied") is True
+                    ),
+                    "ipv4_network_error": network_error_code("ipv4_network_error"),
+                    "ipv4_canary_received": (
+                        network_canary in network_servers[0].received_canaries
+                    ),
+                    "ipv6_host_control": network_host_controls["ipv6"] is True,
+                    "ipv6_network_attempted": facts.get("ipv6_network_attempted") is True,
+                    "ipv6_network_connected": facts.get("ipv6_network_connected") is True,
+                    "ipv6_network_connect_denied": (
+                        facts.get("ipv6_network_connect_denied") is True
+                    ),
+                    "ipv6_network_error": network_error_code("ipv6_network_error"),
+                    "ipv6_canary_received": (
+                        network_canary in network_servers[1].received_canaries
+                    ),
                     **{
                         key: facts.get(key) is True
                         for key in (
@@ -6432,6 +6616,20 @@ class TestWindowsAppContainer(unittest.TestCase):
                     summary["write_diagnostics"],
                 )
                 self._workflow_json_notice(
+                    "Windows Reviewer loopback network denial",
+                    {
+                        key: summary[key]
+                        for key in (
+                            "ipv4_host_control", "ipv4_network_attempted",
+                            "ipv4_network_connected", "ipv4_network_connect_denied",
+                            "ipv4_network_error", "ipv4_canary_received",
+                            "ipv6_host_control", "ipv6_network_attempted",
+                            "ipv6_network_connected", "ipv6_network_connect_denied",
+                            "ipv6_network_error", "ipv6_canary_received",
+                        )
+                    },
+                )
+                self._workflow_json_notice(
                     "Windows Reviewer write canary fingerprints",
                     summary["write_canary_fingerprints"],
                 )
@@ -6446,7 +6644,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "delete_denied", "rename_denied", "create_denied", "dacl_write_dac_denied",
                     "child_started", "child_exited", "snapshot_acl_restored", "runtime_acl_restored",
                     "write_canary_unchanged", "create_cleanup_ok",
+                    "ipv4_host_control", "ipv4_network_attempted",
+                    "ipv4_network_connect_denied", "ipv6_host_control",
+                    "ipv6_network_attempted", "ipv6_network_connect_denied",
                 )), summary)
+                self.assertIs(summary["ipv4_network_connected"], False, summary)
+                self.assertEqual(summary["ipv4_network_error"], 10013, summary)
+                self.assertIs(summary["ipv4_canary_received"], False, summary)
+                self.assertIs(summary["ipv6_network_connected"], False, summary)
+                self.assertEqual(summary["ipv6_network_error"], 10013, summary)
+                self.assertIs(summary["ipv6_canary_received"], False, summary)
                 self.assertEqual(summary["capabilities"], 0, summary)
                 self.assertIs(summary["elevated"], False, summary)
                 self.assertIs(summary["admin_group_enabled"], False, summary)
@@ -6456,6 +6663,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.assertEqual(ledger_file.read_text(encoding="ascii"), '{"private":"synthetic canary"}')
                 self.assertEqual(home_file.read_text(encoding="ascii"), "user home canary")
             finally:
+                for listener, listener_thread in zip(network_servers, network_threads):
+                    if listener_thread.is_alive():
+                        listener.shutdown()
+                        listener_thread.join(timeout=3)
+                    listener.server_close()
                 home_temp.cleanup()
 
 
