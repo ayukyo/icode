@@ -29,6 +29,46 @@ from icode.network_proxy_server import HostUnixSocks5ProxyServer
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 
 
+class TestUpstreamAcceptFixture(unittest.TestCase):
+    def test_accept_fixture_keeps_waiting_after_poll_timeout(self) -> None:
+        accept_connection = getattr(probe, "accept_connection_until_stopped", None)
+        self.assertTrue(
+            callable(accept_connection),
+            "live-lease upstream fixture needs a stop-aware accept loop",
+        )
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        stop_event = threading.Event()
+        accepted_payloads: list[bytes] = []
+
+        def accept_once() -> None:
+            connection = accept_connection(listener, stop_event)
+            if connection is None:
+                return
+            with connection:
+                accepted_payloads.append(connection.recv(1))
+
+        worker = threading.Thread(target=accept_once, daemon=True)
+        worker.start()
+        try:
+            worker.join(timeout=0.35)
+            self.assertTrue(
+                worker.is_alive(),
+                "one accept polling timeout must not end the upstream fixture",
+            )
+            with socket.create_connection(listener.getsockname(), timeout=1.0) as client:
+                client.sendall(b"x")
+            worker.join(timeout=1.0)
+            self.assertFalse(worker.is_alive(), "upstream fixture did not accept the canary")
+            self.assertEqual(accepted_payloads, [b"x"])
+        finally:
+            stop_event.set()
+            worker.join(timeout=1.0)
+            listener.close()
+
+
 class TestUnixSocketPolicyBuilder(unittest.TestCase):
     def test_curl_socks5_uds_support_requires_version_and_build_feature(self) -> None:
         supports = getattr(probe, "supports_curl_socks5_uds", None)
@@ -1267,7 +1307,6 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             upstream_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             upstream_listener.bind(("127.0.0.1", 0))
             upstream_listener.listen(2)
-            upstream_listener.settimeout(0.2)
             upstream_address = upstream_listener.getsockname()
             upstream_body = b"live-test-lease-bridge\n"
             upstream_requests: list[bytes] = []
@@ -1278,7 +1317,12 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
 
             def serve_upstream_once() -> None:
                 try:
-                    connection, _address = upstream_listener.accept()
+                    connection = probe.accept_connection_until_stopped(
+                        upstream_listener,
+                        stop,
+                    )
+                    if connection is None:
+                        return
                     with connection:
                         connection.settimeout(3.0)
                         request_head = bytearray()

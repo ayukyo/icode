@@ -25,11 +25,32 @@ _MACOS_SUN_PATH_BYTES = 103
 _BRIDGE_CLIENT_TIMEOUT_SECONDS = 3.0
 _BRIDGE_CONNECT_TIMEOUT_SECONDS = 3.0
 _BRIDGE_ACCEPT_POLL_SECONDS = 0.1
+_UPSTREAM_ACCEPT_POLL_SECONDS = 0.2
 _BRIDGE_RELAY_POLL_SECONDS = 0.1
 _BRIDGE_RELAY_READ_CHUNK_BYTES = 64 * 1024
 _BRIDGE_RELAY_BUFFER_LIMIT_BYTES = 256 * 1024
 _BRIDGE_CONNECT_RESPONSE = b"HTTP/1.1 200 Connection Established\r\n\r\n"
 _BRIDGE_CONNECT_RESPONSE_MAX_BYTES = 4096
+
+
+def accept_connection_until_stopped(
+    listener: socket.socket,
+    stop_event: threading.Event,
+) -> socket.socket | None:
+    """Accept one test-fixture connection, tolerating stop-aware poll timeouts."""
+
+    listener.settimeout(_UPSTREAM_ACCEPT_POLL_SECONDS)
+    while not stop_event.is_set():
+        try:
+            connection, _address = listener.accept()
+            return connection
+        except socket.timeout:
+            continue
+        except OSError:
+            if stop_event.is_set():
+                return None
+            raise
+    return None
 
 
 def _close_bridge_socket(connection: socket.socket) -> bool:
