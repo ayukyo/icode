@@ -20,8 +20,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
+
+_WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = stat.FILE_ATTRIBUTE_REPARSE_POINT
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -63,12 +67,81 @@ def _load_json(path: Path) -> dict:
     return value
 
 
+def _package_member_path(pack: Path, relative: str) -> Path | None:
+    """只接受包根内规范相对路径，并拒绝任何符号链接/reparse point。"""
+    if not isinstance(relative, str) or not relative or "\x00" in relative or "\\" in relative:
+        return None
+
+    parts = relative.split("/")
+    posix_path = PurePosixPath(relative)
+    windows_path = PureWindowsPath(relative)
+    if (
+        posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or any(part in ("", ".", "..") for part in parts)
+    ):
+        return None
+
+    root = pack.resolve()
+    target = pack.joinpath(*parts)
+    current = pack
+    for part in parts:
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            break
+        except (OSError, RuntimeError, ValueError):
+            return None
+        if stat.S_ISLNK(metadata.st_mode) or (
+            getattr(metadata, "st_file_attributes", 0)
+            & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT
+        ):
+            return None
+
+    try:
+        resolved = target.resolve(strict=False)
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return target
+
+
+def _walk_package_entries(pack: Path):
+    """遍历包项时不跟随符号链接或 Windows reparse point。"""
+    pending = [pack]
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as iterator:
+            entries = sorted(iterator, key=lambda entry: entry.name)
+        child_directories: list[Path] = []
+        for entry in entries:
+            path = Path(entry.path)
+            metadata = entry.stat(follow_symlinks=False)
+            is_link = stat.S_ISLNK(metadata.st_mode) or bool(
+                getattr(metadata, "st_file_attributes", 0)
+                & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT
+            )
+            if is_link:
+                yield path, "link"
+            elif stat.S_ISDIR(metadata.st_mode):
+                child_directories.append(path)
+            elif stat.S_ISREG(metadata.st_mode):
+                yield path, "file"
+            else:
+                yield path, "special"
+        pending.extend(reversed(child_directories))
+
+
 def verify_pack(pack_dir: Path) -> list[str]:
     """返回问题列表；空列表表示校验通过。"""
     pack = Path(pack_dir)
     problems: list[str] = []
 
-    manifest_path = pack / MANIFEST_NAME
+    manifest_path = _package_member_path(pack, MANIFEST_NAME)
+    if manifest_path is None:
+        return [f"清单包内路径无效（必须是普通文件）：{MANIFEST_NAME}"]
     if not manifest_path.is_file():
         return [f"缺少清单文件：{MANIFEST_NAME}"]
     try:
@@ -96,7 +169,10 @@ def verify_pack(pack_dir: Path) -> list[str]:
         entries.append(entry)
     for entry in entries:
         rel = entry["path"]
-        target = pack / rel
+        target = _package_member_path(pack, rel)
+        if target is None:
+            problems.append("清单文件项包内路径无效（必须是规范相对普通文件路径）")
+            continue
         if not target.is_file():
             problems.append(f"清单登记的文件缺失：{rel}")
             continue
@@ -123,16 +199,21 @@ def verify_pack(pack_dir: Path) -> list[str]:
 
     # ⑤ 未登记的额外文件（防止夹带内容而不被发现）
     listed = {str(e.get("path", "")) for e in entries}
-    for path in sorted(pack.rglob("*")):
-        if not path.is_file() or path.name == MANIFEST_NAME:
-            continue
-        rel = path.relative_to(pack).as_posix()
-        if rel not in listed:
-            problems.append(f"存在未登记的额外文件（清单未覆盖）：{rel}")
+    try:
+        for path, kind in _walk_package_entries(pack):
+            rel = path.relative_to(pack).as_posix()
+            if kind in ("link", "special"):
+                problems.append(f"证据包包含不允许的链接或特殊文件：{rel}")
+            elif path.name != MANIFEST_NAME and rel not in listed:
+                problems.append(f"存在未登记的额外文件（清单未覆盖）：{rel}")
+    except (OSError, RuntimeError, ValueError):
+        problems.append("证据包目录无法完整枚举")
 
     # ② 事件链完整性
-    events_path = pack / EVENTS_REL
-    if not events_path.is_file():
+    events_path = _package_member_path(pack, EVENTS_REL)
+    if events_path is None:
+        problems.append("事件链包内路径无效（必须是普通文件）")
+    elif not events_path.is_file():
         problems.append(f"缺少事件链：{EVENTS_REL}")
     else:
         try:
@@ -217,7 +298,10 @@ def _verify_artifact_binding(pack: Path, events: list[dict]) -> list[str]:
     if not chain_artifacts:
         return problems
 
-    index_path = pack / "artifacts.json"
+    index_path = _package_member_path(pack, "artifacts.json")
+    if index_path is None:
+        problems.append("artifacts.json 包内路径无效（必须是普通文件）")
+        return problems
     if not index_path.is_file():
         problems.append("事件链存在产物记录，但缺少 artifacts.json（正文对应表）")
         return problems
@@ -239,9 +323,15 @@ def _verify_artifact_binding(pack: Path, events: list[dict]) -> list[str]:
         if not isinstance(item, dict):
             problems.append(f"artifacts.json 第 {index_number} 项结构无效（必须是对象）")
             continue
-        snapshot_rel = str(item.get("snapshot") or "")
+        snapshot_rel = item.get("snapshot")
+        if not isinstance(snapshot_rel, str):
+            problems.append(f"artifacts.json 第 {index_number} 项快照包内路径无效")
+            continue
         chain_hash = str(item.get("chain_sha256") or "")
-        snapshot = pack / snapshot_rel
+        snapshot = _package_member_path(pack, snapshot_rel)
+        if snapshot is None:
+            problems.append(f"artifacts.json 第 {index_number} 项快照包内路径无效")
+            continue
         if not snapshot.is_file():
             problems.append(f"正文快照缺失：{snapshot_rel}")
             continue
@@ -276,9 +366,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     problems = verify_pack(pack)
-    manifest_path = pack / MANIFEST_NAME
+    manifest_path = _package_member_path(pack, MANIFEST_NAME)
     ticket = ""
-    if manifest_path.is_file():
+    if manifest_path is not None and manifest_path.is_file():
         try:
             ticket_info = _load_json(manifest_path).get("ticket")
             if isinstance(ticket_info, dict):

@@ -583,7 +583,7 @@ class TestStandaloneVerifier(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
         self.assertNotIn("icode", imported, "独立校验器不得依赖本仓")
-        allowed = {"hashlib", "json", "sys", "pathlib", "__future__"}
+        allowed = {"hashlib", "json", "os", "pathlib", "stat", "sys", "__future__"}
         self.assertTrue(imported <= allowed, f"出现非标准库依赖：{imported - allowed}")
 
     def _run_verifier(self, pack: Path, *, cwd: Path, extra_env: dict | None = None):
@@ -716,6 +716,206 @@ class TestStandaloneVerifier(unittest.TestCase):
                     standalone.returncode, 1, standalone.stdout + standalone.stderr,
                 )
                 self.assertIn("校验失败", standalone.stdout)
+                self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
+
+    def test_内置和独立校验器拒绝证据包路径越界(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from hashlib import sha256
+        from io import StringIO
+
+        from icode.cli import main
+        from icode.pack_verify import pack_digest, sha256_file
+
+        outside_marker = "external evidence must not be read"
+
+        def read_json(path: Path) -> dict:
+            return json.loads(path.read_text(encoding="utf-8"))
+
+        def write_json(path: Path, value: object) -> None:
+            path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        def refresh_manifest(pack: Path, changed_member: str) -> None:
+            manifest_path = pack / "manifest.json"
+            manifest = read_json(manifest_path)
+            member = pack / changed_member
+            entry = next(item for item in manifest["files"] if item["path"] == changed_member)
+            entry["sha256"] = sha256_file(member)
+            entry["size"] = member.stat().st_size
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            write_json(manifest_path, manifest)
+
+        def add_manifest_traversal(pack: Path, outside: Path) -> None:
+            outside.write_text(outside_marker, encoding="utf-8")
+            manifest = read_json(pack / "manifest.json")
+            manifest["files"].append({
+                "path": "../outside.txt",
+                "sha256": sha256(outside.read_bytes()).hexdigest(),
+                "size": outside.stat().st_size,
+            })
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            write_json(pack / "manifest.json", manifest)
+
+        def add_windows_separator_traversal(pack: Path, outside: Path) -> None:
+            outside.write_text(outside_marker, encoding="utf-8")
+            manifest = read_json(pack / "manifest.json")
+            manifest["files"].append({
+                "path": r"..\outside.txt",
+                "sha256": sha256(outside.read_bytes()).hexdigest(),
+                "size": outside.stat().st_size,
+            })
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            write_json(pack / "manifest.json", manifest)
+
+        def add_absolute_manifest_path(pack: Path, outside: Path, relative: str) -> None:
+            manifest = read_json(pack / "manifest.json")
+            manifest["files"].append({"path": relative, "sha256": "0" * 64, "size": 0})
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            write_json(pack / "manifest.json", manifest)
+
+        def move_artifact_snapshot_outside(pack: Path, outside: Path) -> None:
+            index_path = pack / "artifacts.json"
+            index = read_json(index_path)
+            item = index["artifacts"][0]
+            snapshot = pack / item["snapshot"]
+            outside.write_bytes(snapshot.read_bytes())
+            item["snapshot"] = "../outside.txt"
+            write_json(index_path, index)
+            refresh_manifest(pack, "artifacts.json")
+
+        cases = (
+            ("manifest traversal", add_manifest_traversal),
+            ("Windows separator traversal", add_windows_separator_traversal),
+            ("POSIX absolute", lambda pack, outside: add_absolute_manifest_path(
+                pack, outside, "/outside.txt",
+            )),
+            ("Windows drive absolute", lambda pack, outside: add_absolute_manifest_path(
+                pack, outside, "C:/outside.txt",
+            )),
+            ("UNC absolute", lambda pack, outside: add_absolute_manifest_path(
+                pack, outside, "//server/share/outside.txt",
+            )),
+            ("artifact snapshot traversal", move_artifact_snapshot_outside),
+        )
+        for name, mutate in cases:
+            with self.subTest(path=name), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                pack = ws / "pack"
+                report = build_evidence_pack(
+                    out_dir, dest=pack, gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+                outside = ws / "outside.txt"
+                mutate(pack, outside)
+
+                problems = verify_pack(pack)
+                rendered = "\n".join(problems)
+                self.assertTrue(any("包内路径无效" in problem for problem in problems), problems)
+                self.assertNotIn(outside_marker, rendered)
+
+                stdout = StringIO()
+                stderr = StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main(["verify-pack", str(pack)])
+                self.assertEqual(exit_code, 1, stdout.getvalue() + stderr.getvalue())
+                self.assertIn("证据包校验失败", stdout.getvalue())
+                self.assertIn("包内路径无效", stdout.getvalue())
+                self.assertNotIn(outside_marker, stdout.getvalue() + stderr.getvalue())
+                self.assertNotIn("Traceback", stdout.getvalue() + stderr.getvalue())
+
+                standalone = self._run_verifier(pack, cwd=ws)
+                self.assertEqual(
+                    standalone.returncode, 1, standalone.stdout + standalone.stderr,
+                )
+                self.assertIn("包内路径无效", standalone.stdout)
+                self.assertNotIn(outside_marker, standalone.stdout + standalone.stderr)
+                self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
+
+    def test_内置和独立校验器不跟随未登记的外部链接目录(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from icode.cli import main
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            pack = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=pack, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+            outside = ws / "outside"
+            outside.mkdir()
+            (outside / "private-marker.txt").write_text(
+                "external directory marker", encoding="utf-8",
+            )
+            link = pack / "unlisted-link"
+            try:
+                link.symlink_to(outside, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"当前平台不能创建目录符号链接：{type(exc).__name__}")
+
+            problems = verify_pack(pack)
+            rendered = "\n".join(problems)
+            self.assertTrue(any("不允许的链接" in problem for problem in problems), problems)
+            self.assertNotIn("external directory marker", rendered)
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(["verify-pack", str(pack)])
+            self.assertEqual(exit_code, 1, stdout.getvalue() + stderr.getvalue())
+            self.assertIn("不允许的链接", stdout.getvalue())
+            self.assertNotIn("external directory marker", stdout.getvalue() + stderr.getvalue())
+            self.assertNotIn("Traceback", stdout.getvalue() + stderr.getvalue())
+
+            standalone = self._run_verifier(pack, cwd=ws)
+            self.assertEqual(
+                standalone.returncode, 1, standalone.stdout + standalone.stderr,
+            )
+            self.assertIn("不允许的链接", standalone.stdout)
+            self.assertNotIn("external directory marker", standalone.stdout + standalone.stderr)
+            self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
+
+    def test_内置和独立校验器拒绝固定成员符号链接(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from icode.cli import main
+
+        for relative in ("manifest.json", "ticket/events.jsonl", "artifacts.json"):
+            with self.subTest(member=relative), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                pack = ws / "pack"
+                report = build_evidence_pack(
+                    out_dir, dest=pack, gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+
+                member = pack / relative
+                outside = ws / "outside-member"
+                outside.write_bytes(member.read_bytes())
+                member.unlink()
+                try:
+                    member.symlink_to(outside)
+                except (NotImplementedError, OSError) as exc:
+                    self.skipTest(f"当前平台不能创建符号链接：{type(exc).__name__}")
+
+                problems = verify_pack(pack)
+                self.assertTrue(any("包内路径无效" in problem for problem in problems), problems)
+
+                stdout = StringIO()
+                stderr = StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main(["verify-pack", str(pack)])
+                self.assertEqual(exit_code, 1, stdout.getvalue() + stderr.getvalue())
+                self.assertIn("包内路径无效", stdout.getvalue())
+                self.assertNotIn("Traceback", stdout.getvalue() + stderr.getvalue())
+
+                standalone = self._run_verifier(pack, cwd=ws)
+                self.assertEqual(
+                    standalone.returncode, 1, standalone.stdout + standalone.stderr,
+                )
+                self.assertIn("包内路径无效", standalone.stdout)
                 self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
 
     def test_校验器用法错误返回2(self) -> None:
