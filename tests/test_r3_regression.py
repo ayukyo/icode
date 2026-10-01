@@ -944,6 +944,48 @@ class TestResultCommitTreeBinding(unittest.TestCase):
                 "head_observed_at_test_boundaries",
             )
 
+    def test_run_task成功测试绑定受测tree和结果commit(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.config import Settings
+        from icode.runner import run_task
+
+        with temp_workspace() as ws:
+            repo = self._new_repo(ws)
+            self._commit(repo, "verified source\n", "verified source")
+            test_source = (
+                b"import unittest\n\n"
+                b"class ResultTreeProof(unittest.TestCase):\n"
+                b"    def test_committed_source_exists(self):\n"
+                b"        with open('source.txt', 'rb') as source:\n"
+                b"            self.assertEqual(source.read(), b'verified source\\n')\n"
+            )
+            (repo / "test_result_tree.py").write_bytes(test_source)
+            self._git(repo, "add", "test_result_tree.py")
+            self._git(repo, "commit", "-q", "-m", "add result tree test")
+            commit_sha = self._git(repo, "rev-parse", "HEAD")
+            expected_tree_oid = self._git(repo, "rev-parse", "HEAD^{tree}")
+
+            report = run_task(
+                Settings(skill_root=repo / "missing-skill"),
+                backend=FakeBackend(["完成"]),
+                workspace=repo,
+                result_commit_sha=commit_sha,
+                max_repairs=0,
+            )
+
+            self.assertEqual(report.exit_code, 0, report.test_output)
+            self.assertIn("Ran 1 test", report.test_output)
+            self.assertEqual(report.verification.test_head_status, "stable")
+            self.assertEqual(report.verification.tested_git_tree_status, "stable")
+            self.assertEqual(
+                report.verification.tested_git_tree_oid, expected_tree_oid,
+            )
+            self.assertEqual(report.verification.result_commit_tree_status, "matched")
+            self.assertEqual(
+                report.verification.result_commit_timing_status,
+                "head_observed_at_test_boundaries",
+            )
+
     def test无稳定受测tree时拒绝读取结果提交(self) -> None:
         from icode.runner import TaskReport, bind_task_result_commit
         from icode.self_verify import VerificationEvidence

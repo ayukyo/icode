@@ -40,7 +40,14 @@ class TestWindowsTreeCiFailureAnnotations(unittest.TestCase):
         suite = load_windows_tree_suite(loader=loader)  # type: ignore[arg-type]
 
         self.assertIsInstance(suite, unittest.TestSuite)
-        self.assertEqual(loader.loaded, ["tests.test_windows_worktree_tree_oid"])
+        self.assertEqual(
+            loader.loaded,
+            [
+                "tests.test_windows_worktree_tree_oid",
+                "tests.test_r3_regression.TestResultCommitTreeBinding."
+                "test_run_task成功测试绑定受测tree和结果commit",
+            ],
+        )
 
     def test_failure_and_error_annotations_expose_safe_ids_only(self) -> None:
         result = unittest.TestResult()

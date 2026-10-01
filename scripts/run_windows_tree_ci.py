@@ -15,7 +15,11 @@ from typing import TextIO
 _SAFE_TEST_ID_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._"
 )
-_WINDOWS_TREE_TEST_MODULES = ("tests.test_windows_worktree_tree_oid",)
+_WINDOWS_TREE_TEST_MODULES = (
+    "tests.test_windows_worktree_tree_oid",
+    "tests.test_r3_regression.TestResultCommitTreeBinding."
+    "test_run_task成功测试绑定受测tree和结果commit",
+)
 _SAFE_EXCEPTION_TYPES = frozenset({
     "AssertionError",
     "CalledProcessError",
