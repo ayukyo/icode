@@ -619,6 +619,105 @@ class TestStandaloneVerifier(unittest.TestCase):
             self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
             self.assertIn("校验失败", proc.stdout)
 
+    def test_内置和独立校验器对畸形JSON结构返回失败而不抛异常(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from icode.cli import main
+
+        def write_json(path: Path, value: object) -> None:
+            path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+
+        def replace_event(pack: Path, field: str, value: object, *, artifact: bool = False) -> None:
+            events_path = pack / "ticket" / "events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            target = next(
+                event for event in events
+                if event.get("event_type") == ("artifact_written" if artifact else "ticket_created")
+            )
+            target[field] = value
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+        def invalid_event_root(pack: Path) -> None:
+            (pack / "ticket" / "events.jsonl").write_text("null\n", encoding="utf-8")
+
+        def invalid_manifest_root(pack: Path) -> None:
+            write_json(pack / "manifest.json", [])
+
+        def invalid_manifest_item(pack: Path) -> None:
+            manifest_path = pack / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["files"] = [None]
+            write_json(manifest_path, manifest)
+
+        def missing_manifest_digest(pack: Path) -> None:
+            manifest_path = pack / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["files"] = [{"path": "ticket/events.jsonl"}]
+            write_json(manifest_path, manifest)
+
+        def invalid_artifact_root(pack: Path) -> None:
+            write_json(pack / "artifacts.json", [])
+
+        def invalid_artifact_item(pack: Path) -> None:
+            write_json(pack / "artifacts.json", {"artifacts": [None]})
+
+        cases = (
+            ("manifest-root", invalid_manifest_root, "清单文件不可解析"),
+            ("manifest-item", invalid_manifest_item, "清单 files 第 1 项结构无效"),
+            ("manifest-missing-hash", missing_manifest_digest, "缺少有效 path 或 sha256"),
+            ("event-root", invalid_event_root, "事件链第 1 行结构无效"),
+            ("event-id-type", lambda pack: replace_event(
+                pack, "event_id", [],
+            ), "event_id 结构无效"),
+            ("event-type", lambda pack: replace_event(
+                pack, "event_type", [],
+            ), "首条事件类型"),
+            ("artifact-payload", lambda pack: replace_event(
+                pack, "payload", ["malformed"], artifact=True,
+            ), "artifact_written 事件 payload 结构无效"),
+            ("artifact-index-root", invalid_artifact_root, "artifacts.json 不可解析"),
+            ("artifact-index-item", invalid_artifact_item, "artifacts.json 第 1 项结构无效"),
+        )
+        for name, mutate, expected_problem in cases:
+            with self.subTest(structure=name), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                dest = ws / "pack"
+                report = build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+                mutate(dest)
+
+                problems = verify_pack(dest)
+                self.assertTrue(problems, name)
+                self.assertTrue(
+                    any(expected_problem in problem for problem in problems),
+                    f"{name}: {problems}",
+                )
+
+                stdout = StringIO()
+                stderr = StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main(["verify-pack", str(dest)])
+                self.assertEqual(exit_code, 1, stdout.getvalue() + stderr.getvalue())
+                self.assertIn("证据包校验失败", stdout.getvalue())
+                self.assertNotIn("Traceback", stdout.getvalue() + stderr.getvalue())
+
+                standalone = self._run_verifier(dest, cwd=ws)
+                self.assertEqual(
+                    standalone.returncode, 1, standalone.stdout + standalone.stderr,
+                )
+                self.assertIn("校验失败", standalone.stdout)
+                self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
+
     def test_校验器用法错误返回2(self) -> None:
         with temp_workspace() as ws:
             out_dir = make_finished_plan_ticket(self.settings, ws / "work")

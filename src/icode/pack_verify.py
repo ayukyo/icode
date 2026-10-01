@@ -57,7 +57,10 @@ def pack_digest(entries: list[dict]) -> str:
 
 
 def _load_json(path: Path) -> dict:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("JSON 根节点必须是对象")
+    return value
 
 
 def verify_pack(pack_dir: Path) -> list[str]:
@@ -70,24 +73,38 @@ def verify_pack(pack_dir: Path) -> list[str]:
         return [f"缺少清单文件：{MANIFEST_NAME}"]
     try:
         manifest = _load_json(manifest_path)
-    except (json.JSONDecodeError, OSError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         return [f"清单文件不可解析：{exc}"]
 
     # ① 清单完整性
-    entries = manifest.get("files") or []
-    if not entries:
+    file_entries = manifest.get("files")
+    if file_entries is None:
+        file_entries = []
+    if not isinstance(file_entries, list):
+        problems.append("清单 files 结构无效（必须是数组）")
+        file_entries = []
+    if not file_entries:
         problems.append("清单 files 为空")
+    entries: list[dict] = []
+    for index, entry in enumerate(file_entries, 1):
+        if not isinstance(entry, dict):
+            problems.append(f"清单 files 第 {index} 项结构无效（必须是对象）")
+            continue
+        if not isinstance(entry.get("path"), str) or not isinstance(entry.get("sha256"), str):
+            problems.append(f"清单 files 第 {index} 项缺少有效 path 或 sha256")
+            continue
+        entries.append(entry)
     for entry in entries:
-        rel = str(entry.get("path", ""))
+        rel = entry["path"]
         target = pack / rel
         if not target.is_file():
             problems.append(f"清单登记的文件缺失：{rel}")
             continue
         actual = sha256_file(target)
-        if actual != entry.get("sha256"):
+        if actual != entry["sha256"]:
             problems.append(
                 f"文件内容与清单不符（疑似篡改）：{rel} "
-                f"清单={str(entry.get('sha256'))[:12]} 实际={actual[:12]}"
+                f"清单={entry['sha256'][:12]} 实际={actual[:12]}"
             )
         size = entry.get("size")
         if isinstance(size, int) and target.stat().st_size != size:
@@ -118,10 +135,13 @@ def verify_pack(pack_dir: Path) -> list[str]:
     if not events_path.is_file():
         problems.append(f"缺少事件链：{EVENTS_REL}")
     else:
-        events, chain_problems = _verify_event_chain(events_path)
-        problems.extend(chain_problems)
-        # ③ 正文与链上哈希对应
-        problems.extend(_verify_artifact_binding(pack, events))
+        try:
+            events, chain_problems = _verify_event_chain(events_path)
+            problems.extend(chain_problems)
+            # ③ 正文与链上哈希对应
+            problems.extend(_verify_artifact_binding(pack, events))
+        except (OSError, ValueError, RecursionError) as exc:
+            problems.append(f"事件链或正文索引无法读取：{type(exc).__name__}")
 
     return problems
 
@@ -129,30 +149,45 @@ def verify_pack(pack_dir: Path) -> list[str]:
 def _verify_event_chain(path: Path) -> tuple[list[dict], list[str]]:
     problems: list[str] = []
     events: list[dict] = []
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        return events, [f"事件链无法读取：{type(exc).__name__}"]
+
+    for lineno, line in enumerate(lines, 1):
         line = line.strip()
         if not line:
             continue
         try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError as exc:
+            event = json.loads(line)
+        except (json.JSONDecodeError, RecursionError) as exc:
             problems.append(f"事件链第 {lineno} 行 JSON 不可解析（疑似截断/篡改）：{exc}")
             return events, problems
+        if not isinstance(event, dict):
+            problems.append(f"事件链第 {lineno} 行结构无效（必须是对象）")
+            return events, problems
+        events.append(event)
 
     prev = GENESIS_HASH
     seen_ids: set[str] = set()
     for idx, event in enumerate(events, 1):
         event_id = event.get("event_id")
-        if event_id in seen_ids:
+        if not isinstance(event_id, str) or not event_id:
+            problems.append(f"第 {idx} 条事件 event_id 结构无效（必须是非空字符串）")
+        elif event_id in seen_ids:
             problems.append(f"第 {idx} 条事件 event_id 重复：{event_id!r}")
-        seen_ids.add(event_id)
+        else:
+            seen_ids.add(event_id)
         if event.get("previous_event_hash") != prev:
             problems.append(f"第 {idx} 条事件 previous_event_hash 断链（疑似删改事件）")
         if event.get("event_hash") != canonical_event_hash(event):
             problems.append(f"第 {idx} 条事件 event_hash 与内容不符（疑似篡改）")
         prev = event.get("event_hash", prev)
 
-    if events and events[0].get("event_type") not in ALLOWED_FIRST_EVENT:
+    if events and (
+        not isinstance(events[0].get("event_type"), str)
+        or events[0].get("event_type") not in ALLOWED_FIRST_EVENT
+    ):
         problems.append(
             f"首条事件类型为 {events[0].get('event_type')!r}，应为 {sorted(ALLOWED_FIRST_EVENT)} 之一"
         )
@@ -170,7 +205,10 @@ def _verify_artifact_binding(pack: Path, events: list[dict]) -> list[str]:
     for event in events:
         if event.get("event_type") != "artifact_written":
             continue
-        payload = event.get("payload") or {}
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            problems.append("artifact_written 事件 payload 结构无效（必须是对象）")
+            continue
         digest = payload.get("sha256")
         if digest:
             chain_artifacts[str(digest)] = str(event.get("event_id"))
@@ -186,12 +224,21 @@ def _verify_artifact_binding(pack: Path, events: list[dict]) -> list[str]:
 
     try:
         index = _load_json(index_path)
-    except (json.JSONDecodeError, OSError) as exc:
+    except (OSError, ValueError, RecursionError) as exc:
         problems.append(f"artifacts.json 不可解析：{exc}")
         return problems
 
+    artifact_entries = index.get("artifacts")
+    if artifact_entries is None:
+        artifact_entries = []
+    if not isinstance(artifact_entries, list):
+        problems.append("artifacts.json 的 artifacts 结构无效（必须是数组）")
+        artifact_entries = []
     bound_digests: set[str] = set()
-    for item in index.get("artifacts") or []:
+    for index_number, item in enumerate(artifact_entries, 1):
+        if not isinstance(item, dict):
+            problems.append(f"artifacts.json 第 {index_number} 项结构无效（必须是对象）")
+            continue
         snapshot_rel = str(item.get("snapshot") or "")
         chain_hash = str(item.get("chain_sha256") or "")
         snapshot = pack / snapshot_rel
@@ -233,8 +280,10 @@ def main(argv: list[str] | None = None) -> int:
     ticket = ""
     if manifest_path.is_file():
         try:
-            ticket = (_load_json(manifest_path).get("ticket") or {}).get("ticket_id", "")
-        except (json.JSONDecodeError, OSError):
+            ticket_info = _load_json(manifest_path).get("ticket")
+            if isinstance(ticket_info, dict):
+                ticket = ticket_info.get("ticket_id", "")
+        except (OSError, ValueError, RecursionError):
             ticket = "?"
 
     if problems:
