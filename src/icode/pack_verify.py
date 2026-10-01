@@ -26,6 +26,7 @@ import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = stat.FILE_ATTRIBUTE_REPARSE_POINT
+_SHA256_FILE_READ_SIZE = 1024 * 1024
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -40,7 +41,14 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def sha256_file(path: Path) -> str:
-    return sha256_bytes(Path(path).read_bytes())
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        while True:
+            chunk = stream.read(_SHA256_FILE_READ_SIZE)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def canonical_event_hash(event: dict) -> str:

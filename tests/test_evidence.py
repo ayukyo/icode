@@ -794,6 +794,35 @@ class TestStandaloneVerifier(unittest.TestCase):
                 self.assertIn("重复 JSON 成员名", standalone.stdout)
                 self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
 
+    def test_文件摘要采用有界内存分块读取(self) -> None:
+        import hashlib
+        import tracemalloc
+
+        from icode.pack_verify import sha256_file
+
+        with temp_workspace() as ws:
+            artifact = ws / "large-artifact.bin"
+            artifact_size = 8 * 1024 * 1024
+            with artifact.open("wb") as stream:
+                stream.truncate(artifact_size)
+
+            with artifact.open("rb") as stream:
+                expected = hashlib.file_digest(stream, "sha256").hexdigest()
+
+            tracemalloc.start()
+            try:
+                actual = sha256_file(artifact)
+                _, peak_bytes = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+
+            self.assertEqual(actual, expected)
+            self.assertLess(
+                peak_bytes,
+                4 * 1024 * 1024,
+                f"哈希单个 {artifact_size} 字节文件时 Python 峰值分配 {peak_bytes} 字节",
+            )
+
     def test_内置和独立校验器拒绝证据包路径越界(self) -> None:
         from contextlib import redirect_stderr, redirect_stdout
         from hashlib import sha256

@@ -1,6 +1,8 @@
 # 开发路线图与取舍原则
 
 - 日期：2026-10-01 Asia/Shanghai
+- **R3 大文件哈希有界内存（本机通过、远端待验）：**`sha256_file()` 从整文件 `read_bytes()` 改为 1 MiB 分块 SHA-256；8 MiB 稀疏文件摘要与 `hashlib.file_digest` 一致，TDD 回归的 Python 跟踪峰值低于 4 MiB（旧版 RED 约 8 MiB）。176 项精选 workspace matrix、语法/diff 检查与全量 preflight 三道门通过。只约束本次 Python 分配，不限制文件大小、RSS、CPU 或 OOM，也不增强来源认证/OS 隔离。Codex 缓冲 rollout reader 与 OpenHands 单事件文件读取仅作模式参照，不是哈希方案；固定版本、许可与取舍见[持续竞品对照](./agent-landscape-live.md)。新 SHA CI/官网待验。
+- **R3 重复 JSON 成员名远端复核：**路线图上一条中的远端待验状态现由 commit [`25abae7`](https://github.com/ayukyo/icode/commit/25abae70939db6e3ed060bad560eb4eb0285213a) 的主 CI [#458](https://github.com/ayukyo/icode/actions/runs/36828352828) 与官网 [#334](https://github.com/ayukyo/icode/actions/runs/36828352791) success 取代；只消除解析歧义，不认证来源。
 - **R3 重复 JSON 成员名拒绝（本地验收完成、待新 SHA 远端门）：**verifier 不再接受 manifest、逐行事件与 artifact index 中的重复 JSON 对象成员（包括转义后等名）；旧实现按 Python 默认 last-wins 解释，即使包摘要重算也可通过。现在内置 verifier、CLI 和零依赖包内 `verify.py` 均给出稳定结构错误；Python 3.11 精选 workspace matrix 175 项和全量 preflight 三道门通过。新 SHA 的 CI/官网待验。RFC 8259/I-JSON 与 Codex/OpenHands 固定版本取舍见[持续竞品对照](./agent-landscape-live.md)。只消除解析歧义，不认证来源。
 - **R3 证据包路径约束验收更新：**原路径边界待验状态已由提交 [`6ed35cc`](https://github.com/ayukyo/icode/commit/6ed35cc929bb544e961c1a400579a2aaae909646) 的主 CI [#457](https://github.com/ayukyo/icode/actions/runs/36825808997) success 与官网 [#333](https://github.com/ayukyo/icode/actions/runs/36825808988) success 取代；本机 174 项 workspace matrix 和全量 preflight 也通过。此项只证明静态路径边界，不证明同用户并发安全或 OS 隔离。
 - **R3 独立证据包路径逃逸：**校验器现将 manifest 文件项、artifact snapshot、固定 manifest/events/index 与递归目录都限制在包根内；拒绝绝对/父目录/Windows 分隔符歧义、symlink/reparse point，并以 no-follow 遍历外部链接目录。6 类路径逃逸和固定/未登记链接变体走内置和独立 verifier，CLI 稳定失败且不泄漏标记；174 项 workspace matrix 与全量 preflight 三道门通过，新 SHA CI 待验。只表示静态包路径受限，不证明同用户并发安全或 OS 隔离。
