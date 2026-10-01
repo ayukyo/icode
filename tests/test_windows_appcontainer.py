@@ -7,6 +7,7 @@ import errno
 import hashlib
 import http.client
 import http.server
+import inspect
 import json
 import ntpath
 import os
@@ -1522,6 +1523,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer snapshot writes and cleanup", notice_names)
         self.assertIn("Windows Reviewer access diagnostics", notice_names)
         self.assertIn("Windows Reviewer handle cleanup diagnostics", notice_names)
+        self.assertIn("Windows Reviewer WriteFile diagnostics", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
         max_error_notice = {
             key: {"winerror": 0xFFFFFFFF, "errno": 0xFFFFFFFF}
@@ -1543,7 +1545,22 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertLessEqual(
             len(json.dumps(max_close_errors, separators=(",", ":"))), 500,
         )
+        max_write_diagnostics = {
+            "stage": "writefile",
+            "io_succeeded": False,
+            "requested_bytes": 7,
+            "bytes_transferred": 0xFFFFFFFF,
+        }
+        self.assertLessEqual(
+            len(json.dumps(max_write_diagnostics, separators=(",", ":"))), 500,
+        )
         self.assertEqual(len(captured_scripts), 1)
+        self.assertEqual(
+            captured_scripts[0].count(
+                "requested_bytes=len(write_payload) if io_kind=='write' else 0",
+            ),
+            1,
+        )
         for required_probe in (
             "outside_snapshot_denied", "workspace_denied", "home_denied",
             "ledger_denied", "write_denied", "delete_denied", "rename_denied",
@@ -1557,6 +1574,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             "kernel.CloseHandle(admin_token)",
             "access_errors={}",
             "close_errors={}",
+            "write_diagnostics={}",
             "def access_denied(key,call):",
             "if code==5: return True",
             "def bounded_error_code(value):",
@@ -1577,14 +1595,38 @@ class TestWindowsAppContainer(unittest.TestCase):
             "native_kernel.CloseHandle(handle)",
             "def native_access_denied(key,path,desired_access,io_kind=None,disposition=3):",
             "close_errors[key]=bounded_error_code(close_error)",
-            "return cleanup_ok and code==5",
+            "denied=cleanup_ok and code==5",
+            "if key=='write' and bytes_transferred!=0: denied=False",
+            "return denied",
             "facts['close_errors']=close_errors",
+            "write_diagnostics['write']={'stage':stage,'io_succeeded':io_succeeded,"
+            "'requested_bytes':requested_bytes,'bytes_transferred':"
+            "bounded_error_code(bytes_transferred)}",
+            "facts['write_diagnostics']=write_diagnostics",
             "native_access_denied('outside_snapshot',outside,0x80000000,'read')",
-            "if key not in {'child_pid','access_errors','close_errors'}",
+            "if key not in {'child_pid','access_errors','close_errors','write_diagnostics'}",
         ):
             with self.subTest(required_probe=required_probe):
                 self.assertIn(required_probe, captured_scripts[0])
         self.assertNotIn("advapi.CheckTokenMembership", captured_scripts[0])
+
+        reviewer_source = inspect.getsource(
+            TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理,
+        )
+        acceptance_start = reviewer_source.index(
+            "self.assertTrue(all(summary[key] is True for key in (",
+        )
+        acceptance_end = reviewer_source.index(")), summary)", acceptance_start)
+        acceptance_contract = reviewer_source[acceptance_start:acceptance_end]
+        self.assertIn('"write_canary_unchanged"', acceptance_contract)
+        self.assertNotIn("write_canary_matches_expected_result", acceptance_contract)
+        self.assertNotIn("write_canary_matches_payload", acceptance_contract)
+        self.assertIn("expected_write_result = (", reviewer_source)
+        self.assertIn(
+            "write_payload + write_canary_original[len(write_payload):]",
+            reviewer_source,
+        )
+        self.assertEqual(b"changed" + b"original\n"[len(b"changed"):], b"changedl\n")
 
         helper_start = captured_scripts[0].index("access_errors={}\n")
         helper_end = captured_scripts[0].index(
@@ -1669,9 +1711,11 @@ class TestWindowsAppContainer(unittest.TestCase):
             "        return data,ctypes.get_last_error(),True",
             "if not native_kernel.ReadFile(handle,buffer,len(buffer),"
             "ctypes.byref(transferred),None):\n"
+            "                io_succeeded=False\n"
             "                error_code=ctypes.get_last_error()",
-            "if not native_kernel.WriteFile(handle,payload,7,"
+            "if not native_kernel.WriteFile(handle,payload,requested_bytes,"
             "ctypes.byref(transferred),None):\n"
+            "                io_succeeded=False\n"
             "                error_code=ctypes.get_last_error()",
         ):
             self.assertIn(immediate_error_check, native_source)
@@ -1703,11 +1747,15 @@ class TestWindowsAppContainer(unittest.TestCase):
                 close_ok: bool,
                 create_handle: int = 7,
                 create_error: int = 0,
+                write_ok: bool = False,
+                write_transferred: int = 0,
             ) -> None:
                 self._last_error = last_error
                 self._close_ok = close_ok
                 self._create_handle = create_handle
                 self._create_error = create_error
+                self._write_ok = write_ok
+                self._write_transferred = write_transferred
                 self.close_calls = 0
 
             def CreateFileW(self, *_args: object) -> int:
@@ -1719,8 +1767,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 return False
 
             def WriteFile(self, *_args: object) -> bool:
-                self._last_error["value"] = 5
-                return False
+                transferred = _args[3]
+                transferred.value = self._write_transferred
+                self._last_error["value"] = 0 if self._write_ok else 5
+                return self._write_ok
 
             def CloseHandle(self, _handle: int) -> bool:
                 self.close_calls += 1
@@ -1732,9 +1782,21 @@ class TestWindowsAppContainer(unittest.TestCase):
             close_ok: bool = True,
             create_handle: int = 7,
             create_error: int = 0,
-        ) -> tuple[bool, dict[str, object], dict[str, object], FakeKernel]:
+            io_kind: str = "read",
+            write_ok: bool = False,
+            write_transferred: int = 0,
+        ) -> tuple[
+            bool,
+            dict[str, object],
+            dict[str, object],
+            dict[str, object],
+            FakeKernel,
+        ]:
             last_error = {"value": 0}
-            kernel = FakeKernel(last_error, close_ok, create_handle, create_error)
+            kernel = FakeKernel(
+                last_error, close_ok, create_handle, create_error,
+                write_ok, write_transferred,
+            )
             namespace: dict[str, object] = {
                 "ctypes": FakeCtypes(last_error),
                 "wintypes": FakeWintypes,
@@ -1742,6 +1804,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "INVALID_HANDLE_VALUE": -1,
                 "access_errors": {},
                 "close_errors": {},
+                "write_diagnostics": {},
+                "write_payload": b"changed",
                 "bounded_error_code": lambda value: (
                     value if type(value) is int and -0x80000000 <= value <= 0xFFFFFFFF else -1
                 ),
@@ -1749,32 +1813,129 @@ class TestWindowsAppContainer(unittest.TestCase):
             exec(native_source, namespace)
             try:
                 denied = namespace["native_access_denied"](
-                    "read", Path("canary.txt"), 0x80000000, "read",
+                    "write" if io_kind == "write" else "read",
+                    Path("canary.txt"),
+                    0x40000000 if io_kind == "write" else 0x80000000,
+                    io_kind,
                 )
             except RuntimeError as exc:
                 self.fail(f"CloseHandle failure discarded the captured I/O error: {exc}")
             self.assertIs(type(denied), bool)
-            return denied, namespace["access_errors"], namespace["close_errors"], kernel
+            return (
+                denied,
+                namespace["access_errors"],
+                namespace["close_errors"],
+                namespace["write_diagnostics"],
+                kernel,
+            )
 
-        denied, native_errors, close_errors, kernel = run_native_access(close_ok=False)
+        denied, native_errors, close_errors, _write_diagnostics, kernel = run_native_access(
+            close_ok=False,
+        )
         self.assertFalse(denied, "failed handle cleanup must not count as access denial")
         self.assertEqual(native_errors["read"], {"winerror": 5, "errno": -1})
         self.assertEqual(close_errors["read"], 6)
         self.assertEqual(kernel.close_calls, 1)
 
-        denied, native_errors, close_errors, kernel = run_native_access()
+        denied, native_errors, close_errors, write_diagnostics, kernel = run_native_access(
+            close_ok=False,
+            io_kind="write",
+            write_ok=False,
+            write_transferred=0,
+        )
+        self.assertFalse(denied, "failed handle cleanup must not count as a write denial")
+        self.assertEqual(native_errors["write"], {"winerror": 5, "errno": -1})
+        self.assertEqual(close_errors["write"], 6)
+        self.assertEqual(
+            write_diagnostics["write"],
+            {
+                "stage": "writefile",
+                "io_succeeded": False,
+                "requested_bytes": 7,
+                "bytes_transferred": 0,
+            },
+        )
+        self.assertEqual(kernel.close_calls, 1)
+
+        denied, native_errors, close_errors, _write_diagnostics, kernel = run_native_access()
         self.assertTrue(denied, "WinError 5 with successful cleanup is a denial")
         self.assertEqual(native_errors["read"], {"winerror": 5, "errno": -1})
         self.assertEqual(close_errors, {})
         self.assertEqual(kernel.close_calls, 1)
 
-        denied, native_errors, close_errors, kernel = run_native_access(
+        denied, native_errors, close_errors, _write_diagnostics, kernel = run_native_access(
             create_handle=-1, create_error=32,
         )
         self.assertFalse(denied, "WinError 32 is not an access-denied result")
         self.assertEqual(native_errors["read"], {"winerror": 32, "errno": -1})
         self.assertEqual(close_errors, {})
         self.assertEqual(kernel.close_calls, 0)
+
+        denied, native_errors, close_errors, write_diagnostics, kernel = run_native_access(
+            io_kind="write", write_ok=False, write_transferred=0,
+        )
+        self.assertTrue(denied)
+        self.assertEqual(native_errors["write"], {"winerror": 5, "errno": -1})
+        self.assertEqual(close_errors, {})
+        self.assertEqual(
+            write_diagnostics["write"],
+            {
+                "stage": "writefile",
+                "io_succeeded": False,
+                "requested_bytes": 7,
+                "bytes_transferred": 0,
+            },
+        )
+        self.assertEqual(kernel.close_calls, 1)
+
+        denied, native_errors, close_errors, write_diagnostics, kernel = run_native_access(
+            io_kind="write", write_ok=False, write_transferred=3,
+        )
+        self.assertFalse(denied, "partial WriteFile failure must not count as a denied write")
+        self.assertEqual(native_errors["write"], {"winerror": 5, "errno": -1})
+        self.assertEqual(close_errors, {})
+        self.assertEqual(
+            write_diagnostics["write"],
+            {
+                "stage": "writefile",
+                "io_succeeded": False,
+                "requested_bytes": 7,
+                "bytes_transferred": 3,
+            },
+        )
+        self.assertEqual(kernel.close_calls, 1)
+
+        denied, _native_errors, close_errors, write_diagnostics, kernel = run_native_access(
+            io_kind="write", write_ok=True, write_transferred=3,
+        )
+        self.assertFalse(denied, "short successful WriteFile must not count as a denied write")
+        self.assertEqual(close_errors, {})
+        self.assertEqual(
+            write_diagnostics["write"],
+            {
+                "stage": "writefile",
+                "io_succeeded": True,
+                "requested_bytes": 7,
+                "bytes_transferred": 3,
+            },
+        )
+        self.assertEqual(kernel.close_calls, 1)
+
+        denied, _native_errors, close_errors, write_diagnostics, kernel = run_native_access(
+            io_kind="write", write_ok=True, write_transferred=7,
+        )
+        self.assertFalse(denied)
+        self.assertEqual(close_errors, {})
+        self.assertEqual(
+            write_diagnostics["write"],
+            {
+                "stage": "writefile",
+                "io_succeeded": True,
+                "requested_bytes": 7,
+                "bytes_transferred": 7,
+            },
+        )
+        self.assertEqual(kernel.close_calls, 1)
 
     def test_JSON工作流回执超限时必须显式失败(self) -> None:
         with self.assertRaises(AssertionError):
@@ -5721,7 +5882,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             approved_file.write_bytes(allowed_content)
             new_file = snapshot / "new.py"
             mutable_file = snapshot / "mutable.py"
-            mutable_file.write_bytes(b"original\n")
+            write_canary_original = b"original\n"
+            write_payload = b"changed"
+            mutable_file.write_bytes(write_canary_original)
             deletable_file = snapshot / "delete.py"
             deletable_file.write_bytes(b"delete sentinel\n")
             rename_file = snapshot / "rename.py"
@@ -5842,6 +6005,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "        kernel.CloseHandle(token)\n"
                     "access_errors={}\n"
                     "close_errors={}\n"
+                    "write_diagnostics={}\n"
+                    f"write_payload={write_payload!r}\n"
                     "def bounded_error_code(value):\n"
                     "    return value if type(value) is int and -0x80000000<=value<=0xffffffff else -1\n"
                     "def access_denied(key,call):\n"
@@ -5882,28 +6047,34 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "native_kernel.CloseHandle.restype=wintypes.BOOL\n"
                     "INVALID_HANDLE_VALUE=ctypes.c_void_p(-1).value\n"
                     "def native_file_access(key,path,desired_access,disposition,io_kind=None):\n"
-                    "    data=b''; error_code=None; cleanup_ok=True\n"
+                    "    data=b''; error_code=None; cleanup_ok=True; stage='createfilew'\n"
+                    f"    requested_bytes={len(write_payload)} if io_kind=='write' else 0\n"
+                    "    transferred=wintypes.DWORD(); io_succeeded=None\n"
                     "    ctypes.set_last_error(0)\n"
                     "    handle=native_kernel.CreateFileW(str(path),desired_access,0x7,None,"
                     "disposition,0x80,None)\n"
                     "    if handle==INVALID_HANDLE_VALUE:\n"
-                    "        return data,ctypes.get_last_error(),True\n"
-                    "    if handle is None: return data,0,True\n"
+                    "        return data,ctypes.get_last_error(),True,stage,transferred.value,io_succeeded\n"
+                    "    if handle is None: return data,0,True,stage,transferred.value,io_succeeded\n"
                     "    try:\n"
                     "        if io_kind=='read':\n"
-                    "            buffer=ctypes.create_string_buffer(4096); transferred=wintypes.DWORD()\n"
+                    "            stage='readfile'; buffer=ctypes.create_string_buffer(4096)\n"
                     "            ctypes.set_last_error(0)\n"
                     "            if not native_kernel.ReadFile(handle,buffer,len(buffer),"
                     "ctypes.byref(transferred),None):\n"
+                    "                io_succeeded=False\n"
                     "                error_code=ctypes.get_last_error()\n"
-                    "            else: data=buffer.raw[:transferred.value]\n"
+                    "            else: io_succeeded=True; data=buffer.raw[:transferred.value]\n"
                     "        elif io_kind=='write':\n"
-                    "            payload=ctypes.create_string_buffer(b'changed'); transferred=wintypes.DWORD()\n"
+                    "            stage='writefile'; payload=ctypes.create_string_buffer(write_payload)\n"
                     "            ctypes.set_last_error(0)\n"
-                    "            if not native_kernel.WriteFile(handle,payload,7,"
+                    "            if not native_kernel.WriteFile(handle,payload,requested_bytes,"
                     "ctypes.byref(transferred),None):\n"
+                    "                io_succeeded=False\n"
                     "                error_code=ctypes.get_last_error()\n"
-                    "            elif transferred.value!=7: error_code=0\n"
+                    "            else:\n"
+                    "                io_succeeded=True\n"
+                    "                if transferred.value!=requested_bytes: error_code=0\n"
                     "    finally:\n"
                     "        try:\n"
                     "            ctypes.set_last_error(0)\n"
@@ -5913,11 +6084,18 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "                cleanup_ok=False\n"
                     "        except Exception:\n"
                     "            close_errors[key]=-1; cleanup_ok=False\n"
-                    "    return data,error_code,cleanup_ok\n"
+                    "    return data,error_code,cleanup_ok,stage,transferred.value,io_succeeded\n"
                     "def native_access_denied(key,path,desired_access,io_kind=None,disposition=3):\n"
-                    "    _data,code,cleanup_ok=native_file_access(key,path,desired_access,disposition,io_kind)\n"
+                    "    _data,code,cleanup_ok,stage,bytes_transferred,io_succeeded=native_file_access("
+                    "key,path,desired_access,disposition,io_kind)\n"
+                    "    requested_bytes=len(write_payload) if io_kind=='write' else 0\n"
+                    "    if key=='write': write_diagnostics['write']={'stage':stage,"
+                    "'io_succeeded':io_succeeded,'requested_bytes':requested_bytes,"
+                    "'bytes_transferred':bounded_error_code(bytes_transferred)}\n"
                     "    access_errors[key]={'winerror':bounded_error_code(code),'errno':-1}\n"
-                    "    return cleanup_ok and code==5\n"
+                    "    denied=cleanup_ok and code==5\n"
+                    "    if key=='write' and bytes_transferred!=0: denied=False\n"
+                    "    return denied\n"
                     "token=query_token()\n"
                     f"approved=pathlib.Path({str(approved_file)!r})\n"
                     f"expected={original_snapshot_hash!r}\n"
@@ -5931,7 +6109,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f"rename_target=pathlib.Path({str(snapshot / 'renamed.py')!r})\n"
                     f"dacl_file=pathlib.Path({str(dacl_file)!r})\n"
                     f"new_file=pathlib.Path({str(new_file)!r})\n"
-                    "approved_content,approved_error,approved_cleanup=native_file_access("
+                    "approved_content,approved_error,approved_cleanup,approved_stage,"
+                    "approved_bytes,approved_io=native_file_access("
                     "'approved_read',approved,0x80000000,3,'read')\n"
                     "facts={'approved_read':approved_error is None and approved_cleanup and "
                     "hashlib.sha256(approved_content).hexdigest()==expected,"
@@ -5946,6 +6125,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'dacl_write_dac_denied':dacl_write_dac_denied(dacl_file)}\n"
                     "facts['access_errors']=access_errors\n"
                     "facts['close_errors']=close_errors\n"
+                    "facts['write_diagnostics']=write_diagnostics\n"
                     f"child=subprocess.Popen([sys.executable,'-I','-c',{child_code!r}])\n"
                     f"deadline=time.monotonic()+5\n"
                     f"while not pathlib.Path({str(child_ready_file)!r}).is_file() and time.monotonic()<deadline: time.sleep(.05)\n"
@@ -5956,7 +6136,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "if not (token['appcontainer'] and token['package_sid'] and token['capability_count']==0 "
                     "and not token['elevated'] and not token['admin_group_enabled'] "
                     "and all(value for key,value in facts.items() "
-                    "if key not in {'child_pid','access_errors','close_errors'})): raise SystemExit(78)\n"
+                    "if key not in {'child_pid','access_errors','close_errors','write_diagnostics'})): raise SystemExit(78)\n"
                 )
                 compile(script, "<reviewer-snapshot-probe>", "exec")
                 candidate = run_windows_appcontainer(
@@ -6015,15 +6195,64 @@ class TestWindowsAppContainer(unittest.TestCase):
                     ):
                         close_errors[key] = error_number
 
+                raw_write_diagnostics = facts.get("write_diagnostics")
+                write_details = (
+                    raw_write_diagnostics.get("write")
+                    if isinstance(raw_write_diagnostics, dict)
+                    else None
+                )
+                if not isinstance(write_details, dict):
+                    write_details = {}
+                raw_stage = write_details.get("stage")
+                stage = (
+                    raw_stage
+                    if isinstance(raw_stage, str) and raw_stage in {"createfilew", "writefile"}
+                    else "missing"
+                )
+                raw_io_succeeded = write_details.get("io_succeeded")
+                io_succeeded = (
+                    raw_io_succeeded
+                    if type(raw_io_succeeded) is bool or raw_io_succeeded is None
+                    else None
+                )
+                raw_requested_bytes = write_details.get("requested_bytes")
+                requested_bytes = (
+                    raw_requested_bytes
+                    if type(raw_requested_bytes) is int
+                    and raw_requested_bytes == len(write_payload)
+                    else -1
+                )
+                raw_bytes_transferred = write_details.get("bytes_transferred")
+                bytes_transferred = (
+                    raw_bytes_transferred
+                    if type(raw_bytes_transferred) is int
+                    and 0 <= raw_bytes_transferred <= len(write_payload)
+                    else -1
+                )
+                write_diagnostics = {
+                    "stage": stage,
+                    "io_succeeded": io_succeeded,
+                    "requested_bytes": requested_bytes,
+                    "bytes_transferred": bytes_transferred,
+                }
+
                 try:
                     new_file.unlink(missing_ok=True)
                     create_cleanup_ok = not new_file.exists() and not new_file.is_symlink()
                 except OSError:
                     create_cleanup_ok = False
                 try:
-                    write_canary_unchanged = mutable_file.read_bytes() == b"original\n"
+                    write_canary_content = mutable_file.read_bytes()
+                    expected_write_result = (
+                        write_payload + write_canary_original[len(write_payload):]
+                    )
+                    write_canary_unchanged = write_canary_content == write_canary_original
+                    write_canary_matches_expected_result = (
+                        write_canary_content == expected_write_result
+                    )
                 except OSError:
                     write_canary_unchanged = False
+                    write_canary_matches_expected_result = False
 
                 child_pid = facts.get("child_pid")
                 child_exited = False
@@ -6059,7 +6288,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                             "approved_read", "outside_snapshot_denied", "workspace_denied",
                             "home_denied", "ledger_denied", "write_denied", "delete_denied",
                             "rename_denied", "create_denied", "dacl_write_dac_denied", "child_started",
-                            "write_canary_unchanged",
+                            "write_canary_unchanged", "write_canary_matches_expected_result",
                         )
                     },
                     "create_cleanup_ok": create_cleanup_ok,
@@ -6071,6 +6300,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "staged_files": stage_summary.get("staged_entries"),
                     "access_errors": access_errors,
                     "close_errors": close_errors,
+                    "write_diagnostics": write_diagnostics,
                 }
                 self._workflow_json_notice(
                     "Windows Reviewer probe preflight",
@@ -6100,7 +6330,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                             "write_denied", "delete_denied", "rename_denied", "create_denied",
                             "dacl_write_dac_denied", "child_started", "child_exited",
                             "snapshot_acl_restored", "runtime_acl_restored", "staged_files",
-                            "write_canary_unchanged", "create_cleanup_ok",
+                            "write_canary_unchanged", "write_canary_matches_expected_result",
+                            "create_cleanup_ok",
                         )
                     },
                 )
@@ -6111,6 +6342,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self._workflow_json_notice(
                     "Windows Reviewer handle cleanup diagnostics",
                     summary["close_errors"],
+                )
+                self._workflow_json_notice(
+                    "Windows Reviewer WriteFile diagnostics",
+                    summary["write_diagnostics"],
                 )
                 self.assertTrue(candidate.executed, candidate)
                 self.assertEqual(candidate.exit_code, 0, candidate)
