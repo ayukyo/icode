@@ -107,13 +107,13 @@ def _read_events(out_dir: Path) -> _EventSummary:
 
                 summary.event_count += 1
                 event_type = event.get("event_type")
-                if event_type not in ("step_started", "artifact_written"):
-                    continue
                 payload = event.get("payload")
                 if not isinstance(payload, dict):
                     raise EvidenceError(
                         f"事件链第 {lineno} 行 payload 结构无效（必须是对象）"
                     )
+                if event_type not in ("step_started", "artifact_written"):
+                    continue
                 if event_type == "step_started":
                     step = payload.get("step")
                     if step:

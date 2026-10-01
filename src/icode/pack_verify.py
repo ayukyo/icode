@@ -296,7 +296,16 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
     event_count = 0
     first_event_type_valid = False
     first_event_type_label = ""
-    invalid_artifact_payload_count = 0
+    invalid_payload_kinds: set[str] = set()
+
+    def append_payload_shape_problems(target: list[str]) -> None:
+        # Bound retained diagnostics even if a hostile event stream contains many
+        # malformed payloads; one finding per category is enough to reject the pack.
+        if "event" in invalid_payload_kinds:
+            target.append("事件 payload 结构无效（必须是对象）")
+        if "artifact_written" in invalid_payload_kinds:
+            target.append("artifact_written 事件 payload 结构无效（必须是对象）")
+
     try:
         stream = path.open(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
@@ -316,13 +325,11 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
                     problems.append(
                         f"事件链第 {lineno} 行 JSON 不可解析（疑似截断/篡改）：{exc}"
                     )
-                    for _ in range(invalid_artifact_payload_count):
-                        problems.append("artifact_written 事件 payload 结构无效（必须是对象）")
+                    append_payload_shape_problems(problems)
                     return artifact_facts, problems
                 if not isinstance(event, dict):
                     problems.append(f"事件链第 {lineno} 行结构无效（必须是对象）")
-                    for _ in range(invalid_artifact_payload_count):
-                        problems.append("artifact_written 事件 payload 结构无效（必须是对象）")
+                    append_payload_shape_problems(problems)
                     return artifact_facts, problems
 
                 event_count += 1
@@ -358,17 +365,19 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
                     )
                 previous_hash = event.get("event_hash", previous_hash)
 
-                if event.get("event_type") == "artifact_written":
-                    payload = event.get("payload")
-                    if not isinstance(payload, dict):
-                        invalid_artifact_payload_count += 1
-                    else:
-                        digest = payload.get("sha256")
-                        if digest:
-                            artifact_facts[str(digest)] = (
-                                str(event.get("event_id")),
-                                str(payload.get("path") or ""),
-                            )
+                event_type = event.get("event_type")
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    invalid_payload_kinds.add(
+                        "artifact_written" if event_type == "artifact_written" else "event"
+                    )
+                elif event_type == "artifact_written":
+                    digest = payload.get("sha256")
+                    if digest:
+                        artifact_facts[str(digest)] = (
+                            str(event.get("event_id")),
+                            str(payload.get("path") or ""),
+                        )
     except (OSError, UnicodeError) as exc:
         return {}, [f"事件链无法读取：{type(exc).__name__}"]
 
@@ -377,8 +386,7 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
         problems.append(
             f"首条事件类型为 {first_event_type_label}，应为 {sorted(ALLOWED_FIRST_EVENT)} 之一"
         )
-    for _ in range(invalid_artifact_payload_count):
-        problems.append("artifact_written 事件 payload 结构无效（必须是对象）")
+    append_payload_shape_problems(problems)
     return artifact_facts, problems
 
 
