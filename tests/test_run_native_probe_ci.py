@@ -98,9 +98,19 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=cleanup), \
              mock.patch.object(run_native_probe_ci, "_probe_linux_network_lease_expiry",
                                return_value=lease_result, create=True) as lease_probe, \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_seccomp_receipt",
+                 return_value=SimpleNamespace(status="passed", detail="receipt ok"),
+             ) as receipt_probe, \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_observed_command_bounds",
+                 return_value=SimpleNamespace(status="passed", detail="bounds ok"),
+             ) as bounds_probe, \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
              redirect_stdout(output):
             result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
+        receipt_probe.assert_called_once_with()
+        bounds_probe.assert_called_once_with()
         return result, lease_probe, score, output.getvalue()
 
     def test_linux租约到期正向证据进入评分(self) -> None:
@@ -318,6 +328,14 @@ class TestNativeProbeCi(unittest.TestCase):
              mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
                                return_value=cleanup), \
              mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_network_lease_expiry",
+                 return_value=SimpleNamespace(status="passed", detail="lease ok"),
+             ), \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_seccomp_receipt",
+                 return_value=SimpleNamespace(status="passed", detail="receipt ok"),
+             ), \
+             mock.patch.object(
                  run_native_probe_ci, "_probe_linux_observed_command_bounds",
                  return_value=SimpleNamespace(status="passed", detail="ok"),
                  create=True,
@@ -349,6 +367,14 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=failed), \
              mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
                                return_value=cleanup), \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_network_lease_expiry",
+                 return_value=SimpleNamespace(status="passed", detail="lease ok"),
+             ), \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_seccomp_receipt",
+                 return_value=SimpleNamespace(status="passed", detail="receipt ok"),
+             ), \
              mock.patch.object(
                  run_native_probe_ci, "_probe_linux_observed_command_bounds",
                  return_value=SimpleNamespace(status="passed", detail="ok"),
@@ -395,6 +421,14 @@ class TestNativeProbeCi(unittest.TestCase):
                                return_value=protected), \
              mock.patch.object(run_native_probe_ci, "probe_linux_process_tree_cleanup",
                                return_value=cleanup), \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_network_lease_expiry",
+                 return_value=SimpleNamespace(status="passed", detail="lease ok"),
+             ), \
+             mock.patch.object(
+                 run_native_probe_ci, "_probe_linux_seccomp_receipt",
+                 return_value=SimpleNamespace(status="passed", detail="receipt ok"),
+             ), \
              mock.patch.object(
                  run_native_probe_ci, "_probe_linux_observed_command_bounds",
                  return_value=SimpleNamespace(status="passed", detail="ok"),
