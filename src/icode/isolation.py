@@ -1691,6 +1691,104 @@ class MacSeatbeltSandbox:
         )
         return "\n".join(filter(None, rules)) + "\n"
 
+    def experimental_wrap_leased_unix_connect_candidate(
+        self,
+        argv: Sequence[str],
+        *,
+        policy: SandboxPolicy,
+        socket_path: str | os.PathLike[str],
+    ) -> list[str]:
+        """Wrap a candidate with outbound access to a dedicated host UDS directory.
+
+        Seatbelt currently exposes a directory ``subpath`` rule here, not an
+        exact-socket rule. The base profile denies worker writes to this
+        directory and this method requires exactly one socket at compile time,
+        but it cannot prevent an outside host process from replacing or adding
+        entries later. The caller owns that lifecycle boundary. This is an
+        isolated test/integration seam, not the normal policy wrapper; it does
+        not validate the host proxy's lease scope. No IP networking or socket
+        bind permission is granted by this profile.
+        """
+        if sys.platform != "darwin":
+            raise ValueError("leased Unix-socket candidate requires macOS Seatbelt")
+        if (
+            not isinstance(policy, SandboxPolicy)
+            or policy.network_mode is not NetworkMode.DENY
+            or policy.allowed_domains
+        ):
+            raise ValueError("leased Unix-socket candidate requires deny-only policy")
+        if (
+            not isinstance(argv, (list, tuple))
+            or not argv
+            or any(type(part) is not str or "\x00" in part for part in argv)
+            or not argv[0]
+        ):
+            raise ValueError("invalid leased Unix-socket command")
+
+        from .network_proxy_server import _UNIX_SOCKET_PATH_MAX_BYTES
+
+        try:
+            raw_path = os.fspath(socket_path)
+            if type(raw_path) is not str:
+                raise ValueError("socket path must be text")
+            path = Path(raw_path)
+            parent_status = path.parent.lstat()
+            socket_status = path.lstat()
+            workspace = policy.workspace_root.resolve(strict=True)
+            parent = path.parent
+            parent_resolved = parent.resolve(strict=True)
+            encoded_path = os.fsencode(raw_path)
+            with os.scandir(parent) as directory:
+                directory_entries = tuple(entry.name for entry in directory)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            raise ValueError("leased Unix-socket endpoint is unavailable") from None
+
+        if (
+            not path.is_absolute()
+            or any(part in {".", ".."} for part in path.parts)
+            or any(ord(char) < 32 or ord(char) == 127 for char in raw_path)
+            or len(encoded_path) > _UNIX_SOCKET_PATH_MAX_BYTES
+            or parent_resolved != parent
+            or not stat.S_ISDIR(parent_status.st_mode)
+            or stat.S_ISLNK(parent_status.st_mode)
+            or parent_status.st_uid != os.geteuid()
+            or stat.S_IMODE(parent_status.st_mode) != 0o700
+            or not stat.S_ISSOCK(socket_status.st_mode)
+            or socket_status.st_uid != os.geteuid()
+            or stat.S_IMODE(socket_status.st_mode) != 0o600
+            or directory_entries != (path.name,)
+            or parent.is_relative_to(workspace)
+            or workspace.is_relative_to(parent)
+        ):
+            raise ValueError("leased Unix-socket endpoint is outside its private boundary")
+
+        for write_root in policy.write_roots:
+            try:
+                resolved_write_root = Path(write_root).resolve(strict=True)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                raise ValueError("leased Unix-socket write boundary is unavailable") from None
+            if (
+                parent.is_relative_to(resolved_write_root)
+                or resolved_write_root.is_relative_to(parent)
+            ):
+                raise ValueError("leased Unix-socket endpoint overlaps a writable path")
+
+        raw_parent = str(parent)
+        escaped_parent = raw_parent.replace("\\", "\\\\").replace('"', '\\"')
+        quoted_parent = f'"{escaped_parent}"'
+        escaped_path = raw_path.replace("\\", "\\\\").replace('"', '\\"')
+        quoted_path = f'"{escaped_path}"'
+        profile = self._policy_profile(policy)
+        # The supported candidate syntax is directory-scoped; keep the host
+        # directory private and worker-read-only until an exact-path rule has
+        # passed native validation on every supported macOS architecture.
+        profile += (
+            f"(allow file-read-metadata file-test-existence (path-ancestors {quoted_path}))"
+            "(allow system-socket (socket-domain AF_UNIX))"
+            f"(allow network-outbound (remote unix-socket (subpath {quoted_parent})))"
+        )
+        return [self.sandbox_exec, "-p", profile, *argv]
+
     def experimental_wrap_policy(
         self, argv: Sequence[str], *, policy: SandboxPolicy, network: bool = False,
     ) -> list[str]:

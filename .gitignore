@@ -41,6 +41,7 @@ icode.local/
 *.icontrol.lock
 *.ico_events.jsonl
 *.ico_metadata.json
+.playwright-mcp/
 
 # ---------------------------------------------------------------------------
 # Agent 工作数据：本地记忆不入库；项目级技能（skills/）保留共享

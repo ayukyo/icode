@@ -1,5 +1,7 @@
 # 开发路线图与取舍原则
 
+- **macOS lease UDS directory-scoped outbound 候选（本机测试通过，原生 CI 待验）：**实验 profile 只增加 AF_UNIX 私有目录 `subpath` outbound 规则，不授予 bind/IP/UDP/network，也未接产品执行器；这不是单 socket 精确授权，外部宿主进程的编译后目录替换尚未解决。156 项定向测试通过，15 项 macOS-only skip；全量 preflight 三道门通过。候选不计 readiness/评分，产品网络 deny 与自动模式关闭。为保护本地私有 `.playwright-mcp/`，preflight 扫描在目录遍历阶段剪枝且该产物已加入 `.gitignore`。见[R2 资源与回执计划](./nbl/plans/2026-09-28-r2-resource-limit-and-violation-receipt.md)及[持续竞品对照](./agent-landscape-live.md)。
+
 - **R3 verifier 坏事件诊断有界化（2026-10-01 远端验收）：**commit [`1e9c037`](https://github.com/ayukyo/icode/commit/1e9c037b1701b403cfdf497d8b21cd40ac25a0c1) 的主 CI [#475](https://github.com/ayukyo/icode/actions/runs/36876357166) 与官网 [#351](https://github.com/ayukyo/icode/actions/runs/36876356980) 均 success；Python 3.11/3.12、Linux/macOS 原生探针、Windows x64/ARM64 workspace/tree/Job/wheel、Docker/Podman Reviewer 必需作业通过。3 项可选 AppContainer/标准用户诊断 skipped，不计通过。事件链继续完整扫描，仅限制保留诊断；不代表事件总数、单行/总内存/CPU 上限或来源认证/OS 隔离，R2/R3 readiness 不变。
 
 - **事件时间戳 pattern 互操作性补充：**pinned Draft-07 schema 的 `\d` 按 ECMA-262 解释为 ASCII `0`–`9`。实现使用 ASCII 匹配并增加 Arabic-Indic 数字拒绝测试；仍只验证正则前缀，不解析完整日历时间。依据见[持续竞品对照](./agent-landscape-live.md)。

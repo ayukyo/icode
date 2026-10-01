@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -26,7 +27,10 @@ REPO = Path(__file__).resolve().parents[1]
 SUBMODULE = REPO / "vendor" / "icode-skill"
 
 # 扫描时跳过的目录（子模块内容由上游自己负责；.git 不是工作区内容）
-SKIP_DIRS = {".git", "vendor", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".venv"}
+SKIP_DIRS = {
+    ".git", "vendor", "__pycache__", ".pytest_cache", ".mypy_cache",
+    ".ruff_cache", ".venv", ".playwright-mcp",
+}
 
 # 密钥形态：命中即阻断
 SECRET_PATTERNS: tuple[tuple[str, str], ...] = (
@@ -45,12 +49,15 @@ FORBIDDEN_SUFFIXES = {".key", ".pem", ".p12", ".pfx", ".env"}
 
 def _iter_files() -> list[Path]:
     out: list[Path] = []
-    for p in REPO.rglob("*"):
-        if not p.is_file():
-            continue
-        if any(part in SKIP_DIRS for part in p.relative_to(REPO).parts):
-            continue
-        out.append(p)
+    for current, directories, filenames in os.walk(REPO, topdown=True, followlinks=False):
+        # Prune excluded directories before os.walk descends into user/runtime data.
+        directories[:] = [name for name in directories if name not in SKIP_DIRS]
+        current_path = Path(current)
+        for name in filenames:
+            path = current_path / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            out.append(path)
     return out
 
 

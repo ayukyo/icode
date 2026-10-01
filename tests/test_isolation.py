@@ -2002,6 +2002,109 @@ print("metadata-read-only-ok")
             with self.assertRaisesRegex(ValueError, "overlaps.*independently allowed"):
                 MacSeatbeltSandbox()._policy_profile(policy)
 
+    def test_seatbelt_租约UDS候选只授权代理私有目录出站路径(self) -> None:
+        with temp_workspace() as root:
+            workspace = (root / "workspace").resolve()
+            workspace.mkdir()
+            proxy_root = root / "private-proxy"
+            proxy_root.mkdir(mode=0o700)
+            socket_path = proxy_root / "lease.sock"
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                listener.bind(str(socket_path))
+                listener.listen(1)
+                os.chmod(socket_path, 0o600)
+                policy = SandboxPolicy(
+                    schema_version=1, run_id="mac-uds", ticket_id="mac-uds",
+                    step="code", workspace_root=workspace,
+                    read_roots=(workspace,), write_roots=(workspace,),
+                    deny_read_roots=(), deny_write_roots=(),
+                    network_mode=NetworkMode.DENY, allowed_domains=(),
+                    process_limit=8, wall_timeout_seconds=10,
+                    output_limit_bytes=1024, protected_paths=(),
+                )
+                sandbox = MacSeatbeltSandbox()
+                with mock.patch.object(sys, "platform", "darwin"):
+                    wrapped = sandbox.experimental_wrap_leased_unix_connect_candidate(
+                        ["curl", "https://packages.example/"],
+                        policy=policy,
+                        socket_path=socket_path,
+                    )
+                profile = wrapped[wrapped.index("-p") + 1]
+                self.assertIn("(deny default)", profile)
+                self.assertIn("(allow system-socket (socket-domain AF_UNIX))", profile)
+                self.assertIn(
+                    f'(allow network-outbound (remote unix-socket (subpath "{proxy_root}")))',
+                    profile,
+                )
+                self.assertNotIn(f'(remote unix-socket (literal "{socket_path}"))', profile)
+                self.assertNotIn("network-bind", profile)
+                self.assertNotIn("(allow network*)", profile)
+                self.assertNotIn("(remote ip", profile)
+                for line in profile.splitlines():
+                    if "(allow file-write*" in line:
+                        self.assertNotIn(str(proxy_root), line)
+                self.assertFalse(hasattr(sandbox, "wrap_policy"))
+                self.assertFalse(sandbox.policy_contract_ready)
+            finally:
+                listener.close()
+
+    def test_seatbelt_租约UDS候选拒绝不可信路径及目录写权限(self) -> None:
+        with temp_workspace() as root:
+            workspace = (root / "workspace").resolve()
+            workspace.mkdir()
+            proxy_root = root / "private-proxy"
+            proxy_root.mkdir(mode=0o700)
+            socket_path = proxy_root / "lease.sock"
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                listener.bind(str(socket_path))
+                listener.listen(1)
+                os.chmod(socket_path, 0o600)
+                policy = SandboxPolicy(
+                    schema_version=1, run_id="mac-uds", ticket_id="mac-uds",
+                    step="code", workspace_root=workspace,
+                    read_roots=(workspace,), write_roots=(workspace,),
+                    deny_read_roots=(), deny_write_roots=(),
+                    network_mode=NetworkMode.DENY, allowed_domains=(),
+                    process_limit=8, wall_timeout_seconds=10,
+                    output_limit_bytes=1024, protected_paths=(),
+                )
+                sandbox = MacSeatbeltSandbox()
+                with mock.patch.object(sys, "platform", "darwin"):
+                    with self.assertRaises(ValueError):
+                        sandbox.experimental_wrap_leased_unix_connect_candidate(
+                            ["curl"], policy=policy,
+                            socket_path=proxy_root / "missing.sock",
+                        )
+                    with self.assertRaises(ValueError):
+                        sandbox.experimental_wrap_leased_unix_connect_candidate(
+                            ["curl"], policy=replace(
+                                policy,
+                                network_mode=NetworkMode.PROXY_ALLOWLIST,
+                                allowed_domains=("packages.example",),
+                            ),
+                            socket_path=socket_path,
+                        )
+                    with self.assertRaises(ValueError):
+                        sandbox.experimental_wrap_leased_unix_connect_candidate(
+                            [], policy=policy, socket_path=socket_path,
+                        )
+                (proxy_root / "unexpected-entry").touch()
+                with mock.patch.object(sys, "platform", "darwin"):
+                    with self.assertRaises(ValueError):
+                        sandbox.experimental_wrap_leased_unix_connect_candidate(
+                            ["curl"], policy=policy, socket_path=socket_path,
+                        )
+                os.chmod(proxy_root, 0o755)
+                with mock.patch.object(sys, "platform", "darwin"):
+                    with self.assertRaises(ValueError):
+                        sandbox.experimental_wrap_leased_unix_connect_candidate(
+                            ["curl"], policy=policy, socket_path=socket_path,
+                        )
+            finally:
+                listener.close()
+
     def test_seatbelt_实验策略包装不开放完整_policy_接口(self) -> None:
         with temp_workspace() as root:
             workspace = (root / "workspace").resolve()

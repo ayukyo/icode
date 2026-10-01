@@ -1470,18 +1470,6 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             socket_root.mkdir(mode=0o700)
             socket_path = socket_root / "lease.sock"
             sandbox = MacSeatbeltSandbox(sandbox_exec=sandbox_exec)
-            profile = probe.build_test_profile(
-                sandbox._profile(workspace, False),
-                socket_root,
-            )
-            environment = {
-                "PATH": "/usr/bin:/bin",
-                "HOME": str(workspace),
-                "LC_ALL": "C",
-                "ALL_PROXY": probe.curl_socks5_uds_proxy_url(socket_path),
-                "NO_PROXY": "",
-                "no_proxy": "",
-            }
 
             policy = SandboxPolicy(
                 schema_version=1,
@@ -1516,6 +1504,20 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                 NetworkPurpose.PACKAGE_INSTALL,
             )
             proxy_server = HostUnixSocks5ProxyServer(socket_path, scope)
+            wrapped = sandbox.experimental_wrap_leased_unix_connect_candidate(
+                [curl_path, "--silent"],
+                policy=policy,
+                socket_path=socket_path,
+            )
+            profile = wrapped[wrapped.index("-p") + 1]
+            environment = {
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(workspace),
+                "LC_ALL": "C",
+                "ALL_PROXY": probe.curl_socks5_uds_proxy_url(socket_path),
+                "NO_PROXY": "",
+                "no_proxy": "",
+            }
             upstream_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             upstream_listener.bind(("127.0.0.1", 0))
             upstream_listener.listen(2)
@@ -1600,6 +1602,41 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                 "finally:\n"
                 "    if sock is not None: sock.close()\n"
             )
+            worker_created_socket_path = socket_root / "worker-created.sock"
+            worker_bind_source = (
+                "import errno, socket, sys\n"
+                "sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+                "try:\n"
+                "    sock.bind(sys.argv[1])\n"
+                "except OSError as exc:\n"
+                "    print('probe:create-denied' if exc.errno in (errno.EPERM, errno.EACCES) "
+                "else 'probe:unexpected')\n"
+                "else:\n"
+                "    print('probe:created')\n"
+                "finally:\n"
+                "    sock.close()\n"
+            )
+
+            outside_socket_path = root / "outside.sock"
+            outside_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.addCleanup(outside_listener.close)
+            outside_listener.bind(str(outside_socket_path))
+            os.chmod(outside_socket_path, 0o600)
+            outside_listener.listen(1)
+            outside_listener.settimeout(0.2)
+            outside_network_source = (
+                "import errno, socket, sys\n"
+                "sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+                "try:\n"
+                "    sock.connect(sys.argv[1])\n"
+                "except OSError as exc:\n"
+                "    print('probe:connect-denied' if exc.errno in (errno.EPERM, errno.EACCES) "
+                "else 'probe:unexpected')\n"
+                "else:\n"
+                "    print('probe:connected')\n"
+                "finally:\n"
+                "    sock.close()\n"
+            )
 
             upstream_worker = threading.Thread(
                 target=serve_upstream_once,
@@ -1642,6 +1679,38 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             try:
                 self.assertTrue(ready.wait(1.0), "lease UDS proxy did not become ready")
                 self.assertEqual(socket_path.stat().st_mode & 0o777, 0o600)
+                worker_bind_result = self._run_probe(
+                    sandbox_exec,
+                    profile,
+                    workspace,
+                    worker_bind_source,
+                    str(worker_created_socket_path),
+                )
+                self.assertEqual(
+                    worker_bind_result,
+                    "probe:create-denied",
+                    "Seatbelt profile allowed a worker-created socket in the proxy directory",
+                )
+                self.assertFalse(worker_created_socket_path.exists())
+                outside_result = self._run_probe(
+                    sandbox_exec,
+                    profile,
+                    workspace,
+                    outside_network_source,
+                    str(outside_socket_path),
+                )
+                self.assertEqual(
+                    outside_result,
+                    "probe:connect-denied",
+                    "Seatbelt profile allowed a Unix-domain socket outside its private directory",
+                )
+                try:
+                    outside_peer, _address = outside_listener.accept()
+                except TimeoutError:
+                    pass
+                else:
+                    outside_peer.close()
+                    self.fail("outside Unix-domain listener accepted a connection")
                 direct_results: dict[int, str] = {}
                 for family in (socket.AF_INET, socket.AF_INET6):
                     listener, direct_port = direct_listeners[family]
@@ -1698,6 +1767,7 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                 stop.set()
                 proxy_server.close()
                 proxy_worker.join(timeout=2.0)
+                outside_listener.close()
                 upstream_listener.close()
                 upstream_worker.join(timeout=2.0)
                 self.assertTrue(proxy_server.close())
@@ -1709,9 +1779,10 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
         print(
             "::notice::macos-seatbelt-production-uds-lease-test "
             "approved_domain=passed blocked_domain=failed_closed "
+            "worker_proxy_dir_bind=denied outside_uds=denied "
             f"ipv4_tcp={direct_results[socket.AF_INET]} "
             f"ipv6_tcp={direct_results[socket.AF_INET6]} "
-            "ticket_socket_only=yes conformance_credit=none",
+            "profile_scope=private_socket_dir_subpath conformance_credit=none",
             flush=True,
         )
 
