@@ -946,6 +946,7 @@ class TestResultCommitTreeBinding(unittest.TestCase):
 
     def test_run_task成功测试绑定受测tree和结果commit(self) -> None:
         from icode.backends import FakeBackend
+        from icode.isolation import NoIsolation
         from icode.runner import run_task
 
         with temp_workspace() as ws:
@@ -964,12 +965,14 @@ class TestResultCommitTreeBinding(unittest.TestCase):
             commit_sha = self._git(repo, "rev-parse", "HEAD")
             expected_tree_oid = self._git(repo, "rev-parse", "HEAD^{tree}")
 
+            # This test covers result-tree evidence, not host sandbox discovery.
             report = run_task(
                 require_skill(),
                 backend=FakeBackend(["完成"]),
                 workspace=repo,
                 result_commit_sha=commit_sha,
                 max_repairs=0,
+                sandbox=NoIsolation(),
             )
 
             self.assertEqual(report.exit_code, 0, report.test_output)

@@ -453,6 +453,7 @@ R3 核心能力（本切片）：
 - **CI 观察：**commit [`d14b7b7`](https://github.com/ayukyo/icode/commit/d14b7b7ac21026c68565a7d564a90ffa24b61c32) 的主 CI [#444](https://github.com/ayukyo/icode/actions/runs/36809562958) 中，Windows ARM64 原生 tree job 通过；x64 原生 tree job 因额外运行 `run_task` 集成用例而失败。公开 annotation 仅显示该测试 ID，访问 Actions 页面要求登录、日志 API 返回 403，具体失败断言和根因未知。不得将它归因于生产快照/tree OID，也不得声称根因已修复。
 - **范围修正：**原生 Windows tree wrapper 的职责限定为 `tests.test_windows_worktree_tree_oid` 生产快照/tree-OID 模块；跨平台 `run_task → 测试退出码 → tested tree → result commit` 集成用例移至 `scripts/run_workspace_ci.py` 精选矩阵，使用 `require_skill()`，确保 workspace job 的运行环境和 ICODE-SKILL 契约一致。覆盖合同先 RED 后 GREEN；当前本机 Python 3.11 workspace runner 167 项与原生 wrapper 47 项通过，新 SHA 的 Windows x64/ARM64 结果待远端验收。
 - **当前边界：**这只修正测试归属与 skill fixture，不改生产隔离/快照逻辑；不能证明此前 x64 失败具体原因，也未在 Windows x64 原生 runner 复验新集成。CI #444 的其它平台门仍通过、网站 [#322](https://github.com/ayukyo/icode/actions/runs/36809562932) 成功，但该主 CI 不整体视作通过。R2/R3 readiness 与自动模式维持关闭。
+- **CI #445 发现自动后端耦合并修正夹具：**commit [`8f1e597`](https://github.com/ayukyo/icode/commit/8f1e59712a8f535caa469857396ed434199f147d) 将集成用例移入 Windows workspace 矩阵后，真实运行注解显示 `run_task` 未显式传 sandbox，宿主自动探测选择 Docker 并执行 Linux `python:3.13-slim`；Windows runner 当前 Docker engine 报 `no matching manifest for windows(10.0.26100)/amd64`，导致独立 unittest 退出 125。该证据精确解释 #445 测试失败，但不证明 #444 x64 的私有日志是同一原因。为隔离本测试声明的 tree/commit 证据范围，测试显式注入 `NoIsolation()`；没有改生产 `select_sandbox`，也不将 NoIsolation 用例算作 OS 隔离通过。修正后新 SHA 的 Windows workspace 和完整 CI 仍待验。
 
 ## 2026-09-30 Asia/Shanghai：CI #395 目录 EOF 交叉比较修正
 
