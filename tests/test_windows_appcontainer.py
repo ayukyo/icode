@@ -1451,6 +1451,7 @@ class TestWindowsAppContainer(unittest.TestCase):
 
     def test_Reviewer快照原生探针脚本在非Windows主机可静态解析(self) -> None:
         captured_scripts: list[str] = []
+        captured_notices: list[tuple[str, str]] = []
 
         class _CaptureAssertions:
             def assertTrue(self, *_args: object, **_kwargs: object) -> None:
@@ -1463,11 +1464,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                 return None
 
             def _workflow_json_notice(
-                self, _name: str, detail: dict[str, object],
+                self, name: str, detail: dict[str, object],
             ) -> None:
                 encoded = json.dumps(detail, ensure_ascii=True, separators=(",", ":"))
                 if len(encoded) > 500:
                     raise AssertionError("native Reviewer probe notice exceeds GitHub limit")
+                captured_notices.append((name, encoded))
 
         with tempfile.TemporaryDirectory(prefix="icode-reviewer-probe-script-") as raw:
             source_root = Path(raw) / "source-python"
@@ -1514,6 +1516,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                     _CaptureAssertions(),
                 )
 
+        notice_names = {name for name, _encoded in captured_notices}
+        self.assertIn("Windows Reviewer snapshot access", notice_names)
+        self.assertIn("Windows Reviewer snapshot writes and cleanup", notice_names)
+        self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
         self.assertEqual(len(captured_scripts), 1)
         for required_probe in (
             "outside_snapshot_denied", "workspace_denied", "home_denied",
@@ -5695,12 +5701,34 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self._workflow_json_notice(
                     "Windows Reviewer probe preflight",
                     {
-                    "parent_standard_user": parent_standard_user_verified,
-                    "parent_standard_user_status": parent_standard_user_status,
-                    "dacl_control_verified": dacl_control_verified,
+                        "parent_standard_user": parent_standard_user_verified,
+                        "parent_standard_user_status": parent_standard_user_status,
+                        "dacl_control_verified": dacl_control_verified,
                     },
                 )
-                self._workflow_json_notice("Windows Reviewer snapshot AppContainer", summary)
+                self._workflow_json_notice(
+                    "Windows Reviewer snapshot access",
+                    {
+                        key: summary[key]
+                        for key in (
+                            "executed", "exit", "cleanup", "appcontainer", "package_sid",
+                            "capabilities", "elevated", "admin_group_enabled", "approved_read",
+                            "outside_snapshot_denied", "workspace_denied", "home_denied",
+                            "ledger_denied",
+                        )
+                    },
+                )
+                self._workflow_json_notice(
+                    "Windows Reviewer snapshot writes and cleanup",
+                    {
+                        key: summary[key]
+                        for key in (
+                            "write_denied", "delete_denied", "rename_denied", "create_denied",
+                            "dacl_write_dac_denied", "child_started", "child_exited",
+                            "snapshot_acl_restored", "runtime_acl_restored", "staged_files",
+                        )
+                    },
+                )
                 self.assertTrue(candidate.executed, candidate)
                 self.assertEqual(candidate.exit_code, 0, candidate)
                 self.assertTrue(candidate.cleanup_ok, candidate)
