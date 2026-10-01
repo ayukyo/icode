@@ -40,6 +40,38 @@ from icode.windows_job import (
 )
 
 
+def _query_administrators_group_membership_status(
+    token: ctypes.c_void_p, admin_sid: ctypes.c_void_p, advapi: object, kernel: object,
+) -> str:
+    """Check Administrators membership using the impersonation-token API contract."""
+    security_impersonation = 2
+    impersonation_token = ctypes.c_void_p()
+    advapi.DuplicateToken.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.DuplicateToken.restype = ctypes.c_int
+    advapi.CheckTokenMembership.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+    ]
+    advapi.CheckTokenMembership.restype = ctypes.c_int
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel.CloseHandle.restype = ctypes.c_int
+    if not advapi.DuplicateToken(
+        token, security_impersonation, ctypes.byref(impersonation_token),
+    ):
+        return "administrators_token_duplicate_failed"
+    try:
+        admin_enabled = ctypes.c_int()
+        if not advapi.CheckTokenMembership(
+            impersonation_token, admin_sid, ctypes.byref(admin_enabled),
+        ):
+            return "administrators_membership_query_failed"
+        return "member" if admin_enabled.value != 0 else "not_member"
+    finally:
+        if impersonation_token.value:
+            kernel.CloseHandle(impersonation_token)
+
+
 def _current_process_standard_user_status(expected_sid: str) -> str:
     """Return a fixed, non-sensitive reason if the host token is not expected."""
     if sys.platform != "win32":
@@ -61,6 +93,8 @@ def _current_process_standard_user_status(expected_sid: str) -> str:
     kernel.CloseHandle.restype = ctypes.c_int
     kernel.LocalFree.argtypes = [ctypes.c_void_p]
     kernel.LocalFree.restype = ctypes.c_void_p
+    token_query_access = 0x0008
+    token_duplicate_access = 0x0002
     advapi.OpenProcessToken.argtypes = [
         ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p),
     ]
@@ -78,17 +112,15 @@ def _current_process_standard_user_status(expected_sid: str) -> str:
         ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
     ]
     advapi.ConvertSidToStringSidW.restype = ctypes.c_int
-    advapi.CheckTokenMembership.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
-    ]
-    advapi.CheckTokenMembership.restype = ctypes.c_int
 
     token = ctypes.c_void_p()
     actual_sid_string = ctypes.c_void_p()
     admin_sid = ctypes.c_void_p()
     try:
         if not advapi.OpenProcessToken(
-            kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token),
+            kernel.GetCurrentProcess(),
+            token_query_access | token_duplicate_access,
+            ctypes.byref(token),
         ):
             return "process_token_open_failed"
         required = ctypes.c_uint32()
@@ -122,15 +154,19 @@ def _current_process_standard_user_status(expected_sid: str) -> str:
             "S-1-5-32-544", ctypes.byref(admin_sid),
         ):
             return "administrators_sid_conversion_failed"
-        admin_enabled = ctypes.c_int()
-        if not advapi.CheckTokenMembership(
-            token, admin_sid, ctypes.byref(admin_enabled),
-        ):
+        membership_status = _query_administrators_group_membership_status(
+            token, admin_sid, advapi, kernel,
+        )
+        if membership_status == "administrators_token_duplicate_failed":
+            return membership_status
+        if membership_status == "administrators_membership_query_failed":
             return "administrators_membership_query_failed"
-        if admin_enabled.value != 0:
+        if membership_status == "member":
             return "administrators_group_enabled"
+        if membership_status != "not_member":
+            return "administrators_membership_check_invalid_result"
         return "verified"
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError, ctypes.ArgumentError):
         return "token_api_error"
     finally:
         for pointer in (actual_sid_string, admin_sid):
@@ -1344,6 +1380,74 @@ class TestWindowsAppContainer(unittest.TestCase):
     def test_Reviewer宿主普通用户校验在非Windows上返回固定原因码(self) -> None:
         status = _current_process_standard_user_status("S-1-5-21-test")
         self.assertEqual(status, "unsupported_platform")
+
+    def test_CheckTokenMembership使用主令牌的模拟副本且关闭句柄(self) -> None:
+        token = ctypes.c_void_p(0x1234)
+        admin_sid = ctypes.c_void_p(0x5678)
+        advapi = mock.Mock()
+        kernel = mock.Mock()
+
+        def duplicate_primary_token(
+            source: ctypes.c_void_p, level: int, target: ctypes.c_void_p,
+        ) -> int:
+            self.assertEqual(source.value, token.value)
+            self.assertEqual(level, 2)
+            ctypes.cast(target, ctypes.POINTER(ctypes.c_void_p)).contents.value = 0x9ABC
+            return 1
+
+        advapi.DuplicateToken.side_effect = duplicate_primary_token
+        advapi.CheckTokenMembership.return_value = 1
+
+        status = _query_administrators_group_membership_status(
+            token, admin_sid, advapi, kernel,
+        )
+
+        self.assertEqual(status, "not_member")
+        checked_token = advapi.CheckTokenMembership.call_args.args[0]
+        self.assertEqual(checked_token.value, 0x9ABC)
+        self.assertEqual(advapi.CheckTokenMembership.call_args.args[1].value, admin_sid.value)
+        kernel.CloseHandle.assert_called_once_with(checked_token)
+
+    def test_管理员组查询的令牌复制失败时不调用成员检查(self) -> None:
+        advapi = mock.Mock()
+        kernel = mock.Mock()
+        advapi.DuplicateToken.return_value = 0
+
+        status = _query_administrators_group_membership_status(
+            ctypes.c_void_p(1), ctypes.c_void_p(2), advapi, kernel,
+        )
+
+        self.assertEqual(status, "administrators_token_duplicate_failed")
+        advapi.CheckTokenMembership.assert_not_called()
+        kernel.CloseHandle.assert_not_called()
+
+    def test_CheckTokenMembership发现管理员组启用时返回成员状态(self) -> None:
+        advapi = mock.Mock()
+        kernel = mock.Mock()
+        impersonation_token = 0x9ABC
+
+        def duplicate_token(
+            _source: ctypes.c_void_p, _level: int, target: ctypes.c_void_p,
+        ) -> int:
+            ctypes.cast(target, ctypes.POINTER(ctypes.c_void_p)).contents.value = impersonation_token
+            return 1
+
+        def check_membership(
+            checked_token: ctypes.c_void_p, _sid: ctypes.c_void_p, member: ctypes.c_void_p,
+        ) -> int:
+            self.assertEqual(checked_token.value, impersonation_token)
+            ctypes.cast(member, ctypes.POINTER(ctypes.c_int)).contents.value = 1
+            return 1
+
+        advapi.DuplicateToken.side_effect = duplicate_token
+        advapi.CheckTokenMembership.side_effect = check_membership
+
+        status = _query_administrators_group_membership_status(
+            ctypes.c_void_p(0x1234), ctypes.c_void_p(0x5678), advapi, kernel,
+        )
+
+        self.assertEqual(status, "member")
+        kernel.CloseHandle.assert_called_once()
 
     def test_Reviewer快照原生探针脚本在非Windows主机可静态解析(self) -> None:
         captured_scripts: list[str] = []
