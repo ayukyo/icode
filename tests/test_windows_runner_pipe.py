@@ -1352,9 +1352,201 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
         self.assertEqual(kernel.CloseHandle.call_count, 3)
         kernel.LocalFree.assert_called_once()
 
+    def test_pipe_dacl_protection_probe_changes_only_control_bit(self) -> None:
+        from scripts import windows_standard_user_token_probe as probe
+
+        diagnostic = getattr(
+            probe, "runner_pipe_dacl_protection_matrix_probe", None,
+        )
+        self.assertTrue(
+            callable(diagnostic), "pipe_dacl_protection_probe_missing",
+        )
+
+        descriptor_shapes_for_test = (
+            "sd_control=9004;sd_revision=1;owner=other;group=other;"
+            "dacl=present;acl_revision=2;ace_count=1;"
+            "aces=00.00.00100003;truncated=0",
+            "sd_control=8004;sd_revision=1;owner=other;group=other;"
+            "dacl=present;acl_revision=2;ace_count=1;"
+            "aces=00.00.00100003;truncated=0",
+        )
+        descriptor_shapes = iter(descriptor_shapes_for_test)
+        server_handles = iter((0x2000, 0x2001))
+        client_handles = iter((windows_runner_pipe._INVALID_HANDLE_VALUE, 0x3001))
+        sddl_values: list[str] = []
+        created_pipes: list[tuple[object, ...]] = []
+        client_calls: list[tuple[object, ...]] = []
+
+        def convert_sddl(
+            sddl: str, _revision: int, output: object, _size: object,
+        ) -> int:
+            sddl_values.append(sddl)
+            value = 0x7700 + len(sddl_values)
+            output._obj.value = value
+            return 1
+
+        kernel = SimpleNamespace(
+            GetCurrentProcess=mock.Mock(return_value=0x1111),
+            GetCurrentProcessId=mock.Mock(return_value=4321),
+            CreateNamedPipeW=mock.Mock(
+                side_effect=lambda *args: created_pipes.append(args)
+                or next(server_handles),
+            ),
+            WaitNamedPipeW=mock.Mock(return_value=1),
+            CreateFileW=mock.Mock(
+                side_effect=lambda *args: client_calls.append(args)
+                or next(client_handles),
+            ),
+            GetNamedPipeServerProcessId=mock.Mock(
+                side_effect=lambda _handle, output: (
+                    setattr(output._obj, "value", 4321) or 1
+                ),
+            ),
+            CloseHandle=mock.Mock(return_value=1),
+            LocalFree=mock.Mock(return_value=0),
+        )
+        api = SimpleNamespace(
+            kernel=kernel,
+            advapi=SimpleNamespace(
+                ConvertStringSecurityDescriptorToSecurityDescriptorW=mock.Mock(
+                    side_effect=convert_sddl,
+                ),
+            ),
+        )
+
+        with (
+            mock.patch.object(probe.sys, "platform", "win32"),
+            mock.patch(
+                "icode.windows_runner_pipe._load_win32_api", return_value=api,
+            ),
+            mock.patch.object(
+                probe, "runner_process_user_sid",
+                return_value="S-1-5-21-1-2-3-1001",
+            ),
+            mock.patch.object(
+                probe, "runner_process_logon_sid",
+                return_value="S-1-5-5-100-200",
+            ),
+            mock.patch.object(
+                probe, "runner_pipe_security_descriptor_shape",
+                side_effect=lambda *_args: next(descriptor_shapes),
+            ),
+            mock.patch.object(
+                windows_runner_pipe.ctypes, "get_last_error",
+                return_value=5, create=True,
+            ),
+        ):
+            receipt = diagnostic()
+            self.assertEqual(
+                receipt,
+                "pipe_dacl_protection=protected_access_denied+unprotected_opened+"
+                "shape_control_only",
+            )
+            self.assertEqual(sddl_values, [
+                "D:P(A;;0x00100003;;;S-1-5-5-100-200)",
+                "D:(A;;0x00100003;;;S-1-5-5-100-200)",
+            ])
+            self.assertEqual(created_pipes[0][1:7], created_pipes[1][1:7])
+            self.assertEqual(client_calls[0][1:], client_calls[1][1:])
+            self.assertEqual(kernel.CloseHandle.call_count, 3)
+            self.assertEqual(kernel.LocalFree.call_count, 2)
+
+            unprotected_shape_with_inherited_ace = (
+                descriptor_shapes_for_test[1].replace(
+                    "ace_count=1;aces=00.00.00100003",
+                    "ace_count=2;aces=00.00.00100003,00.10.00120089",
+                )
+            )
+            descriptor_shapes = iter((
+                descriptor_shapes_for_test[0],
+                unprotected_shape_with_inherited_ace,
+            ))
+            server_handles = iter((0x2010, 0x2011))
+            client_handles = iter(())
+            created_pipes.clear()
+            client_calls.clear()
+            kernel.CreateNamedPipeW.reset_mock()
+            kernel.WaitNamedPipeW.reset_mock()
+            kernel.CreateFileW.reset_mock()
+            kernel.GetNamedPipeServerProcessId.reset_mock()
+            mismatched_receipt = diagnostic()
+
+        self.assertEqual(
+            mismatched_receipt,
+            "pipe_dacl_protection=protected_not_run+unprotected_not_run+"
+            "shape_different",
+        )
+        kernel.WaitNamedPipeW.assert_not_called()
+        kernel.CreateFileW.assert_not_called()
+        self.assertEqual(kernel.CloseHandle.call_count, 5)
+        self.assertEqual(kernel.LocalFree.call_count, 4)
+
+    def test_pipe_dacl_protection_receipt_preserves_setup_failure_states(self) -> None:
+        from scripts.windows_standard_user_token_probe import (
+            _format_pipe_dacl_protection_receipt,
+        )
+
+        self.assertEqual(
+            _format_pipe_dacl_protection_receipt(
+                "descriptor_failed", "create_d5", "control_only",
+            ),
+            "pipe_dacl_protection=protected_descriptor_failed+"
+            "unprotected_create_d5+shape_control_only",
+        )
+
+    def test_pipe_dacl_protection_shape_relation_rejects_other_changes(self) -> None:
+        from scripts.windows_standard_user_token_probe import (
+            _pipe_dacl_protection_shape_relation,
+        )
+
+        protected = (
+            "sd_control=9004;sd_revision=1;owner=other;group=other;"
+            "dacl=present;acl_revision=2;ace_count=1;"
+            "aces=00.00.00100003;truncated=0"
+        )
+        unprotected_same_shape = protected.replace("sd_control=9004", "sd_control=8004")
+        unprotected_with_inherited_ace = unprotected_same_shape.replace(
+            "ace_count=1;aces=00.00.00100003",
+            "ace_count=2;aces=00.00.00100003,00.10.00120089",
+        )
+
+        self.assertEqual(
+            _pipe_dacl_protection_shape_relation(protected, unprotected_same_shape),
+            "control_only",
+        )
+        self.assertEqual(
+            _pipe_dacl_protection_shape_relation(
+                protected, unprotected_with_inherited_ace,
+            ),
+            "different",
+        )
+        self.assertEqual(
+            _pipe_dacl_protection_shape_relation(protected, "sd=unavailable"),
+            "unavailable",
+        )
+
 
 @unittest.skipUnless(sys.platform == "win32", "需要 Windows 原生 named-pipe 双向验证")
 class TestWindowsRunnerPipeNative(unittest.TestCase):
+    def test_native_pipe_dacl_protection_matrix_emits_fixed_receipt(self) -> None:
+        from scripts.windows_standard_user_token_probe import (
+            runner_pipe_dacl_protection_matrix_probe,
+        )
+
+        receipt = runner_pipe_dacl_protection_matrix_probe()
+        print(f"::notice::{receipt}")
+        self.assertRegex(
+            receipt,
+            r"\Apipe_dacl_protection=protected_(?:opened|access_denied|failed|"
+            r"not_run|setup_failed|unsupported_platform|descriptor_failed|"
+            r"create_d5|create_failed)\+unprotected_(?:opened|access_denied|"
+            r"failed|not_run|setup_failed|unsupported_platform|"
+            r"descriptor_failed|create_d5|create_failed)\+shape_(?:"
+            r"control_only|different|"
+            r"unavailable|cleanup_failed)\Z",
+        )
+        self.assertLessEqual(len(receipt), 128)
+
     def test_default_and_explicit_copy_pipe_emit_bounded_receipt(self) -> None:
         from scripts.windows_standard_user_token_probe import (
             runner_pipe_default_dacl_copy_probe,

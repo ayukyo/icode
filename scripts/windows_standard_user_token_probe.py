@@ -1563,6 +1563,65 @@ def _pipe_descriptor_dacl_protected_state(descriptor_shape: object) -> str:
     return "on" if control & _SE_DACL_PROTECTED else "off"
 
 
+def _pipe_dacl_protection_shape_relation(
+    protected_shape: object,
+    unprotected_shape: object,
+) -> str:
+    """Require readback shapes to differ only by SE_DACL_PROTECTED."""
+    if (
+        type(protected_shape) is not str
+        or type(unprotected_shape) is not str
+        or len(protected_shape) > 384
+        or len(unprotected_shape) > 384
+    ):
+        return "unavailable"
+    protected_match = _PIPE_SECURITY_DESCRIPTOR_SHAPE_RE.fullmatch(
+        protected_shape,
+    )
+    unprotected_match = _PIPE_SECURITY_DESCRIPTOR_SHAPE_RE.fullmatch(
+        unprotected_shape,
+    )
+    if protected_match is None or unprotected_match is None:
+        return "unavailable"
+
+    protected_control = int(protected_match.group(1), 16)
+    unprotected_control = int(unprotected_match.group(1), 16)
+    if (
+        not protected_control & _SE_DACL_PROTECTED
+        or unprotected_control & _SE_DACL_PROTECTED
+        or protected_control ^ unprotected_control != _SE_DACL_PROTECTED
+    ):
+        return "different"
+    protected_rest = protected_shape.split(";", 1)[1]
+    unprotected_rest = unprotected_shape.split(";", 1)[1]
+    return "control_only" if protected_rest == unprotected_rest else "different"
+
+
+def _format_pipe_dacl_protection_receipt(
+    protected_state: object,
+    unprotected_state: object,
+    shape_state: object,
+) -> str:
+    """Serialize only fixed pipe-open and descriptor-shape labels."""
+    open_states = {
+        "opened", "access_denied", "failed", "not_run", "setup_failed",
+        "unsupported_platform", "descriptor_failed", "create_d5",
+        "create_failed",
+    }
+    shape_states = {"control_only", "different", "unavailable", "cleanup_failed"}
+    if type(protected_state) is not str or protected_state not in open_states:
+        protected_state = "not_run"
+    if type(unprotected_state) is not str or unprotected_state not in open_states:
+        unprotected_state = "not_run"
+    if type(shape_state) is not str or shape_state not in shape_states:
+        shape_state = "unavailable"
+    receipt = (
+        f"pipe_dacl_protection=protected_{protected_state}+"
+        f"unprotected_{unprotected_state}+shape_{shape_state}"
+    )
+    return receipt if len(receipt) <= 128 else "pipe_dacl_protection=unavailable"
+
+
 def _format_pipe_default_dacl_copy_receipt(
     default_open_state: object,
     explicit_open_state: object,
@@ -1762,6 +1821,128 @@ def runner_pipe_default_dacl_copy_probe() -> str:
     return _format_pipe_default_dacl_copy_receipt(
         default_state, explicit_state, descriptor_state,
         default_protected_state, explicit_protected_state,
+    )
+
+
+def runner_pipe_dacl_protection_matrix_probe() -> str:
+    """Compare protected/unprotected minimal DACLs on disposable pipes only.
+
+    Both server pipes use the same logon SID ACE, server flags/mode/buffers,
+    and client access/flags. The only SDDL change is the ``P`` protection
+    marker. Client opens are attempted only when readback descriptors differ
+    solely by SE_DACL_PROTECTED; any inherited ACE or other shape difference
+    makes the comparison non-equivalent and leaves both opens unattempted.
+    No pipe is connected and no payload is exchanged.
+    """
+    if sys.platform != "win32":
+        return _format_pipe_dacl_protection_receipt(
+            "unsupported_platform", "unsupported_platform", "unavailable",
+        )
+
+    api = None
+    descriptors: list[ctypes.c_void_p] = []
+    servers: list[_runner_pipe.RunnerPipeServer] = []
+    open_states = ["not_run", "not_run"]
+    descriptor_shapes: list[str | None] = [None, None]
+    shape_state = "unavailable"
+    cleanup_failed = False
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        api.kernel.GetCurrentProcessId.argtypes = []
+        api.kernel.GetCurrentProcessId.restype = wintypes.DWORD
+        process_handle = api.kernel.GetCurrentProcess()
+        server_pid = int(api.kernel.GetCurrentProcessId())
+        if not process_handle or not 1 <= server_pid <= 0xFFFFFFFF:
+            raise OSError("pipe_dacl_protection_identity_unavailable")
+        user_sid = runner_process_user_sid(process_handle)
+        logon_sid = _runner_pipe._validate_sid(
+            runner_process_logon_sid(process_handle),
+        )
+
+        for index, protected in enumerate((True, False)):
+            descriptor = ctypes.c_void_p()
+            protection_marker = "P" if protected else ""
+            sddl = (
+                f"D:{protection_marker}(A;;"
+                f"0x{PIPE_CLIENT_ACCESS_MASK:08x};;;{logon_sid})"
+            )
+            converted = bool(
+                api.advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl, 1, ctypes.byref(descriptor), None,
+                ),
+            )
+            if descriptor.value:
+                descriptors.append(descriptor)
+            if not converted or not descriptor.value:
+                open_states[index] = "descriptor_failed"
+                continue
+
+            attributes = _runner_pipe._SECURITY_ATTRIBUTES(
+                ctypes.sizeof(_runner_pipe._SECURITY_ATTRIBUTES),
+                descriptor,
+                0,
+            )
+            pipe_name = new_runner_pipe_name()
+            server_handle = api.kernel.CreateNamedPipeW(
+                pipe_name,
+                _runner_pipe.RUNNER_PIPE_OPEN_MODE,
+                _runner_pipe.RUNNER_PIPE_MODE,
+                _runner_pipe.RUNNER_PIPE_MAX_INSTANCES,
+                _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+                _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+                0,
+                ctypes.byref(attributes),
+            )
+            if _runner_pipe._handle_is_invalid(server_handle):
+                error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                open_states[index] = (
+                    "create_d5" if error == _ERROR_ACCESS_DENIED
+                    else "create_failed"
+                )
+                continue
+
+            server = _runner_pipe.RunnerPipeServer(
+                name=pipe_name, handle=server_handle, api=api,
+            )
+            servers.append(server)
+            descriptor_shapes[index] = runner_pipe_security_descriptor_shape(
+                server._handle, user_sid, logon_sid,
+            )
+
+        if all(shape is not None for shape in descriptor_shapes):
+            shape_state = _pipe_dacl_protection_shape_relation(
+                descriptor_shapes[0], descriptor_shapes[1],
+            )
+
+        if shape_state == "control_only":
+            for index, server in enumerate(servers):
+                open_states[index] = _runner_pipe_descriptor_copy_open_state(
+                    server.name, server_pid,
+                )
+    except Exception:
+        for index, state in enumerate(open_states):
+            if state == "not_run":
+                open_states[index] = "setup_failed"
+    finally:
+        for server in reversed(servers):
+            try:
+                server.close()
+            except Exception:
+                cleanup_failed = True
+        if api is not None:
+            for descriptor in descriptors:
+                try:
+                    if api.kernel.LocalFree(descriptor):
+                        cleanup_failed = True
+                except Exception:
+                    cleanup_failed = True
+
+    if cleanup_failed:
+        shape_state = "cleanup_failed"
+    return _format_pipe_dacl_protection_receipt(
+        open_states[0], open_states[1], shape_state,
     )
 
 
