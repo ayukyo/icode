@@ -40,10 +40,12 @@ from icode.windows_job import (
 )
 
 
-def _current_process_is_standard_user(expected_sid: str) -> bool:
-    """Require the native probe host itself to be the expected non-admin user."""
-    if sys.platform != "win32" or not expected_sid.startswith("S-"):
-        return False
+def _current_process_standard_user_status(expected_sid: str) -> str:
+    """Return a fixed, non-sensitive reason if the host token is not expected."""
+    if sys.platform != "win32":
+        return "unsupported_platform"
+    if not expected_sid.startswith("S-"):
+        return "expected_sid_missing"
 
     class _SidAndAttributes(ctypes.Structure):
         _fields_ = [("sid", ctypes.c_void_p), ("attributes", ctypes.c_uint32)]
@@ -88,44 +90,48 @@ def _current_process_is_standard_user(expected_sid: str) -> bool:
         if not advapi.OpenProcessToken(
             kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token),
         ):
-            return False
+            return "process_token_open_failed"
         required = ctypes.c_uint32()
         ctypes.set_last_error(0)
         advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(required))
         if ctypes.get_last_error() != 122 or required.value < ctypes.sizeof(_TokenUser):
-            return False
+            return "token_user_size_query_failed"
         buffer = ctypes.create_string_buffer(required.value)
         if not advapi.GetTokenInformation(
             token, 1, buffer, required.value, ctypes.byref(required),
         ):
-            return False
+            return "token_user_query_failed"
         token_user = ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents
         if not token_user.user.sid or not advapi.ConvertSidToStringSidW(
             token_user.user.sid, ctypes.byref(actual_sid_string),
         ):
-            return False
+            return "token_user_sid_conversion_failed"
         actual_sid = ctypes.wstring_at(actual_sid_string.value)
         if actual_sid.casefold() != expected_sid.casefold():
-            return False
+            return "token_user_sid_mismatch"
 
         elevated = ctypes.c_uint32()
         if not advapi.GetTokenInformation(
             token, 20, ctypes.byref(elevated), ctypes.sizeof(elevated),
             ctypes.byref(required),
-        ) or elevated.value != 0:
-            return False
+        ):
+            return "token_elevation_query_failed"
+        if elevated.value != 0:
+            return "token_is_elevated"
         if not advapi.ConvertStringSidToSidW(
             "S-1-5-32-544", ctypes.byref(admin_sid),
         ):
-            return False
+            return "administrators_sid_conversion_failed"
         admin_enabled = ctypes.c_int()
-        return bool(
-            advapi.CheckTokenMembership(
-                token, admin_sid, ctypes.byref(admin_enabled),
-            ) and admin_enabled.value == 0
-        )
+        if not advapi.CheckTokenMembership(
+            token, admin_sid, ctypes.byref(admin_enabled),
+        ):
+            return "administrators_membership_query_failed"
+        if admin_enabled.value != 0:
+            return "administrators_group_enabled"
+        return "verified"
     except (OSError, ValueError):
-        return False
+        return "token_api_error"
     finally:
         for pointer in (actual_sid_string, admin_sid):
             if pointer.value:
@@ -1335,6 +1341,10 @@ class TestWindowsAppContainer(unittest.TestCase):
         )
         self._workflow_notice(name, encoded)
 
+    def test_Reviewer宿主普通用户校验在非Windows上返回固定原因码(self) -> None:
+        status = _current_process_standard_user_status("S-1-5-21-test")
+        self.assertEqual(status, "unsupported_platform")
+
     def test_Reviewer快照原生探针脚本在非Windows主机可静态解析(self) -> None:
         captured_scripts: list[str] = []
 
@@ -1384,8 +1394,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                      "tests.test_windows_appcontainer.subprocess.run",
                      return_value=mock.Mock(returncode=0),
                  ), mock.patch(
-                     "tests.test_windows_appcontainer._current_process_is_standard_user",
-                     return_value=True,
+                     "tests.test_windows_appcontainer._current_process_standard_user_status",
+                     return_value="verified",
                  ), mock.patch(
                      "tests.test_windows_appcontainer._dacl_write_control_succeeds",
                      return_value=True,
@@ -5324,12 +5334,14 @@ class TestWindowsAppContainer(unittest.TestCase):
         expected_standard_user_sid = os.environ.get(
             "ICODE_DIAGNOSTIC_STANDARD_USER_SID", "",
         )
-        parent_standard_user_verified = _current_process_is_standard_user(
+        parent_standard_user_status = _current_process_standard_user_status(
             expected_standard_user_sid,
         )
+        parent_standard_user_verified = parent_standard_user_status == "verified"
         self.assertTrue(
             parent_standard_user_verified,
-            "native Reviewer probe must run as the designated non-admin standard user",
+            "native Reviewer probe host token check failed: "
+            f"{parent_standard_user_status}",
         )
 
         source_root = Path(sys.base_prefix).resolve(strict=True)
@@ -5579,8 +5591,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self._workflow_json_notice(
                     "Windows Reviewer probe preflight",
                     {
-                        "parent_standard_user": parent_standard_user_verified,
-                        "dacl_control_verified": dacl_control_verified,
+                    "parent_standard_user": parent_standard_user_verified,
+                    "parent_standard_user_status": parent_standard_user_status,
+                    "dacl_control_verified": dacl_control_verified,
                     },
                 )
                 self._workflow_json_notice("Windows Reviewer snapshot AppContainer", summary)
