@@ -262,6 +262,12 @@ class TestEvidencePack(unittest.TestCase):
             ("duplicate-member", b"{\"value\":1,\"value\":2}", "JSON 格式无效", True),
             ("lone-surrogate", b"{\"value\":\"\\ud800\"}", "JSON 格式无效", True),
             (
+                "over-nesting-limit",
+                b'{"value":' + b"[" * 128 + b"0" + b"]" * 128 + b"}",
+                "JSON 格式无效",
+                True,
+            ),
+            (
                 "deeply-nested",
                 b'{"value":' * 1200 + b"0" + b"}" * 1200,
                 "JSON 格式无效",
@@ -337,6 +343,38 @@ class TestEvidencePack(unittest.TestCase):
                 (pack_path / "verifications.json").read_text(encoding="utf-8")
             )
             self.assertEqual(verifications["receipts"], [{"ratio": 1.25}])
+            self.assertEqual(verify_pack(pack_path), [])
+
+    def test_evidence导入最大嵌套深度回执可生成并独立校验(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        from icode.cli import main
+
+        with temp_workspace() as ws:
+            ticket = make_finished_plan_ticket(self.settings, ws / "work")
+            receipt_path = ws / "max-depth.json"
+            # Root object plus 127 nested arrays is exactly 128 containers deep.
+            receipt_path.write_bytes(
+                b'{"value":' + b"[" * 127 + b"0" + b"]" * 127 + b"}"
+            )
+            pack_path = ws / "pack"
+            stdout = StringIO()
+            stderr = StringIO()
+            with (
+                patch("icode.cli.load_settings", return_value=self.settings),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main([
+                    "evidence",
+                    "--ticket", str(ticket),
+                    "--dest", str(pack_path),
+                    "--receipt", str(receipt_path),
+                ])
+
+            self.assertEqual(exit_code, 0, stdout.getvalue() + stderr.getvalue())
             self.assertEqual(verify_pack(pack_path), [])
 
     def test真实task回执经CLI保存导入证据包并独立校验(self) -> None:
@@ -700,6 +738,15 @@ class TestStandaloneVerifier(unittest.TestCase):
         def invalid_manifest_root(pack: Path) -> None:
             write_json(pack / "manifest.json", [])
 
+        def over_nested_manifest(pack: Path) -> None:
+            manifest_path = pack / "manifest.json"
+            text = manifest_path.read_text(encoding="utf-8").rstrip()
+            self.assertTrue(text.endswith("}"), text[-32:])
+            manifest_path.write_text(
+                text[:-1] + ',"audit_note":' + "[" * 128 + "0" + "]" * 128 + "}\n",
+                encoding="utf-8",
+            )
+
         def invalid_manifest_item(pack: Path) -> None:
             manifest_path = pack / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -720,6 +767,7 @@ class TestStandaloneVerifier(unittest.TestCase):
 
         cases = (
             ("manifest-root", invalid_manifest_root, "清单文件不可解析"),
+            ("manifest-over-nested", over_nested_manifest, "嵌套深度"),
             ("manifest-item", invalid_manifest_item, "清单 files 第 1 项结构无效"),
             ("manifest-missing-hash", missing_manifest_digest, "缺少有效 path 或 sha256"),
             ("event-root", invalid_event_root, "事件链第 1 行结构无效"),

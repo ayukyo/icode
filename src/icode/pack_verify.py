@@ -28,6 +28,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = stat.FILE_ATTRIBUTE_REPARSE_POINT
 _SHA256_FILE_READ_SIZE = 1024 * 1024
+_MAX_JSON_CONTAINER_DEPTH = 128
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -85,20 +86,26 @@ def _reject_non_json_numeric_constant(_value: str) -> object:
 
 
 def _reject_non_interoperable_values(value: object) -> None:
-    """Reject lone surrogates and numbers that canonical JSON cannot represent."""
-    pending = [value]
+    """Reject values unsafe for the shared parser/hash/serializer contract."""
+    pending: list[tuple[object, int]] = [(value, 0)]
     while pending:
-        current = pending.pop()
+        current, parent_depth = pending.pop()
         if isinstance(current, str):
             if any(0xD800 <= ord(char) <= 0xDFFF for char in current):
                 raise ValueError("JSON 字符串包含孤立 UTF-16 代理项")
         elif isinstance(current, float) and not math.isfinite(current):
             raise ValueError("JSON 数值转换为非有限 binary64")
         elif isinstance(current, dict):
-            pending.extend(current.keys())
-            pending.extend(current.values())
+            depth = parent_depth + 1
+            if depth > _MAX_JSON_CONTAINER_DEPTH:
+                raise ValueError("JSON 容器嵌套深度超过安全上限")
+            pending.extend((item, depth) for item in current.keys())
+            pending.extend((item, depth) for item in current.values())
         elif isinstance(current, list):
-            pending.extend(current)
+            depth = parent_depth + 1
+            if depth > _MAX_JSON_CONTAINER_DEPTH:
+                raise ValueError("JSON 容器嵌套深度超过安全上限")
+            pending.extend((item, depth) for item in current)
 
 
 def loads_json_value(text: str) -> object:
