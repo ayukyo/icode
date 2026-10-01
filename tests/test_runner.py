@@ -634,6 +634,81 @@ class TestTaskVerificationEvidence(unittest.TestCase):
 class TestReviewStepReadOnlyContext(unittest.TestCase):
     """R3 Reviewer 在独立上下文中只能读源码、提交审查产物。"""
 
+    def test_review阶段无隔离沙箱时命令在启动前拒绝且不产生标记(self) -> None:
+        import subprocess
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from icode.backends import FakeBackend
+        from icode.contracts import ContractSet
+        from icode.handshake import next_out_dir
+        from icode.isolation import NoIsolation
+        from icode.runner import _run_agent
+
+        settings = require_skill()
+        with temp_workspace() as root:
+            workspace = root / "workspace"
+            workspace.mkdir()
+            workspace_marker = workspace / "review-command-started.txt"
+            outside_marker = root / "outside-review-command-started.txt"
+            out_dir = next_out_dir(workspace)
+            command_code = (
+                "("
+                f"__import__('pathlib').Path({str(workspace_marker)!r})"
+                ".write_text('started'),"
+                f"__import__('pathlib').Path({str(outside_marker)!r})"
+                ".write_text('started')"
+                ")"
+            )
+            contract = ContractSet.load(settings.gates_json).step("review")
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [
+                    {"id": "review-command", "name": "run_command", "arguments": {
+                        "argv": ["python", "-c", command_code],
+                    }},
+                    {"id": "submit-review", "name": "submit_artifact", "arguments": {
+                        "name": "02_review.md", "content": "# Review\n\nNo findings.\n",
+                    }},
+                ]},
+                "审查产物已提交",
+            ])
+
+            class _Operations:
+                def start(self, **_kwargs):
+                    return SimpleNamespace(can_execute=True, attempt="attempt-1", detail="")
+
+                def finish(self, *_args, **_kwargs):
+                    return True
+
+            with patch("subprocess.run", wraps=subprocess.run) as process_run:
+                report = _run_agent(
+                    backend=backend,
+                    workspace=workspace,
+                    out_dir=out_dir,
+                    ticket_id="REVIEW-NO-ISOLATION",
+                    step="review",
+                    brief="Review without changing source or running unisolated commands.",
+                    contract=contract,
+                    requirement="Do not start a Reviewer command without OS isolation.",
+                    approver=None,
+                    loop_config=None,
+                    budget=None,
+                    on_event=None,
+                    sandbox=NoIsolation(reason="Windows Reviewer boundary integration test"),
+                    operations=_Operations(),
+                )
+
+        command_call, submit_call = report.turns[0].invocations
+        self.assertEqual(command_call.name, "run_command")
+        self.assertEqual(command_call.decision, "allow")
+        self.assertFalse(command_call.result.ok)
+        self.assertEqual(command_call.result.meta.get("error"), "isolation_unavailable")
+        self.assertIs(command_call.result.meta.get("payload_started"), False)
+        self.assertEqual(process_run.call_count, 0, "未通过 OS 隔离时不得启动命令")
+        self.assertFalse(workspace_marker.exists())
+        self.assertFalse(outside_marker.exists())
+        self.assertTrue(submit_call.result.ok, submit_call.result.content)
+
     def test_review阶段源码写入被拒绝且审查产物仍可提交(self) -> None:
         from types import SimpleNamespace
 

@@ -692,7 +692,11 @@ def run_command(
         return ToolResult(
             False,
             f"隔离不可用，已拒绝执行：{exc}",
-            {"error": "isolation_unavailable", "sandbox": ctx.isolation_label()},
+            {
+                "error": "isolation_unavailable",
+                "sandbox": ctx.isolation_label(),
+                "payload_started": False,
+            },
             opclass=OPCLASS_MANAGED_WRITE,
         )
 
