@@ -243,6 +243,171 @@ class TestEvidencePack(unittest.TestCase):
             )
             self.assertEqual(verify_pack(pack_path), [])
 
+    def test真实task回执经CLI保存导入证据包并独立校验(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        from icode.approvals import DenyAllApprover
+        from icode.backends import FakeBackend
+        from icode.budget import Budget
+        from icode.cli import main
+        from icode.isolation import NoIsolation
+
+        with temp_workspace() as ws:
+            repo = ws / "repo"
+            repo.mkdir()
+            source = repo / "calc.py"
+            test_file = repo / "test_calc.py"
+            source.write_bytes(b"def add(a, b): return a + b")
+            test_file.write_bytes(
+                b"import unittest\n"
+                b"from calc import add\n\n"
+                b"class TestCalc(unittest.TestCase):\n"
+                b"    def test_add(self):\n"
+                b"        self.assertEqual(add(2, 3), 5)\n"
+            )
+
+            def git(*arguments: str) -> str:
+                result = subprocess.run(
+                    ["git", "-C", str(repo), *arguments],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    timeout=30,
+                    shell=False,
+                )
+                return result.stdout.strip()
+
+            git("init", "-q")
+            git("config", "user.name", "ICODE tests")
+            git("config", "user.email", "icode-tests@example.invalid")
+            git("config", "core.autocrlf", "false")
+            git("add", "calc.py", "test_calc.py")
+            git("commit", "-q", "-m", "baseline")
+            base_commit = git("rev-parse", "HEAD")
+
+            result_source = "def add(a, b): return a + b # task result"
+            source.write_bytes(result_source.encode("utf-8"))
+            git("add", "calc.py")
+            git("commit", "-q", "-m", "expected task result")
+            result_commit = git("rev-parse", "HEAD")
+            result_tree = git("rev-parse", "HEAD^{tree}")
+            git("reset", "--hard", base_commit)
+
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "executor-edit",
+                    "name": "write_file",
+                    "arguments": {
+                        "path": str(source),
+                        "content": result_source,
+                    },
+                }]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-read",
+                    "name": "read_file",
+                    "arguments": {"path": "calc.py"},
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "review-submit",
+                    "name": "submit_review",
+                    "arguments": {
+                        "summary": "Reviewed the changed source.",
+                        "findings": [],
+                    },
+                }]},
+                "review submitted",
+            ])
+            receipt_path = ws / "task-verification.json"
+            task_stdout = StringIO()
+            with (
+                patch("icode.cli.load_settings", return_value=self.settings),
+                patch(
+                    "icode.cli._build_runner",
+                    return_value=(
+                        backend,
+                        DenyAllApprover(),
+                        Budget(),
+                        None,
+                        NoIsolation(),
+                    ),
+                ),
+                redirect_stdout(task_stdout),
+            ):
+                task_exit = main([
+                    "task",
+                    "--workspace", str(repo),
+                    "--task", "Keep add behavior unchanged and apply the requested edit.",
+                    "--max-repairs", "0",
+                    "--result-commit", result_commit,
+                    "--receipt-out", str(receipt_path),
+                ])
+
+            self.assertEqual(task_exit, 0, task_stdout.getvalue())
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertEqual(receipt["exit_code"], 0)
+            self.assertEqual(receipt["test_head_status"], "stable")
+            self.assertEqual(receipt["test_head_before_sha"], base_commit)
+            self.assertEqual(receipt["test_head_after_sha"], base_commit)
+            self.assertEqual(receipt["tested_git_tree_status"], "stable")
+            self.assertEqual(receipt["tested_git_tree_oid"], result_tree)
+            self.assertEqual(receipt["result_commit_sha"], result_commit)
+            self.assertEqual(receipt["result_commit_tree_oid"], result_tree)
+            self.assertEqual(receipt["result_commit_tree_status"], "matched")
+            self.assertTrue(receipt["fingerprint"])
+            self.assertNotIn("output", receipt)
+            self.assertEqual(git("rev-parse", "HEAD"), base_commit)
+
+            ticket = make_finished_plan_ticket(self.settings, ws / "ticket-work")
+            pack_path = ws / "pack"
+            evidence_stdout = StringIO()
+            with (
+                patch("icode.cli.load_settings", return_value=self.settings),
+                redirect_stdout(evidence_stdout),
+            ):
+                evidence_exit = main([
+                    "evidence",
+                    "--ticket", str(ticket),
+                    "--dest", str(pack_path),
+                    "--receipt", str(receipt_path),
+                ])
+
+            self.assertEqual(evidence_exit, 0, evidence_stdout.getvalue())
+            packed = json.loads(
+                (pack_path / "verifications.json").read_text(encoding="utf-8"),
+            )
+            self.assertEqual(packed["receipts"], [receipt])
+            self.assertEqual(verify_pack(pack_path), [])
+
+            verify_stdout = StringIO()
+            with redirect_stdout(verify_stdout):
+                verify_exit = main(["verify-pack", str(pack_path)])
+            self.assertEqual(verify_exit, 0, verify_stdout.getvalue())
+            self.assertIn("证据包校验通过", verify_stdout.getvalue())
+
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(pack_path / "verify.py"), str(pack_path)],
+                cwd=str(ws),
+                env=environment,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                shell=False,
+            )
+            self.assertEqual(
+                independent.returncode,
+                0,
+                independent.stdout + independent.stderr,
+            )
+            self.assertIn("校验通过", independent.stdout)
+
     def test_清单列出所有文件且摘要自洽(self) -> None:
         with temp_workspace() as ws:
             _out, dest, report = self._build(ws, workspace=ws / "work")

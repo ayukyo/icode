@@ -9,11 +9,14 @@ import unittest
 from pathlib import Path
 
 
-CROSS_PLATFORM_GIT_OBJECT_TESTS = (
+# Keep the cross-platform R3 regression matrix bounded while exercising the
+# real task-to-tree and task-receipt CLI chains on every workspace platform.
+CROSS_PLATFORM_R3_TESTS = (
     "tests.test_r3_regression.TestTaskReviewAndDiffBinding.test_run_task证据锚定真实Git基线和含预存脏改动的快照",
     "tests.test_r3_regression.TestTaskReviewAndDiffBinding.test_SHA256基线自动选择对应tree对象格式",
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_run_task显式参数自动绑定结果commit",
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_run_task成功测试绑定受测tree和结果commit",
+    "tests.test_evidence.TestEvidencePack.test真实task回执经CLI保存导入证据包并独立校验",
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_commit_tree读取只读对象并且不改用户index",
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_commit_tree读取忽略replace_refs",
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_commit_tree读取支持SHA256对象格式",
@@ -37,9 +40,9 @@ DEFAULT_MODULES = (
     "tests.test_workspace",
     "tests.test_autonomy",
     "tests.test_workbench",
-    # Keep the integration matrix bounded while exercising task-tree capture
-    # and result-commit binding on each supported native workspace platform.
-    *CROSS_PLATFORM_GIT_OBJECT_TESTS,
+    # Keep the integration matrix bounded while exercising task-tree capture,
+    # result-commit binding, and receipt export/import on each workspace platform.
+    *CROSS_PLATFORM_R3_TESTS,
 )
 
 

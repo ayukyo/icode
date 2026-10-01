@@ -645,6 +645,12 @@
 - **采纳 / 暂缓：**采纳“持久记录显式失败”和“状态与验证证据分离”的设计原则；暂缓完整会话 JSONL、恢复日志和逐步 snapshot/event store，本切片不需要重造一套 task 生命周期存储。ICODE 复用 `VerificationEvidence.to_receipt()` 既有 schema，新增显式 `icode task --receipt-out <新文件>` 原子无覆盖写入，并允许 `icode evidence --receipt <JSON>` 纳入既有证据包；默认不落盘、不自动创建目录。输出不含测试正文/原始错误，失败验证仍按原退出码返回并留下失败回执；回执写入失败单独 fail-closed。没有复制上游代码或新增依赖，许可证/平台包影响为无。
 - **验收边界：**这是一份验证事实快照，不是可恢复的会话日志；它不证明 agent 过程无写入，也不替代事件链、独立包校验或跨平台隔离门槛。验收覆盖无覆盖、无自动建目录、敏感正文不进入回执、失败任务仍保留失败回执及 CLI→证据包闭环；Windows/macOS CI 仍需核实 `os.link` 在目标 runner/filesystem 上行为。观察时间：2026-09-26 17:33 UTC / 2026-09-27 01:33 Asia/Shanghai；所列上游 SHA 均在该观察时固定。
 
+### 2026-10-01 Asia/Shanghai：R3 真实 task 回执 CLI 往返验收
+
+- **研究刷新与来源边界：**沿用本节固定 Codex [`a6bd19261c30ce0a0225fe90e646822d29916f11`](https://github.com/openai/codex/commit/a6bd19261c30ce0a0225fe90e646822d29916f11)（Apache-2.0）`RolloutRecorder` 事件写入机制，以及 OpenCode [`a42f393c850bec0c0f395fb91bf19b1ee8b31666`](https://github.com/anomalyco/opencode/commit/a42f393c850bec0c0f395fb91bf19b1ee8b31666) `1.18.32`（MIT）的隔离 index 快照。两者均未显示等价于 ICODE 的 `run_task` 测试验证回执；Codex 运行事件不证明 tree/test，OpenCode 会话快照不等于测试认证。观察日期 2026-10-01；不把固定 SHA 描述为今天 upstream HEAD。
+- **采纳 / 暂缓 / 不适配：**采纳“可恢复的活动事件记录”与“验证事实”分层；ICODE 复用现有 `VerificationEvidence.to_receipt()`/`save_verification_receipt()`，不新建另一套会话事件存储。暂缓完整 rollout replay 和 OpenCode shadow Git index；不适配把 event completion 或 session snapshot 当成测试通过证明。无第三方代码复制、无新增运行时依赖，现有 Apache-2.0/MIT 对照不产生新的许可证义务。
+- **本轮验收：**新增集成测试从真实 CLI parser/handler 走 `task --receipt-out` → `evidence --receipt` → `verify-pack`，并在清除 `PYTHONPATH`、工作目录位于包外的条件下运行包内独立 verifier。回执关键字段绑定真实 `tested_git_tree_oid`、`result_commit_sha/tree` 和稳定 HEAD，原始测试输出不落入 receipt；test artifact 导入证据包后内部校验通过。该结果表示包内清单/哈希/链路一致，不是签名、作者身份、执行来源真实性或过程无未记录副作用的认证。Linux 项目 Python 3.11 的定向与 168 项 workspace runner 通过；同一用例进入 workspace CI，CI matrix 新加 `windows-11-arm`，新 SHA 原生结果待验。
+
 ### 2026-09-26 17:57 UTC / 2026-09-27 01:57 Asia/Shanghai 定向刷新：测试执行回执是否验证了“实际发现测试”
 
 - **Codex 固定源码：**观察 `main` HEAD [`a6bd19261c30ce0a0225fe90e646822d29916f11`](https://github.com/openai/codex/commit/a6bd19261c30ce0a0225fe90e646822d29916f11)。[`ExecCommandBegin/End`](https://github.com/openai/codex/blob/a6bd19261c30ce0a0225fe90e646822d29916f11/codex-rs/protocol/src/protocol.rs#L3559-L3642) 用 call/turn ID 关联开始和结束事件，回传 command/cwd、stdout/stderr、exit code、duration 与状态。所查执行事件合同未发现测试 runner 收集数量检查，因此 `exit_code=0` 本身不能推出测试实际被发现。

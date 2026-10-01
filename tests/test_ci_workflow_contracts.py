@@ -201,6 +201,24 @@ class TestWindowsWorktreeTreeOidCi(unittest.TestCase):
         self.assertIn(required_step, workflow)
 
 
+class TestCrossPlatformWorkspaceEvidenceCi(unittest.TestCase):
+    def test_workspace_matrix_includes_windows_arm64_for_R3_receipt_roundtrip(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        required_matrix = """  workspace-platforms:
+    name: R2.1 workspace (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
+"""
+        self.assertIn(required_matrix, workflow)
+
+
 class TestWindowsRunnerPipeNativeCi(unittest.TestCase):
     def test_authenticated_pipe_round_trip_runs_on_x64_and_arm64(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
