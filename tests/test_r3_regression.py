@@ -524,7 +524,10 @@ class TestResultCommitTreeBinding(unittest.TestCase):
         return repo
 
     def _commit(self, repo, content: str, message: str) -> str:
-        (repo / "source.txt").write_text(content, encoding="utf-8")
+        # Keep repository bytes identical on every OS. Text-mode writes translate
+        # ``\n`` to CRLF on Windows, which can make the raw worktree tree differ
+        # from Git's normalized blob when core.autocrlf is enabled.
+        (repo / "source.txt").write_bytes(content.encode("utf-8"))
         self._git(repo, "add", "source.txt")
         self._git(repo, "commit", "-q", "-m", message)
         return self._git(repo, "rev-parse", "HEAD")
@@ -919,6 +922,15 @@ class TestResultCommitTreeBinding(unittest.TestCase):
         with temp_workspace() as ws:
             repo = self._new_repo(ws)
             commit_sha = self._commit(repo, "verified source\n", "verified source")
+
+            expected_source = b"verified source\n"
+            self.assertEqual((repo / "source.txt").read_bytes(), expected_source)
+            import subprocess
+            committed_source = subprocess.run(
+                ["git", "-C", str(repo), "cat-file", "blob", "HEAD:source.txt"],
+                check=True, capture_output=True,
+            ).stdout
+            self.assertEqual(committed_source, expected_source)
 
             report = run_task(
                 require_skill(), backend=FakeBackend(["完成"]), workspace=repo,
