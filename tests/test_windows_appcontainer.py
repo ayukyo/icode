@@ -1532,6 +1532,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             if name == "Windows Reviewer snapshot writes and cleanup"
         ))
         self.assertIs(writes_notice["write_canary_before_unchanged"], True)
+        self.assertIs(writes_notice["write_canary_unchanged"], True)
+        self.assertIs(writes_notice["write_canary_matches_expected_result"], False)
         max_error_notice = {
             key: {"winerror": 0xFFFFFFFF, "errno": 0xFFFFFFFF}
             for key in (
@@ -1638,6 +1640,26 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertNotIn("write_canary_before_unchanged", acceptance_contract)
         self.assertNotIn("write_canary_matches_expected_result", acceptance_contract)
         self.assertNotIn("write_canary_matches_payload", acceptance_contract)
+        summary_start = reviewer_source.index("summary = {")
+        summary_end = reviewer_source.index(
+            'self._workflow_json_notice(\n                    "Windows Reviewer probe preflight"',
+            summary_start,
+        )
+        summary_contract = reviewer_source[summary_start:summary_end]
+        facts_projection_start = summary_contract.index("for key in (")
+        facts_projection_end = summary_contract.index(")\n                    },", facts_projection_start)
+        facts_projection = summary_contract[facts_projection_start:facts_projection_end]
+        self.assertNotIn('"write_canary_unchanged"', facts_projection)
+        self.assertNotIn('"write_canary_matches_expected_result"', facts_projection)
+        self.assertIn(
+            '"write_canary_unchanged": write_canary_unchanged',
+            summary_contract,
+        )
+        self.assertRegex(
+            summary_contract,
+            r'"write_canary_matches_expected_result":\s*\(\s*'
+            r'write_canary_matches_expected_result\s*\)',
+        )
         self.assertIn("expected_write_result = (", reviewer_source)
         self.assertIn(
             "write_payload + write_canary_original[len(write_payload):]",
@@ -6340,9 +6362,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                             "approved_read", "outside_snapshot_denied", "workspace_denied",
                             "home_denied", "ledger_denied", "write_denied", "delete_denied",
                             "rename_denied", "create_denied", "dacl_write_dac_denied", "child_started",
-                            "write_canary_unchanged", "write_canary_matches_expected_result",
                         )
                     },
+                    "write_canary_unchanged": write_canary_unchanged,
+                    "write_canary_matches_expected_result": (
+                        write_canary_matches_expected_result
+                    ),
                     "create_cleanup_ok": create_cleanup_ok,
                     "child_exited": child_exited,
                     "snapshot_acl_restored": (
