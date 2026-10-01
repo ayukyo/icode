@@ -724,6 +724,7 @@ def _require_windows_entry_identity(
         or type(info.file_id) is not bytes
         or info.file_id != entry.file_id
         or type(info.change_time) is not int
+        or info.change_time < 0
         or type(info.end_of_file) is not int
         or info.end_of_file < 0
         # Directory enumeration and an opened directory handle can report
@@ -743,16 +744,13 @@ def _require_windows_entry_identity(
         or info.reparse_tag != entry.reparse_tag
     ):
         raise WorktreeTreeUnavailable("windows_entry_identity_changed")
-    if info.change_time != entry.change_time:
-        # Keep the strict version check, but distinguish the one directory
-        # race for which the outer snapshot may discard all partial output and
-        # retry from a newly opened root. File and reparse identity changes
-        # remain non-retryable.
-        reason = (
-            "windows_directory_entry_change_time_changed"
-            if is_directory else "windows_entry_identity_changed"
-        )
-        raise WorktreeTreeUnavailable(reason)
+    if not is_directory and info.change_time != entry.change_time:
+        raise WorktreeTreeUnavailable("windows_entry_identity_changed")
+    # A directory entry and its opened handle are separate Windows metadata
+    # observations; the APIs do not promise their ChangeTime values are an
+    # atomic, exactly equal pair. The walker still checks the parent listing
+    # before/after and this directory handle before/after, alongside FileId,
+    # volume, type, and reparse identity. Regular files retain exact equality.
 
 
 def _require_windows_symlink_identity(

@@ -347,7 +347,7 @@ class TestWindowsSnapshotReparseSafety(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.name == "posix", "Git tree worktree hashing currently requires POSIX fd APIs",
+    os.name == "posix", "fixture asserts POSIX executable-bit semantics",
 )
 class TestWorktreeGitTreeOID(unittest.TestCase):
     def _git(self, root, *arguments: str) -> str:

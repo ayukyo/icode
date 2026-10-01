@@ -804,7 +804,7 @@ class TestWindowsWorkspaceSnapshotDispatch(unittest.TestCase):
                 handle = super().open_child(
                     parent, entry, directory=directory, reparse=reparse,
                 )
-                if not backends[:-1]:
+                if handle.node.is_directory and not backends[:-1]:
                     handle.node.change_time += 1
                 return handle
 
@@ -847,7 +847,8 @@ class TestWindowsWorkspaceSnapshotDispatch(unittest.TestCase):
                 handle = super().open_child(
                     parent, entry, directory=directory, reparse=reparse,
                 )
-                handle.node.change_time += 1
+                if handle.node.is_directory:
+                    handle.node.change_time += 1
                 return handle
 
         def create_backend():
@@ -865,7 +866,7 @@ class TestWindowsWorkspaceSnapshotDispatch(unittest.TestCase):
 
         self.assertEqual(
             raised.exception.reason,
-            "windows_directory_entry_change_time_changed",
+            "windows_directory_changed",
         )
         self.assertEqual(len(backends), 2)
         self.assertTrue(all(
@@ -932,6 +933,73 @@ class TestWindowsWorkspaceSnapshotDispatch(unittest.TestCase):
                 "file", "100644", b"large packed objects",
             ),
         })
+
+    def test_workspace_snapshot_accepts_stable_directory_change_time_projection_difference(self) -> None:
+        root = _FakeWindowsNode("", bytes.fromhex("10" * 16))
+        directory = _FakeWindowsNode("nested", bytes.fromhex("11" * 16))
+        directory.handle_change_time = directory.change_time + 1
+        directory.children["child.txt"] = _FakeWindowsNode(
+            "child.txt", bytes.fromhex("12" * 16), content=b"stable\n",
+        )
+        root.children["nested"] = directory
+        backend = _FakeWindowsTreeBackend(root)
+        fake_os = type(
+            "FakeOS", (), {"name": "nt", "fsencode": staticmethod(os.fsencode)},
+        )()
+
+        with patch.object(workspace_snapshot, "os", fake_os), patch.object(
+            windows_worktree, "_WindowsNativeWorktreeBackend", return_value=backend,
+        ):
+            actual = workspace_snapshot.snapshot_workspace(Path("C:/source"))
+
+        self.assertEqual(actual, {
+            "nested/child.txt": workspace_snapshot._entry_hash(
+                "file", "100644", b"stable\n",
+            ),
+        })
+        self.assertEqual(backend.read_calls, 1)
+        self.assertTrue(all(
+            handle.closed
+            for handle in (*backend.opened, *backend.root_handles)
+        ))
+
+    def test_workspace_snapshot_fails_closed_when_directory_handle_changes_during_scan(self) -> None:
+        root = _FakeWindowsNode("", bytes.fromhex("13" * 16))
+        directory = _FakeWindowsNode("nested", bytes.fromhex("14" * 16))
+        directory.handle_change_time = 10
+        directory.children["child.txt"] = _FakeWindowsNode(
+            "child.txt", bytes.fromhex("15" * 16), content=b"stable\n",
+        )
+        root.children["nested"] = directory
+        backends: list[_FakeWindowsTreeBackend] = []
+
+        class ChangingDirectoryBackend(_FakeWindowsTreeBackend):
+            def read_file(self, handle, size):
+                chunk = super().read_file(handle, size)
+                directory.handle_change_time += 1
+                return chunk
+
+        def create_backend():
+            backend = ChangingDirectoryBackend(root)
+            backends.append(backend)
+            return backend
+
+        fake_os = type(
+            "FakeOS", (), {"name": "nt", "fsencode": staticmethod(os.fsencode)},
+        )()
+        with patch.object(workspace_snapshot, "os", fake_os), patch.object(
+            windows_worktree, "_WindowsNativeWorktreeBackend",
+            side_effect=create_backend,
+        ), self.assertRaisesRegex(OSError, "windows_directory_changed"):
+            workspace_snapshot.snapshot_workspace(Path("C:/source"))
+
+        self.assertEqual(len(backends), 2)
+        self.assertEqual(sum(backend.read_calls for backend in backends), 2)
+        self.assertTrue(all(
+            handle.closed
+            for backend in backends
+            for handle in (*backend.opened, *backend.root_handles)
+        ))
 
     def test_shared_snapshot_walker_hashes_symlink_text_without_reading_target(self) -> None:
         root = _FakeWindowsNode("", bytes.fromhex("81" * 16))
@@ -1034,6 +1102,7 @@ class _FakeWindowsNode:
         self.file_id = file_id
         self.content = content
         self.handle_end_of_file: int | None = None
+        self.handle_change_time: int | None = None
         self.children: dict[str, _FakeWindowsNode] = {}
         self.change_time = 1
         self.reparse = False
@@ -1119,7 +1188,11 @@ class _FakeWindowsTreeBackend:
             file_id=node.file_id,
             attributes=attributes,
             reparse_tag=node.reparse_tag if node.is_reparse_point else 0,
-            change_time=node.change_time,
+            change_time=(
+                node.handle_change_time
+                if node.handle_change_time is not None
+                else node.change_time
+            ),
             end_of_file=(
                 node.handle_end_of_file
                 if node.handle_end_of_file is not None
@@ -1207,6 +1280,31 @@ class TestProductionWindowsWorktreeTreeBuilder(unittest.TestCase):
                 self.assertEqual(actual, expected)
                 self.assertTrue(all(handle.closed for handle in backend.opened))
 
+    def test_builder_accepts_stable_directory_change_time_projection_difference(self) -> None:
+        root = _FakeWindowsNode("", bytes.fromhex("07" * 16))
+        directory = _FakeWindowsNode("nested", bytes.fromhex("08" * 16))
+        directory.handle_change_time = directory.change_time + 1
+        directory.children["child.txt"] = _FakeWindowsNode(
+            "child.txt", bytes.fromhex("09" * 16), content=b"stable\n",
+        )
+        root.children["nested"] = directory
+        backend = _FakeWindowsTreeBackend(root)
+
+        actual = self._builder()(
+            _FakeWindowsHandle(root), backend, object_format="sha1",
+        )
+
+        child_tree = _expected_git_tree("sha1", [
+            (
+                b"child.txt", False, b"100644",
+                _expected_git_blob("sha1", b"stable\n"),
+            ),
+        ])
+        self.assertEqual(actual, _expected_git_tree("sha1", [
+            (b"nested", True, b"40000", child_tree),
+        ]))
+        self.assertTrue(all(handle.closed for handle in backend.opened))
+
     def test_builder_rejects_identity_mismatch_before_reading_file(self) -> None:
         class MismatchedBackend(_FakeWindowsTreeBackend):
             def open_child(self, parent, entry, *, directory):
@@ -1235,6 +1333,24 @@ class TestProductionWindowsWorktreeTreeBuilder(unittest.TestCase):
             "source.py", bytes.fromhex("17" * 16), content=b"must not read",
         )
         source.handle_end_of_file = len(source.content or b"") + 1
+        root.children["source.py"] = source
+        backend = _FakeWindowsTreeBackend(root)
+
+        with self.assertRaises(WorktreeTreeUnavailable) as raised:
+            self._builder()(
+                _FakeWindowsHandle(root), backend, object_format="sha1",
+            )
+
+        self.assertEqual(raised.exception.reason, "windows_entry_identity_changed")
+        self.assertEqual(backend.read_calls, 0)
+        self.assertTrue(all(handle.closed for handle in backend.opened))
+
+    def test_builder_rejects_regular_file_change_time_mismatch_before_reading(self) -> None:
+        root = _FakeWindowsNode("", bytes.fromhex("18" * 16))
+        source = _FakeWindowsNode(
+            "source.py", bytes.fromhex("19" * 16), content=b"do not read",
+        )
+        source.handle_change_time = source.change_time + 1
         root.children["source.py"] = source
         backend = _FakeWindowsTreeBackend(root)
 
@@ -1291,6 +1407,23 @@ class TestProductionWindowsWorktreeTreeBuilder(unittest.TestCase):
                 _expected_git_blob("sha1", b"../external.txt"),
             ),
         ]))
+        self.assertEqual(backend.read_calls, 0)
+        self.assertTrue(all(handle.closed for handle in backend.opened))
+
+    def test_builder_keeps_symlink_change_time_match_strict(self) -> None:
+        root = _FakeWindowsNode("", bytes.fromhex("95" * 16))
+        link = _FakeWindowsNode("alias", bytes.fromhex("96" * 16))
+        link.reparse_target = "../outside.txt"
+        link.handle_change_time = link.change_time + 1
+        root.children["alias"] = link
+        backend = _FakeWindowsTreeBackend(root)
+
+        with self.assertRaises(WorktreeTreeUnavailable) as raised:
+            self._builder()(
+                _FakeWindowsHandle(root), backend, object_format="sha1",
+            )
+
+        self.assertEqual(raised.exception.reason, "windows_entry_identity_changed")
         self.assertEqual(backend.read_calls, 0)
         self.assertTrue(all(handle.closed for handle in backend.opened))
 

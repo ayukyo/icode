@@ -480,7 +480,7 @@ def snapshot_windows_workspace_windows(root: Path) -> dict[str, str]:
             )
         except WorktreeTreeUnavailable as exc:
             if (
-                exc.reason != "windows_directory_entry_change_time_changed"
+                exc.reason != "windows_directory_changed"
                 or attempt + 1 >= _WINDOWS_WORKSPACE_SNAPSHOT_ATTEMPTS
             ):
                 raise

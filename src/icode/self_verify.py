@@ -111,7 +111,7 @@ class VerificationEvidence:
     是**有界修复的账本标签**（回执中保留），但不参与「新证据」指纹：同一
     失败在不同 attempt 下应被识别为**同一证据**，否则任何重试都会因为
     attempt 递增而被误判为新证据（碰运气）。`tested_git_tree_oid` 仅在
-    POSIX 工作树 tree 投影于测试前后稳定时存在；结果 commit 字段在后续显式绑定时
+    支持的平台完成只读工作树 tree 投影且测试前后稳定时存在；结果 commit 字段在后续显式绑定时
     记录 tree 内容相等性与测试窗口 HEAD 观测，不以 commit 日期推断提交时序。
     """
 
