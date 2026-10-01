@@ -617,6 +617,8 @@ R3 核心切片已合入 main（2026-09-26）：`src/icode/self_verify.py` 实�
 
 2026-10-02 Windows Reviewer 原生 CI #485：[x64](https://github.com/ayukyo/icode/actions/runs/36908232174/job/110524079006) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36908232174/job/110524078846) 都通过 AppContainer 身份、approved snapshot 读取、删除/改名/DACL 拒绝和清理，但外部读取及写/新建错误回执为 `-1`、exit 78；未取得可用 WinError，不能归因为权限或路径问题。探针现同时输出 bounded `winerror` 与 `errno`，固定键、最坏错误回执不超过 500 字节。96 项 AppContainer/CI-contract 聚焦测试（83 通过、13 项按平台跳过）、Python 3.11.15 全量 preflight 三道门、站点/治理/竞品对照及语法/diff 检查均通过；新 SHA 双架构原生复验待跑，R2/R3 readiness 不变。
 
+2026-10-02 Windows Reviewer 原生 CI #486：[x64](https://github.com/ayukyo/icode/actions/runs/36909918830/job/110529731115) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36909918830/job/110529730951) 均报告六项文件访问操作 `winerror=-1, errno=13`，身份、批准快照读取、删除/改名/DACL 拒绝与清理通过。`errno=13` 不能唯一代表 WinError 5：CPython 3.11.17/3.12.15 的[固定源码映射](https://github.com/python/cpython/blob/e6392eb68a39cef49c9fe6431253050caa17a426/PC/errmap.h#L77-L104)也把 WinError 32/33 等映射为 EACCES。因此候选拒绝 errno-only 判定，仍仅 WinError 5 计拒绝。当前测试候选改为 `CreateFileW` + 实际 `ReadFile`/`WriteFile`，原生调用失败后立即取 LastError，检查 `INVALID_HANDLE_VALUE`、句柄关闭、写 canary 未变以及意外创建文件已清理。独立复审还发现句柄关闭失败可能遮蔽原始 I/O 错误；现用有界独立 `close_errors` 保留两类诊断，且清理未确认不算拒绝。审查修正后 AppContainer 模块 86 项（73 通过、13 跳过），包含 CloseHandle 失败和 WinError 32 反例；本次完整 preflight 与文档检查待重跑。新 SHA Windows x64/ARM64 原生 CI 待复验。WinError 5 仅说明该 API 返回 ACCESS_DENIED，不证明 DACL 是根因；R2/R3 readiness 不变。
+
 ## 4. 为什么是这个顺序
 
 | 顺序 | 依据 |
