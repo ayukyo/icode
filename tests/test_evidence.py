@@ -253,6 +253,8 @@ class TestEvidencePack(unittest.TestCase):
         cases = (
             ("invalid-json", b"{\"receipt\":", "JSON 格式无效", False),
             ("invalid-utf8", b"\xff", "不是有效 UTF-8", True),
+            ("non-object", b"null", "回执文件结构无效", False),
+            ("non-object-item", b"[{\"kind\":\"command\"}, null]", "回执文件结构无效", True),
         )
         for name, contents, expected_error, existing_pack in cases:
             with self.subTest(receipt=name), temp_workspace() as ws:

@@ -546,6 +546,14 @@ def cmd_evidence(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 2
+        if not isinstance(data, dict) and not (
+            isinstance(data, list) and all(isinstance(item, dict) for item in data)
+        ):
+            print(
+                f"回执文件结构无效（需 JSON 对象或仅含对象的数组）：{p}",
+                file=sys.stderr,
+            )
+            return 2
         receipts.extend(data if isinstance(data, list) else [data])
 
     if args.receipt_from:
