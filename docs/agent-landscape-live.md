@@ -1,5 +1,7 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
+- **R3 verifier 坏事件诊断有界化（2026-10-01 远端复验）：**commit [`1e9c037`](https://github.com/ayukyo/icode/commit/1e9c037b1701b403cfdf497d8b21cd40ac25a0c1) 的主 CI [#475](https://github.com/ayukyo/icode/actions/runs/36876357166) 与官网 [#351](https://github.com/ayukyo/icode/actions/runs/36876356980) 均 success；Python 3.11/3.12、Linux x64/ARM64、macOS Intel/Apple Silicon、Windows x64/ARM64 workspace、Job、wheel、R3 tree、容器 Reviewer 必需作业通过。AppContainer/标准用户诊断 3 项 skipped，不计通过。该结果验证本次 R3 变更，不改变 R2/R3 readiness，也不证明完整资源上限或 OS 隔离。
+
 - **事件时间戳 pattern 互操作性补充（2026-10-01）：**pinned Draft-07 schema 的 `\d` 按 ECMA-262 解释为 ASCII `0`–`9`，不是 Python 默认 Unicode digit 集；实现显式采用 ASCII 匹配，并有 Arabic-Indic 数字负例。依据：[Draft-07 正则约定](https://json-schema.org/draft-07/json-schema-validation#rfc.section.4.3)、[ECMAScript CharacterClassEscape](https://tc39.es/ecma262/multipage/text-processing.html#sec-characterclassescape)。这只保持 pattern 行为一致，不增加完整日历日期验证。
 
 - **R3 pinned event v1 切片远端验收（2026-10-01）：**commit [`44ab4b7`](https://github.com/ayukyo/icode/commit/44ab4b7) 的 [主 CI](https://github.com/ayukyo/icode/actions/runs/36869271191) 与[官网 workflow](https://github.com/ayukyo/icode/actions/runs/36869271226) 均 success；必需 Linux/macOS、Windows x64/ARM64、Python 3.11/3.12、容器与 R2/R3 子门通过。3 个可选 AppContainer/标准用户诊断作业 skipped，不能视为已验证能力。
