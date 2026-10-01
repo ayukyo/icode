@@ -276,23 +276,31 @@ def verify_pack(pack_dir: Path) -> list[str]:
         problems.append(f"缺少事件链：{EVENTS_REL}")
     else:
         try:
-            events, chain_problems = _verify_event_chain(events_path)
+            artifact_facts, chain_problems = _verify_event_chain(events_path)
             problems.extend(chain_problems)
             # ③ 正文与链上哈希对应
-            problems.extend(_verify_artifact_binding(pack, events))
+            problems.extend(_verify_artifact_binding(pack, artifact_facts))
         except (OSError, ValueError, RecursionError) as exc:
             problems.append(f"事件链或正文索引无法读取：{type(exc).__name__}")
 
     return problems
 
 
-def _verify_event_chain(path: Path) -> tuple[list[dict], list[str]]:
+def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """逐条校验事件，只保留去重 ID 与产物绑定所需的紧凑事实。"""
     problems: list[str] = []
-    events: list[dict] = []
+    chain_problems: list[str] = []
+    artifact_facts: dict[str, tuple[str, str]] = {}
+    seen_ids: set[str] = set()
+    previous_hash = GENESIS_HASH
+    event_count = 0
+    first_event_type_valid = False
+    first_event_type_label = ""
+    invalid_artifact_payload_count = 0
     try:
         stream = path.open(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
-        return events, [f"事件链无法读取：{type(exc).__name__}"]
+        return artifact_facts, [f"事件链无法读取：{type(exc).__name__}"]
 
     try:
         with stream:
@@ -303,70 +311,83 @@ def _verify_event_chain(path: Path) -> tuple[list[dict], list[str]]:
                 if not line:
                     continue
                 try:
-                    event = json.loads(
-                        line, object_pairs_hook=_json_object_without_duplicates,
-                        parse_constant=_reject_non_json_numeric_constant,
-                    )
-                    _reject_non_interoperable_values(event)
+                    event = loads_json_value(line)
                 except (RecursionError, ValueError) as exc:
                     problems.append(
                         f"事件链第 {lineno} 行 JSON 不可解析（疑似截断/篡改）：{exc}"
                     )
-                    return events, problems
+                    for _ in range(invalid_artifact_payload_count):
+                        problems.append("artifact_written 事件 payload 结构无效（必须是对象）")
+                    return artifact_facts, problems
                 if not isinstance(event, dict):
                     problems.append(f"事件链第 {lineno} 行结构无效（必须是对象）")
-                    return events, problems
-                events.append(event)
+                    for _ in range(invalid_artifact_payload_count):
+                        problems.append("artifact_written 事件 payload 结构无效（必须是对象）")
+                    return artifact_facts, problems
+
+                event_count += 1
+                if event_count == 1:
+                    first_type = event.get("event_type")
+                    first_event_type_valid = (
+                        isinstance(first_type, str)
+                        and first_type in ALLOWED_FIRST_EVENT
+                    )
+                    if isinstance(first_type, str):
+                        first_event_type_label = repr(first_type[:160])
+                        if len(first_type) > 160:
+                            first_event_type_label += "..."
+                    else:
+                        first_event_type_label = f"<{type(first_type).__name__}>"
+
+                event_id = event.get("event_id")
+                if not isinstance(event_id, str) or not event_id:
+                    chain_problems.append(
+                        f"第 {event_count} 条事件 event_id 结构无效（必须是非空字符串）"
+                    )
+                elif event_id in seen_ids:
+                    chain_problems.append(f"第 {event_count} 条事件 event_id 重复：{event_id!r}")
+                else:
+                    seen_ids.add(event_id)
+                if event.get("previous_event_hash") != previous_hash:
+                    chain_problems.append(
+                        f"第 {event_count} 条事件 previous_event_hash 断链（疑似删改事件）"
+                    )
+                if event.get("event_hash") != canonical_event_hash(event):
+                    chain_problems.append(
+                        f"第 {event_count} 条事件 event_hash 与内容不符（疑似篡改）"
+                    )
+                previous_hash = event.get("event_hash", previous_hash)
+
+                if event.get("event_type") == "artifact_written":
+                    payload = event.get("payload")
+                    if not isinstance(payload, dict):
+                        invalid_artifact_payload_count += 1
+                    else:
+                        digest = payload.get("sha256")
+                        if digest:
+                            artifact_facts[str(digest)] = (
+                                str(event.get("event_id")),
+                                str(payload.get("path") or ""),
+                            )
     except (OSError, UnicodeError) as exc:
-        return [], [f"事件链无法读取：{type(exc).__name__}"]
+        return {}, [f"事件链无法读取：{type(exc).__name__}"]
 
-    prev = GENESIS_HASH
-    seen_ids: set[str] = set()
-    for idx, event in enumerate(events, 1):
-        event_id = event.get("event_id")
-        if not isinstance(event_id, str) or not event_id:
-            problems.append(f"第 {idx} 条事件 event_id 结构无效（必须是非空字符串）")
-        elif event_id in seen_ids:
-            problems.append(f"第 {idx} 条事件 event_id 重复：{event_id!r}")
-        else:
-            seen_ids.add(event_id)
-        if event.get("previous_event_hash") != prev:
-            problems.append(f"第 {idx} 条事件 previous_event_hash 断链（疑似删改事件）")
-        if event.get("event_hash") != canonical_event_hash(event):
-            problems.append(f"第 {idx} 条事件 event_hash 与内容不符（疑似篡改）")
-        prev = event.get("event_hash", prev)
-
-    if events and (
-        not isinstance(events[0].get("event_type"), str)
-        or events[0].get("event_type") not in ALLOWED_FIRST_EVENT
-    ):
+    problems.extend(chain_problems)
+    if event_count and not first_event_type_valid:
         problems.append(
-            f"首条事件类型为 {events[0].get('event_type')!r}，应为 {sorted(ALLOWED_FIRST_EVENT)} 之一"
+            f"首条事件类型为 {first_event_type_label}，应为 {sorted(ALLOWED_FIRST_EVENT)} 之一"
         )
-    return events, problems
+    for _ in range(invalid_artifact_payload_count):
+        problems.append("artifact_written 事件 payload 结构无效（必须是对象）")
+    return artifact_facts, problems
 
 
-def _verify_artifact_binding(pack: Path, events: list[dict]) -> list[str]:
+def _verify_artifact_binding(
+    pack: Path, artifact_facts: dict[str, tuple[str, str]],
+) -> list[str]:
     """正文快照必须与事件链上记录的 sha256 一致（D11 的核心）。"""
     problems: list[str] = []
-    if not events:
-        return problems
-
-    chain_artifacts: dict[str, str] = {}
-    chain_paths: dict[str, str] = {}
-    for event in events:
-        if event.get("event_type") != "artifact_written":
-            continue
-        payload = event.get("payload")
-        if not isinstance(payload, dict):
-            problems.append("artifact_written 事件 payload 结构无效（必须是对象）")
-            continue
-        digest = payload.get("sha256")
-        if digest:
-            chain_artifacts[str(digest)] = str(event.get("event_id"))
-            chain_paths[str(digest)] = str(payload.get("path") or "")
-
-    if not chain_artifacts:
+    if not artifact_facts:
         return problems
 
     index_path = _package_member_path(pack, "artifacts.json")
@@ -412,14 +433,15 @@ def _verify_artifact_binding(pack: Path, events: list[dict]) -> list[str]:
                 f"正文快照与事件链记录不符（疑似篡改）：{snapshot_rel} "
                 f"链上={chain_hash[:12]} 实际={actual[:12]}"
             )
-        if chain_hash and chain_hash not in chain_artifacts:
+        if chain_hash and chain_hash not in artifact_facts:
             problems.append(f"artifacts.json 引用了事件链上不存在的哈希：{chain_hash[:12]}")
         bound_digests.add(actual)
 
-    missing = set(chain_artifacts) - bound_digests
+    missing = set(artifact_facts) - bound_digests
     for digest in sorted(missing):
+        _event_id, source_path = artifact_facts[digest]
         problems.append(
-            f"事件链记录的产物缺少正文快照（hash {digest[:12]}，源路径 {chain_paths.get(digest, '?')}）"
+            f"事件链记录的产物缺少正文快照（hash {digest[:12]}，源路径 {source_path}）"
         )
     return problems
 

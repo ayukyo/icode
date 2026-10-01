@@ -26,6 +26,8 @@ CROSS_PLATFORM_R3_TESTS = (
     "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器不跟随未登记的外部链接目录",
     "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器拒绝证据包中的重复JSON成员名",
     "tests.test_evidence.TestStandaloneVerifier.test_文件摘要采用有界内存分块读取",
+    "tests.test_evidence.TestStandaloneVerifier.test_event_chain校验不累计保留非产物事件payload",
+    "tests.test_evidence.TestStandaloneVerifier.test_event_chain校验仍拒绝重复event_id",
     "tests.test_evidence.TestStandaloneVerifier.test_所有Verifier拒绝孤立代理项并接受合法代理对",
     "tests.test_evidence.TestStandaloneVerifier.test_所有Verifier拒绝非标准非有限数值",
     "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器接受JSON字符串中的Unicode行段符号",

@@ -920,6 +920,66 @@ class TestStandaloneVerifier(unittest.TestCase):
                 f"哈希单个 {artifact_size} 字节文件时 Python 峰值分配 {peak_bytes} 字节",
             )
 
+    def test_event_chain校验不累计保留非产物事件payload(self) -> None:
+        import tracemalloc
+
+        from icode.pack_verify import _verify_event_chain, canonical_event_hash
+
+        with temp_workspace() as ws:
+            events_path = ws / "events.jsonl"
+            previous_hash = "0" * 64
+            padding = "x" * (16 * 1024)
+            with events_path.open("w", encoding="utf-8") as stream:
+                for index in range(256):
+                    event = {
+                        "event_id": f"large-event-{index}",
+                        "event_type": "ticket_created" if index == 0 else "command_output",
+                        "payload": {"padding": padding},
+                        "previous_event_hash": previous_hash,
+                    }
+                    event["event_hash"] = canonical_event_hash(event)
+                    previous_hash = event["event_hash"]
+                    stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+                    stream.write("\n")
+
+            tracemalloc.start()
+            try:
+                _artifact_facts, problems = _verify_event_chain(events_path)
+                _, peak_bytes = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+
+            self.assertEqual(problems, [])
+            self.assertLess(
+                peak_bytes,
+                2 * 1024 * 1024,
+                "逐行验证不应按全部非产物 payload 累积 Python 对象："
+                f"峰值分配 {peak_bytes} 字节",
+            )
+
+    def test_event_chain校验仍拒绝重复event_id(self) -> None:
+        from icode.pack_verify import _verify_event_chain, canonical_event_hash
+
+        with temp_workspace() as ws:
+            events_path = ws / "duplicate-ids.jsonl"
+            previous_hash = "0" * 64
+            lines: list[str] = []
+            for index, event_type in enumerate(("ticket_created", "command_output")):
+                event = {
+                    "event_id": "reused-event-id",
+                    "event_type": event_type,
+                    "payload": {"sequence": index},
+                    "previous_event_hash": previous_hash,
+                }
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+                lines.append(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
+            events_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            _artifact_facts, problems = _verify_event_chain(events_path)
+
+            self.assertTrue(any("event_id 重复" in problem for problem in problems), problems)
+
     def test_所有Verifier拒绝孤立代理项并接受合法代理对(self) -> None:
         invalid_scalar = chr(0xD800)
         cases = (
