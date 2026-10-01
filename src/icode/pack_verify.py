@@ -60,8 +60,21 @@ def pack_digest(entries: list[dict]) -> str:
     return sha256_bytes(raw.encode("utf-8"))
 
 
+def _json_object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """拒绝重复 JSON 成员名，避免独立审计工具对同一内容产生不同解释。"""
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("JSON 对象包含重复 JSON 成员名")
+        value[key] = item
+    return value
+
+
 def _load_json(path: Path) -> dict:
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    value = json.loads(
+        Path(path).read_text(encoding="utf-8"),
+        object_pairs_hook=_json_object_without_duplicates,
+    )
     if not isinstance(value, dict):
         raise ValueError("JSON 根节点必须是对象")
     return value
@@ -240,8 +253,10 @@ def _verify_event_chain(path: Path) -> tuple[list[dict], list[str]]:
         if not line:
             continue
         try:
-            event = json.loads(line)
-        except (json.JSONDecodeError, RecursionError) as exc:
+            event = json.loads(
+                line, object_pairs_hook=_json_object_without_duplicates,
+            )
+        except (RecursionError, ValueError) as exc:
             problems.append(f"事件链第 {lineno} 行 JSON 不可解析（疑似截断/篡改）：{exc}")
             return events, problems
         if not isinstance(event, dict):

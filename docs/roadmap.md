@@ -1,6 +1,8 @@
 # 开发路线图与取舍原则
 
 - 日期：2026-10-01 Asia/Shanghai
+- **R3 重复 JSON 成员名拒绝（本地验收完成、待新 SHA 远端门）：**verifier 不再接受 manifest、逐行事件与 artifact index 中的重复 JSON 对象成员（包括转义后等名）；旧实现按 Python 默认 last-wins 解释，即使包摘要重算也可通过。现在内置 verifier、CLI 和零依赖包内 `verify.py` 均给出稳定结构错误；Python 3.11 精选 workspace matrix 175 项和全量 preflight 三道门通过。新 SHA 的 CI/官网待验。RFC 8259/I-JSON 与 Codex/OpenHands 固定版本取舍见[持续竞品对照](./agent-landscape-live.md)。只消除解析歧义，不认证来源。
+- **R3 证据包路径约束验收更新：**原路径边界待验状态已由提交 [`6ed35cc`](https://github.com/ayukyo/icode/commit/6ed35cc929bb544e961c1a400579a2aaae909646) 的主 CI [#457](https://github.com/ayukyo/icode/actions/runs/36825808997) success 与官网 [#333](https://github.com/ayukyo/icode/actions/runs/36825808988) success 取代；本机 174 项 workspace matrix 和全量 preflight 也通过。此项只证明静态路径边界，不证明同用户并发安全或 OS 隔离。
 - **R3 独立证据包路径逃逸：**校验器现将 manifest 文件项、artifact snapshot、固定 manifest/events/index 与递归目录都限制在包根内；拒绝绝对/父目录/Windows 分隔符歧义、symlink/reparse point，并以 no-follow 遍历外部链接目录。6 类路径逃逸和固定/未登记链接变体走内置和独立 verifier，CLI 稳定失败且不泄漏标记；174 项 workspace matrix 与全量 preflight 三道门通过，新 SHA CI 待验。只表示静态包路径受限，不证明同用户并发安全或 OS 隔离。
 - **R3 独立证据包校验器畸形结构：**`verify-pack` 与包内 `verify.py` 遇到 manifest/event/artifact 的有效 JSON 但错误根/条目类型时，现改为列出校验问题并返回 1，不再抛 traceback；9 类畸形结构同时走内置与零依赖 verifier。171 项跨平台 workspace matrix 与全量 preflight 三道门已过；提交 [`c2bb5cc`](https://github.com/ayukyo/icode/commit/c2bb5cc2ccd31e3f770ec5b18b78e1614518d148) 的主 CI [#456](https://github.com/ayukyo/icode/actions/runs/36823400302) success，官网 [#332](https://github.com/ayukyo/icode/actions/runs/36823400570) 首次 deploy token 注解在 failed-only 重试第 2 次 success。只证明输入结构/包内完整性，不证明来源认证。
 - **R3 回执结构边界：**`evidence --receipt` 现在只接受 JSON 对象或对象数组；标量与含非对象成员的数组在打包前以退出码 2 拒绝，避免误报成功证据包或清理既有目标。对象字段仍不强制 schema，以兼容不同外部回执类型；这不验证来源真实性。170 项跨平台 workspace matrix 和全量 preflight 通过，远端 CI 待推送后验收。

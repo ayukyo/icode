@@ -718,6 +718,82 @@ class TestStandaloneVerifier(unittest.TestCase):
                 self.assertIn("校验失败", standalone.stdout)
                 self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
 
+    def test_内置和独立校验器拒绝证据包中的重复JSON成员名(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from icode.cli import main
+        from icode.pack_verify import pack_digest, sha256_file
+
+        def replace_member(pack: Path, member: str) -> None:
+            if member == "manifest.json":
+                path = pack / member
+                text = path.read_text(encoding="utf-8")
+                unique_member = '"path": "ticket/metadata.json"'
+                self.assertIn(unique_member, text)
+                path.write_text(
+                    text.replace(
+                        unique_member,
+                        '"p\\u0061th": "ignored-shadow.txt", ' + unique_member,
+                        1,
+                    ),
+                    encoding="utf-8",
+                )
+                return
+
+            path = pack / member
+            text = path.read_text(encoding="utf-8")
+            if member == "ticket/events.jsonl":
+                unique_member = '"event_type": "ticket_created"'
+                duplicate = '"event_type": "ignored-shadow", ' + unique_member
+            else:
+                unique_member = '"artifacts": ['
+                duplicate = '"artifacts": [], ' + unique_member
+            self.assertIn(unique_member, text)
+            path.write_text(text.replace(unique_member, duplicate, 1), encoding="utf-8")
+
+            manifest_path = pack / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            entry = next(item for item in manifest["files"] if item["path"] == member)
+            entry["sha256"] = sha256_file(path)
+            entry["size"] = path.stat().st_size
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+        for member in ("manifest.json", "ticket/events.jsonl", "artifacts.json"):
+            with self.subTest(member=member), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                dest = ws / "pack"
+                report = build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+                replace_member(dest, member)
+
+                problems = verify_pack(dest)
+                self.assertTrue(problems)
+                self.assertTrue(
+                    any("重复 JSON 成员名" in problem for problem in problems), problems,
+                )
+
+                stdout = StringIO()
+                stderr = StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    exit_code = main(["verify-pack", str(dest)])
+                self.assertEqual(exit_code, 1, stdout.getvalue() + stderr.getvalue())
+                self.assertIn("重复 JSON 成员名", stdout.getvalue())
+                self.assertNotIn("Traceback", stdout.getvalue() + stderr.getvalue())
+
+                standalone = self._run_verifier(dest, cwd=ws)
+                self.assertEqual(
+                    standalone.returncode, 1, standalone.stdout + standalone.stderr,
+                )
+                self.assertIn("重复 JSON 成员名", standalone.stdout)
+                self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
+
     def test_内置和独立校验器拒绝证据包路径越界(self) -> None:
         from contextlib import redirect_stderr, redirect_stdout
         from hashlib import sha256
