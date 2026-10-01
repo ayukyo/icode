@@ -30,6 +30,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = stat.FILE_ATTRIBUTE_REPARSE_POINT
 _SHA256_FILE_READ_SIZE = 1024 * 1024
 _MAX_JSON_CONTAINER_DEPTH = 128
+_MAX_EVENT_CHAIN_DIAGNOSTIC_SAMPLES = 32
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -135,6 +136,36 @@ def event_schema_issues(
             issues.add(field)
 
     return issues
+
+
+class _EventChainDiagnostics:
+    """Keep verifier diagnostics bounded without stopping validation of later events."""
+
+    def __init__(self) -> None:
+        self._samples: list[str] = []
+        self._counts: dict[str, int] = {}
+        self._total = 0
+
+    def add(self, category: str, message: str) -> None:
+        # Categories are fixed call-site labels; message text must not be copied
+        # from schema-invalid input without a strict bound.
+        self._total += 1
+        self._counts[category] = self._counts.get(category, 0) + 1
+        if len(self._samples) < _MAX_EVENT_CHAIN_DIAGNOSTIC_SAMPLES:
+            self._samples.append(message)
+
+    def render(self) -> list[str]:
+        rendered = list(self._samples)
+        omitted = self._total - len(self._samples)
+        if omitted:
+            categories = ", ".join(
+                f"{name}={count}" for name, count in sorted(self._counts.items())
+            )
+            rendered.append(
+                f"事件链校验发现 {self._total} 个链问题；仅展示前 {len(self._samples)} 条，"
+                f"省略 {omitted} 条（{categories}）"
+            )
+        return rendered
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -428,7 +459,7 @@ def _verify_event_chain(
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """逐条校验事件，只保留去重 ID 与产物绑定所需的紧凑事实。"""
     problems: list[str] = []
-    chain_problems: list[str] = []
+    chain_problems = _EventChainDiagnostics()
     artifact_facts: dict[str, tuple[str, str]] = {}
     seen_ids: set[str] = set()
     previous_hash = GENESIS_HASH
@@ -459,7 +490,7 @@ def _verify_event_chain(
     try:
         stream = path.open(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
-        return artifact_facts, [f"事件链无法读取：{type(exc).__name__}"]
+        return artifact_facts, [*chain_problems.render(), f"事件链无法读取：{type(exc).__name__}"]
 
     try:
         with stream:
@@ -475,21 +506,24 @@ def _verify_event_chain(
                     problems.append(
                         f"事件链第 {lineno} 行 JSON 不可解析（疑似截断/篡改）：{exc}"
                     )
+                    problems.extend(chain_problems.render())
                     append_payload_shape_problems(problems)
                     append_event_type_problem(problems)
                     append_event_schema_problem(problems)
                     return artifact_facts, problems
                 if not isinstance(event, dict):
                     problems.append(f"事件链第 {lineno} 行结构无效（必须是对象）")
+                    problems.extend(chain_problems.render())
                     append_payload_shape_problems(problems)
                     append_event_type_problem(problems)
                     append_event_schema_problem(problems)
                     return artifact_facts, problems
 
                 event_count += 1
-                invalid_schema_fields.update(
-                    event_schema_issues(event, expected_ticket_id=expected_ticket_id)
+                schema_issues = event_schema_issues(
+                    event, expected_ticket_id=expected_ticket_id,
                 )
+                invalid_schema_fields.update(schema_issues)
                 if event_count == 1:
                     first_type = event.get("event_type")
                     first_event_type_valid = (
@@ -505,19 +539,30 @@ def _verify_event_chain(
 
                 event_id = event.get("event_id")
                 if not isinstance(event_id, str) or not event_id:
-                    chain_problems.append(
+                    chain_problems.add(
+                        "event_id",
                         f"第 {event_count} 条事件 event_id 结构无效（必须是非空字符串）"
                     )
+                elif "event_id" in schema_issues:
+                    # Invalid IDs are already represented by the bounded schema
+                    # summary. Do not retain arbitrary-length attacker strings in
+                    # the duplicate-detection set or diagnostic text.
+                    pass
                 elif event_id in seen_ids:
-                    chain_problems.append(f"第 {event_count} 条事件 event_id 重复：{event_id!r}")
+                    chain_problems.add(
+                        "event_id_duplicate",
+                        f"第 {event_count} 条事件 event_id 重复：{event_id!r}",
+                    )
                 else:
                     seen_ids.add(event_id)
                 if event.get("previous_event_hash") != previous_hash:
-                    chain_problems.append(
+                    chain_problems.add(
+                        "previous_event_hash",
                         f"第 {event_count} 条事件 previous_event_hash 断链（疑似删改事件）"
                     )
                 if event.get("event_hash") != canonical_event_hash(event):
-                    chain_problems.append(
+                    chain_problems.add(
+                        "event_hash",
                         f"第 {event_count} 条事件 event_hash 与内容不符（疑似篡改）"
                     )
                 previous_hash = event.get("event_hash", previous_hash)
@@ -539,10 +584,11 @@ def _verify_event_chain(
                         )
     except (OSError, UnicodeError) as exc:
         problems.append(f"事件链无法读取：{type(exc).__name__}")
+        problems.extend(chain_problems.render())
         append_event_schema_problem(problems)
         return {}, problems
 
-    problems.extend(chain_problems)
+    problems.extend(chain_problems.render())
     if event_count and not first_event_type_valid:
         problems.append(
             f"首条事件类型为 {first_event_type_label}，应为 {sorted(ALLOWED_FIRST_EVENT)} 之一"

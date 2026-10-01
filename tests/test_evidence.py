@@ -982,6 +982,88 @@ class TestStandaloneVerifier(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("校验通过", proc.stdout)
 
+    def test_事件链坏记录洪泛时仍完整验证且诊断有界(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from icode.cli import main
+        from icode.pack_verify import pack_digest, sha256_file
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            events_path = dest / "ticket" / "events.jsonl"
+            events = []
+            repeated_id = "00000000-0000-4000-8000-000000000001"
+            ticket_id = json.loads(
+                events_path.read_text(encoding="utf-8").splitlines()[0]
+            )["ticket_id"]
+            for index in range(257):
+                events.append({
+                    "schema_version": 1,
+                    "event_id": repeated_id if index < 256 else "x" * 4096,
+                    "ticket_id": ticket_id,
+                    "timestamp": "2026-10-01T00:00:00+00:00",
+                    "actor": "system",
+                    "event_type": "ticket_created" if index == 0 else "step_finished",
+                    "payload": {},
+                    "previous_event_hash": "e" * 64,
+                    "event_hash": "f" * 64,
+                })
+            events_path.write_text(
+                "\n".join(json.dumps(event, separators=(",", ":")) for event in events)
+                + "\n",
+                encoding="utf-8",
+            )
+
+            manifest_path = dest / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            event_entry = next(
+                item for item in manifest["files"]
+                if item["path"] == "ticket/events.jsonl"
+            )
+            event_entry["sha256"] = sha256_file(events_path)
+            event_entry["size"] = events_path.stat().st_size
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            problems = verify_pack(dest)
+            joined_problems = "\n".join(problems)
+            self.assertLessEqual(len(problems), 34, joined_problems)
+            self.assertIn("769 个链问题", joined_problems)
+            self.assertIn("省略 737 条", joined_problems)
+            self.assertIn("event_id_duplicate=255", joined_problems)
+            self.assertIn("event_hash=257", joined_problems)
+            self.assertIn("previous_event_hash=257", joined_problems)
+            self.assertNotIn("x" * 4096, joined_problems)
+            self.assertLess(max(map(len, problems)), 512)
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(["verify-pack", str(dest)])
+            self.assertEqual(exit_code, 1, stdout.getvalue() + stderr.getvalue())
+            self.assertIn("省略 737 条", stdout.getvalue())
+            self.assertNotIn("Traceback", stdout.getvalue() + stderr.getvalue())
+            self.assertLess(len(stdout.getvalue()), 16 * 1024)
+
+            standalone = self._run_verifier(dest, cwd=ws)
+            self.assertEqual(
+                standalone.returncode, 1, standalone.stdout + standalone.stderr,
+            )
+            self.assertIn("省略 737 条", standalone.stdout)
+            self.assertNotIn("x" * 4096, standalone.stdout + standalone.stderr)
+            self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
+            self.assertLess(len(standalone.stdout), 16 * 1024)
+
     def test_独立运行校验器能发现篡改(self) -> None:
         with temp_workspace() as ws:
             out_dir = make_finished_plan_ticket(self.settings, ws / "work")
