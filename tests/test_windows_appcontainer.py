@@ -1646,6 +1646,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             "'ipv6_network_error'}",
             "import ctypes,hashlib,json,os,pathlib,socket,subprocess,sys,time",
             "def network_connect_denied(family,address,port):",
+            "code=bounded_error_code(connection.connect_ex((address,port)))",
             "return True,False,code==10013,code",
             "network_connect_denied(socket.AF_INET,'127.0.0.1',ipv4_loopback_port)",
             "network_connect_denied(socket.AF_INET6,'::1',ipv6_loopback_port)",
@@ -1656,6 +1657,80 @@ class TestWindowsAppContainer(unittest.TestCase):
         ):
             with self.subTest(required_probe=required_probe):
                 self.assertIn(required_probe, captured_scripts[0])
+
+        probe_script = captured_scripts[0]
+        helper_start = probe_script.index("network_canary=")
+        helper_end = probe_script.index("ipv4_network_attempted,", helper_start)
+        network_helper = probe_script[helper_start:helper_end]
+
+        class _ConnectExSocket:
+            def __init__(
+                self, result: int = 0, error: OSError | None = None,
+            ) -> None:
+                self.result = result
+                self.error = error
+                self.closed = False
+                self.sent: bytes | None = None
+                self.timeout: float | None = None
+
+            def settimeout(self, timeout: float) -> None:
+                self.timeout = timeout
+
+            def connect_ex(self, _address: tuple[str, int]) -> int:
+                if self.error is not None:
+                    raise self.error
+                return self.result
+
+            def sendall(self, payload: bytes) -> None:
+                self.sent = payload
+
+            def close(self) -> None:
+                self.closed = True
+
+        def run_network_probe(connection: _ConnectExSocket) -> tuple[
+            tuple[bool, bool, bool, int], dict[str, object],
+        ]:
+            socket_module = mock.Mock(
+                AF_INET=socket.AF_INET,
+                AF_INET6=socket.AF_INET6,
+                SOCK_STREAM=socket.SOCK_STREAM,
+            )
+            socket_module.socket.return_value = connection
+            namespace: dict[str, object] = {"socket": socket_module}
+            exec(network_helper, namespace)
+            probe = namespace["network_connect_denied"]
+            return probe(socket.AF_INET, "127.0.0.1", 32123), namespace
+
+        for code, expected in (
+            (10013, (True, False, True, 10013)),
+            (10035, (True, False, False, 10035)),
+            (10061, (True, False, False, 10061)),
+            (0, (True, True, False, 0)),
+        ):
+            with self.subTest(connect_ex_code=code):
+                connection = _ConnectExSocket(result=code)
+                outcome, namespace = run_network_probe(connection)
+
+                self.assertEqual(outcome, expected)
+                self.assertTrue(connection.closed)
+                self.assertEqual(connection.timeout, 3)
+                if code == 0:
+                    self.assertEqual(connection.sent, namespace["network_canary"])
+                else:
+                    self.assertIsNone(connection.sent)
+
+        access_denied = OSError("access denied")
+        access_denied.winerror = 10013
+        for error, expected in (
+            (access_denied, (True, False, True, 10013)),
+            (OSError("error code unavailable"), (True, False, False, -1)),
+        ):
+            with self.subTest(connect_ex_exception=expected[-1]):
+                connection = _ConnectExSocket(error=error)
+                outcome, _namespace = run_network_probe(connection)
+
+                self.assertEqual(outcome, expected)
+                self.assertTrue(connection.closed)
         self.assertNotIn("advapi.CheckTokenMembership", captured_scripts[0])
 
         reviewer_source = inspect.getsource(
@@ -6183,10 +6258,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "        except OSError as exc:\n"
                     "            code=bounded_error_code(getattr(exc,'winerror',None))\n"
                     "            return False,False,False,code\n"
-                    "        try: connection.connect((address,port))\n"
+                    "        try:\n"
+                    "            code=bounded_error_code(connection.connect_ex((address,port)))\n"
                     "        except OSError as exc:\n"
                     "            code=bounded_error_code(getattr(exc,'winerror',None))\n"
                     "            return True,False,code==10013,code\n"
+                    "        if code!=0: return True,False,code==10013,code\n"
                     "        try: connection.sendall(network_canary)\n"
                     "        except OSError: pass\n"
                     "        return True,True,False,0\n"
