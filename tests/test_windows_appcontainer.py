@@ -1519,6 +1519,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         notice_names = {name for name, _encoded in captured_notices}
         self.assertIn("Windows Reviewer snapshot access", notice_names)
         self.assertIn("Windows Reviewer snapshot writes and cleanup", notice_names)
+        self.assertIn("Windows Reviewer access diagnostics", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
         self.assertEqual(len(captured_scripts), 1)
         for required_probe in (
@@ -1532,6 +1533,14 @@ class TestWindowsAppContainer(unittest.TestCase):
             "kernel.CheckTokenMembershipEx.argtypes",
             "CheckTokenMembershipEx(admin_token,admin_sid,0x00000001,",
             "kernel.CloseHandle(admin_token)",
+            "access_errors={}",
+            "def access_denied(key,call):",
+            "if code==5: return True",
+            "access_errors[key]=code if type(code) is int and 0<=code<=0xffffffff else -1",
+            "facts['access_errors']=access_errors",
+            "if error_code==5: return True",
+            "access_errors['dacl_write_dac']=error_code if type(error_code) is int and 0<=error_code<=0xffffffff else -1",
+            "if key not in {'child_pid','access_errors'}",
         ):
             with self.subTest(required_probe=required_probe):
                 self.assertIn(required_probe, captured_scripts[0])
@@ -5599,9 +5608,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'admin_group_enabled':admin_enabled.value!=0}\n"
                     "    finally:\n"
                     "        kernel.CloseHandle(token)\n"
-                    "def access_denied(call):\n"
+                    "access_errors={}\n"
+                    "def access_denied(key,call):\n"
                     "    try: call()\n"
-                    "    except OSError as exc: return getattr(exc,'winerror',None)==5\n"
+                    "    except OSError as exc:\n"
+                    "        code=getattr(exc,'winerror',None)\n"
+                    "        if code==5: return True\n"
+                    "        access_errors[key]=code if type(code) is int and 0<=code<=0xffffffff else -1\n"
                     "    return False\n"
                     "def dacl_write_dac_denied(path):\n"
                     "    import ctypes.wintypes as wintypes\n"
@@ -5613,7 +5626,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "    ctypes.set_last_error(0)\n"
                     "    handle=kernel.CreateFileW(str(path),0x00060000,0x7,None,3,0x80,None)\n"
                     "    if handle==ctypes.c_void_p(-1).value:\n"
-                    "        return ctypes.get_last_error()==5\n"
+                    "        error_code=ctypes.get_last_error()\n"
+                    "        if error_code==5: return True\n"
+                    "        access_errors['dacl_write_dac']=error_code if type(error_code) is int and 0<=error_code<=0xffffffff else -1\n"
+                    "        return False\n"
                     "    kernel.CloseHandle(handle)\n"
                     "    return False\n"
                     "token=query_token()\n"
@@ -5630,15 +5646,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f"dacl_file=pathlib.Path({str(dacl_file)!r})\n"
                     f"new_file=pathlib.Path({str(snapshot / 'new.py')!r})\n"
                     "facts={'approved_read':hashlib.sha256(approved.read_bytes()).hexdigest()==expected,"
-                    "'outside_snapshot_denied':access_denied(lambda:outside.read_bytes()),"
-                    "'workspace_denied':access_denied(lambda:workspace.read_bytes()),"
-                    "'home_denied':access_denied(lambda:home.read_bytes()),"
-                    "'ledger_denied':access_denied(lambda:ledger.read_bytes()),"
-                    "'write_denied':access_denied(lambda:mutable.write_bytes(b'changed')) ,"
-                    "'delete_denied':access_denied(lambda:deletable.unlink()),"
-                    "'rename_denied':access_denied(lambda:rename_source.rename(rename_target)),"
-                    "'create_denied':access_denied(lambda:new_file.write_bytes(b'new')),"
+                    "'outside_snapshot_denied':access_denied('outside_snapshot',lambda:outside.read_bytes()),"
+                    "'workspace_denied':access_denied('workspace',lambda:workspace.read_bytes()),"
+                    "'home_denied':access_denied('home',lambda:home.read_bytes()),"
+                    "'ledger_denied':access_denied('ledger',lambda:ledger.read_bytes()),"
+                    "'write_denied':access_denied('write',lambda:mutable.write_bytes(b'changed')) ,"
+                    "'delete_denied':access_denied('delete',lambda:deletable.unlink()),"
+                    "'rename_denied':access_denied('rename',lambda:rename_source.rename(rename_target)),"
+                    "'create_denied':access_denied('create',lambda:new_file.write_bytes(b'new')),"
                     "'dacl_write_dac_denied':dacl_write_dac_denied(dacl_file)}\n"
+                    "facts['access_errors']=access_errors\n"
                     f"child=subprocess.Popen([sys.executable,'-I','-c',{child_code!r}])\n"
                     f"deadline=time.monotonic()+5\n"
                     f"while not pathlib.Path({str(child_ready_file)!r}).is_file() and time.monotonic()<deadline: time.sleep(.05)\n"
@@ -5649,7 +5666,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "if not (token['appcontainer'] and token['package_sid'] and token['capability_count']==0 "
                     "and not token['elevated'] and not token['admin_group_enabled'] "
                     "and all(value for key,value in facts.items() "
-                    "if key not in {'child_pid'})): raise SystemExit(78)\n"
+                    "if key not in {'child_pid','access_errors'})): raise SystemExit(78)\n"
                 )
                 compile(script, "<reviewer-snapshot-probe>", "exec")
                 candidate = run_windows_appcontainer(
@@ -5668,6 +5685,20 @@ class TestWindowsAppContainer(unittest.TestCase):
                 token = result.get("token") if isinstance(result, dict) else {}
                 facts = facts if isinstance(facts, dict) else {}
                 token = token if isinstance(token, dict) else {}
+                raw_access_errors = facts.get("access_errors")
+                if not isinstance(raw_access_errors, dict):
+                    raw_access_errors = {}
+                access_error_keys = {
+                    "outside_snapshot", "workspace", "home", "ledger",
+                    "write", "delete", "rename", "create", "dacl_write_dac",
+                }
+                access_errors = {
+                    key: code
+                    for key, code in raw_access_errors.items()
+                    if key in access_error_keys
+                    and type(code) is int
+                    and -1 <= code <= 0xFFFFFFFF
+                }
 
                 child_pid = facts.get("child_pid")
                 child_exited = False
@@ -5711,6 +5742,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     ),
                     "runtime_acl_restored": "runtime_acl_restore_verified=true" in candidate.detail,
                     "staged_files": stage_summary.get("staged_entries"),
+                    "access_errors": access_errors,
                 }
                 self._workflow_json_notice(
                     "Windows Reviewer probe preflight",
@@ -5742,6 +5774,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                             "snapshot_acl_restored", "runtime_acl_restored", "staged_files",
                         )
                     },
+                )
+                self._workflow_json_notice(
+                    "Windows Reviewer access diagnostics",
+                    summary["access_errors"],
                 )
                 self.assertTrue(candidate.executed, candidate)
                 self.assertEqual(candidate.exit_code, 0, candidate)
