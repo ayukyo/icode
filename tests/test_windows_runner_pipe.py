@@ -68,6 +68,12 @@ _NATIVE_PIPE_CLIENT_FLAGS = re.compile(
     r"\+nosqos_(?:ok|d5|pid_unavailable|pid_mismatch|[ewcs][0-9a-f]{8}|[cs])"
     r"\+neither_(?:ok|d5|pid_unavailable|pid_mismatch|[ewcs][0-9a-f]{8}|[cs])\Z",
 )
+_NATIVE_PIPE_ACCESS_CONTROL_RECEIPT = re.compile(
+    r"self_pipe=(?:self_pipe_ok|self_pipe_denied|self_pipe_other):"
+    r"self_access_(?:allow|deny|unavailable);temporary_dacl="
+    r"[duc][odf][adu][ptu][panu][mxnu](?:[0-9a-f]{8}|-{8})_"
+    r"[duc][odf][adu][ptu][panu][mxnu](?:[0-9a-f]{8}|-{8})\Z",
+)
 _NATIVE_PIPE_DESCRIPTOR_SHAPE = re.compile(
     r"sd_control=[0-9A-F]{4};sd_revision=[0-9]{1,3};"
     r"owner=(?:user|logon|other|absent|unavailable);"
@@ -173,6 +179,17 @@ def _native_pipe_access_control_receipt() -> str:
         )
     except Exception:
         return "self_pipe=unavailable;temporary_dacl=unavailable"
+
+
+def _format_native_pipe_access_control_notice(receipt: object) -> str:
+    """Keep temporary-DACL diagnostics fixed before emitting a CI notice."""
+    if (
+        type(receipt) is not str
+        or len(receipt) > 128
+        or _NATIVE_PIPE_ACCESS_CONTROL_RECEIPT.fullmatch(receipt) is None
+    ):
+        receipt = "unavailable"
+    return f"pipe_access_controls={receipt}"
 
 
 def _native_pipe_target_access_receipt(
@@ -525,6 +542,23 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
             _native_pipe_access_control_receipt(),
             "self_pipe=self_pipe_other:self_access_unavailable;"
             "temporary_dacl=dfuuuu--------_ufuuuu--------",
+        )
+
+    def test_pipe_access_control_notice_accepts_only_fixed_receipts(self) -> None:
+        formatter = globals().get("_format_native_pipe_access_control_notice")
+        self.assertTrue(
+            callable(formatter), "pipe_access_control_notice_formatter_missing",
+        )
+        receipt = (
+            "self_pipe=self_pipe_other:self_access_unavailable;"
+            "temporary_dacl=dfuuuu--------_ufuuuu--------"
+        )
+        self.assertEqual(
+            formatter(receipt), f"pipe_access_controls={receipt}",
+        )
+        self.assertEqual(
+            formatter("self_pipe=\nS-1-5-5-sensitive"),
+            "pipe_access_controls=unavailable",
         )
 
     def test_native_pipe_target_access_receipt_uses_actual_handle(self) -> None:
@@ -1740,6 +1774,13 @@ class TestWindowsRunnerPipeNative(unittest.TestCase):
                 if isinstance(client_error, PermissionError)
                 else ""
             )
+            if controls:
+                print(
+                    "::notice::"
+                    + _format_native_pipe_access_control_notice(
+                        controls.removeprefix(";"),
+                    ),
+                )
             target_access = (
                 f";{target_access_receipts[-1]}"
                 if isinstance(client_error, PermissionError)
