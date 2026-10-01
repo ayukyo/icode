@@ -18,6 +18,7 @@ CROSS_PLATFORM_R3_TESTS = (
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_run_task成功测试绑定受测tree和结果commit",
     "tests.test_evidence.TestEvidencePack.test真实task回执经CLI保存导入证据包并独立校验",
     "tests.test_evidence.TestEvidencePack.test_evidence导入无效回执时返回用户错误且不触碰目标包",
+    "tests.test_evidence.TestEvidencePack.test_evidence导入有限浮点回执后可生成并独立校验",
     "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器对畸形JSON结构返回失败而不抛异常",
     "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器拒绝证据包路径越界",
     "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器拒绝固定成员符号链接",

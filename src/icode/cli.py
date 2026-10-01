@@ -523,6 +523,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     import json as _json
 
     from .evidence import build_evidence_pack, collect_verifications
+    from .pack_verify import loads_json_value
     from .runner import run_unittest
 
     settings = load_settings(args.skill_root)
@@ -539,12 +540,15 @@ def cmd_evidence(args: argparse.Namespace) -> int:
             print(f"回执文件不是有效 UTF-8：{p}", file=sys.stderr)
             return 2
         try:
-            data = _json.loads(receipt_text)
+            data = loads_json_value(receipt_text)
         except _json.JSONDecodeError as exc:
             print(
                 f"回执文件 JSON 格式无效：{p}（第 {exc.lineno} 行第 {exc.colno} 列）",
                 file=sys.stderr,
             )
+            return 2
+        except (ValueError, RecursionError):
+            print(f"回执文件 JSON 格式无效：{p}", file=sys.stderr)
             return 2
         if not isinstance(data, dict) and not (
             isinstance(data, list) and all(isinstance(item, dict) for item in data)

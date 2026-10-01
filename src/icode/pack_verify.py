@@ -101,13 +101,19 @@ def _reject_non_interoperable_values(value: object) -> None:
             pending.extend(current)
 
 
-def _load_json(path: Path) -> dict:
+def loads_json_value(text: str) -> object:
+    """Parse JSON under the same strict interoperability rules used by verify.py."""
     value = json.loads(
-        Path(path).read_text(encoding="utf-8"),
+        text,
         object_pairs_hook=_json_object_without_duplicates,
         parse_constant=_reject_non_json_numeric_constant,
     )
     _reject_non_interoperable_values(value)
+    return value
+
+
+def _load_json(path: Path) -> dict:
+    value = loads_json_value(Path(path).read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise ValueError("JSON 根节点必须是对象")
     return value

@@ -255,6 +255,18 @@ class TestEvidencePack(unittest.TestCase):
             ("invalid-utf8", b"\xff", "不是有效 UTF-8", True),
             ("non-object", b"null", "回执文件结构无效", False),
             ("non-object-item", b"[{\"kind\":\"command\"}, null]", "回执文件结构无效", True),
+            ("nan", b"{\"value\":NaN}", "JSON 格式无效", True),
+            ("positive-infinity", b"{\"value\":Infinity}", "JSON 格式无效", True),
+            ("negative-infinity", b"{\"value\":-Infinity}", "JSON 格式无效", True),
+            ("overflow", b"{\"value\":1e400}", "JSON 格式无效", True),
+            ("duplicate-member", b"{\"value\":1,\"value\":2}", "JSON 格式无效", True),
+            ("lone-surrogate", b"{\"value\":\"\\ud800\"}", "JSON 格式无效", True),
+            (
+                "deeply-nested",
+                b'{"value":' * 1200 + b"0" + b"}" * 1200,
+                "JSON 格式无效",
+                True,
+            ),
         )
         for name, contents, expected_error, existing_pack in cases:
             with self.subTest(receipt=name), temp_workspace() as ws:
@@ -281,7 +293,11 @@ class TestEvidencePack(unittest.TestCase):
                         "--receipt", str(receipt_path),
                     ])
 
-                self.assertEqual(exit_code, 2, stdout.getvalue() + stderr.getvalue())
+                if exit_code != 2:
+                    self.fail(
+                        f"{name}: expected invalid receipt to return 2, got {exit_code}; "
+                        f"stdout={stdout.getvalue()!r}, stderr={stderr.getvalue()!r}"
+                    )
                 self.assertIn(expected_error, stderr.getvalue())
                 self.assertNotIn("Traceback", stderr.getvalue())
                 if existing_pack:
@@ -289,6 +305,39 @@ class TestEvidencePack(unittest.TestCase):
                     self.assertEqual(list(pack_path.iterdir()), [marker])
                 else:
                     self.assertFalse(pack_path.exists())
+
+    def test_evidence导入有限浮点回执后可生成并独立校验(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        from icode.cli import main
+
+        with temp_workspace() as ws:
+            ticket = make_finished_plan_ticket(self.settings, ws / "work")
+            receipt_path = ws / "finite.json"
+            receipt_path.write_bytes(b'{"ratio":1.25}')
+            pack_path = ws / "pack"
+            stdout = StringIO()
+            stderr = StringIO()
+            with (
+                patch("icode.cli.load_settings", return_value=self.settings),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main([
+                    "evidence",
+                    "--ticket", str(ticket),
+                    "--dest", str(pack_path),
+                    "--receipt", str(receipt_path),
+                ])
+
+            self.assertEqual(exit_code, 0, stdout.getvalue() + stderr.getvalue())
+            verifications = json.loads(
+                (pack_path / "verifications.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(verifications["receipts"], [{"ratio": 1.25}])
+            self.assertEqual(verify_pack(pack_path), [])
 
     def test真实task回执经CLI保存导入证据包并独立校验(self) -> None:
         from contextlib import redirect_stdout
