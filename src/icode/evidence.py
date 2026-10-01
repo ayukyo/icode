@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import __version__
 from .contracts import ContractSet
-from .pack_verify import EVENTS_REL, loads_json_value, verify_pack
+from .pack_verify import ALLOWED_EVENT_TYPES, EVENTS_REL, loads_json_value, verify_pack
 
 METADATA_NAME = ".ico_metadata.json"
 EVENTS_NAME = ".ico_events.jsonl"
@@ -107,6 +107,10 @@ def _read_events(out_dir: Path) -> _EventSummary:
 
                 summary.event_count += 1
                 event_type = event.get("event_type")
+                if not isinstance(event_type, str) or event_type not in ALLOWED_EVENT_TYPES:
+                    raise EvidenceError(
+                        f"事件链第 {lineno} 行 event_type 无效（不属于允许类型）"
+                    )
                 payload = event.get("payload")
                 if not isinstance(payload, dict):
                     raise EvidenceError(

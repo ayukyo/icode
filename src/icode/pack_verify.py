@@ -36,6 +36,31 @@ EVENTS_REL = "ticket/events.jsonl"
 
 # 事件链首事件必须属于这两类（与上游一致）
 ALLOWED_FIRST_EVENT = {"ticket_created", "migration_applied"}
+ALLOWED_EVENT_TYPES = frozenset({
+    "ticket_created",
+    "step_started",
+    "step_finished",
+    "artifact_written",
+    "gate_checked",
+    "operation_started",
+    "operation_finished",
+    "state_changed",
+    "metadata_updated",
+    "claim_recorded",
+    "verification_recorded",
+    "skill_run_recorded",
+    "snapshot_written",
+    "close_phase",
+    "ticket_reopened",
+    "requirement_delta",
+    "agent_spawned",
+    "agent_result",
+    "doc_module_status",
+    "index_updated",
+    "migration_applied",
+    "idempotent_hit",
+    "external_note",
+})
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -297,6 +322,7 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
     first_event_type_valid = False
     first_event_type_label = ""
     invalid_payload_kinds: set[str] = set()
+    invalid_event_type_seen = False
 
     def append_payload_shape_problems(target: list[str]) -> None:
         # Bound retained diagnostics even if a hostile event stream contains many
@@ -305,6 +331,10 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
             target.append("事件 payload 结构无效（必须是对象）")
         if "artifact_written" in invalid_payload_kinds:
             target.append("artifact_written 事件 payload 结构无效（必须是对象）")
+
+    def append_event_type_problem(target: list[str]) -> None:
+        if invalid_event_type_seen:
+            target.append("事件 event_type 无效（不属于允许类型）")
 
     try:
         stream = path.open(encoding="utf-8")
@@ -326,10 +356,12 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
                         f"事件链第 {lineno} 行 JSON 不可解析（疑似截断/篡改）：{exc}"
                     )
                     append_payload_shape_problems(problems)
+                    append_event_type_problem(problems)
                     return artifact_facts, problems
                 if not isinstance(event, dict):
                     problems.append(f"事件链第 {lineno} 行结构无效（必须是对象）")
                     append_payload_shape_problems(problems)
+                    append_event_type_problem(problems)
                     return artifact_facts, problems
 
                 event_count += 1
@@ -367,6 +399,8 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
 
                 event_type = event.get("event_type")
                 payload = event.get("payload")
+                if not isinstance(event_type, str) or event_type not in ALLOWED_EVENT_TYPES:
+                    invalid_event_type_seen = True
                 if not isinstance(payload, dict):
                     invalid_payload_kinds.add(
                         "artifact_written" if event_type == "artifact_written" else "event"
@@ -387,6 +421,7 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
             f"首条事件类型为 {first_event_type_label}，应为 {sorted(ALLOWED_FIRST_EVENT)} 之一"
         )
     append_payload_shape_problems(problems)
+    append_event_type_problem(problems)
     return artifact_facts, problems
 
 

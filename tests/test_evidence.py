@@ -183,6 +183,43 @@ class TestEvidencePack(unittest.TestCase):
             )
             self.assertEqual(standalone.returncode, 0, standalone.stdout + standalone.stderr)
 
+    def test_导出器拒绝不在SKILL枚举中的事件类型并保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+        from icode.pack_verify import GENESIS_HASH, canonical_event_hash
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertGreater(len(events), 1)
+            self.assertEqual(events[0]["event_type"], "ticket_created")
+            events[1]["event_type"] = "command_output"
+            previous_hash = GENESIS_HASH
+            for event in events:
+                event["previous_event_hash"] = previous_hash
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_text("keep existing evidence pack\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(EvidenceError, "event_type"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep existing evidence pack\n")
+
     def test_导出器不累计保留大量非产物事件payload(self) -> None:
         import tracemalloc
 
@@ -1065,6 +1102,85 @@ class TestStandaloneVerifier(unittest.TestCase):
             self.assertIn("事件 payload 结构无效", standalone.stdout)
             self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
 
+    def test_所有Verifier拒绝哈希自洽但未知的事件类型(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from icode.cli import main
+        from icode.pack_verify import (
+            ALLOWED_EVENT_TYPES,
+            GENESIS_HASH,
+            canonical_event_hash,
+            pack_digest,
+            sha256_file,
+        )
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            events_path = dest / "ticket" / "events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertGreater(len(events), 1)
+            self.assertEqual(events[0]["event_type"], "ticket_created")
+            events[1]["event_type"] = "command_output"
+            schema_path = REPO_ROOT / "vendor" / "icode-skill" / "schemas" / "ticket-event.schema.json"
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                ALLOWED_EVENT_TYPES,
+                frozenset(schema["properties"]["event_type"]["enum"]),
+            )
+            previous_hash = GENESIS_HASH
+            for event in events:
+                event["previous_event_hash"] = previous_hash
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            manifest_path = dest / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            event_entry = next(
+                item for item in manifest["files"]
+                if item["path"] == "ticket/events.jsonl"
+            )
+            event_entry["sha256"] = sha256_file(events_path)
+            event_entry["size"] = events_path.stat().st_size
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("event_type" in problem for problem in problems),
+                problems,
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(["verify-pack", str(dest)])
+            self.assertEqual(exit_code, 1, stdout.getvalue() + stderr.getvalue())
+            self.assertIn("event_type", stdout.getvalue())
+            self.assertNotIn("Traceback", stdout.getvalue() + stderr.getvalue())
+
+            standalone = self._run_verifier(dest, cwd=ws)
+            self.assertEqual(standalone.returncode, 1, standalone.stdout + standalone.stderr)
+            self.assertIn("event_type", standalone.stdout)
+            self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
+
     def test_内置和独立校验器拒绝证据包中的重复JSON成员名(self) -> None:
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO
@@ -1183,7 +1299,7 @@ class TestStandaloneVerifier(unittest.TestCase):
                 for index in range(256):
                     event = {
                         "event_id": f"large-event-{index}",
-                        "event_type": "ticket_created" if index == 0 else "command_output",
+                        "event_type": "ticket_created" if index == 0 else "step_finished",
                         "payload": {"padding": padding},
                         "previous_event_hash": previous_hash,
                     }
@@ -1214,7 +1330,7 @@ class TestStandaloneVerifier(unittest.TestCase):
             events_path = ws / "duplicate-ids.jsonl"
             previous_hash = "0" * 64
             lines: list[str] = []
-            for index, event_type in enumerate(("ticket_created", "command_output")):
+            for index, event_type in enumerate(("ticket_created", "step_finished")):
                 event = {
                     "event_id": "reused-event-id",
                     "event_type": event_type,
