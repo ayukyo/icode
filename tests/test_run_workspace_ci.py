@@ -9,7 +9,7 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
     def test_cross_platform_matrix_selects_os_neutral_R3_regressions(self) -> None:
-        self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 30)
+        self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 31)
         self.assertTrue(set(CROSS_PLATFORM_R3_TESTS).issubset(DEFAULT_MODULES))
         required_r3_evidence_tests = {
             "tests.test_r3_regression.TestTaskReviewAndDiffBinding.test_run_task证据锚定真实Git基线和含预存脏改动的快照",
@@ -24,6 +24,7 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
             "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器不跟随未登记的外部链接目录",
             "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器拒绝证据包中的重复JSON成员名",
             "tests.test_evidence.TestStandaloneVerifier.test_文件摘要采用有界内存分块读取",
+            "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器接受JSON字符串中的Unicode行段符号",
             "tests.test_runner.TestReviewStepReadOnlyContext.test_review阶段无隔离沙箱时命令在启动前拒绝且不产生标记",
         }
         self.assertTrue(required_r3_evidence_tests.issubset(

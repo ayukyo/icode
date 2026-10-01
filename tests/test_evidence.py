@@ -823,6 +823,70 @@ class TestStandaloneVerifier(unittest.TestCase):
                 f"哈希单个 {artifact_size} 字节文件时 Python 峰值分配 {peak_bytes} 字节",
             )
 
+    def test_内置和独立校验器接受JSON字符串中的Unicode行段符号(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from icode.cli import main
+        from icode.pack_verify import canonical_event_hash, pack_digest, sha256_file
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            events_path = dest / "ticket" / "events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertIsInstance(events[0].get("payload"), dict)
+            events[0]["payload"]["audit_note"] = (
+                "第一段\u0085第二段\u2028第三段\u2029第四段"
+            )
+            previous_hash = "0" * 64
+            for event in events:
+                event["previous_event_hash"] = previous_hash
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            manifest_path = dest / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            event_entry = next(
+                entry for entry in manifest["files"]
+                if entry["path"] == "ticket/events.jsonl"
+            )
+            event_entry["sha256"] = sha256_file(events_path)
+            event_entry["size"] = events_path.stat().st_size
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(verify_pack(dest), [])
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(["verify-pack", str(dest)])
+            self.assertEqual(exit_code, 0, stdout.getvalue() + stderr.getvalue())
+            self.assertIn("证据包校验通过", stdout.getvalue())
+
+            standalone = self._run_verifier(dest, cwd=ws)
+            self.assertEqual(
+                standalone.returncode, 0, standalone.stdout + standalone.stderr,
+            )
+            self.assertIn("校验通过", standalone.stdout)
+
     def test_内置和独立校验器拒绝证据包路径越界(self) -> None:
         from contextlib import redirect_stderr, redirect_stdout
         from hashlib import sha256

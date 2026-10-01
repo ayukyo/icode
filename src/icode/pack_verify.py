@@ -252,25 +252,33 @@ def _verify_event_chain(path: Path) -> tuple[list[dict], list[str]]:
     problems: list[str] = []
     events: list[dict] = []
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        stream = path.open(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         return events, [f"事件链无法读取：{type(exc).__name__}"]
 
-    for lineno, line in enumerate(lines, 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(
-                line, object_pairs_hook=_json_object_without_duplicates,
-            )
-        except (RecursionError, ValueError) as exc:
-            problems.append(f"事件链第 {lineno} 行 JSON 不可解析（疑似截断/篡改）：{exc}")
-            return events, problems
-        if not isinstance(event, dict):
-            problems.append(f"事件链第 {lineno} 行结构无效（必须是对象）")
-            return events, problems
-        events.append(event)
+    try:
+        with stream:
+            for lineno, line in enumerate(stream, 1):
+                # JSONL framing follows physical CR/LF lines. splitlines() also splits Unicode
+                # separators (NEL/LS/PS) that are valid JSON string data.
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(
+                        line, object_pairs_hook=_json_object_without_duplicates,
+                    )
+                except (RecursionError, ValueError) as exc:
+                    problems.append(
+                        f"事件链第 {lineno} 行 JSON 不可解析（疑似截断/篡改）：{exc}"
+                    )
+                    return events, problems
+                if not isinstance(event, dict):
+                    problems.append(f"事件链第 {lineno} 行结构无效（必须是对象）")
+                    return events, problems
+                events.append(event)
+    except (OSError, UnicodeError) as exc:
+        return [], [f"事件链无法读取：{type(exc).__name__}"]
 
     prev = GENESIS_HASH
     seen_ids: set[str] = set()
