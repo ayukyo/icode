@@ -1526,9 +1526,16 @@ class TestWindowsAppContainer(unittest.TestCase):
             "ledger_denied", "write_denied", "delete_denied", "rename_denied",
             "create_denied", "dacl_write_dac_denied",
             "0x00060000", "capability_count",
+            "advapi.DuplicateToken.argtypes",
+            "OpenProcessToken(kernel.GetCurrentProcess(),0x000a,",
+            "DuplicateToken(token,2,ctypes.byref(admin_token))",
+            "kernel.CheckTokenMembershipEx.argtypes",
+            "CheckTokenMembershipEx(admin_token,admin_sid,0x00000001,",
+            "kernel.CloseHandle(admin_token)",
         ):
             with self.subTest(required_probe=required_probe):
                 self.assertIn(required_probe, captured_scripts[0])
+        self.assertNotIn("advapi.CheckTokenMembership", captured_scripts[0])
 
     def test_JSON工作流回执超限时必须显式失败(self) -> None:
         with self.assertRaises(AssertionError):
@@ -5535,22 +5542,25 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "    kernel.GetCurrentProcess.restype=ctypes.c_void_p\n"
                     "    kernel.CloseHandle.argtypes=[ctypes.c_void_p]\n"
                     "    kernel.CloseHandle.restype=wintypes.BOOL\n"
+                    "    kernel.CheckTokenMembershipEx.argtypes=[ctypes.c_void_p,ctypes.c_void_p,"
+                    "wintypes.DWORD,ctypes.POINTER(wintypes.BOOL)]\n"
+                    "    kernel.CheckTokenMembershipEx.restype=wintypes.BOOL\n"
                     "    kernel.LocalFree.argtypes=[ctypes.c_void_p]\n"
                     "    kernel.LocalFree.restype=ctypes.c_void_p\n"
                     "    advapi.OpenProcessToken.argtypes=[ctypes.c_void_p,wintypes.DWORD,"
                     "ctypes.POINTER(ctypes.c_void_p)]\n"
                     "    advapi.OpenProcessToken.restype=wintypes.BOOL\n"
+                    "    advapi.DuplicateToken.argtypes=[ctypes.c_void_p,ctypes.c_int,"
+                    "ctypes.POINTER(ctypes.c_void_p)]\n"
+                    "    advapi.DuplicateToken.restype=wintypes.BOOL\n"
                     "    advapi.GetTokenInformation.argtypes=[ctypes.c_void_p,ctypes.c_int,"
                     "ctypes.c_void_p,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD)]\n"
                     "    advapi.GetTokenInformation.restype=wintypes.BOOL\n"
                     "    advapi.ConvertStringSidToSidW.argtypes=[wintypes.LPCWSTR,"
                     "ctypes.POINTER(ctypes.c_void_p)]\n"
                     "    advapi.ConvertStringSidToSidW.restype=wintypes.BOOL\n"
-                    "    advapi.CheckTokenMembership.argtypes=[ctypes.c_void_p,ctypes.c_void_p,"
-                    "ctypes.POINTER(wintypes.BOOL)]\n"
-                    "    advapi.CheckTokenMembership.restype=wintypes.BOOL\n"
-                    "    token=ctypes.c_void_p(); returned=wintypes.DWORD()\n"
-                    "    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(),0x0008,"
+                    "    token=ctypes.c_void_p(); admin_token=ctypes.c_void_p(); returned=wintypes.DWORD()\n"
+                    "    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(),0x000a,"
                     "ctypes.byref(token)): raise ctypes.WinError(ctypes.get_last_error())\n"
                     "    try:\n"
                     "        app=wintypes.DWORD(); elevated=wintypes.DWORD()\n"
@@ -5576,9 +5586,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "        if not advapi.ConvertStringSidToSidW('S-1-5-32-544',ctypes.byref(admin_sid)):\n"
                     "            raise ctypes.WinError(ctypes.get_last_error())\n"
                     "        try:\n"
-                    "            if not advapi.CheckTokenMembership(token,admin_sid,ctypes.byref(admin_enabled)):\n"
+                    "            if not advapi.DuplicateToken(token,2,ctypes.byref(admin_token)):\n"
+                    "                raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "            if not kernel.CheckTokenMembershipEx(admin_token,admin_sid,"
+                    "0x00000001,ctypes.byref(admin_enabled)):\n"
                     "                raise ctypes.WinError(ctypes.get_last_error())\n"
                     "        finally:\n"
+                    "            if admin_token.value: kernel.CloseHandle(admin_token)\n"
                     "            kernel.LocalFree(admin_sid)\n"
                     "        return {'appcontainer':app.value==1,'package_sid':True,"
                     "'capability_count':capability_count,'elevated':elevated.value!=0,"
