@@ -946,7 +946,6 @@ class TestResultCommitTreeBinding(unittest.TestCase):
 
     def test_run_task成功测试绑定受测tree和结果commit(self) -> None:
         from icode.backends import FakeBackend
-        from icode.config import Settings
         from icode.runner import run_task
 
         with temp_workspace() as ws:
@@ -966,7 +965,7 @@ class TestResultCommitTreeBinding(unittest.TestCase):
             expected_tree_oid = self._git(repo, "rev-parse", "HEAD^{tree}")
 
             report = run_task(
-                Settings(skill_root=repo / "missing-skill"),
+                require_skill(),
                 backend=FakeBackend(["完成"]),
                 workspace=repo,
                 result_commit_sha=commit_sha,

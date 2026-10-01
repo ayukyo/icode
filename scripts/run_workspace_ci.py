@@ -13,6 +13,7 @@ CROSS_PLATFORM_GIT_OBJECT_TESTS = (
     "tests.test_r3_regression.TestTaskReviewAndDiffBinding.test_run_task证据锚定真实Git基线和含预存脏改动的快照",
     "tests.test_r3_regression.TestTaskReviewAndDiffBinding.test_SHA256基线自动选择对应tree对象格式",
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_run_task显式参数自动绑定结果commit",
+    "tests.test_r3_regression.TestResultCommitTreeBinding.test_run_task成功测试绑定受测tree和结果commit",
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_commit_tree读取只读对象并且不改用户index",
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_commit_tree读取忽略replace_refs",
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_commit_tree读取支持SHA256对象格式",
