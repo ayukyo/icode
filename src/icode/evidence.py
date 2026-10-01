@@ -28,7 +28,13 @@ from pathlib import Path
 
 from . import __version__
 from .contracts import ContractSet
-from .pack_verify import ALLOWED_EVENT_TYPES, EVENTS_REL, loads_json_value, verify_pack
+from .pack_verify import (
+    ALLOWED_EVENT_TYPES,
+    EVENTS_REL,
+    event_schema_issues,
+    loads_json_value,
+    verify_pack,
+)
 
 METADATA_NAME = ".ico_metadata.json"
 EVENTS_NAME = ".ico_events.jsonl"
@@ -83,7 +89,7 @@ def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _read_events(out_dir: Path) -> _EventSummary:
+def _read_events(out_dir: Path, *, expected_ticket_id: str) -> _EventSummary:
     path = Path(out_dir) / EVENTS_NAME
     if not path.is_file():
         raise EvidenceError(f"事件链不存在：{path}")
@@ -115,6 +121,15 @@ def _read_events(out_dir: Path) -> _EventSummary:
                 if not isinstance(payload, dict):
                     raise EvidenceError(
                         f"事件链第 {lineno} 行 payload 结构无效（必须是对象）"
+                    )
+                schema_issues = event_schema_issues(
+                    event, expected_ticket_id=expected_ticket_id,
+                )
+                if schema_issues:
+                    fields = ", ".join(sorted(schema_issues))
+                    raise EvidenceError(
+                        f"事件链第 {lineno} 行不符合 pinned ticket-event schema "
+                        f"（字段：{fields}）"
                     )
                 if event_type not in ("step_started", "artifact_written"):
                     continue
@@ -274,10 +289,19 @@ def build_evidence_pack(
     meta_path = out_dir / METADATA_NAME
     if not meta_path.is_file():
         raise EvidenceError(f"不是 v3 工单目录（缺 {METADATA_NAME}）：{out_dir}")
-    meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    ticket_id = str(meta.get("ticket_id") or "UNKNOWN")
+    try:
+        meta = loads_json_value(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise EvidenceError(
+            f"工单 metadata 不可解析：{type(exc).__name__}"
+        ) from None
+    if not isinstance(meta, dict):
+        raise EvidenceError("工单 metadata 结构无效（必须是对象）")
+    ticket_id = meta.get("ticket_id")
+    if not isinstance(ticket_id, str) or not ticket_id:
+        raise EvidenceError("工单 metadata 缺少有效 ticket_id")
 
-    event_summary = _read_events(out_dir)
+    event_summary = _read_events(out_dir, expected_ticket_id=ticket_id)
     if not event_summary.event_count:
         raise EvidenceError("事件链为空，无法导出证据包")
 

@@ -9,7 +9,7 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
     def test_cross_platform_matrix_selects_os_neutral_R3_regressions(self) -> None:
-        self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 45)
+        self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 49)
         self.assertTrue(set(CROSS_PLATFORM_R3_TESTS).issubset(DEFAULT_MODULES))
         required_r3_evidence_tests = {
             "tests.test_r3_regression.TestTaskReviewAndDiffBinding.test_run_task证据锚定真实Git基线和含预存脏改动的快照",
@@ -22,6 +22,8 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
             "tests.test_evidence.TestEvidencePack.test_导出器拒绝任意事件类型的非对象payload并保留旧包",
             "tests.test_evidence.TestEvidencePack.test_任意事件类型的空对象payload仍兼容导出和校验",
             "tests.test_evidence.TestEvidencePack.test_导出器拒绝不在SKILL枚举中的事件类型并保留旧包",
+            "tests.test_evidence.TestEvidencePack.test_导出器拒绝不符合v1事件Schema的字段并保留旧包",
+            "tests.test_evidence.TestEvidencePack.test_导出器拒绝缺失的工单身份且清理旧包前失败",
             "tests.test_evidence.TestEvidencePack.test_导出器不累计保留大量非产物事件payload",
             "tests.test_evidence.TestEvidencePack.test_evidence导入无效回执时返回用户错误且不触碰目标包",
             "tests.test_evidence.TestEvidencePack.test_evidence导入有限浮点回执后可生成并独立校验",
@@ -29,6 +31,8 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
             "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器对畸形JSON结构返回失败而不抛异常",
             "tests.test_evidence.TestStandaloneVerifier.test_所有Verifier拒绝哈希自洽事件中的非对象payload",
             "tests.test_evidence.TestStandaloneVerifier.test_所有Verifier拒绝哈希自洽但未知的事件类型",
+            "tests.test_evidence.TestStandaloneVerifier.test_所有Verifier拒绝哈希自洽但不符合v1事件Schema的包",
+            "tests.test_evidence.TestStandaloneVerifier.test_内置和独立Verifier接受Schema允许省略的request_id",
             "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器拒绝证据包路径越界",
             "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器拒绝固定成员符号链接",
             "tests.test_evidence.TestStandaloneVerifier.test_内置和独立校验器不跟随未登记的外部链接目录",

@@ -22,6 +22,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import stat
 import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -61,6 +62,79 @@ ALLOWED_EVENT_TYPES = frozenset({
     "idempotent_hit",
     "external_note",
 })
+ALLOWED_EVENT_ACTORS = frozenset({"icode", "user", "watch", "system"})
+EVENT_SCHEMA_VERSION = 1
+EVENT_REQUIRED_FIELDS = frozenset({
+    "schema_version",
+    "event_id",
+    "ticket_id",
+    "timestamp",
+    "actor",
+    "event_type",
+    "payload",
+    "previous_event_hash",
+    "event_hash",
+})
+EVENT_SCHEMA_FIELDS = frozenset({
+    *EVENT_REQUIRED_FIELDS,
+    "request_id",
+})
+EVENT_ID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+EVENT_TIMESTAMP_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+EVENT_HASH_PATTERN = r"^[0-9a-f]{64}$"
+
+
+def event_schema_issues(
+    event: dict, *, expected_ticket_id: str | None = None,
+) -> set[str]:
+    """Return bounded field labels that violate the pinned ICODE-SKILL v1 event schema."""
+    issues = set(EVENT_REQUIRED_FIELDS.difference(event))
+    if any(key not in EVENT_SCHEMA_FIELDS for key in event):
+        issues.add("additionalProperties")
+
+    schema_version = event.get("schema_version")
+    if type(schema_version) is not int or schema_version != EVENT_SCHEMA_VERSION:
+        issues.add("schema_version")
+
+    event_id = event.get("event_id")
+    if not isinstance(event_id, str) or re.fullmatch(EVENT_ID_PATTERN, event_id) is None:
+        issues.add("event_id")
+
+    ticket_id = event.get("ticket_id")
+    if not isinstance(ticket_id, str) or not ticket_id:
+        issues.add("ticket_id")
+    elif expected_ticket_id is not None and ticket_id != expected_ticket_id:
+        issues.add("ticket_id")
+
+    if "request_id" in event:
+        request_id = event["request_id"]
+        if request_id is not None and not isinstance(request_id, str):
+            issues.add("request_id")
+
+    timestamp = event.get("timestamp")
+    if (
+        not isinstance(timestamp, str)
+        or re.search(EVENT_TIMESTAMP_PATTERN, timestamp, flags=re.ASCII) is None
+    ):
+        issues.add("timestamp")
+
+    actor = event.get("actor")
+    if not isinstance(actor, str) or actor not in ALLOWED_EVENT_ACTORS:
+        issues.add("actor")
+
+    event_type = event.get("event_type")
+    if not isinstance(event_type, str) or event_type not in ALLOWED_EVENT_TYPES:
+        issues.add("event_type")
+
+    if not isinstance(event.get("payload"), dict):
+        issues.add("payload")
+
+    for field in ("previous_event_hash", "event_hash"):
+        value = event.get(field)
+        if not isinstance(value, str) or re.fullmatch(EVENT_HASH_PATTERN, value) is None:
+            issues.add(field)
+
+    return issues
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -293,7 +367,43 @@ def verify_pack(pack_dir: Path) -> list[str]:
     except (OSError, RuntimeError, ValueError):
         problems.append("证据包目录无法完整枚举")
 
-    # ② 事件链完整性
+    # ② 工单身份：manifest、metadata 与每条 event 必须指向同一工单。
+    manifest_ticket_id: str | None = None
+    manifest_ticket = manifest.get("ticket")
+    if not isinstance(manifest_ticket, dict):
+        problems.append("清单 ticket 结构无效（必须是对象）")
+    else:
+        candidate = manifest_ticket.get("ticket_id")
+        if not isinstance(candidate, str) or not candidate:
+            problems.append("清单 ticket.ticket_id 无效")
+        else:
+            manifest_ticket_id = candidate
+
+    metadata_ticket_id: str | None = None
+    metadata_path = _package_member_path(pack, "ticket/metadata.json")
+    if metadata_path is None:
+        problems.append("工单 metadata 包内路径无效（必须是普通文件）")
+    elif not metadata_path.is_file():
+        problems.append("缺少工单 metadata：ticket/metadata.json")
+    else:
+        try:
+            metadata = _load_json(metadata_path)
+        except (OSError, ValueError, RecursionError):
+            problems.append("工单 metadata 不可解析")
+        else:
+            candidate = metadata.get("ticket_id")
+            if not isinstance(candidate, str) or not candidate:
+                problems.append("工单 metadata.ticket_id 无效")
+            else:
+                metadata_ticket_id = candidate
+    if (
+        manifest_ticket_id is not None
+        and metadata_ticket_id is not None
+        and manifest_ticket_id != metadata_ticket_id
+    ):
+        problems.append("清单与工单 metadata 的 ticket_id 不一致")
+
+    # ③ 事件链完整性
     events_path = _package_member_path(pack, EVENTS_REL)
     if events_path is None:
         problems.append("事件链包内路径无效（必须是普通文件）")
@@ -301,9 +411,11 @@ def verify_pack(pack_dir: Path) -> list[str]:
         problems.append(f"缺少事件链：{EVENTS_REL}")
     else:
         try:
-            artifact_facts, chain_problems = _verify_event_chain(events_path)
+            artifact_facts, chain_problems = _verify_event_chain(
+                events_path, expected_ticket_id=metadata_ticket_id,
+            )
             problems.extend(chain_problems)
-            # ③ 正文与链上哈希对应
+            # ④ 正文与链上哈希对应
             problems.extend(_verify_artifact_binding(pack, artifact_facts))
         except (OSError, ValueError, RecursionError) as exc:
             problems.append(f"事件链或正文索引无法读取：{type(exc).__name__}")
@@ -311,7 +423,9 @@ def verify_pack(pack_dir: Path) -> list[str]:
     return problems
 
 
-def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[str]]:
+def _verify_event_chain(
+    path: Path, *, expected_ticket_id: str | None = None,
+) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """逐条校验事件，只保留去重 ID 与产物绑定所需的紧凑事实。"""
     problems: list[str] = []
     chain_problems: list[str] = []
@@ -323,6 +437,7 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
     first_event_type_label = ""
     invalid_payload_kinds: set[str] = set()
     invalid_event_type_seen = False
+    invalid_schema_fields: set[str] = set()
 
     def append_payload_shape_problems(target: list[str]) -> None:
         # Bound retained diagnostics even if a hostile event stream contains many
@@ -335,6 +450,11 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
     def append_event_type_problem(target: list[str]) -> None:
         if invalid_event_type_seen:
             target.append("事件 event_type 无效（不属于允许类型）")
+
+    def append_event_schema_problem(target: list[str]) -> None:
+        if invalid_schema_fields:
+            fields = ", ".join(sorted(invalid_schema_fields))
+            target.append(f"事件不符合 pinned ticket-event schema（字段：{fields}）")
 
     try:
         stream = path.open(encoding="utf-8")
@@ -357,14 +477,19 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
                     )
                     append_payload_shape_problems(problems)
                     append_event_type_problem(problems)
+                    append_event_schema_problem(problems)
                     return artifact_facts, problems
                 if not isinstance(event, dict):
                     problems.append(f"事件链第 {lineno} 行结构无效（必须是对象）")
                     append_payload_shape_problems(problems)
                     append_event_type_problem(problems)
+                    append_event_schema_problem(problems)
                     return artifact_facts, problems
 
                 event_count += 1
+                invalid_schema_fields.update(
+                    event_schema_issues(event, expected_ticket_id=expected_ticket_id)
+                )
                 if event_count == 1:
                     first_type = event.get("event_type")
                     first_event_type_valid = (
@@ -413,7 +538,9 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
                             str(payload.get("path") or ""),
                         )
     except (OSError, UnicodeError) as exc:
-        return {}, [f"事件链无法读取：{type(exc).__name__}"]
+        problems.append(f"事件链无法读取：{type(exc).__name__}")
+        append_event_schema_problem(problems)
+        return {}, problems
 
     problems.extend(chain_problems)
     if event_count and not first_event_type_valid:
@@ -422,6 +549,7 @@ def _verify_event_chain(path: Path) -> tuple[dict[str, tuple[str, str]], list[st
         )
     append_payload_shape_problems(problems)
     append_event_type_problem(problems)
+    append_event_schema_problem(problems)
     return artifact_facts, problems
 
 

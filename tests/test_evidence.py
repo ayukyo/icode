@@ -220,6 +220,70 @@ class TestEvidencePack(unittest.TestCase):
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep existing evidence pack\n")
 
+    def test_导出器拒绝不符合v1事件Schema的字段并保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+        from icode.pack_verify import GENESIS_HASH, canonical_event_hash
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            events[1]["ticket_id"] = "different-source-ticket"
+            events[1]["actor"] = "unregistered-actor"
+            events[1]["unexpected_field"] = "still hash-consistent"
+            previous_hash = GENESIS_HASH
+            for event in events:
+                event["previous_event_hash"] = previous_hash
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_text("keep existing evidence pack\n", encoding="utf-8")
+
+            with self.assertRaises(EvidenceError) as raised:
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+            for field in ("actor", "additionalProperties", "ticket_id"):
+                self.assertIn(field, str(raised.exception))
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep existing evidence pack\n")
+
+    def test_导出器拒绝缺失的工单身份且清理旧包前失败(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            meta_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            metadata.pop("ticket_id")
+            meta_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_text("keep existing evidence pack\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(EvidenceError, "ticket_id"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep existing evidence pack\n")
+
     def test_导出器不累计保留大量非产物事件payload(self) -> None:
         import tracemalloc
 
@@ -239,7 +303,7 @@ class TestEvidencePack(unittest.TestCase):
             for index in range(256):
                 event = {
                     "schema_version": 1,
-                    "event_id": f"synthetic-event-{index}",
+                    "event_id": f"00000000-0000-4000-8000-{index:012x}",
                     "ticket_id": ticket_id,
                     "timestamp": "2026-10-01T00:00:00+00:00",
                     "actor": "system",
@@ -891,7 +955,10 @@ class TestStandaloneVerifier(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
         self.assertNotIn("icode", imported, "独立校验器不得依赖本仓")
-        allowed = {"hashlib", "json", "math", "os", "pathlib", "stat", "sys", "__future__"}
+        allowed = {
+            "hashlib", "json", "math", "os", "pathlib", "re", "stat", "sys",
+            "__future__",
+        }
         self.assertTrue(imported <= allowed, f"出现非标准库依赖：{imported - allowed}")
 
     def _run_verifier(self, pack: Path, *, cwd: Path, extra_env: dict | None = None):
@@ -1109,11 +1176,19 @@ class TestStandaloneVerifier(unittest.TestCase):
         from icode.cli import main
         from icode.pack_verify import (
             ALLOWED_EVENT_TYPES,
+            ALLOWED_EVENT_ACTORS,
+            EVENT_HASH_PATTERN,
+            EVENT_ID_PATTERN,
+            EVENT_REQUIRED_FIELDS,
+            EVENT_SCHEMA_FIELDS,
+            EVENT_SCHEMA_VERSION,
+            EVENT_TIMESTAMP_PATTERN,
             GENESIS_HASH,
             canonical_event_hash,
             pack_digest,
             sha256_file,
         )
+        from icode.pack_verify import event_schema_issues
 
         with temp_workspace() as ws:
             out_dir = make_finished_plan_ticket(self.settings, ws / "work")
@@ -1131,12 +1206,57 @@ class TestStandaloneVerifier(unittest.TestCase):
             ]
             self.assertGreater(len(events), 1)
             self.assertEqual(events[0]["event_type"], "ticket_created")
+            non_ascii_timestamp = dict(events[0])
+            non_ascii_timestamp["timestamp"] = "٢٠٢٦-١٠-٠١T٠٠:٠٠:٠٠"
+            self.assertIn(
+                "timestamp",
+                event_schema_issues(
+                    non_ascii_timestamp,
+                    expected_ticket_id=events[0]["ticket_id"],
+                ),
+            )
             events[1]["event_type"] = "command_output"
             schema_path = REPO_ROOT / "vendor" / "icode-skill" / "schemas" / "ticket-event.schema.json"
             schema = json.loads(schema_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 ALLOWED_EVENT_TYPES,
                 frozenset(schema["properties"]["event_type"]["enum"]),
+            )
+            self.assertEqual(
+                ALLOWED_EVENT_ACTORS,
+                frozenset(schema["properties"]["actor"]["enum"]),
+            )
+            self.assertEqual(
+                EVENT_REQUIRED_FIELDS,
+                frozenset(schema["required"]),
+            )
+            self.assertEqual(
+                EVENT_SCHEMA_FIELDS,
+                frozenset(schema["properties"]),
+            )
+            properties = schema["properties"]
+            self.assertFalse(schema["additionalProperties"])
+            self.assertEqual(EVENT_SCHEMA_VERSION, properties["schema_version"]["const"])
+            self.assertEqual("string", properties["event_id"]["type"])
+            self.assertEqual(EVENT_ID_PATTERN, properties["event_id"]["pattern"])
+            self.assertEqual("string", properties["ticket_id"]["type"])
+            self.assertEqual(1, properties["ticket_id"]["minLength"])
+            self.assertEqual("string", properties["timestamp"]["type"])
+            self.assertEqual(EVENT_TIMESTAMP_PATTERN, properties["timestamp"]["pattern"])
+            self.assertEqual(
+                EVENT_HASH_PATTERN,
+                properties["previous_event_hash"]["pattern"],
+            )
+            self.assertEqual(
+                EVENT_HASH_PATTERN,
+                properties["event_hash"]["pattern"],
+            )
+            self.assertEqual("object", properties["payload"]["type"])
+            self.assertEqual("string", properties["previous_event_hash"]["type"])
+            self.assertEqual("string", properties["event_hash"]["type"])
+            self.assertNotIn("request_id", schema["required"])
+            self.assertEqual(
+                ["string", "null"], properties["request_id"]["type"],
             )
             previous_hash = GENESIS_HASH
             for event in events:
@@ -1180,6 +1300,146 @@ class TestStandaloneVerifier(unittest.TestCase):
             self.assertEqual(standalone.returncode, 1, standalone.stdout + standalone.stderr)
             self.assertIn("event_type", standalone.stdout)
             self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
+
+    def test_所有Verifier拒绝哈希自洽但不符合v1事件Schema的包(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from icode.cli import main
+        from icode.pack_verify import (
+            GENESIS_HASH,
+            canonical_event_hash,
+            pack_digest,
+            sha256_file,
+        )
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            events_path = dest / "ticket" / "events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            malformed = events[1]
+            malformed["schema_version"] = 2
+            malformed["event_id"] = "not-a-uuid-v4"
+            malformed["ticket_id"] = "different-ticket"
+            malformed["timestamp"] = "not-a-timestamp"
+            malformed.pop("actor")
+            malformed["request_id"] = []
+            malformed["unexpected_field"] = "still hash-consistent"
+            previous_hash = GENESIS_HASH
+            for event in events:
+                event["previous_event_hash"] = previous_hash
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["ticket_id"] = "different-metadata-ticket"
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            manifest_path = dest / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for entry in manifest["files"]:
+                file_path = dest / entry["path"]
+                entry["sha256"] = sha256_file(file_path)
+                entry["size"] = file_path.stat().st_size
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            problems = verify_pack(dest)
+            self.assertTrue(problems, "schema-invalid but rehashed ticket event must be rejected")
+            schema_problem = next(
+                problem for problem in problems if "ticket-event schema" in problem
+            )
+            for field in (
+                "actor", "additionalProperties", "event_id", "request_id",
+                "schema_version", "ticket_id", "timestamp",
+            ):
+                self.assertIn(field, schema_problem)
+            self.assertTrue(
+                any("清单与工单 metadata 的 ticket_id 不一致" in problem for problem in problems),
+                problems,
+            )
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(["verify-pack", str(dest)])
+            self.assertEqual(exit_code, 1, stdout.getvalue() + stderr.getvalue())
+            self.assertIn("ticket-event schema", stdout.getvalue())
+            self.assertNotIn("Traceback", stdout.getvalue() + stderr.getvalue())
+
+            standalone = self._run_verifier(dest, cwd=ws)
+            self.assertEqual(standalone.returncode, 1, standalone.stdout + standalone.stderr)
+            self.assertIn("ticket-event schema", standalone.stdout)
+            self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
+
+    def test_内置和独立Verifier接受Schema允许省略的request_id(self) -> None:
+        from icode.pack_verify import GENESIS_HASH, canonical_event_hash, pack_digest, sha256_file
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            events_path = dest / "ticket" / "events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            events[1].pop("request_id")
+            events[2]["request_id"] = "replay-request-id"
+            events[2]["payload"]["future_payload_extension"] = {"accepted": True}
+            previous_hash = GENESIS_HASH
+            for event in events:
+                event["previous_event_hash"] = previous_hash
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            manifest_path = dest / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            event_entry = next(
+                item for item in manifest["files"]
+                if item["path"] == "ticket/events.jsonl"
+            )
+            event_entry["sha256"] = sha256_file(events_path)
+            event_entry["size"] = events_path.stat().st_size
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(verify_pack(dest), [])
+            standalone = self._run_verifier(dest, cwd=ws)
+            self.assertEqual(standalone.returncode, 0, standalone.stdout + standalone.stderr)
 
     def test_内置和独立校验器拒绝证据包中的重复JSON成员名(self) -> None:
         from contextlib import redirect_stderr, redirect_stdout
@@ -1298,7 +1558,11 @@ class TestStandaloneVerifier(unittest.TestCase):
             with events_path.open("w", encoding="utf-8") as stream:
                 for index in range(256):
                     event = {
-                        "event_id": f"large-event-{index}",
+                        "schema_version": 1,
+                        "event_id": f"00000000-0000-4000-8000-{index:012x}",
+                        "ticket_id": "bounded-memory-ticket",
+                        "timestamp": "2026-10-01T00:00:00+00:00",
+                        "actor": "system",
                         "event_type": "ticket_created" if index == 0 else "step_finished",
                         "payload": {"padding": padding},
                         "previous_event_hash": previous_hash,
@@ -1332,7 +1596,11 @@ class TestStandaloneVerifier(unittest.TestCase):
             lines: list[str] = []
             for index, event_type in enumerate(("ticket_created", "step_finished")):
                 event = {
-                    "event_id": "reused-event-id",
+                    "schema_version": 1,
+                    "event_id": "00000000-0000-4000-8000-000000000001",
+                    "ticket_id": "duplicate-event-ticket",
+                    "timestamp": "2026-10-01T00:00:00+00:00",
+                    "actor": "system",
                     "event_type": event_type,
                     "payload": {"sequence": index},
                     "previous_event_hash": previous_hash,
@@ -1348,6 +1616,8 @@ class TestStandaloneVerifier(unittest.TestCase):
 
     def test_所有Verifier拒绝孤立代理项并接受合法代理对(self) -> None:
         invalid_scalar = chr(0xD800)
+        from icode.pack_verify import GENESIS_HASH, canonical_event_hash, pack_digest, sha256_file
+
         cases = (
             ("manifest object key", "manifest_key", 1),
             ("manifest.files.path", "path", 1),
@@ -1406,7 +1676,41 @@ class TestStandaloneVerifier(unittest.TestCase):
                         encoding="utf-8",
                     )
                 else:
-                    manifest["ticket"]["ticket_id"] = chr(0xD83D) + chr(0xDE00)
+                    ticket_id = chr(0x1F600)
+                    manifest["ticket"]["ticket_id"] = ticket_id
+
+                    metadata_path = dest / "ticket" / "metadata.json"
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    metadata["ticket_id"] = ticket_id
+                    metadata_path.write_text(
+                        json.dumps(metadata, ensure_ascii=True, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+
+                    events_path = dest / "ticket" / "events.jsonl"
+                    events = [
+                        json.loads(line)
+                        for line in events_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    previous_hash = GENESIS_HASH
+                    for event in events:
+                        event["ticket_id"] = ticket_id
+                        event["previous_event_hash"] = previous_hash
+                        event["event_hash"] = canonical_event_hash(event)
+                        previous_hash = event["event_hash"]
+                    events_path.write_text(
+                        "\n".join(
+                            json.dumps(event, ensure_ascii=True) for event in events
+                        ) + "\n",
+                        encoding="utf-8",
+                    )
+
+                    for entry in manifest["files"]:
+                        file_path = dest / entry["path"]
+                        entry["sha256"] = sha256_file(file_path)
+                        entry["size"] = file_path.stat().st_size
+                    manifest["pack_digest"] = pack_digest(manifest["files"])
                 manifest_path.write_text(
                     json.dumps(manifest, ensure_ascii=True, indent=2) + "\n",
                     encoding="utf-8",
