@@ -823,6 +823,108 @@ class TestStandaloneVerifier(unittest.TestCase):
                 f"哈希单个 {artifact_size} 字节文件时 Python 峰值分配 {peak_bytes} 字节",
             )
 
+    def test_所有Verifier拒绝孤立代理项并接受合法代理对(self) -> None:
+        invalid_scalar = chr(0xD800)
+        cases = (
+            ("manifest object key", "manifest_key", 1),
+            ("manifest.files.path", "path", 1),
+            ("manifest.pack_digest", "digest", 1),
+            ("manifest.files.sha256", "file_hash", 1),
+            ("manifest.ticket.ticket_id", "ticket_id", 1),
+            ("artifacts.json", "artifact_index", 1),
+            ("event.payload", "event_payload", 1),
+            ("valid surrogate pair", "paired_ticket", 0),
+        )
+        cli_code = "from icode.cli import main; raise SystemExit(main())"
+
+        for name, mutation, expected_exit in cases:
+            with self.subTest(field=name), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                dest = ws / "pack"
+                report = build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+
+                manifest_path = dest / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if mutation == "manifest_key":
+                    manifest[invalid_scalar] = "invalid member name"
+                elif mutation == "path":
+                    manifest["files"].append({
+                        "path": invalid_scalar, "sha256": "0" * 64, "size": 0,
+                    })
+                elif mutation == "digest":
+                    manifest["pack_digest"] = invalid_scalar
+                elif mutation == "file_hash":
+                    manifest["files"][0]["sha256"] = invalid_scalar
+                elif mutation == "ticket_id":
+                    manifest["ticket"]["ticket_id"] = invalid_scalar
+                elif mutation == "artifact_index":
+                    index_path = dest / "artifacts.json"
+                    index = json.loads(index_path.read_text(encoding="utf-8"))
+                    index["audit_note"] = invalid_scalar
+                    index_path.write_text(
+                        json.dumps(index, ensure_ascii=True, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                elif mutation == "event_payload":
+                    events_path = dest / "ticket" / "events.jsonl"
+                    events = [
+                        json.loads(line)
+                        for line in events_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    events[0]["payload"]["audit_note"] = invalid_scalar
+                    events_path.write_text(
+                        "\n".join(
+                            json.dumps(event, ensure_ascii=True) for event in events
+                        ) + "\n",
+                        encoding="utf-8",
+                    )
+                else:
+                    manifest["ticket"]["ticket_id"] = chr(0xD83D) + chr(0xDE00)
+                manifest_path.write_text(
+                    json.dumps(manifest, ensure_ascii=True, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+                problems = verify_pack(dest)
+                rendered = "\n".join(problems)
+                self.assertEqual(bool(problems), expected_exit == 1, rendered)
+                self.assertNotIn(invalid_scalar, rendered)
+                if expected_exit:
+                    self.assertTrue(
+                        any("孤立 UTF-16 代理项" in problem for problem in problems),
+                        rendered,
+                    )
+
+                env = dict(os.environ)
+                env["PYTHONPATH"] = str(REPO_ROOT / "src")
+                env["PYTHONIOENCODING"] = "utf-8:strict"
+                cli = subprocess.run(
+                    [sys.executable, "-c", cli_code, "verify-pack", str(dest)],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    cwd=str(ws), env=env, shell=False,
+                )
+                self.assertEqual(
+                    cli.returncode, expected_exit, cli.stdout + cli.stderr,
+                )
+                self.assertNotIn("Traceback", cli.stdout + cli.stderr)
+                self.assertNotIn(invalid_scalar, cli.stdout + cli.stderr)
+
+                standalone = self._run_verifier(
+                    dest, cwd=ws, extra_env={"PYTHONIOENCODING": "utf-8:strict"},
+                )
+                self.assertEqual(
+                    standalone.returncode, expected_exit,
+                    standalone.stdout + standalone.stderr,
+                )
+                self.assertNotIn(
+                    "Traceback", standalone.stdout + standalone.stderr,
+                )
+                self.assertNotIn(invalid_scalar, standalone.stdout + standalone.stderr)
+
     def test_内置和独立校验器接受JSON字符串中的Unicode行段符号(self) -> None:
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO

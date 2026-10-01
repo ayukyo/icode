@@ -78,11 +78,27 @@ def _json_object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str
     return value
 
 
+def _reject_unpaired_surrogates(value: object) -> None:
+    """Reject JSON strings that cannot be represented as Unicode scalar values."""
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            if any(0xD800 <= ord(char) <= 0xDFFF for char in current):
+                raise ValueError("JSON 字符串包含孤立 UTF-16 代理项")
+        elif isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+
+
 def _load_json(path: Path) -> dict:
     value = json.loads(
         Path(path).read_text(encoding="utf-8"),
         object_pairs_hook=_json_object_without_duplicates,
     )
+    _reject_unpaired_surrogates(value)
     if not isinstance(value, dict):
         raise ValueError("JSON 根节点必须是对象")
     return value
@@ -268,6 +284,7 @@ def _verify_event_chain(path: Path) -> tuple[list[dict], list[str]]:
                     event = json.loads(
                         line, object_pairs_hook=_json_object_without_duplicates,
                     )
+                    _reject_unpaired_surrogates(event)
                 except (RecursionError, ValueError) as exc:
                     problems.append(
                         f"事件链第 {lineno} 行 JSON 不可解析（疑似截断/篡改）：{exc}"
