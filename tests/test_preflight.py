@@ -35,3 +35,20 @@ class TestPreflightFileDiscovery(TestCase):
 
             self.assertEqual(discovered, [tracked_file])
             self.assertNotIn(Path(".playwright-mcp"), walked_directories)
+
+    def test_secret_scan_file_discovery_keeps_regular_file_symlinks(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "target.txt"
+            target.write_text("synthetic test fixture\n", encoding="utf-8")
+            link = root / "src" / "linked.txt"
+            link.parent.mkdir()
+            try:
+                link.symlink_to(target)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"file symlinks unavailable: {exc}")
+
+            with mock.patch.object(preflight, "REPO", root):
+                discovered = preflight._iter_files()
+
+            self.assertIn(link, discovered)

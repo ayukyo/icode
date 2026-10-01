@@ -54,8 +54,10 @@ def _iter_files() -> list[Path]:
         directories[:] = [name for name in directories if name not in SKIP_DIRS]
         current_path = Path(current)
         for name in filenames:
+            if name in SKIP_DIRS:
+                continue
             path = current_path / name
-            if path.is_symlink() or not path.is_file():
+            if not path.is_file():
                 continue
             out.append(path)
     return out
