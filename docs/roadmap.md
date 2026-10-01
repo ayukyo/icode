@@ -615,6 +615,8 @@ R3 核心切片已合入 main（2026-09-26）：`src/icode/self_verify.py` 实�
 
 **R3 仍未验收的部分（如实标注）**：Linux Bubblewrap 与 macOS Seatbelt 普通工作流 Reviewer 命令、Docker/Podman 容器 Reviewer 的只读源码/拒读账本/拒绝写入负例已有本机或 [CI #447](https://github.com/ayukyo/icode/actions/runs/36812863211) 原生/容器证据；Linux 策略化 Bubblewrap Reviewer 有原生步骤证据，但不能外推到其它 backend。Windows Reviewer OS 命令边界、WSL Reviewer 与 macOS/Windows/容器上的策略化 Reviewer 仍未开放。Linux 挂载测试针对静态路径，不证明敌意同用户进程可在路径校验与 bwrap 启动之间并发替换目录。短上下文终结器的强制触发真实 MiniMax 路径不证明自然触发率或任意任务成功率。task receipt 是可显式落盘并导入证据包的验证快照，不等于完整任务/会话事件回放，也不证明过程无未记录写入。专项范围包括 staged/unstaged、ignored/untracked、可执行位、符号链接、attributes/clean filter 与测试期间漂移；当前明确把 ignored 项纳入 raw projection、拒绝嵌套 `.git`/特殊文件/竞态，attributes 不执行，因此不可把 OID 解释为 Git clean-filter 结果。投影不证明 ACL、xattr、所有权、运行环境或进程执行轨迹；SHA-1 标识不作安全认证。Windows x64/ARM64 的 `run_task→tested tree→result commit` 与真实 CLI receipt → evidence pack → 独立 verifier 往返集成回归已在 CI #447 workspace 矩阵通过（FakeBackend + `NoIsolation()`）。基线 SHA、受测 tree 锚点和 task 回执均不等于 R3 全部退出条件通过。
 
+2026-10-02 Windows Reviewer 原生 CI #485：[x64](https://github.com/ayukyo/icode/actions/runs/36908232174/job/110524079006) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36908232174/job/110524078846) 都通过 AppContainer 身份、approved snapshot 读取、删除/改名/DACL 拒绝和清理，但外部读取及写/新建错误回执为 `-1`、exit 78；未取得可用 WinError，不能归因为权限或路径问题。探针现同时输出 bounded `winerror` 与 `errno`，固定键、最坏错误回执不超过 500 字节。96 项 AppContainer/CI-contract 聚焦测试（83 通过、13 项按平台跳过）、Python 3.11.15 全量 preflight 三道门、站点/治理/竞品对照及语法/diff 检查均通过；新 SHA 双架构原生复验待跑，R2/R3 readiness 不变。
+
 ## 4. 为什么是这个顺序
 
 | 顺序 | 依据 |

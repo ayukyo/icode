@@ -1521,6 +1521,16 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer snapshot writes and cleanup", notice_names)
         self.assertIn("Windows Reviewer access diagnostics", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
+        max_error_notice = {
+            key: {"winerror": 0xFFFFFFFF, "errno": 0xFFFFFFFF}
+            for key in (
+                "outside_snapshot", "workspace", "home", "ledger", "write",
+                "delete", "rename", "create", "dacl_write_dac",
+            )
+        }
+        self.assertLessEqual(
+            len(json.dumps(max_error_notice, separators=(",", ":"))), 500,
+        )
         self.assertEqual(len(captured_scripts), 1)
         for required_probe in (
             "outside_snapshot_denied", "workspace_denied", "home_denied",
@@ -1536,10 +1546,11 @@ class TestWindowsAppContainer(unittest.TestCase):
             "access_errors={}",
             "def access_denied(key,call):",
             "if code==5: return True",
-            "access_errors[key]=code if type(code) is int and 0<=code<=0xffffffff else -1",
+            "def bounded_error_code(value):",
+            "access_errors[key]={'winerror':bounded_error_code(code),'errno':bounded_error_code(getattr(exc,'errno',None))}",
             "facts['access_errors']=access_errors",
             "if error_code==5: return True",
-            "access_errors['dacl_write_dac']=error_code if type(error_code) is int and 0<=error_code<=0xffffffff else -1",
+            "access_errors['dacl_write_dac']={'winerror':bounded_error_code(error_code),'errno':-1}",
             "if key not in {'child_pid','access_errors'}",
         ):
             with self.subTest(required_probe=required_probe):
@@ -5609,12 +5620,15 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "    finally:\n"
                     "        kernel.CloseHandle(token)\n"
                     "access_errors={}\n"
+                    "def bounded_error_code(value):\n"
+                    "    return value if type(value) is int and -0x80000000<=value<=0xffffffff else -1\n"
                     "def access_denied(key,call):\n"
                     "    try: call()\n"
                     "    except OSError as exc:\n"
                     "        code=getattr(exc,'winerror',None)\n"
                     "        if code==5: return True\n"
-                    "        access_errors[key]=code if type(code) is int and 0<=code<=0xffffffff else -1\n"
+                    "        access_errors[key]={'winerror':bounded_error_code(code),"
+                    "'errno':bounded_error_code(getattr(exc,'errno',None))}\n"
                     "    return False\n"
                     "def dacl_write_dac_denied(path):\n"
                     "    import ctypes.wintypes as wintypes\n"
@@ -5628,7 +5642,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "    if handle==ctypes.c_void_p(-1).value:\n"
                     "        error_code=ctypes.get_last_error()\n"
                     "        if error_code==5: return True\n"
-                    "        access_errors['dacl_write_dac']=error_code if type(error_code) is int and 0<=error_code<=0xffffffff else -1\n"
+                    "        access_errors['dacl_write_dac']={'winerror':bounded_error_code(error_code),'errno':-1}\n"
                     "        return False\n"
                     "    kernel.CloseHandle(handle)\n"
                     "    return False\n"
@@ -5692,13 +5706,22 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "outside_snapshot", "workspace", "home", "ledger",
                     "write", "delete", "rename", "create", "dacl_write_dac",
                 }
-                access_errors = {
-                    key: code
-                    for key, code in raw_access_errors.items()
-                    if key in access_error_keys
-                    and type(code) is int
-                    and -1 <= code <= 0xFFFFFFFF
-                }
+                access_errors: dict[str, dict[str, int]] = {}
+                for key, details in raw_access_errors.items():
+                    if key not in access_error_keys or not isinstance(details, dict):
+                        continue
+                    winerror = details.get("winerror")
+                    error_number = details.get("errno")
+                    if (
+                        type(winerror) is int
+                        and -1 <= winerror <= 0xFFFFFFFF
+                        and type(error_number) is int
+                        and -1 <= error_number <= 0xFFFFFFFF
+                    ):
+                        access_errors[key] = {
+                            "winerror": winerror,
+                            "errno": error_number,
+                        }
 
                 child_pid = facts.get("child_pid")
                 child_exited = False
