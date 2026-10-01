@@ -134,6 +134,7 @@ _FILE_ALL_ACCESS = 0x001F01FF
 _FILE_CREATE_PIPE_INSTANCE = 0x00000004
 _PIPE_READ_DATA_ACCESS = 0x00000001
 _PIPE_WRITE_DATA_ACCESS = 0x00000002
+_PIPE_READ_ATTRIBUTES_ACCESS = 0x00000080
 _PIPE_SYNCHRONIZE_ACCESS = 0x00100000
 _PIPE_READ_CONTROL_ACCESS = 0x00020000
 _PIPE_WRITE_DAC_ACCESS = 0x00040000
@@ -1622,6 +1623,81 @@ def _format_pipe_dacl_protection_receipt(
     return receipt if len(receipt) <= 128 else "pipe_dacl_protection=unavailable"
 
 
+def _pipe_dacl_read_attributes_shape_relation(
+    base_shape: object,
+    attribute_shape: object,
+) -> str:
+    """Require identical descriptors except one explicit read-attributes bit."""
+    if (
+        type(base_shape) is not str
+        or type(attribute_shape) is not str
+        or len(base_shape) > 384
+        or len(attribute_shape) > 384
+    ):
+        return "unavailable"
+    base_match = _PIPE_SECURITY_DESCRIPTOR_SHAPE_RE.fullmatch(base_shape)
+    attribute_match = _PIPE_SECURITY_DESCRIPTOR_SHAPE_RE.fullmatch(
+        attribute_shape,
+    )
+    if base_match is None or attribute_match is None:
+        return "unavailable"
+    base_control = int(base_match.group(1), 16)
+    attribute_control = int(attribute_match.group(1), 16)
+    if (
+        not base_control & _SE_DACL_PROTECTED
+        or not attribute_control & _SE_DACL_PROTECTED
+        or base_control != attribute_control
+        or ";ace_count=1;" not in base_shape
+        or ";ace_count=1;" not in attribute_shape
+        or "truncated=0" not in base_shape
+        or "truncated=0" not in attribute_shape
+    ):
+        return "different"
+
+    base_ace = "aces=00.00.00100003"
+    attribute_ace = "aces=00.00.00100083"
+    if base_ace not in base_shape or attribute_ace not in attribute_shape:
+        return "different"
+    normalized_base = base_shape.replace(base_ace, "aces=ACE", 1)
+    normalized_attribute = attribute_shape.replace(
+        attribute_ace, "aces=ACE", 1,
+    )
+    return (
+        "mask_only"
+        if normalized_base == normalized_attribute
+        else "different"
+    )
+
+
+def _format_pipe_dacl_read_attributes_receipt(
+    base_state: object,
+    attribute_state: object,
+    shape_state: object,
+) -> str:
+    """Serialize only fixed open and descriptor-shape labels."""
+    open_states = {
+        "opened", "access_denied", "failed", "not_run", "setup_failed",
+        "unsupported_platform", "descriptor_failed", "create_d5",
+        "create_failed",
+    }
+    shape_states = {"mask_only", "different", "unavailable", "cleanup_failed"}
+    if type(base_state) is not str or base_state not in open_states:
+        base_state = "not_run"
+    if type(attribute_state) is not str or attribute_state not in open_states:
+        attribute_state = "not_run"
+    if type(shape_state) is not str or shape_state not in shape_states:
+        shape_state = "unavailable"
+    receipt = (
+        f"pipe_dacl_read_attributes=base_{base_state}+"
+        f"with_attribute_{attribute_state}+shape_{shape_state}"
+    )
+    return (
+        receipt
+        if len(receipt) <= 128
+        else "pipe_dacl_read_attributes=unavailable"
+    )
+
+
 def _format_pipe_default_dacl_copy_receipt(
     default_open_state: object,
     explicit_open_state: object,
@@ -1942,6 +2018,127 @@ def runner_pipe_dacl_protection_matrix_probe() -> str:
     if cleanup_failed:
         shape_state = "cleanup_failed"
     return _format_pipe_dacl_protection_receipt(
+        open_states[0], open_states[1], shape_state,
+    )
+
+
+def runner_pipe_dacl_read_attributes_probe() -> str:
+    """Test a single FILE_READ_ATTRIBUTES ACE bit on disposable pipes only.
+
+    Both local pipes keep the protected DACL, logon SID, server parameters,
+    and production client-open contract. The second ACE differs only by the
+    low-risk FILE_READ_ATTRIBUTES bit; readback must prove that exact mask-only
+    delta before either client open is attempted. No pipe is connected and no
+    payload is exchanged.
+    """
+    if sys.platform != "win32":
+        return _format_pipe_dacl_read_attributes_receipt(
+            "unsupported_platform", "unsupported_platform", "unavailable",
+        )
+
+    api = None
+    descriptors: list[ctypes.c_void_p] = []
+    servers: list[_runner_pipe.RunnerPipeServer] = []
+    open_states = ["not_run", "not_run"]
+    descriptor_shapes: list[str | None] = [None, None]
+    shape_state = "unavailable"
+    cleanup_failed = False
+    try:
+        api = _runner_pipe._load_win32_api()
+        api.kernel.GetCurrentProcess.argtypes = []
+        api.kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        api.kernel.GetCurrentProcessId.argtypes = []
+        api.kernel.GetCurrentProcessId.restype = wintypes.DWORD
+        process_handle = api.kernel.GetCurrentProcess()
+        server_pid = int(api.kernel.GetCurrentProcessId())
+        if not process_handle or not 1 <= server_pid <= 0xFFFFFFFF:
+            raise OSError("pipe_read_attributes_identity_unavailable")
+        user_sid = runner_process_user_sid(process_handle)
+        logon_sid = _runner_pipe._validate_sid(
+            runner_process_logon_sid(process_handle),
+        )
+        masks = (
+            PIPE_CLIENT_ACCESS_MASK,
+            PIPE_CLIENT_ACCESS_MASK | _PIPE_READ_ATTRIBUTES_ACCESS,
+        )
+
+        for index, access_mask in enumerate(masks):
+            descriptor = ctypes.c_void_p()
+            sddl = f"D:P(A;;0x{access_mask:08x};;;{logon_sid})"
+            converted = bool(
+                api.advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    sddl, 1, ctypes.byref(descriptor), None,
+                ),
+            )
+            if descriptor.value:
+                descriptors.append(descriptor)
+            if not converted or not descriptor.value:
+                open_states[index] = "descriptor_failed"
+                continue
+
+            attributes = _runner_pipe._SECURITY_ATTRIBUTES(
+                ctypes.sizeof(_runner_pipe._SECURITY_ATTRIBUTES),
+                descriptor,
+                0,
+            )
+            pipe_name = new_runner_pipe_name()
+            server_handle = api.kernel.CreateNamedPipeW(
+                pipe_name,
+                _runner_pipe.RUNNER_PIPE_OPEN_MODE,
+                _runner_pipe.RUNNER_PIPE_MODE,
+                _runner_pipe.RUNNER_PIPE_MAX_INSTANCES,
+                _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+                _runner_pipe.RUNNER_PIPE_BUFFER_BYTES,
+                0,
+                ctypes.byref(attributes),
+            )
+            if _runner_pipe._handle_is_invalid(server_handle):
+                error = int(ctypes.get_last_error()) & 0xFFFFFFFF
+                open_states[index] = (
+                    "create_d5" if error == _ERROR_ACCESS_DENIED
+                    else "create_failed"
+                )
+                continue
+
+            server = _runner_pipe.RunnerPipeServer(
+                name=pipe_name, handle=server_handle, api=api,
+            )
+            servers.append(server)
+            descriptor_shapes[index] = runner_pipe_security_descriptor_shape(
+                server._handle, user_sid, logon_sid,
+            )
+
+        if all(shape is not None for shape in descriptor_shapes):
+            shape_state = _pipe_dacl_read_attributes_shape_relation(
+                descriptor_shapes[0], descriptor_shapes[1],
+            )
+
+        if shape_state == "mask_only":
+            for index, server in enumerate(servers):
+                open_states[index] = _runner_pipe_descriptor_copy_open_state(
+                    server.name, server_pid,
+                )
+    except Exception:
+        for index, state in enumerate(open_states):
+            if state == "not_run":
+                open_states[index] = "setup_failed"
+    finally:
+        for server in reversed(servers):
+            try:
+                server.close()
+            except Exception:
+                cleanup_failed = True
+        if api is not None:
+            for descriptor in descriptors:
+                try:
+                    if api.kernel.LocalFree(descriptor):
+                        cleanup_failed = True
+                except Exception:
+                    cleanup_failed = True
+
+    if cleanup_failed:
+        shape_state = "cleanup_failed"
+    return _format_pipe_dacl_read_attributes_receipt(
         open_states[0], open_states[1], shape_state,
     )
 
