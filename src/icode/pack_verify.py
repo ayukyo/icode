@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import stat
 import sys
@@ -78,14 +79,21 @@ def _json_object_without_duplicates(pairs: list[tuple[str, object]]) -> dict[str
     return value
 
 
-def _reject_unpaired_surrogates(value: object) -> None:
-    """Reject JSON strings that cannot be represented as Unicode scalar values."""
+def _reject_non_json_numeric_constant(_value: str) -> object:
+    """Python's decoder accepts JavaScript NaN/Infinity tokens by default."""
+    raise ValueError("JSON 含有非标准 JSON 数值常量")
+
+
+def _reject_non_interoperable_values(value: object) -> None:
+    """Reject lone surrogates and numbers that canonical JSON cannot represent."""
     pending = [value]
     while pending:
         current = pending.pop()
         if isinstance(current, str):
             if any(0xD800 <= ord(char) <= 0xDFFF for char in current):
                 raise ValueError("JSON 字符串包含孤立 UTF-16 代理项")
+        elif isinstance(current, float) and not math.isfinite(current):
+            raise ValueError("JSON 数值转换为非有限 binary64")
         elif isinstance(current, dict):
             pending.extend(current.keys())
             pending.extend(current.values())
@@ -97,8 +105,9 @@ def _load_json(path: Path) -> dict:
     value = json.loads(
         Path(path).read_text(encoding="utf-8"),
         object_pairs_hook=_json_object_without_duplicates,
+        parse_constant=_reject_non_json_numeric_constant,
     )
-    _reject_unpaired_surrogates(value)
+    _reject_non_interoperable_values(value)
     if not isinstance(value, dict):
         raise ValueError("JSON 根节点必须是对象")
     return value
@@ -283,8 +292,9 @@ def _verify_event_chain(path: Path) -> tuple[list[dict], list[str]]:
                 try:
                     event = json.loads(
                         line, object_pairs_hook=_json_object_without_duplicates,
+                        parse_constant=_reject_non_json_numeric_constant,
                     )
-                    _reject_unpaired_surrogates(event)
+                    _reject_non_interoperable_values(event)
                 except (RecursionError, ValueError) as exc:
                     problems.append(
                         f"事件链第 {lineno} 行 JSON 不可解析（疑似截断/篡改）：{exc}"

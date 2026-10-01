@@ -583,7 +583,7 @@ class TestStandaloneVerifier(unittest.TestCase):
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported.add(node.module.split(".")[0])
         self.assertNotIn("icode", imported, "独立校验器不得依赖本仓")
-        allowed = {"hashlib", "json", "os", "pathlib", "stat", "sys", "__future__"}
+        allowed = {"hashlib", "json", "math", "os", "pathlib", "stat", "sys", "__future__"}
         self.assertTrue(imported <= allowed, f"出现非标准库依赖：{imported - allowed}")
 
     def _run_verifier(self, pack: Path, *, cwd: Path, extra_env: dict | None = None):
@@ -924,6 +924,109 @@ class TestStandaloneVerifier(unittest.TestCase):
                     "Traceback", standalone.stdout + standalone.stderr,
                 )
                 self.assertNotIn(invalid_scalar, standalone.stdout + standalone.stderr)
+
+    def test_所有Verifier拒绝非标准非有限数值(self) -> None:
+        from icode.pack_verify import canonical_event_hash, pack_digest, sha256_file
+
+        numeric_cases = (
+            ("event NaN", "event", float("nan"), "NaN", "NaN", True),
+            ("manifest Infinity", "manifest", float("inf"), "Infinity", "Infinity", True),
+            ("artifact -Infinity", "artifact", float("-inf"), "-Infinity", "-Infinity", True),
+            ("event positive exponent overflow", "event", float("inf"), "Infinity", "1e400", True),
+            ("event negative exponent overflow", "event", float("-inf"), "-Infinity", "-1e400", True),
+            ("event finite number", "event", 1.25, "1.25", "1.25", False),
+        )
+        cli_code = "from icode.cli import main; raise SystemExit(main())"
+
+        for name, surface, number, serialized_value, wire_value, should_reject in numeric_cases:
+            with self.subTest(value=name), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                dest = ws / "pack"
+                report = build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+
+                manifest_path = dest / "manifest.json"
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+                if surface == "event":
+                    events_path = dest / "ticket" / "events.jsonl"
+                    events = [
+                        json.loads(line)
+                        for line in events_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    events[0]["payload"]["audit_number"] = number
+                    previous_hash = "0" * 64
+                    for event in events:
+                        event["previous_event_hash"] = previous_hash
+                        event["event_hash"] = canonical_event_hash(event)
+                        previous_hash = event["event_hash"]
+                    event_lines = [
+                        json.dumps(event, ensure_ascii=False) for event in events
+                    ]
+                    if wire_value != serialized_value:
+                        marker = f'"audit_number": {serialized_value}'
+                        self.assertIn(marker, event_lines[0])
+                        event_lines[0] = event_lines[0].replace(
+                            marker, f'"audit_number": {wire_value}', 1,
+                        )
+                    events_path.write_text(
+                        "\n".join(event_lines) + "\n", encoding="utf-8",
+                    )
+                    event_entry = next(
+                        entry for entry in manifest["files"]
+                        if entry["path"] == "ticket/events.jsonl"
+                    )
+                    event_entry["sha256"] = sha256_file(events_path)
+                    event_entry["size"] = events_path.stat().st_size
+                    manifest["pack_digest"] = pack_digest(manifest["files"])
+                elif surface == "manifest":
+                    manifest["audit_number"] = number
+                else:
+                    index_path = dest / "artifacts.json"
+                    index = json.loads(index_path.read_text(encoding="utf-8"))
+                    index["audit_number"] = number
+                    index_path.write_text(
+                        json.dumps(index, ensure_ascii=True, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+
+                manifest_path.write_text(
+                    json.dumps(manifest, ensure_ascii=True, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+
+                problems = verify_pack(dest)
+                if should_reject:
+                    self.assertTrue(
+                        any("非有限" in problem or "非标准 JSON 数值" in problem for problem in problems),
+                        problems,
+                    )
+                else:
+                    self.assertEqual(problems, [])
+
+                env = dict(os.environ)
+                env["PYTHONPATH"] = str(REPO_ROOT / "src")
+                env["PYTHONIOENCODING"] = "utf-8:strict"
+                cli = subprocess.run(
+                    [sys.executable, "-c", cli_code, "verify-pack", str(dest)],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    cwd=str(ws), env=env, shell=False,
+                )
+                expected_exit = 1 if should_reject else 0
+                self.assertEqual(cli.returncode, expected_exit, cli.stdout + cli.stderr)
+                self.assertNotIn("Traceback", cli.stdout + cli.stderr)
+
+                standalone = self._run_verifier(
+                    dest, cwd=ws, extra_env={"PYTHONIOENCODING": "utf-8:strict"},
+                )
+                self.assertEqual(
+                    standalone.returncode, expected_exit,
+                    standalone.stdout + standalone.stderr,
+                )
+                self.assertNotIn("Traceback", standalone.stdout + standalone.stderr)
 
     def test_内置和独立校验器接受JSON字符串中的Unicode行段符号(self) -> None:
         from contextlib import redirect_stderr, redirect_stdout
