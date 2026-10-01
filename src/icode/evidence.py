@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import __version__
 from .contracts import ContractSet
-from .pack_verify import EVENTS_REL, verify_pack
+from .pack_verify import EVENTS_REL, loads_json_value, verify_pack
 
 METADATA_NAME = ".ico_metadata.json"
 EVENTS_NAME = ".ico_events.jsonl"
@@ -70,24 +70,67 @@ class PackReport:
         return "\n".join(lines)
 
 
+@dataclass
+class _EventSummary:
+    """导出所需的紧凑事件事实，不保留非产物事件正文。"""
+
+    event_count: int = 0
+    steps: set[str] = field(default_factory=set)
+    artifact_events: list[dict] = field(default_factory=list)
+
+
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _read_events(out_dir: Path) -> list[dict]:
+def _read_events(out_dir: Path) -> _EventSummary:
     path = Path(out_dir) / EVENTS_NAME
     if not path.is_file():
         raise EvidenceError(f"事件链不存在：{path}")
-    events: list[dict] = []
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            events.append(json.loads(line))
-        except json.JSONDecodeError as exc:
-            raise EvidenceError(f"事件链第 {lineno} 行不可解析：{exc}") from None
-    return events
+    summary = _EventSummary()
+    try:
+        with path.open(encoding="utf-8") as stream:
+            for lineno, line in enumerate(stream, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = loads_json_value(line)
+                except (RecursionError, ValueError) as exc:
+                    raise EvidenceError(
+                        f"事件链第 {lineno} 行不可解析：{exc}"
+                    ) from None
+                if not isinstance(event, dict):
+                    raise EvidenceError(
+                        f"事件链第 {lineno} 行结构无效（必须是对象）"
+                    )
+
+                summary.event_count += 1
+                event_type = event.get("event_type")
+                if event_type not in ("step_started", "artifact_written"):
+                    continue
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    raise EvidenceError(
+                        f"事件链第 {lineno} 行 payload 结构无效（必须是对象）"
+                    )
+                if event_type == "step_started":
+                    step = payload.get("step")
+                    if step:
+                        summary.steps.add(str(step))
+                    continue
+
+                summary.artifact_events.append({
+                    "event_id": event.get("event_id"),
+                    "event_index": summary.event_count,
+                    "payload": {
+                        key: payload.get(key)
+                        for key in ("path", "sha256", "output", "step", "scope", "size")
+                    },
+                })
+    except (OSError, UnicodeError) as exc:
+        raise EvidenceError(f"事件链无法读取：{type(exc).__name__}") from None
+    return summary
 
 
 def _safe_name(text: str) -> str:
@@ -96,7 +139,7 @@ def _safe_name(text: str) -> str:
 
 
 def _snapshot_artifacts(
-    out_dir: Path, events: list[dict], bodies_dir: Path
+    out_dir: Path, artifact_events: list[dict], bodies_dir: Path
 ) -> tuple[list[dict], list[str], list[str]]:
     """把链上登记的产物正文快照进包里，并建立正文↔链上哈希的对应表。"""
     from .pack_verify import sha256_file
@@ -105,10 +148,9 @@ def _snapshot_artifacts(
     problems: list[str] = []
     warnings: list[str] = []
 
-    for index, event in enumerate(events, 1):
-        if event.get("event_type") != "artifact_written":
-            continue
-        payload = event.get("payload") or {}
+    for event in artifact_events:
+        index = event["event_index"]
+        payload = event["payload"]
         source = Path(str(payload.get("path") or ""))
         chain_hash = str(payload.get("sha256") or "")
         output_id = str(payload.get("output") or "artifact")
@@ -231,8 +273,8 @@ def build_evidence_pack(
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     ticket_id = str(meta.get("ticket_id") or "UNKNOWN")
 
-    events = _read_events(out_dir)
-    if not events:
+    event_summary = _read_events(out_dir)
+    if not event_summary.event_count:
         raise EvidenceError("事件链为空，无法导出证据包")
 
     if clean and dest.exists():
@@ -244,7 +286,9 @@ def build_evidence_pack(
     shutil.copyfile(meta_path, dest / "ticket" / "metadata.json")
 
     # 2) 产物正文快照 + 对应表
-    artifacts, problems, warnings = _snapshot_artifacts(out_dir, events, dest / "ticket" / "bodies")
+    artifacts, problems, warnings = _snapshot_artifacts(
+        out_dir, event_summary.artifact_events, dest / "ticket" / "bodies",
+    )
     (dest / "artifacts.json").write_text(
         json.dumps({"schema_version": PACK_SCHEMA_VERSION, "artifacts": artifacts},
                    ensure_ascii=False, indent=2, sort_keys=False) + "\n",
@@ -252,14 +296,9 @@ def build_evidence_pack(
     )
 
     # 3) 契约快照
-    steps = {
-        str((e.get("payload") or {}).get("step"))
-        for e in events
-        if e.get("event_type") == "step_started" and (e.get("payload") or {}).get("step")
-    }
     if gates_json is not None and Path(gates_json).is_file():
         (dest / "contracts.json").write_text(
-            json.dumps(_contract_snapshot(Path(gates_json), steps),
+            json.dumps(_contract_snapshot(Path(gates_json), event_summary.steps),
                        ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
@@ -335,9 +374,9 @@ def build_evidence_pack(
             "requirement": meta.get("requirement"),
         },
         "scope": {
-            "event_count": len(events),
+            "event_count": event_summary.event_count,
             "artifact_count": len(artifacts),
-            "steps": sorted(s for s in steps if s),
+            "steps": sorted(s for s in event_summary.steps if s),
         },
         "hash_algorithm": "sha256",
         "canonical_json": {"ensure_ascii": False, "sort_keys": True, "separators": [",", ":"]},
@@ -366,7 +405,7 @@ def build_evidence_pack(
         ok=not problems,
         pack_dir=str(dest),
         ticket_id=ticket_id,
-        event_count=len(events),
+        event_count=event_summary.event_count,
         artifact_count=len(artifacts),
         pack_digest=digest,
         problems=problems,

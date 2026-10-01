@@ -53,6 +53,110 @@ class TestEvidencePack(unittest.TestCase):
             self.assertTrue(report.pack_digest)
             self.assertEqual(verify_pack(dest), [])
 
+    def test_导出器保留JSON字符串中的Unicode行分隔符(self) -> None:
+        from icode.pack_verify import GENESIS_HASH, canonical_event_hash
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            events[0]["payload"]["unicode_separators"] = "NEL:\u0085 LS:\u2028 PS:\u2029"
+            previous_hash = GENESIS_HASH
+            for event in events:
+                event["previous_event_hash"] = previous_hash
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+            original_bytes = events_path.read_bytes()
+
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual((dest / "ticket" / "events.jsonl").read_bytes(), original_bytes)
+            self.assertEqual(verify_pack(dest), [])
+
+    def test_导出器拒绝非对象事件且在清理旧包前失败(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            (out_dir / ".ico_events.jsonl").write_text("null\n", encoding="utf-8")
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_text("keep existing evidence pack\n", encoding="utf-8")
+
+            with self.assertRaises(EvidenceError):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+
+            self.assertEqual(marker.read_text(encoding="utf-8"), "keep existing evidence pack\n")
+
+    def test_导出器不累计保留大量非产物事件payload(self) -> None:
+        import tracemalloc
+
+        from icode.pack_verify import canonical_event_hash
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            previous_hash = events[-1]["event_hash"]
+            ticket_id = events[0]["ticket_id"]
+            padding = "x" * (16 * 1024)
+            for index in range(256):
+                event = {
+                    "schema_version": 1,
+                    "event_id": f"synthetic-event-{index}",
+                    "ticket_id": ticket_id,
+                    "timestamp": "2026-10-01T00:00:00+00:00",
+                    "actor": "system",
+                    "event_type": "external_note",
+                    "payload": {"note": padding},
+                    "previous_event_hash": previous_hash,
+                }
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+                events.append(event)
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            dest = ws / "pack"
+            tracemalloc.start()
+            try:
+                report = build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+                _, peak_bytes = tracemalloc.get_traced_memory()
+            finally:
+                tracemalloc.stop()
+
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(report.event_count, len(events))
+            self.assertLess(
+                peak_bytes,
+                3 * 1024 * 1024,
+                "导出器不应累计保留所有非产物事件 payload："
+                f"峰值分配 {peak_bytes} 字节",
+            )
+
     def test_包内包含独立校验器与诚实边界声明(self) -> None:
         with temp_workspace() as ws:
             _out, dest, report = self._build(ws, workspace=ws / "work")
