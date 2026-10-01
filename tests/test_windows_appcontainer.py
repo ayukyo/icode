@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
 from collections.abc import Callable
 from unittest import mock
 from urllib.parse import urlsplit
@@ -37,6 +38,153 @@ from icode.windows_job import (
     WindowsJobResult,
     run_windows_job,
 )
+
+
+def _current_process_is_standard_user(expected_sid: str) -> bool:
+    """Require the native probe host itself to be the expected non-admin user."""
+    if sys.platform != "win32" or not expected_sid.startswith("S-"):
+        return False
+
+    class _SidAndAttributes(ctypes.Structure):
+        _fields_ = [("sid", ctypes.c_void_p), ("attributes", ctypes.c_uint32)]
+
+    class _TokenUser(ctypes.Structure):
+        _fields_ = [("user", _SidAndAttributes)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = ctypes.c_void_p
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel.CloseHandle.restype = ctypes.c_int
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    advapi.OpenProcessToken.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.OpenProcessToken.restype = ctypes.c_int
+    advapi.GetTokenInformation.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32),
+    ]
+    advapi.GetTokenInformation.restype = ctypes.c_int
+    advapi.ConvertStringSidToSidW.argtypes = [
+        ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.ConvertStringSidToSidW.restype = ctypes.c_int
+    advapi.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.ConvertSidToStringSidW.restype = ctypes.c_int
+    advapi.CheckTokenMembership.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+    ]
+    advapi.CheckTokenMembership.restype = ctypes.c_int
+
+    token = ctypes.c_void_p()
+    actual_sid_string = ctypes.c_void_p()
+    admin_sid = ctypes.c_void_p()
+    try:
+        if not advapi.OpenProcessToken(
+            kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token),
+        ):
+            return False
+        required = ctypes.c_uint32()
+        ctypes.set_last_error(0)
+        advapi.GetTokenInformation(token, 1, None, 0, ctypes.byref(required))
+        if ctypes.get_last_error() != 122 or required.value < ctypes.sizeof(_TokenUser):
+            return False
+        buffer = ctypes.create_string_buffer(required.value)
+        if not advapi.GetTokenInformation(
+            token, 1, buffer, required.value, ctypes.byref(required),
+        ):
+            return False
+        token_user = ctypes.cast(buffer, ctypes.POINTER(_TokenUser)).contents
+        if not token_user.user.sid or not advapi.ConvertSidToStringSidW(
+            token_user.user.sid, ctypes.byref(actual_sid_string),
+        ):
+            return False
+        actual_sid = ctypes.wstring_at(actual_sid_string.value)
+        if actual_sid.casefold() != expected_sid.casefold():
+            return False
+
+        elevated = ctypes.c_uint32()
+        if not advapi.GetTokenInformation(
+            token, 20, ctypes.byref(elevated), ctypes.sizeof(elevated),
+            ctypes.byref(required),
+        ) or elevated.value != 0:
+            return False
+        if not advapi.ConvertStringSidToSidW(
+            "S-1-5-32-544", ctypes.byref(admin_sid),
+        ):
+            return False
+        admin_enabled = ctypes.c_int()
+        return bool(
+            advapi.CheckTokenMembership(
+                token, admin_sid, ctypes.byref(admin_enabled),
+            ) and admin_enabled.value == 0
+        )
+    except (OSError, ValueError):
+        return False
+    finally:
+        for pointer in (actual_sid_string, admin_sid):
+            if pointer.value:
+                kernel.LocalFree(pointer)
+        if token.value:
+            kernel.CloseHandle(token)
+
+
+def _dacl_write_control_succeeds(path: Path) -> bool:
+    """Prove this exact WRITE_DAC handle and SetSecurityInfo path can succeed."""
+    if sys.platform != "win32":
+        return False
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.CreateFileW.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    ]
+    kernel.CreateFileW.restype = ctypes.c_void_p
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel.CloseHandle.restype = ctypes.c_int
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    advapi.GetSecurityInfo.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.GetSecurityInfo.restype = ctypes.c_uint32
+    advapi.SetSecurityInfo.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+    ]
+    advapi.SetSecurityInfo.restype = ctypes.c_uint32
+
+    handle = kernel.CreateFileW(str(path), 0x00060000, 0x7, None, 3, 0x80, None)
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle == invalid_handle:
+        return False
+    descriptor = ctypes.c_void_p()
+    dacl = ctypes.c_void_p()
+    try:
+        status = advapi.GetSecurityInfo(
+            handle, 1, 4, None, None, ctypes.byref(dacl), None,
+            ctypes.byref(descriptor),
+        )
+        if status != 0 or not dacl.value:
+            return False
+        changed = advapi.SetSecurityInfo(
+            handle, 1, 4, None, None, dacl, None,
+        ) == 0
+        closed = bool(kernel.CloseHandle(handle))
+        handle = None
+        return changed and closed
+    finally:
+        if descriptor.value:
+            kernel.LocalFree(descriptor)
+        if handle:
+            kernel.CloseHandle(handle)
 
 _RUNTIME_PROBE_FAILURE_STAGES = frozenset({
     "imports", "executable_absolute", "module_path", "prefix_absolute",
@@ -534,6 +682,123 @@ def _compact_path_resolution_probe_notice(
 
 
 class TestWindowsAppContainer(unittest.TestCase):
+    def test_reviewer_snapshot_root_requires_named_temp_directory_outside_scratch(self) -> None:
+        validator = getattr(
+            windows_appcontainer,
+            "_validate_diagnostic_reviewer_snapshot_roots",
+            None,
+        )
+        self.assertTrue(
+            callable(validator),
+            "reviewer snapshot diagnostic root validator is missing",
+        )
+        with tempfile.TemporaryDirectory(prefix="icode-reviewer-snapshot-validation-") as raw:
+            base = Path(raw)
+            scratch = base / "scratch"
+            snapshot = base / "icode-reviewer-snapshot-validation"
+            scratch.mkdir()
+            snapshot.mkdir()
+            (snapshot / "allowed.py").write_text("value = 1\n", encoding="utf-8")
+
+            self.assertEqual(
+                validator((snapshot,), workspace=scratch),
+                (snapshot.resolve(),),
+            )
+            with self.assertRaises(_AppContainerSetupError) as overlap:
+                validator((scratch,), workspace=scratch)
+            self.assertEqual(overlap.exception.error, "unsupported_runtime_root")
+
+            not_named = base / "snapshot"
+            not_named.mkdir()
+            with self.assertRaises(_AppContainerSetupError) as bad_name:
+                validator((not_named,), workspace=scratch)
+            self.assertEqual(bad_name.exception.error, "invalid_diagnostic_probe")
+
+            with self.assertRaises(_AppContainerSetupError) as bad_shape:
+                validator(str(snapshot), workspace=scratch)
+            self.assertEqual(bad_shape.exception.error, "invalid_diagnostic_probe")
+
+            runner_temp = base / "runner-temp"
+            runner_temp.mkdir()
+            outside_temp = base / "outside-temp" / "icode-reviewer-snapshot-outside"
+            outside_temp.mkdir(parents=True)
+            with mock.patch(
+                "icode.windows_appcontainer.tempfile.gettempdir",
+                return_value=str(runner_temp),
+            ), self.assertRaises(_AppContainerSetupError) as outside:
+                validator((outside_temp,), workspace=scratch)
+            self.assertEqual(outside.exception.error, "invalid_diagnostic_probe")
+
+    def test_reviewer_snapshot_appcontainer_probe_requires_explicit_ci_optin(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-reviewer-snapshot-gate-") as raw:
+            root = Path(raw)
+            scratch = root / "scratch"
+            runtime = root / "icode-runtime-staging-gate"
+            snapshot = root / "icode-reviewer-snapshot-gate"
+            scratch.mkdir()
+            runtime.mkdir()
+            snapshot.mkdir()
+            probe = runtime / "python.exe"
+            probe.write_bytes(b"test-only placeholder")
+            with mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+                 mock.patch.dict(
+                     os.environ,
+                     {
+                         "GITHUB_ACTIONS": "true",
+                         "RUNNER_OS": "Windows",
+                         "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
+                     },
+                     clear=True,
+                 ), mock.patch("ctypes.WinDLL", create=True) as load_api:
+                result = run_windows_appcontainer(
+                    [str(probe), "-I", "-c", "pass"],
+                    cwd=scratch,
+                    timeout_seconds=2,
+                    _diagnostic_runtime_acl=True,
+                    _diagnostic_runtime_roots=(runtime,),
+                    _diagnostic_reviewer_snapshot_roots=(snapshot,),
+                )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+        self.assertFalse(result.cleanup_ok)
+        load_api.assert_not_called()
+
+    def test_reviewer_snapshot_probe拒绝与runtime重叠且不改ACL(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-reviewer-snapshot-overlap-") as raw:
+            root = Path(raw)
+            scratch = root / "scratch"
+            runtime = root / "icode-runtime-staging-overlap"
+            snapshot = runtime / "icode-reviewer-snapshot-overlap"
+            scratch.mkdir()
+            snapshot.mkdir(parents=True)
+            probe = runtime / "python.exe"
+            probe.write_bytes(b"test-only placeholder")
+            with mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+                 mock.patch.dict(
+                     os.environ,
+                     {
+                         "GITHUB_ACTIONS": "true",
+                         "RUNNER_OS": "Windows",
+                         "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
+                         "ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT": "true",
+                     },
+                     clear=True,
+                 ), mock.patch("ctypes.WinDLL", create=True) as load_api:
+                result = run_windows_appcontainer(
+                    [str(probe), "-I", "-c", "pass"],
+                    cwd=scratch,
+                    timeout_seconds=2,
+                    _diagnostic_runtime_acl=True,
+                    _diagnostic_runtime_roots=(runtime,),
+                    _diagnostic_reviewer_snapshot_roots=(snapshot,),
+                )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "unsupported_runtime_root")
+        self.assertFalse(result.cleanup_ok)
+        load_api.assert_not_called()
+
     def test_diagnostic_profile_name_accepts_only_generated_shape(self) -> None:
         validator = getattr(
             windows_appcontainer, "_is_diagnostic_profile_name", None,
@@ -1069,6 +1334,81 @@ class TestWindowsAppContainer(unittest.TestCase):
             f"R2.3 JSON notice {name!r} would be silently truncated",
         )
         self._workflow_notice(name, encoded)
+
+    def test_Reviewer快照原生探针脚本在非Windows主机可静态解析(self) -> None:
+        captured_scripts: list[str] = []
+
+        class _CaptureAssertions:
+            def assertTrue(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            def assertEqual(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            def assertIs(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            def _workflow_json_notice(
+                self, _name: str, detail: dict[str, object],
+            ) -> None:
+                encoded = json.dumps(detail, ensure_ascii=True, separators=(",", ":"))
+                if len(encoded) > 500:
+                    raise AssertionError("native Reviewer probe notice exceeds GitHub limit")
+
+        with tempfile.TemporaryDirectory(prefix="icode-reviewer-probe-script-") as raw:
+            source_root = Path(raw) / "source-python"
+            source_root.mkdir()
+            source_executable = source_root / Path(sys.executable).name
+            source_executable.write_bytes(b"synthetic Python executable")
+
+            def stage_runtime(_source: Path, destination: Path) -> dict[str, int]:
+                destination.mkdir()
+                (destination / Path(sys.executable).name).write_bytes(b"synthetic staged Python")
+                return {"staged_entries": 1}
+
+            def capture_runner(argv: list[str], **_kwargs: object) -> WindowsJobResult:
+                script = argv[-1]
+                compile(script, "<reviewer-snapshot-probe-captured>", "exec")
+                captured_scripts.append(script)
+                return WindowsJobResult(
+                    True, 0, None, True,
+                    "reviewer_snapshot_acl_restore_verified=true;runtime_acl_restore_verified=true",
+                )
+
+            with mock.patch.object(sys, "prefix", str(source_root)), \
+                 mock.patch.object(sys, "base_prefix", str(source_root)), \
+                 mock.patch(
+                     "icode.windows_appcontainer._copy_runtime_tree_for_diagnostic",
+                     side_effect=stage_runtime,
+                 ), mock.patch(
+                     "tests.test_windows_appcontainer.subprocess.run",
+                     return_value=mock.Mock(returncode=0),
+                 ), mock.patch(
+                     "tests.test_windows_appcontainer._current_process_is_standard_user",
+                     return_value=True,
+                 ), mock.patch(
+                     "tests.test_windows_appcontainer._dacl_write_control_succeeds",
+                     return_value=True,
+                 ), mock.patch.dict(
+                     os.environ,
+                     {"ICODE_DIAGNOSTIC_STANDARD_USER_SID": "S-1-5-21-1-2-3-1001"},
+                 ), mock.patch(
+                     "tests.test_windows_appcontainer.run_windows_appcontainer",
+                     side_effect=capture_runner,
+                 ):
+                TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理.__wrapped__(
+                    _CaptureAssertions(),
+                )
+
+        self.assertEqual(len(captured_scripts), 1)
+        for required_probe in (
+            "outside_snapshot_denied", "workspace_denied", "home_denied",
+            "ledger_denied", "write_denied", "delete_denied", "rename_denied",
+            "create_denied", "dacl_write_dac_denied",
+            "0x00060000", "capability_count",
+        ):
+            with self.subTest(required_probe=required_probe):
+                self.assertIn(required_probe, captured_scripts[0])
 
     def test_JSON工作流回执超限时必须显式失败(self) -> None:
         with self.assertRaises(AssertionError):
@@ -4968,6 +5308,303 @@ class TestWindowsAppContainer(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+    @unittest.skipUnless(
+        sys.platform == "win32"
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_OS") == "Windows"
+        and os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_STAGING") == "true"
+        and os.environ.get("ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT") == "true",
+        "Windows AppContainer Reviewer snapshot probe runs only in its required native CI job",
+    )
+    def test_Reviewer快照AppContainer只读边界与Job清理(self) -> None:
+        if Path(sys.prefix).resolve() != Path(sys.base_prefix).resolve():
+            self.fail("CI Python must be a base interpreter for disposable runtime staging")
+
+        expected_standard_user_sid = os.environ.get(
+            "ICODE_DIAGNOSTIC_STANDARD_USER_SID", "",
+        )
+        parent_standard_user_verified = _current_process_is_standard_user(
+            expected_standard_user_sid,
+        )
+        self.assertTrue(
+            parent_standard_user_verified,
+            "native Reviewer probe must run as the designated non-admin standard user",
+        )
+
+        source_root = Path(sys.base_prefix).resolve(strict=True)
+        source_executable = source_root / Path(sys.executable).name
+        self.assertTrue(source_executable.is_file(), "host Python executable is missing")
+
+        with tempfile.TemporaryDirectory(prefix="icode-reviewer-appcontainer-probe-") as raw:
+            temp_root = Path(raw)
+            scratch = temp_root / "task-scratch"
+            scratch.mkdir()
+            staged_runtime = temp_root / f"icode-runtime-staging-reviewer-{uuid.uuid4().hex}"
+            snapshot = temp_root / f"icode-reviewer-snapshot-{uuid.uuid4().hex}"
+            outside_root = temp_root / "outside-snapshot"
+            original_workspace = temp_root / "original-workspace-canary"
+            ledger_root = temp_root / "ledger-canary"
+            for directory in (snapshot, outside_root, original_workspace, ledger_root):
+                directory.mkdir()
+
+            allowed_content = b"def reviewed_value():\n    return 'safe-snapshot'\n"
+            approved_file = snapshot / "reviewed.py"
+            approved_file.write_bytes(allowed_content)
+            mutable_file = snapshot / "mutable.py"
+            mutable_file.write_bytes(b"original\n")
+            deletable_file = snapshot / "delete.py"
+            deletable_file.write_bytes(b"delete sentinel\n")
+            rename_file = snapshot / "rename.py"
+            rename_file.write_bytes(b"rename sentinel\n")
+            dacl_file = snapshot / "dacl.py"
+            dacl_file.write_bytes(b"dacl sentinel\n")
+            outside_file = outside_root / "sentinel.txt"
+            outside_file.write_text("outside snapshot", encoding="ascii")
+            dacl_control_verified = _dacl_write_control_succeeds(outside_file)
+            self.assertTrue(
+                dacl_control_verified,
+                "WRITE_DAC positive control must open and perform SetSecurityInfo",
+            )
+            workspace_file = original_workspace / "sentinel.txt"
+            workspace_file.write_text("original workspace", encoding="ascii")
+            ledger_file = ledger_root / "verification-ledger.json"
+            ledger_file.write_text('{"private":"synthetic canary"}', encoding="ascii")
+
+            home_temp = tempfile.TemporaryDirectory(
+                prefix="icode-reviewer-home-canary-", dir=Path.home(),
+            )
+            try:
+                home_file = Path(home_temp.name) / "sentinel.txt"
+                home_file.write_text("user home canary", encoding="ascii")
+                original_snapshot_hash = hashlib.sha256(approved_file.read_bytes()).hexdigest()
+                stage_summary = windows_appcontainer._copy_runtime_tree_for_diagnostic(
+                    source_root, staged_runtime,
+                )
+                staged_executable = staged_runtime / source_executable.name
+                self.assertTrue(staged_executable.is_file(), "staged Python executable is missing")
+                positive_control = subprocess.run(
+                    [
+                        str(staged_executable), "-I", "-c",
+                        "import ctypes,hashlib,json,pathlib,subprocess; "
+                        "print(json.dumps({'runtime_ready':True}))",
+                    ],
+                    cwd=scratch, capture_output=True, text=True, encoding="utf-8",
+                    errors="replace", timeout=15, shell=False, check=False,
+                )
+                self.assertEqual(
+                    positive_control.returncode, 0,
+                    "staged Python host positive control failed",
+                )
+
+                result_file = scratch / "reviewer-probe-result.json"
+                child_ready_file = scratch / "reviewer-child-ready"
+                child_code = (
+                    "from pathlib import Path; import time; "
+                    f"Path({str(child_ready_file)!r}).write_text('ready'); time.sleep(30)"
+                )
+                script = (
+                    "import ctypes,hashlib,json,os,pathlib,subprocess,sys,time\n"
+                    "def query_token():\n"
+                    "    import ctypes.wintypes as wintypes\n"
+                    "    kernel=ctypes.WinDLL('kernel32',use_last_error=True)\n"
+                    "    advapi=ctypes.WinDLL('advapi32',use_last_error=True)\n"
+                    "    kernel.GetCurrentProcess.argtypes=[]\n"
+                    "    kernel.GetCurrentProcess.restype=ctypes.c_void_p\n"
+                    "    kernel.CloseHandle.argtypes=[ctypes.c_void_p]\n"
+                    "    kernel.CloseHandle.restype=wintypes.BOOL\n"
+                    "    kernel.LocalFree.argtypes=[ctypes.c_void_p]\n"
+                    "    kernel.LocalFree.restype=ctypes.c_void_p\n"
+                    "    advapi.OpenProcessToken.argtypes=[ctypes.c_void_p,wintypes.DWORD,"
+                    "ctypes.POINTER(ctypes.c_void_p)]\n"
+                    "    advapi.OpenProcessToken.restype=wintypes.BOOL\n"
+                    "    advapi.GetTokenInformation.argtypes=[ctypes.c_void_p,ctypes.c_int,"
+                    "ctypes.c_void_p,wintypes.DWORD,ctypes.POINTER(wintypes.DWORD)]\n"
+                    "    advapi.GetTokenInformation.restype=wintypes.BOOL\n"
+                    "    advapi.ConvertStringSidToSidW.argtypes=[wintypes.LPCWSTR,"
+                    "ctypes.POINTER(ctypes.c_void_p)]\n"
+                    "    advapi.ConvertStringSidToSidW.restype=wintypes.BOOL\n"
+                    "    advapi.CheckTokenMembership.argtypes=[ctypes.c_void_p,ctypes.c_void_p,"
+                    "ctypes.POINTER(wintypes.BOOL)]\n"
+                    "    advapi.CheckTokenMembership.restype=wintypes.BOOL\n"
+                    "    token=ctypes.c_void_p(); returned=wintypes.DWORD()\n"
+                    "    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(),0x0008,"
+                    "ctypes.byref(token)): raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "    try:\n"
+                    "        app=wintypes.DWORD(); elevated=wintypes.DWORD()\n"
+                    "        if not advapi.GetTokenInformation(token,29,ctypes.byref(app),"
+                    "ctypes.sizeof(app),ctypes.byref(returned)): raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "        if not advapi.GetTokenInformation(token,20,ctypes.byref(elevated),"
+                    "ctypes.sizeof(elevated),ctypes.byref(returned)): raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "        sid_size=wintypes.DWORD(); ctypes.set_last_error(0)\n"
+                    "        advapi.GetTokenInformation(token,31,None,0,ctypes.byref(sid_size))\n"
+                    "        if ctypes.get_last_error()!=122 or sid_size.value<ctypes.sizeof(ctypes.c_void_p):\n"
+                    "            raise ctypes.WinError(ctypes.get_last_error() or 87)\n"
+                    "        sid_buffer=ctypes.create_string_buffer(sid_size.value)\n"
+                    "        if not advapi.GetTokenInformation(token,31,sid_buffer,sid_size.value,"
+                    "ctypes.byref(returned)): raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "        sid=ctypes.cast(sid_buffer,ctypes.POINTER(ctypes.c_void_p)).contents.value\n"
+                    "        if not sid: raise RuntimeError('missing package SID')\n"
+                    "        capability_buffer=ctypes.create_string_buffer(4096)\n"
+                    "        if not advapi.GetTokenInformation(token,30,capability_buffer,"
+                    "len(capability_buffer),ctypes.byref(returned)): raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "        capability_count=ctypes.cast(capability_buffer,"
+                    "ctypes.POINTER(wintypes.DWORD)).contents.value\n"
+                    "        admin_sid=ctypes.c_void_p(); admin_enabled=wintypes.BOOL()\n"
+                    "        if not advapi.ConvertStringSidToSidW('S-1-5-32-544',ctypes.byref(admin_sid)):\n"
+                    "            raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "        try:\n"
+                    "            if not advapi.CheckTokenMembership(token,admin_sid,ctypes.byref(admin_enabled)):\n"
+                    "                raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "        finally:\n"
+                    "            kernel.LocalFree(admin_sid)\n"
+                    "        return {'appcontainer':app.value==1,'package_sid':True,"
+                    "'capability_count':capability_count,'elevated':elevated.value!=0,"
+                    "'admin_group_enabled':admin_enabled.value!=0}\n"
+                    "    finally:\n"
+                    "        kernel.CloseHandle(token)\n"
+                    "def access_denied(call):\n"
+                    "    try: call()\n"
+                    "    except OSError as exc: return getattr(exc,'winerror',None)==5\n"
+                    "    return False\n"
+                    "def dacl_write_dac_denied(path):\n"
+                    "    import ctypes.wintypes as wintypes\n"
+                    "    kernel=ctypes.WinDLL('kernel32',use_last_error=True)\n"
+                    "    kernel.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,"
+                    "wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p]\n"
+                    "    kernel.CreateFileW.restype=ctypes.c_void_p\n"
+                    "    kernel.CloseHandle.argtypes=[ctypes.c_void_p]; kernel.CloseHandle.restype=wintypes.BOOL\n"
+                    "    ctypes.set_last_error(0)\n"
+                    "    handle=kernel.CreateFileW(str(path),0x00060000,0x7,None,3,0x80,None)\n"
+                    "    if handle==ctypes.c_void_p(-1).value:\n"
+                    "        return ctypes.get_last_error()==5\n"
+                    "    kernel.CloseHandle(handle)\n"
+                    "    return False\n"
+                    "token=query_token()\n"
+                    f"approved=pathlib.Path({str(approved_file)!r})\n"
+                    f"expected={original_snapshot_hash!r}\n"
+                    f"outside=pathlib.Path({str(outside_file)!r})\n"
+                    f"workspace=pathlib.Path({str(workspace_file)!r})\n"
+                    f"home=pathlib.Path({str(home_file)!r})\n"
+                    f"ledger=pathlib.Path({str(ledger_file)!r})\n"
+                    f"mutable=pathlib.Path({str(mutable_file)!r})\n"
+                    f"deletable=pathlib.Path({str(deletable_file)!r})\n"
+                    f"rename_source=pathlib.Path({str(rename_file)!r})\n"
+                    f"rename_target=pathlib.Path({str(snapshot / 'renamed.py')!r})\n"
+                    f"dacl_file=pathlib.Path({str(dacl_file)!r})\n"
+                    f"new_file=pathlib.Path({str(snapshot / 'new.py')!r})\n"
+                    "facts={'approved_read':hashlib.sha256(approved.read_bytes()).hexdigest()==expected,"
+                    "'outside_snapshot_denied':access_denied(lambda:outside.read_bytes()),"
+                    "'workspace_denied':access_denied(lambda:workspace.read_bytes()),"
+                    "'home_denied':access_denied(lambda:home.read_bytes()),"
+                    "'ledger_denied':access_denied(lambda:ledger.read_bytes()),"
+                    "'write_denied':access_denied(lambda:mutable.write_bytes(b'changed')) ,"
+                    "'delete_denied':access_denied(lambda:deletable.unlink()),"
+                    "'rename_denied':access_denied(lambda:rename_source.rename(rename_target)),"
+                    "'create_denied':access_denied(lambda:new_file.write_bytes(b'new')),"
+                    "'dacl_write_dac_denied':dacl_write_dac_denied(dacl_file)}\n"
+                    f"child=subprocess.Popen([sys.executable,'-I','-c',{child_code!r}])\n"
+                    f"deadline=time.monotonic()+5\n"
+                    f"while not pathlib.Path({str(child_ready_file)!r}).is_file() and time.monotonic()<deadline: time.sleep(.05)\n"
+                    "facts['child_started']=pathlib.Path(" + repr(str(child_ready_file)) + ").is_file()\n"
+                    "facts['child_pid']=child.pid\n"
+                    "pathlib.Path(" + repr(str(result_file)) + ").write_text("
+                    "json.dumps({'token':token,'facts':facts}),encoding='ascii')\n"
+                    "if not (token['appcontainer'] and token['package_sid'] and token['capability_count']==0 "
+                    "and not token['elevated'] and not token['admin_group_enabled'] "
+                    "and all(value for key,value in facts.items() "
+                    "if key not in {'child_pid'})): raise SystemExit(78)\n"
+                )
+                compile(script, "<reviewer-snapshot-probe>", "exec")
+                candidate = run_windows_appcontainer(
+                    [str(staged_executable), "-I", "-c", script],
+                    cwd=scratch, timeout_seconds=20, process_limit=8,
+                    _diagnostic_runtime_acl=True,
+                    _diagnostic_runtime_roots=(staged_runtime,),
+                    _diagnostic_reviewer_snapshot_roots=(snapshot,),
+                )
+
+                try:
+                    result = json.loads(result_file.read_text(encoding="ascii"))
+                except (OSError, ValueError):
+                    result = {}
+                facts = result.get("facts") if isinstance(result, dict) else {}
+                token = result.get("token") if isinstance(result, dict) else {}
+                facts = facts if isinstance(facts, dict) else {}
+                token = token if isinstance(token, dict) else {}
+
+                child_pid = facts.get("child_pid")
+                child_exited = False
+                if type(child_pid) is int and child_pid > 0:
+                    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                    kernel.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+                    kernel.OpenProcess.restype = ctypes.c_void_p
+                    kernel.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+                    kernel.WaitForSingleObject.restype = ctypes.c_uint32
+                    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+                    kernel.CloseHandle.restype = ctypes.c_int
+                    child_handle = kernel.OpenProcess(0x00100000, 0, child_pid)
+                    if child_handle:
+                        try:
+                            child_exited = kernel.WaitForSingleObject(child_handle, 0) == 0
+                        finally:
+                            kernel.CloseHandle(child_handle)
+                    else:
+                        child_exited = ctypes.get_last_error() == 87
+
+                summary = {
+                    "executed": candidate.executed,
+                    "exit": candidate.exit_code,
+                    "cleanup": candidate.cleanup_ok,
+                    "appcontainer": token.get("appcontainer") is True,
+                    "package_sid": token.get("package_sid") is True,
+                    "capabilities": token.get("capability_count"),
+                    "elevated": token.get("elevated"),
+                    "admin_group_enabled": token.get("admin_group_enabled"),
+                    **{
+                        key: facts.get(key) is True
+                        for key in (
+                            "approved_read", "outside_snapshot_denied", "workspace_denied",
+                            "home_denied", "ledger_denied", "write_denied", "delete_denied",
+                            "rename_denied", "create_denied", "dacl_write_dac_denied", "child_started",
+                        )
+                    },
+                    "child_exited": child_exited,
+                    "snapshot_acl_restored": (
+                        "reviewer_snapshot_acl_restore_verified=true" in candidate.detail
+                    ),
+                    "runtime_acl_restored": "runtime_acl_restore_verified=true" in candidate.detail,
+                    "staged_files": stage_summary.get("staged_entries"),
+                }
+                self._workflow_json_notice(
+                    "Windows Reviewer probe preflight",
+                    {
+                        "parent_standard_user": parent_standard_user_verified,
+                        "dacl_control_verified": dacl_control_verified,
+                    },
+                )
+                self._workflow_json_notice("Windows Reviewer snapshot AppContainer", summary)
+                self.assertTrue(candidate.executed, candidate)
+                self.assertEqual(candidate.exit_code, 0, candidate)
+                self.assertTrue(candidate.cleanup_ok, candidate)
+                self.assertTrue(parent_standard_user_verified, summary)
+                self.assertTrue(dacl_control_verified, summary)
+                self.assertTrue(all(summary[key] is True for key in (
+                    "appcontainer", "package_sid", "approved_read", "outside_snapshot_denied",
+                    "workspace_denied", "home_denied", "ledger_denied", "write_denied",
+                    "delete_denied", "rename_denied", "create_denied", "dacl_write_dac_denied",
+                    "child_started", "child_exited", "snapshot_acl_restored", "runtime_acl_restored",
+                )), summary)
+                self.assertEqual(summary["capabilities"], 0, summary)
+                self.assertIs(summary["elevated"], False, summary)
+                self.assertIs(summary["admin_group_enabled"], False, summary)
+                self.assertEqual(hashlib.sha256(approved_file.read_bytes()).hexdigest(), original_snapshot_hash)
+                self.assertEqual(outside_file.read_text(encoding="ascii"), "outside snapshot")
+                self.assertEqual(workspace_file.read_text(encoding="ascii"), "original workspace")
+                self.assertEqual(ledger_file.read_text(encoding="ascii"), '{"private":"synthetic canary"}')
+                self.assertEqual(home_file.read_text(encoding="ascii"), "user home canary")
+            finally:
+                home_temp.cleanup()
 
 
 if __name__ == "__main__":

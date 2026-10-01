@@ -367,6 +367,141 @@ jobs:
       - name: Verify leased TCP socket lifecycle
         run: python scripts/run_network_lease_ci.py
 
+  windows-reviewer-snapshot-probe:
+    name: R3 Windows Reviewer snapshot candidate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python-architecture: x64
+          - os: windows-11-arm
+            python-architecture: arm64
+    env:
+      PYTHONPATH: src
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      ICODE_DIAGNOSTIC_RUNTIME_STAGING: "true"
+      ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT: "true"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python 3.11
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+          architecture: ${{ matrix.python-architecture }}
+      - name: Run Reviewer snapshot probe as temporary standard user
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $suffix = [Guid]::NewGuid().ToString('N').Substring(0, 8)
+          $accountName = "icodeprobe_$suffix"
+          if ($accountName.Length -gt 20) { throw 'temporary_reviewer_account_name_too_long' }
+          $probeRoot = Join-Path $env:RUNNER_TEMP "icode-reviewer-standard-user-$suffix"
+          $profilePath = $null
+          $securePassword = $null
+          $passwordText = $null
+          $created = $false
+          $environmentNames = @(
+            'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+            'RUNNER_TEMP', 'TEMP', 'TMP', 'ICODE_DIAGNOSTIC_STANDARD_USER_SID'
+          )
+          $savedEnvironment = @{}
+          foreach ($name in $environmentNames) {
+            $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+          }
+          try {
+            $passwordBytes = [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+            $passwordText = [Convert]::ToBase64String($passwordBytes).TrimEnd('=') + 'aA1!'
+            Write-Output "::add-mask::$passwordText"
+            [Array]::Clear($passwordBytes, 0, $passwordBytes.Length)
+            $securePassword = ConvertTo-SecureString -String $passwordText -AsPlainText -Force
+            $credential = [Management.Automation.PSCredential]::new($accountName, $securePassword)
+
+            New-LocalUser -Name $accountName -Password $securePassword `
+              -PasswordNeverExpires -AccountNeverExpires | Out-Null
+            $created = $true
+            $sid = (Get-LocalUser -Name $accountName).SID.Value
+            $adminSids = Get-LocalGroupMember -Group 'Administrators' |
+              ForEach-Object { $_.SID.Value }
+            if ($adminSids -contains $sid) {
+              throw 'temporary_reviewer_account_is_admin'
+            }
+
+            New-Item -ItemType Directory -Path $probeRoot | Out-Null
+            & icacls.exe $probeRoot /grant "*${sid}:(OI)(CI)M" /Q
+            if ($LASTEXITCODE -ne 0) { throw "reviewer_probe_root_acl_failed exit=$LASTEXITCODE" }
+
+            $profileBootstrap = Start-Process `
+              -FilePath (Join-Path $env:SystemRoot 'System32/cmd.exe') `
+              -ArgumentList @('/d', '/c', 'exit', '0') `
+              -Credential $credential -LoadUserProfile `
+              -WorkingDirectory (Join-Path $env:SystemRoot 'System32') `
+              -Wait -PassThru
+            if ($profileBootstrap.ExitCode -ne 0) {
+              throw "temporary_user_profile_bootstrap_failed exit=$($profileBootstrap.ExitCode)"
+            }
+            $profiles = @(Get-CimInstance -ClassName Win32_UserProfile -Filter "SID = '$sid'")
+            if ($profiles.Count -ne 1 -or [string]::IsNullOrWhiteSpace($profiles[0].LocalPath)) {
+              throw 'temporary_user_profile_path_unavailable'
+            }
+            $profilePath = [string]$profiles[0].LocalPath
+            if (-not [IO.Path]::IsPathRooted($profilePath) -or
+                -not (Test-Path -LiteralPath $profilePath -PathType Container)) {
+              throw 'temporary_user_profile_path_invalid'
+            }
+
+            $python = (Get-Command python).Source
+            $arguments = @(
+              '-m', 'unittest',
+              'tests.test_windows_appcontainer.TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理',
+              '-v'
+            )
+            $profileVolumeRoot = [IO.Path]::GetPathRoot($profilePath)
+            $env:HOME = $profilePath
+            $env:USERPROFILE = $profilePath
+            $env:HOMEDRIVE = $profileVolumeRoot.TrimEnd('\')
+            $env:HOMEPATH = $profilePath.Substring($env:HOMEDRIVE.Length)
+            $env:RUNNER_TEMP = $probeRoot
+            $env:TEMP = $probeRoot
+            $env:TMP = $probeRoot
+            $env:ICODE_DIAGNOSTIC_STANDARD_USER_SID = $sid
+
+            $stdout = Join-Path $probeRoot 'reviewer-probe.stdout.txt'
+            $stderr = Join-Path $probeRoot 'reviewer-probe.stderr.txt'
+            $process = Start-Process -FilePath $python -ArgumentList $arguments `
+              -Credential $credential -LoadUserProfile `
+              -WorkingDirectory $env:GITHUB_WORKSPACE `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr `
+              -Wait -PassThru
+            if (Test-Path -LiteralPath $stdout) { Get-Content -LiteralPath $stdout }
+            if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr }
+            if ($process.ExitCode -ne 0) {
+              throw "Reviewer snapshot native probe failed exit=$($process.ExitCode)"
+            }
+          }
+          finally {
+            foreach ($name in $environmentNames) {
+              [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+            }
+            if ($created) {
+              Remove-LocalUser -Name $accountName -ErrorAction Stop
+              if (Get-LocalUser -Name $accountName -ErrorAction SilentlyContinue) {
+                throw 'temporary_reviewer_account_cleanup_failed'
+              }
+            }
+            if (Test-Path -LiteralPath $probeRoot) {
+              Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction Stop
+            }
+            if ($securePassword) { $securePassword.Dispose() }
+            $passwordText = $null
+          }
+
   windows-appcontainer-read-handle-probe:
     if: github.event_name == 'workflow_dispatch' && inputs.run_windows_appcontainer_read_handle_probe
     name: R2 Windows AppContainer read-handle probe (${{ matrix.os }})

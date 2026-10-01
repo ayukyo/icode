@@ -153,6 +153,99 @@ class TestRetiredAppContainerProbeCi(unittest.TestCase):
         self.assertIn(expected_job_gate, workflow)
 
 
+class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
+    def test_windows_x64_and_arm64_run_reviewer_snapshot_candidate_as_required_job(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        required_job = """  windows-reviewer-snapshot-probe:
+    name: R3 Windows Reviewer snapshot candidate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python-architecture: x64
+          - os: windows-11-arm
+            python-architecture: arm64
+    env:
+      PYTHONPATH: src
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      ICODE_DIAGNOSTIC_RUNTIME_STAGING: "true"
+      ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT: "true"
+"""
+        self.assertIn(required_job, workflow)
+        self.assertIn(
+            "              'tests.test_windows_appcontainer.TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理',\n",
+            workflow,
+        )
+        self.assertNotIn(
+            "  windows-reviewer-snapshot-probe:\n    if:", workflow,
+            "the Windows Reviewer candidate must not silently skip on push CI",
+        )
+        self.assertIn(
+            "      - name: Run Reviewer snapshot probe as temporary standard user\n",
+            workflow,
+        )
+        candidate_job = workflow.split(
+            "  windows-reviewer-snapshot-probe:\n", 1,
+        )[1].split("\n  windows-appcontainer-read-handle-probe:", 1)[0]
+        for standard_user_contract in (
+            "architecture: ${{ matrix.python-architecture }}",
+            "New-LocalUser -Name $accountName",
+            "Get-LocalGroupMember -Group 'Administrators'",
+            "Start-Process -FilePath $python -ArgumentList $arguments `\n              -Credential $credential -LoadUserProfile",
+            "Remove-LocalUser -Name $accountName",
+        ):
+            with self.subTest(contract=standard_user_contract.splitlines()[0]):
+                self.assertIn(standard_user_contract, candidate_job)
+        for profile_contract in (
+            '$accountName = "icodeprobe_$suffix"',
+            "if ($accountName.Length -gt 20)",
+            "Get-CimInstance -ClassName Win32_UserProfile -Filter",
+            "$env:USERPROFILE = $profilePath",
+            "$env:HOME = $profilePath",
+            "$env:RUNNER_TEMP = $probeRoot",
+            "icacls.exe $probeRoot /grant",
+        ):
+            with self.subTest(contract=profile_contract):
+                self.assertIn(profile_contract, candidate_job)
+        self.assertNotIn("$env:USERPROFILE = $probeRoot", candidate_job)
+        self.assertNotIn("-UseNewEnvironment", candidate_job)
+
+    def test_required_native_probe_fails_closed_if_setup_python_uses_a_venv(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        test_source = (repository_root / "tests/test_windows_appcontainer.py").read_text(
+            encoding="utf-8",
+        )
+        self.assertIn(
+            'self.fail("CI Python must be a base interpreter for disposable runtime staging")',
+            test_source,
+        )
+        self.assertNotIn(
+            'self.skipTest("CI Python must be a base interpreter for disposable runtime staging")',
+            test_source,
+        )
+
+    def test_native_dacl_probe_requests_write_dac_and_has_an_allowed_control(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        appcontainer_tests = (repository_root / "tests/test_windows_appcontainer.py").read_text(
+            encoding="utf-8",
+        )
+        for required_probe in (
+            "handle=kernel.CreateFileW(str(path),0x00060000,",
+            "dacl_write_dac_denied",
+            "dacl_control_verified",
+            "SetSecurityInfo(",
+        ):
+            with self.subTest(probe=required_probe):
+                self.assertIn(required_probe, appcontainer_tests)
+
+
 class TestWindowsStandardUserSqosProbeCi(unittest.TestCase):
     def test_sqos_probe_is_a_separate_opt_in_on_the_existing_manual_job(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]

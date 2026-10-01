@@ -733,6 +733,39 @@ def _validate_diagnostic_runtime_roots(
     return validated
 
 
+def _validate_diagnostic_reviewer_snapshot_roots(
+    roots: Sequence[str | os.PathLike[str]], *, workspace: Path,
+) -> tuple[Path, ...]:
+    """Accept one disposable, named Reviewer snapshot outside writable scratch."""
+    if isinstance(roots, (str, bytes)) or not isinstance(roots, Sequence) or len(roots) != 1:
+        raise _AppContainerSetupError(
+            "invalid_diagnostic_probe",
+            "Reviewer snapshot diagnostic requires exactly one snapshot root",
+        )
+    try:
+        temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        validated = _validate_runtime_roots(
+            tuple(Path(root) for root in roots), workspace=workspace,
+        )
+        root = validated[0]
+    except _AppContainerSetupError:
+        raise
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise _AppContainerSetupError(
+            "invalid_diagnostic_probe", "Reviewer snapshot path cannot be verified",
+        ) from exc
+    if (
+        root == temp_root
+        or not root.is_relative_to(temp_root)
+        or not root.name.startswith("icode-reviewer-snapshot-")
+    ):
+        raise _AppContainerSetupError(
+            "invalid_diagnostic_probe",
+            "Reviewer snapshot must be a named disposable directory under runner temp",
+        )
+    return validated
+
+
 def _read_dacl_state(
     path: Path, advapi: ctypes.WinDLL, kernel: ctypes.WinDLL,
 ) -> _DaclSnapshot:
@@ -1253,6 +1286,7 @@ def run_windows_appcontainer(
     _diagnostic_omit_localappdata: bool = False,
     _diagnostic_runtime_acl: bool = False,
     _diagnostic_runtime_roots: Sequence[str | os.PathLike[str]] | None = None,
+    _diagnostic_reviewer_snapshot_roots: Sequence[str | os.PathLike[str]] | None = None,
 ) -> WindowsJobResult:
     """在无网络能力的 AppContainer + 独立 Job 中运行单条命令。
 
@@ -1261,6 +1295,8 @@ def run_windows_appcontainer(
     删除 profile 并核验其私有数据目录不存在。cwd 必须是独立任务工作区，不能是原始仓库。
     runtime ACL 差分仅允许 GitHub Windows runner 当前 Python 或专用 temp staging 树的只读诊断，
     不用于工单命令。
+    Reviewer snapshot 差分仅允许 GitHub Windows runner 上、与 staged Python 和可写 cwd 分离的
+    临时快照目录；它只授予 Package SID 读/执行 ACL，退出后逐对象恢复原 DACL，仍不接生产 Reviewer。
     其它私有启动差分仅允许固定无参数 whoami 探针，不用于任何工单命令。
     只读句柄差分仅允许 GitHub Windows runner 上固定名称的原生测试探针，
     并要求参数中恰有一个完整占位符；它不构成生产 Reviewer 隔离证明。
@@ -1302,6 +1338,25 @@ def run_windows_appcontainer(
         return WindowsJobResult(
             False, None, "invalid_diagnostic_probe", True,
             "显式 runtime 根仅允许单根 staging ACL 诊断",
+        )
+    if _diagnostic_reviewer_snapshot_roots is not None and (
+        not _diagnostic_runtime_acl
+        or _diagnostic_runtime_roots is None
+        or isinstance(_diagnostic_reviewer_snapshot_roots, (str, bytes))
+        or not isinstance(_diagnostic_reviewer_snapshot_roots, Sequence)
+        or len(_diagnostic_reviewer_snapshot_roots) != 1
+        or _diagnostic_read_handle is not None
+        or _diagnostic_profile_name is not None
+        or _diagnostic_null_application_name
+        or _diagnostic_omit_localappdata
+        or os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("RUNNER_OS") != "Windows"
+        or os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_STAGING") != "true"
+        or os.environ.get("ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT") != "true"
+    ):
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", False,
+            "Reviewer snapshot ACL 仅允许显式启用的 GitHub Windows staged-runtime 探针",
         )
     if sys.platform != "win32":
         return WindowsJobResult(False, None, "unsupported_platform", False, "仅适用于 Windows")
@@ -1382,6 +1437,7 @@ def run_windows_appcontainer(
         return WindowsJobResult(False, None, "invalid_workspace", False, "工作目录不存在")
 
     runtime_acl_roots: tuple[Path, ...] | None = None
+    reviewer_snapshot_acl_roots: tuple[Path, ...] | None = None
     if _diagnostic_runtime_acl:
         if _diagnostic_runtime_roots is None:
             runtime_acl_roots = (Path(sys.prefix), Path(sys.base_prefix))
@@ -1394,6 +1450,28 @@ def run_windows_appcontainer(
                 return WindowsJobResult(
                     False, None, exc.error, True, exc.detail,
                 )
+    if _diagnostic_reviewer_snapshot_roots is not None:
+        if runtime_acl_roots is None:
+            return WindowsJobResult(
+                False, None, "invalid_diagnostic_probe", False,
+                "Reviewer snapshot ACL requires an isolated staged Python runtime",
+            )
+        try:
+            reviewer_snapshot_acl_roots = _validate_diagnostic_reviewer_snapshot_roots(
+                _diagnostic_reviewer_snapshot_roots, workspace=root,
+            )
+            # A shared or nested runtime/snapshot path would widen one ACL grant into
+            # the other resource class, so validate their combined disjointness too.
+            combined_roots = _validate_runtime_roots(
+                (*runtime_acl_roots, *reviewer_snapshot_acl_roots), workspace=root,
+            )
+            if len(combined_roots) != len(runtime_acl_roots) + len(reviewer_snapshot_acl_roots):
+                raise _AppContainerSetupError(
+                    "unsupported_runtime_root",
+                    "Reviewer snapshot and Python runtime roots overlap",
+                )
+        except _AppContainerSetupError as exc:
+            return WindowsJobResult(False, None, exc.error, False, exc.detail)
 
     try:
         userenv = ctypes.WinDLL("userenv", use_last_error=True)
@@ -1435,6 +1513,7 @@ def run_windows_appcontainer(
     diagnostic_process_executed = False
     profile_local_app_data: str | None = None
     runtime_acl_transaction: _RuntimeAclTransaction | None = None
+    reviewer_snapshot_acl_transaction: _RuntimeAclTransaction | None = None
     try:
         hr = int(userenv.CreateAppContainerProfile(
             profile, "ICODE task", "Temporary task isolation", None, 0, ctypes.byref(sid),
@@ -1478,6 +1557,19 @@ def run_windows_appcontainer(
             )
             _grant_runtime_acl_roots(runtime_acl_transaction, sid)
             diagnostics.append("runtime_acl_access=read_execute")
+        if reviewer_snapshot_acl_roots is not None:
+            reviewer_snapshot_acl_transaction = _snapshot_runtime_acl_roots(
+                reviewer_snapshot_acl_roots,
+                workspace=root, advapi=advapi, kernel=kernel_for_acl,
+            )
+            diagnostics.append(
+                "reviewer_snapshot_acl_snapshot="
+                f"roots:{len(reviewer_snapshot_acl_transaction.roots)},"
+                f"objects:{len(reviewer_snapshot_acl_transaction.entries)},"
+                f"ms:{reviewer_snapshot_acl_transaction.snapshot_duration_ms}"
+            )
+            _grant_runtime_acl_roots(reviewer_snapshot_acl_transaction, sid)
+            diagnostics.append("reviewer_snapshot_acl_access=read_execute")
         profile_local_app_data = _get_appcontainer_localappdata_path(
             sid, userenv, advapi, kernel, ole32,
         )
@@ -1548,6 +1640,18 @@ def run_windows_appcontainer(
             f"{type(exc).__name__} during native setup",
         )
     finally:
+        if reviewer_snapshot_acl_transaction is not None:
+            try:
+                reviewer_snapshot_acl_restored = _restore_runtime_acl_roots(
+                    reviewer_snapshot_acl_transaction, sid,
+                )
+            except Exception:  # noqa: BLE001 - 不可验证的快照 ACL 恢复必须 fail closed
+                reviewer_snapshot_acl_restored = False
+            if not reviewer_snapshot_acl_restored:
+                cleanup_ok = False
+                details.append("reviewer_snapshot_acl_restore_failed")
+            else:
+                diagnostics.append("reviewer_snapshot_acl_restore_verified=true")
         if runtime_acl_transaction is not None:
             try:
                 runtime_acl_restored = _restore_runtime_acl_roots(
