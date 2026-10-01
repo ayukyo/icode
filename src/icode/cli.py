@@ -533,7 +533,19 @@ def cmd_evidence(args: argparse.Namespace) -> int:
         if not p.is_file():
             print(f"回执文件不存在：{p}", file=sys.stderr)
             return 2
-        data = _json.loads(p.read_text(encoding="utf-8"))
+        try:
+            receipt_text = p.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            print(f"回执文件不是有效 UTF-8：{p}", file=sys.stderr)
+            return 2
+        try:
+            data = _json.loads(receipt_text)
+        except _json.JSONDecodeError as exc:
+            print(
+                f"回执文件 JSON 格式无效：{p}（第 {exc.lineno} 行第 {exc.colno} 列）",
+                file=sys.stderr,
+            )
+            return 2
         receipts.extend(data if isinstance(data, list) else [data])
 
     if args.receipt_from:

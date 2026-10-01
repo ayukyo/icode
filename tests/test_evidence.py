@@ -243,6 +243,51 @@ class TestEvidencePack(unittest.TestCase):
             )
             self.assertEqual(verify_pack(pack_path), [])
 
+    def test_evidence导入无效回执时返回用户错误且不触碰目标包(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        from icode.cli import main
+
+        cases = (
+            ("invalid-json", b"{\"receipt\":", "JSON 格式无效", False),
+            ("invalid-utf8", b"\xff", "不是有效 UTF-8", True),
+        )
+        for name, contents, expected_error, existing_pack in cases:
+            with self.subTest(receipt=name), temp_workspace() as ws:
+                ticket = make_finished_plan_ticket(self.settings, ws / "work")
+                receipt_path = ws / f"{name}.json"
+                receipt_path.write_bytes(contents)
+                pack_path = ws / "pack"
+                marker = pack_path / "keep.txt"
+                if existing_pack:
+                    pack_path.mkdir()
+                    marker.write_bytes(b"keep existing evidence pack")
+
+                stdout = StringIO()
+                stderr = StringIO()
+                with (
+                    patch("icode.cli.load_settings", return_value=self.settings),
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                ):
+                    exit_code = main([
+                        "evidence",
+                        "--ticket", str(ticket),
+                        "--dest", str(pack_path),
+                        "--receipt", str(receipt_path),
+                    ])
+
+                self.assertEqual(exit_code, 2, stdout.getvalue() + stderr.getvalue())
+                self.assertIn(expected_error, stderr.getvalue())
+                self.assertNotIn("Traceback", stderr.getvalue())
+                if existing_pack:
+                    self.assertEqual(marker.read_bytes(), b"keep existing evidence pack")
+                    self.assertEqual(list(pack_path.iterdir()), [marker])
+                else:
+                    self.assertFalse(pack_path.exists())
+
     def test真实task回执经CLI保存导入证据包并独立校验(self) -> None:
         from contextlib import redirect_stdout
         from io import StringIO
