@@ -29,6 +29,10 @@ FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
 FILE_FLAG_OVERLAPPED = 0x40000000
 PIPE_REJECT_REMOTE_CLIENTS = 0x00000008
 PIPE_CLIENT_ACCESS_MASK = 0x00100003  # FILE_READ_DATA | FILE_WRITE_DATA | SYNCHRONIZE
+PIPE_FILE_READ_ATTRIBUTES_ACCESS = 0x00000080
+PIPE_DACL_ACCESS_MASK = (
+    PIPE_CLIENT_ACCESS_MASK | PIPE_FILE_READ_ATTRIBUTES_ACCESS
+)
 RUNNER_PIPE_OPEN_MODE = 0x00000003 | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED
 RUNNER_PIPE_MODE = PIPE_REJECT_REMOTE_CLIENTS  # byte type, byte read mode, PIPE_WAIT are zero
 RUNNER_PIPE_MAX_INSTANCES = 1
@@ -135,13 +139,16 @@ def new_runner_pipe_name() -> str:
 
 
 def build_runner_pipe_sddl(runner_logon_sid: str) -> str:
-    """Grant only read/write data and synchronization to this logon SID.
+    """Grant this logon SID pipe I/O and the required read-attributes right.
 
-    In particular, do not use FILE_GENERIC_WRITE or GENERIC_ALL: the generic
-    write mapping also grants FILE_CREATE_PIPE_INSTANCE for named pipes.
+    Keep the client request mask narrower than the DACL grant. Native Windows
+    A/B probes require FILE_READ_ATTRIBUTES in the ACE for CreateFileW to
+    open the duplex pipe, while the client continues requesting only data and
+    synchronization rights. Do not use FILE_GENERIC_WRITE or GENERIC_ALL:
+    generic write also grants FILE_CREATE_PIPE_INSTANCE for named pipes.
     """
     sid = _validate_sid(runner_logon_sid)
-    return f"D:P(A;;0x{PIPE_CLIENT_ACCESS_MASK:08x};;;{sid})"
+    return f"D:P(A;;0x{PIPE_DACL_ACCESS_MASK:08x};;;{sid})"
 
 
 def _load_win32_api() -> _Win32Api:

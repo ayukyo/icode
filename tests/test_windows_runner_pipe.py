@@ -1101,10 +1101,13 @@ class TestWindowsRunnerPipePolicy(unittest.TestCase):
 
         sddl = build_runner_pipe_sddl(sid)
 
-        self.assertEqual(sddl, f"D:P(A;;0x{PIPE_CLIENT_ACCESS_MASK:08x};;;{sid})")
+        self.assertEqual(sddl, f"D:P(A;;0x00100083;;;{sid})")
+        self.assertEqual(PIPE_CLIENT_ACCESS_MASK, 0x00100003)
         self.assertNotIn("GA", sddl)
         self.assertNotIn("GW", sddl)
-        self.assertEqual(PIPE_CLIENT_ACCESS_MASK & 0x00000004, 0)
+        acl_mask = int(sddl.split("0x", 1)[1][:8], 16)
+        self.assertEqual(acl_mask, 0x00100083)
+        self.assertEqual(acl_mask & 0x00000004, 0)
 
     def test_invalid_sid_and_injected_sddl_text_are_rejected(self) -> None:
         for sid in (
