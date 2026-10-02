@@ -300,11 +300,19 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             executor_thread: threading.Thread | None = None
             try:
                 worker = (
-                    "import errno, os, socket\n"
+                    "import errno, os, socket, urllib.error, urllib.request\n"
                     "try: socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
                     "except OSError as exc: assert exc.errno == errno.EPERM, exc\n"
                     "else: raise AssertionError('worker created a new AF_UNIX socket')\n"
                     "host, port = os.environ['ICODE_PROXY_LISTENER'].rsplit(':', 1)\n"
+                    "https_proxy = urllib.request.getproxies().get('https')\n"
+                    "assert https_proxy == f'http://{host}:{int(port)}', https_proxy\n"
+                    "assert not urllib.request.getproxies().get('http')\n"
+                    "assert not urllib.request.getproxies().get('all')\n"
+                    "try:\n"
+                    "    urllib.request.urlopen('https://packages.example/', timeout=2)\n"
+                    "except (urllib.error.URLError, OSError): pass\n"
+                    "else: raise AssertionError('test TLS endpoint unexpectedly succeeded')\n"
                     "proxy_port = int(port)\n"
                     f"host_ports = ({upstream_listener.getsockname()[1]}, "
                     f"{host_only_listener.getsockname()[1]})\n"
@@ -380,6 +388,16 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                             "host proxy did not receive the worker CONNECT request: "
                             + (str(result_holder[0]) if result_holder else "launcher still running")
                         )
+                    upstream.settimeout(10.0)
+                    tls_client_hello = upstream.recv(512)
+                    self.assertTrue(
+                        tls_client_hello.startswith(b"\x16\x03"),
+                        f"urllib did not tunnel TLS through the HTTPS proxy: {tls_client_hello!r}",
+                    )
+                    # A fixed TLS alert ends the standard-library client's handshake.
+                    upstream.sendall(b"\x15\x03\x03\x00\x02\x02\x28")
+                    upstream.close()
+                    upstream, _address = upstream_listener.accept()
                     upstream.settimeout(10.0)
                     self.assertEqual(upstream.recv(64), b"worker-to-host-marker")
                     upstream.sendall(b"host-to-worker-marker")

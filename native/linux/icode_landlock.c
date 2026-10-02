@@ -439,6 +439,7 @@ static int handoff_loopback_listener(int control_descriptor) {
     struct sockaddr_in address = {0};
     socklen_t address_length = sizeof(address);
     char endpoint[64];
+    char proxy_url[96];
     unsigned char nonce[ICODE_HANDOFF_NONCE_SIZE];
     unsigned char handoff_payload[
         sizeof(handoff_message) - 1 + ICODE_HANDOFF_NONCE_SIZE];
@@ -468,7 +469,22 @@ static int handoff_loopback_listener(int control_descriptor) {
         errno = EINVAL;
         goto fail;
     }
-    if (setenv("ICODE_PROXY_LISTENER", endpoint, 1) != 0) {
+    int proxy_url_size = snprintf(proxy_url, sizeof(proxy_url), "http://%s", endpoint);
+    if (proxy_url_size < 0 || (size_t)proxy_url_size >= sizeof(proxy_url)) {
+        errno = EINVAL;
+        goto fail;
+    }
+    /*
+     * The candidate supports only HTTPS CONNECT. Remove inherited proxy
+     * bypass/alternate-proxy settings, then expose the same loopback endpoint
+     * under the standard HTTPS-only variables used by urllib and common CLIs.
+     */
+    if (unsetenv("HTTP_PROXY") != 0 || unsetenv("http_proxy") != 0 ||
+        unsetenv("ALL_PROXY") != 0 || unsetenv("all_proxy") != 0 ||
+        setenv("NO_PROXY", "", 1) != 0 || setenv("no_proxy", "", 1) != 0 ||
+        setenv("HTTPS_PROXY", proxy_url, 1) != 0 ||
+        setenv("https_proxy", proxy_url, 1) != 0 ||
+        setenv("ICODE_PROXY_LISTENER", endpoint, 1) != 0) {
         goto fail;
     }
     if (fill_handoff_nonce(nonce, sizeof(nonce)) != 0) goto fail;
@@ -519,6 +535,14 @@ fail: {
         int saved_errno = errno ? errno : EIO;
         if (listener >= 0) close(listener);
         close(control_descriptor);
+        unsetenv("HTTPS_PROXY");
+        unsetenv("https_proxy");
+        unsetenv("NO_PROXY");
+        unsetenv("no_proxy");
+        unsetenv("HTTP_PROXY");
+        unsetenv("http_proxy");
+        unsetenv("ALL_PROXY");
+        unsetenv("all_proxy");
         unsetenv("ICODE_PROXY_LISTENER");
         errno = saved_errno;
         perror("loopback listener handoff");

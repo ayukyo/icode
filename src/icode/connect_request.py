@@ -32,10 +32,10 @@ class HttpsConnectTarget:
 def parse_https_connect_request_head(request_head: bytes) -> HttpsConnectTarget:
     """Parse a bounded CONNECT header block without performing network I/O.
 
-    ICODE intentionally accepts only the authority-form HTTPS CONNECT shape
-    ``CONNECT exact-ascii-host:443 HTTP/1.1`` and one matching ``Host`` field.
-    It rejects all other fields, including request-body framing and proxy
-    credentials, so no unparsed metadata can affect a future connector.
+    ICODE accepts the authority-form HTTPS CONNECT shape used by Python's
+    standard-library proxy client (HTTP/1.0 with no headers) and the stricter
+    HTTP/1.1 form with exactly one matching ``Host`` field. Other fields,
+    including request-body framing and proxy credentials, remain unsupported.
     """
 
     if type(request_head) is not bytes or not request_head:
@@ -58,10 +58,17 @@ def parse_https_connect_request_head(request_head: bytes) -> HttpsConnectTarget:
         method, authority, version = request_line.split(b" ")
     except ValueError:
         raise ConnectRequestError(_INVALID_REQUEST) from None
-    if method != b"CONNECT" or version != b"HTTP/1.1":
+    if method != b"CONNECT":
         raise ConnectRequestError(_INVALID_REQUEST)
 
     hostname = _parse_authority(authority)
+    if version == b"HTTP/1.0":
+        if len(lines) != 1:
+            raise ConnectRequestError(_INVALID_REQUEST)
+        return HttpsConnectTarget(hostname=hostname, port=HTTPS_PORT)
+    if version != b"HTTP/1.1":
+        raise ConnectRequestError(_INVALID_REQUEST)
+
     host_fields = 0
     for line in lines[1:]:
         if not line or line.startswith((b" ", b"\t")):

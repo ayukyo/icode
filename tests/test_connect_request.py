@@ -36,6 +36,13 @@ class ConnectRequestTestCase(unittest.TestCase):
         self.assertEqual(target.hostname, "packages.example")
         self.assertEqual(target.port, 443)
 
+    def test_parses_python_urllib_http10_connect_without_headers(self) -> None:
+        target = parse_https_connect_request_head(
+            b"CONNECT packages.example:443 HTTP/1.0\r\n\r\n"
+        )
+
+        self.assertEqual((target.hostname, target.port), ("packages.example", 443))
+
     def test_host_header_may_omit_only_the_default_https_port(self) -> None:
         target = parse_https_connect_request_head(
             _request("packages.example:443", "PACKAGES.EXAMPLE:443")

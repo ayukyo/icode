@@ -1220,6 +1220,24 @@ class TestSandboxWrapping(unittest.TestCase):
                 for endpoint in (host, sender, stream_host, stream_sender):
                     endpoint.close()
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux 临时 CONNECT 候选环境")
+    def test_leased_connect_candidate_exports_https_proxy_without_plain_http_proxy(self) -> None:
+        helper_source = (
+            Path(__file__).resolve().parents[1]
+            / "native" / "linux" / "icode_landlock.c"
+        ).read_text(encoding="utf-8")
+        start = helper_source.index("static int handoff_loopback_listener(")
+        end = helper_source.index("\nstatic int add_metadata_path(", start)
+        handoff = helper_source[start:end]
+
+        self.assertIn('snprintf(proxy_url, sizeof(proxy_url), "http://%s", endpoint)', handoff)
+        self.assertIn('setenv("HTTPS_PROXY", proxy_url, 1)', handoff)
+        self.assertIn('setenv("https_proxy", proxy_url, 1)', handoff)
+        self.assertIn('unsetenv("HTTPS_PROXY")', handoff)
+        self.assertIn('unsetenv("https_proxy")', handoff)
+        self.assertNotRegex(handoff, r'(?<!un)setenv\("HTTP_PROXY"')
+        self.assertNotRegex(handoff, r'(?<!un)setenv\("ALL_PROXY"')
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux Landlock read-only policy")
     def test_landlock_Git只读工作区拒绝可执行授权重叠(self) -> None:
         sandbox = LandlockSandbox(helper="/not-needed-for-static-check")
