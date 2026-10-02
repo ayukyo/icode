@@ -29,6 +29,12 @@ from urllib.parse import urlsplit
 
 import icode.windows_appcontainer as windows_appcontainer
 import icode.windows_job as windows_job_module
+from scripts.run_windows_appcontainer_read_probe import (
+    _classify_wfp_ipv6_loopback_receipt,
+    _start_wfp_ipv6_loopback_event_probe,
+    _stop_wfp_event_probe,
+    _wfp_observer_diagnostic_summary,
+)
 from icode.windows_appcontainer import (
     _AppContainerSetupError,
     _delete_appcontainer_profile,
@@ -825,6 +831,47 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(result.error, "invalid_diagnostic_probe")
         self.assertFalse(result.cleanup_ok)
         load_api.assert_not_called()
+
+    def test_reviewer_snapshot_profile_name_can_be_pinned_only_under_ci_optins(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-reviewer-profile-name-gate-") as raw:
+            root = Path(raw)
+            scratch = root / "scratch"
+            runtime = root / "icode-runtime-staging-profile-gate"
+            snapshot = root / "icode-reviewer-snapshot-profile-gate"
+            scratch.mkdir()
+            runtime.mkdir()
+            snapshot.mkdir()
+            probe = runtime / "python.exe"
+            probe.write_bytes(b"test-only placeholder")
+            with mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+                 mock.patch.dict(
+                     os.environ,
+                     {
+                         "GITHUB_ACTIONS": "true",
+                         "RUNNER_OS": "Windows",
+                         "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
+                         "ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT": "true",
+                     },
+                     clear=True,
+                 ), mock.patch(
+                     "ctypes.WinDLL", create=True,
+                     side_effect=OSError("test API load failure"),
+                 ) as load_api:
+                result = run_windows_appcontainer(
+                    [str(probe), "-I", "-c", "pass"],
+                    cwd=scratch,
+                    timeout_seconds=2,
+                    _diagnostic_runtime_acl=True,
+                    _diagnostic_runtime_roots=(runtime,),
+                    _diagnostic_reviewer_snapshot_roots=(snapshot,),
+                    _diagnostic_profile_name=(
+                        "icode-0123456789abcdef0123456789abcdef"
+                    ),
+                )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "appcontainer_api_unavailable")
+        load_api.assert_called()
 
     def test_reviewer_snapshot_probe拒绝与runtime重叠且不改ACL(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-reviewer-snapshot-overlap-") as raw:
@@ -6270,6 +6317,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 network_canary = b"icode-reviewer-appcontainer-network-canary-v1"
                 ipv4_loopback_port = network_servers[0].server_address[1]
                 ipv6_loopback_port = network_servers[1].server_address[1]
+                reviewer_profile_name = f"icode-{uuid.uuid4().hex}"
                 original_snapshot_hash = hashlib.sha256(approved_file.read_bytes()).hexdigest()
                 stage_summary = windows_appcontainer._copy_runtime_tree_for_diagnostic(
                     source_root, staged_runtime,
@@ -6576,12 +6624,61 @@ class TestWindowsAppContainer(unittest.TestCase):
                     write_canary_before_length = -1
                     write_canary_before_sha256 = "unavailable"
                     write_canary_before_unchanged = False
-                candidate = run_windows_appcontainer(
-                    [str(staged_executable), "-I", "-c", script],
-                    cwd=scratch, timeout_seconds=20, process_limit=8,
-                    _diagnostic_runtime_acl=True,
-                    _diagnostic_runtime_roots=(staged_runtime,),
-                    _diagnostic_reviewer_snapshot_roots=(snapshot,),
+                wfp_process = None
+                wfp_paths = None
+                wfp_receipt = None
+                wfp_exit_code = None
+                wfp_probe_value = os.environ.get("ICODE_DIAGNOSTIC_WFP_PROBE_PATH")
+                if (
+                    os.environ.get("GITHUB_ACTIONS") == "true"
+                    and os.environ.get("RUNNER_OS") == "Windows"
+                    and isinstance(wfp_probe_value, str)
+                    and wfp_probe_value
+                ):
+                    try:
+                        wfp_probe_executable = Path(wfp_probe_value).resolve(strict=True)
+                    except OSError:
+                        wfp_probe_executable = None
+                    if wfp_probe_executable is not None and wfp_probe_executable.is_file():
+                        wfp_process, wfp_paths = _start_wfp_ipv6_loopback_event_probe(
+                            wfp_probe_executable,
+                            reviewer_profile_name,
+                            ipv6_loopback_port,
+                            temp_root,
+                        )
+                try:
+                    candidate = run_windows_appcontainer(
+                        [str(staged_executable), "-I", "-c", script],
+                        cwd=scratch, timeout_seconds=20, process_limit=8,
+                        _diagnostic_runtime_acl=True,
+                        _diagnostic_runtime_roots=(staged_runtime,),
+                        _diagnostic_reviewer_snapshot_roots=(snapshot,),
+                        _diagnostic_profile_name=reviewer_profile_name,
+                    )
+                finally:
+                    wfp_receipt, wfp_exit_code = _stop_wfp_event_probe(
+                        wfp_process, wfp_paths,
+                    )
+                print(
+                    "reviewer_ipv6_loopback_wfp="
+                    + _classify_wfp_ipv6_loopback_receipt(
+                        wfp_receipt, collector_exit_code=wfp_exit_code,
+                    ),
+                    flush=True,
+                )
+                print(
+                    "reviewer_ipv6_loopback_wfp_diagnostics="
+                    + json.dumps(
+                        _wfp_observer_diagnostic_summary(
+                            process_started=wfp_process is not None,
+                            paths=wfp_paths,
+                            receipt=wfp_receipt,
+                            collector_exit_code=wfp_exit_code,
+                        ),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    flush=True,
                 )
 
                 try:

@@ -169,8 +169,10 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         include:
           - os: windows-latest
             python-architecture: x64
+            cmake-architecture: x64
           - os: windows-11-arm
             python-architecture: arm64
+            cmake-architecture: ARM64
     env:
       PYTHONPATH: src
       PYTHONIOENCODING: utf-8
@@ -194,6 +196,21 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         candidate_job = workflow.split(
             "  windows-reviewer-snapshot-probe:\n", 1,
         )[1].split("\n  windows-appcontainer-read-handle-probe:", 1)[0]
+        native_observer_contract = (
+            "      - name: Build and self-test IPv6 loopback WFP observer\n"
+            "        shell: pwsh\n"
+        )
+        self.assertIn(native_observer_contract, candidate_job)
+        for native_requirement in (
+            "cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}'",
+            "cmake --build $buildDirectory --config Release --parallel 1",
+            "icode-wfp-event-probe.exe",
+            "--self-test",
+            "$env:ICODE_DIAGNOSTIC_WFP_PROBE_PATH = $wfpProbeForUser",
+            "Copy-Item -LiteralPath $env:ICODE_DIAGNOSTIC_WFP_PROBE_BUILD",
+        ):
+            with self.subTest(requirement=native_requirement):
+                self.assertIn(native_requirement, candidate_job)
         abi_probe = (
             "      - name: Cross-check Windows SDK WFP ABI (x64/ARM64)\n"
             "        run: python -m unittest tests.test_windows_wfp_abi.TestWindowsWfpAbi -v\n"

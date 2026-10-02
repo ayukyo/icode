@@ -251,6 +251,64 @@ def _classify_wfp_target_drop_receipt(
     return "evidence_unavailable"
 
 
+def _classify_wfp_ipv6_loopback_receipt(
+    receipt: object, *, collector_exit_code: int | None,
+) -> str:
+    """Attribute only a complete, exact IPv6-loopback capability-drop receipt."""
+    if (
+        type(collector_exit_code) is not int
+        or collector_exit_code != 0
+        or not isinstance(receipt, dict)
+        or type(receipt.get("schema_version")) is not int
+        or receipt.get("schema_version") != 6
+        or type(receipt.get("target_ip_version")) is not int
+        or receipt.get("target_ip_version") != 6
+        or receipt.get("target_is_loopback") is not True
+        or receipt.get("subscription_ok") is not True
+        or receipt.get("unsubscribe_ok") is not True
+        or receipt.get("network_events_collected") is not True
+    ):
+        return "evidence_unavailable"
+
+    count_fields = (
+        "event_callback_count",
+        "capability_drop_event_count",
+        "classify_drop_event_count",
+        "matched_capability_drop_count",
+        "matched_classify_drop_count",
+    )
+    counts = {field: receipt.get(field) for field in count_fields}
+    if any(
+        type(value) is not int or not 0 <= value <= 0xFFFF
+        for value in counts.values()
+    ):
+        return "evidence_unavailable"
+
+    callback_count = counts["event_callback_count"]
+    capability_count = counts["capability_drop_event_count"]
+    classify_count = counts["classify_drop_event_count"]
+    matched_capability_count = counts["matched_capability_drop_count"]
+    if (
+        callback_count == 0
+        or capability_count != callback_count
+        or classify_count != 0
+        or matched_capability_count == 0
+        or matched_capability_count > capability_count
+        or counts["matched_classify_drop_count"] != 0
+    ):
+        return "evidence_unavailable"
+
+    capability_id = receipt.get("matched_network_capability_id")
+    if (
+        type(receipt.get("network_capability_id_consistent")) is not bool
+        or receipt.get("network_capability_id_consistent") is not True
+        or type(capability_id) is not int
+        or capability_id not in _WFP_NETWORK_CAPABILITY_LABELS
+    ):
+        return "evidence_unavailable"
+    return "capability_drop_ipv6_loopback_attributed"
+
+
 def _wfp_observer_diagnostic_summary(
     *,
     process_started: bool,
@@ -697,6 +755,46 @@ def _start_wfp_event_probe(
                 str(executable), profile_name, canonical_address,
                 str(remote_port),
                 str(ready_path), str(stop_path), str(result_path),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError:
+        return None, None
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not ready_path.is_file():
+        if process.poll() is not None:
+            break
+        time.sleep(0.025)
+    return process, (ready_path, stop_path, result_path)
+
+
+def _start_wfp_ipv6_loopback_event_probe(
+    executable: Path,
+    profile_name: str,
+    remote_port: int,
+    root: Path,
+) -> tuple[subprocess.Popen[bytes] | None, tuple[Path, Path, Path] | None]:
+    """Start a test-only observer restricted to one AppContainer and ::1 TCP port."""
+    if (
+        not isinstance(profile_name, str)
+        or re.fullmatch(r"icode-[0-9a-f]{32}", profile_name) is None
+        or type(remote_port) is not int
+        or not 1 <= remote_port <= 65535
+    ):
+        return None, None
+    token = profile_name[6:]
+    ready_path = root / f"wfp-{token}.ready"
+    stop_path = root / f"wfp-{token}.stop"
+    result_path = root / f"wfp-{token}.json"
+    try:
+        process = subprocess.Popen(
+            [
+                str(executable), "--collect-ipv6-loopback", profile_name,
+                str(remote_port), str(ready_path), str(stop_path), str(result_path),
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

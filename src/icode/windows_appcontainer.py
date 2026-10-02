@@ -1313,14 +1313,29 @@ def run_windows_appcontainer(
                 False, None, "invalid_diagnostic_probe", False,
                 "只读句柄探针仅允许受控 GitHub Windows runner 的固定原生探针",
             )
+    reviewer_profile_name_opted_in = (
+        _diagnostic_runtime_acl is True
+        and _diagnostic_runtime_roots is not None
+        and _diagnostic_reviewer_snapshot_roots is not None
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_OS") == "Windows"
+        and os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_STAGING") == "true"
+        and os.environ.get("ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT") == "true"
+    )
+    read_handle_profile_name_opted_in = (
+        _diagnostic_read_handle is not None
+        and _is_fixed_read_handle_probe(argv, cwd, _diagnostic_read_handle)
+    )
     if _diagnostic_profile_name is not None and (
-        _diagnostic_read_handle is None
-        or not _is_diagnostic_profile_name(_diagnostic_profile_name)
-        or not _is_fixed_read_handle_probe(argv, cwd, _diagnostic_read_handle)
+        not _is_diagnostic_profile_name(_diagnostic_profile_name)
+        or not (
+            read_handle_profile_name_opted_in
+            or reviewer_profile_name_opted_in
+        )
     ):
         return WindowsJobResult(
             False, None, "invalid_diagnostic_probe", False,
-            "临时 AppContainer profile 名称仅允许固定 CI 只读句柄探针",
+            "临时 AppContainer profile 名称仅允许受控 CI 诊断探针",
         )
     if not isinstance(_diagnostic_runtime_acl, bool):
         return WindowsJobResult(False, None, "invalid_diagnostic_probe", True, "诊断 ACL 模式无效")
@@ -1346,7 +1361,6 @@ def run_windows_appcontainer(
         or not isinstance(_diagnostic_reviewer_snapshot_roots, Sequence)
         or len(_diagnostic_reviewer_snapshot_roots) != 1
         or _diagnostic_read_handle is not None
-        or _diagnostic_profile_name is not None
         or _diagnostic_null_application_name
         or _diagnostic_omit_localappdata
         or os.environ.get("GITHUB_ACTIONS") != "true"

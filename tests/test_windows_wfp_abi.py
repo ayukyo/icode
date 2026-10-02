@@ -83,6 +83,60 @@ class TestWindowsWfpAbi(unittest.TestCase):
             script,
         )
 
+    def test_ipv6_loopback_observer_uses_narrow_read_only_event_scope(self) -> None:
+        repository_root = os.path.dirname(os.path.dirname(__file__))
+        source_path = os.path.join(
+            repository_root, "native", "windows", "icode_wfp_event_probe.c",
+        )
+        with open(source_path, encoding="utf-8") as source_file:
+            source = source_file.read()
+
+        for required_contract in (
+            "--collect-ipv6-loopback",
+            "FWPM_CONDITION_NET_EVENT_TYPE",
+            "FWPM_NET_EVENT_TYPE_CAPABILITY_DROP",
+            "FWP_V6_ADDR_MASK",
+            "prefixLength = 128",
+            "FWP_IP_VERSION_V6",
+            "header->remoteAddrV6",
+            "expected_loopback",
+        ):
+            with self.subTest(contract=required_contract):
+                self.assertIn(required_contract, source)
+        self.assertNotIn("FwpmEngineSetOption", source)
+
+    def test_unsubscribe_failure_terminates_helper_before_releasing_callback_state(self) -> None:
+        repository_root = os.path.dirname(os.path.dirname(__file__))
+        source_path = os.path.join(
+            repository_root, "native", "windows", "icode_wfp_event_probe.c",
+        )
+        with open(source_path, encoding="utf-8") as source_file:
+            source = source_file.read()
+
+        collector_start = source.index("static int run_collector(")
+        collector_end = source.index("\nint wmain(", collector_start)
+        collector = source[collector_start:collector_end]
+        cleanup = collector.split("\ncleanup:\n", 1)[1]
+        unsubscribe_call = cleanup.index("FwpmNetEventUnsubscribe0")
+        unsubscribe_failure = cleanup.index(
+            "if (api_result != ERROR_SUCCESS)", unsubscribe_call,
+        )
+        process_terminate = cleanup.index(
+            "TerminateProcess(GetCurrentProcess(), ERROR_GEN_FAILURE);",
+            unsubscribe_failure,
+        )
+        process_exit = cleanup.index(
+            "ExitProcess(ERROR_GEN_FAILURE);", process_terminate,
+        )
+        engine_close = cleanup.index("FwpmEngineClose0", unsubscribe_failure)
+        sid_free = cleanup.index("FreeSid(expected_sid)", unsubscribe_failure)
+
+        self.assertLess(unsubscribe_call, unsubscribe_failure)
+        self.assertLess(unsubscribe_failure, process_terminate)
+        self.assertLess(process_terminate, process_exit)
+        self.assertLess(process_exit, engine_close)
+        self.assertLess(process_exit, sid_free)
+
     def test_sdk_compile_failure_classification_does_not_return_raw_output(self) -> None:
         probe = _probe_module(self)
         classify = probe._classify_windows_sdk_compile_failure

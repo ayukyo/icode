@@ -636,6 +636,51 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                     "evidence_unavailable",
                 )
 
+    def test_wfp_ipv6_loopback_receipt_requires_exact_native_scope(self) -> None:
+        classify = getattr(
+            probe_module, "_classify_wfp_ipv6_loopback_receipt", None,
+        )
+        self.assertTrue(
+            callable(classify),
+            "IPv6 loopback WFP receipt classifier is missing",
+        )
+        receipt = {
+            "schema_version": 6,
+            "target_ip_version": 6,
+            "target_is_loopback": True,
+            "subscription_ok": True,
+            "unsubscribe_ok": True,
+            "network_events_collected": True,
+            "event_callback_count": 1,
+            "capability_drop_event_count": 1,
+            "classify_drop_event_count": 0,
+            "matched_capability_drop_count": 1,
+            "matched_classify_drop_count": 0,
+            "matched_network_capability_id": 0,
+            "network_capability_id_consistent": True,
+        }
+        self.assertEqual(
+            classify(receipt, collector_exit_code=0),
+            "capability_drop_ipv6_loopback_attributed",
+        )
+        for unavailable in (
+            {**receipt, "target_ip_version": 4},
+            {**receipt, "target_is_loopback": False},
+            {**receipt, "schema_version": 5},
+            {**receipt, "subscription_ok": False},
+            {**receipt, "matched_capability_drop_count": 0},
+            {**receipt, "matched_network_capability_id": True},
+        ):
+            with self.subTest(receipt=unavailable):
+                self.assertEqual(
+                    classify(unavailable, collector_exit_code=0),
+                    "evidence_unavailable",
+                )
+        self.assertEqual(
+            classify(receipt, collector_exit_code=1),
+            "evidence_unavailable",
+        )
+
     def test_wfp_observer_diagnostics_show_only_bounded_phase_fields(self) -> None:
         summarize = getattr(
             probe_module, "_wfp_observer_diagnostic_summary", None,
@@ -775,6 +820,78 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertEqual(
             classify(receipt, collector_exit_code=exit_code),
             "capability_drop_private_network_attributed",
+        )
+
+    def test_wfp_ipv6_loopback_observer_binds_fixed_mode_port_and_cleans_up(self) -> None:
+        start = getattr(
+            probe_module, "_start_wfp_ipv6_loopback_event_probe", None,
+        )
+        stop = getattr(probe_module, "_stop_wfp_event_probe", None)
+        classify = getattr(
+            probe_module, "_classify_wfp_ipv6_loopback_receipt", None,
+        )
+        self.assertTrue(callable(start), "IPv6 loopback WFP observer launcher is missing")
+        self.assertTrue(callable(stop), "WFP observer cleanup is missing")
+        self.assertTrue(callable(classify), "IPv6 loopback receipt classifier is missing")
+
+        with tempfile.TemporaryDirectory(prefix="icode-wfp-ipv6-observer-test-") as raw:
+            root = Path(raw)
+            fake_observer = root / "fake-wfp-observer"
+            fake_observer.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, pathlib, sys, time\n"
+                "mode, profile, port, ready, stop, result = sys.argv[1:]\n"
+                "if (mode, profile, port) != ('--collect-ipv6-loopback', "
+                "'icode-0123456789abcdef0123456789abcdef', '54321'):\n"
+                "    raise SystemExit(7)\n"
+                "pathlib.Path(ready).write_text('ready\\n', encoding='ascii')\n"
+                "deadline = time.monotonic() + 4\n"
+                "while time.monotonic() < deadline and not pathlib.Path(stop).exists():\n"
+                "    time.sleep(0.01)\n"
+                "pathlib.Path(result).write_text(json.dumps({\n"
+                "    'schema_version': 6, 'target_ip_version': 6,\n"
+                "    'target_is_loopback': True, 'subscription_ok': True,\n"
+                "    'network_events_collected': True, 'unsubscribe_ok': True,\n"
+                "    'event_callback_count': 1, 'capability_drop_event_count': 1,\n"
+                "    'classify_drop_event_count': 0,\n"
+                "    'matched_capability_drop_count': 1,\n"
+                "    'matched_classify_drop_count': 0,\n"
+                "    'matched_network_capability_id': 0,\n"
+                "    'network_capability_id_consistent': True,\n"
+                "}), encoding='ascii')\n",
+                encoding="utf-8",
+            )
+            fake_observer.chmod(0o755)
+
+            invalid_profile, invalid_profile_paths = start(
+                fake_observer, "not-an-appcontainer", 54321, root,
+            )
+            self.assertIsNone(invalid_profile)
+            self.assertIsNone(invalid_profile_paths)
+            invalid_port, invalid_port_paths = start(
+                fake_observer,
+                "icode-0123456789abcdef0123456789abcdef",
+                65536,
+                root,
+            )
+            self.assertIsNone(invalid_port)
+            self.assertIsNone(invalid_port_paths)
+
+            process, paths = start(
+                fake_observer,
+                "icode-0123456789abcdef0123456789abcdef",
+                54321,
+                root,
+            )
+            self.assertIsNotNone(process)
+            self.assertIsNotNone(paths)
+            self.assertEqual(paths[0].name, "wfp-0123456789abcdef0123456789abcdef.ready")
+            receipt, exit_code = stop(process, paths)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            classify(receipt, collector_exit_code=exit_code),
+            "capability_drop_ipv6_loopback_attributed",
         )
 
     def test_dacl_state_requires_exact_acl_bytes_and_security_control(self) -> None:

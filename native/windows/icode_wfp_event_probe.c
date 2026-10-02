@@ -18,6 +18,7 @@
 #define EVENT_DRAIN_DELAY_MS 200
 #define MAX_RECEIPT_EVENT_COUNT 65536
 #define TARGET_FILTER_CONDITION_COUNT 3
+#define IPV6_LOOPBACK_FILTER_CONDITION_COUNT 4
 #define RFC1918_10_ADDRESS 0x0A000000U
 #define RFC1918_10_MASK 0xFF000000U
 #define RFC1918_172_ADDRESS 0xAC100000U
@@ -28,7 +29,10 @@
 
 typedef struct WfpProbeContext {
     PSID expected_package_sid;
+    UINT8 expected_ip_version;
+    BOOL expected_loopback;
     UINT32 expected_remote_address;
+    UINT8 expected_remote_address_v6[16];
     UINT16 expected_remote_port;
     volatile LONG event_callback_count;
     volatile LONG capability_drop_event_count;
@@ -151,6 +155,43 @@ static void initialize_target_event_template(
     event_template->filterCondition = conditions;
 }
 
+static void initialize_ipv6_loopback_event_template(
+    FWPM_NET_EVENT_ENUM_TEMPLATE0 *event_template,
+    FWPM_FILTER_CONDITION0 conditions[IPV6_LOOPBACK_FILTER_CONDITION_COUNT],
+    FWP_V6_ADDR_AND_MASK *loopback_address,
+    UINT16 remote_port
+) {
+    ZeroMemory(event_template, sizeof(*event_template));
+    ZeroMemory(conditions, sizeof(FWPM_FILTER_CONDITION0) *
+        IPV6_LOOPBACK_FILTER_CONDITION_COUNT);
+    ZeroMemory(loopback_address, sizeof(*loopback_address));
+    loopback_address->addr[15] = 1;
+    loopback_address->prefixLength = 128;
+
+    conditions[0].fieldKey = FWPM_CONDITION_NET_EVENT_TYPE;
+    conditions[0].matchType = FWP_MATCH_EQUAL;
+    conditions[0].conditionValue.type = FWP_UINT32;
+    conditions[0].conditionValue.uint32 = FWPM_NET_EVENT_TYPE_CAPABILITY_DROP;
+
+    conditions[1].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+    conditions[1].matchType = FWP_MATCH_EQUAL;
+    conditions[1].conditionValue.type = FWP_V6_ADDR_MASK;
+    conditions[1].conditionValue.v6AddrMask = loopback_address;
+
+    conditions[2].fieldKey = FWPM_CONDITION_IP_REMOTE_PORT;
+    conditions[2].matchType = FWP_MATCH_EQUAL;
+    conditions[2].conditionValue.type = FWP_UINT16;
+    conditions[2].conditionValue.uint16 = remote_port;
+
+    conditions[3].fieldKey = FWPM_CONDITION_IP_PROTOCOL;
+    conditions[3].matchType = FWP_MATCH_EQUAL;
+    conditions[3].conditionValue.type = FWP_UINT8;
+    conditions[3].conditionValue.uint8 = IPPROTO_TCP;
+
+    event_template->numFilterConditions = IPV6_LOOPBACK_FILTER_CONDITION_COUNT;
+    event_template->filterCondition = conditions;
+}
+
 static void increment_saturating(volatile LONG *value) {
     LONG current = InterlockedCompareExchange(value, 0, 0);
 
@@ -183,22 +224,33 @@ static BOOL event_header_matches_target(
     if ((header->flags & required_flags) != required_flags ||
         header->packageSid == NULL || !IsValidSid(header->packageSid) ||
         !EqualSid(header->packageSid, context->expected_package_sid) ||
-        header->ipVersion != FWP_IP_VERSION_V4 ||
         header->ipProtocol != IPPROTO_TCP ||
-        header->remoteAddrV4 != context->expected_remote_address ||
         header->remotePort != context->expected_remote_port) {
         return FALSE;
     }
-    return TRUE;
+    if (context->expected_ip_version == FWP_IP_VERSION_V4) {
+        return header->ipVersion == FWP_IP_VERSION_V4 &&
+            header->remoteAddrV4 == context->expected_remote_address;
+    }
+    if (context->expected_ip_version == FWP_IP_VERSION_V6) {
+        return header->ipVersion == FWP_IP_VERSION_V6 &&
+            memcmp(
+                header->remoteAddrV6.byteArray16,
+                context->expected_remote_address_v6,
+                sizeof(context->expected_remote_address_v6)
+            ) == 0;
+    }
+    return FALSE;
 }
 
 static BOOL event_matches_target(
     const FWPM_NET_EVENT3 *event,
     const WfpProbeContext *context
 ) {
-    return event != NULL &&
+    return event != NULL && context != NULL &&
         event->type == FWPM_NET_EVENT_TYPE_CAPABILITY_DROP &&
-        event->capabilityDrop != NULL && !event->capabilityDrop->isLoopback &&
+        event->capabilityDrop != NULL &&
+        event->capabilityDrop->isLoopback == context->expected_loopback &&
         event_header_matches_target(event, context);
 }
 
@@ -206,9 +258,10 @@ static BOOL event_matches_classify_drop(
     const FWPM_NET_EVENT3 *event,
     const WfpProbeContext *context
 ) {
-    return event != NULL &&
+    return event != NULL && context != NULL &&
         event->type == FWPM_NET_EVENT_TYPE_CLASSIFY_DROP &&
-        event->classifyDrop != NULL && !event->classifyDrop->isLoopback &&
+        event->classifyDrop != NULL &&
+        event->classifyDrop->isLoopback == context->expected_loopback &&
         event_header_matches_target(event, context);
 }
 
@@ -435,6 +488,7 @@ static BOOL wait_for_stop(const wchar_t *path) {
 
 static BOOL write_result(
     const wchar_t *path,
+    BOOL ipv6_loopback,
     BOOL subscription_ok,
     BOOL unsubscribe_ok,
     BOOL network_events_state_known,
@@ -447,7 +501,7 @@ static BOOL write_result(
     LONG matched_network_capability_id,
     BOOL network_capability_id_consistent
 ) {
-    char json[512];
+    char json[640];
     char capability_id_text[16];
     int written;
     if (matched_network_capability_id >=
@@ -461,30 +515,58 @@ static BOOL write_result(
     } else {
         strcpy_s(capability_id_text, sizeof(capability_id_text), "null");
     }
-    written = _snprintf_s(
-        json, sizeof(json), _TRUNCATE,
-        "{\"schema_version\":5,\"subscription_ok\":%s,"
-        "\"unsubscribe_ok\":%s,\"network_events_collected\":%s,"
-        "\"event_callback_count\":%ld,"
-        "\"capability_drop_event_count\":%ld,"
-        "\"classify_drop_event_count\":%ld,"
-        "\"matched_capability_drop_count\":%ld,"
-        "\"matched_classify_drop_count\":%ld,"
-        "\"matched_network_capability_id\":%s,"
-        "\"network_capability_id_consistent\":%s}\n",
-        subscription_ok ? "true" : "false",
-        unsubscribe_ok ? "true" : "false",
-        network_events_state_known
-            ? (network_events_collected ? "true" : "false")
-            : "null",
-        event_callback_count,
-        capability_drop_event_count,
-        classify_drop_event_count,
-        matched_capability_drop_count,
-        matched_classify_drop_count,
-        capability_id_text,
-        network_capability_id_consistent ? "true" : "false"
-    );
+    if (ipv6_loopback) {
+        written = _snprintf_s(
+            json, sizeof(json), _TRUNCATE,
+            "{\"schema_version\":6,\"target_ip_version\":6,"
+            "\"target_is_loopback\":true,\"subscription_ok\":%s,"
+            "\"unsubscribe_ok\":%s,\"network_events_collected\":%s,"
+            "\"event_callback_count\":%ld,"
+            "\"capability_drop_event_count\":%ld,"
+            "\"classify_drop_event_count\":%ld,"
+            "\"matched_capability_drop_count\":%ld,"
+            "\"matched_classify_drop_count\":%ld,"
+            "\"matched_network_capability_id\":%s,"
+            "\"network_capability_id_consistent\":%s}\n",
+            subscription_ok ? "true" : "false",
+            unsubscribe_ok ? "true" : "false",
+            network_events_state_known
+                ? (network_events_collected ? "true" : "false")
+                : "null",
+            event_callback_count,
+            capability_drop_event_count,
+            classify_drop_event_count,
+            matched_capability_drop_count,
+            matched_classify_drop_count,
+            capability_id_text,
+            network_capability_id_consistent ? "true" : "false"
+        );
+    } else {
+        written = _snprintf_s(
+            json, sizeof(json), _TRUNCATE,
+            "{\"schema_version\":5,\"subscription_ok\":%s,"
+            "\"unsubscribe_ok\":%s,\"network_events_collected\":%s,"
+            "\"event_callback_count\":%ld,"
+            "\"capability_drop_event_count\":%ld,"
+            "\"classify_drop_event_count\":%ld,"
+            "\"matched_capability_drop_count\":%ld,"
+            "\"matched_classify_drop_count\":%ld,"
+            "\"matched_network_capability_id\":%s,"
+            "\"network_capability_id_consistent\":%s}\n",
+            subscription_ok ? "true" : "false",
+            unsubscribe_ok ? "true" : "false",
+            network_events_state_known
+                ? (network_events_collected ? "true" : "false")
+                : "null",
+            event_callback_count,
+            capability_drop_event_count,
+            classify_drop_event_count,
+            matched_capability_drop_count,
+            matched_classify_drop_count,
+            capability_id_text,
+            network_capability_id_consistent ? "true" : "false"
+        );
+    }
     return written > 0 && (size_t)written < sizeof(json) &&
         write_ascii_file(path, json);
 }
@@ -550,6 +632,7 @@ static BOOL classifier_self_test(void) {
     ZeroMemory(&classify_drop, sizeof(classify_drop));
     ZeroMemory(&context, sizeof(context));
     context.expected_package_sid = expected_sid;
+    context.expected_ip_version = FWP_IP_VERSION_V4;
     context.expected_remote_address = TEST_PRIVATE_TARGET_ADDRESS;
     context.expected_remote_port = 54321;
     context.matched_network_capability_id = -1;
@@ -640,6 +723,7 @@ static BOOL classifier_self_test(void) {
     {
         WfpProbeContext mixed_context = {0};
         mixed_context.expected_package_sid = expected_sid;
+        mixed_context.expected_ip_version = FWP_IP_VERSION_V4;
         mixed_context.expected_remote_address = context.expected_remote_address;
         mixed_context.expected_remote_port = context.expected_remote_port;
         mixed_context.matched_network_capability_id = -1;
@@ -654,6 +738,126 @@ static BOOL classifier_self_test(void) {
             mixed_context.matched_network_capability_id !=
                 FWPM_APPC_NETWORK_CAPABILITY_INTERNET_PRIVATE_NETWORK ||
             mixed_context.network_capability_id_consistent != FALSE) {
+            goto cleanup;
+        }
+    }
+
+    {
+        FWPM_FILTER_CONDITION0 ipv6_conditions[
+            IPV6_LOOPBACK_FILTER_CONDITION_COUNT
+        ];
+        FWPM_NET_EVENT3 ipv6_event;
+        FWPM_NET_EVENT_CAPABILITY_DROP0 ipv6_drop;
+        FWPM_NET_EVENT_ENUM_TEMPLATE0 ipv6_template;
+        FWP_V6_ADDR_AND_MASK ipv6_mask;
+        WfpProbeContext ipv6_context = {0};
+        UINT8 expected_loopback[16] = {0};
+
+        expected_loopback[15] = 1;
+        initialize_ipv6_loopback_event_template(
+            &ipv6_template, ipv6_conditions, &ipv6_mask, 54322
+        );
+        if (ipv6_template.numFilterConditions !=
+                IPV6_LOOPBACK_FILTER_CONDITION_COUNT ||
+            ipv6_template.filterCondition != ipv6_conditions ||
+            !IsEqualGUID(
+                &ipv6_conditions[0].fieldKey,
+                &FWPM_CONDITION_NET_EVENT_TYPE
+            ) || ipv6_conditions[0].conditionValue.type != FWP_UINT32 ||
+            ipv6_conditions[0].conditionValue.uint32 !=
+                FWPM_NET_EVENT_TYPE_CAPABILITY_DROP ||
+            !IsEqualGUID(
+                &ipv6_conditions[1].fieldKey,
+                &FWPM_CONDITION_IP_REMOTE_ADDRESS
+            ) || ipv6_conditions[1].conditionValue.type != FWP_V6_ADDR_MASK ||
+            ipv6_conditions[1].conditionValue.v6AddrMask != &ipv6_mask ||
+            memcmp(ipv6_mask.addr, expected_loopback, sizeof(expected_loopback)) != 0 ||
+            ipv6_mask.prefixLength != 128 ||
+            !IsEqualGUID(
+                &ipv6_conditions[2].fieldKey,
+                &FWPM_CONDITION_IP_REMOTE_PORT
+            ) || ipv6_conditions[2].conditionValue.type != FWP_UINT16 ||
+            ipv6_conditions[2].conditionValue.uint16 != 54322 ||
+            !IsEqualGUID(
+                &ipv6_conditions[3].fieldKey,
+                &FWPM_CONDITION_IP_PROTOCOL
+            ) || ipv6_conditions[3].conditionValue.type != FWP_UINT8 ||
+            ipv6_conditions[3].conditionValue.uint8 != IPPROTO_TCP) {
+            goto cleanup;
+        }
+
+        ZeroMemory(&ipv6_event, sizeof(ipv6_event));
+        ZeroMemory(&ipv6_drop, sizeof(ipv6_drop));
+        ipv6_context.expected_package_sid = expected_sid;
+        ipv6_context.expected_ip_version = FWP_IP_VERSION_V6;
+        ipv6_context.expected_loopback = TRUE;
+        memcpy(
+            ipv6_context.expected_remote_address_v6,
+            expected_loopback,
+            sizeof(expected_loopback)
+        );
+        ipv6_context.expected_remote_port = 54322;
+        ipv6_context.matched_network_capability_id = -1;
+        ipv6_context.network_capability_id_consistent = TRUE;
+
+        ipv6_event.type = FWPM_NET_EVENT_TYPE_CAPABILITY_DROP;
+        ipv6_event.header.flags =
+            FWPM_NET_EVENT_FLAG_IP_VERSION_SET |
+            FWPM_NET_EVENT_FLAG_IP_PROTOCOL_SET |
+            FWPM_NET_EVENT_FLAG_REMOTE_ADDR_SET |
+            FWPM_NET_EVENT_FLAG_REMOTE_PORT_SET |
+            FWPM_NET_EVENT_FLAG_PACKAGE_ID_SET;
+        ipv6_event.header.packageSid = expected_sid;
+        ipv6_event.header.ipVersion = FWP_IP_VERSION_V6;
+        ipv6_event.header.ipProtocol = IPPROTO_TCP;
+        memcpy(
+            ipv6_event.header.remoteAddrV6.byteArray16,
+            expected_loopback,
+            sizeof(expected_loopback)
+        );
+        ipv6_event.header.remotePort = ipv6_context.expected_remote_port;
+        ipv6_event.capabilityDrop = &ipv6_drop;
+        ipv6_drop.isLoopback = TRUE;
+        ipv6_drop.networkCapabilityId =
+            FWPM_APPC_NETWORK_CAPABILITY_INTERNET_CLIENT;
+        if (!event_matches_target(&ipv6_event, &ipv6_context)) {
+            goto cleanup;
+        }
+        on_net_event(&ipv6_context, &ipv6_event);
+        if (ipv6_context.event_callback_count != 1 ||
+            ipv6_context.matched_capability_drop_count != 1 ||
+            ipv6_context.matched_network_capability_id !=
+                FWPM_APPC_NETWORK_CAPABILITY_INTERNET_CLIENT ||
+            ipv6_context.network_capability_id_consistent != TRUE) {
+            goto cleanup;
+        }
+        ipv6_drop.isLoopback = FALSE;
+        if (event_matches_target(&ipv6_event, &ipv6_context)) {
+            goto cleanup;
+        }
+        ipv6_drop.isLoopback = TRUE;
+        ipv6_event.header.remoteAddrV6.byteArray16[15] = 2;
+        if (event_matches_target(&ipv6_event, &ipv6_context)) {
+            goto cleanup;
+        }
+        ipv6_event.header.remoteAddrV6.byteArray16[15] = 1;
+        ipv6_event.header.remotePort++;
+        if (event_matches_target(&ipv6_event, &ipv6_context)) {
+            goto cleanup;
+        }
+        ipv6_event.header.remotePort--;
+        ipv6_event.header.ipProtocol = IPPROTO_UDP;
+        if (event_matches_target(&ipv6_event, &ipv6_context)) {
+            goto cleanup;
+        }
+        ipv6_event.header.ipProtocol = IPPROTO_TCP;
+        ipv6_event.header.packageSid = other_sid;
+        if (event_matches_target(&ipv6_event, &ipv6_context)) {
+            goto cleanup;
+        }
+        ipv6_event.header.packageSid = expected_sid;
+        ipv6_event.header.ipVersion = FWP_IP_VERSION_V4;
+        if (event_matches_target(&ipv6_event, &ipv6_context)) {
             goto cleanup;
         }
     }
@@ -700,6 +904,7 @@ static int run_collector(
     const wchar_t *profile_name,
     UINT32 remote_address,
     UINT16 remote_port,
+    BOOL ipv6_loopback,
     const wchar_t *ready_path,
     const wchar_t *stop_path,
     const wchar_t *result_path
@@ -708,7 +913,8 @@ static int run_collector(
     HANDLE engine = NULL;
     HANDLE subscription_handle = NULL;
     FWPM_NET_EVENT_ENUM_TEMPLATE0 event_template;
-    FWPM_FILTER_CONDITION0 filter_conditions[TARGET_FILTER_CONDITION_COUNT];
+    FWPM_FILTER_CONDITION0 filter_conditions[IPV6_LOOPBACK_FILTER_CONDITION_COUNT];
+    FWP_V6_ADDR_AND_MASK ipv6_loopback_address;
     FWPM_NET_EVENT_SUBSCRIPTION0 subscription;
     WfpProbeContext context = {0};
     HRESULT derive_result;
@@ -732,6 +938,7 @@ static int run_collector(
     BOOL network_capability_id_consistent = FALSE;
     int exit_code = 1;
 
+    ZeroMemory(&ipv6_loopback_address, sizeof(ipv6_loopback_address));
     context.matched_network_capability_id = -1;
     context.network_capability_id_consistent = TRUE;
     derive_result = DeriveAppContainerSidFromAppContainerName(
@@ -764,14 +971,25 @@ static int run_collector(
     ZeroMemory(&subscription, sizeof(subscription));
     ZeroMemory(&context, sizeof(context));
     context.expected_package_sid = expected_sid;
-    context.expected_remote_address = remote_address;
     context.expected_remote_port = remote_port;
     context.matched_network_capability_id = -1;
     context.network_capability_id_consistent = TRUE;
-
-    initialize_target_event_template(
-        &event_template, filter_conditions, remote_address, remote_port
-    );
+    if (ipv6_loopback) {
+        context.expected_ip_version = FWP_IP_VERSION_V6;
+        context.expected_loopback = TRUE;
+        context.expected_remote_address_v6[15] = 1;
+        initialize_ipv6_loopback_event_template(
+            &event_template, filter_conditions, &ipv6_loopback_address,
+            remote_port
+        );
+    } else {
+        context.expected_ip_version = FWP_IP_VERSION_V4;
+        context.expected_loopback = FALSE;
+        context.expected_remote_address = remote_address;
+        initialize_target_event_template(
+            &event_template, filter_conditions, remote_address, remote_port
+        );
+    }
     /* The subscription is limited to this endpoint; callback checks package SID. */
     subscription.enumTemplate = &event_template;
     api_result = FwpmNetEventSubscribe2(
@@ -793,7 +1011,14 @@ cleanup:
         /* Unsubscribe drains callbacks before shared context/SID release. */
         api_result = FwpmNetEventUnsubscribe0(engine, subscription_handle);
         if (api_result != ERROR_SUCCESS) {
-            unsubscribe_ok = FALSE;
+            /*
+             * A failed unsubscribe does not guarantee callbacks were drained.
+             * This one-shot helper must terminate before releasing callback
+             * state; the parent treats its nonzero exit and missing receipt as
+             * unavailable diagnostic evidence.
+             */
+            TerminateProcess(GetCurrentProcess(), ERROR_GEN_FAILURE);
+            ExitProcess(ERROR_GEN_FAILURE);
         }
         subscription_handle = NULL;
     }
@@ -823,7 +1048,7 @@ cleanup:
     network_capability_id_consistent =
         context.network_capability_id_consistent != FALSE;
     result_written = write_result(
-        result_path, subscription_ok,
+        result_path, ipv6_loopback, subscription_ok,
         unsubscribe_ok, network_events_state_known, network_events_collected,
         event_callback_count, capability_drop_event_count,
         classify_drop_event_count,
@@ -844,6 +1069,19 @@ int wmain(int argc, wchar_t **argv) {
     if (argc == 2 && wcscmp(argv[1], L"--self-test") == 0) {
         return classifier_self_test() ? 0 : 1;
     }
+    if (argc == 7 && wcscmp(argv[1], L"--collect-ipv6-loopback") == 0) {
+        if (!is_generated_profile_name(argv[2]) ||
+            !parse_port(argv[3], &remote_port) ||
+            argv[4][0] == L'\0' || argv[5][0] == L'\0' || argv[6][0] == L'\0' ||
+            _wcsicmp(argv[4], argv[5]) == 0 || _wcsicmp(argv[4], argv[6]) == 0 ||
+            _wcsicmp(argv[5], argv[6]) == 0 ||
+            !probe_paths_are_safe(argv[2], argv[4], argv[5], argv[6])) {
+            return 2;
+        }
+        return run_collector(
+            argv[2], 0, remote_port, TRUE, argv[4], argv[5], argv[6]
+        );
+    }
     if (argc != 7 || !is_generated_profile_name(argv[1]) ||
         !parse_private_ipv4(argv[2], &remote_address) ||
         !parse_port(argv[3], &remote_port) ||
@@ -856,6 +1094,7 @@ int wmain(int argc, wchar_t **argv) {
         return 2;
     }
     return run_collector(
-        argv[1], remote_address, remote_port, argv[4], argv[5], argv[6]
+        argv[1], remote_address, remote_port, FALSE,
+        argv[4], argv[5], argv[6]
     );
 }

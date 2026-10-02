@@ -377,8 +377,10 @@ jobs:
         include:
           - os: windows-latest
             python-architecture: x64
+            cmake-architecture: x64
           - os: windows-11-arm
             python-architecture: arm64
+            cmake-architecture: ARM64
     env:
       PYTHONPATH: src
       PYTHONIOENCODING: utf-8
@@ -395,6 +397,20 @@ jobs:
         with:
           python-version: "3.11"
           architecture: ${{ matrix.python-architecture }}
+      - name: Build and self-test IPv6 loopback WFP observer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $buildDirectory = Join-Path $env:RUNNER_TEMP 'icode-reviewer-wfp-probe'
+          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}'
+          if ($LASTEXITCODE -ne 0) { throw "WFP observer configure failed: $LASTEXITCODE" }
+          cmake --build $buildDirectory --config Release --parallel 1
+          if ($LASTEXITCODE -ne 0) { throw "WFP observer build failed: $LASTEXITCODE" }
+          $wfpProbe = Join-Path $buildDirectory 'Release/icode-wfp-event-probe.exe'
+          & $wfpProbe --self-test
+          if ($LASTEXITCODE -ne 0) { throw "IPv6 WFP observer self-test failed: $LASTEXITCODE" }
+          Add-Content -Path $env:GITHUB_ENV `
+            -Value "ICODE_DIAGNOSTIC_WFP_PROBE_BUILD=$wfpProbe" -Encoding utf8
       - name: Cross-check Windows SDK WFP ABI (x64/ARM64)
         run: python -m unittest tests.test_windows_wfp_abi.TestWindowsWfpAbi -v
       - name: Run Reviewer snapshot probe as temporary standard user
@@ -405,13 +421,15 @@ jobs:
           $accountName = "icodeprobe_$suffix"
           if ($accountName.Length -gt 20) { throw 'temporary_reviewer_account_name_too_long' }
           $probeRoot = Join-Path $env:RUNNER_TEMP "icode-reviewer-standard-user-$suffix"
+          $wfpProbeForUser = Join-Path $probeRoot 'icode-wfp-event-probe.exe'
           $profilePath = $null
           $securePassword = $null
           $passwordText = $null
           $created = $false
           $environmentNames = @(
             'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
-            'RUNNER_TEMP', 'TEMP', 'TMP', 'ICODE_DIAGNOSTIC_STANDARD_USER_SID'
+            'RUNNER_TEMP', 'TEMP', 'TMP', 'ICODE_DIAGNOSTIC_STANDARD_USER_SID',
+            'ICODE_DIAGNOSTIC_WFP_PROBE_PATH'
           )
           $savedEnvironment = @{}
           foreach ($name in $environmentNames) {
@@ -438,6 +456,8 @@ jobs:
             New-Item -ItemType Directory -Path $probeRoot | Out-Null
             & icacls.exe $probeRoot /grant "*${sid}:(OI)(CI)M" /Q
             if ($LASTEXITCODE -ne 0) { throw "reviewer_probe_root_acl_failed exit=$LASTEXITCODE" }
+            Copy-Item -LiteralPath $env:ICODE_DIAGNOSTIC_WFP_PROBE_BUILD `
+              -Destination $wfpProbeForUser -ErrorAction Stop
 
             $profileBootstrap = Start-Process `
               -FilePath (Join-Path $env:SystemRoot 'System32/cmd.exe') `
@@ -473,6 +493,7 @@ jobs:
             $env:TEMP = $probeRoot
             $env:TMP = $probeRoot
             $env:ICODE_DIAGNOSTIC_STANDARD_USER_SID = $sid
+            $env:ICODE_DIAGNOSTIC_WFP_PROBE_PATH = $wfpProbeForUser
 
             $stdout = Join-Path $probeRoot 'reviewer-probe.stdout.txt'
             $stderr = Join-Path $probeRoot 'reviewer-probe.stderr.txt'
