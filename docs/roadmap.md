@@ -1,5 +1,7 @@
 # 开发路线图与取舍原则
 
+- **CI #510 根因与 WFP 注记接线修正（2026-10-02；新 SHA 待验）：**主 CI [#510](https://github.com/ayukyo/icode/actions/runs/36969102709) 28 个 jobs 为 23 success、2 failure、3 skipped；Windows Reviewer [x64](https://github.com/ayukyo/icode/actions/runs/36969102709/job/110719137046) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36969102709/job/110719137092) 仍因 IPv4/IPv6 `10035` 未满足 `10013` 硬门，且两边均没有 WFP diagnostic annotation。根因是 required Reviewer 测试只打印摘要，调用 notice helper 的代码此前仅在可选手动探针。已在本地用 RED→GREEN 回归接入同一 helper，并保留 `reviewer_ipv6_loopback_wfp_diagnostics=` 完整日志行；固定字段 notice 上限 500 字符。GitHub runner stdout 命令路径与 PowerShell 捕获后 `Get-Content` 回放已只读核对；下一 SHA 需原生确认双架构注记实际出现。官网 [#386](https://github.com/ayukyo/icode/actions/runs/36969102737) success。此修正不改变网络门、`process_limit` 语义、R2/R3 readiness 或自动模式。
+
 - **CI #509 与 WFP 注记切片（2026-10-02；R2/R3 继续未完成）：**主 CI [#509](https://github.com/ayukyo/icode/actions/runs/36967065754) 为 23 success、2 failure、3 skipped；Windows Reviewer x64/ARM64 仍因 IPv4/IPv6 `10035` 而未满足 `10013` 网络硬门，文件/ACL/清理子门通过，官网 [#384](https://github.com/ayukyo/icode/actions/runs/36967065760) success。由于原 WFP 原始订阅码只在普通日志、未进结构化 annotation，已追加 ≤500 字的净化诊断注记与 RED→GREEN 回归；保留原网络门、生产接线和 readiness 状态。新 SHA 的双架构结果出来后，继续围绕明确的平台缺口推进，不因子门或 CI 注记宣告阶段完成。
 
 

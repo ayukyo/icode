@@ -31,6 +31,7 @@ import icode.windows_appcontainer as windows_appcontainer
 import icode.windows_job as windows_job_module
 from scripts.run_windows_appcontainer_read_probe import (
     _classify_wfp_ipv6_loopback_receipt,
+    _print_wfp_observer_diagnostics,
     _start_wfp_ipv6_loopback_event_probe,
     _stop_wfp_event_probe,
     _wfp_observer_diagnostic_summary,
@@ -1541,8 +1542,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
 
     def test_Reviewer快照原生探针脚本在非Windows主机可静态解析(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
         captured_scripts: list[str] = []
         captured_notices: list[tuple[str, str]] = []
+        wfp_output = StringIO()
 
         class _CaptureAssertions:
             def assertTrue(self, *_args: object, **_kwargs: object) -> None:
@@ -1596,16 +1601,20 @@ class TestWindowsAppContainer(unittest.TestCase):
                  ), mock.patch(
                      "tests.test_windows_appcontainer._dacl_write_control_succeeds",
                      return_value=True,
-                 ), mock.patch.dict(
-                     os.environ,
-                     {"ICODE_DIAGNOSTIC_STANDARD_USER_SID": "S-1-5-21-1-2-3-1001"},
-                 ), mock.patch(
-                     "tests.test_windows_appcontainer.run_windows_appcontainer",
-                     side_effect=capture_runner,
-                 ):
-                TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理.__wrapped__(
-                    _CaptureAssertions(),
-                )
+                ), mock.patch.dict(
+                    os.environ,
+                    {
+                        "ICODE_DIAGNOSTIC_STANDARD_USER_SID": "S-1-5-21-1-2-3-1001",
+                        "GITHUB_ACTIONS": "true",
+                        "RUNNER_OS": "Windows",
+                    },
+                ), mock.patch(
+                    "tests.test_windows_appcontainer.run_windows_appcontainer",
+                    side_effect=capture_runner,
+                ), redirect_stdout(wfp_output):
+                    TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理.__wrapped__(
+                        _CaptureAssertions(),
+                    )
 
         notice_names = {name for name, _encoded in captured_notices}
         self.assertIn("Windows Reviewer snapshot access", notice_names)
@@ -1616,6 +1625,19 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer loopback network denial", notice_names)
         self.assertIn("Windows Reviewer write canary fingerprints", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
+        wfp_notice_prefix = (
+            "::notice title=Windows Reviewer WFP diagnostic only::"
+        )
+        wfp_notice_lines = [
+            line for line in wfp_output.getvalue().splitlines()
+            if line.startswith(wfp_notice_prefix)
+        ]
+        self.assertEqual(len(wfp_notice_lines), 1, wfp_output.getvalue())
+        wfp_notice_json = wfp_notice_lines[0][len(wfp_notice_prefix):]
+        self.assertLessEqual(len(wfp_notice_json), 500)
+        wfp_notice = json.loads(wfp_notice_json)
+        self.assertIn("subscription_return_code_hex", wfp_notice)
+        self.assertIn("reviewer_ipv6_loopback_wfp_diagnostics=", wfp_output.getvalue())
         network_notice = json.loads(next(
             encoded
             for name, encoded in captured_notices
@@ -6666,19 +6688,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                     ),
                     flush=True,
                 )
-                print(
-                    "reviewer_ipv6_loopback_wfp_diagnostics="
-                    + json.dumps(
-                        _wfp_observer_diagnostic_summary(
-                            process_started=wfp_process is not None,
-                            paths=wfp_paths,
-                            receipt=wfp_receipt,
-                            collector_exit_code=wfp_exit_code,
-                        ),
-                        sort_keys=True,
-                        separators=(",", ":"),
+                _print_wfp_observer_diagnostics(
+                    _wfp_observer_diagnostic_summary(
+                        process_started=wfp_process is not None,
+                        paths=wfp_paths,
+                        receipt=wfp_receipt,
+                        collector_exit_code=wfp_exit_code,
                     ),
-                    flush=True,
+                    log_prefix="reviewer_ipv6_loopback_wfp_diagnostics=",
                 )
 
                 try:

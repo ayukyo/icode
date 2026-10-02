@@ -399,10 +399,12 @@ def _wfp_observer_diagnostic_summary(
     }
 
 
-def _print_wfp_observer_diagnostics(summary: dict[str, object]) -> None:
+def _print_wfp_observer_diagnostics(
+    summary: dict[str, object], *, log_prefix: str = "  wfp_observer_diagnostics=",
+) -> None:
     """Keep full diagnostics in logs and publish only fixed fields as an Actions notice."""
     compact_summary = json.dumps(summary, sort_keys=True, separators=(",", ":"))
-    print("  wfp_observer_diagnostics=" + compact_summary)
+    print(log_prefix + compact_summary)
     if os.environ.get("GITHUB_ACTIONS") != "true":
         return
 
