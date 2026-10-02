@@ -430,6 +430,7 @@ jobs:
           $wfpStartedFile = Join-Path $probeRoot 'wfp-started'
           $wfpCaptureStarted = $false
           $wfpCaptureStatus = 'not_started'
+          $wfpArchiveMemberStatus = 'not_checked'
           $wfpExactDropCount = 0
           $wfpExtractExitCode = 'not_run'
           $netsh = Join-Path $env:SystemRoot 'System32/netsh.exe'
@@ -692,12 +693,31 @@ jobs:
                       } elseif ($expandResult.ExitCode -ne 0) {
                         $wfpCaptureStatus = 'extract_command_failed'
                       } else {
-                        $wfpXml = Join-Path $wfpExtractRoot 'wfpdiag.xml'
-                        if (-not (Test-Path -LiteralPath $wfpXml -PathType Leaf)) {
+                        $wfpXmlCandidates = @(
+                          Get-ChildItem -LiteralPath $wfpExtractRoot `
+                            -Filter 'wfpdiag.xml' -File -Recurse -ErrorAction Stop
+                        )
+                        if ($wfpXmlCandidates.Count -eq 0) {
                           $wfpCaptureStatus = 'extract_xml_missing'
-                        } elseif ((Get-Item -LiteralPath $wfpXml).Length -gt 8388608) {
+                          $memberListResult = Invoke-BoundedDiagnosticCommand `
+                            -Path $expand -Arguments @(
+                              '-D', $wfpCaptureArchive, '-F:wfpdiag.xml'
+                            ) -TimeoutMilliseconds 5000 -CaptureStdout
+                          if ($memberListResult.TimedOut) {
+                            $wfpArchiveMemberStatus = 'list_timeout'
+                          } elseif ($memberListResult.ExitCode -ne 0) {
+                            $wfpArchiveMemberStatus = 'list_failed'
+                          } elseif ($memberListResult.Stdout -match '(?i)wfpdiag\.xml') {
+                            $wfpArchiveMemberStatus = 'present'
+                          } else {
+                            $wfpArchiveMemberStatus = 'missing'
+                          }
+                        } elseif ($wfpXmlCandidates.Count -gt 1) {
+                          $wfpCaptureStatus = 'extract_xml_ambiguous'
+                        } elseif ($wfpXmlCandidates[0].Length -gt 8388608) {
                           $wfpCaptureStatus = 'extract_xml_too_large'
                         } else {
+                          $wfpXml = $wfpXmlCandidates[0].FullName
                           $captureSummaryResult = Invoke-BoundedDiagnosticCommand `
                             -Path $python -Arguments @(
                               (Join-Path $env:GITHUB_WORKSPACE 'scripts/inspect_windows_wfp_capture.py'),
@@ -750,7 +770,7 @@ jobs:
                 }
               }
             }
-            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode"
+            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }

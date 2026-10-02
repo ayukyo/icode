@@ -320,11 +320,9 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                     "    urllib.request.urlopen('https://packages.example/', timeout=2)\n"
                     "except (urllib.error.URLError, OSError): pass\n"
                     "else: raise AssertionError('test TLS endpoint unexpectedly succeeded')\n"
-                    "proxy_port = int(port)\n"
-                    f"host_ports = ({upstream_listener.getsockname()[1]}, "
-                    f"{host_only_listener.getsockname()[1]})\n"
-                    "blocked_port = next(candidate for candidate in host_ports\n"
-                    "                     if candidate != proxy_port)\n"
+                    # Match the worker negative probe to the host-only port whose
+                    # positive control and post-run accept queue are checked below.
+                    f"blocked_port = {host_only_listener.getsockname()[1]}\n"
                     "direct = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
                     "direct_result = direct.connect_ex(('127.0.0.1', blocked_port))\n"
                     "direct.close()\n"
@@ -348,6 +346,10 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                     "assert client.recv(1) == b'', 'lease expiry did not close client'\n"
                     "client.close()\n"
                     "print('lease-expiry-closed-client')\n"
+                )
+                self.assertIn(
+                    f"blocked_port = {host_only_listener.getsockname()[1]}\n",
+                    worker,
                 )
                 resolver = lambda hostname, port, resolver=None: (
                     ResolvedNetworkTarget(

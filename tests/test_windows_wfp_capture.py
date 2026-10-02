@@ -232,6 +232,32 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertLess(source_index, member_index)
         self.assertLess(member_index, destination_index)
 
+    def test_workflow_checks_exact_cab_member_without_logging_archive_listing(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("$wfpArchiveMemberStatus = 'not_checked'", job)
+        self.assertIn("'-D', $wfpCaptureArchive, '-F:wfpdiag.xml'", job)
+        self.assertIn("$memberListResult.Stdout -match '(?i)wfpdiag\\.xml'", job)
+        self.assertIn("archive_member_status=$wfpArchiveMemberStatus", job)
+        self.assertNotIn('Write-Output $memberListResult.Stdout', job)
+
+    def test_workflow_accepts_one_nested_cab_xml_and_rejects_ambiguous_matches(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("$wfpXmlCandidates = @(", job)
+        self.assertIn("Get-ChildItem -LiteralPath $wfpExtractRoot", job)
+        self.assertIn("-Filter 'wfpdiag.xml' -File -Recurse -ErrorAction Stop", job)
+        self.assertIn("$wfpXmlCandidates.Count -gt 1", job)
+        self.assertIn("extract_xml_ambiguous", job)
+
 
 if __name__ == "__main__":
     unittest.main()
