@@ -445,6 +445,7 @@ jobs:
           $observerReturnCode = 'none'
           $observerSetupStage = 'unavailable'
           $observerHelperExitCode = 'none'
+          $observerNetworkEventsState = 'unknown'
           $runnerAdminToken = $false
           $identity = $null
           try {
@@ -547,6 +548,14 @@ jobs:
                 $handlePresent = $observerReceipt.subscription_handle_present
                 $subscriptionOk = $observerReceipt.subscription_ok
                 $unsubscribeOk = $observerReceipt.unsubscribe_ok
+                $observerNetworkEventsCollected = $observerReceipt.network_events_collected
+                if ($observerNetworkEventsCollected -is [bool]) {
+                  $observerNetworkEventsState = if ($observerNetworkEventsCollected) {
+                    'enabled'
+                  } else {
+                    'disabled'
+                  }
+                }
                 if ($schemaVersion -eq 7 -and $ipVersion -eq 6 -and
                     $attempted -is [bool] -and $attempted -and
                     ($returnCode -is [int] -or $returnCode -is [long]) -and
@@ -593,7 +602,7 @@ jobs:
               Remove-Item -LiteralPath $observerRoot -Recurse -Force -ErrorAction Stop
             }
           }
-          Write-Output "::notice title=WFP observer identity control::runner_admin_token=$runnerAdminToken runner_wfp_observer_permission_probe=$observerPermissionState runner_wfp_observer_setup=$observerSetupStage runner_wfp_observer_helper_exit_code=$observerHelperExitCode subscription_return_code=$observerReturnCode"
+          Write-Output "::notice title=WFP observer identity control::runner_admin_token=$runnerAdminToken runner_wfp_observer_permission_probe=$observerPermissionState runner_wfp_observer_setup=$observerSetupStage runner_wfp_observer_helper_exit_code=$observerHelperExitCode runner_wfp_network_events_collected=$observerNetworkEventsState subscription_return_code=$observerReturnCode"
       - name: Run Reviewer snapshot probe as temporary standard user
         shell: pwsh
         run: |

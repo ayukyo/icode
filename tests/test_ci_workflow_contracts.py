@@ -326,6 +326,43 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         self.assertNotIn("$env:USERPROFILE = $probeRoot", candidate_job)
         self.assertNotIn("-UseNewEnvironment", candidate_job)
 
+    def test_runner_identity_notice_reports_read_only_collection_setting(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        candidate_job = workflow.split(
+            "  windows-reviewer-snapshot-probe:\n", 1,
+        )[1].split("\n  windows-appcontainer-read-handle-probe:", 1)[0]
+        runner_observer_step = candidate_job.split(
+            "      - name: Probe WFP Subscribe2 access as runner identity\n",
+            1,
+        )[1].split("\n      - name:", 1)[0]
+
+        for required_contract in (
+            "$observerNetworkEventsState = 'unknown'",
+            "$observerNetworkEventsCollected = $observerReceipt.network_events_collected",
+            "if ($observerNetworkEventsCollected -is [bool])",
+            "'enabled'",
+            "'disabled'",
+            "runner_wfp_network_events_collected=$observerNetworkEventsState",
+            "runner_wfp_observer_permission_probe=$observerPermissionState",
+        ):
+            with self.subTest(contract=required_contract):
+                self.assertTrue(
+                    required_contract in runner_observer_step,
+                    f"missing: {required_contract}",
+                )
+
+        receipt_projection = runner_observer_step.find(
+            "$observerNetworkEventsCollected = $observerReceipt.network_events_collected"
+        )
+        notice = runner_observer_step.find(
+            "Write-Output \"::notice title=WFP observer identity control"
+        )
+        self.assertTrue(receipt_projection >= 0, "missing receipt projection")
+        self.assertTrue(notice > receipt_projection, "notice must follow receipt parsing")
+
     def test_required_native_probe_fails_closed_if_setup_python_uses_a_venv(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         test_source = (repository_root / "tests/test_windows_appcontainer.py").read_text(
