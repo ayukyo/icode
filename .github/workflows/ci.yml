@@ -510,10 +510,11 @@ jobs:
                 "subscription-ready`n" { 'subscription_ready' }
                 default { 'unavailable' }
               }
-              if ($observerProcess.ExitCode -eq 2 -and
-                  $observerSetupStage -ne 'unavailable') {
-                $observerSetupStage = 'profile_cleanup_failed'
-              }
+            }
+            if ($observerProcess.ExitCode -eq 2) {
+              $observerSetupStage = 'profile_cleanup_failed'
+            } elseif ($observerProcess.ExitCode -eq 3) {
+              $observerSetupStage = 'invalid_arguments'
             }
             if ((Test-Path -LiteralPath $observerResultPath -PathType Leaf) -and
                 (Get-Item -LiteralPath $observerResultPath).Length -le 4096) {

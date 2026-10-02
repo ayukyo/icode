@@ -165,6 +165,7 @@ class TestWindowsWfpAbi(unittest.TestCase):
         with open(source_path, encoding="utf-8") as source_file:
             source = source_file.read()
 
+        self.assertIn("RUNNER_PROBE_INVALID_ARGUMENTS = 3", source)
         self.assertIn("--probe-runner-subscription", source)
         self.assertIn('"sid-derive-failed\\n"', source)
         self.assertIn('"engine-open-failed\\n"', source)
@@ -195,6 +196,17 @@ class TestWindowsWfpAbi(unittest.TestCase):
         self.assertIn("delete_result != S_OK", probe[delete:])
         self.assertIn("RUNNER_PROBE_PROFILE_CLEANUP_FAILED", probe[delete:])
         self.assertIn("return probe_result;", probe[delete:])
+
+        runner_mode_start = source.index(
+            'if (argc >= 2 && wcscmp(argv[1], L"--probe-runner-subscription") == 0)'
+        )
+        runner_mode_end = source.index(
+            'if (argc == 7 && wcscmp(argv[1], L"--collect-ipv6-loopback") == 0)',
+            runner_mode_start,
+        )
+        runner_mode = source[runner_mode_start:runner_mode_end]
+        self.assertIn("argc != 7", runner_mode)
+        self.assertIn("return RUNNER_PROBE_INVALID_ARGUMENTS;", runner_mode)
 
     def test_sdk_compile_failure_classification_does_not_return_raw_output(self) -> None:
         probe = _probe_module(self)
