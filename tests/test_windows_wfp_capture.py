@@ -203,6 +203,19 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertNotIn("& $netsh wfp capture", job)
         self.assertNotIn("& $expand '-F:wfpdiag.xml'", job)
 
+    def test_workflow_reports_bounded_wfp_extract_failure_category(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("$wfpExtractExitCode", job)
+        self.assertIn("extract_exit_code=$wfpExtractExitCode", job)
+        self.assertIn("extract_command_failed", job)
+        self.assertIn("extract_xml_missing", job)
+        self.assertIn("extract_xml_too_large", job)
+
 
 if __name__ == "__main__":
     unittest.main()
