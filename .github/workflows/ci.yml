@@ -442,6 +442,7 @@ jobs:
           $wfpArchiveMemberStatus = 'not_checked'
           $wfpArchiveMemberCount = 'not_checked'
           $wfpArchiveMemberMatchCount = 'not_checked'
+          $wfpArchiveXmlMemberCount = 'not_checked'
           $wfpExactDropCount = 0
           $wfpExtractExitCode = 'not_run'
           $wfpMemberSelfTestStage = 'prepare'
@@ -597,7 +598,7 @@ jobs:
               throw 'wfp_cab_member_parser_self_test_failed'
             }
             $cabinetMemberSummary = $memberListResult.Stdout | ConvertFrom-Json
-            if ($cabinetMemberSummary.schema_version -ne 1 -or
+            if ($cabinetMemberSummary.schema_version -ne 2 -or
                 $cabinetMemberSummary.status -ne 'listed' -or
                 ($cabinetMemberSummary.member_count -isnot [int] -and
                  $cabinetMemberSummary.member_count -isnot [long]) -or
@@ -606,7 +607,12 @@ jobs:
                 ($cabinetMemberSummary.target_match_count -isnot [int] -and
                  $cabinetMemberSummary.target_match_count -isnot [long]) -or
                 $cabinetMemberSummary.target_match_count -ne 1 -or
-                $cabinetMemberSummary.target_match_count -gt $cabinetMemberSummary.member_count) {
+                $cabinetMemberSummary.target_match_count -gt $cabinetMemberSummary.member_count -or
+                ($cabinetMemberSummary.xml_member_count -isnot [int] -and
+                 $cabinetMemberSummary.xml_member_count -isnot [long]) -or
+                $cabinetMemberSummary.xml_member_count -ne 1 -or
+                $cabinetMemberSummary.xml_member_count -gt $cabinetMemberSummary.member_count -or
+                $cabinetMemberSummary.target_match_count -gt $cabinetMemberSummary.xml_member_count) {
               throw 'wfp_cab_member_parser_self_test_failed'
             }
             $wfpMemberSelfTestStage = 'member_match'
@@ -907,7 +913,8 @@ jobs:
                             $cabinetMemberSummary.PSObject.Properties.Name | Sort-Object
                           )
                           $expectedSummaryPropertyNames = @(
-                            'member_count', 'schema_version', 'status', 'target_match_count'
+                            'member_count', 'schema_version', 'status', 'target_match_count',
+                            'xml_member_count'
                           )
                           $cabinetSummaryValid = (
                             $summaryPropertyNames.Count -eq $expectedSummaryPropertyNames.Count
@@ -919,7 +926,7 @@ jobs:
                           }
                           if ($cabinetSummaryValid) {
                             $cabinetSummaryValid = (
-                              $cabinetMemberSummary.schema_version -eq 1 -and
+                              $cabinetMemberSummary.schema_version -eq 2 -and
                               ($cabinetMemberSummary.member_count -is [int] -or
                                $cabinetMemberSummary.member_count -is [long]) -and
                               $cabinetMemberSummary.member_count -ge 0 -and
@@ -927,7 +934,13 @@ jobs:
                               ($cabinetMemberSummary.target_match_count -is [int] -or
                                $cabinetMemberSummary.target_match_count -is [long]) -and
                               $cabinetMemberSummary.target_match_count -ge 0 -and
-                              $cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.member_count
+                              $cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.member_count -and
+                              ($cabinetMemberSummary.xml_member_count -is [int] -or
+                               $cabinetMemberSummary.xml_member_count -is [long]) -and
+                              $cabinetMemberSummary.xml_member_count -ge 0 -and
+                              $cabinetMemberSummary.xml_member_count -le 4096 -and
+                              $cabinetMemberSummary.xml_member_count -le $cabinetMemberSummary.member_count -and
+                              $cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.xml_member_count
                             )
                           }
                         } catch {
@@ -935,6 +948,7 @@ jobs:
                         }
                         if ($cabinetSummaryValid) {
                           $wfpArchiveMemberCount = [string]$cabinetMemberSummary.member_count
+                          $wfpArchiveXmlMemberCount = [string]$cabinetMemberSummary.xml_member_count
                         }
                         if (-not $cabinetSummaryValid) {
                           $wfpArchiveMemberStatus = 'summary_invalid'
@@ -1053,7 +1067,7 @@ jobs:
                 }
               }
             }
-            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_member_match_count=$wfpArchiveMemberMatchCount"
+            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_member_match_count=$wfpArchiveMemberMatchCount archive_xml_member_count=$wfpArchiveXmlMemberCount"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }

@@ -330,6 +330,40 @@ class TestWindowsWfpCapture(unittest.TestCase):
             member_count_receipt,
             job.index("archive_member_count=$wfpArchiveMemberCount"),
         )
+        self.assertTrue(
+            "$wfpArchiveXmlMemberCount = 'not_checked'" in job,
+            "the XML suffix count must default to a fixed not_checked category",
+        )
+        self.assertTrue(
+            "$cabinetMemberSummary.schema_version -ne 2" in job,
+            "the synthetic positive control must exercise the v2 receipt schema",
+        )
+        self.assertTrue(
+            "$cabinetMemberSummary.xml_member_count -ne 1" in job,
+            "the synthetic CAB must prove its single XML member is counted",
+        )
+        self.assertTrue(
+            "$wfpArchiveXmlMemberCount = [string]$cabinetMemberSummary.xml_member_count" in job,
+            "the notice may only publish the validated XML suffix count",
+        )
+        self.assertTrue(
+            "archive_xml_member_count=$wfpArchiveXmlMemberCount" in job,
+            "the bounded XML suffix count must be present in the fixed notice",
+        )
+        xml_count_bound = job.index("$cabinetMemberSummary.xml_member_count -le 4096")
+        xml_count_consistency = job.index(
+            "$cabinetMemberSummary.xml_member_count -le $cabinetMemberSummary.member_count"
+        )
+        xml_count_receipt = job.index(
+            "$wfpArchiveXmlMemberCount = [string]$cabinetMemberSummary.xml_member_count"
+        )
+        self.assertLess(xml_count_bound, xml_count_receipt)
+        self.assertLess(xml_count_consistency, xml_count_receipt)
+        self.assertLess(
+            xml_count_receipt,
+            job.index("archive_xml_member_count=$wfpArchiveXmlMemberCount"),
+        )
+        self.assertIn("$cabinetMemberSummary.schema_version -eq 2", job)
 
     def test_workflow_rejects_malformed_or_unbounded_cabinet_probe_receipts(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
@@ -342,6 +376,10 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("$summaryPropertyNames.Count -eq $expectedSummaryPropertyNames.Count", job)
         self.assertIn("$cabinetMemberSummary.member_count -le 4096", job)
         self.assertIn("$cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.member_count", job)
+        self.assertIn("$cabinetMemberSummary.xml_member_count -le 4096", job)
+        self.assertIn("$cabinetMemberSummary.xml_member_count -le $cabinetMemberSummary.member_count", job)
+        self.assertIn("$cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.xml_member_count", job)
+        self.assertIn("'xml_member_count'", job)
         self.assertIn("$wfpArchiveMemberStatus = 'summary_invalid'", job)
         self.assertIn("$wfpArchiveMemberStatus = 'list_timeout'", job)
         logged_lines = [line for line in job.splitlines() if "Write-Output" in line]

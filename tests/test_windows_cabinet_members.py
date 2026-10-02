@@ -37,11 +37,33 @@ class TestWindowsCabinetMemberName(unittest.TestCase):
             "SetupAPI cabinet metadata notifications must be handled explicitly",
         )
 
-        state = {"member_count": 0, "target_match_count": 0}
+        state = {"member_count": 0, "target_match_count": 0, "xml_member_count": 0}
         callback_result = handle_notification(0x10, 0, state)
 
         self.assertEqual(callback_result, 0)
-        self.assertEqual(state, {"member_count": 0, "target_match_count": 0})
+        self.assertEqual(
+            state,
+            {"member_count": 0, "target_match_count": 0, "xml_member_count": 0},
+        )
+
+    def test_xml_member_classifier_matches_only_ascii_xml_suffix(self) -> None:
+        if cabinet_probe is None:
+            self.fail("the bounded Windows CAB inspector is not implemented")
+        is_xml_member = getattr(cabinet_probe, "is_xml_cabinet_member", None)
+        self.assertIsNotNone(is_xml_member)
+
+        for name in ("wfpdiag.xml", "diagnostics/other.XML", r"diagnostics\other.xml"):
+            with self.subTest(name=name):
+                self.assertTrue(is_xml_member(name))
+        for name in (
+            "wfpdiag.xml.backup",
+            "diagnostics/file",
+            "diagnostics/trace.μ.xml",
+            "",
+            None,
+        ):
+            with self.subTest(name=name):
+                self.assertFalse(is_xml_member(name))
 
     def test_member_error_aborts_without_counting_target_as_valid(self) -> None:
         if cabinet_probe is None:
@@ -52,7 +74,7 @@ class TestWindowsCabinetMemberName(unittest.TestCase):
         member_info = cabinet_probe._FileInCabinetInfoW()
         member_info.NameInCabinet = "wfpdiag.xml"
         member_info.Win32Error = 5
-        state = {"member_count": 0, "target_match_count": 0}
+        state = {"member_count": 0, "target_match_count": 0, "xml_member_count": 0}
         callback_result = handle_notification(
             0x11,
             ctypes.addressof(member_info),
@@ -62,15 +84,21 @@ class TestWindowsCabinetMemberName(unittest.TestCase):
         self.assertEqual(callback_result, 0)
         self.assertEqual(
             state,
-            {"member_count": 1, "target_match_count": 0, "status": "member_error"},
+            {
+                "member_count": 1,
+                "target_match_count": 0,
+                "xml_member_count": 0,
+                "status": "member_error",
+            },
         )
         self.assertEqual(
             cabinet_probe._safe_summary("member_error", member_count=1),
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "status": "member_error",
                 "member_count": 1,
                 "target_match_count": None,
+                "xml_member_count": None,
             },
         )
 
@@ -83,7 +111,7 @@ class TestWindowsCabinetMemberName(unittest.TestCase):
         member_info = cabinet_probe._FileInCabinetInfoW()
         member_info.NameInCabinet = "wfpdiag.xml"
         member_info.Win32Error = 0
-        state = {"member_count": 0, "target_match_count": 0}
+        state = {"member_count": 0, "target_match_count": 0, "xml_member_count": 0}
         callback_result = handle_notification(
             0x11,
             ctypes.addressof(member_info),
@@ -91,7 +119,10 @@ class TestWindowsCabinetMemberName(unittest.TestCase):
         )
 
         self.assertEqual(callback_result, 2)
-        self.assertEqual(state, {"member_count": 1, "target_match_count": 1})
+        self.assertEqual(
+            state,
+            {"member_count": 1, "target_match_count": 1, "xml_member_count": 1},
+        )
 
     def test_exact_basename_matches_at_root_or_under_a_cabinet_directory(self) -> None:
         is_member = self._require_classifier()
@@ -131,10 +162,11 @@ class TestWindowsCabinetMemberName(unittest.TestCase):
         self.assertEqual(
             receipt,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "status": "invalid_archive",
                 "member_count": 0,
                 "target_match_count": None,
+                "xml_member_count": None,
             },
         )
         self.assertNotIn(str(private_path), json.dumps(receipt))

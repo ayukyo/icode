@@ -14,6 +14,7 @@ from pathlib import Path
 _MAX_CABINET_BYTES = 64 * 1024 * 1024
 _MAX_CABINET_MEMBERS = 4096
 _TARGET_BASENAME = "wfpdiag.xml"
+_XML_SUFFIX = ".xml"
 
 _SPFILENOTIFY_CABINETINFO = 0x10
 _SPFILENOTIFY_FILEINCABINET = 0x11
@@ -54,10 +55,23 @@ class _FileInCabinetInfoW(ctypes.Structure):
 
 def is_target_cabinet_member(member_name: object) -> bool:
     """Match only the exact ASCII basename, independent of CAB path separators."""
+    basename = _cabinet_member_basename(member_name)
+    return basename is not None and basename.lower() == _TARGET_BASENAME
+
+
+def is_xml_cabinet_member(member_name: object) -> bool:
+    """Count an ASCII XML filename by suffix without retaining its name or path."""
+    basename = _cabinet_member_basename(member_name)
+    return basename is not None and basename.lower().endswith(_XML_SUFFIX)
+
+
+def _cabinet_member_basename(member_name: object) -> str | None:
     if not isinstance(member_name, str) or not member_name:
-        return False
+        return None
     basename = member_name.replace("\\", "/").rsplit("/", 1)[-1]
-    return basename.isascii() and basename.lower() == _TARGET_BASENAME
+    if not basename.isascii() or not basename:
+        return None
+    return basename
 
 
 def _safe_summary(
@@ -65,6 +79,7 @@ def _safe_summary(
     *,
     member_count: int = 0,
     target_match_count: int | None = None,
+    xml_member_count: int | None = None,
 ) -> dict[str, int | str | None]:
     """Return fixed fields only; never include paths, names, or native errors."""
     safe_status = status if status in _RESULT_STATUSES else "api_failed"
@@ -72,11 +87,17 @@ def _safe_summary(
     bounded_match_count = target_match_count
     if bounded_match_count is not None:
         bounded_match_count = min(max(int(bounded_match_count), 0), _MAX_CABINET_MEMBERS)
+    bounded_xml_member_count = xml_member_count
+    if bounded_xml_member_count is not None:
+        bounded_xml_member_count = min(
+            max(int(bounded_xml_member_count), 0), _MAX_CABINET_MEMBERS,
+        )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": safe_status,
         "member_count": bounded_member_count,
         "target_match_count": bounded_match_count,
+        "xml_member_count": bounded_xml_member_count,
     }
 
 
@@ -111,6 +132,8 @@ def _handle_setupapi_notification(
 
         if is_target_cabinet_member(info.NameInCabinet):
             state["target_match_count"] = int(state["target_match_count"]) + 1
+        if is_xml_cabinet_member(info.NameInCabinet):
+            state["xml_member_count"] = int(state["xml_member_count"]) + 1
 
         # Enumeration is intentionally non-extracting for every member.
         return _FILEOP_SKIP
@@ -132,7 +155,11 @@ def _enumerate_windows_cabinet(archive_path: Path) -> dict[str, int | str | None
     except (AttributeError, OSError):
         return _safe_summary("api_unavailable")
 
-    state: dict[str, int | str] = {"member_count": 0, "target_match_count": 0}
+    state: dict[str, int | str] = {
+        "member_count": 0,
+        "target_match_count": 0,
+        "xml_member_count": 0,
+    }
 
     callback_type = ctypes.WINFUNCTYPE(
         wintypes.UINT,
@@ -173,6 +200,7 @@ def _enumerate_windows_cabinet(archive_path: Path) -> dict[str, int | str | None
         "listed",
         member_count=member_count,
         target_match_count=int(state["target_match_count"]),
+        xml_member_count=int(state["xml_member_count"]),
     )
 
 
