@@ -572,6 +572,25 @@ jobs:
                 Where-Object { $_ -match $wfpArchiveMemberPattern }
             )
             if ($matchingSyntheticMembers.Count -ne 1) {
+              $safeSyntheticMemberLines = @(
+                $memberListResult.Stdout -split "`r?`n" |
+                  Where-Object { $_ -match '(?i)wfpdiag\.xml' } |
+                  Select-Object -First 2 |
+                  ForEach-Object {
+                    $line = $_ -replace [regex]::Escape($wfpMemberSelfTestRoot), '<temp>'
+                    $line = $line -replace [regex]::Escape($wfpMemberSelfTestCab), '<cab>'
+                    $line = [regex]::Replace($line, '[^\x20-\x7e]', '?')
+                    if ($line.Length -gt 160) { $line = $line.Substring(0, 160) }
+                    $line
+                  }
+              )
+              if ($safeSyntheticMemberLines.Count -eq 0) {
+                Write-Output 'wfp_cab_member_parser_self_test_member_lines=0'
+              } else {
+                foreach ($line in $safeSyntheticMemberLines) {
+                  Write-Output "wfp_cab_member_parser_self_test_member_line=$line"
+                }
+              }
               throw 'wfp_cab_member_parser_self_test_failed'
             }
             $wfpMemberSelfTestStage = 'extract'

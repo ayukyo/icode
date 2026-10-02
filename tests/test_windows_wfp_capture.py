@@ -311,6 +311,12 @@ class TestWindowsWfpCapture(unittest.TestCase):
             'Write-Output "wfp_cab_member_parser_self_test=failed stage=$wfpMemberSelfTestStage"',
             job,
         )
+        self.assertIn("$safeSyntheticMemberLines = @(", job)
+        self.assertIn("[regex]::Escape($wfpMemberSelfTestRoot)", job)
+        self.assertIn("[regex]::Escape($wfpMemberSelfTestCab)", job)
+        self.assertIn("$line.Substring(0, 160)", job)
+        self.assertIn('wfp_cab_member_parser_self_test_member_line=$line', job)
+        self.assertNotIn("Write-Output $memberListResult.Stdout", job)
         self.assertIn("throw 'wfp_cab_member_parser_self_test_cleanup_failed'", job)
         self.assertIn("Remove-Item -LiteralPath $wfpMemberSelfTestRoot -Recurse -Force", job)
 

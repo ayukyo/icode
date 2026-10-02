@@ -1,5 +1,7 @@
 # R3 自验证与有界修复
 
+- **CI #523 合成 CAB 自测失败于成员匹配步骤（2026-10-02）：**[x64](https://github.com/ayukyo/icode/actions/runs/37002609320/job/110823511839) 和 [ARM64](https://github.com/ayukyo/icode/actions/runs/37002609320/job/110823511604) 均在 candidate 前退出，固定状态为 `stage=member_match`。因为 makecab 输出 CAB 且 expand 列举命令已通过退出检查，但解析命中数不等于 1，根因仍可能是 CAB 成员名、`-F` 选择或行格式；当前候选只记录消除临时路径后的合成成员候选行以供下一 SHA 双架构核对。`10013` 网络硬门未运行、未放宽，Windows R3 仍失败关闭。
+
 - **CI #522 CAB 正成员控制自身未通过，网络验收未运行（2026-10-02）：**Reviewer [x64](https://github.com/ayukyo/icode/actions/runs/37001443006/job/110819810380) 和 [ARM64](https://github.com/ayukyo/icode/actions/runs/37001443006/job/110819810399) 在创建临时账户之前都被合成 CAB 自测以固定错误拦截；日志未含自测阶段，故根因尚未定位。当前未提交候选只新增有限阶段状态回执，下一 SHA 再按实测结果修复，不输出路径/异常。由于 R3 文件/网络 candidate 没有启动，本轮不能计为拒绝或隔离通过；Windows `10013` 硬门及 Reviewer 生产接线不变。
 
 - **CI #521 Windows CAB 成员状态仍需正向验证（2026-10-02；R3 仍失败关闭）：**[x64](https://github.com/ayukyo/icode/actions/runs/36999406258/job/110813406883) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36999406258/job/110813406719) 的 Reviewer jobs 均未通过，notice 是 `extract_xml_missing`、`extract_exit_code=0`、`archive_member_status=missing`。此前按行匹配器排除了 `present` 的文本误命中，但 #521 没有已知正成员控制，因此 `missing` 仍只是尚未正向验证的 parser 输出，不能归因于真实 capture CAB。当前待提交 Windows-only diagnostic 会在每个架构先合成并抽取一个确知内容的 CAB，复用同一匹配器；本地 14 项 WFP 测试通过，但宿主没有 PowerShell，实际语法、listing 输出和清理需新 SHA x64/ARM64 复验。observer 无 callback、Winsock 双栈为 `10035`（非 `10013`）；该自测不影响网络硬门、Reviewer 生产接线、R3 readiness 或自动模式。
