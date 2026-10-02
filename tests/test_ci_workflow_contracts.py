@@ -231,6 +231,10 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         for runner_observer_requirement in (
             "[IO.Path]::GetTempPath()",
             "--probe-runner-subscription",
+            "$observerTempRoot = $observerRoot + [IO.Path]::DirectorySeparatorChar",
+            "$startInfo.Environment['TMP'] = $observerTempRoot",
+            "$startInfo.Environment['TEMP'] = $observerTempRoot",
+            "$startInfo.UseShellExecute = $false",
             "$observerSetupStage = 'unavailable'",
             "runner_wfp_observer_setup=$observerSetupStage",
             "profile_create_failed",
@@ -283,6 +287,16 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         ):
             with self.subTest(forbidden_mutation=forbidden_mutation):
                 self.assertNotIn(forbidden_mutation, runner_observer_step)
+        runner_observer_start = runner_observer_step.index("$observerProcess.Start()")
+        for scoped_environment in (
+            "$startInfo.Environment['TMP'] = $observerTempRoot",
+            "$startInfo.Environment['TEMP'] = $observerTempRoot",
+        ):
+            with self.subTest(scoped_environment=scoped_environment):
+                self.assertLess(
+                    runner_observer_step.index(scoped_environment),
+                    runner_observer_start,
+                )
         self.assertLess(
             candidate_job.index(runner_observer_probe),
             candidate_job.index(

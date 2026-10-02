@@ -427,6 +427,7 @@ jobs:
           $observerRoot = [IO.Path]::GetFullPath(
             (Join-Path $tempRoot "icode-wfp-permission-$suffix")
           )
+          $observerTempRoot = $observerRoot + [IO.Path]::DirectorySeparatorChar
           if (-not $observerRoot.StartsWith(
               $tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'runner_observer_probe_path_invalid'
@@ -456,6 +457,8 @@ jobs:
             $startInfo.FileName = $probeExecutable
             $startInfo.UseShellExecute = $false
             $startInfo.CreateNoWindow = $true
+            $startInfo.Environment['TMP'] = $observerTempRoot
+            $startInfo.Environment['TEMP'] = $observerTempRoot
             foreach ($argument in @(
               '--probe-runner-subscription', $profileName, '1',
               $observerReadyPath, $observerStopPath, $observerResultPath
