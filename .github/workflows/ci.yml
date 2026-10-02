@@ -442,6 +442,8 @@ jobs:
           $observerProcess = $null
           $observerPermissionState = 'unavailable'
           $observerReturnCode = 'none'
+          $observerSetupStage = 'unavailable'
+          $observerHelperExitCode = 'none'
           $runnerAdminToken = $false
           $identity = $null
           try {
@@ -484,6 +486,33 @@ jobs:
               try { $observerProcess.Kill() } catch { }
               if (-not $observerProcess.WaitForExit(2000)) {
                 throw 'observer_permission_probe_cleanup_timeout'
+              }
+            }
+            $observerProcess.Refresh()
+            if ($observerProcess.HasExited) {
+              if ($observerProcess.ExitCode -ge 0 -and
+                  $observerProcess.ExitCode -le 255) {
+                $observerHelperExitCode = '{0:D}' -f $observerProcess.ExitCode
+              } else {
+                $observerHelperExitCode = 'out_of_range'
+              }
+            }
+            if ((Test-Path -LiteralPath $observerReadyPath -PathType Leaf) -and
+                (Get-Item -LiteralPath $observerReadyPath).Length -le 64) {
+              $observerSetupStage = switch -Exact -CaseSensitive (
+                [IO.File]::ReadAllText($observerReadyPath)
+              ) {
+                "profile-create-failed`n" { 'profile_create_failed' }
+                "profile-sid-invalid`n" { 'profile_sid_invalid' }
+                "sid-derive-failed`n" { 'sid_derive_failed' }
+                "engine-open-failed`n" { 'engine_open_failed' }
+                "subscribe-failed`n" { 'subscribe_failed' }
+                "subscription-ready`n" { 'subscription_ready' }
+                default { 'unavailable' }
+              }
+              if ($observerProcess.ExitCode -eq 2 -and
+                  $observerSetupStage -ne 'unavailable') {
+                $observerSetupStage = 'profile_cleanup_failed'
               }
             }
             if ((Test-Path -LiteralPath $observerResultPath -PathType Leaf) -and
@@ -544,7 +573,7 @@ jobs:
               Remove-Item -LiteralPath $observerRoot -Recurse -Force -ErrorAction Stop
             }
           }
-          Write-Output "::notice title=WFP observer identity control::runner_admin_token=$runnerAdminToken runner_wfp_observer_permission_probe=$observerPermissionState subscription_return_code=$observerReturnCode"
+          Write-Output "::notice title=WFP observer identity control::runner_admin_token=$runnerAdminToken runner_wfp_observer_permission_probe=$observerPermissionState runner_wfp_observer_setup=$observerSetupStage runner_wfp_observer_helper_exit_code=$observerHelperExitCode subscription_return_code=$observerReturnCode"
       - name: Run Reviewer snapshot probe as temporary standard user
         shell: pwsh
         run: |

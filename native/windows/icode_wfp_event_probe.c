@@ -932,6 +932,7 @@ static int run_collector(
     UINT32 remote_address,
     UINT16 remote_port,
     BOOL ipv6_loopback,
+    BOOL report_setup_stage,
     const wchar_t *ready_path,
     const wchar_t *stop_path,
     const wchar_t *result_path
@@ -959,6 +960,7 @@ static int run_collector(
     BOOL stop_seen = FALSE;
     BOOL ready_written = FALSE;
     BOOL result_written = FALSE;
+    const char *setup_failure_status = "unavailable\n";
     LONG event_callback_count = 0;
     LONG capability_drop_event_count = 0;
     LONG classify_drop_event_count = 0;
@@ -975,12 +977,18 @@ static int run_collector(
         profile_name, &expected_sid
     );
     if (FAILED(derive_result) || expected_sid == NULL || !IsValidSid(expected_sid)) {
+        if (report_setup_stage) {
+            setup_failure_status = "sid-derive-failed\n";
+        }
         goto cleanup;
     }
     api_result = FwpmEngineOpen0(
         NULL, RPC_C_AUTHN_WINNT, NULL, NULL, &engine
     );
     if (api_result != ERROR_SUCCESS || engine == NULL) {
+        if (report_setup_stage) {
+            setup_failure_status = "engine-open-failed\n";
+        }
         goto cleanup;
     }
 
@@ -1030,9 +1038,15 @@ static int run_collector(
     subscription_ok = subscription_return_code == ERROR_SUCCESS &&
         subscription_handle_present;
     if (!subscription_ok) {
+        if (report_setup_stage) {
+            setup_failure_status = "subscribe-failed\n";
+        }
         goto cleanup;
     }
-    ready_written = write_ascii_file(ready_path, "ready\n");
+    ready_written = write_ascii_file(
+        ready_path,
+        report_setup_stage ? "subscription-ready\n" : "ready\n"
+    );
     if (!ready_written) {
         goto cleanup;
     }
@@ -1070,7 +1084,10 @@ cleanup:
         unsubscribe_ok = FALSE;
     }
     if (!subscription_ok && !ready_written) {
-        ready_written = write_ascii_file(ready_path, "unavailable\n");
+        ready_written = write_ascii_file(
+            ready_path,
+            report_setup_stage ? setup_failure_status : "unavailable\n"
+        );
     }
     event_callback_count = context.event_callback_count;
     capability_drop_event_count = context.capability_drop_event_count;
@@ -1118,6 +1135,7 @@ static int run_runner_subscription_probe(
         &created_sid
     );
     if (create_result != S_OK) {
+        (void)write_ascii_file(ready_path, "profile-create-failed\n");
         if (created_sid != NULL && IsValidSid(created_sid)) {
             FreeSid(created_sid);
         }
@@ -1125,6 +1143,7 @@ static int run_runner_subscription_probe(
         return RUNNER_PROBE_UNAVAILABLE;
     }
     if (created_sid == NULL || !IsValidSid(created_sid)) {
+        (void)write_ascii_file(ready_path, "profile-sid-invalid\n");
         if (created_sid != NULL && IsValidSid(created_sid)) {
             FreeSid(created_sid);
         }
@@ -1136,7 +1155,7 @@ static int run_runner_subscription_probe(
 
     /* run_collector unsubscribes and closes its engine before it returns. */
     probe_result = run_collector(
-        profile_name, 0, remote_port, TRUE,
+        profile_name, 0, remote_port, TRUE, TRUE,
         ready_path, stop_path, result_path
     );
     FreeSid(created_sid);
@@ -1179,7 +1198,8 @@ int wmain(int argc, wchar_t **argv) {
             return 2;
         }
         return run_collector(
-            argv[2], 0, remote_port, TRUE, argv[4], argv[5], argv[6]
+            argv[2], 0, remote_port, TRUE, FALSE,
+            argv[4], argv[5], argv[6]
         );
     }
     if (argc != 7 || !is_generated_profile_name(argv[1]) ||
@@ -1194,7 +1214,7 @@ int wmain(int argc, wchar_t **argv) {
         return 2;
     }
     return run_collector(
-        argv[1], remote_address, remote_port, FALSE,
+        argv[1], remote_address, remote_port, FALSE, FALSE,
         argv[4], argv[5], argv[6]
     );
 }

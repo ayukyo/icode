@@ -166,6 +166,11 @@ class TestWindowsWfpAbi(unittest.TestCase):
             source = source_file.read()
 
         self.assertIn("--probe-runner-subscription", source)
+        self.assertIn('"sid-derive-failed\\n"', source)
+        self.assertIn('"engine-open-failed\\n"', source)
+        self.assertIn('"subscribe-failed\\n"', source)
+        self.assertIn('"profile-create-failed\\n"', source)
+        self.assertIn('"profile-sid-invalid\\n"', source)
         probe_start = source.index("static int run_runner_subscription_probe(")
         probe_end = source.index("\nint wmain(", probe_start)
         probe = source[probe_start:probe_end]
