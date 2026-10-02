@@ -255,6 +255,23 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertNotIn("$memberListResult.Stdout -match '(?i)wfpdiag\\.xml'", job)
         self.assertNotIn('Write-Output $memberListResult.Stdout', job)
 
+    def test_workflow_reports_only_bounded_real_cab_member_listing_shape(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("$wfpArchiveMemberNameMentions = @(", job)
+        self.assertIn("$wfpArchiveMemberLineShape", job)
+        self.assertIn("archive_member_name_mentions=$wfpArchiveMemberNameMentionCount", job)
+        self.assertIn("archive_member_line_shape=$wfpArchiveMemberLineShape", job)
+        self.assertIn("'cab_prefixed'", job)
+        self.assertIn("'bare_member'", job)
+        self.assertIn("'other'", job)
+        logged_lines = [line for line in job.splitlines() if "Write-Output" in line]
+        self.assertFalse(any("$memberListResult.Stdout" in line for line in logged_lines))
+
     def test_cab_member_pattern_rejects_incidental_mentions(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")

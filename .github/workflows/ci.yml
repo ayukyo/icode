@@ -439,6 +439,8 @@ jobs:
           $wfpCaptureStarted = $false
           $wfpCaptureStatus = 'not_started'
           $wfpArchiveMemberStatus = 'not_checked'
+          $wfpArchiveMemberNameMentionCount = 'not_checked'
+          $wfpArchiveMemberLineShape = 'not_checked'
           $wfpExactDropCount = 0
           $wfpExtractExitCode = 'not_run'
           $wfpMemberSelfTestStage = 'prepare'
@@ -880,6 +882,28 @@ jobs:
                         $wfpArchiveMemberStatus = 'list_failed'
                         $wfpCaptureStatus = 'member_list_failed'
                       } else {
+                        $wfpArchiveMemberNameMentions = @(
+                          $memberListResult.Stdout -split "`r?`n" |
+                            Where-Object { $_ -match '(?i)wfpdiag\.xml' }
+                        )
+                        $wfpArchiveMemberNameMentionCount = if ($wfpArchiveMemberNameMentions.Count -eq 0) {
+                          'zero'
+                        } elseif ($wfpArchiveMemberNameMentions.Count -eq 1) {
+                          'one'
+                        } else {
+                          'multiple'
+                        }
+                        if ($wfpArchiveMemberNameMentions.Count -eq 0) {
+                          $wfpArchiveMemberLineShape = 'none'
+                        } elseif ($wfpArchiveMemberNameMentions | Where-Object { $_ -match $wfpArchiveMemberPattern }) {
+                          $wfpArchiveMemberLineShape = 'cab_prefixed'
+                        } elseif ($wfpArchiveMemberNameMentions | Where-Object {
+                          $_ -match '(?i)^\s*(?:[^:\\/\r\n]+[\\/])*wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
+                        }) {
+                          $wfpArchiveMemberLineShape = 'bare_member'
+                        } else {
+                          $wfpArchiveMemberLineShape = 'other'
+                        }
                         $matchingArchiveMembers = @(
                           $memberListResult.Stdout -split "`r?`n" |
                             Where-Object { $_ -match $wfpArchiveMemberPattern }
@@ -985,7 +1009,7 @@ jobs:
                 }
               }
             }
-            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus"
+            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_name_mentions=$wfpArchiveMemberNameMentionCount archive_member_line_shape=$wfpArchiveMemberLineShape"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }
