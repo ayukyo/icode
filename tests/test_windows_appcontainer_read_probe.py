@@ -492,7 +492,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertTrue(callable(classify), "WFP target-drop receipt classifier is missing")
 
         receipt = {
-            "schema_version": 5,
+            "schema_version": 6,
             "subscription_ok": True,
             "unsubscribe_ok": True,
             "network_events_collected": True,
@@ -614,6 +614,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             ({**valid_receipt, "unsubscribe_ok": False}, 0),
             ({**valid_receipt, "network_events_collected": False}, 0),
             ({**valid_receipt, "schema_version": 4}, 0),
+            ({**valid_receipt, "schema_version": 6, "target_ip_version": 6}, 0),
             ({**valid_receipt, "schema_version": 5.0}, 0),
             ({**valid_receipt, "matched_capability_drop_count": True}, 0),
             ({**valid_receipt, "matched_network_capability_id": None}, 0),
@@ -645,7 +646,7 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             "IPv6 loopback WFP receipt classifier is missing",
         )
         receipt = {
-            "schema_version": 6,
+            "schema_version": 7,
             "target_ip_version": 6,
             "target_is_loopback": True,
             "subscription_ok": True,
@@ -679,6 +680,10 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertEqual(
             classify(receipt, collector_exit_code=1),
             "evidence_unavailable",
+        )
+        self.assertEqual(
+            classify({**receipt, "schema_version": 6}, collector_exit_code=0),
+            "capability_drop_ipv6_loopback_attributed",
         )
 
     def test_wfp_observer_diagnostics_show_only_bounded_phase_fields(self) -> None:
@@ -719,6 +724,10 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                     "started": True,
                     "ready_state": "ready",
                     "collector_exit_code": 0,
+                    "subscription_attempted": None,
+                    "subscription_return_code": None,
+                    "subscription_return_code_hex": None,
+                    "subscription_handle_present": None,
                     "subscription_ok": True,
                     "unsubscribe_ok": True,
                     "network_events_collected": True,
@@ -743,6 +752,61 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             self.assertIsNone(unsafe_summary["network_events_collected"])
             self.assertNotIn(str(root), json.dumps(unsafe_summary))
 
+    def test_wfp_observer_diagnostics_preserve_native_subscription_result(self) -> None:
+        summarize = probe_module._wfp_observer_diagnostic_summary
+        with tempfile.TemporaryDirectory(prefix="icode-wfp-subscribe-result-") as raw:
+            root = Path(raw)
+            ready = root / "wfp-token.ready"
+            stop = root / "wfp-token.stop"
+            result = root / "wfp-token.json"
+            ready.write_text("unavailable\n", encoding="ascii")
+            receipt = {
+                "schema_version": 7,
+                "target_ip_version": 6,
+                "target_is_loopback": True,
+                "subscription_attempted": True,
+                "subscription_return_code": 0x80320005,
+                "subscription_handle_present": False,
+                "subscription_ok": False,
+                "unsubscribe_ok": True,
+                "network_events_collected": None,
+                "event_callback_count": 0,
+                "capability_drop_event_count": 0,
+                "classify_drop_event_count": 0,
+                "matched_capability_drop_count": 0,
+                "matched_classify_drop_count": 0,
+                "matched_network_capability_id": None,
+                "network_capability_id_consistent": True,
+            }
+
+            summary = summarize(
+                process_started=True,
+                paths=(ready, stop, result),
+                receipt=receipt,
+                collector_exit_code=0,
+            )
+
+        self.assertIs(summary["subscription_attempted"], True)
+        self.assertEqual(summary["subscription_return_code"], 0x80320005)
+        self.assertEqual(summary["subscription_return_code_hex"], "0x80320005")
+        self.assertIs(summary["subscription_handle_present"], False)
+        self.assertIs(summary["subscription_ok"], False)
+
+        malformed = summarize(
+            process_started=True,
+            paths=None,
+            receipt={
+                "subscription_attempted": 1,
+                "subscription_return_code": True,
+                "subscription_handle_present": 0,
+            },
+            collector_exit_code=0,
+        )
+        self.assertIsNone(malformed["subscription_attempted"])
+        self.assertIsNone(malformed["subscription_return_code"])
+        self.assertIsNone(malformed["subscription_return_code_hex"])
+        self.assertIsNone(malformed["subscription_handle_present"])
+
     def test_wfp_observer_stop_collects_receipt_and_reaps_its_process(self) -> None:
         start = getattr(probe_module, "_start_wfp_event_probe", None)
         stop = getattr(probe_module, "_stop_wfp_event_probe", None)
@@ -764,7 +828,9 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                 "while time.monotonic() < deadline and not pathlib.Path(stop).exists():\n"
                 "    time.sleep(0.01)\n"
                 "pathlib.Path(result).write_text(json.dumps({\n"
-                "    'schema_version': 5, 'subscription_ok': True,\n"
+                "    'schema_version': 6, 'subscription_attempted': True,\n"
+                "    'subscription_return_code': 0, 'subscription_handle_present': True,\n"
+                "    'subscription_ok': True,\n"
                 "    'network_events_collected': True,\n"
                 "    'unsubscribe_ok': True, 'event_callback_count': 1,\n"
                 "    'capability_drop_event_count': 1,\n"
@@ -849,8 +915,10 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                 "while time.monotonic() < deadline and not pathlib.Path(stop).exists():\n"
                 "    time.sleep(0.01)\n"
                 "pathlib.Path(result).write_text(json.dumps({\n"
-                "    'schema_version': 6, 'target_ip_version': 6,\n"
+                "    'schema_version': 7, 'target_ip_version': 6,\n"
                 "    'target_is_loopback': True, 'subscription_ok': True,\n"
+                "    'subscription_attempted': True, 'subscription_return_code': 0,\n"
+                "    'subscription_handle_present': True,\n"
                 "    'network_events_collected': True, 'unsubscribe_ok': True,\n"
                 "    'event_callback_count': 1, 'capability_drop_event_count': 1,\n"
                 "    'classify_drop_event_count': 0,\n"

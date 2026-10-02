@@ -489,6 +489,9 @@ static BOOL wait_for_stop(const wchar_t *path) {
 static BOOL write_result(
     const wchar_t *path,
     BOOL ipv6_loopback,
+    BOOL subscription_attempted,
+    DWORD subscription_return_code,
+    BOOL subscription_handle_present,
     BOOL subscription_ok,
     BOOL unsubscribe_ok,
     BOOL network_events_state_known,
@@ -501,9 +504,18 @@ static BOOL write_result(
     LONG matched_network_capability_id,
     BOOL network_capability_id_consistent
 ) {
-    char json[640];
+    char json[768];
     char capability_id_text[16];
+    char subscription_code_text[16];
     int written;
+    if (subscription_attempted) {
+        _snprintf_s(
+            subscription_code_text, sizeof(subscription_code_text), _TRUNCATE,
+            "%lu", (unsigned long)subscription_return_code
+        );
+    } else {
+        strcpy_s(subscription_code_text, sizeof(subscription_code_text), "null");
+    }
     if (matched_network_capability_id >=
             FWPM_APPC_NETWORK_CAPABILITY_INTERNET_CLIENT &&
         matched_network_capability_id <=
@@ -518,8 +530,10 @@ static BOOL write_result(
     if (ipv6_loopback) {
         written = _snprintf_s(
             json, sizeof(json), _TRUNCATE,
-            "{\"schema_version\":6,\"target_ip_version\":6,"
-            "\"target_is_loopback\":true,\"subscription_ok\":%s,"
+            "{\"schema_version\":7,\"target_ip_version\":6,"
+            "\"target_is_loopback\":true,\"subscription_attempted\":%s,"
+            "\"subscription_return_code\":%s,"
+            "\"subscription_handle_present\":%s,\"subscription_ok\":%s,"
             "\"unsubscribe_ok\":%s,\"network_events_collected\":%s,"
             "\"event_callback_count\":%ld,"
             "\"capability_drop_event_count\":%ld,"
@@ -528,6 +542,9 @@ static BOOL write_result(
             "\"matched_classify_drop_count\":%ld,"
             "\"matched_network_capability_id\":%s,"
             "\"network_capability_id_consistent\":%s}\n",
+            subscription_attempted ? "true" : "false",
+            subscription_code_text,
+            subscription_handle_present ? "true" : "false",
             subscription_ok ? "true" : "false",
             unsubscribe_ok ? "true" : "false",
             network_events_state_known
@@ -544,7 +561,9 @@ static BOOL write_result(
     } else {
         written = _snprintf_s(
             json, sizeof(json), _TRUNCATE,
-            "{\"schema_version\":5,\"subscription_ok\":%s,"
+            "{\"schema_version\":6,\"subscription_attempted\":%s,"
+            "\"subscription_return_code\":%s,"
+            "\"subscription_handle_present\":%s,\"subscription_ok\":%s,"
             "\"unsubscribe_ok\":%s,\"network_events_collected\":%s,"
             "\"event_callback_count\":%ld,"
             "\"capability_drop_event_count\":%ld,"
@@ -553,6 +572,9 @@ static BOOL write_result(
             "\"matched_classify_drop_count\":%ld,"
             "\"matched_network_capability_id\":%s,"
             "\"network_capability_id_consistent\":%s}\n",
+            subscription_attempted ? "true" : "false",
+            subscription_code_text,
+            subscription_handle_present ? "true" : "false",
             subscription_ok ? "true" : "false",
             unsubscribe_ok ? "true" : "false",
             network_events_state_known
@@ -922,6 +944,9 @@ static int run_collector(
     DWORD close_result = ERROR_SUCCESS;
     FWP_VALUE0 *network_event_option = NULL;
     DWORD option_result = ERROR_SUCCESS;
+    DWORD subscription_return_code = ERROR_SUCCESS;
+    BOOL subscription_attempted = FALSE;
+    BOOL subscription_handle_present = FALSE;
     BOOL subscription_ok = FALSE;
     BOOL unsubscribe_ok = FALSE;
     BOOL network_events_state_known = FALSE;
@@ -992,10 +1017,13 @@ static int run_collector(
     }
     /* The subscription is limited to this endpoint; callback checks package SID. */
     subscription.enumTemplate = &event_template;
-    api_result = FwpmNetEventSubscribe2(
+    subscription_attempted = TRUE;
+    subscription_return_code = FwpmNetEventSubscribe2(
         engine, &subscription, on_net_event, &context, &subscription_handle
     );
-    subscription_ok = api_result == ERROR_SUCCESS && subscription_handle != NULL;
+    subscription_handle_present = subscription_handle != NULL;
+    subscription_ok = subscription_return_code == ERROR_SUCCESS &&
+        subscription_handle_present;
     if (!subscription_ok) {
         goto cleanup;
     }
@@ -1048,7 +1076,8 @@ cleanup:
     network_capability_id_consistent =
         context.network_capability_id_consistent != FALSE;
     result_written = write_result(
-        result_path, ipv6_loopback, subscription_ok,
+        result_path, ipv6_loopback, subscription_attempted,
+        subscription_return_code, subscription_handle_present, subscription_ok,
         unsubscribe_ok, network_events_state_known, network_events_collected,
         event_callback_count, capability_drop_event_count,
         classify_drop_event_count,

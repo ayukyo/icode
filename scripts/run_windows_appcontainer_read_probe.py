@@ -196,7 +196,11 @@ def _classify_wfp_target_drop_receipt(
         or collector_exit_code != 0
         or not isinstance(receipt, dict)
         or type(receipt.get("schema_version")) is not int
-        or receipt.get("schema_version") != 5
+        or receipt.get("schema_version") not in (5, 6)
+        or (
+            receipt.get("schema_version") == 6
+            and ("target_ip_version" in receipt or "target_is_loopback" in receipt)
+        )
         or receipt.get("subscription_ok") is not True
         or receipt.get("unsubscribe_ok") is not True
         or receipt.get("network_events_collected") is not True
@@ -260,7 +264,7 @@ def _classify_wfp_ipv6_loopback_receipt(
         or collector_exit_code != 0
         or not isinstance(receipt, dict)
         or type(receipt.get("schema_version")) is not int
-        or receipt.get("schema_version") != 6
+        or receipt.get("schema_version") not in (6, 7)
         or type(receipt.get("target_ip_version")) is not int
         or receipt.get("target_ip_version") != 6
         or receipt.get("target_is_loopback") is not True
@@ -337,14 +341,32 @@ def _wfp_observer_diagnostic_summary(
         value = receipt_dict.get(key)
         return value if type(value) is int and 0 <= value <= 0xFFFF else None
 
+    def bounded_subscription_return_code() -> int | None:
+        value = receipt_dict.get("subscription_return_code")
+        return value if type(value) is int and 0 <= value <= 0xFFFFFFFF else None
+
     capability_id = receipt_dict.get("matched_network_capability_id")
     capability_id_consistent = receipt_dict.get("network_capability_id_consistent")
+    subscription_return_code = bounded_subscription_return_code()
 
     return {
         "started": process_started is True,
         "ready_state": ready_state,
         "collector_exit_code": (
             collector_exit_code if type(collector_exit_code) is int else None
+        ),
+        "subscription_attempted": (
+            receipt_dict.get("subscription_attempted")
+            if type(receipt_dict.get("subscription_attempted")) is bool else None
+        ),
+        "subscription_return_code": subscription_return_code,
+        "subscription_return_code_hex": (
+            f"0x{subscription_return_code:08X}"
+            if subscription_return_code is not None else None
+        ),
+        "subscription_handle_present": (
+            receipt_dict.get("subscription_handle_present")
+            if type(receipt_dict.get("subscription_handle_present")) is bool else None
         ),
         "subscription_ok": (
             receipt_dict.get("subscription_ok")

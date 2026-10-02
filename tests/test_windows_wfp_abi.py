@@ -137,6 +137,26 @@ class TestWindowsWfpAbi(unittest.TestCase):
         self.assertLess(process_exit, engine_close)
         self.assertLess(process_exit, sid_free)
 
+    def test_subscription_return_code_is_preserved_in_bounded_native_receipt(self) -> None:
+        repository_root = os.path.dirname(os.path.dirname(__file__))
+        source_path = os.path.join(
+            repository_root, "native", "windows", "icode_wfp_event_probe.c",
+        )
+        with open(source_path, encoding="utf-8") as source_file:
+            source = source_file.read()
+
+        call = source.index(
+            "subscription_return_code = FwpmNetEventSubscribe2("
+        )
+        self.assertLess(
+            source.index("subscription_attempted = TRUE;", call - 128), call,
+        )
+        self.assertIn(r'\"subscription_attempted\":%s', source)
+        self.assertIn(r'\"subscription_return_code\":%s', source)
+        self.assertIn(r'\"subscription_handle_present\":%s', source)
+        self.assertIn(r'\"schema_version\":7', source)
+        self.assertIn(r'\"schema_version\":6', source)
+
     def test_sdk_compile_failure_classification_does_not_return_raw_output(self) -> None:
         probe = _probe_module(self)
         classify = probe._classify_windows_sdk_compile_failure
