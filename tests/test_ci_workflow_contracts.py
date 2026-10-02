@@ -220,6 +220,41 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
             candidate_job.index(abi_probe),
             candidate_job.index("      - name: Run Reviewer snapshot probe as temporary standard user\n"),
         )
+        runner_observer_probe = (
+            "      - name: Probe WFP Subscribe2 access as runner identity\n"
+            "        shell: pwsh\n"
+        )
+        self.assertIn(runner_observer_probe, candidate_job)
+        runner_observer_step = candidate_job.split(
+            runner_observer_probe, 1,
+        )[1].split("\n      - name:", 1)[0]
+        for runner_observer_requirement in (
+            "[IO.Path]::GetTempPath()",
+            "--collect-ipv6-loopback",
+            "$observerProcess.WaitForExit(5000)",
+            "$observerStopPath",
+            "subscription_return_code",
+            "runner_wfp_observer_permission_probe=",
+            "observer_permission_probe_cleanup_timeout",
+        ):
+            with self.subTest(requirement=runner_observer_requirement):
+                self.assertIn(runner_observer_requirement, runner_observer_step)
+        for forbidden_mutation in (
+            "FwpmEngineSetOption0",
+            "FwpmFilterAdd0",
+            "FwpmFilterDeleteByKey0",
+            "Add-LocalGroupMember",
+            "-Verb RunAs",
+            "-Credential",
+        ):
+            with self.subTest(forbidden_mutation=forbidden_mutation):
+                self.assertNotIn(forbidden_mutation, runner_observer_step)
+        self.assertLess(
+            candidate_job.index(runner_observer_probe),
+            candidate_job.index(
+                "      - name: Run Reviewer snapshot probe as temporary standard user\n",
+            ),
+        )
         for standard_user_contract in (
             "architecture: ${{ matrix.python-architecture }}",
             "New-LocalUser -Name $accountName",

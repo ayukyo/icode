@@ -413,6 +413,138 @@ jobs:
             -Value "ICODE_DIAGNOSTIC_WFP_PROBE_BUILD=$wfpProbe" -Encoding utf8
       - name: Cross-check Windows SDK WFP ABI (x64/ARM64)
         run: python -m unittest tests.test_windows_wfp_abi.TestWindowsWfpAbi -v
+      - name: Probe WFP Subscribe2 access as runner identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $probeExecutable = $env:ICODE_DIAGNOSTIC_WFP_PROBE_BUILD
+          if ([string]::IsNullOrWhiteSpace($probeExecutable) -or
+              -not (Test-Path -LiteralPath $probeExecutable -PathType Leaf)) {
+            throw 'runner_observer_probe_executable_missing'
+          }
+          $suffix = [Guid]::NewGuid().ToString('N')
+          $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+          $observerRoot = [IO.Path]::GetFullPath(
+            (Join-Path $tempRoot "icode-wfp-permission-$suffix")
+          )
+          if (-not $observerRoot.StartsWith(
+              $tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'runner_observer_probe_path_invalid'
+          }
+          if (Test-Path -LiteralPath $observerRoot) {
+            throw 'runner_observer_probe_path_collision'
+          }
+          [IO.Directory]::CreateDirectory($observerRoot) | Out-Null
+          $profileName = "icode-$suffix"
+          $observerReadyPath = Join-Path $observerRoot "wfp-$suffix.ready"
+          $observerStopPath = Join-Path $observerRoot "wfp-$suffix.stop"
+          $observerResultPath = Join-Path $observerRoot "wfp-$suffix.json"
+          $observerProcess = $null
+          $observerPermissionState = 'unavailable'
+          $observerReturnCode = 'none'
+          $runnerAdminToken = $false
+          $identity = $null
+          try {
+            $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+            $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+            $runnerAdminToken = $principal.IsInRole(
+              [Security.Principal.WindowsBuiltInRole]::Administrator
+            )
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $probeExecutable
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            foreach ($argument in @(
+              '--collect-ipv6-loopback', $profileName, '1',
+              $observerReadyPath, $observerStopPath, $observerResultPath
+            )) {
+              [void]$startInfo.ArgumentList.Add([string]$argument)
+            }
+            $observerProcess = [Diagnostics.Process]::new()
+            $observerProcess.StartInfo = $startInfo
+            if (-not $observerProcess.Start()) {
+              throw 'runner_observer_probe_start_failed'
+            }
+            $readyDeadline = [DateTimeOffset]::UtcNow.AddSeconds(5)
+            while ([DateTimeOffset]::UtcNow -lt $readyDeadline) {
+              $observerProcess.Refresh()
+              if ((Test-Path -LiteralPath $observerReadyPath -PathType Leaf) -or
+                  $observerProcess.HasExited) {
+                break
+              }
+              Start-Sleep -Milliseconds 25
+            }
+            if (-not $observerProcess.HasExited -and
+                -not (Test-Path -LiteralPath $observerStopPath)) {
+              [IO.File]::WriteAllText(
+                $observerStopPath, "stop`n", [Text.Encoding]::ASCII
+              )
+            }
+            if (-not $observerProcess.WaitForExit(5000)) {
+              try { $observerProcess.Kill() } catch { }
+              if (-not $observerProcess.WaitForExit(2000)) {
+                throw 'observer_permission_probe_cleanup_timeout'
+              }
+            }
+            if ((Test-Path -LiteralPath $observerResultPath -PathType Leaf) -and
+                (Get-Item -LiteralPath $observerResultPath).Length -le 4096) {
+              try {
+                $observerReceipt = [IO.File]::ReadAllText($observerResultPath) |
+                  ConvertFrom-Json -ErrorAction Stop
+                $schemaVersion = $observerReceipt.schema_version
+                $ipVersion = $observerReceipt.target_ip_version
+                $attempted = $observerReceipt.subscription_attempted
+                $returnCode = $observerReceipt.subscription_return_code
+                $handlePresent = $observerReceipt.subscription_handle_present
+                $subscriptionOk = $observerReceipt.subscription_ok
+                $unsubscribeOk = $observerReceipt.unsubscribe_ok
+                if ($schemaVersion -eq 7 -and $ipVersion -eq 6 -and
+                    $attempted -is [bool] -and $attempted -and
+                    ($returnCode -is [int] -or $returnCode -is [long]) -and
+                    $returnCode -ge 0 -and $returnCode -le 4294967295 -and
+                    $handlePresent -is [bool] -and
+                    $subscriptionOk -is [bool] -and
+                    $unsubscribeOk -is [bool] -and
+                    $observerProcess.ExitCode -eq 0 -and $unsubscribeOk) {
+                  $observerReturnCode = '0x{0:X8}' -f [uint32]$returnCode
+                  if ($returnCode -eq 0 -and $handlePresent -and $subscriptionOk) {
+                    $observerPermissionState = 'subscription_succeeded'
+                  } elseif ($returnCode -eq 5 -and
+                      -not $handlePresent -and -not $subscriptionOk) {
+                    $observerPermissionState = 'access_denied'
+                  } else {
+                    $observerPermissionState = 'subscription_failed'
+                  }
+                }
+              } catch {
+                $observerPermissionState = 'unavailable'
+              }
+            }
+          } finally {
+            if ($identity) { $identity.Dispose() }
+            if ($observerProcess) {
+              $observerProcess.Refresh()
+              if (-not $observerProcess.HasExited) {
+                try {
+                  [IO.File]::WriteAllText(
+                    $observerStopPath, "stop`n", [Text.Encoding]::ASCII
+                  )
+                } catch { }
+                if (-not $observerProcess.WaitForExit(5000)) {
+                  try { $observerProcess.Kill() } catch { }
+                  if (-not $observerProcess.WaitForExit(2000)) {
+                    $observerProcess.Dispose()
+                    throw 'observer_permission_probe_cleanup_timeout'
+                  }
+                }
+              }
+              $observerProcess.Dispose()
+            }
+            if (Test-Path -LiteralPath $observerRoot -PathType Container) {
+              Remove-Item -LiteralPath $observerRoot -Recurse -Force -ErrorAction Stop
+            }
+          }
+          Write-Output "::notice title=WFP observer identity control::runner_admin_token=$runnerAdminToken runner_wfp_observer_permission_probe=$observerPermissionState subscription_return_code=$observerReturnCode"
       - name: Run Reviewer snapshot probe as temporary standard user
         shell: pwsh
         run: |
