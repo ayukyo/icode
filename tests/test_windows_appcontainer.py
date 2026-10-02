@@ -48,11 +48,13 @@ _WINDOWS_WSAETIMEDOUT = 10060
 
 def _network_attempt_timed_out(
     attempted: object, connected: object, error_code: object,
+    terminal_error: object,
 ) -> bool:
-    """Classify an explicit bounded wait timeout, never a pending connect."""
+    """Classify only a timeout returned by the connect operation or SO_ERROR."""
     return (
         attempted is True
         and connected is False
+        and terminal_error is True
         and type(error_code) is int
         and error_code == _WINDOWS_WSAETIMEDOUT
     )
@@ -1468,22 +1470,27 @@ class TestWindowsAppContainer(unittest.TestCase):
         kernel.CloseHandle.assert_called_once()
 
     def test_Reviewer网络超时回执必须绑定尝试未连接和精确超时代码(self) -> None:
-        self.assertIs(_network_attempt_timed_out(True, False, 10060), True)
-        for attempted, connected, error_code in (
-            (False, False, 10060),
-            (True, True, 10060),
-            (True, False, 10035),
-            (True, False, 10013),
-            (True, False, 10061),
-            (True, False, -1),
-            (True, None, 10035),
-            (True, False, True),
+        self.assertIs(_network_attempt_timed_out(True, False, 10060, True), True)
+        for attempted, connected, error_code, terminal_error in (
+            (False, False, 10060, True),
+            (True, True, 10060, True),
+            (True, False, 10060, False),
+            (True, False, 10035, False),
+            (True, False, 10013, True),
+            (True, False, 10061, True),
+            (True, False, -1, True),
+            (True, None, 10035, False),
+            (True, False, True, True),
         ):
             with self.subTest(
                 attempted=attempted, connected=connected, error_code=error_code,
+                terminal_error=terminal_error,
             ):
                 self.assertIs(
-                    _network_attempt_timed_out(attempted, connected, error_code), False,
+                    _network_attempt_timed_out(
+                        attempted, connected, error_code, terminal_error,
+                    ),
+                    False,
                 )
 
     def test_Reviewer快照原生探针脚本在非Windows主机可静态解析(self) -> None:
@@ -1567,7 +1574,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             for name, encoded in captured_notices
             if name == "Windows Reviewer loopback network denial"
         ))
+        self.assertIs(network_notice["ipv4_network_wait_expired"], False)
         self.assertIs(network_notice["ipv4_network_timed_out"], False)
+        self.assertIs(network_notice["ipv6_network_wait_expired"], False)
         self.assertIs(network_notice["ipv6_network_timed_out"], False)
         writes_notice = json.loads(next(
             encoded
@@ -1683,8 +1692,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             "facts['write_diagnostics']=write_diagnostics",
             "native_access_denied('outside_snapshot',outside,0x80000000,'read')",
             "if key not in {'child_pid','access_errors','close_errors','write_diagnostics',"
-            "'ipv4_network_connected','ipv4_network_error','ipv6_network_connected',"
-            "'ipv6_network_error'}",
+            "'ipv4_network_connected','ipv4_network_error','ipv4_network_wait_expired',"
+            "'ipv4_network_terminal_error','ipv6_network_connected','ipv6_network_error',"
+            "'ipv6_network_wait_expired','ipv6_network_terminal_error'}",
             "import ctypes,hashlib,json,os,pathlib,select,socket,subprocess,sys,time",
             "def network_connect_denied(family,address,port):",
             "connection.setblocking(False)",
@@ -1692,13 +1702,17 @@ class TestWindowsAppContainer(unittest.TestCase):
             "if code in (WSAEWOULDBLOCK,WSAEINPROGRESS):",
             "select.select([], [connection], [connection], 3)",
             "connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)",
-            "return True,False,False,WSAETIMEDOUT",
+            "return True,False,False,code,True",
+            "terminal_error=True",
+            "else: terminal_error=(code!=0)",
             "network_connect_denied(socket.AF_INET,'127.0.0.1',ipv4_loopback_port)",
             "network_connect_denied(socket.AF_INET6,'::1',ipv6_loopback_port)",
             "facts['ipv4_network_attempted']=ipv4_network_attempted",
             "facts['ipv4_network_connect_denied']",
+            "facts['ipv4_network_wait_expired']=ipv4_network_wait_expired",
             "facts['ipv6_network_attempted']=ipv6_network_attempted",
             "facts['ipv6_network_connect_denied']",
+            "facts['ipv6_network_wait_expired']=ipv6_network_wait_expired",
         ):
             with self.subTest(required_probe=required_probe):
                 self.assertIn(required_probe, captured_scripts[0])
@@ -1749,7 +1763,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.closed = True
 
         def run_network_probe(connection: _ConnectExSocket) -> tuple[
-            tuple[bool, bool, bool, int], dict[str, object],
+            tuple[bool, bool, bool, int, bool, bool], dict[str, object],
         ]:
             socket_module = type("SocketModule", (), {
                 "AF_INET": socket.AF_INET,
@@ -1787,16 +1801,17 @@ class TestWindowsAppContainer(unittest.TestCase):
             return probe(socket.AF_INET, "127.0.0.1", 32123), namespace
 
         for code, completion, completion_error, expected in (
-            (10013, "write", 0, (True, False, True, 10013)),
-            (10035, "exception", 10013, (True, False, True, 10013)),
-            (10035, "exception", 10061, (True, False, False, 10061)),
-            (10035, "select_error", 10013, (True, False, False, 10013)),
-            (10035, "socket_error", 10013, (True, False, False, 10013)),
-            (10036, "exception", 10013, (True, False, True, 10013)),
-            (10035, "write", 0, (True, True, False, 0)),
-            (10035, "timeout", 0, (True, False, False, 10060)),
-            (10061, "write", 0, (True, False, False, 10061)),
-            (0, "write", 0, (True, True, False, 0)),
+            (10013, "write", 0, (True, False, True, 10013, False, True)),
+            (10035, "exception", 10013, (True, False, True, 10013, False, True)),
+            (10035, "exception", 10061, (True, False, False, 10061, False, True)),
+            (10035, "exception", 10060, (True, False, False, 10060, False, True)),
+            (10035, "select_error", 10013, (True, False, False, 10013, False, False)),
+            (10035, "socket_error", 10013, (True, False, False, 10013, False, False)),
+            (10036, "exception", 10013, (True, False, True, 10013, False, True)),
+            (10035, "write", 0, (True, True, False, 0, False, False)),
+            (10035, "timeout", 0, (True, False, False, 10035, True, False)),
+            (10061, "write", 0, (True, False, False, 10061, False, True)),
+            (0, "write", 0, (True, True, False, 0, False, False)),
         ):
             with self.subTest(
                 connect_ex_code=code,
@@ -1811,6 +1826,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                 outcome, namespace = run_network_probe(connection)
 
                 self.assertEqual(outcome, expected)
+                self.assertIs(
+                    _network_attempt_timed_out(
+                        outcome[0], outcome[1], outcome[3], outcome[5],
+                    ),
+                    outcome[3] == 10060 and outcome[5] is True,
+                )
                 self.assertTrue(connection.closed)
                 self.assertIs(connection.blocking, False)
                 if code in (10035, 10036):
@@ -1822,11 +1843,14 @@ class TestWindowsAppContainer(unittest.TestCase):
 
         access_denied = OSError("access denied")
         access_denied.winerror = 10013
+        socket_timeout = OSError("connect timed out")
+        socket_timeout.winerror = 10060
         for error, expected in (
-            (access_denied, (True, False, True, 10013)),
-            (OSError("error code unavailable"), (True, False, False, -1)),
+            (access_denied, (True, False, True, 10013, False, True)),
+            (socket_timeout, (True, False, False, 10060, False, True)),
+            (OSError("error code unavailable"), (True, False, False, -1, False, True)),
         ):
-            with self.subTest(connect_ex_exception=expected[-1]):
+            with self.subTest(connect_ex_exception=expected[3]):
                 connection = _ConnectExSocket(error=error)
                 outcome, _namespace = run_network_probe(connection)
 
@@ -6347,48 +6371,52 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f"network_canary={network_canary!r}\n"
                     f"ipv4_loopback_port={ipv4_loopback_port!r}\n"
                     f"ipv6_loopback_port={ipv6_loopback_port!r}\n"
-                    "WSAEACCES=10013; WSAEWOULDBLOCK=10035; WSAEINPROGRESS=10036; WSAETIMEDOUT=10060\n"
+                    "WSAEACCES=10013; WSAEWOULDBLOCK=10035; WSAEINPROGRESS=10036\n"
                     "def bounded_error_code(value):\n"
                     "    return value if type(value) is int and -0x80000000<=value<=0xffffffff else -1\n"
                     "def network_connect_denied(family,address,port):\n"
                     "    try: connection=socket.socket(family,socket.SOCK_STREAM)\n"
                     "    except OSError as exc:\n"
                     "        code=bounded_error_code(getattr(exc,'winerror',None))\n"
-                    "        return False,False,False,code\n"
+                    "        return False,False,False,code,False,False\n"
                     "    try:\n"
                     "        try:\n"
                     "            connection.setblocking(False)\n"
                     "        except OSError as exc:\n"
                     "            code=bounded_error_code(getattr(exc,'winerror',None))\n"
-                    "            return False,False,False,code\n"
+                    "            return False,False,False,code,False,False\n"
                     "        try:\n"
                     "            code=bounded_error_code(connection.connect_ex((address,port)))\n"
                     "        except OSError as exc:\n"
                     "            code=bounded_error_code(getattr(exc,'winerror',None))\n"
-                    "            return True,False,code==WSAEACCES,code\n"
+                    "            return True,False,code==WSAEACCES,code,False,True\n"
                     "        if code in (WSAEWOULDBLOCK,WSAEINPROGRESS):\n"
                     "            # WSAEWOULDBLOCK is pending; wait for completion before classifying.\n"
                     "            try:\n"
                     "                _readable,writable,exceptional=select.select([], [connection], [connection], 3)\n"
                     "            except OSError as exc:\n"
                     "                code=bounded_error_code(getattr(exc,'winerror',None))\n"
-                    "                return True,False,False,code\n"
-                    "            if not writable and not exceptional: return True,False,False,WSAETIMEDOUT\n"
+                    "                return True,False,False,code,False,False\n"
+                    "            if not writable and not exceptional: return True,False,False,code,True,False\n"
                     "            try:\n"
                     "                code=bounded_error_code(connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR))\n"
                     "            except OSError as exc:\n"
                     "                code=bounded_error_code(getattr(exc,'winerror',None))\n"
-                    "                return True,False,False,code\n"
-                    "        if code!=0: return True,False,code==WSAEACCES,code\n"
+                    "                return True,False,False,code,False,False\n"
+                    "            terminal_error=True\n"
+                    "        else: terminal_error=(code!=0)\n"
+                    "        if code!=0: return True,False,code==WSAEACCES,code,False,terminal_error\n"
                     "        try: connection.sendall(network_canary)\n"
                     "        except OSError: pass\n"
-                    "        return True,True,False,0\n"
+                    "        return True,True,False,0,False,False\n"
                     "    finally: connection.close()\n"
                     "ipv4_network_attempted,ipv4_network_connected,"
-                    "ipv4_network_connect_denied,ipv4_network_error="
+                    "ipv4_network_connect_denied,ipv4_network_error,"
+                    "ipv4_network_wait_expired,ipv4_network_terminal_error="
                     "network_connect_denied(socket.AF_INET,'127.0.0.1',ipv4_loopback_port)\n"
                     "ipv6_network_attempted,ipv6_network_connected,"
-                    "ipv6_network_connect_denied,ipv6_network_error="
+                    "ipv6_network_connect_denied,ipv6_network_error,"
+                    "ipv6_network_wait_expired,ipv6_network_terminal_error="
                     "network_connect_denied(socket.AF_INET6,'::1',ipv6_loopback_port)\n"
                     "def access_denied(key,call):\n"
                     "    try: call()\n"
@@ -6508,10 +6536,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "facts['ipv4_network_connected']=ipv4_network_connected\n"
                     "facts['ipv4_network_connect_denied']=ipv4_network_connect_denied\n"
                     "facts['ipv4_network_error']=bounded_error_code(ipv4_network_error)\n"
+                    "facts['ipv4_network_wait_expired']=ipv4_network_wait_expired\n"
+                    "facts['ipv4_network_terminal_error']=ipv4_network_terminal_error\n"
                     "facts['ipv6_network_attempted']=ipv6_network_attempted\n"
                     "facts['ipv6_network_connected']=ipv6_network_connected\n"
                     "facts['ipv6_network_connect_denied']=ipv6_network_connect_denied\n"
                     "facts['ipv6_network_error']=bounded_error_code(ipv6_network_error)\n"
+                    "facts['ipv6_network_wait_expired']=ipv6_network_wait_expired\n"
+                    "facts['ipv6_network_terminal_error']=ipv6_network_terminal_error\n"
                     "facts['access_errors']=access_errors\n"
                     "facts['close_errors']=close_errors\n"
                     "facts['write_diagnostics']=write_diagnostics\n"
@@ -6526,8 +6558,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "and not token['elevated'] and not token['admin_group_enabled'] "
                     "and all(value for key,value in facts.items() "
                     "if key not in {'child_pid','access_errors','close_errors','write_diagnostics',"
-                    "'ipv4_network_connected','ipv4_network_error','ipv6_network_connected',"
-                    "'ipv6_network_error'})): raise SystemExit(78)\n"
+                    "'ipv4_network_connected','ipv4_network_error','ipv4_network_wait_expired',"
+                    "'ipv4_network_terminal_error','ipv6_network_connected','ipv6_network_error',"
+                    "'ipv6_network_wait_expired','ipv6_network_terminal_error'})): raise SystemExit(78)\n"
                 )
                 compile(script, "<reviewer-snapshot-probe>", "exec")
                 try:
@@ -6720,10 +6753,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                         facts.get("ipv4_network_connect_denied") is True
                     ),
                     "ipv4_network_error": network_error_code("ipv4_network_error"),
+                    "ipv4_network_wait_expired": (
+                        facts.get("ipv4_network_wait_expired") is True
+                    ),
                     "ipv4_network_timed_out": _network_attempt_timed_out(
                         facts.get("ipv4_network_attempted"),
                         facts.get("ipv4_network_connected"),
                         network_error_code("ipv4_network_error"),
+                        facts.get("ipv4_network_terminal_error"),
                     ),
                     "ipv4_canary_received": (
                         network_canary in network_servers[0].received_canaries
@@ -6735,10 +6772,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                         facts.get("ipv6_network_connect_denied") is True
                     ),
                     "ipv6_network_error": network_error_code("ipv6_network_error"),
+                    "ipv6_network_wait_expired": (
+                        facts.get("ipv6_network_wait_expired") is True
+                    ),
                     "ipv6_network_timed_out": _network_attempt_timed_out(
                         facts.get("ipv6_network_attempted"),
                         facts.get("ipv6_network_connected"),
                         network_error_code("ipv6_network_error"),
+                        facts.get("ipv6_network_terminal_error"),
                     ),
                     "ipv6_canary_received": (
                         network_canary in network_servers[1].received_canaries
@@ -6825,11 +6866,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                         for key in (
                             "ipv4_host_control", "ipv4_network_attempted",
                             "ipv4_network_connected", "ipv4_network_connect_denied",
-                            "ipv4_network_error", "ipv4_network_timed_out",
+                            "ipv4_network_error", "ipv4_network_wait_expired",
+                            "ipv4_network_timed_out",
                             "ipv4_canary_received",
                             "ipv6_host_control", "ipv6_network_attempted",
                             "ipv6_network_connected", "ipv6_network_connect_denied",
-                            "ipv6_network_error", "ipv6_network_timed_out",
+                            "ipv6_network_error", "ipv6_network_wait_expired",
+                            "ipv6_network_timed_out",
                             "ipv6_canary_received",
                         )
                     },
