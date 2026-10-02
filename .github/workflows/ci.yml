@@ -455,7 +455,7 @@ jobs:
             $startInfo.UseShellExecute = $false
             $startInfo.CreateNoWindow = $true
             foreach ($argument in @(
-              '--collect-ipv6-loopback', $profileName, '1',
+              '--probe-runner-subscription', $profileName, '1',
               $observerReadyPath, $observerStopPath, $observerResultPath
             )) {
               [void]$startInfo.ArgumentList.Add([string]$argument)

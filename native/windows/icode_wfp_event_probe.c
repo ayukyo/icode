@@ -27,6 +27,11 @@
 #define RFC1918_192_MASK 0xFFFF0000U
 #define TEST_PRIVATE_TARGET_ADDRESS 0xC0A83811U
 
+enum RunnerProbeExitCode {
+    RUNNER_PROBE_UNAVAILABLE = 1,
+    RUNNER_PROBE_PROFILE_CLEANUP_FAILED = 2
+};
+
 typedef struct WfpProbeContext {
     PSID expected_package_sid;
     UINT8 expected_ip_version;
@@ -1091,12 +1096,78 @@ cleanup:
     return exit_code;
 }
 
+static int run_runner_subscription_probe(
+    const wchar_t *profile_name,
+    UINT16 remote_port,
+    const wchar_t *ready_path,
+    const wchar_t *stop_path,
+    const wchar_t *result_path
+) {
+    PSID created_sid = NULL;
+    HRESULT create_result;
+    HRESULT delete_result;
+    int probe_result;
+
+    /* A newly registered profile makes SID derivation a meaningful precondition. */
+    create_result = CreateAppContainerProfile(
+        profile_name,
+        L"ICODE WFP Permission Probe",
+        L"Temporary zero-capability CI diagnostic profile",
+        NULL,
+        0,
+        &created_sid
+    );
+    if (create_result != S_OK) {
+        if (created_sid != NULL && IsValidSid(created_sid)) {
+            FreeSid(created_sid);
+        }
+        /* In particular, never delete a profile that already existed. */
+        return RUNNER_PROBE_UNAVAILABLE;
+    }
+    if (created_sid == NULL || !IsValidSid(created_sid)) {
+        if (created_sid != NULL && IsValidSid(created_sid)) {
+            FreeSid(created_sid);
+        }
+        delete_result = DeleteAppContainerProfile(profile_name);
+        return delete_result == S_OK
+            ? RUNNER_PROBE_UNAVAILABLE
+            : RUNNER_PROBE_PROFILE_CLEANUP_FAILED;
+    }
+
+    /* run_collector unsubscribes and closes its engine before it returns. */
+    probe_result = run_collector(
+        profile_name, 0, remote_port, TRUE,
+        ready_path, stop_path, result_path
+    );
+    FreeSid(created_sid);
+    created_sid = NULL;
+
+    delete_result = DeleteAppContainerProfile(profile_name);
+    if (delete_result != S_OK) {
+        return RUNNER_PROBE_PROFILE_CLEANUP_FAILED;
+    }
+    return probe_result;
+}
+
 int wmain(int argc, wchar_t **argv) {
     UINT32 remote_address;
     UINT16 remote_port;
 
     if (argc == 2 && wcscmp(argv[1], L"--self-test") == 0) {
         return classifier_self_test() ? 0 : 1;
+    }
+    if (argc == 7 && wcscmp(argv[1], L"--probe-runner-subscription") == 0) {
+        if (!is_generated_profile_name(argv[2]) ||
+            !parse_port(argv[3], &remote_port) ||
+            argv[4][0] == L'\0' || argv[5][0] == L'\0' || argv[6][0] == L'\0' ||
+            _wcsicmp(argv[4], argv[5]) == 0 || _wcsicmp(argv[4], argv[6]) == 0 ||
+            _wcsicmp(argv[5], argv[6]) == 0 ||
+            !probe_paths_are_safe(argv[2], argv[4], argv[5], argv[6])) {
+            return 2;
+        }
+        return run_runner_subscription_probe(
+            argv[2], remote_port, argv[4], argv[5], argv[6]
+        );
     }
     if (argc == 7 && wcscmp(argv[1], L"--collect-ipv6-loopback") == 0) {
         if (!is_generated_profile_name(argv[2]) ||

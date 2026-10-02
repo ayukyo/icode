@@ -230,7 +230,7 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         )[1].split("\n      - name:", 1)[0]
         for runner_observer_requirement in (
             "[IO.Path]::GetTempPath()",
-            "--collect-ipv6-loopback",
+            "--probe-runner-subscription",
             "$observerProcess.WaitForExit(5000)",
             "$observerStopPath",
             "subscription_return_code",
@@ -240,6 +240,8 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
             with self.subTest(requirement=runner_observer_requirement):
                 self.assertIn(runner_observer_requirement, runner_observer_step)
         for forbidden_mutation in (
+            "CreateAppContainerProfile",
+            "DeleteAppContainerProfile",
             "FwpmEngineSetOption0",
             "FwpmFilterAdd0",
             "FwpmFilterDeleteByKey0",

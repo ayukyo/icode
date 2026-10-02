@@ -157,6 +157,40 @@ class TestWindowsWfpAbi(unittest.TestCase):
         self.assertIn(r'\"schema_version\":7', source)
         self.assertIn(r'\"schema_version\":6', source)
 
+    def test_runner_permission_probe_creates_and_removes_only_its_profile(self) -> None:
+        repository_root = os.path.dirname(os.path.dirname(__file__))
+        source_path = os.path.join(
+            repository_root, "native", "windows", "icode_wfp_event_probe.c",
+        )
+        with open(source_path, encoding="utf-8") as source_file:
+            source = source_file.read()
+
+        self.assertIn("--probe-runner-subscription", source)
+        probe_start = source.index("static int run_runner_subscription_probe(")
+        probe_end = source.index("\nint wmain(", probe_start)
+        probe = source[probe_start:probe_end]
+        create = probe.index("CreateAppContainerProfile(")
+        success_guard = probe.index("if (create_result != S_OK", create)
+        create_call = probe[create:success_guard]
+        self.assertIn("NULL,\n        0,", create_call)
+        create_failure_end = probe.index("if (created_sid == NULL", success_guard)
+        collector = probe.index("probe_result = run_collector(", create_failure_end)
+        free_sid = probe.index("FreeSid(created_sid)", collector)
+        delete = probe.index("DeleteAppContainerProfile(", free_sid)
+
+        self.assertLess(create, success_guard)
+        self.assertLess(success_guard, collector)
+        self.assertLess(collector, free_sid)
+        self.assertLess(free_sid, delete)
+        self.assertIn(
+            "return RUNNER_PROBE_UNAVAILABLE;",
+            probe[success_guard:create_failure_end],
+        )
+        self.assertNotIn("DeleteAppContainerProfile(", probe[success_guard:create_failure_end])
+        self.assertIn("delete_result != S_OK", probe[delete:])
+        self.assertIn("RUNNER_PROBE_PROFILE_CLEANUP_FAILED", probe[delete:])
+        self.assertIn("return probe_result;", probe[delete:])
+
     def test_sdk_compile_failure_classification_does_not_return_raw_output(self) -> None:
         probe = _probe_module(self)
         classify = probe._classify_windows_sdk_compile_failure
