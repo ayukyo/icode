@@ -404,6 +404,37 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
                     f"missing: {required_contract}",
                 )
 
+    def test_native_probe_publishes_receipts_only_after_complete_write(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        native_source = (
+            repository_root / "native/windows/icode_wfp_event_probe.c"
+        ).read_text(encoding="utf-8")
+        write_helper = native_source.split(
+            "static BOOL write_ascii_file(", 1,
+        )[1].split("\nstatic BOOL stop_requested", 1)[0]
+        normalized_helper = " ".join(write_helper.split())
+
+        create_temp = normalized_helper.find("CreateFileW(")
+        write_payload = normalized_helper.find("WriteFile(")
+        flush_temp = normalized_helper.find("FlushFileBuffers(file)")
+        close_temp = normalized_helper.find("CloseHandle(file)")
+        publish_final = normalized_helper.find(
+            "MoveFileExW( temporary_path, path, MOVEFILE_WRITE_THROUGH )"
+        )
+        self.assertTrue(create_temp >= 0, "missing exclusive temporary receipt")
+        self.assertTrue(write_payload > create_temp, "write must follow temp creation")
+        self.assertIn(
+            "temporary_path, GENERIC_WRITE, 0, NULL, CREATE_NEW",
+            normalized_helper[create_temp:write_payload],
+        )
+        self.assertTrue(flush_temp > write_payload, "flush only after a complete write")
+        self.assertTrue(close_temp > flush_temp, "publish only after closing the temp")
+        self.assertTrue(publish_final > close_temp, "publish only after complete write")
+        self.assertIn("L\".tmp\"", normalized_helper)
+        self.assertIn("CREATE_NEW", normalized_helper)
+        self.assertIn("DeleteFileW(temporary_path)", normalized_helper)
+        self.assertNotIn("MOVEFILE_REPLACE_EXISTING", normalized_helper)
+
     def test_required_native_probe_fails_closed_if_setup_python_uses_a_venv(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         test_source = (repository_root / "tests/test_windows_appcontainer.py").read_text(

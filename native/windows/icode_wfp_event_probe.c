@@ -515,29 +515,46 @@ static BOOL probe_paths_are_safe(
 }
 
 static BOOL write_ascii_file(const wchar_t *path, const char *contents) {
+    wchar_t temporary_path[MAX_PROBE_PATH];
     HANDLE file;
     DWORD written = 0;
+    size_t path_length;
     size_t length;
-    BOOL ok;
+    BOOL ok = FALSE;
 
     if (path == NULL || contents == NULL) {
         return FALSE;
     }
+    path_length = wcslen(path);
+    if (path_length == 0 || path_length > MAX_PROBE_PATH - 5) {
+        return FALSE;
+    }
+    wmemcpy(temporary_path, path, path_length);
+    wmemcpy(temporary_path + path_length, L".tmp", 5);
     length = strlen(contents);
     if (length > 4096) {
         return FALSE;
     }
     file = CreateFileW(
-        path, GENERIC_WRITE, FILE_SHARE_READ, NULL, CREATE_NEW,
+        temporary_path, GENERIC_WRITE, 0, NULL, CREATE_NEW,
         FILE_ATTRIBUTE_NORMAL, NULL
     );
     if (file == INVALID_HANDLE_VALUE) {
         return FALSE;
     }
     ok = WriteFile(file, contents, (DWORD)length, &written, NULL) &&
-        written == (DWORD)length;
+        written == (DWORD)length && FlushFileBuffers(file);
     if (!CloseHandle(file)) {
         ok = FALSE;
+    }
+    if (ok) {
+        /* Same-directory rename exposes only a complete, non-replaced receipt. */
+        ok = MoveFileExW(
+            temporary_path, path, MOVEFILE_WRITE_THROUGH
+        );
+    }
+    if (!ok) {
+        (void)DeleteFileW(temporary_path);
     }
     return ok;
 }
