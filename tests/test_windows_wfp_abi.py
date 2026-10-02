@@ -166,6 +166,9 @@ class TestWindowsWfpAbi(unittest.TestCase):
             source = source_file.read()
 
         self.assertIn("RUNNER_PROBE_INVALID_ARGUMENTS = 3", source)
+        self.assertIn("RUNNER_PROBE_INVALID_PROFILE_NAME = 4", source)
+        self.assertIn("RUNNER_PROBE_INVALID_PORT = 5", source)
+        self.assertIn("RUNNER_PROBE_INVALID_PATHS = 6", source)
         self.assertIn("--probe-runner-subscription", source)
         self.assertIn('"sid-derive-failed\\n"', source)
         self.assertIn('"engine-open-failed\\n"', source)
@@ -205,8 +208,24 @@ class TestWindowsWfpAbi(unittest.TestCase):
             runner_mode_start,
         )
         runner_mode = source[runner_mode_start:runner_mode_end]
-        self.assertIn("argc != 7", runner_mode)
-        self.assertIn("return RUNNER_PROBE_INVALID_ARGUMENTS;", runner_mode)
+        self.assertIn(
+            "if (argc != 7) {\n            return RUNNER_PROBE_INVALID_ARGUMENTS;",
+            runner_mode,
+        )
+        self.assertIn(
+            "if (!is_generated_profile_name(argv[2])) {\n"
+            "            return RUNNER_PROBE_INVALID_PROFILE_NAME;",
+            runner_mode,
+        )
+        self.assertIn(
+            "if (!parse_port(argv[3], &remote_port)) {\n"
+            "            return RUNNER_PROBE_INVALID_PORT;",
+            runner_mode,
+        )
+        self.assertIn(
+            "return RUNNER_PROBE_INVALID_PATHS;",
+            runner_mode,
+        )
 
     def test_sdk_compile_failure_classification_does_not_return_raw_output(self) -> None:
         probe = _probe_module(self)

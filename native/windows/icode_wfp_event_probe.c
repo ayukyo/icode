@@ -30,7 +30,10 @@
 enum RunnerProbeExitCode {
     RUNNER_PROBE_UNAVAILABLE = 1,
     RUNNER_PROBE_PROFILE_CLEANUP_FAILED = 2,
-    RUNNER_PROBE_INVALID_ARGUMENTS = 3
+    RUNNER_PROBE_INVALID_ARGUMENTS = 3,
+    RUNNER_PROBE_INVALID_PROFILE_NAME = 4,
+    RUNNER_PROBE_INVALID_PORT = 5,
+    RUNNER_PROBE_INVALID_PATHS = 6
 };
 
 typedef struct WfpProbeContext {
@@ -1177,13 +1180,20 @@ int wmain(int argc, wchar_t **argv) {
         return classifier_self_test() ? 0 : 1;
     }
     if (argc >= 2 && wcscmp(argv[1], L"--probe-runner-subscription") == 0) {
-        if (argc != 7 || !is_generated_profile_name(argv[2]) ||
-            !parse_port(argv[3], &remote_port) ||
-            argv[4][0] == L'\0' || argv[5][0] == L'\0' || argv[6][0] == L'\0' ||
+        if (argc != 7) {
+            return RUNNER_PROBE_INVALID_ARGUMENTS;
+        }
+        if (!is_generated_profile_name(argv[2])) {
+            return RUNNER_PROBE_INVALID_PROFILE_NAME;
+        }
+        if (!parse_port(argv[3], &remote_port)) {
+            return RUNNER_PROBE_INVALID_PORT;
+        }
+        if (argv[4][0] == L'\0' || argv[5][0] == L'\0' || argv[6][0] == L'\0' ||
             _wcsicmp(argv[4], argv[5]) == 0 || _wcsicmp(argv[4], argv[6]) == 0 ||
             _wcsicmp(argv[5], argv[6]) == 0 ||
             !probe_paths_are_safe(argv[2], argv[4], argv[5], argv[6])) {
-            return RUNNER_PROBE_INVALID_ARGUMENTS;
+            return RUNNER_PROBE_INVALID_PATHS;
         }
         return run_runner_subscription_probe(
             argv[2], remote_port, argv[4], argv[5], argv[6]
