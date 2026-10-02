@@ -395,6 +395,8 @@ jobs:
         with:
           python-version: "3.11"
           architecture: ${{ matrix.python-architecture }}
+      - name: Cross-check Windows SDK WFP ABI (x64/ARM64)
+        run: python -m unittest tests.test_windows_wfp_abi.TestWindowsWfpAbi -v
       - name: Run Reviewer snapshot probe as temporary standard user
         shell: pwsh
         run: |

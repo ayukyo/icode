@@ -194,6 +194,15 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         candidate_job = workflow.split(
             "  windows-reviewer-snapshot-probe:\n", 1,
         )[1].split("\n  windows-appcontainer-read-handle-probe:", 1)[0]
+        abi_probe = (
+            "      - name: Cross-check Windows SDK WFP ABI (x64/ARM64)\n"
+            "        run: python -m unittest tests.test_windows_wfp_abi.TestWindowsWfpAbi -v\n"
+        )
+        self.assertIn(abi_probe, candidate_job)
+        self.assertLess(
+            candidate_job.index(abi_probe),
+            candidate_job.index("      - name: Run Reviewer snapshot probe as temporary standard user\n"),
+        )
         for standard_user_contract in (
             "architecture: ${{ matrix.python-architecture }}",
             "New-LocalUser -Name $accountName",
