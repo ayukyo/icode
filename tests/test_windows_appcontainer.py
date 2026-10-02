@@ -42,6 +42,20 @@ from icode.windows_job import (
     run_windows_job,
 )
 
+_WINDOWS_WSAEWOULDBLOCK = 10035
+
+
+def _network_attempt_timed_out(
+    attempted: object, connected: object, error_code: object,
+) -> bool:
+    """Classify only the bounded connect_ex timeout outcome, not a denial."""
+    return (
+        attempted is True
+        and connected is False
+        and type(error_code) is int
+        and error_code == _WINDOWS_WSAEWOULDBLOCK
+    )
+
 
 def _query_administrators_group_membership_status(
     token: ctypes.c_void_p, admin_sid: ctypes.c_void_p, advapi: object, kernel: object,
@@ -1452,6 +1466,24 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(status, "member")
         kernel.CloseHandle.assert_called_once()
 
+    def test_Reviewer网络超时回执必须绑定尝试未连接和精确超时代码(self) -> None:
+        self.assertIs(_network_attempt_timed_out(True, False, 10035), True)
+        for attempted, connected, error_code in (
+            (False, False, 10035),
+            (True, True, 10035),
+            (True, False, 10013),
+            (True, False, 10061),
+            (True, False, -1),
+            (True, None, 10035),
+            (True, False, True),
+        ):
+            with self.subTest(
+                attempted=attempted, connected=connected, error_code=error_code,
+            ):
+                self.assertIs(
+                    _network_attempt_timed_out(attempted, connected, error_code), False,
+                )
+
     def test_Reviewer快照原生探针脚本在非Windows主机可静态解析(self) -> None:
         captured_scripts: list[str] = []
         captured_notices: list[tuple[str, str]] = []
@@ -1528,6 +1560,13 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer loopback network denial", notice_names)
         self.assertIn("Windows Reviewer write canary fingerprints", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
+        network_notice = json.loads(next(
+            encoded
+            for name, encoded in captured_notices
+            if name == "Windows Reviewer loopback network denial"
+        ))
+        self.assertIs(network_notice["ipv4_network_timed_out"], False)
+        self.assertIs(network_notice["ipv6_network_timed_out"], False)
         writes_notice = json.loads(next(
             encoded
             for name, encoded in captured_notices
@@ -1743,6 +1782,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         acceptance_end = reviewer_source.index(")), summary)", acceptance_start)
         acceptance_contract = reviewer_source[acceptance_start:acceptance_end]
         self.assertIn('"write_canary_unchanged"', acceptance_contract)
+        self.assertNotIn("network_timed_out", acceptance_contract)
         self.assertNotIn("write_canary_before_unchanged", acceptance_contract)
         self.assertNotIn("write_canary_matches_expected_result", acceptance_contract)
         self.assertNotIn("write_canary_matches_payload", acceptance_contract)
@@ -6604,6 +6644,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                         facts.get("ipv4_network_connect_denied") is True
                     ),
                     "ipv4_network_error": network_error_code("ipv4_network_error"),
+                    "ipv4_network_timed_out": _network_attempt_timed_out(
+                        facts.get("ipv4_network_attempted"),
+                        facts.get("ipv4_network_connected"),
+                        network_error_code("ipv4_network_error"),
+                    ),
                     "ipv4_canary_received": (
                         network_canary in network_servers[0].received_canaries
                     ),
@@ -6614,6 +6659,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                         facts.get("ipv6_network_connect_denied") is True
                     ),
                     "ipv6_network_error": network_error_code("ipv6_network_error"),
+                    "ipv6_network_timed_out": _network_attempt_timed_out(
+                        facts.get("ipv6_network_attempted"),
+                        facts.get("ipv6_network_connected"),
+                        network_error_code("ipv6_network_error"),
+                    ),
                     "ipv6_canary_received": (
                         network_canary in network_servers[1].received_canaries
                     ),
@@ -6699,10 +6749,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                         for key in (
                             "ipv4_host_control", "ipv4_network_attempted",
                             "ipv4_network_connected", "ipv4_network_connect_denied",
-                            "ipv4_network_error", "ipv4_canary_received",
+                            "ipv4_network_error", "ipv4_network_timed_out",
+                            "ipv4_canary_received",
                             "ipv6_host_control", "ipv6_network_attempted",
                             "ipv6_network_connected", "ipv6_network_connect_denied",
-                            "ipv6_network_error", "ipv6_canary_received",
+                            "ipv6_network_error", "ipv6_network_timed_out",
+                            "ipv6_canary_received",
                         )
                     },
                 )
