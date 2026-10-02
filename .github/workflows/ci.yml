@@ -434,10 +434,10 @@ jobs:
           $wfpMemberSelfTestExplicitExtractFile = Join-Path $wfpMemberSelfTestRoot 'extract-exact-file.xml'
           $wfpArchiveMemberPattern = '(?im)^\s*(?:[A-Z]:[\\/]|\\\\)[^:\r\n]*\.cab:\s*(?:[^:\r\n]*[\\/])?wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
           $wfpMatchFile = Join-Path $probeRoot 'wfp-match.json'
-          $wfpReadyFile = Join-Path $probeRoot 'wfp-ready'
-          $wfpStartedFile = Join-Path $probeRoot 'wfp-started'
           $wfpCaptureStarted = $false
+          $wfpCaptureStartAttempted = $false
           $wfpCaptureStatus = 'not_started'
+          $wfpCapturePreflight = 'not_checked'
           $wfpArchiveMemberStatus = 'not_checked'
           $wfpArchiveMemberNameMentionCount = 'not_checked'
           $wfpArchiveMemberLineShape = 'not_checked'
@@ -453,8 +453,7 @@ jobs:
             'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
             'RUNNER_TEMP', 'TEMP', 'TMP', 'ICODE_DIAGNOSTIC_STANDARD_USER_SID',
             'ICODE_DIAGNOSTIC_WFP_PROBE_PATH', 'ICODE_DIAGNOSTIC_WFP_CAPTURE',
-            'ICODE_DIAGNOSTIC_WFP_MATCH_FILE', 'ICODE_DIAGNOSTIC_WFP_READY_FILE',
-            'ICODE_DIAGNOSTIC_WFP_STARTED_FILE'
+            'ICODE_DIAGNOSTIC_WFP_MATCH_FILE'
           )
           $savedEnvironment = @{}
           foreach ($name in $environmentNames) {
@@ -557,6 +556,16 @@ jobs:
             } finally {
               if ($process) { $process.Dispose() }
             }
+          }
+          function Get-WfpCaptureActivity {
+            param([Parameter(Mandatory = $true)][string]$Output)
+            if ($Output -match '(?im)\b(?:No capture is in progress|No active capture)\b') {
+              return 'inactive'
+            }
+            if ($Output -match '(?im)\b(?:Capture is already in progress|Capture is active)\b') {
+              return 'active'
+            }
+            return 'unknown'
           }
           try {
             $wfpMemberSelfTestStage = 'prepare'
@@ -794,54 +803,48 @@ jobs:
             $env:ICODE_DIAGNOSTIC_WFP_PROBE_PATH = $wfpProbeForUser
             $env:ICODE_DIAGNOSTIC_WFP_CAPTURE = 'true'
             $env:ICODE_DIAGNOSTIC_WFP_MATCH_FILE = $wfpMatchFile
-            $env:ICODE_DIAGNOSTIC_WFP_READY_FILE = $wfpReadyFile
-            $env:ICODE_DIAGNOSTIC_WFP_STARTED_FILE = $wfpStartedFile
 
             $stdout = Join-Path $probeRoot 'reviewer-probe.stdout.txt'
             $stderr = Join-Path $probeRoot 'reviewer-probe.stderr.txt'
+            $captureStatusResult = Invoke-BoundedDiagnosticCommand `
+              -Path $netsh -Arguments @('wfp', 'capture', 'status') `
+              -TimeoutMilliseconds 5000 -CaptureStdout -CaptureStderr
+            if (-not $captureStatusResult.TimedOut -and $captureStatusResult.ExitCode -eq 0) {
+              $captureStatusOutput = $captureStatusResult.Stdout + "`n" + $captureStatusResult.Stderr
+              $wfpCapturePreflight = Get-WfpCaptureActivity $captureStatusOutput
+              if ($wfpCapturePreflight -eq 'inactive') {
+                $wfpCaptureStartAttempted = $true
+                $captureStartResult = Invoke-BoundedDiagnosticCommand `
+                  -Path $netsh -Arguments @(
+                    'wfp', 'capture', 'start', 'keywords=19', 'cab=on',
+                    'traceonly=off', "file=$wfpCapturePrefix"
+                  ) -TimeoutMilliseconds 10000
+                if (-not $captureStartResult.TimedOut -and $captureStartResult.ExitCode -eq 0) {
+                  $wfpCaptureStarted = $true
+                  $wfpCaptureStatus = 'started'
+                } elseif ($captureStartResult.TimedOut) {
+                  $wfpCaptureStatus = 'start_timeout'
+                } else {
+                  $wfpCaptureStatus = 'start_failed'
+                }
+              } elseif ($wfpCapturePreflight -eq 'active') {
+                $wfpCaptureStatus = 'existing_session'
+              } else {
+                $wfpCaptureStatus = 'status_unrecognized'
+              }
+            } elseif ($captureStatusResult.TimedOut) {
+              $wfpCapturePreflight = 'timeout'
+              $wfpCaptureStatus = 'status_timeout'
+            } else {
+              $wfpCapturePreflight = 'failed'
+              $wfpCaptureStatus = 'status_failed'
+            }
             $process = Start-Process -FilePath $python -ArgumentList $arguments `
               -Credential $credential -LoadUserProfile `
               -WorkingDirectory $env:GITHUB_WORKSPACE `
               -RedirectStandardOutput $stdout -RedirectStandardError $stderr `
               -PassThru
-            $readyDeadline = [DateTime]::UtcNow.AddSeconds(20)
-            $process.Refresh()
-            while (-not (Test-Path -LiteralPath $wfpReadyFile -PathType Leaf) -and
-                   -not $process.HasExited -and [DateTime]::UtcNow -lt $readyDeadline) {
-              Start-Sleep -Milliseconds 50
-              $process.Refresh()
-            }
-            try {
-              if (Test-Path -LiteralPath $wfpReadyFile -PathType Leaf) {
-                $captureStatusResult = Invoke-BoundedDiagnosticCommand `
-                  -Path $netsh -Arguments @('wfp', 'capture', 'status') `
-                  -TimeoutMilliseconds 5000
-                if (-not $captureStatusResult.TimedOut -and $captureStatusResult.ExitCode -eq 0) {
-                  $captureStartResult = Invoke-BoundedDiagnosticCommand `
-                    -Path $netsh -Arguments @(
-                      'wfp', 'capture', 'start', 'keywords=19', 'cab=on',
-                      'traceonly=off', "file=$wfpCapturePrefix"
-                    ) -TimeoutMilliseconds 10000
-                  if (-not $captureStartResult.TimedOut -and $captureStartResult.ExitCode -eq 0) {
-                    $wfpCaptureStarted = $true
-                    $wfpCaptureStatus = 'started'
-                  } elseif ($captureStartResult.TimedOut) {
-                    $wfpCaptureStatus = 'start_timeout'
-                  } else {
-                    $wfpCaptureStatus = 'start_failed'
-                  }
-                } elseif ($captureStatusResult.TimedOut) {
-                  $wfpCaptureStatus = 'status_timeout'
-                } else {
-                  $wfpCaptureStatus = 'status_failed'
-                }
-              } else {
-                $wfpCaptureStatus = 'ready_timeout'
-              }
-            } finally {
-              [IO.File]::WriteAllText($wfpStartedFile, 'released')
-            }
-            if (-not $process.WaitForExit(45000)) {
+            if (-not $process.WaitForExit(65000)) {
               $process.Refresh()
               if (-not $process.HasExited) {
                 Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
@@ -857,6 +860,34 @@ jobs:
             }
           }
           finally {
+            if ($wfpCaptureStartAttempted -and -not $wfpCaptureStarted -and
+                ($wfpCaptureStatus -eq 'start_timeout' -or
+                 $wfpCaptureStatus -eq 'start_failed')) {
+              $captureRecoveryStatus = Invoke-BoundedDiagnosticCommand `
+                -Path $netsh -Arguments @('wfp', 'capture', 'status') `
+                -TimeoutMilliseconds 5000 -CaptureStdout -CaptureStderr
+              if ($captureRecoveryStatus.TimedOut -or $captureRecoveryStatus.ExitCode -ne 0) {
+                $wfpCaptureStatus = 'start_state_unknown'
+              } else {
+                $captureRecoveryOutput = $captureRecoveryStatus.Stdout + "`n" + $captureRecoveryStatus.Stderr
+                $captureRecoveryActivity = Get-WfpCaptureActivity $captureRecoveryOutput
+                $captureRecoveryOwnsSession = [regex]::IsMatch(
+                  $captureRecoveryOutput,
+                  [regex]::Escape($wfpCapturePrefix),
+                  [Text.RegularExpressions.RegexOptions]::IgnoreCase
+                )
+                if ($captureRecoveryActivity -eq 'active' -and $captureRecoveryOwnsSession) {
+                  $wfpCaptureStarted = $true
+                  $wfpCaptureStatus = 'start_recovered'
+                } elseif ($captureRecoveryActivity -eq 'active') {
+                  $wfpCaptureStatus = 'start_state_unowned'
+                } elseif ($captureRecoveryActivity -eq 'inactive') {
+                  $wfpCaptureStatus = 'start_not_active'
+                } else {
+                  $wfpCaptureStatus = 'start_state_unknown'
+                }
+              }
+            }
             if ($wfpCaptureStarted) {
               try {
                 $captureStopResult = Invoke-BoundedDiagnosticCommand `
@@ -1009,7 +1040,7 @@ jobs:
                 }
               }
             }
-            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_name_mentions=$wfpArchiveMemberNameMentionCount archive_member_line_shape=$wfpArchiveMemberLineShape"
+            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_name_mentions=$wfpArchiveMemberNameMentionCount archive_member_line_shape=$wfpArchiveMemberLineShape"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }

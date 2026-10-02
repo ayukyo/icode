@@ -150,22 +150,25 @@ class TestWindowsWfpCapture(unittest.TestCase):
         job = workflow[job_start:job_end]
         candidate_start = job.index("$process = Start-Process")
         capture_start = job.index("'capture', 'start'")
-        candidate_wait = job.index("$process.WaitForExit(45000)")
+        candidate_wait = job.index("$process.WaitForExit(65000)")
         capture_stop = job.index("'capture', 'stop'")
         capture_parse = job.index("inspect_windows_wfp_capture.py")
         capture_cleanup = job.index("Remove-Item -LiteralPath $diagnosticPath")
-        self.assertLess(candidate_start, capture_start)
-        self.assertLess(capture_start, candidate_wait)
+        self.assertLess(capture_start, candidate_start)
+        self.assertLess(candidate_start, candidate_wait)
         self.assertLess(candidate_wait, capture_stop)
         self.assertLess(capture_stop, capture_parse)
         self.assertLess(capture_parse, capture_cleanup)
         self.assertIn("'capture', 'status'", job)
+        self.assertIn("$process.WaitForExit(65000)", job)
+        self.assertNotIn("$process.WaitForExit(45000)", job)
         self.assertIn("$wfpCaptureStarted", job)
+        self.assertIn("$wfpCapturePreflight", job)
         self.assertIn("Stop-Process -Id $process.Id -Force", job)
-        self.assertIn("45000", job)
+        self.assertIn("65000", job)
         self.assertIn("ICODE_DIAGNOSTIC_WFP_MATCH_FILE", job)
-        self.assertIn("ICODE_DIAGNOSTIC_WFP_READY_FILE", job)
-        self.assertIn("ICODE_DIAGNOSTIC_WFP_STARTED_FILE", job)
+        self.assertNotIn("ICODE_DIAGNOSTIC_WFP_READY_FILE", job)
+        self.assertNotIn("ICODE_DIAGNOSTIC_WFP_STARTED_FILE", job)
         self.assertIn("exact_classify_drop_count", job)
         self.assertNotIn("netsh wfp set", job)
         self.assertNotIn("actions/upload-artifact", job)
@@ -178,6 +181,31 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("wfp_context_path.parent.resolve() == runner_temp_path", appcontainer_test)
         self.assertIn("'package_sid_value':package_sid_value", appcontainer_test)
         self.assertNotIn('summary["package_sid_value"]', appcontainer_test)
+
+    def test_workflow_only_starts_or_recovers_a_capture_from_bounded_status(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("function Get-WfpCaptureActivity", job)
+        self.assertIn("return 'inactive'", job)
+        self.assertIn("return 'active'", job)
+        self.assertIn("return 'unknown'", job)
+        self.assertIn("$wfpCapturePreflight -eq 'inactive'", job)
+        self.assertIn("$wfpCaptureStatus = 'existing_session'", job)
+        self.assertIn("$wfpCaptureStatus = 'status_unrecognized'", job)
+        self.assertIn("$wfpCaptureStartAttempted -and -not $wfpCaptureStarted", job)
+        self.assertIn("$wfpCaptureStatus -eq 'start_timeout'", job)
+        self.assertIn("$wfpCaptureStatus -eq 'start_failed'", job)
+        self.assertIn("$wfpCaptureStatus = 'start_state_unknown'", job)
+        self.assertIn("$wfpCaptureStatus = 'start_state_unowned'", job)
+        self.assertIn("[regex]::IsMatch(", job)
+        self.assertIn("preflight=$wfpCapturePreflight", job)
+        self.assertNotIn("$captureStatusResult.Stdout", "\n".join(
+            line for line in job.splitlines() if "Write-Output" in line
+        ))
 
     def test_workflow_bounds_each_external_capture_diagnostic_command(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
@@ -192,7 +220,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("$profileBootstrap.WaitForExit(30000)", job)
         self.assertIn("$profileBootstrap.Kill($true)", job)
         self.assertNotIn("-Wait -PassThru", job)
-        self.assertEqual(job.count("-Path $netsh -Arguments"), 3)
+        self.assertEqual(job.count("-Path $netsh -Arguments"), 4)
         self.assertIn("-Path $expand -Arguments", job)
         self.assertIn("-Path $python -Arguments", job)
         self.assertIn("-TimeoutMilliseconds 5000", job)

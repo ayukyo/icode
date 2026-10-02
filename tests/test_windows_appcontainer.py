@@ -67,37 +67,6 @@ def _network_attempt_timed_out(
     )
 
 
-def _signal_ci_wfp_capture_ready() -> bool:
-    """Synchronize the privileged CI capture immediately before the candidate runs."""
-    if (
-        os.environ.get("ICODE_DIAGNOSTIC_WFP_CAPTURE") != "true"
-        or os.environ.get("GITHUB_ACTIONS") != "true"
-        or os.environ.get("RUNNER_OS") != "Windows"
-    ):
-        return False
-    runner_temp_value = os.environ.get("RUNNER_TEMP", "")
-    ready_value = os.environ.get("ICODE_DIAGNOSTIC_WFP_READY_FILE", "")
-    started_value = os.environ.get("ICODE_DIAGNOSTIC_WFP_STARTED_FILE", "")
-    if not runner_temp_value or not ready_value or not started_value:
-        return False
-    try:
-        runner_temp = Path(runner_temp_value).resolve()
-        ready_path = Path(ready_value)
-        started_path = Path(started_value)
-        if (
-            ready_path.parent.resolve() != runner_temp
-            or started_path.parent.resolve() != runner_temp
-        ):
-            return False
-        ready_path.write_text("ready\n", encoding="ascii")
-        deadline = time.monotonic() + 10
-        while not started_path.is_file() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        return started_path.is_file()
-    except (OSError, RuntimeError, ValueError):
-        return False
-
-
 def _query_administrators_group_membership_status(
     token: ctypes.c_void_p, admin_sid: ctypes.c_void_p, advapi: object, kernel: object,
 ) -> str:
@@ -6708,7 +6677,6 @@ class TestWindowsAppContainer(unittest.TestCase):
                             ipv6_loopback_port,
                             temp_root,
                         )
-                _signal_ci_wfp_capture_ready()
                 try:
                     candidate = run_windows_appcontainer(
                         [str(staged_executable), "-I", "-c", script],
