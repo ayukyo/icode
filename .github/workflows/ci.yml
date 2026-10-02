@@ -422,6 +422,16 @@ jobs:
           if ($accountName.Length -gt 20) { throw 'temporary_reviewer_account_name_too_long' }
           $probeRoot = Join-Path $env:RUNNER_TEMP "icode-reviewer-standard-user-$suffix"
           $wfpProbeForUser = Join-Path $probeRoot 'icode-wfp-event-probe.exe'
+          $wfpCapturePrefix = Join-Path $env:RUNNER_TEMP "icode-reviewer-wfp-$suffix"
+          $wfpCaptureArchive = "$wfpCapturePrefix.cab"
+          $wfpExtractRoot = Join-Path $env:RUNNER_TEMP "icode-reviewer-wfp-extract-$suffix"
+          $wfpMatchFile = Join-Path $probeRoot 'wfp-match.json'
+          $wfpReadyFile = Join-Path $probeRoot 'wfp-ready'
+          $wfpStartedFile = Join-Path $probeRoot 'wfp-started'
+          $wfpCaptureStarted = $false
+          $wfpCaptureStatus = 'not_started'
+          $wfpExactDropCount = 0
+          $netsh = Join-Path $env:SystemRoot 'System32/netsh.exe'
           $profilePath = $null
           $securePassword = $null
           $passwordText = $null
@@ -429,7 +439,9 @@ jobs:
           $environmentNames = @(
             'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
             'RUNNER_TEMP', 'TEMP', 'TMP', 'ICODE_DIAGNOSTIC_STANDARD_USER_SID',
-            'ICODE_DIAGNOSTIC_WFP_PROBE_PATH'
+            'ICODE_DIAGNOSTIC_WFP_PROBE_PATH', 'ICODE_DIAGNOSTIC_WFP_CAPTURE',
+            'ICODE_DIAGNOSTIC_WFP_MATCH_FILE', 'ICODE_DIAGNOSTIC_WFP_READY_FILE',
+            'ICODE_DIAGNOSTIC_WFP_STARTED_FILE'
           )
           $savedEnvironment = @{}
           foreach ($name in $environmentNames) {
@@ -494,6 +506,10 @@ jobs:
             $env:TMP = $probeRoot
             $env:ICODE_DIAGNOSTIC_STANDARD_USER_SID = $sid
             $env:ICODE_DIAGNOSTIC_WFP_PROBE_PATH = $wfpProbeForUser
+            $env:ICODE_DIAGNOSTIC_WFP_CAPTURE = 'true'
+            $env:ICODE_DIAGNOSTIC_WFP_MATCH_FILE = $wfpMatchFile
+            $env:ICODE_DIAGNOSTIC_WFP_READY_FILE = $wfpReadyFile
+            $env:ICODE_DIAGNOSTIC_WFP_STARTED_FILE = $wfpStartedFile
 
             $stdout = Join-Path $probeRoot 'reviewer-probe.stdout.txt'
             $stderr = Join-Path $probeRoot 'reviewer-probe.stderr.txt'
@@ -501,7 +517,44 @@ jobs:
               -Credential $credential -LoadUserProfile `
               -WorkingDirectory $env:GITHUB_WORKSPACE `
               -RedirectStandardOutput $stdout -RedirectStandardError $stderr `
-              -Wait -PassThru
+              -PassThru
+            $readyDeadline = [DateTime]::UtcNow.AddSeconds(20)
+            $process.Refresh()
+            while (-not (Test-Path -LiteralPath $wfpReadyFile -PathType Leaf) -and
+                   -not $process.HasExited -and [DateTime]::UtcNow -lt $readyDeadline) {
+              Start-Sleep -Milliseconds 50
+              $process.Refresh()
+            }
+            try {
+              if (Test-Path -LiteralPath $wfpReadyFile -PathType Leaf) {
+                $captureStatusOutput = & $netsh wfp capture status 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                  $captureStartOutput = & $netsh wfp capture start `
+                    'keywords=19' 'cab=on' 'traceonly=off' "file=$wfpCapturePrefix" 2>&1
+                  if ($LASTEXITCODE -eq 0) {
+                    $wfpCaptureStarted = $true
+                    $wfpCaptureStatus = 'started'
+                  } else {
+                    $wfpCaptureStatus = 'start_failed'
+                  }
+                } else {
+                  $wfpCaptureStatus = 'status_failed'
+                }
+              } else {
+                $wfpCaptureStatus = 'ready_timeout'
+              }
+            } finally {
+              [IO.File]::WriteAllText($wfpStartedFile, 'released')
+            }
+            if (-not $process.WaitForExit(45000)) {
+              $process.Refresh()
+              if (-not $process.HasExited) {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+                [void]$process.WaitForExit(5000)
+              }
+              throw 'reviewer_snapshot_probe_capture_window_timeout'
+            }
+            $process.Refresh()
             if (Test-Path -LiteralPath $stdout) { Get-Content -LiteralPath $stdout }
             if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr }
             if ($process.ExitCode -ne 0) {
@@ -509,6 +562,73 @@ jobs:
             }
           }
           finally {
+            if ($wfpCaptureStarted) {
+              try {
+                $captureStopOutput = & $netsh wfp capture stop 2>&1
+                if ($LASTEXITCODE -eq 0) {
+                  $wfpCaptureStatus = 'stopped'
+                  if (Test-Path -LiteralPath $wfpCaptureArchive -PathType Leaf) {
+                    $archiveLength = (Get-Item -LiteralPath $wfpCaptureArchive).Length
+                    if ($archiveLength -gt 67108864) {
+                      $wfpCaptureStatus = 'archive_too_large'
+                    } else {
+                      New-Item -ItemType Directory -Path $wfpExtractRoot | Out-Null
+                      $expand = Join-Path $env:SystemRoot 'System32/expand.exe'
+                      & $expand '-F:wfpdiag.xml' $wfpCaptureArchive $wfpExtractRoot 2>&1 | Out-Null
+                      if ($LASTEXITCODE -eq 0) {
+                        $wfpXml = Join-Path $wfpExtractRoot 'wfpdiag.xml'
+                        if ((Test-Path -LiteralPath $wfpXml -PathType Leaf) -and
+                            (Get-Item -LiteralPath $wfpXml).Length -le 8388608) {
+                          $captureSummary = & $python `
+                            (Join-Path $env:GITHUB_WORKSPACE 'scripts/inspect_windows_wfp_capture.py') `
+                            --xml $wfpXml --context $wfpMatchFile 2>$null
+                          if ($LASTEXITCODE -eq 0) {
+                            try {
+                              $parsedCaptureSummary = ($captureSummary -join "`n") | ConvertFrom-Json
+                              $parsedCount = $parsedCaptureSummary.exact_classify_drop_count
+                              if ($parsedCaptureSummary.status -in @('matched', 'no_match', 'inconclusive') -and
+                                  ($parsedCount -is [int] -or $parsedCount -is [long]) -and
+                                  $parsedCount -ge 0 -and $parsedCount -le 8192) {
+                                $wfpCaptureStatus = [string]$parsedCaptureSummary.status
+                                $wfpExactDropCount = $parsedCount
+                              } else {
+                                $wfpCaptureStatus = 'parser_failed'
+                              }
+                            } catch {
+                              $wfpCaptureStatus = 'parser_failed'
+                            }
+                          } else {
+                            $wfpCaptureStatus = 'parser_failed'
+                          }
+                        } else {
+                          $wfpCaptureStatus = 'extract_failed'
+                        }
+                      } else {
+                        $wfpCaptureStatus = 'extract_failed'
+                      }
+                    }
+                  } else {
+                    $wfpCaptureStatus = 'archive_missing'
+                  }
+                } else {
+                  $wfpCaptureStatus = 'stop_failed'
+                }
+              } catch {
+                $wfpCaptureStatus = 'capture_error'
+              }
+            }
+            foreach ($diagnosticPath in @(
+              $wfpCaptureArchive, $wfpCapturePrefix, $wfpExtractRoot
+            )) {
+              if (Test-Path -LiteralPath $diagnosticPath) {
+                try {
+                  Remove-Item -LiteralPath $diagnosticPath -Recurse -Force -ErrorAction Stop
+                } catch {
+                  $wfpCaptureStatus = 'cleanup_failed'
+                }
+              }
+            }
+            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }

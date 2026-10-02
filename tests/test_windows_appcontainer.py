@@ -67,6 +67,37 @@ def _network_attempt_timed_out(
     )
 
 
+def _signal_ci_wfp_capture_ready() -> bool:
+    """Synchronize the privileged CI capture immediately before the candidate runs."""
+    if (
+        os.environ.get("ICODE_DIAGNOSTIC_WFP_CAPTURE") != "true"
+        or os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("RUNNER_OS") != "Windows"
+    ):
+        return False
+    runner_temp_value = os.environ.get("RUNNER_TEMP", "")
+    ready_value = os.environ.get("ICODE_DIAGNOSTIC_WFP_READY_FILE", "")
+    started_value = os.environ.get("ICODE_DIAGNOSTIC_WFP_STARTED_FILE", "")
+    if not runner_temp_value or not ready_value or not started_value:
+        return False
+    try:
+        runner_temp = Path(runner_temp_value).resolve()
+        ready_path = Path(ready_value)
+        started_path = Path(started_value)
+        if (
+            ready_path.parent.resolve() != runner_temp
+            or started_path.parent.resolve() != runner_temp
+        ):
+            return False
+        ready_path.write_text("ready\n", encoding="ascii")
+        deadline = time.monotonic() + 10
+        while not started_path.is_file() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        return started_path.is_file()
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def _query_administrators_group_membership_status(
     token: ctypes.c_void_p, admin_sid: ctypes.c_void_p, advapi: object, kernel: object,
 ) -> str:
@@ -6394,6 +6425,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "    advapi.ConvertStringSidToSidW.argtypes=[wintypes.LPCWSTR,"
                     "ctypes.POINTER(ctypes.c_void_p)]\n"
                     "    advapi.ConvertStringSidToSidW.restype=wintypes.BOOL\n"
+                    "    advapi.ConvertSidToStringSidW.argtypes=[ctypes.c_void_p,"
+                    "ctypes.POINTER(wintypes.LPWSTR)]\n"
+                    "    advapi.ConvertSidToStringSidW.restype=wintypes.BOOL\n"
                     "    token=ctypes.c_void_p(); admin_token=ctypes.c_void_p(); returned=wintypes.DWORD()\n"
                     "    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(),0x000a,"
                     "ctypes.byref(token)): raise ctypes.WinError(ctypes.get_last_error())\n"
@@ -6412,6 +6446,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "ctypes.byref(returned)): raise ctypes.WinError(ctypes.get_last_error())\n"
                     "        sid=ctypes.cast(sid_buffer,ctypes.POINTER(ctypes.c_void_p)).contents.value\n"
                     "        if not sid: raise RuntimeError('missing package SID')\n"
+                    "        sid_text=wintypes.LPWSTR()\n"
+                    "        if not advapi.ConvertSidToStringSidW(ctypes.c_void_p(sid),ctypes.byref(sid_text)):\n"
+                    "            raise ctypes.WinError(ctypes.get_last_error())\n"
+                    "        try: package_sid_value=sid_text.value\n"
+                    "        finally: kernel.LocalFree(ctypes.cast(sid_text,ctypes.c_void_p))\n"
                     "        capability_buffer=ctypes.create_string_buffer(4096)\n"
                     "        if not advapi.GetTokenInformation(token,30,capability_buffer,"
                     "len(capability_buffer),ctypes.byref(returned)): raise ctypes.WinError(ctypes.get_last_error())\n"
@@ -6430,6 +6469,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "            if admin_token.value: kernel.CloseHandle(admin_token)\n"
                     "            kernel.LocalFree(admin_sid)\n"
                     "        return {'appcontainer':app.value==1,'package_sid':True,"
+                    "'package_sid_value':package_sid_value,"
                     "'capability_count':capability_count,'elevated':elevated.value!=0,"
                     "'admin_group_enabled':admin_enabled.value!=0}\n"
                     "    finally:\n"
@@ -6668,6 +6708,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                             ipv6_loopback_port,
                             temp_root,
                         )
+                _signal_ci_wfp_capture_ready()
                 try:
                     candidate = run_windows_appcontainer(
                         [str(staged_executable), "-I", "-c", script],
@@ -6706,6 +6747,49 @@ class TestWindowsAppContainer(unittest.TestCase):
                 token = result.get("token") if isinstance(result, dict) else {}
                 facts = facts if isinstance(facts, dict) else {}
                 token = token if isinstance(token, dict) else {}
+                wfp_context_path_value = os.environ.get(
+                    "ICODE_DIAGNOSTIC_WFP_MATCH_FILE", "",
+                )
+                runner_temp_value = os.environ.get("RUNNER_TEMP", "")
+                package_sid_value = token.get("package_sid_value")
+                if (
+                    os.environ.get("ICODE_DIAGNOSTIC_WFP_CAPTURE") == "true"
+                    and os.environ.get("GITHUB_ACTIONS") == "true"
+                    and os.environ.get("RUNNER_OS") == "Windows"
+                    and isinstance(package_sid_value, str)
+                    and len(package_sid_value) <= 184
+                    and wfp_context_path_value
+                    and runner_temp_value
+                ):
+                    try:
+                        wfp_context_path = Path(wfp_context_path_value)
+                        runner_temp_path = Path(runner_temp_value).resolve()
+                        if wfp_context_path.parent.resolve() == runner_temp_path:
+                            wfp_context_path.write_text(
+                                json.dumps(
+                                    {
+                                        "version": 1,
+                                        "package_sid": package_sid_value,
+                                        "targets": [
+                                            {
+                                                "ip_version": "FWP_IP_VERSION_V4",
+                                                "remote_address": "127.0.0.1",
+                                                "remote_port": ipv4_loopback_port,
+                                            },
+                                            {
+                                                "ip_version": "FWP_IP_VERSION_V6",
+                                                "remote_address": "::1",
+                                                "remote_port": ipv6_loopback_port,
+                                            },
+                                        ],
+                                    },
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ),
+                                encoding="utf-8",
+                            )
+                    except (OSError, ValueError):
+                        pass
                 raw_access_errors = facts.get("access_errors")
                 if not isinstance(raw_access_errors, dict):
                     raw_access_errors = {}
