@@ -6,7 +6,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from scripts import run_windows_appcontainer_read_probe
 from scripts.inspect_windows_wfp_capture import (
     _inspect_wfpdiag_bytes,
     inspect_wfp_capture,
@@ -58,6 +60,129 @@ def _event(
 
 
 class TestWindowsWfpCapture(unittest.TestCase):
+    def test_runner_observer_target_request_is_exact_and_never_overwritten(self) -> None:
+        publish = getattr(
+            run_windows_appcontainer_read_probe,
+            "_publish_wfp_ipv6_loopback_target",
+            None,
+        )
+        self.assertTrue(
+            callable(publish),
+            "CI candidate must publish its unique IPv6 target for runner-token observation",
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "wfp-runner-target.json"
+            profile_name = "icode-0123456789abcdef0123456789abcdef"
+            self.assertTrue(publish(
+                target,
+                expected_root=root,
+                profile_name=profile_name,
+                remote_port=41002,
+            ))
+            context = json.loads(target.read_text(encoding="ascii"))
+            self.assertEqual(
+                context,
+                {
+                    "version": 1,
+                    "profile_name": profile_name,
+                    "remote_address": "::1",
+                    "remote_port": 41002,
+                },
+            )
+            original = target.read_bytes()
+            self.assertFalse(publish(
+                target,
+                expected_root=root,
+                profile_name=profile_name,
+                remote_port=41003,
+            ))
+            self.assertEqual(target.read_bytes(), original)
+
+            race_root = root / "race"
+            race_root.mkdir()
+            race_target = race_root / "wfp-runner-target.json"
+            original_link = run_windows_appcontainer_read_probe.os.link
+
+            def create_competing_target(source: object, destination: object) -> None:
+                Path(destination).write_bytes(b"competing-writer")
+                original_link(source, destination)
+
+            with mock.patch.object(
+                run_windows_appcontainer_read_probe.os,
+                "link",
+                side_effect=create_competing_target,
+            ):
+                self.assertFalse(publish(
+                    race_target,
+                    expected_root=race_root,
+                    profile_name=profile_name,
+                    remote_port=41002,
+                ))
+            self.assertEqual(race_target.read_bytes(), b"competing-writer")
+            self.assertEqual(
+                list(race_root.iterdir()),
+                [race_target],
+                "the failed atomic publish must remove only its own temporary file",
+            )
+
+            outside = root / "outside"
+            outside.mkdir()
+            self.assertFalse(publish(
+                outside / "wfp-runner-target.json",
+                expected_root=root,
+                profile_name=profile_name,
+                remote_port=41002,
+            ))
+            invalid_profile_root = root / "invalid-profile"
+            invalid_profile_root.mkdir()
+            self.assertFalse(publish(
+                invalid_profile_root / "wfp-runner-target.json",
+                expected_root=invalid_profile_root,
+                profile_name="icode-not-a-generated-profile",
+                remote_port=41002,
+            ))
+            invalid_port_root = root / "invalid-port"
+            invalid_port_root.mkdir()
+            self.assertFalse(publish(
+                invalid_port_root / "wfp-runner-target.json",
+                expected_root=invalid_port_root,
+                profile_name=profile_name,
+                remote_port=True,
+            ))
+
+    def test_windows_reviewer_starts_bounded_runner_observer_before_candidate_attempt(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+        appcontainer_test = (
+            repository_root / "tests/test_windows_appcontainer.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("ICODE_DIAGNOSTIC_WFP_RUNNER_TARGET_FILE", job)
+        self.assertIn("ICODE_DIAGNOSTIC_WFP_RUNNER_READY_FILE", job)
+        self.assertIn("_publish_wfp_ipv6_loopback_target(", appcontainer_test)
+        self.assertIn("runner_gate_relay_thread", appcontainer_test)
+        self.assertIn("network_observations['runner_observer_gate']", appcontainer_test)
+        self.assertIn("runner_wfp_observer_gate=", appcontainer_test)
+        self.assertIn("'--collect-ipv6-loopback-wait-profile'", job)
+        self.assertIn("$observerReceipt.network_events_collected", job)
+        self.assertIn("$observerReceipt.matched_capability_drop_count", job)
+        self.assertIn("$runnerWfpObserverProcess.WaitForExit", job)
+        self.assertIn("$process.WaitForExit(65000)", job)
+        self.assertNotIn("netsh wfp set", job)
+        self.assertNotIn("connect_denied = $matchedCapabilityDrop", job)
+
+        wfp_source = (
+            repository_root / "native/windows/icode_wfp_event_probe.c"
+        ).read_text(encoding="utf-8")
+        self.assertIn("PROFILE_DERIVE_RETRY_MS 10000", wfp_source)
+        self.assertIn("derive_profile_sid_bounded(", wfp_source)
+        self.assertIn("--collect-ipv6-loopback-wait-profile", wfp_source)
+
     def test_workflow_uses_bounded_setupapi_member_enumeration_before_extract(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")

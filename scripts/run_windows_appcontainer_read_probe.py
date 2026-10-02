@@ -901,6 +901,72 @@ def _start_wfp_ipv6_loopback_event_probe(
     return process, (ready_path, stop_path, result_path)
 
 
+def _publish_wfp_ipv6_loopback_target(
+    target_path: str | os.PathLike[str],
+    *,
+    expected_root: str | os.PathLike[str],
+    profile_name: str,
+    remote_port: int,
+) -> bool:
+    """Atomically publish one bounded target tuple for the CI runner observer."""
+    if (
+        not isinstance(profile_name, str)
+        or re.fullmatch(r"icode-[0-9a-f]{32}", profile_name) is None
+        or type(remote_port) is not int
+        or not 1 <= remote_port <= 65535
+    ):
+        return False
+
+    temporary_path: Path | None = None
+    try:
+        root = Path(expected_root).resolve(strict=True)
+        target = Path(target_path)
+        if (
+            not target.is_absolute()
+            or target.name != "wfp-runner-target.json"
+            or target.parent.resolve(strict=True) != root
+            or target.exists()
+            or target.is_symlink()
+        ):
+            return False
+        encoded = json.dumps(
+            {
+                "version": 1,
+                "profile_name": profile_name,
+                "remote_address": "::1",
+                "remote_port": remote_port,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii")
+        if not 1 <= len(encoded) <= 512:
+            return False
+
+        descriptor, raw_temporary_path = tempfile.mkstemp(
+            prefix=".wfp-runner-target-", suffix=".tmp", dir=root,
+        )
+        temporary_path = Path(raw_temporary_path)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(encoded)
+            output.flush()
+        if target.exists() or target.is_symlink():
+            return False
+        # Linking the fully-written same-directory temporary file publishes it
+        # atomically without replacing a target created by a racing process.
+        os.link(temporary_path, target)
+        temporary_path.unlink()
+        temporary_path = None
+        return True
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    finally:
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink()
+            except OSError:
+                pass
+
+
 def _stop_wfp_event_probe(
     process: subprocess.Popen[bytes] | None,
     paths: tuple[Path, Path, Path] | None,

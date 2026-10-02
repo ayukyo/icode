@@ -32,6 +32,7 @@ import icode.windows_job as windows_job_module
 from scripts.run_windows_appcontainer_read_probe import (
     _classify_wfp_ipv6_loopback_receipt,
     _print_wfp_observer_diagnostics,
+    _publish_wfp_ipv6_loopback_target,
     _start_wfp_ipv6_loopback_event_probe,
     _stop_wfp_event_probe,
     _wfp_observer_diagnostic_summary,
@@ -1620,6 +1621,7 @@ class TestWindowsAppContainer(unittest.TestCase):
 
         captured_scripts: list[str] = []
         captured_notices: list[tuple[str, str]] = []
+        captured_runner_targets: list[dict[str, object]] = []
         wfp_output = StringIO()
 
         class _CaptureAssertions:
@@ -1641,6 +1643,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                 captured_notices.append((name, encoded))
 
         with tempfile.TemporaryDirectory(prefix="icode-reviewer-probe-script-") as raw:
+            runner_temp_root = Path(raw) / "runner-temp"
+            runner_temp_root.mkdir()
+            runner_target_path = runner_temp_root / "wfp-runner-target.json"
+            runner_ready_path = runner_temp_root / "wfp-runner-observer.ready"
+            runner_ready_path.write_bytes(b"ready\n")
             source_root = Path(raw) / "source-python"
             source_root.mkdir()
             source_executable = source_root / Path(sys.executable).name
@@ -1655,6 +1662,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 script = argv[-1]
                 compile(script, "<reviewer-snapshot-probe-captured>", "exec")
                 captured_scripts.append(script)
+                captured_runner_targets.append(
+                    json.loads(runner_target_path.read_text(encoding="ascii"))
+                )
                 return WindowsJobResult(
                     True, 0, None, True,
                     "reviewer_snapshot_acl_restore_verified=true;runtime_acl_restore_verified=true",
@@ -1680,6 +1690,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "ICODE_DIAGNOSTIC_STANDARD_USER_SID": "S-1-5-21-1-2-3-1001",
                         "GITHUB_ACTIONS": "true",
                         "RUNNER_OS": "Windows",
+                        "RUNNER_TEMP": str(runner_temp_root),
+                        "ICODE_DIAGNOSTIC_WFP_RUNNER_TARGET_FILE": str(runner_target_path),
+                        "ICODE_DIAGNOSTIC_WFP_RUNNER_READY_FILE": str(runner_ready_path),
                     },
                 ), mock.patch(
                     "tests.test_windows_appcontainer.run_windows_appcontainer",
@@ -1690,6 +1703,20 @@ class TestWindowsAppContainer(unittest.TestCase):
                     )
 
         notice_names = {name for name, _encoded in captured_notices}
+        self.assertEqual(len(captured_runner_targets), 1)
+        self.assertEqual(captured_runner_targets[0]["version"], 1)
+        profile_name = captured_runner_targets[0]["profile_name"]
+        self.assertIsInstance(profile_name, str)
+        self.assertEqual(len(profile_name), 38)
+        self.assertTrue(profile_name.startswith("icode-"))
+        self.assertTrue(all(char in "0123456789abcdef" for char in profile_name[6:]))
+        self.assertEqual(captured_runner_targets[0]["remote_address"], "::1")
+        self.assertIs(type(captured_runner_targets[0]["remote_port"]), int)
+        self.assertGreaterEqual(captured_runner_targets[0]["remote_port"], 1)
+        self.assertLessEqual(captured_runner_targets[0]["remote_port"], 65535)
+        self.assertIn("runner_gate_deadline=time.monotonic()+20", captured_scripts[0])
+        self.assertIn("network_observations['runner_observer_gate']", captured_scripts[0])
+        self.assertIn("runner_wfp_observer_gate=ready", wfp_output.getvalue())
         self.assertIn("Windows Reviewer snapshot access", notice_names)
         self.assertIn("Windows Reviewer snapshot writes and cleanup", notice_names)
         self.assertIn("Windows Reviewer access diagnostics", notice_names)
@@ -1896,7 +1923,9 @@ class TestWindowsAppContainer(unittest.TestCase):
 
         probe_script = captured_scripts[0]
         helper_start = probe_script.index("network_canary=")
-        helper_end = probe_script.index("ipv4_network_attempted,", helper_start)
+        helper_end = probe_script.index(
+            "runner_observer_gate_marker=None", helper_start,
+        )
         network_helper = probe_script[helper_start:helper_end]
 
         class _ConnectExSocket:
@@ -6522,6 +6551,47 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "from pathlib import Path; import time; "
                     f"Path({str(child_ready_file)!r}).write_text('ready'); time.sleep(30)"
                 )
+                runner_target_path_value = os.environ.get(
+                    "ICODE_DIAGNOSTIC_WFP_RUNNER_TARGET_FILE", "",
+                )
+                runner_ready_path_value = os.environ.get(
+                    "ICODE_DIAGNOSTIC_WFP_RUNNER_READY_FILE", "",
+                )
+                runner_temp_value = os.environ.get("RUNNER_TEMP", "")
+                runner_handshake_enabled = False
+                runner_temp_path: Path | None = None
+                runner_target_path: Path | None = None
+                runner_ready_path: Path | None = None
+                runner_candidate_gate_file = scratch / "runner-observer-gate"
+                try:
+                    runner_temp_path = Path(runner_temp_value).resolve(strict=True)
+                    runner_target_path = Path(runner_target_path_value)
+                    runner_ready_path = Path(runner_ready_path_value)
+                    runner_handshake_enabled = (
+                        os.environ.get("GITHUB_ACTIONS") == "true"
+                        and os.environ.get("RUNNER_OS") == "Windows"
+                        and runner_target_path.parent.resolve(strict=True) == runner_temp_path
+                        and runner_ready_path.parent.resolve(strict=True) == runner_temp_path
+                        and runner_target_path.name == "wfp-runner-target.json"
+                        and runner_ready_path.name == "wfp-runner-observer.ready"
+                        and not runner_candidate_gate_file.exists()
+                    )
+                except (OSError, RuntimeError, ValueError):
+                    runner_handshake_enabled = False
+                runner_gate_script = ""
+                if runner_handshake_enabled:
+                    runner_gate_script = (
+                        f"runner_gate_path=pathlib.Path({str(runner_candidate_gate_file)!r})\n"
+                        "runner_gate_state='timeout'\n"
+                        "runner_gate_deadline=time.monotonic()+20\n"
+                        "while time.monotonic()<runner_gate_deadline and not runner_gate_path.is_file(): time.sleep(.025)\n"
+                        "try:\n"
+                        "    runner_gate_marker=runner_gate_path.read_bytes() if runner_gate_path.is_file() and runner_gate_path.stat().st_size<=64 else b''\n"
+                        "    runner_gate_state='ready' if runner_gate_marker==b'ready\\n' else ('unavailable' if runner_gate_marker==b'unavailable\\n' else 'invalid')\n"
+                        "except OSError:\n"
+                        "    runner_gate_state='unavailable'\n"
+                        "network_observations['runner_observer_gate']=runner_gate_state\n"
+                    )
                 script = (
                     "import ctypes,hashlib,json,os,pathlib,select,socket,subprocess,sys,time\n"
                     "import ctypes.wintypes as wintypes\n"
@@ -6667,6 +6737,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "        except OSError: pass\n"
                     "        return True,True,False,0,False,False\n"
                     "    finally: connection.close()\n"
+                    "runner_observer_gate_marker=None\n"
                     "ipv4_network_attempted,ipv4_network_connected,"
                     "ipv4_network_connect_denied,ipv4_network_error,"
                     "ipv4_network_wait_expired,ipv4_network_terminal_error="
@@ -6820,6 +6891,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'ipv4_network_terminal_error','ipv6_network_connected','ipv6_network_error',"
                     "'ipv6_network_wait_expired','ipv6_network_terminal_error','network_observations'})): raise SystemExit(78)\n"
                 )
+                network_probe_marker = "runner_observer_gate_marker=None\n"
+                if runner_handshake_enabled:
+                    self.assertEqual(script.count(network_probe_marker), 1)
+                    script = script.replace(
+                        network_probe_marker,
+                        network_probe_marker + runner_gate_script,
+                        1,
+                    )
                 compile(script, "<reviewer-snapshot-probe>", "exec")
                 try:
                     write_canary_before = mutable_file.read_bytes()
@@ -6838,6 +6917,66 @@ class TestWindowsAppContainer(unittest.TestCase):
                 wfp_paths = None
                 wfp_receipt = None
                 wfp_exit_code = None
+                runner_observer_gate_state = {
+                    "state": "pending" if runner_handshake_enabled else "not_requested",
+                }
+                runner_gate_relay_stop = threading.Event()
+                runner_gate_relay_thread: threading.Thread | None = None
+                if runner_handshake_enabled:
+                    assert runner_target_path is not None
+                    assert runner_temp_path is not None
+                    request_published = _publish_wfp_ipv6_loopback_target(
+                        runner_target_path,
+                        expected_root=runner_temp_path,
+                        profile_name=reviewer_profile_name,
+                        remote_port=ipv6_loopback_port,
+                    )
+                    if request_published:
+                        def relay_runner_observer_gate() -> None:
+                            state = "timeout"
+                            deadline = time.monotonic() + 20
+                            while (
+                                time.monotonic() < deadline
+                                and not runner_gate_relay_stop.is_set()
+                            ):
+                                try:
+                                    if runner_ready_path is not None and runner_ready_path.is_file():
+                                        if runner_ready_path.stat().st_size > 64:
+                                            state = "invalid"
+                                        else:
+                                            marker = runner_ready_path.read_bytes()
+                                            state = (
+                                                "ready" if marker == b"ready\n"
+                                                else "unavailable" if marker == b"unavailable\n"
+                                                else "invalid"
+                                            )
+                                        if state != "invalid":
+                                            break
+                                except OSError:
+                                    pass
+                                time.sleep(0.025)
+                            runner_observer_gate_state["state"] = state
+                            try:
+                                runner_candidate_gate_file.write_text(
+                                    state + "\n", encoding="ascii",
+                                )
+                            except OSError:
+                                runner_observer_gate_state["state"] = "relay_failed"
+
+                        runner_gate_relay_thread = threading.Thread(
+                            target=relay_runner_observer_gate,
+                            name="icode-wfp-runner-gate-relay",
+                            daemon=True,
+                        )
+                        runner_gate_relay_thread.start()
+                    else:
+                        runner_observer_gate_state["state"] = "request_unavailable"
+                        try:
+                            runner_candidate_gate_file.write_text(
+                                "unavailable\n", encoding="ascii",
+                            )
+                        except OSError:
+                            runner_observer_gate_state["state"] = "relay_failed"
                 wfp_probe_value = os.environ.get("ICODE_DIAGNOSTIC_WFP_PROBE_PATH")
                 if (
                     os.environ.get("GITHUB_ACTIONS") == "true"
@@ -6859,16 +6998,27 @@ class TestWindowsAppContainer(unittest.TestCase):
                 try:
                     candidate = run_windows_appcontainer(
                         [str(staged_executable), "-I", "-c", script],
-                        cwd=scratch, timeout_seconds=20, process_limit=8,
+                        cwd=scratch, timeout_seconds=45, process_limit=8,
                         _diagnostic_runtime_acl=True,
                         _diagnostic_runtime_roots=(staged_runtime,),
                         _diagnostic_reviewer_snapshot_roots=(snapshot,),
                         _diagnostic_profile_name=reviewer_profile_name,
                     )
                 finally:
+                    runner_gate_relay_stop.set()
+                    if runner_gate_relay_thread is not None:
+                        runner_gate_relay_thread.join(timeout=2)
+                        if runner_gate_relay_thread.is_alive():
+                            runner_observer_gate_state["state"] = "relay_cleanup_timeout"
                     wfp_receipt, wfp_exit_code = _stop_wfp_event_probe(
                         wfp_process, wfp_paths,
                     )
+                print(
+                    "runner_wfp_observer_gate=" + str(
+                        runner_observer_gate_state.get("state", "unavailable")
+                    ),
+                    flush=True,
+                )
                 print(
                     "reviewer_ipv6_loopback_wfp="
                     + _classify_wfp_ipv6_loopback_receipt(
@@ -6897,7 +7047,6 @@ class TestWindowsAppContainer(unittest.TestCase):
                 wfp_context_path_value = os.environ.get(
                     "ICODE_DIAGNOSTIC_WFP_MATCH_FILE", "",
                 )
-                runner_temp_value = os.environ.get("RUNNER_TEMP", "")
                 package_sid_value = token.get("package_sid_value")
                 if (
                     os.environ.get("ICODE_DIAGNOSTIC_WFP_CAPTURE") == "true"

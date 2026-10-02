@@ -16,6 +16,7 @@
 #define MAX_PROBE_PATH 32768
 #define COLLECTOR_TIMEOUT_MS 30000
 #define EVENT_DRAIN_DELAY_MS 200
+#define PROFILE_DERIVE_RETRY_MS 10000
 #define MAX_RECEIPT_EVENT_COUNT 65536
 #define TARGET_FILTER_CONDITION_COUNT 3
 #define IPV6_LOOPBACK_FILTER_CONDITION_COUNT 4
@@ -287,6 +288,37 @@ static BOOL event_matches_classify_drop(
         event->classifyDrop != NULL &&
         event->classifyDrop->isLoopback == context->expected_loopback &&
         event_header_matches_target(event, context);
+}
+
+static HRESULT derive_profile_sid_bounded(
+    const wchar_t *profile_name,
+    PSID *sid_out,
+    BOOL wait_for_profile
+) {
+    HRESULT result = E_FAIL;
+    ULONGLONG deadline = GetTickCount64() +
+        (wait_for_profile ? PROFILE_DERIVE_RETRY_MS : 0);
+
+    if (sid_out == NULL) {
+        return E_INVALIDARG;
+    }
+    *sid_out = NULL;
+    for (;;) {
+        result = DeriveAppContainerSidFromAppContainerName(
+            profile_name, sid_out
+        );
+        if (!FAILED(result) && *sid_out != NULL && IsValidSid(*sid_out)) {
+            return result;
+        }
+        if (*sid_out != NULL) {
+            FreeSid(*sid_out);
+            *sid_out = NULL;
+        }
+        if (!wait_for_profile || GetTickCount64() >= deadline) {
+            return result;
+        }
+        Sleep(25);
+    }
 }
 
 static void record_matched_network_capability(
@@ -970,6 +1002,7 @@ static int run_collector(
     UINT16 remote_port,
     BOOL ipv6_loopback,
     BOOL report_setup_stage,
+    BOOL wait_for_profile,
     const wchar_t *ready_path,
     const wchar_t *stop_path,
     const wchar_t *result_path
@@ -1010,8 +1043,8 @@ static int run_collector(
     ZeroMemory(&ipv6_loopback_address, sizeof(ipv6_loopback_address));
     context.matched_network_capability_id = -1;
     context.network_capability_id_consistent = TRUE;
-    derive_result = DeriveAppContainerSidFromAppContainerName(
-        profile_name, &expected_sid
+    derive_result = derive_profile_sid_bounded(
+        profile_name, &expected_sid, wait_for_profile
     );
     if (FAILED(derive_result) || expected_sid == NULL || !IsValidSid(expected_sid)) {
         if (report_setup_stage) {
@@ -1192,7 +1225,7 @@ static int run_runner_subscription_probe(
 
     /* run_collector unsubscribes and closes its engine before it returns. */
     probe_result = run_collector(
-        profile_name, 0, remote_port, TRUE, TRUE,
+        profile_name, 0, remote_port, TRUE, TRUE, FALSE,
         ready_path, stop_path, result_path
     );
     FreeSid(created_sid);
@@ -1261,7 +1294,22 @@ int wmain(int argc, wchar_t **argv) {
             return 2;
         }
         return run_collector(
-            argv[2], 0, remote_port, TRUE, FALSE,
+            argv[2], 0, remote_port, TRUE, FALSE, FALSE,
+            argv[4], argv[5], argv[6]
+        );
+    }
+    if (argc == 7 &&
+        wcscmp(argv[1], L"--collect-ipv6-loopback-wait-profile") == 0) {
+        if (!is_generated_profile_name(argv[2]) ||
+            !parse_port(argv[3], &remote_port) ||
+            argv[4][0] == L'\0' || argv[5][0] == L'\0' || argv[6][0] == L'\0' ||
+            _wcsicmp(argv[4], argv[5]) == 0 || _wcsicmp(argv[4], argv[6]) == 0 ||
+            _wcsicmp(argv[5], argv[6]) == 0 ||
+            !probe_paths_are_safe(argv[2], argv[4], argv[5], argv[6])) {
+            return 2;
+        }
+        return run_collector(
+            argv[2], 0, remote_port, TRUE, FALSE, TRUE,
             argv[4], argv[5], argv[6]
         );
     }
@@ -1277,7 +1325,7 @@ int wmain(int argc, wchar_t **argv) {
         return 2;
     }
     return run_collector(
-        argv[1], remote_address, remote_port, FALSE, FALSE,
+        argv[1], remote_address, remote_port, FALSE, FALSE, FALSE,
         argv[4], argv[5], argv[6]
     );
 }
