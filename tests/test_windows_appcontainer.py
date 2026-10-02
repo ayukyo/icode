@@ -43,17 +43,18 @@ from icode.windows_job import (
 )
 
 _WINDOWS_WSAEWOULDBLOCK = 10035
+_WINDOWS_WSAETIMEDOUT = 10060
 
 
 def _network_attempt_timed_out(
     attempted: object, connected: object, error_code: object,
 ) -> bool:
-    """Classify only the bounded connect_ex timeout outcome, not a denial."""
+    """Classify an explicit bounded wait timeout, never a pending connect."""
     return (
         attempted is True
         and connected is False
         and type(error_code) is int
-        and error_code == _WINDOWS_WSAEWOULDBLOCK
+        and error_code == _WINDOWS_WSAETIMEDOUT
     )
 
 
@@ -1467,10 +1468,11 @@ class TestWindowsAppContainer(unittest.TestCase):
         kernel.CloseHandle.assert_called_once()
 
     def test_Reviewer网络超时回执必须绑定尝试未连接和精确超时代码(self) -> None:
-        self.assertIs(_network_attempt_timed_out(True, False, 10035), True)
+        self.assertIs(_network_attempt_timed_out(True, False, 10060), True)
         for attempted, connected, error_code in (
-            (False, False, 10035),
-            (True, True, 10035),
+            (False, False, 10060),
+            (True, True, 10060),
+            (True, False, 10035),
             (True, False, 10013),
             (True, False, 10061),
             (True, False, -1),
@@ -1683,10 +1685,14 @@ class TestWindowsAppContainer(unittest.TestCase):
             "if key not in {'child_pid','access_errors','close_errors','write_diagnostics',"
             "'ipv4_network_connected','ipv4_network_error','ipv6_network_connected',"
             "'ipv6_network_error'}",
-            "import ctypes,hashlib,json,os,pathlib,socket,subprocess,sys,time",
+            "import ctypes,hashlib,json,os,pathlib,select,socket,subprocess,sys,time",
             "def network_connect_denied(family,address,port):",
+            "connection.setblocking(False)",
             "code=bounded_error_code(connection.connect_ex((address,port)))",
-            "return True,False,code==10013,code",
+            "if code in (WSAEWOULDBLOCK,WSAEINPROGRESS):",
+            "select.select([], [connection], [connection], 3)",
+            "connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)",
+            "return True,False,False,WSAETIMEDOUT",
             "network_connect_denied(socket.AF_INET,'127.0.0.1',ipv4_loopback_port)",
             "network_connect_denied(socket.AF_INET6,'::1',ipv6_loopback_port)",
             "facts['ipv4_network_attempted']=ipv4_network_attempted",
@@ -1705,20 +1711,36 @@ class TestWindowsAppContainer(unittest.TestCase):
         class _ConnectExSocket:
             def __init__(
                 self, result: int = 0, error: OSError | None = None,
+                completion: str = "write", completion_error: int = 0,
             ) -> None:
                 self.result = result
                 self.error = error
+                self.completion = completion
+                self.completion_error = completion_error
                 self.closed = False
                 self.sent: bytes | None = None
+                self.blocking: bool | None = None
+                self.wait_timeout: float | None = None
                 self.timeout: float | None = None
+
+            def setblocking(self, blocking: bool) -> None:
+                self.blocking = blocking
 
             def settimeout(self, timeout: float) -> None:
                 self.timeout = timeout
+                self.blocking = False
 
             def connect_ex(self, _address: tuple[str, int]) -> int:
                 if self.error is not None:
                     raise self.error
                 return self.result
+
+            def getsockopt(self, _level: int, _option: int) -> int:
+                if self.completion == "socket_error":
+                    error = OSError("getsockopt failed")
+                    error.winerror = self.completion_error
+                    raise error
+                return self.completion_error
 
             def sendall(self, payload: bytes) -> None:
                 self.sent = payload
@@ -1729,31 +1751,71 @@ class TestWindowsAppContainer(unittest.TestCase):
         def run_network_probe(connection: _ConnectExSocket) -> tuple[
             tuple[bool, bool, bool, int], dict[str, object],
         ]:
-            socket_module = mock.Mock(
-                AF_INET=socket.AF_INET,
-                AF_INET6=socket.AF_INET6,
-                SOCK_STREAM=socket.SOCK_STREAM,
-            )
-            socket_module.socket.return_value = connection
-            namespace: dict[str, object] = {"socket": socket_module}
+            socket_module = type("SocketModule", (), {
+                "AF_INET": socket.AF_INET,
+                "AF_INET6": socket.AF_INET6,
+                "SOCK_STREAM": socket.SOCK_STREAM,
+                "SOL_SOCKET": socket.SOL_SOCKET,
+                "SO_ERROR": socket.SO_ERROR,
+                "socket": staticmethod(lambda *_args: connection),
+            })()
+
+            def select_sockets(
+                _readable: list[object], writable: list[object],
+                exceptional: list[object], timeout: float,
+            ) -> tuple[list[object], list[object], list[object]]:
+                connection.wait_timeout = timeout
+                if connection.completion == "timeout":
+                    return [], [], []
+                if connection.completion == "select_error":
+                    error = OSError("select failed")
+                    error.winerror = connection.completion_error
+                    raise error
+                if connection.completion == "exception":
+                    return [], [], exceptional
+                return [], writable, []
+
+            select_module = type("SelectModule", (), {
+                "select": staticmethod(select_sockets),
+            })()
+            namespace: dict[str, object] = {
+                "socket": socket_module,
+                "select": select_module,
+            }
             exec(network_helper, namespace)
             probe = namespace["network_connect_denied"]
             return probe(socket.AF_INET, "127.0.0.1", 32123), namespace
 
-        for code, expected in (
-            (10013, (True, False, True, 10013)),
-            (10035, (True, False, False, 10035)),
-            (10061, (True, False, False, 10061)),
-            (0, (True, True, False, 0)),
+        for code, completion, completion_error, expected in (
+            (10013, "write", 0, (True, False, True, 10013)),
+            (10035, "exception", 10013, (True, False, True, 10013)),
+            (10035, "exception", 10061, (True, False, False, 10061)),
+            (10035, "select_error", 10013, (True, False, False, 10013)),
+            (10035, "socket_error", 10013, (True, False, False, 10013)),
+            (10036, "exception", 10013, (True, False, True, 10013)),
+            (10035, "write", 0, (True, True, False, 0)),
+            (10035, "timeout", 0, (True, False, False, 10060)),
+            (10061, "write", 0, (True, False, False, 10061)),
+            (0, "write", 0, (True, True, False, 0)),
         ):
-            with self.subTest(connect_ex_code=code):
-                connection = _ConnectExSocket(result=code)
+            with self.subTest(
+                connect_ex_code=code,
+                completion=completion,
+                completion_error=completion_error,
+            ):
+                connection = _ConnectExSocket(
+                    result=code,
+                    completion=completion,
+                    completion_error=completion_error,
+                )
                 outcome, namespace = run_network_probe(connection)
 
                 self.assertEqual(outcome, expected)
                 self.assertTrue(connection.closed)
-                self.assertEqual(connection.timeout, 3)
-                if code == 0:
+                self.assertIs(connection.blocking, False)
+                if code in (10035, 10036):
+                    self.assertEqual(connection.wait_timeout, 3)
+                if expected[1]:
                     self.assertEqual(connection.sent, namespace["network_canary"])
                 else:
                     self.assertIsNone(connection.sent)
@@ -6211,7 +6273,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f"Path({str(child_ready_file)!r}).write_text('ready'); time.sleep(30)"
                 )
                 script = (
-                    "import ctypes,hashlib,json,os,pathlib,socket,subprocess,sys,time\n"
+                    "import ctypes,hashlib,json,os,pathlib,select,socket,subprocess,sys,time\n"
                     "import ctypes.wintypes as wintypes\n"
                     "def query_token():\n"
                     "    import ctypes.wintypes as wintypes\n"
@@ -6285,6 +6347,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f"network_canary={network_canary!r}\n"
                     f"ipv4_loopback_port={ipv4_loopback_port!r}\n"
                     f"ipv6_loopback_port={ipv6_loopback_port!r}\n"
+                    "WSAEACCES=10013; WSAEWOULDBLOCK=10035; WSAEINPROGRESS=10036; WSAETIMEDOUT=10060\n"
                     "def bounded_error_code(value):\n"
                     "    return value if type(value) is int and -0x80000000<=value<=0xffffffff else -1\n"
                     "def network_connect_denied(family,address,port):\n"
@@ -6294,7 +6357,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "        return False,False,False,code\n"
                     "    try:\n"
                     "        try:\n"
-                    "            connection.settimeout(3)\n"
+                    "            connection.setblocking(False)\n"
                     "        except OSError as exc:\n"
                     "            code=bounded_error_code(getattr(exc,'winerror',None))\n"
                     "            return False,False,False,code\n"
@@ -6302,8 +6365,21 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "            code=bounded_error_code(connection.connect_ex((address,port)))\n"
                     "        except OSError as exc:\n"
                     "            code=bounded_error_code(getattr(exc,'winerror',None))\n"
-                    "            return True,False,code==10013,code\n"
-                    "        if code!=0: return True,False,code==10013,code\n"
+                    "            return True,False,code==WSAEACCES,code\n"
+                    "        if code in (WSAEWOULDBLOCK,WSAEINPROGRESS):\n"
+                    "            # WSAEWOULDBLOCK is pending; wait for completion before classifying.\n"
+                    "            try:\n"
+                    "                _readable,writable,exceptional=select.select([], [connection], [connection], 3)\n"
+                    "            except OSError as exc:\n"
+                    "                code=bounded_error_code(getattr(exc,'winerror',None))\n"
+                    "                return True,False,False,code\n"
+                    "            if not writable and not exceptional: return True,False,False,WSAETIMEDOUT\n"
+                    "            try:\n"
+                    "                code=bounded_error_code(connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR))\n"
+                    "            except OSError as exc:\n"
+                    "                code=bounded_error_code(getattr(exc,'winerror',None))\n"
+                    "                return True,False,False,code\n"
+                    "        if code!=0: return True,False,code==WSAEACCES,code\n"
                     "        try: connection.sendall(network_canary)\n"
                     "        except OSError: pass\n"
                     "        return True,True,False,0\n"
