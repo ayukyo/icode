@@ -1,5 +1,7 @@
 # R2 资源限制与统一违规回执实施门
 
+- **CI #509 R2/R3 边界复验（2026-10-02；仍未就绪）：**主 CI [#509](https://github.com/ayukyo/icode/actions/runs/36967065754) 有 23 success、2 failure、3 skipped；Reviewer snapshot candidate x64/ARM64 唯一失败门仍是双栈 loopback `10035` 而非要求的 `10013`，不能将 pending/等待到期认定为 OS 拒绝。其他已结束的 Windows Job cleanup、workspace、Linux/macOS 原生探针与 Windows WFP observer self-test/ABI 子门按各自范围通过；官网 [#384](https://github.com/ayukyo/icode/actions/runs/36967065760) success。R2 Linux/macOS readiness、`process_limit` 语义、网络与自动模式均不改变。WFP API 返回码已采集但未进入结构化 annotation；下一本机切片仅补诊断可见性，待新 SHA 双架构验证。
+
 - **CI #507 WFP observer 结论（2026-10-02）：**x64/ARM64 helper、ABI 对照和 self-test 通过，但普通用户 Reviewer 的 `FwpmNetEventSubscribe2` 未成功（`subscription_ok=false`）；没有可归因 callback，collection 状态为 null，订阅失败原因未采集。IPv4/IPv6 connect 均仍是 `10035`，硬门 `10013` 未通过。不能将 observer 的空回执当作无 WFP 事件或 OS 策略拒绝；不重复同一权限上下文，不提升权限或修改 collection/WFP 设置。R2 Windows readiness、网络门和自动模式保持关闭。[CI #507](https://github.com/ayukyo/icode/actions/runs/36962939995) · [x64](https://github.com/ayukyo/icode/actions/runs/36962939995/job/110700382534) · [ARM64](https://github.com/ayukyo/icode/actions/runs/36962939995/job/110700382772)
 
 - **CI #507 前的 Windows `::1` WFP 拒绝来源诊断实现记录：**Reviewer 候选附加只读、精确到 AppContainer SID/`::1`/TCP/随机监听端口的 `CAPABILITY_DROP` 观察器，用来调查 `10035` pending；权限不足、采集未启用/未知、没收到匹配事件或退订异常都属于 inconclusive。没有 WFP 设置写入、生产接线、评分或 readiness 变化。最新原生结果见上方 CI #507；网络硬门仍必须取得真实 `10013`，R2 Windows 自动模式继续关闭。

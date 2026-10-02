@@ -807,6 +807,117 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
         self.assertIsNone(malformed["subscription_return_code_hex"])
         self.assertIsNone(malformed["subscription_handle_present"])
 
+    def test_wfp_observer_diagnostics_are_emitted_as_github_notice(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        emit = getattr(
+            probe_module, "_print_wfp_observer_diagnostics", None,
+        )
+        self.assertTrue(callable(emit), "WFP GitHub notice emitter is missing")
+        summary = probe_module._wfp_observer_diagnostic_summary(
+            process_started=True,
+            paths=None,
+            receipt={
+                "schema_version": 7,
+                "target_ip_version": 6,
+                "target_is_loopback": True,
+                "subscription_attempted": True,
+                "subscription_return_code": 0x80320005,
+                "subscription_handle_present": False,
+                "subscription_ok": False,
+                "unsubscribe_ok": True,
+                "network_events_collected": None,
+                "event_callback_count": 0,
+                "capability_drop_event_count": 0,
+                "classify_drop_event_count": 0,
+                "matched_capability_drop_count": 0,
+                "matched_classify_drop_count": 0,
+                "matched_network_capability_id": None,
+                "network_capability_id_consistent": True,
+                "private_path": r"C:\\private\\runner",
+            },
+            collector_exit_code=0,
+        )
+        output = StringIO()
+
+        with patch.dict(
+            probe_module.os.environ, {"GITHUB_ACTIONS": "true"},
+        ), redirect_stdout(output):
+            emit(summary)
+
+        lines = output.getvalue().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("  wfp_observer_diagnostics="))
+        full_log_json = lines[0].split("=", 1)[1]
+        self.assertGreater(len(full_log_json), 500)
+        self.assertEqual(
+            json.loads(full_log_json),
+            summary,
+        )
+        notice_prefix = (
+            "::notice title=Windows Reviewer WFP diagnostic only::"
+        )
+        self.assertTrue(lines[1].startswith(notice_prefix))
+        notice_json = lines[1][len(notice_prefix):]
+        self.assertLessEqual(len(notice_json), 500)
+        notice = json.loads(notice_json)
+        self.assertEqual(
+            notice,
+            {
+                "ready_state": "missing",
+                "collector_exit_code": 0,
+                "subscription_attempted": True,
+                "subscription_return_code_hex": "0x80320005",
+                "subscription_handle_present": False,
+                "subscription_ok": False,
+                "unsubscribe_ok": True,
+                "network_events_collected": None,
+                "event_callback_count": 0,
+            },
+        )
+        self.assertIn("0x80320005", lines[1])
+        self.assertNotIn("C:\\\\private", output.getvalue())
+
+    def test_wfp_observer_notice_discards_malformed_summary_values(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+
+        summary = {
+            "ready_state": [],
+            "collector_exit_code": True,
+            "subscription_attempted": "::error::injected",
+            "subscription_return_code_hex": "0x00000000::error::injected",
+            "subscription_handle_present": "C:\\\\private\\\\runner",
+            "subscription_ok": False,
+            "unsubscribe_ok": None,
+            "network_events_collected": None,
+            "event_callback_count": -1,
+        }
+        output = StringIO()
+
+        with patch.dict(
+            probe_module.os.environ, {"GITHUB_ACTIONS": "true"},
+        ), redirect_stdout(output):
+            probe_module._print_wfp_observer_diagnostics(summary)
+
+        lines = output.getvalue().splitlines()
+        notice_prefix = (
+            "::notice title=Windows Reviewer WFP diagnostic only::"
+        )
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[1].startswith(notice_prefix))
+        notice = json.loads(lines[1][len(notice_prefix):])
+        self.assertEqual(notice["ready_state"], "invalid")
+        self.assertIsNone(notice["collector_exit_code"])
+        self.assertIsNone(notice["subscription_attempted"])
+        self.assertIsNone(notice["subscription_return_code_hex"])
+        self.assertIsNone(notice["subscription_handle_present"])
+        self.assertIs(notice["subscription_ok"], False)
+        self.assertIsNone(notice["event_callback_count"])
+        self.assertNotIn("::error::injected", lines[1])
+        self.assertNotIn("C:\\\\private", lines[1])
+
     def test_wfp_observer_stop_collects_receipt_and_reaps_its_process(self) -> None:
         start = getattr(probe_module, "_start_wfp_event_probe", None)
         stop = getattr(probe_module, "_stop_wfp_event_probe", None)

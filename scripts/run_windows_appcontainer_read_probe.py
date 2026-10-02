@@ -399,6 +399,71 @@ def _wfp_observer_diagnostic_summary(
     }
 
 
+def _print_wfp_observer_diagnostics(summary: dict[str, object]) -> None:
+    """Keep full diagnostics in logs and publish only fixed fields as an Actions notice."""
+    compact_summary = json.dumps(summary, sort_keys=True, separators=(",", ":"))
+    print("  wfp_observer_diagnostics=" + compact_summary)
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+
+    ready_state = summary.get("ready_state")
+    if type(ready_state) is not str or ready_state not in (
+        "missing", "invalid", "ready", "unavailable",
+    ):
+        ready_state = "invalid"
+    return_code_hex = summary.get("subscription_return_code_hex")
+    if not isinstance(return_code_hex, str) or re.fullmatch(
+        r"0x[0-9A-F]{8}", return_code_hex,
+    ) is None:
+        return_code_hex = None
+
+    def bounded_bool(key: str) -> bool | None:
+        value = summary.get(key)
+        return value if type(value) is bool else None
+
+    def bounded_count(key: str) -> int | None:
+        value = summary.get(key)
+        return value if type(value) is int and 0 <= value <= 0xFFFF else None
+
+    collector_exit_code = summary.get("collector_exit_code")
+    if (
+        type(collector_exit_code) is not int
+        or not 0 <= collector_exit_code <= 0xFFFFFFFF
+    ):
+        collector_exit_code = None
+
+    # Annotation consumers need the subscription code to diagnose observer
+    # availability, not every event counter. Keep the full fixed-schema receipt
+    # in the job log and the structured annotation comfortably below 500 chars.
+    notice_fields = {
+        "ready_state": ready_state,
+        "collector_exit_code": collector_exit_code,
+        "subscription_attempted": bounded_bool("subscription_attempted"),
+        "subscription_return_code_hex": return_code_hex,
+        "subscription_handle_present": bounded_bool("subscription_handle_present"),
+        "subscription_ok": bounded_bool("subscription_ok"),
+        "unsubscribe_ok": bounded_bool("unsubscribe_ok"),
+        "network_events_collected": bounded_bool("network_events_collected"),
+        "event_callback_count": bounded_count("event_callback_count"),
+    }
+    notice_json = json.dumps(
+        notice_fields, sort_keys=True, separators=(",", ":"), ensure_ascii=True,
+    )
+    if len(notice_json) > 500:
+        # This fixed set and bounded values should always fit; fail visibly in
+        # local tests if a future schema change violates the existing contract.
+        raise ValueError("wfp_observer_notice_exceeds_limit")
+    escaped_notice = (
+        notice_json.replace("%", "%25")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+    )
+    print(
+        "::notice title=Windows Reviewer WFP diagnostic only::" + escaped_notice,
+        flush=True,
+    )
+
+
 def _normalize_inherited_ace_flag(ace: bytes) -> bytes:
     """Clear only the ACE-origin marker, retaining access and inheritance flags."""
     if len(ace) < 4 or int.from_bytes(ace[2:4], "little") != len(ace):
@@ -1141,17 +1206,12 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
                 "  wfp_target_drop_evidence="
                 f"{_classify_wfp_target_drop_receipt(wfp_receipt, collector_exit_code=wfp_exit_code)}"
             )
-            print(
-                "  wfp_observer_diagnostics="
-                + json.dumps(
-                    _wfp_observer_diagnostic_summary(
-                        process_started=wfp_process is not None,
-                        paths=wfp_paths,
-                        receipt=wfp_receipt,
-                        collector_exit_code=wfp_exit_code,
-                    ),
-                    sort_keys=True,
-                    separators=(",", ":"),
+            _print_wfp_observer_diagnostics(
+                _wfp_observer_diagnostic_summary(
+                    process_started=wfp_process is not None,
+                    paths=wfp_paths,
+                    receipt=wfp_receipt,
+                    collector_exit_code=wfp_exit_code,
                 )
             )
             print(
