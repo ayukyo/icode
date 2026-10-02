@@ -148,9 +148,9 @@ class TestWindowsWfpCapture(unittest.TestCase):
         job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
         job = workflow[job_start:job_end]
         candidate_start = job.index("$process = Start-Process")
-        capture_start = job.index("capture start")
+        capture_start = job.index("'capture', 'start'")
         candidate_wait = job.index("$process.WaitForExit(45000)")
-        capture_stop = job.index("capture stop")
+        capture_stop = job.index("'capture', 'stop'")
         capture_parse = job.index("inspect_windows_wfp_capture.py")
         capture_cleanup = job.index("Remove-Item -LiteralPath $diagnosticPath")
         self.assertLess(candidate_start, capture_start)
@@ -158,7 +158,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertLess(candidate_wait, capture_stop)
         self.assertLess(capture_stop, capture_parse)
         self.assertLess(capture_parse, capture_cleanup)
-        self.assertIn("capture status", job)
+        self.assertIn("'capture', 'status'", job)
         self.assertIn("$wfpCaptureStarted", job)
         self.assertIn("Stop-Process -Id $process.Id -Force", job)
         self.assertIn("45000", job)
@@ -177,6 +177,25 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("wfp_context_path.parent.resolve() == runner_temp_path", appcontainer_test)
         self.assertIn("'package_sid_value':package_sid_value", appcontainer_test)
         self.assertNotIn('summary["package_sid_value"]', appcontainer_test)
+
+    def test_workflow_bounds_each_external_capture_diagnostic_command(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("function Invoke-BoundedDiagnosticCommand", job)
+        self.assertIn("$process.WaitForExit($TimeoutMilliseconds)", job)
+        self.assertIn("$process.Kill($true)", job)
+        self.assertEqual(job.count("-Path $netsh -Arguments"), 3)
+        self.assertIn("-Path $expand -Arguments", job)
+        self.assertIn("-Path $python -Arguments", job)
+        self.assertIn("-TimeoutMilliseconds 5000", job)
+        self.assertIn("-TimeoutMilliseconds 10000", job)
+        self.assertIn("-TimeoutMilliseconds 15000", job)
+        self.assertNotIn("& $netsh wfp capture", job)
+        self.assertNotIn("& $expand '-F:wfpdiag.xml'", job)
 
 
 if __name__ == "__main__":

@@ -447,6 +447,69 @@ jobs:
           foreach ($name in $environmentNames) {
             $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
           }
+          function Invoke-BoundedDiagnosticCommand {
+            param(
+              [Parameter(Mandatory = $true)][string]$Path,
+              [Parameter(Mandatory = $true)][string[]]$Arguments,
+              [Parameter(Mandatory = $true)][ValidateRange(1, 60000)][int]$TimeoutMilliseconds,
+              [switch]$CaptureStdout
+            )
+            $process = $null
+            $started = $false
+            try {
+              $startInfo = [Diagnostics.ProcessStartInfo]::new()
+              $startInfo.FileName = $Path
+              $startInfo.UseShellExecute = $false
+              $startInfo.CreateNoWindow = $true
+              $startInfo.RedirectStandardOutput = $true
+              $startInfo.RedirectStandardError = $true
+              foreach ($argument in $Arguments) {
+                [void]$startInfo.ArgumentList.Add($argument)
+              }
+              $process = [Diagnostics.Process]::new()
+              $process.StartInfo = $startInfo
+              if (-not $process.Start()) {
+                return [pscustomobject]@{
+                  ExitCode = $null; TimedOut = $false; Stdout = ''
+                }
+              }
+              $started = $true
+              if ($CaptureStdout) {
+                $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+              } else {
+                $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync([IO.Stream]::Null)
+              }
+              $stderrTask = $process.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null)
+              if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+                try { $process.Kill($true) } catch { }
+                [void]$process.WaitForExit(5000)
+                return [pscustomobject]@{
+                  ExitCode = $null; TimedOut = $true; Stdout = ''
+                }
+              }
+              $process.WaitForExit()
+              if ($CaptureStdout) {
+                $stdout = $stdoutTask.GetAwaiter().GetResult()
+              } else {
+                $stdoutTask.GetAwaiter().GetResult()
+                $stdout = ''
+              }
+              $stderrTask.GetAwaiter().GetResult()
+              return [pscustomobject]@{
+                ExitCode = $process.ExitCode; TimedOut = $false; Stdout = $stdout
+              }
+            } catch {
+              if ($started -and $process -and -not $process.HasExited) {
+                try { $process.Kill($true) } catch { }
+                try { [void]$process.WaitForExit(5000) } catch { }
+              }
+              return [pscustomobject]@{
+                ExitCode = $null; TimedOut = $false; Stdout = ''
+              }
+            } finally {
+              if ($process) { $process.Dispose() }
+            }
+          }
           try {
             $passwordBytes = [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
             $passwordText = [Convert]::ToBase64String($passwordBytes).TrimEnd('=') + 'aA1!'
@@ -527,16 +590,25 @@ jobs:
             }
             try {
               if (Test-Path -LiteralPath $wfpReadyFile -PathType Leaf) {
-                $captureStatusOutput = & $netsh wfp capture status 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                  $captureStartOutput = & $netsh wfp capture start `
-                    'keywords=19' 'cab=on' 'traceonly=off' "file=$wfpCapturePrefix" 2>&1
-                  if ($LASTEXITCODE -eq 0) {
+                $captureStatusResult = Invoke-BoundedDiagnosticCommand `
+                  -Path $netsh -Arguments @('wfp', 'capture', 'status') `
+                  -TimeoutMilliseconds 5000
+                if (-not $captureStatusResult.TimedOut -and $captureStatusResult.ExitCode -eq 0) {
+                  $captureStartResult = Invoke-BoundedDiagnosticCommand `
+                    -Path $netsh -Arguments @(
+                      'wfp', 'capture', 'start', 'keywords=19', 'cab=on',
+                      'traceonly=off', "file=$wfpCapturePrefix"
+                    ) -TimeoutMilliseconds 10000
+                  if (-not $captureStartResult.TimedOut -and $captureStartResult.ExitCode -eq 0) {
                     $wfpCaptureStarted = $true
                     $wfpCaptureStatus = 'started'
+                  } elseif ($captureStartResult.TimedOut) {
+                    $wfpCaptureStatus = 'start_timeout'
                   } else {
                     $wfpCaptureStatus = 'start_failed'
                   }
+                } elseif ($captureStatusResult.TimedOut) {
+                  $wfpCaptureStatus = 'status_timeout'
                 } else {
                   $wfpCaptureStatus = 'status_failed'
                 }
@@ -564,8 +636,10 @@ jobs:
           finally {
             if ($wfpCaptureStarted) {
               try {
-                $captureStopOutput = & $netsh wfp capture stop 2>&1
-                if ($LASTEXITCODE -eq 0) {
+                $captureStopResult = Invoke-BoundedDiagnosticCommand `
+                  -Path $netsh -Arguments @('wfp', 'capture', 'stop') `
+                  -TimeoutMilliseconds 10000
+                if (-not $captureStopResult.TimedOut -and $captureStopResult.ExitCode -eq 0) {
                   $wfpCaptureStatus = 'stopped'
                   if (Test-Path -LiteralPath $wfpCaptureArchive -PathType Leaf) {
                     $archiveLength = (Get-Item -LiteralPath $wfpCaptureArchive).Length
@@ -574,17 +648,23 @@ jobs:
                     } else {
                       New-Item -ItemType Directory -Path $wfpExtractRoot | Out-Null
                       $expand = Join-Path $env:SystemRoot 'System32/expand.exe'
-                      & $expand '-F:wfpdiag.xml' $wfpCaptureArchive $wfpExtractRoot 2>&1 | Out-Null
-                      if ($LASTEXITCODE -eq 0) {
+                      $expandResult = Invoke-BoundedDiagnosticCommand `
+                        -Path $expand -Arguments @(
+                          '-F:wfpdiag.xml', $wfpCaptureArchive, $wfpExtractRoot
+                        ) -TimeoutMilliseconds 15000
+                      if (-not $expandResult.TimedOut -and $expandResult.ExitCode -eq 0) {
                         $wfpXml = Join-Path $wfpExtractRoot 'wfpdiag.xml'
                         if ((Test-Path -LiteralPath $wfpXml -PathType Leaf) -and
                             (Get-Item -LiteralPath $wfpXml).Length -le 8388608) {
-                          $captureSummary = & $python `
-                            (Join-Path $env:GITHUB_WORKSPACE 'scripts/inspect_windows_wfp_capture.py') `
-                            --xml $wfpXml --context $wfpMatchFile 2>$null
-                          if ($LASTEXITCODE -eq 0) {
+                          $captureSummaryResult = Invoke-BoundedDiagnosticCommand `
+                            -Path $python -Arguments @(
+                              (Join-Path $env:GITHUB_WORKSPACE 'scripts/inspect_windows_wfp_capture.py'),
+                              '--xml', $wfpXml, '--context', $wfpMatchFile
+                            ) -TimeoutMilliseconds 10000 -CaptureStdout
+                          if (-not $captureSummaryResult.TimedOut -and
+                              $captureSummaryResult.ExitCode -eq 0) {
                             try {
-                              $parsedCaptureSummary = ($captureSummary -join "`n") | ConvertFrom-Json
+                              $parsedCaptureSummary = $captureSummaryResult.Stdout | ConvertFrom-Json
                               $parsedCount = $parsedCaptureSummary.exact_classify_drop_count
                               if ($parsedCaptureSummary.status -in @('matched', 'no_match', 'inconclusive') -and
                                   ($parsedCount -is [int] -or $parsedCount -is [long]) -and
@@ -603,6 +683,8 @@ jobs:
                         } else {
                           $wfpCaptureStatus = 'extract_failed'
                         }
+                      } elseif ($expandResult.TimedOut) {
+                        $wfpCaptureStatus = 'extract_timeout'
                       } else {
                         $wfpCaptureStatus = 'extract_failed'
                       }
@@ -611,7 +693,11 @@ jobs:
                     $wfpCaptureStatus = 'archive_missing'
                   }
                 } else {
-                  $wfpCaptureStatus = 'stop_failed'
+                  $wfpCaptureStatus = if ($captureStopResult.TimedOut) {
+                    'stop_timeout'
+                  } else {
+                    'stop_failed'
+                  }
                 }
               } catch {
                 $wfpCaptureStatus = 'capture_error'
