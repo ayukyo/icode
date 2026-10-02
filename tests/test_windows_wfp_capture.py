@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,6 +58,21 @@ def _event(
 
 
 class TestWindowsWfpCapture(unittest.TestCase):
+    def test_workflow_uses_bounded_setupapi_member_enumeration_before_extract(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("scripts/inspect_windows_cabinet_members.py", job)
+        self.assertIn("'--archive', $wfpMemberSelfTestCab", job)
+        self.assertIn("'--archive', $wfpCaptureArchive", job)
+        self.assertIn("$cabinetMemberSummary = $memberListResult.Stdout | ConvertFrom-Json", job)
+        self.assertIn("$wfpArchiveMemberMatchCount", job)
+        self.assertNotIn("'-D', $wfpCaptureArchive", job)
+        self.assertNotIn("$memberListResult.Stdout -split", job)
+
     def test_exact_appcontainer_sid_and_loopback_destination_drop_matches_for_both_families(self) -> None:
         document = (
             "<wfpdiag><netEvents><item>"
@@ -253,9 +267,13 @@ class TestWindowsWfpCapture(unittest.TestCase):
         job = workflow[job_start:job_end]
         archive_branch = job.index("if (Test-Path -LiteralPath $wfpCaptureArchive -PathType Leaf)")
         member_list_call = job.index("$memberListResult = Invoke-BoundedDiagnosticCommand", archive_branch)
-        member_list_result = job.index("$matchingArchiveMembers = @(", member_list_call)
-        member_count_zero = job.index("if ($matchingArchiveMembers.Count -eq 0)", member_list_result)
-        member_count_multiple = job.index("elseif ($matchingArchiveMembers.Count -gt 1)", member_count_zero)
+        member_list_result = job.index("'--archive', $wfpCaptureArchive", member_list_call)
+        summary_parse = job.index(
+            "$cabinetMemberSummary = $memberListResult.Stdout | ConvertFrom-Json",
+            member_list_result,
+        )
+        member_count_zero = job.index("if ($matchCount -eq 0)", summary_parse)
+        member_count_multiple = job.index("elseif ($matchCount -gt 1)", member_count_zero)
         extraction_mode = job.index("$expandArguments = if ($wfpMemberSelfTestExtractMode -eq 'file')", member_count_multiple)
         extraction_call = job.index("-Path $expand -Arguments $expandArguments", extraction_mode)
         self.assertLess(member_list_call, member_count_zero)
@@ -274,104 +292,53 @@ class TestWindowsWfpCapture(unittest.TestCase):
         job = workflow[job_start:job_end]
 
         self.assertIn("$wfpArchiveMemberStatus = 'not_checked'", job)
-        self.assertIn("'-D', $wfpCaptureArchive, '-F:wfpdiag.xml'", job)
-        self.assertIn("$wfpArchiveMemberPattern = '(?im)^\\s*", job)
-        self.assertIn("$memberListResult.Stdout -split \"`r?`n\"", job)
-        self.assertIn("$_ -match $wfpArchiveMemberPattern", job)
+        self.assertIn("scripts/inspect_windows_cabinet_members.py", job)
+        self.assertIn("'--archive', $wfpCaptureArchive", job)
+        self.assertIn("$cabinetMemberSummary.target_match_count", job)
+        self.assertIn("$cabinetMemberSummary.status -cne 'listed'", job)
         self.assertIn("$wfpArchiveMemberStatus = 'multiple'", job)
         self.assertIn("archive_member_status=$wfpArchiveMemberStatus", job)
-        self.assertNotIn("$memberListResult.Stdout -match '(?i)wfpdiag\\.xml'", job)
+        self.assertNotIn("'-D', $wfpCaptureArchive", job)
         self.assertNotIn('Write-Output $memberListResult.Stdout', job)
+        self.assertIn("archive_member_match_count=$wfpArchiveMemberMatchCount", job)
 
-    def test_workflow_reports_only_bounded_real_cab_member_listing_shape(self) -> None:
+    def test_workflow_rejects_malformed_or_unbounded_cabinet_probe_receipts(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         job_start = workflow.index("  windows-reviewer-snapshot-probe:")
         job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
         job = workflow[job_start:job_end]
 
-        self.assertIn("$wfpArchiveMemberNameMentions = @(", job)
-        self.assertIn("$wfpArchiveMemberLineShape", job)
-        self.assertIn("archive_member_name_mentions=$wfpArchiveMemberNameMentionCount", job)
-        self.assertIn("archive_member_line_shape=$wfpArchiveMemberLineShape", job)
-        self.assertIn("'cab_prefixed'", job)
-        self.assertIn("'bare_member'", job)
-        self.assertIn("'other'", job)
+        self.assertIn("$expectedSummaryPropertyNames = @(", job)
+        self.assertIn("$summaryPropertyNames.Count -eq $expectedSummaryPropertyNames.Count", job)
+        self.assertIn("$cabinetMemberSummary.member_count -le 4096", job)
+        self.assertIn("$cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.member_count", job)
+        self.assertIn("$wfpArchiveMemberStatus = 'summary_invalid'", job)
+        self.assertIn("$wfpArchiveMemberStatus = 'list_timeout'", job)
         logged_lines = [line for line in job.splitlines() if "Write-Output" in line]
         self.assertFalse(any("$memberListResult.Stdout" in line for line in logged_lines))
 
-    def test_workflow_reports_only_fixed_member_prefix_suffix_categories(self) -> None:
+    def test_workflow_only_extracts_after_unique_native_member_match(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         job_start = workflow.index("  windows-reviewer-snapshot-probe:")
         job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
         job = workflow[job_start:job_end]
 
-        self.assertIn("$wfpArchiveMemberPrefixShape", job)
-        self.assertIn("$wfpArchiveMemberSuffixShape", job)
-        self.assertIn("archive_member_prefix_shape=$wfpArchiveMemberPrefixShape", job)
-        self.assertIn("archive_member_suffix_shape=$wfpArchiveMemberSuffixShape", job)
-        for category in (
-            "'cab_colon'", "'cab_no_delimiter'", "'path_separator'",
-            "'wrapper'", "'text'", "'none'", "'metadata'", "'other'",
-        ):
-            self.assertIn(category, job)
-        logged_lines = [line for line in job.splitlines() if "Write-Output" in line]
-        self.assertFalse(any("$memberListResult.Stdout" in line for line in logged_lines))
-
-    def test_workflow_reports_only_exact_cab_path_echo_and_quote_categories(self) -> None:
-        repository_root = Path(__file__).resolve().parents[1]
-        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
-        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
-        job = workflow[job_start:job_end]
-
-        self.assertIn("$wfpArchiveMemberPathEcho", job)
-        self.assertIn("archive_member_path_echo=$wfpArchiveMemberPathEcho", job)
-        self.assertIn("$wfpCaptureArchive", job)
-        self.assertIn("'echoed'", job)
-        self.assertIn("'not_echoed'", job)
-        self.assertIn("'single_quote_wrapper'", job)
-        self.assertIn("'double_quote_wrapper'", job)
-        logged_lines = [line for line in job.splitlines() if "Write-Output" in line]
-        self.assertFalse(any("$wfpCaptureArchive" in line for line in logged_lines))
-        self.assertFalse(any(
-            re.search(r"\$wfpArchiveMemberLine(?![A-Za-z0-9_])", line)
-            for line in logged_lines
-        ))
-
-    def test_cab_member_pattern_rejects_incidental_mentions(self) -> None:
-        repository_root = Path(__file__).resolve().parents[1]
-        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
-        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
-        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
-        job = workflow[job_start:job_end]
-        pattern_match = re.search(
-            r"(?m)^\s*\$wfpArchiveMemberPattern = '([^']+)'$",
-            job,
+        member_probe = job.index("$cabinetMemberProbe, '--archive', $wfpCaptureArchive")
+        summary_parse = job.index(
+            "$cabinetMemberSummary = $memberListResult.Stdout | ConvertFrom-Json",
+            member_probe,
         )
-
-        self.assertIsNotNone(pattern_match)
-        assert pattern_match is not None
-        member_pattern = re.compile(pattern_match.group(1))
-        listing_lines = [
-            r"D:\a\_temp\probe\capture.cab: wfpdiag.xml 1,024 bytes",
-            r"D:\a\_temp\probe\capture.cab: nested\wfpdiag.xml 1,024 bytes",
-            r"D:\a\_temp\probe\capture.cab: folder with spaces\WFPDIAG.XML 1024 bytes",
-            r"D:\a\_temp\probe\member-selftest.cab: wfpdiag.xml",
-            r"\\server\share\capture.cab: wfpdiag.xml",
-            "  wfpdiag.xml 1,024 bytes",
-            "nested\\wfpdiag.xml 1,024 bytes",
-            "folder with spaces\\WFPDIAG.XML 1024 bytes",
-            r"Expand failed for D:\temp\wfpdiag.xml",
-            "expand selected wfpdiag.xml",
-            "-F:wfpdiag.xml",
-            "wfpdiag.xml is the requested member",
-        ]
-
-        matched = [line for line in listing_lines if member_pattern.search(line)]
-
-        self.assertEqual(matched, listing_lines[:5])
+        unique_gate = job.index("if ($matchCount -eq 0)", summary_parse)
+        extract_call = job.index("-Path $expand -Arguments $expandArguments", unique_gate)
+        self.assertLess(member_probe, summary_parse)
+        self.assertLess(summary_parse, unique_gate)
+        self.assertLess(unique_gate, extract_call)
+        self.assertIn("$wfpArchiveMemberMatchCount = if ($matchCount -eq 0)", job)
+        self.assertIn("$matchCount -gt 1", job)
+        self.assertNotIn("'-D', $wfpCaptureArchive", job)
+        self.assertNotIn("$wfpCaptureArchive, '-F:*'", job)
 
     def test_workflow_verifies_cab_member_listing_with_a_synthetic_positive_control(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
@@ -383,10 +350,10 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("System32/makecab.exe", job)
         self.assertIn("$wfpMemberSelfTestSource, $wfpMemberSelfTestCab", job)
         self.assertIn("$makecabResult.ExitCode -ne 0", job)
-        self.assertIn("'-D', $wfpMemberSelfTestCab, '-F:wfpdiag.xml'", job)
-        self.assertIn("$memberListResult.Stdout -split \"`r?`n\"", job)
-        self.assertIn("Where-Object { $_ -match $wfpArchiveMemberPattern }", job)
-        self.assertIn("$matchingSyntheticMembers.Count -ne 1", job)
+        self.assertIn("'--archive', $wfpMemberSelfTestCab", job)
+        self.assertIn("$cabinetMemberSummary.status -ne 'listed'", job)
+        self.assertIn("$cabinetMemberSummary.target_match_count -ne 1", job)
+        self.assertNotIn("'-D', $wfpMemberSelfTestCab", job)
         self.assertIn("wfp_cab_member_parser_self_test_failed", job)
         self.assertIn("$wfpSyntheticExtract.ExitCode -ne 0", job)
         self.assertIn("Get-ChildItem -LiteralPath $wfpMemberSelfTestExtractRoot", job)
@@ -405,7 +372,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("wfp_cab_member_parser_self_test=passed", job)
         self.assertIn("$wfpMemberSelfTestStage = 'prepare'", job)
         self.assertIn("$wfpMemberSelfTestStage = 'makecab'", job)
-        self.assertIn("$wfpMemberSelfTestStage = 'list'", job)
+        self.assertIn("$wfpMemberSelfTestStage = 'member_enumeration'", job)
         self.assertIn("$wfpMemberSelfTestStage = 'member_match'", job)
         self.assertIn("$wfpMemberSelfTestStage = 'extract'", job)
         self.assertIn("$wfpMemberSelfTestStage = 'content_check'", job)
@@ -413,11 +380,6 @@ class TestWindowsWfpCapture(unittest.TestCase):
             'Write-Output "wfp_cab_member_parser_self_test=failed stage=$wfpMemberSelfTestStage"',
             job,
         )
-        self.assertIn("$safeSyntheticMemberLines = @(", job)
-        self.assertIn("[regex]::Escape($wfpMemberSelfTestRoot)", job)
-        self.assertIn("[regex]::Escape($wfpMemberSelfTestCab)", job)
-        self.assertIn("$line.Substring(0, 160)", job)
-        self.assertIn('wfp_cab_member_parser_self_test_member_line=$line', job)
         self.assertNotIn("Write-Output $memberListResult.Stdout", job)
         self.assertIn("throw 'wfp_cab_member_parser_self_test_cleanup_failed'", job)
         self.assertIn("Remove-Item -LiteralPath $wfpMemberSelfTestRoot -Recurse -Force", job)

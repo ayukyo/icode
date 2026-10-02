@@ -432,18 +432,15 @@ jobs:
           $wfpMemberSelfTestExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract-exact-directory'
           $wfpMemberSelfTestWildcardExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract-wildcard-directory'
           $wfpMemberSelfTestExplicitExtractFile = Join-Path $wfpMemberSelfTestRoot 'extract-exact-file.xml'
-          $wfpArchiveMemberPattern = '(?im)^\s*(?:[A-Z]:[\\/]|\\\\)[^:\r\n]*\.cab:\s*(?:[^:\r\n]*[\\/])?wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
+          $python = (Get-Command python).Source
+          $cabinetMemberProbe = Join-Path $env:GITHUB_WORKSPACE 'scripts/inspect_windows_cabinet_members.py'
           $wfpMatchFile = Join-Path $probeRoot 'wfp-match.json'
           $wfpCaptureStarted = $false
           $wfpCaptureStartAttempted = $false
           $wfpCaptureStatus = 'not_started'
           $wfpCapturePreflight = 'not_checked'
           $wfpArchiveMemberStatus = 'not_checked'
-          $wfpArchiveMemberNameMentionCount = 'not_checked'
-          $wfpArchiveMemberLineShape = 'not_checked'
-          $wfpArchiveMemberPrefixShape = 'not_checked'
-          $wfpArchiveMemberSuffixShape = 'not_checked'
-          $wfpArchiveMemberPathEcho = 'not_checked'
+          $wfpArchiveMemberMatchCount = 'not_checked'
           $wfpExactDropCount = 0
           $wfpExtractExitCode = 'not_run'
           $wfpMemberSelfTestStage = 'prepare'
@@ -590,41 +587,28 @@ jobs:
                 -not (Test-Path -LiteralPath $wfpMemberSelfTestCab -PathType Leaf)) {
               throw 'wfp_cab_member_parser_self_test_failed'
             }
-            $wfpMemberSelfTestStage = 'list'
+            $wfpMemberSelfTestStage = 'member_enumeration'
             $memberListResult = Invoke-BoundedDiagnosticCommand `
-              -Path $expand -Arguments @(
-                '-D', $wfpMemberSelfTestCab, '-F:wfpdiag.xml'
+              -Path $python -Arguments @(
+                $cabinetMemberProbe, '--archive', $wfpMemberSelfTestCab
               ) -TimeoutMilliseconds 5000 -CaptureStdout
             if ($memberListResult.TimedOut -or $memberListResult.ExitCode -ne 0) {
               throw 'wfp_cab_member_parser_self_test_failed'
             }
-            $wfpMemberSelfTestStage = 'member_match'
-            $matchingSyntheticMembers = @(
-              $memberListResult.Stdout -split "`r?`n" |
-                Where-Object { $_ -match $wfpArchiveMemberPattern }
-            )
-            if ($matchingSyntheticMembers.Count -ne 1) {
-              $safeSyntheticMemberLines = @(
-                $memberListResult.Stdout -split "`r?`n" |
-                  Where-Object { $_ -match '(?i)wfpdiag\.xml' } |
-                  Select-Object -First 2 |
-                  ForEach-Object {
-                    $line = $_ -replace [regex]::Escape($wfpMemberSelfTestRoot), '<temp>'
-                    $line = $line -replace [regex]::Escape($wfpMemberSelfTestCab), '<cab>'
-                    $line = [regex]::Replace($line, '[^\x20-\x7e]', '?')
-                    if ($line.Length -gt 160) { $line = $line.Substring(0, 160) }
-                    $line
-                  }
-              )
-              if ($safeSyntheticMemberLines.Count -eq 0) {
-                Write-Output 'wfp_cab_member_parser_self_test_member_lines=0'
-              } else {
-                foreach ($line in $safeSyntheticMemberLines) {
-                  Write-Output "wfp_cab_member_parser_self_test_member_line=$line"
-                }
-              }
+            $cabinetMemberSummary = $memberListResult.Stdout | ConvertFrom-Json
+            if ($cabinetMemberSummary.schema_version -ne 1 -or
+                $cabinetMemberSummary.status -ne 'listed' -or
+                ($cabinetMemberSummary.member_count -isnot [int] -and
+                 $cabinetMemberSummary.member_count -isnot [long]) -or
+                $cabinetMemberSummary.member_count -lt 1 -or
+                $cabinetMemberSummary.member_count -gt 4096 -or
+                ($cabinetMemberSummary.target_match_count -isnot [int] -and
+                 $cabinetMemberSummary.target_match_count -isnot [long]) -or
+                $cabinetMemberSummary.target_match_count -ne 1 -or
+                $cabinetMemberSummary.target_match_count -gt $cabinetMemberSummary.member_count) {
               throw 'wfp_cab_member_parser_self_test_failed'
             }
+            $wfpMemberSelfTestStage = 'member_match'
             $wfpMemberSelfTestStage = 'extract'
             New-Item -ItemType Directory -Path $wfpMemberSelfTestExtractRoot | Out-Null
             New-Item -ItemType Directory -Path $wfpMemberSelfTestWildcardExtractRoot | Out-Null
@@ -788,7 +772,6 @@ jobs:
               throw 'temporary_user_profile_path_invalid'
             }
 
-            $python = (Get-Command python).Source
             $arguments = @(
               '-m', 'unittest',
               'tests.test_windows_appcontainer.TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理',
@@ -906,8 +889,8 @@ jobs:
                       $expand = Join-Path $env:SystemRoot 'System32/expand.exe'
                       $wfpXmlCandidates = @()
                       $memberListResult = Invoke-BoundedDiagnosticCommand `
-                        -Path $expand -Arguments @(
-                          '-D', $wfpCaptureArchive, '-F:wfpdiag.xml'
+                        -Path $python -Arguments @(
+                          $cabinetMemberProbe, '--archive', $wfpCaptureArchive
                         ) -TimeoutMilliseconds 5000 -CaptureStdout
                       if ($memberListResult.TimedOut) {
                         $wfpArchiveMemberStatus = 'list_timeout'
@@ -916,129 +899,92 @@ jobs:
                         $wfpArchiveMemberStatus = 'list_failed'
                         $wfpCaptureStatus = 'member_list_failed'
                       } else {
-                        $wfpArchiveMemberNameMentions = @(
-                          $memberListResult.Stdout -split "`r?`n" |
-                            Where-Object { $_ -match '(?i)wfpdiag\.xml' }
-                        )
-                        $wfpArchiveMemberNameMentionCount = if ($wfpArchiveMemberNameMentions.Count -eq 0) {
-                          'zero'
-                        } elseif ($wfpArchiveMemberNameMentions.Count -eq 1) {
-                          'one'
-                        } else {
-                          'multiple'
-                        }
-                        if ($wfpArchiveMemberNameMentions.Count -eq 0) {
-                          $wfpArchiveMemberLineShape = 'none'
-                        } elseif ($wfpArchiveMemberNameMentions | Where-Object { $_ -match $wfpArchiveMemberPattern }) {
-                          $wfpArchiveMemberLineShape = 'cab_prefixed'
-                        } elseif ($wfpArchiveMemberNameMentions | Where-Object {
-                          $_ -match '(?i)^\s*(?:[^:\\/\r\n]+[\\/])*wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
-                        }) {
-                          $wfpArchiveMemberLineShape = 'bare_member'
-                        } else {
-                          $wfpArchiveMemberLineShape = 'other'
-                        }
-                        if ($wfpArchiveMemberNameMentions.Count -eq 1) {
-                          $wfpArchiveMemberLine = [string]$wfpArchiveMemberNameMentions[0]
-                          $wfpMemberNameIndex = $wfpArchiveMemberLine.IndexOf(
-                            'wfpdiag.xml', [StringComparison]::OrdinalIgnoreCase
+                        $cabinetSummaryValid = $false
+                        try {
+                          $cabinetMemberSummary = $memberListResult.Stdout | ConvertFrom-Json
+                          $summaryPropertyNames = @(
+                            $cabinetMemberSummary.PSObject.Properties.Name | Sort-Object
                           )
-                          if ($wfpMemberNameIndex -ge 0) {
-                            $wfpArchiveMemberPathEcho = if (
-                              $wfpArchiveMemberLine.IndexOf(
-                                $wfpCaptureArchive, [StringComparison]::OrdinalIgnoreCase
-                              ) -ge 0
-                            ) {
-                              'echoed'
-                            } else {
-                              'not_echoed'
+                          $expectedSummaryPropertyNames = @(
+                            'member_count', 'schema_version', 'status', 'target_match_count'
+                          )
+                          $cabinetSummaryValid = (
+                            $summaryPropertyNames.Count -eq $expectedSummaryPropertyNames.Count
+                          )
+                          foreach ($expectedPropertyName in $expectedSummaryPropertyNames) {
+                            if ($summaryPropertyNames -notcontains $expectedPropertyName) {
+                              $cabinetSummaryValid = $false
                             }
-                            $wfpMemberPrefix = $wfpArchiveMemberLine.Substring(0, $wfpMemberNameIndex)
-                            $wfpMemberSuffix = $wfpArchiveMemberLine.Substring(
-                              $wfpMemberNameIndex + 'wfpdiag.xml'.Length
+                          }
+                          if ($cabinetSummaryValid) {
+                            $cabinetSummaryValid = (
+                              $cabinetMemberSummary.schema_version -eq 1 -and
+                              ($cabinetMemberSummary.member_count -is [int] -or
+                               $cabinetMemberSummary.member_count -is [long]) -and
+                              $cabinetMemberSummary.member_count -ge 0 -and
+                              $cabinetMemberSummary.member_count -le 4096 -and
+                              ($cabinetMemberSummary.target_match_count -is [int] -or
+                               $cabinetMemberSummary.target_match_count -is [long]) -and
+                              $cabinetMemberSummary.target_match_count -ge 0 -and
+                              $cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.member_count
                             )
-                            $wfpTrimmedMemberPrefix = $wfpMemberPrefix.TrimEnd()
-                            $wfpTrimmedMemberSuffix = $wfpMemberSuffix.Trim()
-                            if ([string]::IsNullOrWhiteSpace($wfpTrimmedMemberPrefix)) {
-                              $wfpArchiveMemberPrefixShape = 'none'
-                            } elseif ($wfpTrimmedMemberPrefix -eq "'") {
-                              $wfpArchiveMemberPrefixShape = 'single_quote_wrapper'
-                            } elseif ($wfpTrimmedMemberPrefix -eq '"') {
-                              $wfpArchiveMemberPrefixShape = 'double_quote_wrapper'
-                            } elseif ($wfpTrimmedMemberPrefix -match '(?i)\.cab\s*:$') {
-                              $wfpArchiveMemberPrefixShape = 'cab_colon'
-                            } elseif ($wfpTrimmedMemberPrefix -match '(?i)\.cab$') {
-                              $wfpArchiveMemberPrefixShape = 'cab_no_delimiter'
-                            } elseif ($wfpTrimmedMemberPrefix -match '[:=]$') {
-                              $wfpArchiveMemberPrefixShape = 'delimiter'
-                            } elseif ($wfpTrimmedMemberPrefix -match '[\\/]$') {
-                              $wfpArchiveMemberPrefixShape = 'path_separator'
-                            } elseif ($wfpTrimmedMemberPrefix -match '^[\[\(\{"]+$') {
-                              $wfpArchiveMemberPrefixShape = 'wrapper'
-                            } else {
-                              $wfpArchiveMemberPrefixShape = 'text'
-                            }
-                            if ([string]::IsNullOrWhiteSpace($wfpTrimmedMemberSuffix)) {
-                              $wfpArchiveMemberSuffixShape = 'none'
-                            } elseif ($wfpTrimmedMemberSuffix -eq "'") {
-                              $wfpArchiveMemberSuffixShape = 'single_quote_wrapper'
-                            } elseif ($wfpTrimmedMemberSuffix -eq '"') {
-                              $wfpArchiveMemberSuffixShape = 'double_quote_wrapper'
-                            } elseif ($wfpTrimmedMemberSuffix -match '^[\]\)\}"]+$') {
-                              $wfpArchiveMemberSuffixShape = 'wrapper'
-                            } elseif ($wfpMemberSuffix -match '^\s+\d') {
-                              $wfpArchiveMemberSuffixShape = 'metadata'
-                            } elseif ($wfpTrimmedMemberSuffix -match '^[\\/]') {
-                              $wfpArchiveMemberSuffixShape = 'path_separator'
-                            } else {
-                              $wfpArchiveMemberSuffixShape = 'text'
-                            }
-                          } else {
-                            $wfpArchiveMemberPrefixShape = 'other'
-                            $wfpArchiveMemberSuffixShape = 'other'
                           }
+                        } catch {
+                          $cabinetSummaryValid = $false
                         }
-                        $matchingArchiveMembers = @(
-                          $memberListResult.Stdout -split "`r?`n" |
-                            Where-Object { $_ -match $wfpArchiveMemberPattern }
-                        )
-                        if ($matchingArchiveMembers.Count -eq 0) {
-                          $wfpArchiveMemberStatus = 'missing'
-                          $wfpCaptureStatus = 'archive_member_missing'
-                        } elseif ($matchingArchiveMembers.Count -gt 1) {
-                          $wfpArchiveMemberStatus = 'multiple'
-                          $wfpCaptureStatus = 'archive_member_ambiguous'
+                        if (-not $cabinetSummaryValid) {
+                          $wfpArchiveMemberStatus = 'summary_invalid'
+                          $wfpCaptureStatus = 'member_list_failed'
+                        } elseif ($cabinetMemberSummary.status -cne 'listed') {
+                          $wfpArchiveMemberStatus = 'list_failed'
+                          $wfpCaptureStatus = 'member_list_failed'
                         } else {
-                          $wfpArchiveMemberStatus = 'present'
-                          $wfpCaptureStatus = 'extracting'
-                          New-Item -ItemType Directory -Path $wfpExtractRoot | Out-Null
-                          $expandArguments = if ($wfpMemberSelfTestExtractMode -eq 'file') {
-                            @($wfpCaptureArchive, '-F:wfpdiag.xml', $wfpExtractExplicitFile)
+                          $matchCount = [long]$cabinetMemberSummary.target_match_count
+                          $wfpArchiveMemberMatchCount = if ($matchCount -eq 0) {
+                            'zero'
+                          } elseif ($matchCount -eq 1) {
+                            'one'
                           } else {
-                            @($wfpCaptureArchive, '-F:wfpdiag.xml', $wfpExtractRoot)
+                            'multiple'
                           }
-                          $expandResult = Invoke-BoundedDiagnosticCommand `
-                            -Path $expand -Arguments $expandArguments -TimeoutMilliseconds 15000
-                          if ($null -eq $expandResult.ExitCode) {
-                            $wfpExtractExitCode = 'unknown'
+                          if ($matchCount -eq 0) {
+                            $wfpArchiveMemberStatus = 'missing'
+                            $wfpCaptureStatus = 'archive_member_missing'
+                          } elseif ($matchCount -gt 1) {
+                            $wfpArchiveMemberStatus = 'multiple'
+                            $wfpCaptureStatus = 'archive_member_ambiguous'
                           } else {
-                            $wfpExtractExitCode = [string]$expandResult.ExitCode
-                          }
-                          if ($expandResult.TimedOut) {
-                            $wfpCaptureStatus = 'extract_timeout'
-                          } elseif ($expandResult.ExitCode -ne 0) {
-                            $wfpCaptureStatus = 'extract_command_failed'
-                          } elseif ($wfpMemberSelfTestExtractMode -eq 'file') {
-                            if (Test-Path -LiteralPath $wfpExtractExplicitFile -PathType Leaf) {
+                            $wfpArchiveMemberStatus = 'present'
+                            $wfpCaptureStatus = 'extracting'
+                            New-Item -ItemType Directory -Path $wfpExtractRoot | Out-Null
+                            $expandArguments = if ($wfpMemberSelfTestExtractMode -eq 'file') {
+                              @($wfpCaptureArchive, '-F:wfpdiag.xml', $wfpExtractExplicitFile)
+                            } else {
+                              @($wfpCaptureArchive, '-F:wfpdiag.xml', $wfpExtractRoot)
+                            }
+                            $expandResult = Invoke-BoundedDiagnosticCommand `
+                              -Path $expand -Arguments $expandArguments -TimeoutMilliseconds 15000
+                            if ($null -eq $expandResult.ExitCode) {
+                              $wfpExtractExitCode = 'unknown'
+                            } else {
+                              $wfpExtractExitCode = [string]$expandResult.ExitCode
+                            }
+                            if ($expandResult.TimedOut) {
+                              $wfpCaptureStatus = 'extract_timeout'
+                            } elseif ($expandResult.ExitCode -ne 0) {
+                              $wfpCaptureStatus = 'extract_command_failed'
+                            } elseif ($wfpMemberSelfTestExtractMode -eq 'file') {
+                              if (Test-Path -LiteralPath $wfpExtractExplicitFile -PathType Leaf) {
+                                $wfpXmlCandidates = @(
+                                  Get-Item -LiteralPath $wfpExtractExplicitFile -ErrorAction Stop
+                                )
+                              }
+                            } else {
                               $wfpXmlCandidates = @(
-                                Get-Item -LiteralPath $wfpExtractExplicitFile -ErrorAction Stop
+                                Get-ChildItem -LiteralPath $wfpExtractRoot `
+                                  -Filter 'wfpdiag.xml' -File -Recurse -Force -ErrorAction Stop
                               )
                             }
-                          } else {
-                            $wfpXmlCandidates = @(
-                              Get-ChildItem -LiteralPath $wfpExtractRoot `
-                                -Filter 'wfpdiag.xml' -File -Recurse -Force -ErrorAction Stop
-                            )
                           }
                         }
                       }
@@ -1103,7 +1049,7 @@ jobs:
                 }
               }
             }
-            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_name_mentions=$wfpArchiveMemberNameMentionCount archive_member_line_shape=$wfpArchiveMemberLineShape archive_member_prefix_shape=$wfpArchiveMemberPrefixShape archive_member_suffix_shape=$wfpArchiveMemberSuffixShape archive_member_path_echo=$wfpArchiveMemberPathEcho"
+            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_match_count=$wfpArchiveMemberMatchCount"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }
