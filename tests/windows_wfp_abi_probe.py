@@ -10,8 +10,12 @@ import ctypes
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import tempfile
+
+_VS_DEVCMD_SETUP_FAILED_EXIT_CODE = 91
+_VISUAL_CPP_COMPILER_UNAVAILABLE_EXIT_CODE = 92
 
 
 class _Guid(ctypes.Structure):
@@ -104,6 +108,10 @@ class _FwpmNetEventCapabilityDrop0(ctypes.Structure):
 
 def _classify_windows_sdk_compile_failure(compiler_output: str, return_code: int) -> str:
     """Return a bounded reason token without exposing SDK or runner output."""
+    if return_code == _VS_DEVCMD_SETUP_FAILED_EXIT_CODE:
+        return "visual_studio_environment_setup_failed"
+    if return_code == _VISUAL_CPP_COMPILER_UNAVAILABLE_EXIT_CODE:
+        return "compiler_unavailable_after_setup"
     normalized = compiler_output.casefold()
     if "is not recognized as an internal or external command" in normalized:
         return "compiler_unavailable"
@@ -118,6 +126,26 @@ def _classify_windows_sdk_compile_failure(compiler_output: str, return_code: int
     if return_code != 0:
         return "compiler_failed_without_diagnostic"
     return "compiler_output_missing"
+
+
+def _build_visual_studio_batch_script(
+    dev_command: str,
+    target_arch: str,
+    host_arch: str,
+) -> str:
+    """Keep VS environment setup and compiler invocation in one cmd process."""
+    return "\n".join(
+        (
+            "@echo off",
+            f'call "{dev_command}" -arch={target_arch} -host_arch={host_arch} >NUL 2>NUL',
+            f"if errorlevel 1 exit /b {_VS_DEVCMD_SETUP_FAILED_EXIT_CODE}",
+            "where.exe cl >NUL 2>NUL",
+            f"if errorlevel 1 exit /b {_VISUAL_CPP_COMPILER_UNAVAILABLE_EXIT_CODE}",
+            "cl /nologo /W0 /Fewfp_sdk_layout_probe.exe wfp_sdk_layout_probe.c",
+            "exit /b %errorlevel%",
+            "",
+        ),
+    )
 
 
 def _visual_studio_architectures(runner_arch: str, machine: str) -> tuple[str, str]:
@@ -211,18 +239,28 @@ def run_windows_sdk_layout_probe() -> dict[str, int]:
         raise RuntimeError("windows_sdk_probe_source_unavailable")
     with tempfile.TemporaryDirectory(prefix="icode-wfp-sdk-abi-") as raw_directory:
         executable = Path(raw_directory) / "wfp_sdk_layout_probe.exe"
-        compiler_command = (
-            f'call "{dev_command}" -arch={visual_studio_target_arch} '
-            f'-host_arch={visual_studio_host_arch} >NUL && '
-            f'cl /nologo /W0 /Fe:"{executable}" "{source}"'
-        )
+        source_copy = Path(raw_directory) / "wfp_sdk_layout_probe.c"
+        batch_script = Path(raw_directory) / "wfp_sdk_layout_probe.cmd"
+        try:
+            shutil.copyfile(source, source_copy)
+            batch_script.write_text(
+                _build_visual_studio_batch_script(
+                    str(dev_command),
+                    visual_studio_target_arch,
+                    visual_studio_host_arch,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            raise RuntimeError("windows_sdk_probe_batch_creation_failed") from None
         try:
             compile_result = subprocess.run(
-                ["cmd.exe", "/d", "/s", "/c", compiler_command],
+                ["cmd.exe", "/d", "/c", batch_script.name],
                 check=False,
                 capture_output=True,
                 text=True,
                 timeout=60,
+                cwd=raw_directory,
             )
         except (OSError, subprocess.TimeoutExpired):
             raise RuntimeError("windows_sdk_probe_compile_failed") from None

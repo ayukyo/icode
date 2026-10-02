@@ -63,9 +63,31 @@ class TestWindowsWfpAbi(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unsupported_windows_runner_architecture"):
             probe._visual_studio_architectures("x86", "x86")
 
+    def test_compiler_batch_stages_visual_studio_setup_and_compile_safely(self) -> None:
+        probe = _probe_module(self)
+        script = probe._build_visual_studio_batch_script(
+            r"C:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\VsDevCmd.bat",
+            "amd64",
+            "amd64",
+        )
+        self.assertIn(
+            'call "C:\\Program Files\\Microsoft Visual Studio\\18\\Enterprise\\Common7\\Tools\\VsDevCmd.bat" '
+            "-arch=amd64 -host_arch=amd64 >NUL 2>NUL",
+            script,
+        )
+        self.assertIn("if errorlevel 1 exit /b 91", script)
+        self.assertIn("where.exe cl >NUL 2>NUL", script)
+        self.assertIn("if errorlevel 1 exit /b 92", script)
+        self.assertIn(
+            "cl /nologo /W0 /Fewfp_sdk_layout_probe.exe wfp_sdk_layout_probe.c",
+            script,
+        )
+
     def test_sdk_compile_failure_classification_does_not_return_raw_output(self) -> None:
         probe = _probe_module(self)
         classify = probe._classify_windows_sdk_compile_failure
+        self.assertEqual(classify("", 91), "visual_studio_environment_setup_failed")
+        self.assertEqual(classify("", 92), "compiler_unavailable_after_setup")
         self.assertEqual(
             classify("'cl' is not recognized as an internal or external command", 1),
             "compiler_unavailable",
