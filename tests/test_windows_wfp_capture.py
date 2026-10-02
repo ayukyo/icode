@@ -216,6 +216,22 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("extract_xml_missing", job)
         self.assertIn("extract_xml_too_large", job)
 
+    def test_workflow_uses_expand_cab_file_and_destination_argument_order(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+        expand_arguments = job.split("-Path $expand -Arguments @(", 1)[1].split(
+            ") -TimeoutMilliseconds 15000", 1
+        )[0]
+
+        source_index = expand_arguments.index("$wfpCaptureArchive")
+        member_index = expand_arguments.index("'-F:wfpdiag.xml'")
+        destination_index = expand_arguments.index("$wfpExtractRoot")
+        self.assertLess(source_index, member_index)
+        self.assertLess(member_index, destination_index)
+
 
 if __name__ == "__main__":
     unittest.main()

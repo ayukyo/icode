@@ -680,7 +680,7 @@ jobs:
                       $expand = Join-Path $env:SystemRoot 'System32/expand.exe'
                       $expandResult = Invoke-BoundedDiagnosticCommand `
                         -Path $expand -Arguments @(
-                          '-F:wfpdiag.xml', $wfpCaptureArchive, $wfpExtractRoot
+                          $wfpCaptureArchive, '-F:wfpdiag.xml', $wfpExtractRoot
                         ) -TimeoutMilliseconds 15000
                       if ($null -eq $expandResult.ExitCode) {
                         $wfpExtractExitCode = 'unknown'
