@@ -1,5 +1,7 @@
 # R3 自验证与有界修复
 
+- **CI #526 Windows Reviewer 候选仍在 CAB 提取自测前被阻断（2026-10-02）：**[x64](https://github.com/ayukyo/icode/actions/runs/37006274883/job/110835191210) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/37006274883/job/110835191103) 均通过 CAB 成员匹配，随后 `expand` 退出码为 0 但目标目录 XML 数量为 0。候选不依赖错误退出码猜测成功；下一 SHA 只在单文件 synthetic CAB 上比较精确筛选的目录/显式文件落点及一个独立 `-F:*` 诊断控制，stdout/stderr 只作脱敏布尔量。真实 CAB 必须先匹配到唯一成员，生产诊断只使用 synthetic 已验证的精确选择模式；通配不会用于真实数据。该运行没有执行标准用户 Reviewer 候选或 IPv4/IPv6 网络探针，不能计 R3 文件/网络隔离证据；Windows R3 失败关闭，生产调用链和 `10013` 门均不变。
+
 - **CI #525 CAB matcher 已过、提取子阶段失败（2026-10-02）：**Windows Reviewer [x64](https://github.com/ayukyo/icode/actions/runs/37004738576/job/110830239414) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/37004738576/job/110830239548) 都从前一 SHA 的 `member_match` 前进到 `extract`，随后通用固定错误退出。现有日志没有分别记录退出码、超时和提取候选数；候选仅补充这三类有界字段，原始 stdout/stderr、路径和 XML 仍丢弃。两架构未运行 Reviewer 网络 candidate，Windows R3 继续失败关闭、网络 `10013` 门与生产接线不变。
 
 - **CI #524 合成 CAB 失败已定位为 matcher 的归档前缀遗漏（2026-10-02）：**Windows Reviewer [x64](https://github.com/ayukyo/icode/actions/runs/37003727736/job/110827036312) 和 [ARM64](https://github.com/ayukyo/icode/actions/runs/37003727736/job/110827036361) 都观测到安全替换后的成员行 `<temp>\member-selftest.cab: wfpdiag.xml`；旧 regex 只接受成员名/成员路径，因此两者停在 `member_match`。本地测试先验证该失败，再验证 matcher 接受 CAB `.cab:` 前缀且拒绝 incidental mention；更新后的 fixture extraction/content check 仍必须在新 SHA 的双架构运行。当前 Windows R3 继续失败关闭，网络候选没运行，`10013` 门及 Reviewer 生产接线不变。

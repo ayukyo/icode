@@ -425,10 +425,13 @@ jobs:
           $wfpCapturePrefix = Join-Path $env:RUNNER_TEMP "icode-reviewer-wfp-$suffix"
           $wfpCaptureArchive = "$wfpCapturePrefix.cab"
           $wfpExtractRoot = Join-Path $env:RUNNER_TEMP "icode-reviewer-wfp-extract-$suffix"
+          $wfpExtractExplicitFile = Join-Path $wfpExtractRoot 'wfpdiag.xml'
           $wfpMemberSelfTestRoot = Join-Path $env:RUNNER_TEMP "icode-wfp-member-selftest-$suffix"
           $wfpMemberSelfTestSource = Join-Path $wfpMemberSelfTestRoot 'wfpdiag.xml'
           $wfpMemberSelfTestCab = Join-Path $wfpMemberSelfTestRoot 'member-selftest.cab'
-          $wfpMemberSelfTestExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract'
+          $wfpMemberSelfTestExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract-exact-directory'
+          $wfpMemberSelfTestWildcardExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract-wildcard-directory'
+          $wfpMemberSelfTestExplicitExtractFile = Join-Path $wfpMemberSelfTestRoot 'extract-exact-file.xml'
           $wfpArchiveMemberPattern = '(?im)^\s*(?:[A-Z]:[\\/]|\\\\)[^:\r\n]*\.cab:\s*(?:[^:\r\n]*[\\/])?wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
           $wfpMatchFile = Join-Path $probeRoot 'wfp-match.json'
           $wfpReadyFile = Join-Path $probeRoot 'wfp-ready'
@@ -460,7 +463,8 @@ jobs:
               [Parameter(Mandatory = $true)][string]$Path,
               [Parameter(Mandatory = $true)][string[]]$Arguments,
               [Parameter(Mandatory = $true)][ValidateRange(1, 60000)][int]$TimeoutMilliseconds,
-              [switch]$CaptureStdout
+              [switch]$CaptureStdout,
+              [switch]$CaptureStderr
             )
             $process = $null
             $started = $false
@@ -478,7 +482,7 @@ jobs:
               $process.StartInfo = $startInfo
               if (-not $process.Start()) {
                 return [pscustomobject]@{
-                  ExitCode = $null; TimedOut = $false; Stdout = ''
+                  ExitCode = $null; TimedOut = $false; Stdout = ''; Stderr = ''
                 }
               }
               $started = $true
@@ -487,12 +491,16 @@ jobs:
               } else {
                 $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync([IO.Stream]::Null)
               }
-              $stderrTask = $process.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null)
+              if ($CaptureStderr) {
+                $stderrTask = $process.StandardError.ReadToEndAsync()
+              } else {
+                $stderrTask = $process.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null)
+              }
               if (-not $process.WaitForExit($TimeoutMilliseconds)) {
                 try { $process.Kill($true) } catch { }
                 [void]$process.WaitForExit(5000)
                 return [pscustomobject]@{
-                  ExitCode = $null; TimedOut = $true; Stdout = ''
+                  ExitCode = $null; TimedOut = $true; Stdout = ''; Stderr = ''
                 }
               }
               # Child exit does not guarantee inherited stdout/stderr handles reached EOF.
@@ -504,7 +512,7 @@ jobs:
                   try { $process.StandardError.Close() } catch { }
                   try { [void]$stderrTask.Wait(1000) } catch { }
                   return [pscustomobject]@{
-                    ExitCode = $process.ExitCode; TimedOut = $false; Stdout = ''
+                    ExitCode = $process.ExitCode; TimedOut = $false; Stdout = ''; Stderr = ''
                   }
                 }
                 $stdout = $stdoutTask.Result
@@ -515,16 +523,26 @@ jobs:
                 }
                 $stdout = ''
               }
-              try {
-                if (-not $stderrTask.Wait(1000)) {
-                  $process.StandardError.Close()
+              $stderr = ''
+              if ($CaptureStderr) {
+                if (-not $stderrTask.Wait(5000)) {
+                  try { $process.StandardError.Close() } catch { }
                   try { [void]$stderrTask.Wait(1000) } catch { }
+                } else {
+                  $stderr = $stderrTask.Result
                 }
-              } catch {
-                try { $process.StandardError.Close() } catch { }
+              } else {
+                try {
+                  if (-not $stderrTask.Wait(1000)) {
+                    $process.StandardError.Close()
+                    try { [void]$stderrTask.Wait(1000) } catch { }
+                  }
+                } catch {
+                  try { $process.StandardError.Close() } catch { }
+                }
               }
               return [pscustomobject]@{
-                ExitCode = $process.ExitCode; TimedOut = $false; Stdout = $stdout
+                ExitCode = $process.ExitCode; TimedOut = $false; Stdout = $stdout; Stderr = $stderr
               }
             } catch {
               if ($started -and $process -and -not $process.HasExited) {
@@ -532,7 +550,7 @@ jobs:
                 try { [void]$process.WaitForExit(5000) } catch { }
               }
               return [pscustomobject]@{
-                ExitCode = $null; TimedOut = $false; Stdout = ''
+                ExitCode = $null; TimedOut = $false; Stdout = ''; Stderr = ''
               }
             } finally {
               if ($process) { $process.Dispose() }
@@ -595,14 +613,79 @@ jobs:
             }
             $wfpMemberSelfTestStage = 'extract'
             New-Item -ItemType Directory -Path $wfpMemberSelfTestExtractRoot | Out-Null
-            $wfpSyntheticExtract = Invoke-BoundedDiagnosticCommand `
+            New-Item -ItemType Directory -Path $wfpMemberSelfTestWildcardExtractRoot | Out-Null
+            $syntheticExactDirectoryResult = Invoke-BoundedDiagnosticCommand `
               -Path $expand -Arguments @(
                 $wfpMemberSelfTestCab, '-F:wfpdiag.xml', $wfpMemberSelfTestExtractRoot
-              ) -TimeoutMilliseconds 5000
-            $syntheticXmlCandidates = @(
+              ) -TimeoutMilliseconds 5000 -CaptureStdout -CaptureStderr
+            $syntheticExactFileResult = Invoke-BoundedDiagnosticCommand `
+              -Path $expand -Arguments @(
+                $wfpMemberSelfTestCab, '-F:wfpdiag.xml', $wfpMemberSelfTestExplicitExtractFile
+              ) -TimeoutMilliseconds 5000 -CaptureStdout -CaptureStderr
+            $syntheticWildcardDirectoryResult = Invoke-BoundedDiagnosticCommand `
+              -Path $expand -Arguments @(
+                $wfpMemberSelfTestCab, '-F:*', $wfpMemberSelfTestWildcardExtractRoot
+              ) -TimeoutMilliseconds 5000 -CaptureStdout -CaptureStderr
+            $syntheticExactDirectoryCandidates = @(
               Get-ChildItem -LiteralPath $wfpMemberSelfTestExtractRoot `
                 -Filter 'wfpdiag.xml' -File -Recurse -Force -ErrorAction Stop
             )
+            $syntheticWildcardDirectoryCandidates = @(
+              Get-ChildItem -LiteralPath $wfpMemberSelfTestWildcardExtractRoot `
+                -Filter 'wfpdiag.xml' -File -Recurse -Force -ErrorAction Stop
+            )
+            $syntheticExactDirectoryStatus = if ($syntheticExactDirectoryResult.TimedOut) {
+              'timeout'
+            } elseif ($syntheticExactDirectoryResult.ExitCode -ne 0) {
+              'command_failed'
+            } elseif ($syntheticExactDirectoryCandidates.Count -eq 0) {
+              'zero'
+            } elseif ($syntheticExactDirectoryCandidates.Count -eq 1) {
+              'one'
+            } else {
+              'multiple'
+            }
+            $syntheticExactFileExists = Test-Path -LiteralPath $wfpMemberSelfTestExplicitExtractFile -PathType Leaf
+            $syntheticExactFileStatus = if ($syntheticExactFileResult.TimedOut) {
+              'timeout'
+            } elseif ($syntheticExactFileResult.ExitCode -ne 0) {
+              'command_failed'
+            } elseif ($syntheticExactFileExists) {
+              'one'
+            } else {
+              'zero'
+            }
+            $syntheticWildcardDirectoryStatus = if ($syntheticWildcardDirectoryResult.TimedOut) {
+              'timeout'
+            } elseif ($syntheticWildcardDirectoryResult.ExitCode -ne 0) {
+              'command_failed'
+            } elseif ($syntheticWildcardDirectoryCandidates.Count -eq 0) {
+              'zero'
+            } elseif ($syntheticWildcardDirectoryCandidates.Count -eq 1) {
+              'one'
+            } else {
+              'multiple'
+            }
+            $syntheticExactStdoutMember = if ([regex]::IsMatch(
+              $syntheticExactDirectoryResult.Stdout, '(?i)wfpdiag\.xml'
+            )) { 'true' } else { 'false' }
+            $syntheticExactStderrMember = if ([regex]::IsMatch(
+              $syntheticExactDirectoryResult.Stderr, '(?i)wfpdiag\.xml'
+            )) { 'true' } else { 'false' }
+            $syntheticXmlCandidates = @()
+            if ($syntheticExactDirectoryStatus -eq 'one') {
+              $wfpMemberSelfTestExtractMode = 'directory'
+              $wfpSyntheticExtract = $syntheticExactDirectoryResult
+              $syntheticXmlCandidates = $syntheticExactDirectoryCandidates
+            } elseif ($syntheticExactFileStatus -eq 'one') {
+              $wfpMemberSelfTestExtractMode = 'file'
+              $wfpSyntheticExtract = $syntheticExactFileResult
+              $syntheticXmlCandidates = @(
+                Get-Item -LiteralPath $wfpMemberSelfTestExplicitExtractFile -ErrorAction Stop
+              )
+            } else {
+              $wfpSyntheticExtract = $syntheticExactDirectoryResult
+            }
             $extractTimedOut = if ($wfpSyntheticExtract.TimedOut) { 'true' } else { 'false' }
             $extractExitCode = if ($null -eq $wfpSyntheticExtract.ExitCode) {
               'unknown'
@@ -618,7 +701,7 @@ jobs:
             }
             if ($wfpSyntheticExtract.TimedOut -or $wfpSyntheticExtract.ExitCode -ne 0 -or
                 $syntheticXmlCandidates.Count -ne 1) {
-              Write-Output "wfp_cab_member_parser_self_test_extract=failed timed_out=$extractTimedOut exit_code=$extractExitCode xml_candidates=$syntheticXmlCandidateCount"
+              Write-Output "wfp_cab_member_parser_self_test_extract=failed timed_out=$extractTimedOut exit_code=$extractExitCode xml_candidates=$syntheticXmlCandidateCount synthetic_exact_directory_file=$syntheticExactDirectoryStatus synthetic_exact_file_file=$syntheticExactFileStatus synthetic_wildcard_directory_file=$syntheticWildcardDirectoryStatus synthetic_exact_stdout_member=$syntheticExactStdoutMember synthetic_exact_stderr_member=$syntheticExactStderrMember"
               throw 'wfp_cab_member_parser_self_test_failed'
             }
             $wfpMemberSelfTestStage = 'content_check'
@@ -626,7 +709,7 @@ jobs:
             if (-not $syntheticContentMatches) {
               throw 'wfp_cab_member_parser_self_test_failed'
             }
-            Write-Output 'wfp_cab_member_parser_self_test=passed'
+            Write-Output "wfp_cab_member_parser_self_test=passed extraction_mode=$wfpMemberSelfTestExtractMode"
           } catch {
             Write-Output "wfp_cab_member_parser_self_test=failed stage=$wfpMemberSelfTestStage"
             throw 'wfp_cab_member_parser_self_test_failed'
@@ -784,49 +867,66 @@ jobs:
                     if ($archiveLength -gt 67108864) {
                       $wfpCaptureStatus = 'archive_too_large'
                     } else {
-                      New-Item -ItemType Directory -Path $wfpExtractRoot | Out-Null
                       $expand = Join-Path $env:SystemRoot 'System32/expand.exe'
-                      $expandResult = Invoke-BoundedDiagnosticCommand `
+                      $wfpXmlCandidates = @()
+                      $memberListResult = Invoke-BoundedDiagnosticCommand `
                         -Path $expand -Arguments @(
-                          $wfpCaptureArchive, '-F:wfpdiag.xml', $wfpExtractRoot
-                        ) -TimeoutMilliseconds 15000
-                      if ($null -eq $expandResult.ExitCode) {
-                        $wfpExtractExitCode = 'unknown'
+                          '-D', $wfpCaptureArchive, '-F:wfpdiag.xml'
+                        ) -TimeoutMilliseconds 5000 -CaptureStdout
+                      if ($memberListResult.TimedOut) {
+                        $wfpArchiveMemberStatus = 'list_timeout'
+                        $wfpCaptureStatus = 'member_list_timeout'
+                      } elseif ($memberListResult.ExitCode -ne 0) {
+                        $wfpArchiveMemberStatus = 'list_failed'
+                        $wfpCaptureStatus = 'member_list_failed'
                       } else {
-                        $wfpExtractExitCode = [string]$expandResult.ExitCode
-                      }
-                      if ($expandResult.TimedOut) {
-                        $wfpCaptureStatus = 'extract_timeout'
-                      } elseif ($expandResult.ExitCode -ne 0) {
-                        $wfpCaptureStatus = 'extract_command_failed'
-                      } else {
-                        $wfpXmlCandidates = @(
-                          Get-ChildItem -LiteralPath $wfpExtractRoot `
-                            -Filter 'wfpdiag.xml' -File -Recurse -Force -ErrorAction Stop
+                        $matchingArchiveMembers = @(
+                          $memberListResult.Stdout -split "`r?`n" |
+                            Where-Object { $_ -match $wfpArchiveMemberPattern }
                         )
+                        if ($matchingArchiveMembers.Count -eq 0) {
+                          $wfpArchiveMemberStatus = 'missing'
+                          $wfpCaptureStatus = 'archive_member_missing'
+                        } elseif ($matchingArchiveMembers.Count -gt 1) {
+                          $wfpArchiveMemberStatus = 'multiple'
+                          $wfpCaptureStatus = 'archive_member_ambiguous'
+                        } else {
+                          $wfpArchiveMemberStatus = 'present'
+                          $wfpCaptureStatus = 'extracting'
+                          New-Item -ItemType Directory -Path $wfpExtractRoot | Out-Null
+                          $expandArguments = if ($wfpMemberSelfTestExtractMode -eq 'file') {
+                            @($wfpCaptureArchive, '-F:wfpdiag.xml', $wfpExtractExplicitFile)
+                          } else {
+                            @($wfpCaptureArchive, '-F:wfpdiag.xml', $wfpExtractRoot)
+                          }
+                          $expandResult = Invoke-BoundedDiagnosticCommand `
+                            -Path $expand -Arguments $expandArguments -TimeoutMilliseconds 15000
+                          if ($null -eq $expandResult.ExitCode) {
+                            $wfpExtractExitCode = 'unknown'
+                          } else {
+                            $wfpExtractExitCode = [string]$expandResult.ExitCode
+                          }
+                          if ($expandResult.TimedOut) {
+                            $wfpCaptureStatus = 'extract_timeout'
+                          } elseif ($expandResult.ExitCode -ne 0) {
+                            $wfpCaptureStatus = 'extract_command_failed'
+                          } elseif ($wfpMemberSelfTestExtractMode -eq 'file') {
+                            if (Test-Path -LiteralPath $wfpExtractExplicitFile -PathType Leaf) {
+                              $wfpXmlCandidates = @(
+                                Get-Item -LiteralPath $wfpExtractExplicitFile -ErrorAction Stop
+                              )
+                            }
+                          } else {
+                            $wfpXmlCandidates = @(
+                              Get-ChildItem -LiteralPath $wfpExtractRoot `
+                                -Filter 'wfpdiag.xml' -File -Recurse -Force -ErrorAction Stop
+                            )
+                          }
+                        }
+                      }
+                      if ($wfpCaptureStatus -eq 'extracting') {
                         if ($wfpXmlCandidates.Count -eq 0) {
                           $wfpCaptureStatus = 'extract_xml_missing'
-                          $memberListResult = Invoke-BoundedDiagnosticCommand `
-                            -Path $expand -Arguments @(
-                              '-D', $wfpCaptureArchive, '-F:wfpdiag.xml'
-                            ) -TimeoutMilliseconds 5000 -CaptureStdout
-                          if ($memberListResult.TimedOut) {
-                            $wfpArchiveMemberStatus = 'list_timeout'
-                          } elseif ($memberListResult.ExitCode -ne 0) {
-                            $wfpArchiveMemberStatus = 'list_failed'
-                          } else {
-                            $matchingArchiveMembers = @(
-                              $memberListResult.Stdout -split "`r?`n" |
-                                Where-Object { $_ -match $wfpArchiveMemberPattern }
-                            )
-                            if ($matchingArchiveMembers.Count -eq 1) {
-                              $wfpArchiveMemberStatus = 'present'
-                            } elseif ($matchingArchiveMembers.Count -gt 1) {
-                              $wfpArchiveMemberStatus = 'multiple'
-                            } else {
-                              $wfpArchiveMemberStatus = 'missing'
-                            }
-                          }
                         } elseif ($wfpXmlCandidates.Count -gt 1) {
                           $wfpCaptureStatus = 'extract_xml_ambiguous'
                         } elseif ($wfpXmlCandidates[0].Length -gt 8388608) {

@@ -223,18 +223,20 @@ class TestWindowsWfpCapture(unittest.TestCase):
         job_start = workflow.index("  windows-reviewer-snapshot-probe:")
         job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
         job = workflow[job_start:job_end]
-        extraction_timeout = job.index("-TimeoutMilliseconds 15000")
-        extraction_call = job.rfind("-Path $expand -Arguments @(", 0, extraction_timeout)
-        self.assertGreaterEqual(extraction_call, 0)
-        expand_arguments = job[extraction_call:].split(
-            ") -TimeoutMilliseconds 15000", 1
-        )[0]
-
-        source_index = expand_arguments.index("$wfpCaptureArchive")
-        member_index = expand_arguments.index("'-F:wfpdiag.xml'")
-        destination_index = expand_arguments.index("$wfpExtractRoot")
-        self.assertLess(source_index, member_index)
-        self.assertLess(member_index, destination_index)
+        archive_branch = job.index("if (Test-Path -LiteralPath $wfpCaptureArchive -PathType Leaf)")
+        member_list_call = job.index("$memberListResult = Invoke-BoundedDiagnosticCommand", archive_branch)
+        member_list_result = job.index("$matchingArchiveMembers = @(", member_list_call)
+        member_count_zero = job.index("if ($matchingArchiveMembers.Count -eq 0)", member_list_result)
+        member_count_multiple = job.index("elseif ($matchingArchiveMembers.Count -gt 1)", member_count_zero)
+        extraction_mode = job.index("$expandArguments = if ($wfpMemberSelfTestExtractMode -eq 'file')", member_count_multiple)
+        extraction_call = job.index("-Path $expand -Arguments $expandArguments", extraction_mode)
+        self.assertLess(member_list_call, member_count_zero)
+        self.assertLess(member_count_zero, member_count_multiple)
+        self.assertLess(member_count_multiple, extraction_mode)
+        self.assertLess(extraction_mode, extraction_call)
+        self.assertIn("@($wfpCaptureArchive, '-F:wfpdiag.xml', $wfpExtractExplicitFile)", job)
+        self.assertIn("@($wfpCaptureArchive, '-F:wfpdiag.xml', $wfpExtractRoot)", job)
+        self.assertNotIn("$wfpCaptureArchive, '-F:*'", job)
 
     def test_workflow_checks_exact_cab_member_without_logging_archive_listing(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
@@ -334,6 +336,27 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertNotIn("Write-Output $memberListResult.Stdout", job)
         self.assertIn("throw 'wfp_cab_member_parser_self_test_cleanup_failed'", job)
         self.assertIn("Remove-Item -LiteralPath $wfpMemberSelfTestRoot -Recurse -Force", job)
+
+    def test_workflow_diagnoses_synthetic_cab_extract_destination_and_filter_variants(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("$syntheticExactDirectoryResult = Invoke-BoundedDiagnosticCommand", job)
+        self.assertIn("$syntheticExactFileResult = Invoke-BoundedDiagnosticCommand", job)
+        self.assertIn("$syntheticWildcardDirectoryResult = Invoke-BoundedDiagnosticCommand", job)
+        self.assertIn("-CaptureStdout -CaptureStderr", job)
+        self.assertIn("synthetic_exact_directory_file=$syntheticExactDirectoryStatus", job)
+        self.assertIn("synthetic_exact_file_file=$syntheticExactFileStatus", job)
+        self.assertIn("synthetic_wildcard_directory_file=$syntheticWildcardDirectoryStatus", job)
+        self.assertIn("synthetic_exact_stdout_member=$syntheticExactStdoutMember", job)
+        self.assertIn("synthetic_exact_stderr_member=$syntheticExactStderrMember", job)
+        logged_lines = [line for line in job.splitlines() if "Write-Output" in line]
+        self.assertFalse(any("$syntheticExactDirectoryResult.Stdout" in line for line in logged_lines))
+        self.assertFalse(any("$syntheticExactDirectoryResult.Stderr" in line for line in logged_lines))
+        self.assertNotIn("$wfpCaptureArchive, '-F:*'", job)
 
     def test_workflow_accepts_one_nested_cab_xml_and_rejects_ambiguous_matches(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
