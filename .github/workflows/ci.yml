@@ -1330,8 +1330,6 @@ jobs:
                 $runnerWfpCleanupState = 'failed'
               }
             }
-            Write-Output "::notice title=Runner WFP candidate observer::runner_wfp_observer=$runnerWfpObserverStatus collection=$runnerWfpCollectionState candidate_event=$runnerWfpCandidateEvent matched_capability_drop_count=$runnerWfpMatchedCapabilityDropCount cleanup=$runnerWfpCleanupState"
-
             if ($wfpCaptureStartAttempted -and -not $wfpCaptureStarted -and
                 ($wfpCaptureStatus -eq 'start_timeout' -or
                  $wfpCaptureStatus -eq 'start_failed')) {
@@ -1553,7 +1551,7 @@ jobs:
                 }
               }
             }
-            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_member_match_count=$wfpArchiveMemberMatchCount archive_xml_member_count=$wfpArchiveXmlMemberCount archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount"
+            Write-Output "::notice title=Windows WFP capture and runner observer::runner_wfp_observer=$runnerWfpObserverStatus collection=$runnerWfpCollectionState candidate_event=$runnerWfpCandidateEvent matched_capability_drop_count=$runnerWfpMatchedCapabilityDropCount observer_cleanup=$runnerWfpCleanupState capture_status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_member_match_count=$wfpArchiveMemberMatchCount archive_xml_member_count=$wfpArchiveXmlMemberCount archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }

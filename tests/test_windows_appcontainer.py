@@ -1721,12 +1721,12 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer snapshot writes and cleanup", notice_names)
         self.assertIn("Windows Reviewer access diagnostics", notice_names)
         self.assertIn("Windows Reviewer handle cleanup diagnostics", notice_names)
-        self.assertIn("Windows Reviewer WriteFile diagnostics", notice_names)
         self.assertIn("Windows Reviewer loopback network denial", notice_names)
         self.assertIn("Windows Reviewer IPv4 connect stages", notice_names)
         self.assertIn("Windows Reviewer IPv6 connect stages", notice_names)
         self.assertIn("Windows Reviewer write canary fingerprints", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
+        self.assertNotIn("Windows Reviewer probe preflight", notice_names)
         wfp_notice_prefix = (
             "::notice title=Windows Reviewer WFP diagnostic only::"
         )
@@ -1737,9 +1737,21 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(len(wfp_notice_lines), 1, wfp_output.getvalue())
         wfp_notice_json = wfp_notice_lines[0][len(wfp_notice_prefix):]
         self.assertLessEqual(len(wfp_notice_json), 500)
+        self.assertLessEqual(
+            len(captured_notices) + len(wfp_notice_lines), 9,
+            "reserve one of GitHub Actions' ten per-step notice slots for the final runner summary",
+        )
         wfp_notice = json.loads(wfp_notice_json)
         self.assertIn("subscription_return_code_hex", wfp_notice)
         self.assertIn("reviewer_ipv6_loopback_wfp_diagnostics=", wfp_output.getvalue())
+        access_notice = json.loads(next(
+            encoded
+            for name, encoded in captured_notices
+            if name == "Windows Reviewer snapshot access"
+        ))
+        self.assertIs(access_notice["parent_standard_user"], True)
+        self.assertEqual(access_notice["parent_standard_user_status"], "verified")
+        self.assertIs(access_notice["dacl_control_verified"], True)
         network_notice = json.loads(next(
             encoded
             for name, encoded in captured_notices
@@ -1762,9 +1774,11 @@ class TestWindowsAppContainer(unittest.TestCase):
             for name, encoded in captured_notices
             if name == "Windows Reviewer snapshot writes and cleanup"
         ))
-        self.assertIs(writes_notice["write_canary_before_unchanged"], True)
-        self.assertIs(writes_notice["write_canary_unchanged"], True)
-        self.assertIs(writes_notice["write_canary_matches_expected_result"], False)
+        self.assertIs(writes_notice["writes"]["write_canary_before_unchanged"], True)
+        self.assertIs(writes_notice["writes"]["write_canary_unchanged"], True)
+        self.assertIs(writes_notice["writes"]["write_canary_matches_expected_result"], False)
+        self.assertIn("write_diagnostics", writes_notice)
+        self.assertIn("stage", writes_notice["write_diagnostics"])
         max_error_notice = {
             key: {"winerror": 0xFFFFFFFF, "errno": 0xFFFFFFFF}
             for key in (
@@ -1802,6 +1816,49 @@ class TestWindowsAppContainer(unittest.TestCase):
         }
         self.assertLessEqual(
             len(json.dumps(max_canary_fingerprints, separators=(",", ":"))), 500,
+        )
+        max_snapshot_access_notice = {
+            "executed": True,
+            "exit": 0xFFFFFFFF,
+            "cleanup": True,
+            "appcontainer": True,
+            "package_sid": True,
+            "capabilities": 0xFFFFFFFF,
+            "elevated": False,
+            "admin_group_enabled": False,
+            "approved_read": True,
+            "outside_snapshot_denied": True,
+            "workspace_denied": True,
+            "home_denied": True,
+            "ledger_denied": True,
+            "parent_standard_user": True,
+            "parent_standard_user_status": "unsupported_platform",
+            "dacl_control_verified": True,
+        }
+        self.assertLessEqual(
+            len(json.dumps(max_snapshot_access_notice, separators=(",", ":"))), 500,
+        )
+        max_write_cleanup_notice = {
+            "writes": {
+                "write_denied": True,
+                "delete_denied": True,
+                "rename_denied": True,
+                "create_denied": True,
+                "dacl_write_dac_denied": True,
+                "child_started": True,
+                "child_exited": True,
+                "snapshot_acl_restored": True,
+                "runtime_acl_restored": True,
+                "staged_files": 6718,
+                "write_canary_unchanged": True,
+                "write_canary_matches_expected_result": False,
+                "write_canary_before_unchanged": True,
+                "create_cleanup_ok": True,
+            },
+            "write_diagnostics": max_write_diagnostics,
+        }
+        self.assertLessEqual(
+            len(json.dumps(max_write_cleanup_notice, separators=(",", ":"))), 500,
         )
         max_network_notice = {
             "ipv4_host_control": True,
@@ -2128,7 +2185,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertNotIn("write_canary_matches_payload", acceptance_contract)
         summary_start = reviewer_source.index("summary = {")
         summary_end = reviewer_source.index(
-            'self._workflow_json_notice(\n                    "Windows Reviewer probe preflight"',
+            'self._workflow_json_notice(\n                    "Windows Reviewer snapshot access"',
             summary_start,
         )
         summary_contract = reviewer_source[summary_start:summary_end]
@@ -7320,37 +7377,37 @@ class TestWindowsAppContainer(unittest.TestCase):
                     },
                 }
                 self._workflow_json_notice(
-                    "Windows Reviewer probe preflight",
+                    "Windows Reviewer snapshot access",
                     {
                         "parent_standard_user": parent_standard_user_verified,
                         "parent_standard_user_status": parent_standard_user_status,
                         "dacl_control_verified": dacl_control_verified,
-                    },
-                )
-                self._workflow_json_notice(
-                    "Windows Reviewer snapshot access",
-                    {
-                        key: summary[key]
-                        for key in (
-                            "executed", "exit", "cleanup", "appcontainer", "package_sid",
-                            "capabilities", "elevated", "admin_group_enabled", "approved_read",
-                            "outside_snapshot_denied", "workspace_denied", "home_denied",
-                            "ledger_denied",
-                        )
+                        **{
+                            key: summary[key]
+                            for key in (
+                                "executed", "exit", "cleanup", "appcontainer", "package_sid",
+                                "capabilities", "elevated", "admin_group_enabled", "approved_read",
+                                "outside_snapshot_denied", "workspace_denied", "home_denied",
+                                "ledger_denied",
+                            )
+                        }
                     },
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer snapshot writes and cleanup",
                     {
-                        key: summary[key]
-                        for key in (
-                            "write_denied", "delete_denied", "rename_denied", "create_denied",
-                            "dacl_write_dac_denied", "child_started", "child_exited",
-                            "snapshot_acl_restored", "runtime_acl_restored", "staged_files",
-                            "write_canary_unchanged", "write_canary_matches_expected_result",
-                            "write_canary_before_unchanged",
-                            "create_cleanup_ok",
-                        )
+                        "writes": {
+                            key: summary[key]
+                            for key in (
+                                "write_denied", "delete_denied", "rename_denied", "create_denied",
+                                "dacl_write_dac_denied", "child_started", "child_exited",
+                                "snapshot_acl_restored", "runtime_acl_restored", "staged_files",
+                                "write_canary_unchanged", "write_canary_matches_expected_result",
+                                "write_canary_before_unchanged",
+                                "create_cleanup_ok",
+                            )
+                        },
+                        "write_diagnostics": summary["write_diagnostics"],
                     },
                 )
                 self._workflow_json_notice(
@@ -7360,10 +7417,6 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self._workflow_json_notice(
                     "Windows Reviewer handle cleanup diagnostics",
                     summary["close_errors"],
-                )
-                self._workflow_json_notice(
-                    "Windows Reviewer WriteFile diagnostics",
-                    summary["write_diagnostics"],
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer loopback network denial",

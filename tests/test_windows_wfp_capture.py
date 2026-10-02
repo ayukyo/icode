@@ -173,6 +173,21 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("$observerReceipt.matched_capability_drop_count", job)
         self.assertIn("$runnerWfpObserverProcess.WaitForExit", job)
         self.assertIn("$process.WaitForExit(65000)", job)
+        self.assertEqual(
+            job.count("::notice title=Windows WFP capture and runner observer::"), 1,
+        )
+        self.assertNotIn("::notice title=Runner WFP candidate observer::", job)
+        for final_summary_field in (
+            "runner_wfp_observer=$runnerWfpObserverStatus",
+            "collection=$runnerWfpCollectionState",
+            "candidate_event=$runnerWfpCandidateEvent",
+            "matched_capability_drop_count=$runnerWfpMatchedCapabilityDropCount",
+            "cleanup=$runnerWfpCleanupState",
+            "capture_status=$wfpCaptureStatus",
+            "exact_classify_drop_count=$wfpExactDropCount",
+        ):
+            with self.subTest(field=final_summary_field):
+                self.assertIn(final_summary_field, job)
         self.assertNotIn("netsh wfp set", job)
         self.assertNotIn("connect_denied = $matchedCapabilityDrop", job)
 
