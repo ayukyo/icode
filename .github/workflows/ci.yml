@@ -440,6 +440,7 @@ jobs:
           $wfpCaptureStatus = 'not_started'
           $wfpCapturePreflight = 'not_checked'
           $wfpArchiveMemberStatus = 'not_checked'
+          $wfpArchiveMemberCount = 'not_checked'
           $wfpArchiveMemberMatchCount = 'not_checked'
           $wfpExactDropCount = 0
           $wfpExtractExitCode = 'not_run'
@@ -932,6 +933,9 @@ jobs:
                         } catch {
                           $cabinetSummaryValid = $false
                         }
+                        if ($cabinetSummaryValid) {
+                          $wfpArchiveMemberCount = [string]$cabinetMemberSummary.member_count
+                        }
                         if (-not $cabinetSummaryValid) {
                           $wfpArchiveMemberStatus = 'summary_invalid'
                           $wfpCaptureStatus = 'member_list_failed'
@@ -1049,7 +1053,7 @@ jobs:
                 }
               }
             }
-            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_match_count=$wfpArchiveMemberMatchCount"
+            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_member_match_count=$wfpArchiveMemberMatchCount"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }

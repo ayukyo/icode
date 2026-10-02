@@ -302,6 +302,35 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertNotIn('Write-Output $memberListResult.Stdout', job)
         self.assertIn("archive_member_match_count=$wfpArchiveMemberMatchCount", job)
 
+    def test_workflow_reports_only_the_validated_bounded_cabinet_member_count(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertTrue(
+            "$wfpArchiveMemberCount = 'not_checked'" in job,
+            "the CAB member count must default to a fixed not_checked category",
+        )
+        self.assertTrue(
+            "$wfpArchiveMemberCount = [string]$cabinetMemberSummary.member_count" in job,
+            "the notice may only publish the validated numeric member count",
+        )
+        self.assertTrue(
+            "archive_member_count=$wfpArchiveMemberCount" in job,
+            "the bounded count must be present in the fixed notice",
+        )
+        member_count_bound = job.index("$cabinetMemberSummary.member_count -le 4096")
+        member_count_receipt = job.index(
+            "$wfpArchiveMemberCount = [string]$cabinetMemberSummary.member_count"
+        )
+        self.assertLess(member_count_bound, member_count_receipt)
+        self.assertLess(
+            member_count_receipt,
+            job.index("archive_member_count=$wfpArchiveMemberCount"),
+        )
+
     def test_workflow_rejects_malformed_or_unbounded_cabinet_probe_receipts(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
