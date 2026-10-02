@@ -50,6 +50,26 @@ def _probe_module(test: unittest.TestCase):
 
 
 class TestWindowsWfpAbi(unittest.TestCase):
+    def test_sdk_compile_failure_classification_does_not_return_raw_output(self) -> None:
+        probe = _probe_module(self)
+        classify = probe._classify_windows_sdk_compile_failure
+        self.assertEqual(
+            classify("'cl' is not recognized as an internal or external command", 1),
+            "compiler_unavailable",
+        )
+        self.assertEqual(
+            classify("fatal error C1083: Cannot open include file: 'fwpmu.h'", 2),
+            "windows_sdk_header_unavailable",
+        )
+        self.assertEqual(
+            classify("wfp_sdk_layout_probe.c(12): error C2065: unknown identifier", 2),
+            "sdk_declaration_compile_error",
+        )
+        self.assertEqual(
+            classify("D:\\a\\icode\\private-runner-path\\failure", 2),
+            "compiler_failed_without_diagnostic",
+        )
+
     def test_ctypes_layout_matches_documented_64bit_windows_sdk_abi(self) -> None:
         if sys.maxsize <= 2**32:
             self.skipTest("the WFP diagnostic targets 64-bit Windows runners")

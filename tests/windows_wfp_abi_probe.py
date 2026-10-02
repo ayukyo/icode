@@ -102,6 +102,24 @@ class _FwpmNetEventCapabilityDrop0(ctypes.Structure):
     ]
 
 
+def _classify_windows_sdk_compile_failure(compiler_output: str, return_code: int) -> str:
+    """Return a bounded reason token without exposing SDK or runner output."""
+    normalized = compiler_output.casefold()
+    if "is not recognized as an internal or external command" in normalized:
+        return "compiler_unavailable"
+    if "cannot find the path specified" in normalized:
+        return "visual_studio_command_unavailable"
+    if "fatal error c1083" in normalized and any(
+        header in normalized for header in ("fwpmu.h", "windows.h")
+    ):
+        return "windows_sdk_header_unavailable"
+    if "error c" in normalized or "fatal error c" in normalized:
+        return "sdk_declaration_compile_error"
+    if return_code != 0:
+        return "compiler_failed_without_diagnostic"
+    return "compiler_output_missing"
+
+
 def ctypes_layout_snapshot() -> dict[str, int]:
     """Return only the sizes and offsets required by the future event parser."""
     return {
@@ -195,7 +213,15 @@ def run_windows_sdk_layout_probe() -> dict[str, int]:
         except (OSError, subprocess.TimeoutExpired):
             raise RuntimeError("windows_sdk_probe_compile_failed") from None
         if compile_result.returncode != 0 or not executable.is_file():
-            raise RuntimeError("windows_sdk_probe_compile_failed")
+            output = "\n".join((compile_result.stdout, compile_result.stderr))
+            failure_kind = _classify_windows_sdk_compile_failure(
+                output,
+                compile_result.returncode,
+            )
+            raise RuntimeError(
+                f"windows_sdk_probe_compile_failed:{failure_kind}:"
+                f"exit={compile_result.returncode}"
+            )
         try:
             execution = subprocess.run(
                 [str(executable)],
