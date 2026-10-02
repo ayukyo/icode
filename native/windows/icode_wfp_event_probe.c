@@ -33,7 +33,22 @@ enum RunnerProbeExitCode {
     RUNNER_PROBE_INVALID_ARGUMENTS = 3,
     RUNNER_PROBE_INVALID_PROFILE_NAME = 4,
     RUNNER_PROBE_INVALID_PORT = 5,
-    RUNNER_PROBE_INVALID_PATHS = 6
+    RUNNER_PROBE_INVALID_PATHS = 6,
+    RUNNER_PROBE_PATH_FULL_PATH_FAILED = 7,
+    RUNNER_PROBE_PATH_LEAF_NAME_MISMATCH = 8,
+    RUNNER_PROBE_PATH_TEMP_ROOT_REJECTED = 9,
+    RUNNER_PROBE_PATH_PARENT_MISMATCH = 10,
+    RUNNER_PROBE_PATH_DESTINATION_NOT_MISSING = 11
+};
+
+enum ProbePathValidation {
+    PROBE_PATHS_SAFE = 0,
+    PROBE_PATHS_PROFILE_NAME_INVALID = 1,
+    PROBE_PATHS_FULL_PATH_FAILED = 2,
+    PROBE_PATHS_LEAF_NAME_MISMATCH = 3,
+    PROBE_PATHS_TEMP_ROOT_REJECTED = 4,
+    PROBE_PATHS_PARENT_MISMATCH = 5,
+    PROBE_PATHS_DESTINATION_NOT_MISSING = 6
 };
 
 typedef struct WfpProbeContext {
@@ -378,7 +393,7 @@ static BOOL path_is_missing(const wchar_t *path) {
     return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
 }
 
-static BOOL probe_paths_are_safe(
+static enum ProbePathValidation validate_probe_paths(
     const wchar_t *profile_name,
     const wchar_t *ready_path,
     const wchar_t *stop_path,
@@ -400,11 +415,13 @@ static BOOL probe_paths_are_safe(
     size_t stop_parent_length;
     size_t result_parent_length;
 
-    if (!is_generated_profile_name(profile_name) ||
-        !get_full_path(ready_path, full_ready) ||
+    if (!is_generated_profile_name(profile_name)) {
+        return PROBE_PATHS_PROFILE_NAME_INVALID;
+    }
+    if (!get_full_path(ready_path, full_ready) ||
         !get_full_path(stop_path, full_stop) ||
         !get_full_path(result_path, full_result)) {
-        return FALSE;
+        return PROBE_PATHS_FULL_PATH_FAILED;
     }
     if (_snwprintf_s(
             expected_ready, _countof(expected_ready), _TRUNCATE,
@@ -415,7 +432,7 @@ static BOOL probe_paths_are_safe(
         _snwprintf_s(
             expected_result, _countof(expected_result), _TRUNCATE,
             L"wfp-%ls.json", profile_name + 6) < 0) {
-        return FALSE;
+        return PROBE_PATHS_LEAF_NAME_MISMATCH;
     }
 
     ready_leaf = wcsrchr(full_ready, L'\\');
@@ -424,11 +441,13 @@ static BOOL probe_paths_are_safe(
     if (ready_leaf == NULL || stop_leaf == NULL || result_leaf == NULL ||
         _wcsicmp(ready_leaf + 1, expected_ready) != 0 ||
         _wcsicmp(stop_leaf + 1, expected_stop) != 0 ||
-        _wcsicmp(result_leaf + 1, expected_result) != 0 ||
-        !path_is_below_temp_root(full_ready) ||
+        _wcsicmp(result_leaf + 1, expected_result) != 0) {
+        return PROBE_PATHS_LEAF_NAME_MISMATCH;
+    }
+    if (!path_is_below_temp_root(full_ready) ||
         !path_is_below_temp_root(full_stop) ||
         !path_is_below_temp_root(full_result)) {
-        return FALSE;
+        return PROBE_PATHS_TEMP_ROOT_REJECTED;
     }
 
     ready_separator = wcsrchr(full_ready, L'\\');
@@ -441,12 +460,26 @@ static BOOL probe_paths_are_safe(
         ready_parent_length != result_parent_length ||
         _wcsnicmp(full_ready, full_stop, ready_parent_length) != 0 ||
         _wcsnicmp(full_ready, full_result, ready_parent_length) != 0) {
-        return FALSE;
+        return PROBE_PATHS_PARENT_MISMATCH;
     }
 
     /* CREATE_NEW below provides a second, race-safe no-overwrite check. */
-    return path_is_missing(full_ready) && path_is_missing(full_stop) &&
-        path_is_missing(full_result);
+    if (!path_is_missing(full_ready) || !path_is_missing(full_stop) ||
+        !path_is_missing(full_result)) {
+        return PROBE_PATHS_DESTINATION_NOT_MISSING;
+    }
+    return PROBE_PATHS_SAFE;
+}
+
+static BOOL probe_paths_are_safe(
+    const wchar_t *profile_name,
+    const wchar_t *ready_path,
+    const wchar_t *stop_path,
+    const wchar_t *result_path
+) {
+    return validate_probe_paths(
+        profile_name, ready_path, stop_path, result_path
+    ) == PROBE_PATHS_SAFE;
 }
 
 static BOOL write_ascii_file(const wchar_t *path, const char *contents) {
@@ -1175,6 +1208,7 @@ static int run_runner_subscription_probe(
 int wmain(int argc, wchar_t **argv) {
     UINT32 remote_address;
     UINT16 remote_port;
+    enum ProbePathValidation path_status;
 
     if (argc == 2 && wcscmp(argv[1], L"--self-test") == 0) {
         return classifier_self_test() ? 0 : 1;
@@ -1191,8 +1225,26 @@ int wmain(int argc, wchar_t **argv) {
         }
         if (argv[4][0] == L'\0' || argv[5][0] == L'\0' || argv[6][0] == L'\0' ||
             _wcsicmp(argv[4], argv[5]) == 0 || _wcsicmp(argv[4], argv[6]) == 0 ||
-            _wcsicmp(argv[5], argv[6]) == 0 ||
-            !probe_paths_are_safe(argv[2], argv[4], argv[5], argv[6])) {
+            _wcsicmp(argv[5], argv[6]) == 0) {
+            return RUNNER_PROBE_INVALID_PATHS;
+        }
+        path_status = validate_probe_paths(argv[2], argv[4], argv[5], argv[6]);
+        switch (path_status) {
+        case PROBE_PATHS_SAFE:
+            break;
+        case PROBE_PATHS_PROFILE_NAME_INVALID:
+            return RUNNER_PROBE_INVALID_PROFILE_NAME;
+        case PROBE_PATHS_FULL_PATH_FAILED:
+            return RUNNER_PROBE_PATH_FULL_PATH_FAILED;
+        case PROBE_PATHS_LEAF_NAME_MISMATCH:
+            return RUNNER_PROBE_PATH_LEAF_NAME_MISMATCH;
+        case PROBE_PATHS_TEMP_ROOT_REJECTED:
+            return RUNNER_PROBE_PATH_TEMP_ROOT_REJECTED;
+        case PROBE_PATHS_PARENT_MISMATCH:
+            return RUNNER_PROBE_PATH_PARENT_MISMATCH;
+        case PROBE_PATHS_DESTINATION_NOT_MISSING:
+            return RUNNER_PROBE_PATH_DESTINATION_NOT_MISSING;
+        default:
             return RUNNER_PROBE_INVALID_PATHS;
         }
         return run_runner_subscription_probe(

@@ -521,6 +521,16 @@ jobs:
               $observerSetupStage = 'invalid_port'
             } elseif ($observerProcess.ExitCode -eq 6) {
               $observerSetupStage = 'invalid_paths'
+            } elseif ($observerProcess.ExitCode -eq 7) {
+              $observerSetupStage = 'probe_path_full_path_failed'
+            } elseif ($observerProcess.ExitCode -eq 8) {
+              $observerSetupStage = 'probe_path_leaf_name_mismatch'
+            } elseif ($observerProcess.ExitCode -eq 9) {
+              $observerSetupStage = 'probe_path_temp_root_rejected'
+            } elseif ($observerProcess.ExitCode -eq 10) {
+              $observerSetupStage = 'probe_path_parent_mismatch'
+            } elseif ($observerProcess.ExitCode -eq 11) {
+              $observerSetupStage = 'probe_path_destination_not_missing'
             }
             if ((Test-Path -LiteralPath $observerResultPath -PathType Leaf) -and
                 (Get-Item -LiteralPath $observerResultPath).Length -le 4096) {

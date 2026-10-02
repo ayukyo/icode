@@ -169,6 +169,21 @@ class TestWindowsWfpAbi(unittest.TestCase):
         self.assertIn("RUNNER_PROBE_INVALID_PROFILE_NAME = 4", source)
         self.assertIn("RUNNER_PROBE_INVALID_PORT = 5", source)
         self.assertIn("RUNNER_PROBE_INVALID_PATHS = 6", source)
+        self.assertIn("RUNNER_PROBE_PATH_FULL_PATH_FAILED = 7", source)
+        self.assertIn("RUNNER_PROBE_PATH_LEAF_NAME_MISMATCH = 8", source)
+        self.assertIn("RUNNER_PROBE_PATH_TEMP_ROOT_REJECTED = 9", source)
+        self.assertIn("RUNNER_PROBE_PATH_PARENT_MISMATCH = 10", source)
+        self.assertIn("RUNNER_PROBE_PATH_DESTINATION_NOT_MISSING = 11", source)
+        for path_status in (
+            "PROBE_PATHS_PROFILE_NAME_INVALID",
+            "PROBE_PATHS_FULL_PATH_FAILED",
+            "PROBE_PATHS_LEAF_NAME_MISMATCH",
+            "PROBE_PATHS_TEMP_ROOT_REJECTED",
+            "PROBE_PATHS_PARENT_MISMATCH",
+            "PROBE_PATHS_DESTINATION_NOT_MISSING",
+        ):
+            with self.subTest(path_status=path_status):
+                self.assertIn(path_status, source)
         self.assertIn("--probe-runner-subscription", source)
         self.assertIn('"sid-derive-failed\\n"', source)
         self.assertIn('"engine-open-failed\\n"', source)
@@ -226,6 +241,23 @@ class TestWindowsWfpAbi(unittest.TestCase):
             "return RUNNER_PROBE_INVALID_PATHS;",
             runner_mode,
         )
+        self.assertIn(
+            "path_status = validate_probe_paths(argv[2], argv[4], argv[5], argv[6]);",
+            runner_mode,
+        )
+        for path_status, exit_code in (
+            ("PROBE_PATHS_FULL_PATH_FAILED", "RUNNER_PROBE_PATH_FULL_PATH_FAILED"),
+            ("PROBE_PATHS_LEAF_NAME_MISMATCH", "RUNNER_PROBE_PATH_LEAF_NAME_MISMATCH"),
+            ("PROBE_PATHS_TEMP_ROOT_REJECTED", "RUNNER_PROBE_PATH_TEMP_ROOT_REJECTED"),
+            ("PROBE_PATHS_PARENT_MISMATCH", "RUNNER_PROBE_PATH_PARENT_MISMATCH"),
+            (
+                "PROBE_PATHS_DESTINATION_NOT_MISSING",
+                "RUNNER_PROBE_PATH_DESTINATION_NOT_MISSING",
+            ),
+        ):
+            with self.subTest(path_status=path_status):
+                self.assertIn(f"case {path_status}:", runner_mode)
+                self.assertIn(f"return {exit_code};", runner_mode)
 
     def test_sdk_compile_failure_classification_does_not_return_raw_output(self) -> None:
         probe = _probe_module(self)
