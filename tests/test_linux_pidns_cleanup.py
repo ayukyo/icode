@@ -295,6 +295,13 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
             host_only_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             host_only_listener.bind(("127.0.0.1", 0))
             host_only_listener.listen(1)
+            for listener in (upstream_listener, host_only_listener):
+                listener.settimeout(2.0)
+                with socket.create_connection(listener.getsockname(), timeout=2) as control:
+                    control.sendall(b"host-network-control")
+                    host_control, _address = listener.accept()
+                    with host_control:
+                        self.assertEqual(host_control.recv(64), b"host-network-control")
             upstream: socket.socket | None = None
             result_holder = []
             executor_thread: threading.Thread | None = None
@@ -414,6 +421,14 @@ class TestLinuxPidNamespaceCleanup(unittest.TestCase):
                 self.assertGreaterEqual(
                     time.monotonic_ns(), issued.lease.expires_at_monotonic_ns,
                 )
+                for listener in (upstream_listener, host_only_listener):
+                    listener.settimeout(0.1)
+                    try:
+                        unexpected, _address = listener.accept()
+                    except socket.timeout:
+                        continue
+                    unexpected.close()
+                    self.fail("worker direct connection reached a host loopback listener")
 
                 expired_marker = workspace / "expired-scope-payload-ran"
                 expired_result = execute_linux_leased_connect_candidate(
