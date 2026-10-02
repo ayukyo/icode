@@ -32,6 +32,7 @@ _RESULT_STATUSES = frozenset({
     "api_unavailable",
     "api_failed",
     "multi_volume",
+    "member_error",
     "member_limit_exceeded",
     "callback_error",
 })
@@ -103,6 +104,11 @@ def _handle_setupapi_notification(
             ctypes.c_void_p(param1),
             ctypes.POINTER(_FileInCabinetInfoW),
         ).contents
+        if info.Win32Error != _NO_ERROR:
+            # A member-level system error must not count as a valid name match.
+            state["status"] = "member_error"
+            return _FILEOP_ABORT
+
         if is_target_cabinet_member(info.NameInCabinet):
             state["target_match_count"] = int(state["target_match_count"]) + 1
 

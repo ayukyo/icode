@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import tempfile
 import unittest
@@ -41,6 +42,56 @@ class TestWindowsCabinetMemberName(unittest.TestCase):
 
         self.assertEqual(callback_result, 0)
         self.assertEqual(state, {"member_count": 0, "target_match_count": 0})
+
+    def test_member_error_aborts_without_counting_target_as_valid(self) -> None:
+        if cabinet_probe is None:
+            self.fail("the bounded Windows CAB inspector is not implemented")
+        handle_notification = getattr(cabinet_probe, "_handle_setupapi_notification", None)
+        self.assertIsNotNone(handle_notification)
+
+        member_info = cabinet_probe._FileInCabinetInfoW()
+        member_info.NameInCabinet = "wfpdiag.xml"
+        member_info.Win32Error = 5
+        state = {"member_count": 0, "target_match_count": 0}
+        callback_result = handle_notification(
+            0x11,
+            ctypes.addressof(member_info),
+            state,
+        )
+
+        self.assertEqual(callback_result, 0)
+        self.assertEqual(
+            state,
+            {"member_count": 1, "target_match_count": 0, "status": "member_error"},
+        )
+        self.assertEqual(
+            cabinet_probe._safe_summary("member_error", member_count=1),
+            {
+                "schema_version": 1,
+                "status": "member_error",
+                "member_count": 1,
+                "target_match_count": None,
+            },
+        )
+
+    def test_error_free_target_member_is_counted_and_skipped(self) -> None:
+        if cabinet_probe is None:
+            self.fail("the bounded Windows CAB inspector is not implemented")
+        handle_notification = getattr(cabinet_probe, "_handle_setupapi_notification", None)
+        self.assertIsNotNone(handle_notification)
+
+        member_info = cabinet_probe._FileInCabinetInfoW()
+        member_info.NameInCabinet = "wfpdiag.xml"
+        member_info.Win32Error = 0
+        state = {"member_count": 0, "target_match_count": 0}
+        callback_result = handle_notification(
+            0x11,
+            ctypes.addressof(member_info),
+            state,
+        )
+
+        self.assertEqual(callback_result, 2)
+        self.assertEqual(state, {"member_count": 1, "target_match_count": 1})
 
     def test_exact_basename_matches_at_root_or_under_a_cabinet_directory(self) -> None:
         is_member = self._require_classifier()
