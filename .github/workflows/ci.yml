@@ -429,7 +429,7 @@ jobs:
           $wfpMemberSelfTestSource = Join-Path $wfpMemberSelfTestRoot 'wfpdiag.xml'
           $wfpMemberSelfTestCab = Join-Path $wfpMemberSelfTestRoot 'member-selftest.cab'
           $wfpMemberSelfTestExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract'
-          $wfpArchiveMemberPattern = '(?im)^\s*(?:.*[\\/])?wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
+          $wfpArchiveMemberPattern = '(?im)^\s*(?:(?:[A-Z]:)?[^:\r\n]*\.cab:\s*)?(?:.*[\\/])?wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
           $wfpMatchFile = Join-Path $probeRoot 'wfp-match.json'
           $wfpReadyFile = Join-Path $probeRoot 'wfp-ready'
           $wfpStartedFile = Join-Path $probeRoot 'wfp-started'

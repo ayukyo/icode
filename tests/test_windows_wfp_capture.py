@@ -271,6 +271,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
             "  wfpdiag.xml 1,024 bytes",
             "nested\\wfpdiag.xml 1,024 bytes",
             "folder with spaces\\WFPDIAG.XML 1024 bytes",
+            r"D:\a\_temp\probe\member-selftest.cab: wfpdiag.xml",
             "expand selected wfpdiag.xml",
             "-F:wfpdiag.xml",
             "wfpdiag.xml is the requested member",
@@ -278,7 +279,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
 
         matched = [line for line in listing_lines if member_pattern.search(line)]
 
-        self.assertEqual(matched, listing_lines[:3])
+        self.assertEqual(matched, listing_lines[:4])
 
     def test_workflow_verifies_cab_member_listing_with_a_synthetic_positive_control(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]

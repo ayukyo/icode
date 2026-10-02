@@ -1,5 +1,7 @@
 # R3 自验证与有界修复
 
+- **CI #524 合成 CAB 失败已定位为 matcher 的归档前缀遗漏（2026-10-02）：**Windows Reviewer [x64](https://github.com/ayukyo/icode/actions/runs/37003727736/job/110827036312) 和 [ARM64](https://github.com/ayukyo/icode/actions/runs/37003727736/job/110827036361) 都观测到安全替换后的成员行 `<temp>\member-selftest.cab: wfpdiag.xml`；旧 regex 只接受成员名/成员路径，因此两者停在 `member_match`。本地测试先验证该失败，再验证 matcher 接受 CAB `.cab:` 前缀且拒绝 incidental mention；更新后的 fixture extraction/content check 仍必须在新 SHA 的双架构运行。当前 Windows R3 继续失败关闭，网络候选没运行，`10013` 门及 Reviewer 生产接线不变。
+
 - **CI #523 合成 CAB 自测失败于成员匹配步骤（2026-10-02）：**[x64](https://github.com/ayukyo/icode/actions/runs/37002609320/job/110823511839) 和 [ARM64](https://github.com/ayukyo/icode/actions/runs/37002609320/job/110823511604) 均在 candidate 前退出，固定状态为 `stage=member_match`。因为 makecab 输出 CAB 且 expand 列举命令已通过退出检查，但解析命中数不等于 1，根因仍可能是 CAB 成员名、`-F` 选择或行格式；当前候选只记录消除临时路径后的合成成员候选行以供下一 SHA 双架构核对。`10013` 网络硬门未运行、未放宽，Windows R3 仍失败关闭。
 
 - **CI #522 CAB 正成员控制自身未通过，网络验收未运行（2026-10-02）：**Reviewer [x64](https://github.com/ayukyo/icode/actions/runs/37001443006/job/110819810380) 和 [ARM64](https://github.com/ayukyo/icode/actions/runs/37001443006/job/110819810399) 在创建临时账户之前都被合成 CAB 自测以固定错误拦截；日志未含自测阶段，故根因尚未定位。当前未提交候选只新增有限阶段状态回执，下一 SHA 再按实测结果修复，不输出路径/异常。由于 R3 文件/网络 candidate 没有启动，本轮不能计为拒绝或隔离通过；Windows `10013` 硬门及 Reviewer 生产接线不变。
