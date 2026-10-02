@@ -319,6 +319,27 @@ class TestWindowsWfpCapture(unittest.TestCase):
         logged_lines = [line for line in job.splitlines() if "Write-Output" in line]
         self.assertFalse(any("$memberListResult.Stdout" in line for line in logged_lines))
 
+    def test_workflow_reports_only_exact_cab_path_echo_and_quote_categories(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("$wfpArchiveMemberPathEcho", job)
+        self.assertIn("archive_member_path_echo=$wfpArchiveMemberPathEcho", job)
+        self.assertIn("$wfpCaptureArchive", job)
+        self.assertIn("'echoed'", job)
+        self.assertIn("'not_echoed'", job)
+        self.assertIn("'single_quote_wrapper'", job)
+        self.assertIn("'double_quote_wrapper'", job)
+        logged_lines = [line for line in job.splitlines() if "Write-Output" in line]
+        self.assertFalse(any("$wfpCaptureArchive" in line for line in logged_lines))
+        self.assertFalse(any(
+            re.search(r"\$wfpArchiveMemberLine(?![A-Za-z0-9_])", line)
+            for line in logged_lines
+        ))
+
     def test_cab_member_pattern_rejects_incidental_mentions(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
