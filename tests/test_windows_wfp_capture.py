@@ -301,6 +301,16 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("$syntheticXmlCandidates.Count -ne 1", job)
         self.assertIn("$syntheticContentMatches", job)
         self.assertIn("wfp_cab_member_parser_self_test=passed", job)
+        self.assertIn("$wfpMemberSelfTestStage = 'prepare'", job)
+        self.assertIn("$wfpMemberSelfTestStage = 'makecab'", job)
+        self.assertIn("$wfpMemberSelfTestStage = 'list'", job)
+        self.assertIn("$wfpMemberSelfTestStage = 'member_match'", job)
+        self.assertIn("$wfpMemberSelfTestStage = 'extract'", job)
+        self.assertIn("$wfpMemberSelfTestStage = 'content_check'", job)
+        self.assertIn(
+            'Write-Output "wfp_cab_member_parser_self_test=failed stage=$wfpMemberSelfTestStage"',
+            job,
+        )
         self.assertIn("throw 'wfp_cab_member_parser_self_test_cleanup_failed'", job)
         self.assertIn("Remove-Item -LiteralPath $wfpMemberSelfTestRoot -Recurse -Force", job)
 
