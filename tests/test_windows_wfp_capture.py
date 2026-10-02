@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -241,9 +242,40 @@ class TestWindowsWfpCapture(unittest.TestCase):
 
         self.assertIn("$wfpArchiveMemberStatus = 'not_checked'", job)
         self.assertIn("'-D', $wfpCaptureArchive, '-F:wfpdiag.xml'", job)
-        self.assertIn("$memberListResult.Stdout -match '(?i)wfpdiag\\.xml'", job)
+        self.assertIn("$wfpArchiveMemberPattern = '(?im)^\\s*", job)
+        self.assertIn("$memberListResult.Stdout -split \"`r?`n\"", job)
+        self.assertIn("$_ -match $wfpArchiveMemberPattern", job)
+        self.assertIn("$wfpArchiveMemberStatus = 'multiple'", job)
         self.assertIn("archive_member_status=$wfpArchiveMemberStatus", job)
+        self.assertNotIn("$memberListResult.Stdout -match '(?i)wfpdiag\\.xml'", job)
         self.assertNotIn('Write-Output $memberListResult.Stdout', job)
+
+    def test_cab_member_pattern_rejects_incidental_mentions(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+        pattern_match = re.search(
+            r"(?m)^\s*\$wfpArchiveMemberPattern = '([^']+)'$",
+            job,
+        )
+
+        self.assertIsNotNone(pattern_match)
+        assert pattern_match is not None
+        member_pattern = re.compile(pattern_match.group(1))
+        listing_lines = [
+            "  wfpdiag.xml 1,024 bytes",
+            "nested\\wfpdiag.xml 1,024 bytes",
+            "folder with spaces\\WFPDIAG.XML 1024 bytes",
+            "expand selected wfpdiag.xml",
+            "-F:wfpdiag.xml",
+            "wfpdiag.xml is the requested member",
+        ]
+
+        matched = [line for line in listing_lines if member_pattern.search(line)]
+
+        self.assertEqual(matched, listing_lines[:3])
 
     def test_workflow_accepts_one_nested_cab_xml_and_rejects_ambiguous_matches(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
@@ -254,7 +286,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
 
         self.assertIn("$wfpXmlCandidates = @(", job)
         self.assertIn("Get-ChildItem -LiteralPath $wfpExtractRoot", job)
-        self.assertIn("-Filter 'wfpdiag.xml' -File -Recurse -ErrorAction Stop", job)
+        self.assertIn("-Filter 'wfpdiag.xml' -File -Recurse -Force -ErrorAction Stop", job)
         self.assertIn("$wfpXmlCandidates.Count -gt 1", job)
         self.assertIn("extract_xml_ambiguous", job)
 
