@@ -223,7 +223,10 @@ class TestWindowsWfpCapture(unittest.TestCase):
         job_start = workflow.index("  windows-reviewer-snapshot-probe:")
         job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
         job = workflow[job_start:job_end]
-        expand_arguments = job.split("-Path $expand -Arguments @(", 1)[1].split(
+        extraction_timeout = job.index("-TimeoutMilliseconds 15000")
+        extraction_call = job.rfind("-Path $expand -Arguments @(", 0, extraction_timeout)
+        self.assertGreaterEqual(extraction_call, 0)
+        expand_arguments = job[extraction_call:].split(
             ") -TimeoutMilliseconds 15000", 1
         )[0]
 
@@ -276,6 +279,30 @@ class TestWindowsWfpCapture(unittest.TestCase):
         matched = [line for line in listing_lines if member_pattern.search(line)]
 
         self.assertEqual(matched, listing_lines[:3])
+
+    def test_workflow_verifies_cab_member_listing_with_a_synthetic_positive_control(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("System32/makecab.exe", job)
+        self.assertIn("$wfpMemberSelfTestSource, $wfpMemberSelfTestCab", job)
+        self.assertIn("$makecabResult.ExitCode -ne 0", job)
+        self.assertIn("'-D', $wfpMemberSelfTestCab, '-F:wfpdiag.xml'", job)
+        self.assertIn("$memberListResult.Stdout -split \"`r?`n\"", job)
+        self.assertIn("Where-Object { $_ -match $wfpArchiveMemberPattern }", job)
+        self.assertIn("$matchingSyntheticMembers.Count -ne 1", job)
+        self.assertIn("wfp_cab_member_parser_self_test_failed", job)
+        self.assertIn("$wfpSyntheticExtract.ExitCode -ne 0", job)
+        self.assertIn("Get-ChildItem -LiteralPath $wfpMemberSelfTestExtractRoot", job)
+        self.assertIn("-Filter 'wfpdiag.xml' -File -Recurse -Force", job)
+        self.assertIn("$syntheticXmlCandidates.Count -ne 1", job)
+        self.assertIn("$syntheticContentMatches", job)
+        self.assertIn("wfp_cab_member_parser_self_test=passed", job)
+        self.assertIn("throw 'wfp_cab_member_parser_self_test_cleanup_failed'", job)
+        self.assertIn("Remove-Item -LiteralPath $wfpMemberSelfTestRoot -Recurse -Force", job)
 
     def test_workflow_accepts_one_nested_cab_xml_and_rejects_ambiguous_matches(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]

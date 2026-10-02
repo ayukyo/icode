@@ -425,6 +425,11 @@ jobs:
           $wfpCapturePrefix = Join-Path $env:RUNNER_TEMP "icode-reviewer-wfp-$suffix"
           $wfpCaptureArchive = "$wfpCapturePrefix.cab"
           $wfpExtractRoot = Join-Path $env:RUNNER_TEMP "icode-reviewer-wfp-extract-$suffix"
+          $wfpMemberSelfTestRoot = Join-Path $env:RUNNER_TEMP "icode-wfp-member-selftest-$suffix"
+          $wfpMemberSelfTestSource = Join-Path $wfpMemberSelfTestRoot 'wfpdiag.xml'
+          $wfpMemberSelfTestCab = Join-Path $wfpMemberSelfTestRoot 'member-selftest.cab'
+          $wfpMemberSelfTestExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract'
+          $wfpArchiveMemberPattern = '(?im)^\s*(?:.*[\\/])?wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
           $wfpMatchFile = Join-Path $probeRoot 'wfp-match.json'
           $wfpReadyFile = Join-Path $probeRoot 'wfp-ready'
           $wfpStartedFile = Join-Path $probeRoot 'wfp-started'
@@ -530,6 +535,65 @@ jobs:
               }
             } finally {
               if ($process) { $process.Dispose() }
+            }
+          }
+          try {
+            New-Item -ItemType Directory -Path $wfpMemberSelfTestRoot | Out-Null
+            $wfpMemberSelfTestContent = 'ICODE synthetic CAB member parser self-test'
+            [IO.File]::WriteAllText(
+              $wfpMemberSelfTestSource,
+              $wfpMemberSelfTestContent,
+              [Text.Encoding]::ASCII
+            )
+            $makecab = Join-Path $env:SystemRoot 'System32/makecab.exe'
+            $expand = Join-Path $env:SystemRoot 'System32/expand.exe'
+            $makecabResult = Invoke-BoundedDiagnosticCommand `
+              -Path $makecab -Arguments @(
+                $wfpMemberSelfTestSource, $wfpMemberSelfTestCab
+              ) -TimeoutMilliseconds 5000
+            if ($makecabResult.TimedOut -or $makecabResult.ExitCode -ne 0 -or
+                -not (Test-Path -LiteralPath $wfpMemberSelfTestCab -PathType Leaf)) {
+              throw 'wfp_cab_member_parser_self_test_failed'
+            }
+            $memberListResult = Invoke-BoundedDiagnosticCommand `
+              -Path $expand -Arguments @(
+                '-D', $wfpMemberSelfTestCab, '-F:wfpdiag.xml'
+              ) -TimeoutMilliseconds 5000 -CaptureStdout
+            $matchingSyntheticMembers = @(
+              $memberListResult.Stdout -split "`r?`n" |
+                Where-Object { $_ -match $wfpArchiveMemberPattern }
+            )
+            if ($memberListResult.TimedOut -or $memberListResult.ExitCode -ne 0 -or
+                $matchingSyntheticMembers.Count -ne 1) {
+              throw 'wfp_cab_member_parser_self_test_failed'
+            }
+            New-Item -ItemType Directory -Path $wfpMemberSelfTestExtractRoot | Out-Null
+            $wfpSyntheticExtract = Invoke-BoundedDiagnosticCommand `
+              -Path $expand -Arguments @(
+                $wfpMemberSelfTestCab, '-F:wfpdiag.xml', $wfpMemberSelfTestExtractRoot
+              ) -TimeoutMilliseconds 5000
+            $syntheticXmlCandidates = @(
+              Get-ChildItem -LiteralPath $wfpMemberSelfTestExtractRoot `
+                -Filter 'wfpdiag.xml' -File -Recurse -Force -ErrorAction Stop
+            )
+            if ($wfpSyntheticExtract.TimedOut -or $wfpSyntheticExtract.ExitCode -ne 0 -or
+                $syntheticXmlCandidates.Count -ne 1) {
+              throw 'wfp_cab_member_parser_self_test_failed'
+            }
+            $syntheticContentMatches = [IO.File]::ReadAllText($syntheticXmlCandidates[0].FullName) -ceq $wfpMemberSelfTestContent
+            if (-not $syntheticContentMatches) {
+              throw 'wfp_cab_member_parser_self_test_failed'
+            }
+            Write-Output 'wfp_cab_member_parser_self_test=passed'
+          } catch {
+            throw 'wfp_cab_member_parser_self_test_failed'
+          } finally {
+            if (Test-Path -LiteralPath $wfpMemberSelfTestRoot) {
+              try {
+                Remove-Item -LiteralPath $wfpMemberSelfTestRoot -Recurse -Force -ErrorAction Stop
+              } catch {
+                throw 'wfp_cab_member_parser_self_test_cleanup_failed'
+              }
             }
           }
           try {
@@ -708,7 +772,6 @@ jobs:
                           } elseif ($memberListResult.ExitCode -ne 0) {
                             $wfpArchiveMemberStatus = 'list_failed'
                           } else {
-                            $wfpArchiveMemberPattern = '(?im)^\s*(?:.*[\\/])?wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
                             $matchingArchiveMembers = @(
                               $memberListResult.Stdout -split "`r?`n" |
                                 Where-Object { $_ -match $wfpArchiveMemberPattern }
