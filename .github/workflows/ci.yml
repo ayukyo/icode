@@ -1165,8 +1165,12 @@ jobs:
                       if (Test-Path -LiteralPath $runnerWfpObserverReadyPath -PathType Leaf) {
                         if ((Get-Item -LiteralPath $runnerWfpObserverReadyPath).Length -le 64) {
                           $observerMarker = [IO.File]::ReadAllText($runnerWfpObserverReadyPath)
-                          if ($observerMarker -ceq "ready`n") {
-                            $runnerWfpObserverStatus = 'ready'
+                          $runnerWfpObserverStatus = switch -Exact -CaseSensitive ($observerMarker) {
+                            "subscription-ready`n" { 'ready' }
+                            "sid-derive-failed`n" { 'sid_derive_failed' }
+                            "engine-open-failed`n" { 'engine_open_failed' }
+                            "subscribe-failed`n" { 'subscribe_failed' }
+                            default { 'unavailable' }
                           }
                         }
                       }

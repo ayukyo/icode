@@ -1309,7 +1309,7 @@ int wmain(int argc, wchar_t **argv) {
             return 2;
         }
         return run_collector(
-            argv[2], 0, remote_port, TRUE, FALSE, TRUE,
+            argv[2], 0, remote_port, TRUE, TRUE, TRUE,
             argv[4], argv[5], argv[6]
         );
     }
