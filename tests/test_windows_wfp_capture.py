@@ -335,12 +335,28 @@ class TestWindowsWfpCapture(unittest.TestCase):
             "the XML suffix count must default to a fixed not_checked category",
         )
         self.assertTrue(
-            "$cabinetMemberSummary.schema_version -ne 2" in job,
-            "the synthetic positive control must exercise the v2 receipt schema",
+            "$cabinetMemberSummary.schema_version -ne 3" in job,
+            "the synthetic positive control must exercise the v3 receipt schema",
         )
         self.assertTrue(
             "$cabinetMemberSummary.xml_member_count -ne 1" in job,
             "the synthetic CAB must prove its single XML member is counted",
+        )
+        self.assertTrue(
+            "$cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -ne 1" in job,
+            "the synthetic target must prove the diagnostic prefix count",
+        )
+        self.assertTrue(
+            "$wfpArchiveWfpdiagXmlMemberCount = 'not_checked'" in job,
+            "the prefix count must default to a fixed not_checked category",
+        )
+        self.assertTrue(
+            "$wfpArchiveWfpdiagXmlMemberCount = [string]$cabinetMemberSummary.wfpdiag_prefixed_xml_member_count" in job,
+            "the notice may only publish the validated wfpdiag-prefix count",
+        )
+        self.assertTrue(
+            "archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount" in job,
+            "the bounded prefix count must be present in the fixed notice",
         )
         self.assertTrue(
             "$wfpArchiveXmlMemberCount = [string]$cabinetMemberSummary.xml_member_count" in job,
@@ -354,16 +370,31 @@ class TestWindowsWfpCapture(unittest.TestCase):
         xml_count_consistency = job.index(
             "$cabinetMemberSummary.xml_member_count -le $cabinetMemberSummary.member_count"
         )
+        prefix_count_bound = job.index(
+            "$cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -le 4096"
+        )
+        prefix_count_xml_consistency = job.index(
+            "$cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -le $cabinetMemberSummary.xml_member_count"
+        )
         xml_count_receipt = job.index(
             "$wfpArchiveXmlMemberCount = [string]$cabinetMemberSummary.xml_member_count"
         )
+        prefix_count_receipt = job.index(
+            "$wfpArchiveWfpdiagXmlMemberCount = [string]$cabinetMemberSummary.wfpdiag_prefixed_xml_member_count"
+        )
         self.assertLess(xml_count_bound, xml_count_receipt)
         self.assertLess(xml_count_consistency, xml_count_receipt)
+        self.assertLess(prefix_count_bound, prefix_count_receipt)
+        self.assertLess(prefix_count_xml_consistency, prefix_count_receipt)
         self.assertLess(
             xml_count_receipt,
             job.index("archive_xml_member_count=$wfpArchiveXmlMemberCount"),
         )
-        self.assertIn("$cabinetMemberSummary.schema_version -eq 2", job)
+        self.assertLess(
+            prefix_count_receipt,
+            job.index("archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount"),
+        )
+        self.assertIn("$cabinetMemberSummary.schema_version -eq 3", job)
 
     def test_workflow_rejects_malformed_or_unbounded_cabinet_probe_receipts(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
@@ -379,7 +410,11 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("$cabinetMemberSummary.xml_member_count -le 4096", job)
         self.assertIn("$cabinetMemberSummary.xml_member_count -le $cabinetMemberSummary.member_count", job)
         self.assertIn("$cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.xml_member_count", job)
+        self.assertIn("$cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -le 4096", job)
+        self.assertIn("$cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -le $cabinetMemberSummary.xml_member_count", job)
+        self.assertIn("$cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count", job)
         self.assertIn("'xml_member_count'", job)
+        self.assertIn("'wfpdiag_prefixed_xml_member_count'", job)
         self.assertIn("$wfpArchiveMemberStatus = 'summary_invalid'", job)
         self.assertIn("$wfpArchiveMemberStatus = 'list_timeout'", job)
         logged_lines = [line for line in job.splitlines() if "Write-Output" in line]

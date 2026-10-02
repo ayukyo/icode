@@ -14,6 +14,7 @@ from pathlib import Path
 _MAX_CABINET_BYTES = 64 * 1024 * 1024
 _MAX_CABINET_MEMBERS = 4096
 _TARGET_BASENAME = "wfpdiag.xml"
+_WFPDIAG_BASENAME_PREFIX = "wfpdiag"
 _XML_SUFFIX = ".xml"
 
 _SPFILENOTIFY_CABINETINFO = 0x10
@@ -65,6 +66,18 @@ def is_xml_cabinet_member(member_name: object) -> bool:
     return basename is not None and basename.lower().endswith(_XML_SUFFIX)
 
 
+def is_wfpdiag_prefixed_xml_cabinet_member(member_name: object) -> bool:
+    """Count wfpdiag-prefixed XML names without relaxing the exact target match."""
+    basename = _cabinet_member_basename(member_name)
+    if basename is None:
+        return False
+    normalized_basename = basename.lower()
+    return (
+        normalized_basename.startswith(_WFPDIAG_BASENAME_PREFIX)
+        and normalized_basename.endswith(_XML_SUFFIX)
+    )
+
+
 def _cabinet_member_basename(member_name: object) -> str | None:
     if not isinstance(member_name, str) or not member_name:
         return None
@@ -80,6 +93,7 @@ def _safe_summary(
     member_count: int = 0,
     target_match_count: int | None = None,
     xml_member_count: int | None = None,
+    wfpdiag_prefixed_xml_member_count: int | None = None,
 ) -> dict[str, int | str | None]:
     """Return fixed fields only; never include paths, names, or native errors."""
     safe_status = status if status in _RESULT_STATUSES else "api_failed"
@@ -92,12 +106,19 @@ def _safe_summary(
         bounded_xml_member_count = min(
             max(int(bounded_xml_member_count), 0), _MAX_CABINET_MEMBERS,
         )
+    bounded_wfpdiag_prefixed_xml_member_count = wfpdiag_prefixed_xml_member_count
+    if bounded_wfpdiag_prefixed_xml_member_count is not None:
+        bounded_wfpdiag_prefixed_xml_member_count = min(
+            max(int(bounded_wfpdiag_prefixed_xml_member_count), 0),
+            _MAX_CABINET_MEMBERS,
+        )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": safe_status,
         "member_count": bounded_member_count,
         "target_match_count": bounded_match_count,
         "xml_member_count": bounded_xml_member_count,
+        "wfpdiag_prefixed_xml_member_count": bounded_wfpdiag_prefixed_xml_member_count,
     }
 
 
@@ -134,6 +155,10 @@ def _handle_setupapi_notification(
             state["target_match_count"] = int(state["target_match_count"]) + 1
         if is_xml_cabinet_member(info.NameInCabinet):
             state["xml_member_count"] = int(state["xml_member_count"]) + 1
+        if is_wfpdiag_prefixed_xml_cabinet_member(info.NameInCabinet):
+            state["wfpdiag_prefixed_xml_member_count"] = (
+                int(state["wfpdiag_prefixed_xml_member_count"]) + 1
+            )
 
         # Enumeration is intentionally non-extracting for every member.
         return _FILEOP_SKIP
@@ -159,6 +184,7 @@ def _enumerate_windows_cabinet(archive_path: Path) -> dict[str, int | str | None
         "member_count": 0,
         "target_match_count": 0,
         "xml_member_count": 0,
+        "wfpdiag_prefixed_xml_member_count": 0,
     }
 
     callback_type = ctypes.WINFUNCTYPE(
@@ -201,6 +227,9 @@ def _enumerate_windows_cabinet(archive_path: Path) -> dict[str, int | str | None
         member_count=member_count,
         target_match_count=int(state["target_match_count"]),
         xml_member_count=int(state["xml_member_count"]),
+        wfpdiag_prefixed_xml_member_count=int(
+            state["wfpdiag_prefixed_xml_member_count"]
+        ),
     )
 
 

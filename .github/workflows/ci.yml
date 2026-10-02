@@ -443,6 +443,7 @@ jobs:
           $wfpArchiveMemberCount = 'not_checked'
           $wfpArchiveMemberMatchCount = 'not_checked'
           $wfpArchiveXmlMemberCount = 'not_checked'
+          $wfpArchiveWfpdiagXmlMemberCount = 'not_checked'
           $wfpExactDropCount = 0
           $wfpExtractExitCode = 'not_run'
           $wfpMemberSelfTestStage = 'prepare'
@@ -598,7 +599,7 @@ jobs:
               throw 'wfp_cab_member_parser_self_test_failed'
             }
             $cabinetMemberSummary = $memberListResult.Stdout | ConvertFrom-Json
-            if ($cabinetMemberSummary.schema_version -ne 2 -or
+            if ($cabinetMemberSummary.schema_version -ne 3 -or
                 $cabinetMemberSummary.status -ne 'listed' -or
                 ($cabinetMemberSummary.member_count -isnot [int] -and
                  $cabinetMemberSummary.member_count -isnot [long]) -or
@@ -612,7 +613,12 @@ jobs:
                  $cabinetMemberSummary.xml_member_count -isnot [long]) -or
                 $cabinetMemberSummary.xml_member_count -ne 1 -or
                 $cabinetMemberSummary.xml_member_count -gt $cabinetMemberSummary.member_count -or
-                $cabinetMemberSummary.target_match_count -gt $cabinetMemberSummary.xml_member_count) {
+                $cabinetMemberSummary.target_match_count -gt $cabinetMemberSummary.xml_member_count -or
+                ($cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -isnot [int] -and
+                 $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -isnot [long]) -or
+                $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -ne 1 -or
+                $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -gt $cabinetMemberSummary.xml_member_count -or
+                $cabinetMemberSummary.target_match_count -gt $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count) {
               throw 'wfp_cab_member_parser_self_test_failed'
             }
             $wfpMemberSelfTestStage = 'member_match'
@@ -914,7 +920,7 @@ jobs:
                           )
                           $expectedSummaryPropertyNames = @(
                             'member_count', 'schema_version', 'status', 'target_match_count',
-                            'xml_member_count'
+                            'xml_member_count', 'wfpdiag_prefixed_xml_member_count'
                           )
                           $cabinetSummaryValid = (
                             $summaryPropertyNames.Count -eq $expectedSummaryPropertyNames.Count
@@ -926,7 +932,7 @@ jobs:
                           }
                           if ($cabinetSummaryValid) {
                             $cabinetSummaryValid = (
-                              $cabinetMemberSummary.schema_version -eq 2 -and
+                              $cabinetMemberSummary.schema_version -eq 3 -and
                               ($cabinetMemberSummary.member_count -is [int] -or
                                $cabinetMemberSummary.member_count -is [long]) -and
                               $cabinetMemberSummary.member_count -ge 0 -and
@@ -940,7 +946,13 @@ jobs:
                               $cabinetMemberSummary.xml_member_count -ge 0 -and
                               $cabinetMemberSummary.xml_member_count -le 4096 -and
                               $cabinetMemberSummary.xml_member_count -le $cabinetMemberSummary.member_count -and
-                              $cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.xml_member_count
+                              $cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.xml_member_count -and
+                              ($cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -is [int] -or
+                               $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -is [long]) -and
+                              $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -ge 0 -and
+                              $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -le 4096 -and
+                              $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count -le $cabinetMemberSummary.xml_member_count -and
+                              $cabinetMemberSummary.target_match_count -le $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count
                             )
                           }
                         } catch {
@@ -949,6 +961,7 @@ jobs:
                         if ($cabinetSummaryValid) {
                           $wfpArchiveMemberCount = [string]$cabinetMemberSummary.member_count
                           $wfpArchiveXmlMemberCount = [string]$cabinetMemberSummary.xml_member_count
+                          $wfpArchiveWfpdiagXmlMemberCount = [string]$cabinetMemberSummary.wfpdiag_prefixed_xml_member_count
                         }
                         if (-not $cabinetSummaryValid) {
                           $wfpArchiveMemberStatus = 'summary_invalid'
@@ -1067,7 +1080,7 @@ jobs:
                 }
               }
             }
-            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_member_match_count=$wfpArchiveMemberMatchCount archive_xml_member_count=$wfpArchiveXmlMemberCount"
+            Write-Output "::notice title=Windows WFP capture diagnostic::status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_member_match_count=$wfpArchiveMemberMatchCount archive_xml_member_count=$wfpArchiveXmlMemberCount archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }
