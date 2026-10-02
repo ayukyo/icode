@@ -300,6 +300,25 @@ class TestWindowsWfpCapture(unittest.TestCase):
         logged_lines = [line for line in job.splitlines() if "Write-Output" in line]
         self.assertFalse(any("$memberListResult.Stdout" in line for line in logged_lines))
 
+    def test_workflow_reports_only_fixed_member_prefix_suffix_categories(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        self.assertIn("$wfpArchiveMemberPrefixShape", job)
+        self.assertIn("$wfpArchiveMemberSuffixShape", job)
+        self.assertIn("archive_member_prefix_shape=$wfpArchiveMemberPrefixShape", job)
+        self.assertIn("archive_member_suffix_shape=$wfpArchiveMemberSuffixShape", job)
+        for category in (
+            "'cab_colon'", "'cab_no_delimiter'", "'path_separator'",
+            "'wrapper'", "'text'", "'none'", "'metadata'", "'other'",
+        ):
+            self.assertIn(category, job)
+        logged_lines = [line for line in job.splitlines() if "Write-Output" in line]
+        self.assertFalse(any("$memberListResult.Stdout" in line for line in logged_lines))
+
     def test_cab_member_pattern_rejects_incidental_mentions(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
