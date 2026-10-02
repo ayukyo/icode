@@ -487,14 +487,34 @@ jobs:
                   ExitCode = $null; TimedOut = $true; Stdout = ''
                 }
               }
-              $process.WaitForExit()
+              # Child exit does not guarantee inherited stdout/stderr handles reached EOF.
+              # Keep pipe drains bounded too, and fail closed if parser output is incomplete.
               if ($CaptureStdout) {
-                $stdout = $stdoutTask.GetAwaiter().GetResult()
+                if (-not $stdoutTask.Wait(5000)) {
+                  try { $process.StandardOutput.Close() } catch { }
+                  try { [void]$stdoutTask.Wait(1000) } catch { }
+                  try { $process.StandardError.Close() } catch { }
+                  try { [void]$stderrTask.Wait(1000) } catch { }
+                  return [pscustomobject]@{
+                    ExitCode = $process.ExitCode; TimedOut = $false; Stdout = ''
+                  }
+                }
+                $stdout = $stdoutTask.Result
               } else {
-                $stdoutTask.GetAwaiter().GetResult()
+                if (-not $stdoutTask.Wait(1000)) {
+                  try { $process.StandardOutput.Close() } catch { }
+                  try { [void]$stdoutTask.Wait(1000) } catch { }
+                }
                 $stdout = ''
               }
-              $stderrTask.GetAwaiter().GetResult()
+              try {
+                if (-not $stderrTask.Wait(1000)) {
+                  $process.StandardError.Close()
+                  try { [void]$stderrTask.Wait(1000) } catch { }
+                }
+              } catch {
+                try { $process.StandardError.Close() } catch { }
+              }
               return [pscustomobject]@{
                 ExitCode = $process.ExitCode; TimedOut = $false; Stdout = $stdout
               }
@@ -539,7 +559,16 @@ jobs:
               -ArgumentList @('/d', '/c', 'exit', '0') `
               -Credential $credential -LoadUserProfile `
               -WorkingDirectory (Join-Path $env:SystemRoot 'System32') `
-              -Wait -PassThru
+              -PassThru
+            # PowerShell's Start-Process -Wait has no local deadline; bound the profile bootstrap.
+            if (-not $profileBootstrap.WaitForExit(30000)) {
+              try { $profileBootstrap.Kill($true) } catch { }
+              if (-not $profileBootstrap.WaitForExit(5000)) {
+                throw 'temporary_user_profile_bootstrap_cleanup_timeout'
+              }
+              throw 'temporary_user_profile_bootstrap_timeout'
+            }
+            $profileBootstrap.Refresh()
             if ($profileBootstrap.ExitCode -ne 0) {
               throw "temporary_user_profile_bootstrap_failed exit=$($profileBootstrap.ExitCode)"
             }
