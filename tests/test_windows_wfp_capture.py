@@ -268,10 +268,15 @@ class TestWindowsWfpCapture(unittest.TestCase):
         assert pattern_match is not None
         member_pattern = re.compile(pattern_match.group(1))
         listing_lines = [
+            r"D:\a\_temp\probe\capture.cab: wfpdiag.xml 1,024 bytes",
+            r"D:\a\_temp\probe\capture.cab: nested\wfpdiag.xml 1,024 bytes",
+            r"D:\a\_temp\probe\capture.cab: folder with spaces\WFPDIAG.XML 1024 bytes",
+            r"D:\a\_temp\probe\member-selftest.cab: wfpdiag.xml",
+            r"\\server\share\capture.cab: wfpdiag.xml",
             "  wfpdiag.xml 1,024 bytes",
             "nested\\wfpdiag.xml 1,024 bytes",
             "folder with spaces\\WFPDIAG.XML 1024 bytes",
-            r"D:\a\_temp\probe\member-selftest.cab: wfpdiag.xml",
+            r"Expand failed for D:\temp\wfpdiag.xml",
             "expand selected wfpdiag.xml",
             "-F:wfpdiag.xml",
             "wfpdiag.xml is the requested member",
@@ -279,7 +284,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
 
         matched = [line for line in listing_lines if member_pattern.search(line)]
 
-        self.assertEqual(matched, listing_lines[:4])
+        self.assertEqual(matched, listing_lines[:5])
 
     def test_workflow_verifies_cab_member_listing_with_a_synthetic_positive_control(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
@@ -300,6 +305,15 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("Get-ChildItem -LiteralPath $wfpMemberSelfTestExtractRoot", job)
         self.assertIn("-Filter 'wfpdiag.xml' -File -Recurse -Force", job)
         self.assertIn("$syntheticXmlCandidates.Count -ne 1", job)
+        self.assertIn("$extractTimedOut = if ($wfpSyntheticExtract.TimedOut)", job)
+        self.assertIn("$extractExitCode = if ($null -eq $wfpSyntheticExtract.ExitCode)", job)
+        self.assertIn("$syntheticXmlCandidateCount = if ($syntheticXmlCandidates.Count -eq 0)", job)
+        self.assertIn(
+            "wfp_cab_member_parser_self_test_extract=failed "
+            "timed_out=$extractTimedOut exit_code=$extractExitCode "
+            "xml_candidates=$syntheticXmlCandidateCount",
+            job,
+        )
         self.assertIn("$syntheticContentMatches", job)
         self.assertIn("wfp_cab_member_parser_self_test=passed", job)
         self.assertIn("$wfpMemberSelfTestStage = 'prepare'", job)

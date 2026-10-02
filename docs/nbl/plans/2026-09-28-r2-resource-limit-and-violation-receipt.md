@@ -1,5 +1,7 @@
 # R2 资源限制与统一违规回执实施门
 
+- **CI #525 matcher 通过后停在合成 CAB extraction（2026-10-02）：**Windows Reviewer [x64](https://github.com/ayukyo/icode/actions/runs/37004738576/job/110830239414) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/37004738576/job/110830239548) 均进入 `extract` 阶段后失败，说明 synthetic `.cab:` 成员解析已过，但尚不能区分 `expand` 超时/非零/未知退出码与提取 XML 数量不等于一。下一 SHA 只增加 `timed_out`、数字/unknown `exit_code`、`xml_candidates=zero|one|multiple` 的合成测试回执；不打印工具输出、路径或 CAB/XML。两架构都在临时用户/网络探针前退出，未获得网络证据、不计 R2、不放宽 `10013` 硬门或改变 readiness。
+
 - **CI #524 的 CAB 自测输出确认 matcher 漏掉归档前缀（2026-10-02）：**Windows Reviewer [x64](https://github.com/ayukyo/icode/actions/runs/37003727736/job/110827036312) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/37003727736/job/110827036361) 的合成行均为 `<temp>\member-selftest.cab: wfpdiag.xml`，失败在 `member_match`，在临时用户和网络候选启动前即退出。根因已由观察到的 fixture 输出和本地回归测试确认：旧 anchored regex 不接受 `.cab:` 归档字段；候选规则现在限定识别 `.cab:` 后的唯一成员名，同时保留临时夹具内容提取验证。下一 SHA 仍需 x64/ARM64 通过 synthetic self-test 后才能继续读取真实 capture 证据；此补丁没有获得网络结果，不计 R2 证据，不放宽 `10013` 硬门或改变 readiness。
 
 - **CI #523 CAB 正成员测试停在 matcher（2026-10-02）：**Reviewer [x64](https://github.com/ayukyo/icode/actions/runs/37002609320/job/110823511839) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/37002609320/job/110823511604) 都在账户创建/网络探针之前失败，脱敏阶段回执为 `member_match`。这证明 `makecab` 和 `expand -D` 调用已启动并通过其超时/退出码条件，但匹配器没有恰好一个命中；仍未知是 CAB 内部名称、`-F` 行为还是列布局，不将它归为一个已确认 parser 根因。下一 SHA 只打印安全替换后的合成成员候选行（至多两行、160 字符），绝不打印生产 capture listing、路径或异常。本项未获得网络结果，不计 R2 证据、不放宽 `10013` 硬门。

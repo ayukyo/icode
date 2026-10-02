@@ -429,7 +429,7 @@ jobs:
           $wfpMemberSelfTestSource = Join-Path $wfpMemberSelfTestRoot 'wfpdiag.xml'
           $wfpMemberSelfTestCab = Join-Path $wfpMemberSelfTestRoot 'member-selftest.cab'
           $wfpMemberSelfTestExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract'
-          $wfpArchiveMemberPattern = '(?im)^\s*(?:(?:[A-Z]:)?[^:\r\n]*\.cab:\s*)?(?:.*[\\/])?wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
+          $wfpArchiveMemberPattern = '(?im)^\s*(?:[A-Z]:[\\/]|\\\\)[^:\r\n]*\.cab:\s*(?:[^:\r\n]*[\\/])?wfpdiag\.xml(?:\s+[\d,]+(?:\s+\S+)?)?\s*$'
           $wfpMatchFile = Join-Path $probeRoot 'wfp-match.json'
           $wfpReadyFile = Join-Path $probeRoot 'wfp-ready'
           $wfpStartedFile = Join-Path $probeRoot 'wfp-started'
@@ -603,8 +603,22 @@ jobs:
               Get-ChildItem -LiteralPath $wfpMemberSelfTestExtractRoot `
                 -Filter 'wfpdiag.xml' -File -Recurse -Force -ErrorAction Stop
             )
+            $extractTimedOut = if ($wfpSyntheticExtract.TimedOut) { 'true' } else { 'false' }
+            $extractExitCode = if ($null -eq $wfpSyntheticExtract.ExitCode) {
+              'unknown'
+            } else {
+              [string]$wfpSyntheticExtract.ExitCode
+            }
+            $syntheticXmlCandidateCount = if ($syntheticXmlCandidates.Count -eq 0) {
+              'zero'
+            } elseif ($syntheticXmlCandidates.Count -eq 1) {
+              'one'
+            } else {
+              'multiple'
+            }
             if ($wfpSyntheticExtract.TimedOut -or $wfpSyntheticExtract.ExitCode -ne 0 -or
                 $syntheticXmlCandidates.Count -ne 1) {
+              Write-Output "wfp_cab_member_parser_self_test_extract=failed timed_out=$extractTimedOut exit_code=$extractExitCode xml_candidates=$syntheticXmlCandidateCount"
               throw 'wfp_cab_member_parser_self_test_failed'
             }
             $wfpMemberSelfTestStage = 'content_check'
