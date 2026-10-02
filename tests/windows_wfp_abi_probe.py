@@ -120,6 +120,24 @@ def _classify_windows_sdk_compile_failure(compiler_output: str, return_code: int
     return "compiler_output_missing"
 
 
+def _visual_studio_architectures(runner_arch: str, machine: str) -> tuple[str, str]:
+    """Map runner names to supported VsDevCmd target/host architecture names."""
+    runner = runner_arch.strip().casefold()
+    host_machine = machine.strip().casefold()
+    arm_runner = runner == "arm64" or host_machine in {"arm64", "aarch64"}
+    x64_runner = runner in {"x64", "amd64"} or host_machine in {"amd64", "x86_64"}
+
+    if arm_runner and not x64_runner:
+        if runner in {"", "arm64"} and host_machine in {"", "arm64", "aarch64"}:
+            # VsDevCmd documents amd64 as a host architecture for arm64 targets.
+            return "arm64", "amd64"
+    elif x64_runner and not arm_runner:
+        if runner in {"", "x64", "amd64"} and host_machine in {"", "amd64", "x86_64"}:
+            # The VsDevCmd spelling for a 64-bit x86 target is amd64, not x64.
+            return "amd64", "amd64"
+    raise RuntimeError("unsupported_windows_runner_architecture")
+
+
 def ctypes_layout_snapshot() -> dict[str, int]:
     """Return only the sizes and offsets required by the future event parser."""
     return {
@@ -183,14 +201,10 @@ def run_windows_sdk_layout_probe() -> dict[str, int]:
     if not dev_command.is_file():
         raise RuntimeError("visual_studio_developer_command_unavailable")
 
-    runner_arch = os.environ.get("RUNNER_ARCH", "").strip().lower()
-    machine = platform.machine().strip().lower()
-    if runner_arch == "arm64" or machine in {"arm64", "aarch64"}:
-        visual_studio_arch = "arm64"
-    elif runner_arch in {"x64", "amd64"} or machine in {"amd64", "x86_64"}:
-        visual_studio_arch = "x64"
-    else:
-        raise RuntimeError("unsupported_windows_runner_architecture")
+    visual_studio_target_arch, visual_studio_host_arch = _visual_studio_architectures(
+        os.environ.get("RUNNER_ARCH", ""),
+        platform.machine(),
+    )
 
     source = Path(__file__).resolve().parent / "fixtures" / "native" / "wfp_sdk_layout_probe.c"
     if not source.is_file():
@@ -198,8 +212,8 @@ def run_windows_sdk_layout_probe() -> dict[str, int]:
     with tempfile.TemporaryDirectory(prefix="icode-wfp-sdk-abi-") as raw_directory:
         executable = Path(raw_directory) / "wfp_sdk_layout_probe.exe"
         compiler_command = (
-            f'call "{dev_command}" -arch={visual_studio_arch} '
-            f'-host_arch={visual_studio_arch} >NUL && '
+            f'call "{dev_command}" -arch={visual_studio_target_arch} '
+            f'-host_arch={visual_studio_host_arch} >NUL && '
             f'cl /nologo /W0 /Fe:"{executable}" "{source}"'
         )
         try:

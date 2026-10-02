@@ -50,6 +50,19 @@ def _probe_module(test: unittest.TestCase):
 
 
 class TestWindowsWfpAbi(unittest.TestCase):
+    def test_visual_studio_architecture_names_match_supported_target_and_host_values(self) -> None:
+        probe = _probe_module(self)
+        self.assertEqual(
+            probe._visual_studio_architectures("x64", "AMD64"),
+            ("amd64", "amd64"),
+        )
+        self.assertEqual(
+            probe._visual_studio_architectures("ARM64", "ARM64"),
+            ("arm64", "amd64"),
+        )
+        with self.assertRaisesRegex(RuntimeError, "unsupported_windows_runner_architecture"):
+            probe._visual_studio_architectures("x86", "x86")
+
     def test_sdk_compile_failure_classification_does_not_return_raw_output(self) -> None:
         probe = _probe_module(self)
         classify = probe._classify_windows_sdk_compile_failure
