@@ -178,10 +178,10 @@ class TestWindowsWfpCapture(unittest.TestCase):
         )
         self.assertNotIn("::notice title=Runner WFP candidate observer::", job)
         for final_summary_field in (
-            "runner_wfp_observer=$runnerWfpObserverStatus",
+            "observer=$runnerWfpObserverStatus",
             "collection=$runnerWfpCollectionState",
-            "candidate_event=$runnerWfpCandidateEvent",
-            "matched_capability_drop_count=$runnerWfpMatchedCapabilityDropCount",
+            "event=$runnerWfpCandidateEvent",
+            "matched_capability_drops=$runnerWfpMatchedCapabilityDropCount",
             "cleanup=$runnerWfpCleanupState",
             "capture_status=$wfpCaptureStatus",
             "exact_classify_drop_count=$wfpExactDropCount",

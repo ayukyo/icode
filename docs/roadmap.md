@@ -503,6 +503,8 @@ WebUI 闭环：网页放行 → 200，approver 返回 True
 
 ### R2 —— 跨平台隔离策略（实施中）
 
+截至 2026-10-03，R2/R3 尚未验收完成。Windows CI #551 仍没有 `10013` 网络拒绝证据；为定位 observer/receipt 的阶段性失败，当前仅追加净化的固定枚举遥测，本地合同测试不替代新 SHA 的 x64/ARM64 PowerShell 验收。真实模型 `pycalc` 端到端调用中，独立 29 项测试通过，但 Executor 达到回合上限且 Reviewer 未提交结论，整体按失败关闭；该结果证明失败门有效，不算 R3 任务能力通过。具体证据和边界分别见 [R2 资源限制门](./nbl/plans/2026-09-28-r2-resource-limit-and-violation-receipt.md)与 [R3 自验证计划](./nbl/plans/2026-09-26-r3-self-verification.md)。
+
 R2.0 已发布版本化 policy schema、冲突规则与 contract vectors/score。
 R2.1 已实现每工单 Git worktree 或非 Git 清单快照、跨进程租约、受保护路径策略，并接入自主运行生命周期。
 Linux 本地回归验证了同工单两进程互斥、worker 退出后释放租约、原始 Git 工作树内容与状态不变、非 Git 快照清单和受保护路径合同。[三平台 CI 验收](https://github.com/ayukyo/icode/actions/runs/35880420396) 的 Linux、macOS、Windows 工作区专项、Python 3.11/3.12 全量测试与仓库展示检查均通过。

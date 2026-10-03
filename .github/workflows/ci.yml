@@ -645,6 +645,10 @@ jobs:
           $runnerWfpObserverStopPath = $null
           $runnerWfpObserverResultPath = $null
           $runnerWfpObserverStatus = 'not_started'
+          $runnerWfpObserverMarkerState = 'not_started'
+          $runnerWfpObserverProcessState = 'not_started'
+          $runnerWfpObserverHelperExitCode = 'not_exited'
+          $runnerWfpReceiptState = 'not_checked'
           $runnerWfpCollectionState = 'unknown'
           $runnerWfpCandidateEvent = 'inconclusive'
           $runnerWfpMatchedCapabilityDropCount = 'not_checked'
@@ -1108,6 +1112,7 @@ jobs:
                 if ([string]::IsNullOrWhiteSpace($probeExecutable) -or
                     -not (Test-Path -LiteralPath $probeExecutable -PathType Leaf)) {
                   $runnerWfpObserverStatus = 'probe_missing'
+                  $runnerWfpObserverMarkerState = 'probe_missing'
                 } else {
                   $observerTempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
                   $observerSuffix = [Guid]::NewGuid().ToString('N')
@@ -1119,8 +1124,10 @@ jobs:
                   if (-not $runnerWfpObserverRoot.StartsWith(
                       $observerContainmentRoot, [StringComparison]::OrdinalIgnoreCase)) {
                     $runnerWfpObserverStatus = 'path_invalid'
+                    $runnerWfpObserverMarkerState = 'path_invalid'
                   } elseif (Test-Path -LiteralPath $runnerWfpObserverRoot) {
                     $runnerWfpObserverStatus = 'path_collision'
+                    $runnerWfpObserverMarkerState = 'path_collision'
                   } else {
                     [IO.Directory]::CreateDirectory($runnerWfpObserverRoot) | Out-Null
                     $observerTempOverride = $runnerWfpObserverRoot +
@@ -1149,9 +1156,13 @@ jobs:
                     $runnerWfpObserverProcess.StartInfo = $observerStartInfo
                     if (-not $runnerWfpObserverProcess.Start()) {
                       $runnerWfpObserverStatus = 'start_failed'
+                      $runnerWfpObserverMarkerState = 'start_failed'
+                      $runnerWfpObserverProcessState = 'start_failed'
                       $runnerWfpObserverProcess.Dispose()
                       $runnerWfpObserverProcess = $null
                     } else {
+                      $runnerWfpObserverMarkerState = 'waiting'
+                      $runnerWfpObserverProcessState = 'running'
                       $observerReadyDeadline = [DateTimeOffset]::UtcNow.AddSeconds(15)
                       while ([DateTimeOffset]::UtcNow -lt $observerReadyDeadline) {
                         $runnerWfpObserverProcess.Refresh()
@@ -1163,25 +1174,44 @@ jobs:
                       }
                       $runnerWfpObserverStatus = 'unavailable'
                       if (Test-Path -LiteralPath $runnerWfpObserverReadyPath -PathType Leaf) {
-                        if ((Get-Item -LiteralPath $runnerWfpObserverReadyPath).Length -le 64) {
-                          $observerMarker = [IO.File]::ReadAllText($runnerWfpObserverReadyPath)
-                          $runnerWfpObserverStatus = switch -Exact -CaseSensitive ($observerMarker) {
-                            "subscription-ready`n" { 'ready' }
-                            "sid-derive-failed`n" { 'sid_derive_failed' }
-                            "engine-open-failed`n" { 'engine_open_failed' }
-                            "subscribe-failed`n" { 'subscribe_failed' }
-                            default { 'unavailable' }
+                        try {
+                          if ((Get-Item -LiteralPath $runnerWfpObserverReadyPath).Length -gt 64) {
+                            $runnerWfpObserverMarkerState = 'oversize'
+                          } else {
+                            $observerMarker = [IO.File]::ReadAllText($runnerWfpObserverReadyPath)
+                            $runnerWfpObserverMarkerState = switch -Exact -CaseSensitive ($observerMarker) {
+                              "subscription-ready`n" { 'ready' }
+                              "sid-derive-failed`n" { 'sid_derive_failed' }
+                              "engine-open-failed`n" { 'engine_open_failed' }
+                              "subscribe-failed`n" { 'subscribe_failed' }
+                              default { 'unrecognized' }
+                            }
                           }
+                        } catch {
+                          $runnerWfpObserverMarkerState = 'read_failed'
                         }
+                      } elseif ($runnerWfpObserverProcess.HasExited) {
+                        $runnerWfpObserverMarkerState = 'helper_exited_before_marker'
+                      } else {
+                        $runnerWfpObserverMarkerState = 'missing_timeout'
+                      }
+                      $runnerWfpObserverStatus = switch ($runnerWfpObserverMarkerState) {
+                        'ready' { 'ready' }
+                        'sid_derive_failed' { 'sid_derive_failed' }
+                        'engine_open_failed' { 'engine_open_failed' }
+                        'subscribe_failed' { 'subscribe_failed' }
+                        default { 'unavailable' }
                       }
                     }
                   }
                 }
               } catch {
                 $runnerWfpObserverStatus = 'unavailable'
+                $runnerWfpObserverMarkerState = 'setup_error'
               }
             } else {
               $runnerWfpObserverStatus = 'target_unavailable'
+              $runnerWfpObserverMarkerState = 'target_unavailable'
             }
             if (-not (Test-Path -LiteralPath $wfpRunnerReadyFile)) {
               $observerGateMarker = if ($runnerWfpObserverStatus -eq 'ready') {
@@ -1194,6 +1224,7 @@ jobs:
               )
             } else {
               $runnerWfpObserverStatus = 'gate_collision'
+              $runnerWfpObserverMarkerState = 'gate_collision'
             }
 
             if (-not $process.WaitForExit(65000)) {
@@ -1231,102 +1262,153 @@ jobs:
                 if (-not $runnerWfpObserverProcess.HasExited) {
                   $runnerWfpCleanupState = 'failed'
                 }
-                if ((Test-Path -LiteralPath $runnerWfpObserverResultPath -PathType Leaf) -and
-                    (Get-Item -LiteralPath $runnerWfpObserverResultPath).Length -le 4096 -and
-                    $runnerWfpObserverProcess.HasExited -and
-                    $runnerWfpObserverProcess.ExitCode -eq 0 -and
-                    $runnerWfpCleanupState -eq 'passed') {
+                if ($runnerWfpObserverProcess.HasExited) {
                   try {
-                    $observerReceipt = [IO.File]::ReadAllText($runnerWfpObserverResultPath) |
-                      ConvertFrom-Json -ErrorAction Stop
-                    $observerSchema = $observerReceipt.schema_version
-                    $observerIpVersion = $observerReceipt.target_ip_version
-                    $observerSubscriptionCode = $observerReceipt.subscription_return_code
-                    $observerCallbackCount = $observerReceipt.event_callback_count
-                    $observerCapabilityCount = $observerReceipt.capability_drop_event_count
-                    $observerClassifyCount = $observerReceipt.classify_drop_event_count
-                    $observerMatchedCapabilityCount = $observerReceipt.matched_capability_drop_count
-                    $observerMatchedClassifyCount = $observerReceipt.matched_classify_drop_count
-                    $observerCapabilityId = $observerReceipt.matched_network_capability_id
-                    $observerCountsValid = $true
-                    foreach ($count in @(
-                      $observerCallbackCount, $observerCapabilityCount,
-                      $observerClassifyCount, $observerMatchedCapabilityCount,
-                      $observerMatchedClassifyCount
-                    )) {
-                      if ((-not ($count -is [int] -or $count -is [long])) -or
-                          $count -lt 0 -or $count -gt 65535) {
-                        $observerCountsValid = $false
-                      }
-                    }
-                    $observerNetworkEventsCollected = $observerReceipt.network_events_collected
-                    $observerSubscriptionValid = (
-                      $observerReceipt.subscription_attempted -is [bool] -and
-                      $observerReceipt.subscription_attempted -and
-                      ($observerSubscriptionCode -is [int] -or
-                       $observerSubscriptionCode -is [long]) -and
-                      $observerSubscriptionCode -eq 0 -and
-                      $observerReceipt.subscription_handle_present -is [bool] -and
-                      $observerReceipt.subscription_handle_present -and
-                      $observerReceipt.subscription_ok -is [bool] -and
-                      $observerReceipt.subscription_ok -and
-                      $observerReceipt.unsubscribe_ok -is [bool] -and
-                      $observerReceipt.unsubscribe_ok
-                    )
-                    $observerTargetValid = (
-                      $observerSchema -eq 7 -and $observerIpVersion -eq 6 -and
-                      $observerReceipt.target_is_loopback -is [bool] -and
-                      $observerReceipt.target_is_loopback
-                    )
-                    $observerMatchesValid = (
-                      $observerCountsValid -and
-                      $observerCallbackCount -eq $observerCapabilityCount -and
-                      $observerClassifyCount -eq 0 -and
-                      $observerMatchedCapabilityCount -le $observerCapabilityCount -and
-                      $observerMatchedClassifyCount -eq 0 -and
-                      $observerReceipt.network_capability_id_consistent -is [bool]
-                    )
-                    if ($observerMatchedCapabilityCount -gt 0) {
-                      $observerMatchesValid = $observerMatchesValid -and
-                        $observerReceipt.network_capability_id_consistent -and
-                        ($observerCapabilityId -is [int] -or
-                         $observerCapabilityId -is [long]) -and
-                        $observerCapabilityId -ge 0 -and $observerCapabilityId -le 2
-                    } elseif ($null -ne $observerCapabilityId) {
-                      $observerMatchesValid = $false
-                    }
-                    if ($observerSubscriptionValid -and $observerTargetValid -and
-                        $observerMatchesValid -and
-                        ($null -eq $observerNetworkEventsCollected -or
-                         $observerNetworkEventsCollected -is [bool])) {
-                      if ($observerNetworkEventsCollected -is [bool]) {
-                        $runnerWfpCollectionState = if ($observerNetworkEventsCollected) {
-                          'enabled'
-                        } else {
-                          'disabled'
-                        }
-                      }
-                      $runnerWfpMatchedCapabilityDropCount = [string]$observerMatchedCapabilityCount
-                      if ($observerNetworkEventsCollected -eq $false) {
-                        $runnerWfpCandidateEvent = 'collection_disabled'
-                      } elseif ($null -eq $observerNetworkEventsCollected) {
-                        $runnerWfpCandidateEvent = 'collection_unknown'
-                      } elseif ($observerMatchedCapabilityCount -gt 0) {
-                        $runnerWfpCandidateEvent = 'capability_drop_matched'
-                      } else {
-                        $runnerWfpCandidateEvent = 'no_matching_event'
-                      }
+                    $observerExitCode = [int64]$runnerWfpObserverProcess.ExitCode
+                    if ($observerExitCode -eq 0) {
+                      $runnerWfpObserverProcessState = 'exit_zero'
+                      $runnerWfpObserverHelperExitCode = '0'
                     } else {
-                      $runnerWfpCandidateEvent = 'receipt_invalid'
+                      $runnerWfpObserverProcessState = 'nonzero_exit'
+                      $runnerWfpObserverHelperExitCode = if (
+                        $observerExitCode -ge 0 -and $observerExitCode -le 65535
+                      ) { [string]$observerExitCode } else { 'out_of_range' }
                     }
                   } catch {
-                    $runnerWfpCandidateEvent = 'receipt_invalid'
+                    $runnerWfpObserverProcessState = 'exit_unknown'
+                    $runnerWfpObserverHelperExitCode = 'unavailable'
                   }
                 } else {
+                  $runnerWfpObserverProcessState = 'running'
+                  $runnerWfpObserverHelperExitCode = 'not_exited'
+                }
+
+                if (-not (Test-Path -LiteralPath $runnerWfpObserverResultPath -PathType Leaf)) {
+                  $runnerWfpReceiptState = 'missing'
                   $runnerWfpCandidateEvent = 'receipt_unavailable'
+                } elseif ((Get-Item -LiteralPath $runnerWfpObserverResultPath).Length -gt 4096) {
+                  $runnerWfpReceiptState = 'oversize'
+                  $runnerWfpCandidateEvent = 'receipt_unavailable'
+                } elseif ($runnerWfpObserverProcessState -eq 'running') {
+                  $runnerWfpReceiptState = 'process_running'
+                  $runnerWfpCandidateEvent = 'receipt_unavailable'
+                } elseif ($runnerWfpObserverProcessState -ne 'exit_zero') {
+                  $runnerWfpReceiptState = 'helper_nonzero'
+                  $runnerWfpCandidateEvent = 'receipt_unavailable'
+                } elseif ($runnerWfpCleanupState -ne 'passed') {
+                  $runnerWfpReceiptState = 'cleanup_failed'
+                  $runnerWfpCandidateEvent = 'receipt_unavailable'
+                } else {
+                  $observerReceiptText = $null
+                  try {
+                    $observerReceiptText = [IO.File]::ReadAllText($runnerWfpObserverResultPath)
+                  } catch {
+                    $runnerWfpReceiptState = 'read_failed'
+                  }
+                  if ($runnerWfpReceiptState -ne 'read_failed') {
+                    try {
+                      $observerReceipt = ConvertFrom-Json -InputObject $observerReceiptText -ErrorAction Stop
+                      $runnerWfpReceiptState = 'parsed'
+                    } catch {
+                      $runnerWfpReceiptState = 'invalid_json'
+                    }
+                  }
+                  if ($runnerWfpReceiptState -eq 'read_failed' -or
+                      $runnerWfpReceiptState -eq 'invalid_json') {
+                    $runnerWfpCandidateEvent = 'receipt_invalid'
+                  } else {
+                    try {
+                      $observerSchema = $observerReceipt.schema_version
+                      $observerIpVersion = $observerReceipt.target_ip_version
+                      $observerSubscriptionCode = $observerReceipt.subscription_return_code
+                      $observerCallbackCount = $observerReceipt.event_callback_count
+                      $observerCapabilityCount = $observerReceipt.capability_drop_event_count
+                      $observerClassifyCount = $observerReceipt.classify_drop_event_count
+                      $observerMatchedCapabilityCount = $observerReceipt.matched_capability_drop_count
+                      $observerMatchedClassifyCount = $observerReceipt.matched_classify_drop_count
+                      $observerCapabilityId = $observerReceipt.matched_network_capability_id
+                      $observerCountsValid = $true
+                      foreach ($count in @(
+                        $observerCallbackCount, $observerCapabilityCount,
+                        $observerClassifyCount, $observerMatchedCapabilityCount,
+                        $observerMatchedClassifyCount
+                      )) {
+                        if ((-not ($count -is [int] -or $count -is [long])) -or
+                            $count -lt 0 -or $count -gt 65535) {
+                          $observerCountsValid = $false
+                        }
+                      }
+                      $observerNetworkEventsCollected = $observerReceipt.network_events_collected
+                      $observerSubscriptionValid = (
+                        $observerReceipt.subscription_attempted -is [bool] -and
+                        $observerReceipt.subscription_attempted -and
+                        ($observerSubscriptionCode -is [int] -or
+                         $observerSubscriptionCode -is [long]) -and
+                        $observerSubscriptionCode -eq 0 -and
+                        $observerReceipt.subscription_handle_present -is [bool] -and
+                        $observerReceipt.subscription_handle_present -and
+                        $observerReceipt.subscription_ok -is [bool] -and
+                        $observerReceipt.subscription_ok -and
+                        $observerReceipt.unsubscribe_ok -is [bool] -and
+                        $observerReceipt.unsubscribe_ok
+                      )
+                      $observerTargetValid = (
+                        $observerSchema -eq 7 -and $observerIpVersion -eq 6 -and
+                        $observerReceipt.target_is_loopback -is [bool] -and
+                        $observerReceipt.target_is_loopback
+                      )
+                      $observerMatchesValid = (
+                        $observerCountsValid -and
+                        $observerCallbackCount -eq $observerCapabilityCount -and
+                        $observerClassifyCount -eq 0 -and
+                        $observerMatchedCapabilityCount -le $observerCapabilityCount -and
+                        $observerMatchedClassifyCount -eq 0 -and
+                        $observerReceipt.network_capability_id_consistent -is [bool]
+                      )
+                      if ($observerMatchedCapabilityCount -gt 0) {
+                        $observerMatchesValid = $observerMatchesValid -and
+                          $observerReceipt.network_capability_id_consistent -and
+                          ($observerCapabilityId -is [int] -or
+                           $observerCapabilityId -is [long]) -and
+                          $observerCapabilityId -ge 0 -and $observerCapabilityId -le 2
+                      } elseif ($null -ne $observerCapabilityId) {
+                        $observerMatchesValid = $false
+                      }
+                      if ($observerSubscriptionValid -and $observerTargetValid -and
+                          $observerMatchesValid -and
+                          ($null -eq $observerNetworkEventsCollected -or
+                           $observerNetworkEventsCollected -is [bool])) {
+                        $runnerWfpReceiptState = 'valid'
+                        if ($observerNetworkEventsCollected -is [bool]) {
+                          $runnerWfpCollectionState = if ($observerNetworkEventsCollected) {
+                            'enabled'
+                          } else {
+                            'disabled'
+                          }
+                        }
+                        $runnerWfpMatchedCapabilityDropCount = [string]$observerMatchedCapabilityCount
+                        if ($observerNetworkEventsCollected -eq $false) {
+                          $runnerWfpCandidateEvent = 'collection_disabled'
+                        } elseif ($null -eq $observerNetworkEventsCollected) {
+                          $runnerWfpCandidateEvent = 'collection_unknown'
+                        } elseif ($observerMatchedCapabilityCount -gt 0) {
+                          $runnerWfpCandidateEvent = 'capability_drop_matched'
+                        } else {
+                          $runnerWfpCandidateEvent = 'no_matching_event'
+                        }
+                      } else {
+                        $runnerWfpReceiptState = 'invalid_fields'
+                        $runnerWfpCandidateEvent = 'receipt_invalid'
+                      }
+                    } catch {
+                      $runnerWfpReceiptState = 'processing_error'
+                      $runnerWfpCandidateEvent = 'receipt_invalid'
+                    }
+                  }
                 }
               } catch {
                 $runnerWfpCleanupState = 'failed'
+                $runnerWfpReceiptState = 'processing_error'
                 $runnerWfpCandidateEvent = 'cleanup_or_receipt_error'
               } finally {
                 try { $runnerWfpObserverProcess.Dispose() } catch { }
@@ -1564,7 +1646,10 @@ jobs:
                 }
               }
             }
-            Write-Output "::notice title=Windows WFP capture and runner observer::runner_wfp_observer=$runnerWfpObserverStatus collection=$runnerWfpCollectionState candidate_event=$runnerWfpCandidateEvent matched_capability_drop_count=$runnerWfpMatchedCapabilityDropCount observer_cleanup=$runnerWfpCleanupState capture_status=$wfpCaptureStatus preflight=$wfpCapturePreflight exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_member_match_count=$wfpArchiveMemberMatchCount archive_xml_member_count=$wfpArchiveXmlMemberCount archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount"
+            Write-Output '::group::Windows WFP supplemental capture states'
+            Write-Output "preflight=$wfpCapturePreflight archive_member_match_count=$wfpArchiveMemberMatchCount"
+            Write-Output '::endgroup::'
+            Write-Output "::notice title=Windows WFP capture and runner observer::observer=$runnerWfpObserverStatus collection=$runnerWfpCollectionState event=$runnerWfpCandidateEvent matched_capability_drops=$runnerWfpMatchedCapabilityDropCount cleanup=$runnerWfpCleanupState marker=$runnerWfpObserverMarkerState process=$runnerWfpObserverProcessState helper_rc=$runnerWfpObserverHelperExitCode receipt=$runnerWfpReceiptState capture_status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_xml_member_count=$wfpArchiveXmlMemberCount archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }

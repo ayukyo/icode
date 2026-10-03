@@ -404,6 +404,83 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
                     f"missing: {required_contract}",
                 )
 
+    def test_candidate_observer_reports_bounded_marker_and_receipt_states(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        candidate_job = workflow.split(
+            "  windows-reviewer-snapshot-probe:\n", 1,
+        )[1].split("\n  windows-appcontainer-read-handle-probe:", 1)[0]
+        observer_step = candidate_job.split(
+            "      - name: Run Reviewer snapshot probe as temporary standard user\n",
+            1,
+        )[1]
+
+        for required_contract in (
+            "$runnerWfpObserverMarkerState",
+            "$runnerWfpObserverProcessState",
+            "$runnerWfpObserverHelperExitCode",
+            "$runnerWfpReceiptState",
+            "marker=$runnerWfpObserverMarkerState",
+            "process=$runnerWfpObserverProcessState",
+            "helper_rc=$runnerWfpObserverHelperExitCode",
+            "receipt=$runnerWfpReceiptState",
+            "Write-Output \"preflight=$wfpCapturePreflight archive_member_match_count=$wfpArchiveMemberMatchCount\"",
+            "'missing'",
+            "'missing_timeout'",
+            "'helper_exited_before_marker'",
+            "'oversize'",
+            "'unrecognized'",
+            "'read_failed'",
+            "'exit_zero'",
+            "'exit_unknown'",
+            "'running'",
+            "'nonzero_exit'",
+            "'cleanup_failed'",
+            "'parsed'",
+            "'invalid_json'",
+            "'invalid_fields'",
+            "'valid'",
+        ):
+            with self.subTest(contract=required_contract):
+                self.assertTrue(
+                    required_contract in observer_step,
+                    f"missing: {required_contract}",
+                )
+        self.assertNotIn("$_.Exception.Message", observer_step)
+        self.assertNotIn("$observerMarker", observer_step.split(
+            'Write-Output "::notice title=Windows WFP capture and runner observer::',
+            1,
+        )[-1])
+        notice_prefix = "::notice title=Windows WFP capture and runner observer::"
+        notice_line = next(
+            line for line in observer_step.splitlines()
+            if notice_prefix in line
+        )
+        notice_message = notice_line.split(notice_prefix, 1)[1].rstrip('"')
+        longest_safe_values = {
+            "$runnerWfpObserverStatus": "target_unavailable",
+            "$runnerWfpCollectionState": "unknown",
+            "$runnerWfpCandidateEvent": "cleanup_or_receipt_error",
+            "$runnerWfpMatchedCapabilityDropCount": "not_checked",
+            "$runnerWfpCleanupState": "not_started",
+            "$runnerWfpObserverMarkerState": "helper_exited_before_marker",
+            "$runnerWfpObserverProcessState": "exit_unknown",
+            "$runnerWfpObserverHelperExitCode": "out_of_range",
+            "$runnerWfpReceiptState": "processing_error",
+            "$wfpCaptureStatus": "archive_member_ambiguous",
+            "$wfpExactDropCount": "not_checked",
+            "$wfpExtractExitCode": "not_run",
+            "$wfpArchiveMemberStatus": "summary_invalid",
+            "$wfpArchiveMemberCount": "not_checked",
+            "$wfpArchiveXmlMemberCount": "not_checked",
+            "$wfpArchiveWfpdiagXmlMemberCount": "not_checked",
+        }
+        for variable, value in longest_safe_values.items():
+            notice_message = notice_message.replace(variable, value)
+        self.assertLessEqual(len(notice_message), 500)
+
     def test_native_probe_publishes_receipts_only_after_complete_write(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
         native_source = (
