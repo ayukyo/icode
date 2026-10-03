@@ -123,6 +123,110 @@ class TestEvidencePack(unittest.TestCase):
                 marker.read_text(encoding="utf-8"), "preserve previous evidence pack\n",
             )
 
+    def test_导出器限制contracts快照UTF8输出字节并保留旧包(self) -> None:
+        from unittest.mock import patch
+
+        from icode.evidence import EvidenceError, _contract_snapshot
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            gates_json = ws / "gates.json"
+            gates_json.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "execution_model": {
+                            "step_contracts": {
+                                "plan": {
+                                    "required_checks": ["确认多语言契约"] * 64,
+                                    "extension_number": float("nan"),
+                                },
+                                "unselected": {"extension_text": "未选步骤"},
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            expected_text = json.dumps(
+                _contract_snapshot(gates_json, {"plan"}),
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n"
+            output_bytes = len(expected_text.encode("utf-8"))
+            self.assertGreater(output_bytes, gates_json.stat().st_size)
+
+            for clean in (True, False):
+                with self.subTest(clean=clean):
+                    dest = ws / f"existing-{clean}"
+                    dest.mkdir()
+                    marker = dest / "keep.txt"
+                    marker.write_bytes(b"preserve old output\n")
+
+                    with patch(
+                        "icode.evidence._MAX_EVIDENCE_CONTRACTS_JSON_BYTES",
+                        output_bytes - 1,
+                    ):
+                        with self.assertRaisesRegex(EvidenceError, "契约快照输出超过安全上限"):
+                            build_evidence_pack(
+                                out_dir,
+                                dest=dest,
+                                gates_json=gates_json,
+                                clean=clean,
+                            )
+
+                    self.assertEqual(marker.read_bytes(), b"preserve old output\n")
+                    self.assertEqual([path.name for path in dest.iterdir()], ["keep.txt"])
+
+    def test_导出器contracts快照恰好达到输出上限仍保持JSON兼容(self) -> None:
+        from unittest.mock import patch
+
+        from icode.evidence import _contract_snapshot
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            gates_json = ws / "gates.json"
+            gates_json.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "execution_model": {
+                            "step_contracts": {
+                                "plan": {
+                                    "required_checks": ["确认多语言契约"] * 64,
+                                    "extension_number": float("nan"),
+                                },
+                                "unselected": {"extension_text": "未选步骤"},
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                encoding="utf-8",
+            )
+            expected_text = json.dumps(
+                _contract_snapshot(gates_json, {"plan"}),
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n"
+            output_bytes = len(expected_text.encode("utf-8"))
+            dest = ws / "pack"
+
+            with patch(
+                "icode.evidence._MAX_EVIDENCE_CONTRACTS_JSON_BYTES",
+                output_bytes,
+            ):
+                report = build_evidence_pack(out_dir, dest=dest, gates_json=gates_json)
+
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual((dest / "contracts.json").read_text(encoding="utf-8"), expected_text)
+            self.assertIn("NaN", expected_text)
+            self.assertNotIn("unselected", expected_text)
+            self.assertEqual(verify_pack(dest), [])
+
     def test_导出器拒绝与工单源目录重叠的目标且不改动源(self) -> None:
         from icode.evidence import EvidenceError
 

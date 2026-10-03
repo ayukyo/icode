@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
@@ -71,6 +72,8 @@ _MAX_VERIFICATIONS_JSON_BYTES = 8 * 1024 * 1024
 # Workflow contracts are copied into an evidence package. Bound this export
 # input independently; the general ContractSet loader remains unchanged.
 _MAX_EVIDENCE_GATES_JSON_BYTES = 8 * 1024 * 1024
+# The pretty-printed per-ticket contract snapshot has its own output bound.
+_MAX_EVIDENCE_CONTRACTS_JSON_BYTES = 8 * 1024 * 1024
 
 
 class EvidenceError(RuntimeError):
@@ -722,6 +725,33 @@ def _contract_snapshot(gates_json: Path, steps: set[str]) -> dict:
     }
 
 
+def _encode_contract_snapshot_bounded(snapshot: object) -> str:
+    """Pretty-print contracts.json without building an over-limit full string."""
+    encoder = json.JSONEncoder(
+        ensure_ascii=False,
+        indent=2,
+        allow_nan=True,
+    )
+    buffer = io.StringIO()
+    output_bytes = 1  # reserve the trailing newline written by Path.write_text
+    try:
+        for chunk in encoder.iterencode(snapshot):
+            chunk_bytes = len(chunk.encode("utf-8"))
+            if output_bytes + chunk_bytes > _MAX_EVIDENCE_CONTRACTS_JSON_BYTES:
+                raise EvidenceError("契约快照输出超过安全上限")
+            output_bytes += chunk_bytes
+            buffer.write(chunk)
+    except EvidenceError:
+        raise
+    except (TypeError, ValueError, RecursionError, OverflowError, UnicodeError):
+        raise EvidenceError("契约快照无法编码为 UTF-8 JSON") from None
+
+    if output_bytes > _MAX_EVIDENCE_CONTRACTS_JSON_BYTES:
+        raise EvidenceError("契约快照输出超过安全上限")
+    buffer.write("\n")
+    return buffer.getvalue()
+
+
 PACK_README = """# 证据包（{ticket_id}）
 
 由 **icode-agent {version}** 于 {generated_at} 导出。
@@ -828,15 +858,9 @@ def build_evidence_pack(
     # Reuse the same text below and preserve Path.write_text newline behavior.
     contracts_payload: str | None = None
     if gates_path is not None and has_gates_file:
-        contracts_payload = (
-            json.dumps(
-                _contract_snapshot(gates_path, event_summary.steps),
-                ensure_ascii=False,
-                indent=2,
-            ) + "\n"
+        contracts_payload = _encode_contract_snapshot_bounded(
+            _contract_snapshot(gates_path, event_summary.steps)
         )
-        # Catch encoding errors before deleting the previous package.
-        contracts_payload.encode("utf-8")
     hash_budget = _HashReadBudget(_MAX_PACKAGE_HASH_READ_BYTES)
     artifact_budget = _HashReadBudget(_MAX_PACKAGE_ARTIFACT_BYTES)
 
