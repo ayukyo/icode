@@ -587,7 +587,10 @@ class TestSocks5LeaseConnectBridge(unittest.TestCase):
         self.assertTrue(callable(bridge_type), "the test-only bridge is missing")
         with tempfile.TemporaryDirectory(prefix="icode-socks5-deadline-") as raw_root:
             socket_path = Path(raw_root) / "bridge.sock"
-            with patch.object(probe, "_BRIDGE_CLIENT_TIMEOUT_SECONDS", 0.6):
+            deadline_seconds = 0.6
+            with patch.object(
+                probe, "_BRIDGE_CLIENT_TIMEOUT_SECONDS", deadline_seconds,
+            ):
                 with bridge_type(
                     socket_path,
                     ("127.0.0.1", 9),
@@ -595,19 +598,60 @@ class TestSocks5LeaseConnectBridge(unittest.TestCase):
                 ):
                     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                         client.settimeout(1.0)
+                        request_started_at = time.monotonic()
                         client.connect(str(socket_path))
                         client.sendall(b"\x05\x01\x00")
                         self.assertEqual(self._recv_exact(client, 2), b"\x05\x00")
                         client.sendall(b"\x05")
                         time.sleep(0.45)
-                        client.sendall(b"\x01")
-                        partial_elapsed = time.monotonic()
-                        self.assertEqual(client.recv(1), b"")
-                        self.assertLess(
-                            time.monotonic() - partial_elapsed,
-                            0.4,
-                            "each received byte must not reset the handshake deadline",
+                        second_byte_sent = probe.send_if_peer_open(client, b"\x01")
+                        if second_byte_sent:
+                            partial_elapsed = time.monotonic()
+                            try:
+                                response = client.recv(1)
+                            except (
+                                BrokenPipeError,
+                                ConnectionResetError,
+                                ConnectionAbortedError,
+                            ):
+                                response = b""
+                            self.assertEqual(response, b"")
+                            self.assertLess(
+                                time.monotonic() - partial_elapsed,
+                                0.4,
+                                "each received byte must not reset the handshake deadline",
+                            )
+                        self.assertGreaterEqual(
+                            time.monotonic() - request_started_at,
+                            deadline_seconds,
+                            "the bridge must not close before its absolute deadline",
                         )
+
+    def test_delayed_probe_write_recognizes_only_peer_closed_errors(self) -> None:
+        send_if_peer_open = getattr(probe, "send_if_peer_open", None)
+        self.assertTrue(callable(send_if_peer_open), "peer-close probe helper is missing")
+
+        class FakeConnection:
+            def __init__(self, error: OSError | None) -> None:
+                self.error = error
+
+            def sendall(self, _payload: bytes) -> None:
+                if self.error is not None:
+                    raise self.error
+
+        for error in (
+            BrokenPipeError(errno.EPIPE, "closed peer"),
+            ConnectionResetError(errno.ECONNRESET, "reset peer"),
+            ConnectionAbortedError(errno.ECONNABORTED, "aborted peer"),
+        ):
+            with self.subTest(error=type(error).__name__):
+                self.assertFalse(send_if_peer_open(FakeConnection(error), b"x"))
+
+        with self.assertRaisesRegex(OSError, "unrelated send failure"):
+            send_if_peer_open(
+                FakeConnection(OSError(errno.EIO, "unrelated send failure")),
+                b"x",
+            )
 
     def test_close_cancels_partial_handshake_and_removes_owned_socket(self) -> None:
         bridge_type = getattr(probe, "Socks5UdsLeaseConnectBridge", None)

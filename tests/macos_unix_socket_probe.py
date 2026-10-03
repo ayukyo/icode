@@ -31,6 +31,20 @@ _BRIDGE_RELAY_READ_CHUNK_BYTES = 64 * 1024
 _BRIDGE_RELAY_BUFFER_LIMIT_BYTES = 256 * 1024
 _BRIDGE_CONNECT_RESPONSE = b"HTTP/1.1 200 Connection Established\r\n\r\n"
 _BRIDGE_CONNECT_RESPONSE_MAX_BYTES = 4096
+_PEER_CLOSED_SEND_ERRORS = (
+    BrokenPipeError,
+    ConnectionResetError,
+    ConnectionAbortedError,
+)
+
+
+def send_if_peer_open(connection: socket.socket, payload: bytes) -> bool:
+    """Send a delayed test byte, returning false only for a closed peer."""
+    try:
+        connection.sendall(payload)
+    except _PEER_CLOSED_SEND_ERRORS:
+        return False
+    return True
 
 
 def accept_connection_until_stopped(
