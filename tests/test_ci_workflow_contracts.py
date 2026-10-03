@@ -423,6 +423,9 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
             "$runnerWfpObserverHelperExitCode",
             "$runnerWfpObserverPreflightState",
             "$runnerWfpReceiptState",
+            '$runnerWfpObserverReadyPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.ready"',
+            '$runnerWfpObserverStopPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.stop"',
+            '$runnerWfpObserverResultPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.json"',
             "marker=$runnerWfpObserverMarkerState",
             "process=$runnerWfpObserverProcessState",
             "helper_rc=$runnerWfpObserverHelperExitCode",
@@ -461,6 +464,9 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
                     f"missing: {required_contract}",
                 )
         self.assertNotIn("$_.Exception.Message", observer_step)
+        self.assertNotIn('"candidate-$observerToken.ready"', observer_step)
+        self.assertNotIn('"candidate-$observerToken.stop"', observer_step)
+        self.assertNotIn('"candidate-$observerToken.json"', observer_step)
         self.assertNotIn("$observerMarker", observer_step.split(
             'Write-Output "::notice title=Windows WFP capture and runner observer::',
             1,

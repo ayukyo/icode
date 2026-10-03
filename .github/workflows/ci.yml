@@ -1134,9 +1134,9 @@ jobs:
                     $observerTempOverride = $runnerWfpObserverRoot +
                       [IO.Path]::DirectorySeparatorChar
                     $observerToken = $observerSuffix
-                    $runnerWfpObserverReadyPath = Join-Path $runnerWfpObserverRoot "candidate-$observerToken.ready"
-                    $runnerWfpObserverStopPath = Join-Path $runnerWfpObserverRoot "candidate-$observerToken.stop"
-                    $runnerWfpObserverResultPath = Join-Path $runnerWfpObserverRoot "candidate-$observerToken.json"
+                    $runnerWfpObserverReadyPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.ready"
+                    $runnerWfpObserverStopPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.stop"
+                    $runnerWfpObserverResultPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.json"
                     $observerStartInfo = [Diagnostics.ProcessStartInfo]::new()
                     $observerStartInfo.FileName = $probeExecutable
                     $observerStartInfo.UseShellExecute = $false
