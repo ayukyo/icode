@@ -1196,6 +1196,63 @@ class TestStandaloneVerifier(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn("校验通过", proc.stdout)
 
+    def test_包级问题诊断限制样本但仍完整扫描(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from icode.cli import main
+        from icode.pack_verify import pack_digest
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            manifest_path = dest / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            long_missing_path = "/".join(("p" * 180,) * 5)
+            manifest["files"].append({
+                "path": long_missing_path,
+                "sha256": "0" * 64,
+            })
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            for index in range(80):
+                (dest / f"unexpected-{index:03}.txt").write_text(
+                    "unregistered\n", encoding="utf-8",
+                )
+
+            problems = verify_pack(dest)
+            joined = "\n".join(problems)
+            self.assertEqual(getattr(problems, "total_count", None), 81)
+            self.assertEqual(getattr(problems, "sample_count", None), 32)
+            self.assertEqual(len(problems), 33)
+            self.assertIn("省略 49 条", joined)
+            self.assertNotIn(long_missing_path, joined)
+            self.assertLessEqual(max(map(len, problems)), 512)
+
+            stdout = StringIO()
+            stderr = StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                exit_code = main(["verify-pack", str(dest)])
+            self.assertEqual(exit_code, 1, stdout.getvalue() + stderr.getvalue())
+            self.assertIn("问题 81 处", stdout.getvalue())
+            self.assertIn("省略 49 条", stdout.getvalue())
+            self.assertLess(len(stdout.getvalue()), 16 * 1024)
+
+            standalone = self._run_verifier(dest, cwd=ws)
+            self.assertEqual(
+                standalone.returncode, 1, standalone.stdout + standalone.stderr,
+            )
+            self.assertIn("问题 81 处", standalone.stdout)
+            self.assertIn("省略 49 条", standalone.stdout)
+
     def test_事件链坏记录洪泛时仍完整验证且诊断有界(self) -> None:
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO

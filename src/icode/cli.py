@@ -567,6 +567,9 @@ def cmd_verify_pack(args: argparse.Namespace) -> int:
     problems = verify_pack(pack)
     if problems:
         print(f"证据包校验失败：{pack}")
+        total_count = getattr(problems, "total_count", len(problems))
+        sample_count = getattr(problems, "sample_count", len(problems))
+        print(f"  问题 {total_count} 处（诊断样本 {sample_count} 条）：")
         for p in problems:
             print(f"  - {p}")
         return 1

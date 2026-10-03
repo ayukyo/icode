@@ -39,6 +39,9 @@ _MAX_MANIFEST_FILE_ENTRIES = 50_000
 _MAX_ARTIFACT_INDEX_ENTRIES = 50_000
 _MAX_PACKAGE_ENTRY_COUNT = 100_000
 _MAX_EVENT_CHAIN_DIAGNOSTIC_SAMPLES = 32
+_MAX_PACKAGE_DIAGNOSTIC_SAMPLES = 32
+_MAX_DIAGNOSTIC_MESSAGE_CHARS = 512
+_MAX_DIAGNOSTIC_SUMMARY_MESSAGES = 8
 _MAX_EVENT_CHAIN_LINE_BYTES = 1024 * 1024
 _MAX_EVENT_CHAIN_TOTAL_BYTES = 64 * 1024 * 1024
 _MAX_EVENT_CHAIN_EVENT_COUNT = 100_000
@@ -153,6 +156,77 @@ def event_schema_issues(
     return issues
 
 
+class _BoundedProblemReport(list[str]):
+    """List-compatible problem report with exact counts behind its bounded samples."""
+
+    def __init__(
+        self,
+        values: list[str],
+        *,
+        total_count: int,
+        sample_count: int,
+        summary_messages: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(values)
+        self.total_count = total_count
+        self.sample_count = sample_count
+        self.summary_messages = summary_messages
+
+
+class _ProblemCollector:
+    """Retain bounded diagnostics while callers continue validating all inputs."""
+
+    def __init__(self) -> None:
+        self._samples: list[str] = []
+        self._summaries: list[str] = []
+        self._total = 0
+
+    @staticmethod
+    def _bounded_message(message: object) -> str:
+        rendered = str(message)
+        if len(rendered) > _MAX_DIAGNOSTIC_MESSAGE_CHARS:
+            return rendered[:_MAX_DIAGNOSTIC_MESSAGE_CHARS - 3] + "..."
+        return rendered
+
+    def _retain_sample(self, message: object) -> None:
+        if len(self._samples) < _MAX_PACKAGE_DIAGNOSTIC_SAMPLES:
+            self._samples.append(self._bounded_message(message))
+
+    def _retain_summary(self, message: object) -> None:
+        if len(self._summaries) < _MAX_DIAGNOSTIC_SUMMARY_MESSAGES:
+            self._summaries.append(self._bounded_message(message))
+
+    def append(self, message: str) -> None:
+        self._total += 1
+        self._retain_sample(message)
+
+    def extend(self, messages: list[str]) -> None:
+        if isinstance(messages, _BoundedProblemReport):
+            self._total += messages.total_count
+            for message in messages[:messages.sample_count]:
+                self._retain_sample(message)
+            for message in messages.summary_messages:
+                self._retain_summary(message)
+            return
+        for message in messages:
+            self.append(message)
+
+    def render(self) -> _BoundedProblemReport:
+        omitted = max(0, self._total - len(self._samples))
+        rendered = [*self._samples, *self._summaries]
+        if omitted:
+            rendered.append(
+                f"校验共发现 {self._total} 处问题；展示前 {len(self._samples)} 条，"
+                f"省略 {omitted} 条。"
+            )
+        return _BoundedProblemReport(
+            rendered,
+            total_count=self._total,
+            sample_count=len(self._samples),
+            summary_messages=tuple(self._summaries),
+        )
+
+
 class _EventChainDiagnostics:
     """Keep verifier diagnostics bounded without stopping validation of later events."""
 
@@ -169,18 +243,26 @@ class _EventChainDiagnostics:
         if len(self._samples) < _MAX_EVENT_CHAIN_DIAGNOSTIC_SAMPLES:
             self._samples.append(message)
 
-    def render(self) -> list[str]:
+    def render(self) -> _BoundedProblemReport:
         rendered = list(self._samples)
         omitted = self._total - len(self._samples)
+        summary_messages: tuple[str, ...] = ()
         if omitted:
             categories = ", ".join(
                 f"{name}={count}" for name, count in sorted(self._counts.items())
             )
-            rendered.append(
+            summary = (
                 f"事件链校验发现 {self._total} 个链问题；仅展示前 {len(self._samples)} 条，"
                 f"省略 {omitted} 条（{categories}）"
             )
-        return rendered
+            rendered.append(summary)
+            summary_messages = (summary,)
+        return _BoundedProblemReport(
+            rendered,
+            total_count=self._total,
+            sample_count=len(self._samples),
+            summary_messages=summary_messages,
+        )
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -449,7 +531,7 @@ def _walk_package_entries(pack: Path):
 def verify_pack(pack_dir: Path) -> list[str]:
     """返回问题列表；空列表表示校验通过。"""
     pack = Path(pack_dir)
-    problems: list[str] = []
+    problems = _ProblemCollector()
 
     manifest_path = _package_member_path(pack, MANIFEST_NAME)
     if manifest_path is None:
@@ -630,14 +712,14 @@ def verify_pack(pack_dir: Path) -> list[str]:
         except (OSError, ValueError, RecursionError) as exc:
             problems.append(f"事件链或正文索引无法读取：{type(exc).__name__}")
 
-    return problems
+    return problems.render()
 
 
 def _verify_event_chain(
     path: Path, *, expected_ticket_id: str | None = None,
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """逐条校验事件，只保留去重 ID 与产物绑定所需的紧凑事实。"""
-    problems: list[str] = []
+    problems = _ProblemCollector()
     chain_problems = _EventChainDiagnostics()
     artifact_facts: dict[str, tuple[str, str]] = {}
     seen_ids: set[str] = set()
@@ -649,7 +731,7 @@ def _verify_event_chain(
     invalid_event_type_seen = False
     invalid_schema_fields: set[str] = set()
 
-    def append_payload_shape_problems(target: list[str]) -> None:
+    def append_payload_shape_problems(target: _ProblemCollector) -> None:
         # Bound retained diagnostics even if a hostile event stream contains many
         # malformed payloads; one finding per category is enough to reject the pack.
         if "event" in invalid_payload_kinds:
@@ -657,27 +739,32 @@ def _verify_event_chain(
         if "artifact_written" in invalid_payload_kinds:
             target.append("artifact_written 事件 payload 结构无效（必须是对象）")
 
-    def append_event_type_problem(target: list[str]) -> None:
+    def append_event_type_problem(target: _ProblemCollector) -> None:
         if invalid_event_type_seen:
             target.append("事件 event_type 无效（不属于允许类型）")
 
-    def append_event_schema_problem(target: list[str]) -> None:
+    def append_event_schema_problem(target: _ProblemCollector) -> None:
         if invalid_schema_fields:
             fields = ", ".join(sorted(invalid_schema_fields))
             target.append(f"事件不符合 pinned ticket-event schema（字段：{fields}）")
 
     try:
         if path.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
-            return {}, ["事件链超过总输入字节数上限"]
+            problems.append("事件链超过总输入字节数上限")
+            return {}, problems.render()
     except (OSError, UnicodeError) as exc:
-        return {}, [*chain_problems.render(), f"事件链无法读取：{type(exc).__name__}"]
+        problems.extend(chain_problems.render())
+        problems.append(f"事件链无法读取：{type(exc).__name__}")
+        return {}, problems.render()
 
     try:
         # newline="" enables universal CR/LF framing without translating the
         # terminator, while retaining RFC-valid Unicode separators in JSON text.
         stream = path.open(encoding="utf-8", newline="")
     except (OSError, UnicodeError) as exc:
-        return artifact_facts, [*chain_problems.render(), f"事件链无法读取：{type(exc).__name__}"]
+        problems.extend(chain_problems.render())
+        problems.append(f"事件链无法读取：{type(exc).__name__}")
+        return artifact_facts, problems.render()
 
     try:
         with stream:
@@ -691,24 +778,32 @@ def _verify_event_chain(
                     break
                 lineno += 1
                 if len(line) > _MAX_EVENT_CHAIN_LINE_BYTES:
-                    return {}, [
+                    problems.extend(chain_problems.render())
+                    problems.append(
                         f"事件链第 {lineno} 行超过单条物理行字节数上限"
-                    ]
+                    )
+                    return {}, problems.render()
                 line_bytes = len(line.encode("utf-8"))
                 if line_bytes > _MAX_EVENT_CHAIN_LINE_BYTES:
-                    return {}, [
+                    problems.extend(chain_problems.render())
+                    problems.append(
                         f"事件链第 {lineno} 行超过单条物理行字节数上限"
-                    ]
+                    )
+                    return {}, problems.render()
                 total_input_bytes += line_bytes
                 if total_input_bytes > _MAX_EVENT_CHAIN_TOTAL_BYTES:
-                    return {}, ["事件链超过总输入字节数上限"]
+                    problems.extend(chain_problems.render())
+                    problems.append("事件链超过总输入字节数上限")
+                    return {}, problems.render()
                 # JSONL framing follows physical CR/LF lines. splitlines() also splits Unicode
                 # separators (NEL/LS/PS) that are valid JSON string data.
                 line = line.strip()
                 if not line:
                     continue
                 if event_count >= _MAX_EVENT_CHAIN_EVENT_COUNT:
-                    return {}, ["事件链超过最大事件条数上限"]
+                    problems.extend(chain_problems.render())
+                    problems.append("事件链超过最大事件条数上限")
+                    return {}, problems.render()
                 try:
                     event = loads_json_value(line)
                 except (RecursionError, ValueError) as exc:
@@ -719,14 +814,14 @@ def _verify_event_chain(
                     append_payload_shape_problems(problems)
                     append_event_type_problem(problems)
                     append_event_schema_problem(problems)
-                    return artifact_facts, problems
+                    return artifact_facts, problems.render()
                 if not isinstance(event, dict):
                     problems.append(f"事件链第 {lineno} 行结构无效（必须是对象）")
                     problems.extend(chain_problems.render())
                     append_payload_shape_problems(problems)
                     append_event_type_problem(problems)
                     append_event_schema_problem(problems)
-                    return artifact_facts, problems
+                    return artifact_facts, problems.render()
 
                 event_count += 1
                 schema_issues = event_schema_issues(
@@ -795,7 +890,7 @@ def _verify_event_chain(
         problems.append(f"事件链无法读取：{type(exc).__name__}")
         problems.extend(chain_problems.render())
         append_event_schema_problem(problems)
-        return {}, problems
+        return {}, problems.render()
 
     problems.extend(chain_problems.render())
     if event_count and not first_event_type_valid:
@@ -805,7 +900,7 @@ def _verify_event_chain(
     append_payload_shape_problems(problems)
     append_event_type_problem(problems)
     append_event_schema_problem(problems)
-    return artifact_facts, problems
+    return artifact_facts, problems.render()
 
 
 def _verify_artifact_binding(
@@ -813,17 +908,17 @@ def _verify_artifact_binding(
     *, read_budget: _HashReadBudget | None = None,
 ) -> list[str]:
     """正文快照必须与事件链上记录的 sha256 一致（D11 的核心）。"""
-    problems: list[str] = []
+    problems = _ProblemCollector()
     if not artifact_facts:
-        return problems
+        return problems.render()
 
     index_path = _package_member_path(pack, "artifacts.json")
     if index_path is None:
         problems.append("artifacts.json 包内路径无效（必须是普通文件）")
-        return problems
+        return problems.render()
     if not index_path.is_file():
         problems.append("事件链存在产物记录，但缺少 artifacts.json（正文对应表）")
-        return problems
+        return problems.render()
 
     try:
         index = _load_json(
@@ -831,7 +926,7 @@ def _verify_artifact_binding(
         )
     except (OSError, ValueError, RecursionError) as exc:
         problems.append(f"artifacts.json 不可解析：{exc}")
-        return problems
+        return problems.render()
 
     artifact_entries = index.get("artifacts")
     if artifact_entries is None:
@@ -841,7 +936,7 @@ def _verify_artifact_binding(
         artifact_entries = []
     elif len(artifact_entries) > _MAX_ARTIFACT_INDEX_ENTRIES:
         problems.append("artifacts.json 的 artifacts 条目数量超过安全上限")
-        return problems
+        return problems.render()
     snapshot_bytes = 0
     seen_snapshots: set[str] = set()
     for item in artifact_entries:
@@ -860,7 +955,7 @@ def _verify_artifact_binding(
             continue
         if snapshot_bytes > _MAX_PACKAGE_ARTIFACT_BYTES:
             problems.append("产物快照累计字节超过安全上限")
-            return problems
+            return problems.render()
     bound_digests: set[str] = set()
     binding_incomplete = False
     for index_number, item in enumerate(artifact_entries, 1):
@@ -891,7 +986,7 @@ def _verify_artifact_binding(
             continue
         except _HashReadBudgetExceeded:
             problems.append("证据包累计摘要读取超过安全上限")
-            return problems
+            return problems.render()
         if chain_hash and actual != chain_hash:
             problems.append(
                 f"正文快照与事件链记录不符（疑似篡改）：{snapshot_rel} "
@@ -902,14 +997,14 @@ def _verify_artifact_binding(
         bound_digests.add(actual)
 
     if binding_incomplete:
-        return problems
+        return problems.render()
     missing = set(artifact_facts) - bound_digests
     for digest in sorted(missing):
         _event_id, source_path = artifact_facts[digest]
         problems.append(
             f"事件链记录的产物缺少正文快照（hash {digest[:12]}，源路径 {source_path}）"
         )
-    return problems
+    return problems.render()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -940,7 +1035,9 @@ def main(argv: list[str] | None = None) -> int:
     if problems:
         print(f"证据包校验失败：{pack}")
         print(f"  工单：{ticket or '?'}")
-        print(f"  问题 {len(problems)} 处：")
+        total_count = getattr(problems, "total_count", len(problems))
+        sample_count = getattr(problems, "sample_count", len(problems))
+        print(f"  问题 {total_count} 处（诊断样本 {sample_count} 条）：")
         for p in problems:
             print(f"    - {p}")
         return 1
