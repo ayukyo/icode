@@ -93,6 +93,22 @@ def main(modules: tuple[str, ...] = DEFAULT_MODULES) -> int:
             details = traceback[-1800:] if traceback else "test failed without traceback"
             summary = _workflow_escape(f"{test.id()}:\n{details}")
             print(f"::error title=Workspace regression test failure::{summary}", flush=True)
+    # unittest reports skipped tests as successful; this selected Git oracle
+    # is required coverage, so only a skip of an explicitly selected POSIX
+    # differential makes this bounded workspace matrix fail.
+    required_test_ids = frozenset(POSIX_R3_TESTS).intersection(modules)
+    skipped_required_tests = sorted({
+        test.id()
+        for test, _reason in result.skipped
+        if test.id() in required_test_ids
+    })
+    if skipped_required_tests:
+        print(
+            "Required POSIX workspace regression test was skipped: "
+            + ", ".join(skipped_required_tests),
+            file=sys.stderr,
+        )
+        return 1
     return 0 if result.wasSuccessful() else 1
 
 

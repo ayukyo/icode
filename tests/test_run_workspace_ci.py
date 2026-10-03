@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import os
 import unittest
+from contextlib import redirect_stderr
+from unittest.mock import patch
 
+from scripts import run_workspace_ci
 from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
@@ -60,3 +64,29 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
             self.assertIn(tree_differential, DEFAULT_MODULES)
         else:
             self.assertNotIn(tree_differential, DEFAULT_MODULES)
+
+    def test_required_posix_tree_oid_differential_cannot_skip(self) -> None:
+        required_test_id = (
+            "tests.test_r3_regression.TestWorktreeGitTreeOID."
+            "test_tree_oid与Git写树一致并覆盖忽略项链接和模式"
+        )
+
+        class SkippedRequiredTest(unittest.TestCase):
+            def id(self) -> str:
+                return required_test_id
+
+            def runTest(self) -> None:
+                self.skipTest("simulated unavailable symlink support")
+
+        suite = unittest.TestSuite([SkippedRequiredTest()])
+        with patch.object(
+            run_workspace_ci.unittest.defaultTestLoader,
+            "loadTestsFromNames",
+            return_value=suite,
+        ):
+            with redirect_stderr(io.StringIO()):
+                exit_code = run_workspace_ci.main(
+                    modules=(required_test_id,),
+                )
+
+        self.assertEqual(exit_code, 1)
