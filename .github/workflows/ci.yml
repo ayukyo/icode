@@ -1058,52 +1058,84 @@ jobs:
             # Wait for one exact target tuple from the standard-user test, then
             # observe it from the runner token before allowing the candidate to run.
             $runnerTargetContext = $null
+            $runnerWfpTargetContextState = 'waiting'
             $runnerTargetDeadline = [DateTimeOffset]::UtcNow.AddSeconds(12)
             while ([DateTimeOffset]::UtcNow -lt $runnerTargetDeadline) {
               $process.Refresh()
-              if ($process.HasExited) { break }
+              if ($process.HasExited) {
+                $runnerWfpTargetContextState = 'process_exited_before_target'
+                break
+              }
               if (Test-Path -LiteralPath $wfpRunnerTargetFile -PathType Leaf) {
+                $targetLength = -1
                 try {
                   $targetLength = (Get-Item -LiteralPath $wfpRunnerTargetFile).Length
-                  if ($targetLength -gt 0 -and $targetLength -le 512) {
-                    $candidateTarget = [IO.File]::ReadAllText($wfpRunnerTargetFile) |
-                      ConvertFrom-Json -ErrorAction Stop
-                    $targetPropertyNames = @(
-                      $candidateTarget.PSObject.Properties.Name | Sort-Object -CaseSensitive
-                    )
-                    $expectedTargetPropertyNames = @(
-                      'profile_name', 'remote_address', 'remote_port', 'version' |
-                        Sort-Object -CaseSensitive
-                    )
-                    $targetPropertiesMatch = (
-                      $targetPropertyNames.Count -eq $expectedTargetPropertyNames.Count
-                    )
-                    foreach ($propertyName in $expectedTargetPropertyNames) {
-                      if ($targetPropertyNames -notcontains $propertyName) {
-                        $targetPropertiesMatch = $false
-                      }
+                } catch {
+                  $runnerWfpTargetContextState = 'read_failed'
+                }
+                if ($targetLength -eq 0) {
+                  $runnerWfpTargetContextState = 'empty'
+                } elseif ($targetLength -gt 512) {
+                  $runnerWfpTargetContextState = 'oversize'
+                } elseif ($targetLength -gt 0 -and
+                          $runnerWfpTargetContextState -ne 'read_failed') {
+                  $targetText = $null
+                  try {
+                    $targetText = [IO.File]::ReadAllText($wfpRunnerTargetFile)
+                  } catch {
+                    $runnerWfpTargetContextState = 'read_failed'
+                  }
+                  if ($null -ne $targetText) {
+                    $candidateTarget = $null
+                    try {
+                      $candidateTarget = $targetText | ConvertFrom-Json -ErrorAction Stop
+                    } catch {
+                      $runnerWfpTargetContextState = 'invalid_json'
                     }
-                    if ($targetPropertiesMatch -and
-                        ($candidateTarget.version -is [int] -or
-                         $candidateTarget.version -is [long]) -and
-                        $candidateTarget.version -eq 1 -and
-                        $candidateTarget.profile_name -is [string] -and
-                        $candidateTarget.profile_name -cmatch '^icode-[0-9a-f]{32}$' -and
-                        $candidateTarget.remote_address -is [string] -and
-                        $candidateTarget.remote_address -ceq '::1' -and
-                        ($candidateTarget.remote_port -is [int] -or
-                         $candidateTarget.remote_port -is [long]) -and
-                        $candidateTarget.remote_port -ge 1 -and
-                        $candidateTarget.remote_port -le 65535) {
-                      $runnerTargetContext = $candidateTarget
-                      break
+                    if ($null -ne $candidateTarget) {
+                      $targetPropertyNames = @(
+                        $candidateTarget.PSObject.Properties.Name | Sort-Object -CaseSensitive
+                      )
+                      $expectedTargetPropertyNames = @(
+                        'profile_name', 'remote_address', 'remote_port', 'version' |
+                          Sort-Object -CaseSensitive
+                      )
+                      $targetPropertiesMatch = (
+                        $targetPropertyNames.Count -eq $expectedTargetPropertyNames.Count
+                      )
+                      foreach ($propertyName in $expectedTargetPropertyNames) {
+                        if ($targetPropertyNames -notcontains $propertyName) {
+                          $targetPropertiesMatch = $false
+                        }
+                      }
+                      if ($targetPropertiesMatch -and
+                          ($candidateTarget.version -is [int] -or
+                           $candidateTarget.version -is [long]) -and
+                          $candidateTarget.version -eq 1 -and
+                          $candidateTarget.profile_name -is [string] -and
+                          $candidateTarget.profile_name -cmatch '^icode-[0-9a-f]{32}$' -and
+                          $candidateTarget.remote_address -is [string] -and
+                          $candidateTarget.remote_address -ceq '::1' -and
+                          ($candidateTarget.remote_port -is [int] -or
+                           $candidateTarget.remote_port -is [long]) -and
+                          $candidateTarget.remote_port -ge 1 -and
+                          $candidateTarget.remote_port -le 65535) {
+                        $runnerTargetContext = $candidateTarget
+                        $runnerWfpTargetContextState = 'valid'
+                        break
+                      }
+                      $runnerWfpTargetContextState = 'invalid_fields'
+                    } elseif ($runnerWfpTargetContextState -ne 'invalid_json') {
+                      $runnerWfpTargetContextState = 'invalid_fields'
                     }
                   }
-                } catch {
-                  # The publisher writes a tiny file; retry only while it is incomplete.
                 }
               }
               Start-Sleep -Milliseconds 25
+            }
+            if ($null -eq $runnerTargetContext -and
+                $runnerWfpTargetContextState -eq 'waiting') {
+              $runnerWfpTargetContextState = 'wait_timeout'
             }
 
             if ($null -ne $runnerTargetContext) {
@@ -1665,7 +1697,7 @@ jobs:
             Write-Output '::group::Windows WFP supplemental capture states'
             Write-Output "observer_preflight=$runnerWfpObserverPreflightState capture_preflight=$wfpCapturePreflight archive_member_match_count=$wfpArchiveMemberMatchCount"
             Write-Output '::endgroup::'
-            Write-Output "::notice title=Windows WFP capture and runner observer::observer=$runnerWfpObserverStatus collection=$runnerWfpCollectionState event=$runnerWfpCandidateEvent matched_capability_drops=$runnerWfpMatchedCapabilityDropCount cleanup=$runnerWfpCleanupState marker=$runnerWfpObserverMarkerState process=$runnerWfpObserverProcessState helper_rc=$runnerWfpObserverHelperExitCode receipt=$runnerWfpReceiptState capture_status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_xml_member_count=$wfpArchiveXmlMemberCount archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount"
+            Write-Output "::notice title=Windows WFP capture and runner observer::target_context=$runnerWfpTargetContextState observer=$runnerWfpObserverStatus collection=$runnerWfpCollectionState event=$runnerWfpCandidateEvent matched_capability_drops=$runnerWfpMatchedCapabilityDropCount cleanup=$runnerWfpCleanupState marker=$runnerWfpObserverMarkerState process=$runnerWfpObserverProcessState helper_rc=$runnerWfpObserverHelperExitCode receipt=$runnerWfpReceiptState capture_status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode cab_status=$wfpArchiveMemberStatus cab_members=$wfpArchiveMemberCount xml_members=$wfpArchiveXmlMemberCount wfpdiag_xml_members=$wfpArchiveWfpdiagXmlMemberCount"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }

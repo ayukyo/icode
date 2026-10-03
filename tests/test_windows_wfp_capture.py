@@ -437,7 +437,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("$cabinetMemberSummary.target_match_count", job)
         self.assertIn("$cabinetMemberSummary.status -cne 'listed'", job)
         self.assertIn("$wfpArchiveMemberStatus = 'multiple'", job)
-        self.assertIn("archive_member_status=$wfpArchiveMemberStatus", job)
+        self.assertIn("cab_status=$wfpArchiveMemberStatus", job)
         self.assertNotIn("'-D', $wfpCaptureArchive", job)
         self.assertNotIn('Write-Output $memberListResult.Stdout', job)
         self.assertIn("archive_member_match_count=$wfpArchiveMemberMatchCount", job)
@@ -458,7 +458,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
             "the notice may only publish the validated numeric member count",
         )
         self.assertTrue(
-            "archive_member_count=$wfpArchiveMemberCount" in job,
+            "cab_members=$wfpArchiveMemberCount" in job,
             "the bounded count must be present in the fixed notice",
         )
         member_count_bound = job.index("$cabinetMemberSummary.member_count -le 4096")
@@ -468,7 +468,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertLess(member_count_bound, member_count_receipt)
         self.assertLess(
             member_count_receipt,
-            job.index("archive_member_count=$wfpArchiveMemberCount"),
+            job.index("cab_members=$wfpArchiveMemberCount"),
         )
         self.assertTrue(
             "$wfpArchiveXmlMemberCount = 'not_checked'" in job,
@@ -495,7 +495,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
             "the notice may only publish the validated wfpdiag-prefix count",
         )
         self.assertTrue(
-            "archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount" in job,
+            "wfpdiag_xml_members=$wfpArchiveWfpdiagXmlMemberCount" in job,
             "the bounded prefix count must be present in the fixed notice",
         )
         self.assertTrue(
@@ -503,7 +503,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
             "the notice may only publish the validated XML suffix count",
         )
         self.assertTrue(
-            "archive_xml_member_count=$wfpArchiveXmlMemberCount" in job,
+            "xml_members=$wfpArchiveXmlMemberCount" in job,
             "the bounded XML suffix count must be present in the fixed notice",
         )
         xml_count_bound = job.index("$cabinetMemberSummary.xml_member_count -le 4096")
@@ -528,11 +528,11 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertLess(prefix_count_xml_consistency, prefix_count_receipt)
         self.assertLess(
             xml_count_receipt,
-            job.index("archive_xml_member_count=$wfpArchiveXmlMemberCount"),
+            job.index("xml_members=$wfpArchiveXmlMemberCount"),
         )
         self.assertLess(
             prefix_count_receipt,
-            job.index("archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount"),
+            job.index("wfpdiag_xml_members=$wfpArchiveWfpdiagXmlMemberCount"),
         )
         self.assertIn("$cabinetMemberSummary.schema_version -eq 3", job)
 
