@@ -258,13 +258,13 @@ def _classify_wfp_target_drop_receipt(
 def _classify_wfp_ipv6_loopback_receipt(
     receipt: object, *, collector_exit_code: int | None,
 ) -> str:
-    """Attribute only a complete, exact IPv6-loopback capability-drop receipt."""
+    """Report only exact-tuple drop matches from a complete IPv6 observer receipt."""
     if (
         type(collector_exit_code) is not int
         or collector_exit_code != 0
         or not isinstance(receipt, dict)
         or type(receipt.get("schema_version")) is not int
-        or receipt.get("schema_version") not in (6, 7)
+        or receipt.get("schema_version") not in (6, 7, 8)
         or type(receipt.get("target_ip_version")) is not int
         or receipt.get("target_ip_version") != 6
         or receipt.get("target_is_loopback") is not True
@@ -273,6 +273,29 @@ def _classify_wfp_ipv6_loopback_receipt(
         or receipt.get("network_events_collected") is not True
     ):
         return "evidence_unavailable"
+
+    schema_version = receipt["schema_version"]
+    if schema_version == 8:
+        aggregate_receipt_valid = (
+            receipt.get("subscription_attempted") is True
+            and receipt.get("subscription_return_code") == 0
+            and type(receipt.get("subscription_return_code")) is int
+            and receipt.get("subscription_handle_present") is True
+            and receipt.get("capability_subscription_attempted") is True
+            and type(receipt.get("capability_subscription_return_code")) is int
+            and receipt.get("capability_subscription_return_code") == 0
+            and receipt.get("capability_subscription_handle_present") is True
+            and receipt.get("capability_subscription_ok") is True
+            and receipt.get("capability_unsubscribe_ok") is True
+            and receipt.get("classify_subscription_attempted") is True
+            and type(receipt.get("classify_subscription_return_code")) is int
+            and receipt.get("classify_subscription_return_code") == 0
+            and receipt.get("classify_subscription_handle_present") is True
+            and receipt.get("classify_subscription_ok") is True
+            and receipt.get("classify_unsubscribe_ok") is True
+        )
+        if not aggregate_receipt_valid:
+            return "evidence_unavailable"
 
     count_fields = (
         "event_callback_count",
@@ -292,20 +315,43 @@ def _classify_wfp_ipv6_loopback_receipt(
     capability_count = counts["capability_drop_event_count"]
     classify_count = counts["classify_drop_event_count"]
     matched_capability_count = counts["matched_capability_drop_count"]
+    capability_id = receipt.get("matched_network_capability_id")
+    capability_id_consistent = receipt.get("network_capability_id_consistent")
+    matched_classify_count = counts["matched_classify_drop_count"]
+    if schema_version == 8:
+        if (
+            callback_count == 0
+            or capability_count + classify_count != callback_count
+            or matched_capability_count > capability_count
+            or matched_classify_count > classify_count
+            or type(capability_id_consistent) is not bool
+            or capability_id_consistent is not True
+        ):
+            return "evidence_unavailable"
+        if matched_capability_count > 0:
+            if (
+                type(capability_id) is not int
+                or capability_id not in _WFP_NETWORK_CAPABILITY_LABELS
+            ):
+                return "evidence_unavailable"
+            if matched_classify_count > 0:
+                return "capability_and_classify_drops_matched"
+            return "capability_drop_matched"
+        if capability_id is not None:
+            return "evidence_unavailable"
+        if matched_classify_count > 0:
+            return "classify_drop_matched"
+        return "evidence_unavailable"
+
     if (
         callback_count == 0
         or capability_count != callback_count
         or classify_count != 0
         or matched_capability_count == 0
         or matched_capability_count > capability_count
-        or counts["matched_classify_drop_count"] != 0
-    ):
-        return "evidence_unavailable"
-
-    capability_id = receipt.get("matched_network_capability_id")
-    if (
-        type(receipt.get("network_capability_id_consistent")) is not bool
-        or receipt.get("network_capability_id_consistent") is not True
+        or matched_classify_count != 0
+        or type(capability_id_consistent) is not bool
+        or capability_id_consistent is not True
         or type(capability_id) is not int
         or capability_id not in _WFP_NETWORK_CAPABILITY_LABELS
     ):
@@ -345,9 +391,23 @@ def _wfp_observer_diagnostic_summary(
         value = receipt_dict.get("subscription_return_code")
         return value if type(value) is int and 0 <= value <= 0xFFFFFFFF else None
 
+    def bounded_stage_return_code(key: str) -> int | None:
+        value = receipt_dict.get(key)
+        return value if type(value) is int and 0 <= value <= 0xFFFFFFFF else None
+
+    def bounded_bool(key: str) -> bool | None:
+        value = receipt_dict.get(key)
+        return value if type(value) is bool else None
+
     capability_id = receipt_dict.get("matched_network_capability_id")
     capability_id_consistent = receipt_dict.get("network_capability_id_consistent")
     subscription_return_code = bounded_subscription_return_code()
+    capability_return_code = bounded_stage_return_code(
+        "capability_subscription_return_code"
+    )
+    classify_return_code = bounded_stage_return_code(
+        "classify_subscription_return_code"
+    )
 
     return {
         "started": process_started is True,
@@ -368,6 +428,34 @@ def _wfp_observer_diagnostic_summary(
             receipt_dict.get("subscription_handle_present")
             if type(receipt_dict.get("subscription_handle_present")) is bool else None
         ),
+        "capability_subscription_attempted": bounded_bool(
+            "capability_subscription_attempted"
+        ),
+        "capability_subscription_return_code": capability_return_code,
+        "capability_subscription_return_code_hex": (
+            f"0x{capability_return_code:08X}"
+            if capability_return_code is not None else None
+        ),
+        "capability_subscription_handle_present": bounded_bool(
+            "capability_subscription_handle_present"
+        ),
+        "capability_subscription_ok": bounded_bool(
+            "capability_subscription_ok"
+        ),
+        "capability_unsubscribe_ok": bounded_bool("capability_unsubscribe_ok"),
+        "classify_subscription_attempted": bounded_bool(
+            "classify_subscription_attempted"
+        ),
+        "classify_subscription_return_code": classify_return_code,
+        "classify_subscription_return_code_hex": (
+            f"0x{classify_return_code:08X}"
+            if classify_return_code is not None else None
+        ),
+        "classify_subscription_handle_present": bounded_bool(
+            "classify_subscription_handle_present"
+        ),
+        "classify_subscription_ok": bounded_bool("classify_subscription_ok"),
+        "classify_unsubscribe_ok": bounded_bool("classify_unsubscribe_ok"),
         "subscription_ok": (
             receipt_dict.get("subscription_ok")
             if type(receipt_dict.get("subscription_ok")) is bool else None
@@ -418,6 +506,20 @@ def _print_wfp_observer_diagnostics(
         r"0x[0-9A-F]{8}", return_code_hex,
     ) is None:
         return_code_hex = None
+    capability_return_code_hex = summary.get(
+        "capability_subscription_return_code_hex"
+    )
+    if not isinstance(capability_return_code_hex, str) or re.fullmatch(
+        r"0x[0-9A-F]{8}", capability_return_code_hex,
+    ) is None:
+        capability_return_code_hex = None
+    classify_return_code_hex = summary.get(
+        "classify_subscription_return_code_hex"
+    )
+    if not isinstance(classify_return_code_hex, str) or re.fullmatch(
+        r"0x[0-9A-F]{8}", classify_return_code_hex,
+    ) is None:
+        classify_return_code_hex = None
 
     def bounded_bool(key: str) -> bool | None:
         value = summary.get(key)
@@ -442,6 +544,14 @@ def _print_wfp_observer_diagnostics(
         "collector_exit_code": collector_exit_code,
         "subscription_attempted": bounded_bool("subscription_attempted"),
         "subscription_return_code_hex": return_code_hex,
+        "capability_subscription_attempted": bounded_bool(
+            "capability_subscription_attempted"
+        ),
+        "capability_subscription_return_code_hex": capability_return_code_hex,
+        "classify_subscription_attempted": bounded_bool(
+            "classify_subscription_attempted"
+        ),
+        "classify_subscription_return_code_hex": classify_return_code_hex,
         "subscription_handle_present": bounded_bool("subscription_handle_present"),
         "subscription_ok": bounded_bool("subscription_ok"),
         "unsubscribe_ok": bounded_bool("unsubscribe_ok"),

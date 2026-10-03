@@ -686,6 +686,95 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
             "capability_drop_ipv6_loopback_attributed",
         )
 
+    def test_wfp_ipv6_schema8_receipt_requires_both_exact_subscriptions(self) -> None:
+        classify = probe_module._classify_wfp_ipv6_loopback_receipt
+        receipt = {
+            "schema_version": 8,
+            "target_ip_version": 6,
+            "target_is_loopback": True,
+            "subscription_attempted": True,
+            "subscription_return_code": 0,
+            "subscription_handle_present": True,
+            "subscription_ok": True,
+            "unsubscribe_ok": True,
+            "capability_subscription_attempted": True,
+            "capability_subscription_return_code": 0,
+            "capability_subscription_handle_present": True,
+            "capability_subscription_ok": True,
+            "capability_unsubscribe_ok": True,
+            "classify_subscription_attempted": True,
+            "classify_subscription_return_code": 0,
+            "classify_subscription_handle_present": True,
+            "classify_subscription_ok": True,
+            "classify_unsubscribe_ok": True,
+            "network_events_collected": True,
+            "event_callback_count": 1,
+            "capability_drop_event_count": 0,
+            "classify_drop_event_count": 1,
+            "matched_capability_drop_count": 0,
+            "matched_classify_drop_count": 1,
+            "matched_network_capability_id": None,
+            "network_capability_id_consistent": True,
+        }
+        self.assertEqual(
+            classify(receipt, collector_exit_code=0),
+            "classify_drop_matched",
+        )
+        self.assertEqual(
+            classify(
+                {**receipt, "classify_subscription_return_code": 5},
+                collector_exit_code=0,
+            ),
+            "evidence_unavailable",
+        )
+        self.assertEqual(
+            classify(
+                {**receipt, "event_callback_count": 2},
+                collector_exit_code=0,
+            ),
+            "evidence_unavailable",
+        )
+
+    def test_wfp_observer_summary_projects_v8_split_subscription_status(self) -> None:
+        summarize = probe_module._wfp_observer_diagnostic_summary
+        with tempfile.TemporaryDirectory(prefix="icode-wfp-v8-summary-") as raw:
+            root = Path(raw)
+            ready = root / "wfp-token.ready"
+            stop = root / "wfp-token.stop"
+            result = root / "wfp-token.json"
+            ready.write_text("ready\n", encoding="ascii")
+            receipt = {
+                "schema_version": 8,
+                "target_ip_version": 6,
+                "target_is_loopback": True,
+                "capability_subscription_attempted": True,
+                "capability_subscription_return_code": 0,
+                "capability_subscription_handle_present": True,
+                "capability_subscription_ok": True,
+                "capability_unsubscribe_ok": True,
+                "classify_subscription_attempted": True,
+                "classify_subscription_return_code": 5,
+                "classify_subscription_handle_present": False,
+                "classify_subscription_ok": False,
+                "classify_unsubscribe_ok": True,
+            }
+            summary = summarize(
+                process_started=True,
+                paths=(ready, stop, result),
+                receipt=receipt,
+                collector_exit_code=0,
+            )
+        self.assertEqual(
+            summary["capability_subscription_return_code_hex"],
+            "0x00000000",
+        )
+        self.assertEqual(
+            summary["classify_subscription_return_code_hex"],
+            "0x00000005",
+        )
+        self.assertIs(summary["capability_subscription_ok"], True)
+        self.assertIs(summary["classify_subscription_ok"], False)
+
     def test_wfp_observer_diagnostics_show_only_bounded_phase_fields(self) -> None:
         summarize = getattr(
             probe_module, "_wfp_observer_diagnostic_summary", None,
@@ -728,6 +817,18 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                     "subscription_return_code": None,
                     "subscription_return_code_hex": None,
                     "subscription_handle_present": None,
+                    "capability_subscription_attempted": None,
+                    "capability_subscription_return_code": None,
+                    "capability_subscription_return_code_hex": None,
+                    "capability_subscription_handle_present": None,
+                    "capability_subscription_ok": None,
+                    "capability_unsubscribe_ok": None,
+                    "classify_subscription_attempted": None,
+                    "classify_subscription_return_code": None,
+                    "classify_subscription_return_code_hex": None,
+                    "classify_subscription_handle_present": None,
+                    "classify_subscription_ok": None,
+                    "classify_unsubscribe_ok": None,
                     "subscription_ok": True,
                     "unsubscribe_ok": True,
                     "network_events_collected": True,
@@ -869,6 +970,10 @@ class TestWindowsAppContainerReadProbe(unittest.TestCase):
                 "collector_exit_code": 0,
                 "subscription_attempted": True,
                 "subscription_return_code_hex": "0x80320005",
+                "capability_subscription_attempted": None,
+                "capability_subscription_return_code_hex": None,
+                "classify_subscription_attempted": None,
+                "classify_subscription_return_code_hex": None,
                 "subscription_handle_present": False,
                 "subscription_ok": False,
                 "unsubscribe_ok": True,
