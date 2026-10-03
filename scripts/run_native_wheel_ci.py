@@ -142,6 +142,15 @@ def main() -> int:
                 print('installed wheel helper: namespace, Python and cleanup PASS')
             """)
             _run("probe installed wheel", [str(python), "-c", code], cwd=root, env=clean_env)
+            _run(
+                "probe installed wheel native violation receipt",
+                [
+                    str(python),
+                    str(repository / "scripts" / "probe_installed_linux_violation_receipt.py"),
+                ],
+                cwd=root,
+                env=clean_env,
+            )
             cleanup_code = textwrap.dedent("""\
                 from icode.isolation import LandlockSandbox, probe_linux_process_tree_cleanup
 

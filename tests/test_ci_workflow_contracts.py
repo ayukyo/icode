@@ -718,5 +718,24 @@ class TestWindowsRunnerPipeNativeCi(unittest.TestCase):
         )
 
 
+class TestLinuxInstalledWheelViolationReceiptCi(unittest.TestCase):
+    def test_installed_wheel_runner_executes_native_receipt_probe_after_install(
+        self,
+    ) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        runner = (repository_root / "scripts/run_native_wheel_ci.py").read_text(
+            encoding="utf-8",
+        )
+        probe_stage = '"probe installed wheel native violation receipt"'
+        probe_script = '"probe_installed_linux_violation_receipt.py"'
+
+        self.assertIn(probe_stage, runner)
+        self.assertIn(probe_script, runner)
+        self.assertLess(
+            runner.index('_run("install wheel"'),
+            runner.index(probe_stage),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
