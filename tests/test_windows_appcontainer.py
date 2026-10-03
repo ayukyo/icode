@@ -1752,6 +1752,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIs(access_notice["parent_standard_user"], True)
         self.assertEqual(access_notice["parent_standard_user_status"], "verified")
         self.assertIs(access_notice["dacl_control_verified"], True)
+        self.assertEqual(access_notice["runner_wfp_observer_gate"], "ready")
         network_notice = json.loads(next(
             encoded
             for name, encoded in captured_notices
@@ -7070,10 +7071,20 @@ class TestWindowsAppContainer(unittest.TestCase):
                     wfp_receipt, wfp_exit_code = _stop_wfp_event_probe(
                         wfp_process, wfp_paths,
                     )
+                raw_runner_observer_gate = runner_observer_gate_state.get("state")
+                allowed_runner_observer_gate_states = (
+                    "not_requested", "pending", "ready", "unavailable", "invalid",
+                    "timeout", "relay_failed", "request_unavailable",
+                    "relay_cleanup_timeout",
+                )
+                runner_wfp_observer_gate = (
+                    raw_runner_observer_gate
+                    if isinstance(raw_runner_observer_gate, str)
+                    and raw_runner_observer_gate in allowed_runner_observer_gate_states
+                    else "unavailable"
+                )
                 print(
-                    "runner_wfp_observer_gate=" + str(
-                        runner_observer_gate_state.get("state", "unavailable")
-                    ),
+                    "runner_wfp_observer_gate=" + runner_wfp_observer_gate,
                     flush=True,
                 )
                 print(
@@ -7369,6 +7380,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "access_errors": access_errors,
                     "close_errors": close_errors,
                     "write_diagnostics": write_diagnostics,
+                    "runner_wfp_observer_gate": runner_wfp_observer_gate,
                     "write_canary_fingerprints": {
                         "before_length": write_canary_before_length,
                         "before_sha256": write_canary_before_sha256,
@@ -7388,7 +7400,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                                 "executed", "exit", "cleanup", "appcontainer", "package_sid",
                                 "capabilities", "elevated", "admin_group_enabled", "approved_read",
                                 "outside_snapshot_denied", "workspace_denied", "home_denied",
-                                "ledger_denied",
+                                "ledger_denied", "runner_wfp_observer_gate",
                             )
                         }
                     },
