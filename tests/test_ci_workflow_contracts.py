@@ -424,6 +424,7 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
             "$runnerWfpObserverPreflightState",
             "$runnerWfpReceiptState",
             "$runnerWfpTargetContextState = 'waiting'",
+            "$runnerTargetDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)",
             "target_context=$runnerWfpTargetContextState",
             "'process_exited_before_target'",
             "'empty'",

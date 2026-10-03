@@ -1056,10 +1056,11 @@ jobs:
               -PassThru
 
             # Wait for one exact target tuple from the standard-user test, then
-            # observe it from the runner token before allowing the candidate to run.
+            # observe it from the runner token. The test stages its Python runtime
+            # before publishing the tuple, so allow a bounded 30-second window.
             $runnerTargetContext = $null
             $runnerWfpTargetContextState = 'waiting'
-            $runnerTargetDeadline = [DateTimeOffset]::UtcNow.AddSeconds(12)
+            $runnerTargetDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
             while ([DateTimeOffset]::UtcNow -lt $runnerTargetDeadline) {
               $process.Refresh()
               if ($process.HasExited) {
