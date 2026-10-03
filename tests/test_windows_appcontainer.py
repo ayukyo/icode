@@ -226,6 +226,7 @@ def wsa_event_connect_completion(ws2, connection, event, observation, pending_co
 
 _WINDOWS_WSAEWOULDBLOCK = 10035
 _WINDOWS_WSAETIMEDOUT = 10060
+_WINDOWS_CREATE_PROCESS_COMMAND_LINE_LIMIT = 32_767
 
 
 def _network_attempt_timed_out(
@@ -360,6 +361,39 @@ def _bounded_network_stage_notice(value: object) -> dict[str, object]:
         ),
         "tcp_state": observation["tcp_state"],
     }
+
+
+_REVIEWER_SCRIPT_FAILURE_STAGES = frozenset({
+    "script_startup", "wsa_helper_setup", "tcp_info_setup", "network_ipv4",
+    "network_ipv6", "identity_probe", "filesystem_probe", "child_process_probe",
+    "result_serialization",
+})
+
+
+def _bounded_reviewer_probe_script_failure(value: object) -> str:
+    """Expose only a fixed stage, a safe exception class, and a bounded line number."""
+    if value is None:
+        return "not_observed"
+    if not isinstance(value, dict):
+        return "invalid_marker"
+
+    raw_stage = value.get("stage")
+    stage = (
+        raw_stage
+        if type(raw_stage) is str and len(raw_stage) <= 32
+        and raw_stage in _REVIEWER_SCRIPT_FAILURE_STAGES
+        else "unknown"
+    )
+    raw_exception = value.get("exception")
+    exception = (
+        raw_exception
+        if type(raw_exception) is str and len(raw_exception) <= 64
+        and raw_exception in _RUNTIME_PROBE_ERROR_TYPES
+        else "other"
+    )
+    raw_line = value.get("line")
+    line = raw_line if type(raw_line) is int and 1 <= raw_line <= 100_000 else -1
+    return f"{stage}:{exception}:line={line}"
 
 
 def _query_administrators_group_membership_status(
@@ -1836,6 +1870,29 @@ class TestWindowsAppContainer(unittest.TestCase):
                     False,
                 )
 
+    def test_Reviewer脚本异常回执只保留固定阶段类型与有界行号(self) -> None:
+        formatter = globals().get("_bounded_reviewer_probe_script_failure")
+        self.assertTrue(
+            callable(formatter), "Reviewer script failure receipt formatter is missing",
+        )
+        self.assertEqual(
+            formatter({
+                "stage": "network_ipv4", "exception": "OSError", "line": 123,
+                "message": "private path C:\\secret\\input.txt",
+            }),
+            "network_ipv4:OSError:line=123",
+        )
+        self.assertEqual(
+            formatter({
+                "stage": "D:\\private", "exception": "SecretError",
+                "line": 10**100,
+            }),
+            "unknown:other:line=-1",
+        )
+        self.assertEqual(
+            formatter(None), "not_observed",
+        )
+
     def test_ReviewerTCP状态诊断读取同一socket且失败不影响网络结论(self) -> None:
         class _Socket:
             def fileno(self) -> int:
@@ -2081,6 +2138,14 @@ class TestWindowsAppContainer(unittest.TestCase):
             def capture_runner(argv: list[str], **_kwargs: object) -> WindowsJobResult:
                 script = argv[-1]
                 compile(script, "<reviewer-snapshot-probe-captured>", "exec")
+                command_line = subprocess.list2cmdline([
+                    r"C:\Python\python.exe", "-I", "-c", script,
+                ])
+                self.assertLess(
+                    len(command_line) + 1,
+                    _WINDOWS_CREATE_PROCESS_COMMAND_LINE_LIMIT,
+                    "bounded Reviewer script must fit CreateProcessW command-line limit",
+                )
                 captured_scripts.append(script)
                 captured_runner_targets.append(
                     json.loads(runner_target_path.read_text(encoding="ascii"))
@@ -2136,6 +2201,9 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertLessEqual(captured_runner_targets[0]["remote_port"], 65535)
         self.assertIn("runner_gate_deadline=time.monotonic()+20", captured_scripts[0])
         self.assertIn("network_observations['runner_observer_gate']", captured_scripts[0])
+        self.assertIn("sys.excepthook=report_unhandled_probe_exception", captured_scripts[0])
+        self.assertIn("probe_stage='network_ipv4'", captured_scripts[0])
+        self.assertIn("probe_stage='result_serialization'", captured_scripts[0])
         self.assertIn("runner_wfp_observer_gate=ready", wfp_output.getvalue())
         self.assertIn("Windows Reviewer snapshot access", notice_names)
         self.assertIn("Windows Reviewer snapshot writes and cleanup", notice_names)
@@ -2187,6 +2255,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             for name, encoded in captured_notices
             if name == "Windows Reviewer IPv4 connect stages"
         ))
+        self.assertEqual(ipv4_stages.get("script_failure"), "not_observed")
         self.assertEqual(ipv4_stages["connect_ex"], -1)
         self.assertEqual(ipv4_stages["event_create"], "unavailable")
         self.assertEqual(ipv4_stages["event_select"], "unavailable")
@@ -2326,6 +2395,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             "tcp_state": "fin_wait_1",
             "tcp_syn_retrans": 0xFFFFFFFF,
         })
+        max_network_stage_notice["script_failure"] = (
+            "result_serialization:OverflowError:line=100000"
+        )
         self.assertLessEqual(
             len(json.dumps(max_network_stage_notice, separators=(",", ":"))), 500,
         )
@@ -7326,6 +7398,18 @@ class TestWindowsAppContainer(unittest.TestCase):
                 script = (
                     "import ctypes,hashlib,json,os,pathlib,socket,subprocess,sys,time\n"
                     "import ctypes.wintypes as wintypes\n"
+                    "probe_stage='script_startup'\n"
+                    "def report_unhandled_probe_exception(error_type,error,tb):\n"
+                    "    try:\n"
+                    "        line=-1\n"
+                    "        while tb is not None: line=tb.tb_lineno; tb=tb.tb_next\n"
+                    "        exception=getattr(error_type,'__name__','')\n"
+                    "        if type(exception) is not str or len(exception)>64 or not exception.isascii(): exception='other'\n"
+                    "        if exception not in {'AttributeError','ImportError','IndexError','KeyError','NameError','OSError','OverflowError','RuntimeError','TypeError','ValueError'}: exception='other'\n"
+                    "        stage=probe_stage if probe_stage in {'script_startup','wsa_helper_setup','tcp_info_setup','network_ipv4','network_ipv6','identity_probe','filesystem_probe','child_process_probe','result_serialization'} else 'unknown'\n"
+                    f"        pathlib.Path({str(result_file)!r}).write_text(json.dumps({{'probe_failure':{{'stage':stage,'exception':exception,'line':line}}}},separators=(',',':')),encoding='ascii')\n"
+                    "    except BaseException: pass\n"
+                    "sys.excepthook=report_unhandled_probe_exception\n"
                     "def query_token():\n"
                     "    import ctypes.wintypes as wintypes\n"
                     "    kernel=ctypes.WinDLL('kernel32',use_last_error=True)\n"
@@ -7411,7 +7495,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "WSAEACCES=10013; WSAEWOULDBLOCK=10035; WSAEINPROGRESS=10036\n"
                     "def bounded_error_code(value):\n"
                     "    return value if type(value) is int and -0x80000000<=value<=0xffffffff else -1\n"
+                    "probe_stage='wsa_helper_setup'\n"
                     f"exec({_WINDOWS_WSA_EVENT_COMPLETION_SOURCE!r}, globals())\n"
+                    "probe_stage='tcp_info_setup'\n"
                     f"exec({_WINDOWS_TCP_INFO_DIAGNOSTIC_SOURCE!r}, globals())\n"
                     "def network_connect_denied(family,address,port):\n"
                     "    family_key='ipv4' if family==socket.AF_INET else 'ipv6'\n"
@@ -7516,10 +7602,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "                    observation['event_close_state']='error'\n"
                     "                    observation['event_close_api_error']=bounded_error_code(getattr(exc,'winerror',None))\n"
                     "runner_observer_gate_marker=None\n"
+                    "probe_stage='network_ipv4'\n"
                     "ipv4_network_attempted,ipv4_network_connected,"
                     "ipv4_network_connect_denied,ipv4_network_error,"
                     "ipv4_network_wait_expired,ipv4_network_terminal_error="
                     "network_connect_denied(socket.AF_INET,'127.0.0.1',ipv4_loopback_port)\n"
+                    "probe_stage='network_ipv6'\n"
                     "ipv6_network_attempted,ipv6_network_connected,"
                     "ipv6_network_connect_denied,ipv6_network_error,"
                     "ipv6_network_wait_expired,ipv6_network_terminal_error="
@@ -7613,7 +7701,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "    denied=cleanup_ok and code==5\n"
                     "    if key=='write' and bytes_transferred!=0: denied=False\n"
                     "    return denied\n"
+                    "probe_stage='identity_probe'\n"
                     "token=query_token()\n"
+                    "probe_stage='filesystem_probe'\n"
                     f"approved=pathlib.Path({str(approved_file)!r})\n"
                     f"expected={original_snapshot_hash!r}\n"
                     f"outside=pathlib.Path({str(outside_file)!r})\n"
@@ -7656,11 +7746,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "facts['access_errors']=access_errors\n"
                     "facts['close_errors']=close_errors\n"
                     "facts['write_diagnostics']=write_diagnostics\n"
+                    "probe_stage='child_process_probe'\n"
                     f"child=subprocess.Popen([sys.executable,'-I','-c',{child_code!r}])\n"
                     f"deadline=time.monotonic()+5\n"
                     f"while not pathlib.Path({str(child_ready_file)!r}).is_file() and time.monotonic()<deadline: time.sleep(.05)\n"
                     "facts['child_started']=pathlib.Path(" + repr(str(child_ready_file)) + ").is_file()\n"
                     "facts['child_pid']=child.pid\n"
+                    "probe_stage='result_serialization'\n"
                     "pathlib.Path(" + repr(str(result_file)) + ").write_text("
                     "json.dumps({'token':token,'facts':facts}),encoding='ascii')\n"
                     "if not (token['appcontainer'] and token['package_sid'] and token['capability_count']==0 "
@@ -7830,6 +7922,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                     result = json.loads(result_file.read_text(encoding="ascii"))
                 except (OSError, ValueError):
                     result = {}
+                raw_script_failure = (
+                    result.get("probe_failure") if isinstance(result, dict) else None
+                )
+                script_failure = _bounded_reviewer_probe_script_failure(
+                    raw_script_failure,
+                )
                 facts = result.get("facts") if isinstance(result, dict) else {}
                 token = result.get("token") if isinstance(result, dict) else {}
                 facts = facts if isinstance(facts, dict) else {}
@@ -8172,7 +8270,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer IPv4 connect stages",
-                    _bounded_network_stage_notice(summary["ipv4_network_stages"]),
+                    {
+                        **_bounded_network_stage_notice(summary["ipv4_network_stages"]),
+                        "script_failure": script_failure,
+                    },
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer IPv6 connect stages",
