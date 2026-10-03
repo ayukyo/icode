@@ -423,6 +423,7 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
             "$runnerWfpObserverHelperExitCode",
             "$runnerWfpObserverPreflightState",
             "$runnerWfpReceiptState",
+            "$observerToken = $runnerTargetContext.profile_name.Substring(6)",
             '$runnerWfpObserverReadyPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.ready"',
             '$runnerWfpObserverStopPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.stop"',
             '$runnerWfpObserverResultPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.json"',
@@ -464,6 +465,7 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
                     f"missing: {required_contract}",
                 )
         self.assertNotIn("$_.Exception.Message", observer_step)
+        self.assertNotIn("$observerToken = $observerSuffix", observer_step)
         self.assertNotIn('"candidate-$observerToken.ready"', observer_step)
         self.assertNotIn('"candidate-$observerToken.stop"', observer_step)
         self.assertNotIn('"candidate-$observerToken.json"', observer_step)

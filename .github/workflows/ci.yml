@@ -1133,7 +1133,8 @@ jobs:
                     [IO.Directory]::CreateDirectory($runnerWfpObserverRoot) | Out-Null
                     $observerTempOverride = $runnerWfpObserverRoot +
                       [IO.Path]::DirectorySeparatorChar
-                    $observerToken = $observerSuffix
+                    # The helper binds leaf names to the validated profile suffix.
+                    $observerToken = $runnerTargetContext.profile_name.Substring(6)
                     $runnerWfpObserverReadyPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.ready"
                     $runnerWfpObserverStopPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.stop"
                     $runnerWfpObserverResultPath = Join-Path $runnerWfpObserverRoot "wfp-$observerToken.json"
