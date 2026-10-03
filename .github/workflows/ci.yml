@@ -511,6 +511,7 @@ jobs:
                 "sid-derive-failed`n" { 'sid_derive_failed' }
                 "engine-open-failed`n" { 'engine_open_failed' }
                 "subscribe-failed`n" { 'subscribe_failed' }
+                "classify-subscribe-failed`n" { 'classify_subscribe_failed' }
                 "subscription-ready`n" { 'subscription_ready' }
                 default { 'unavailable' }
               }
@@ -548,6 +549,16 @@ jobs:
                 $handlePresent = $observerReceipt.subscription_handle_present
                 $subscriptionOk = $observerReceipt.subscription_ok
                 $unsubscribeOk = $observerReceipt.unsubscribe_ok
+                $capabilityAttempted = $observerReceipt.capability_subscription_attempted
+                $capabilityReturnCode = $observerReceipt.capability_subscription_return_code
+                $capabilityHandlePresent = $observerReceipt.capability_subscription_handle_present
+                $capabilitySubscriptionOk = $observerReceipt.capability_subscription_ok
+                $capabilityUnsubscribeOk = $observerReceipt.capability_unsubscribe_ok
+                $classifyAttempted = $observerReceipt.classify_subscription_attempted
+                $classifyReturnCode = $observerReceipt.classify_subscription_return_code
+                $classifyHandlePresent = $observerReceipt.classify_subscription_handle_present
+                $classifySubscriptionOk = $observerReceipt.classify_subscription_ok
+                $classifyUnsubscribeOk = $observerReceipt.classify_unsubscribe_ok
                 $observerNetworkEventsCollected = $observerReceipt.network_events_collected
                 if ($observerNetworkEventsCollected -is [bool]) {
                   $observerNetworkEventsState = if ($observerNetworkEventsCollected) {
@@ -556,19 +567,57 @@ jobs:
                     'disabled'
                   }
                 }
-                if ($schemaVersion -eq 7 -and $ipVersion -eq 6 -and
+                $capabilityReceiptValid = (
+                  $capabilityAttempted -is [bool] -and $capabilityAttempted -and
+                  ($capabilityReturnCode -is [int] -or $capabilityReturnCode -is [long]) -and
+                  $capabilityReturnCode -ge 0 -and $capabilityReturnCode -le 4294967295 -and
+                  $capabilityHandlePresent -is [bool] -and
+                  $capabilitySubscriptionOk -is [bool] -and
+                  $capabilityUnsubscribeOk -is [bool] -and
+                  $capabilitySubscriptionOk -eq (
+                    $capabilityReturnCode -eq 0 -and $capabilityHandlePresent
+                  ) -and
+                  (-not $capabilityHandlePresent -or $capabilityUnsubscribeOk)
+                )
+                $classifyReceiptValid = (
+                  $classifyAttempted -is [bool] -and
+                  $classifyHandlePresent -is [bool] -and
+                  $classifySubscriptionOk -is [bool] -and
+                  $classifyUnsubscribeOk -is [bool] -and
+                  (($classifyAttempted -and
+                    ($classifyReturnCode -is [int] -or $classifyReturnCode -is [long]) -and
+                    $classifyReturnCode -ge 0 -and $classifyReturnCode -le 4294967295 -and
+                    $classifySubscriptionOk -eq (
+                      $classifyReturnCode -eq 0 -and $classifyHandlePresent
+                    ) -and
+                    (-not $classifyHandlePresent -or $classifyUnsubscribeOk)) -or
+                   ((-not $classifyAttempted) -and $null -eq $classifyReturnCode -and
+                    (-not $classifyHandlePresent) -and (-not $classifySubscriptionOk) -and
+                    $classifyUnsubscribeOk))
+                )
+                $expectedReturnCode = $capabilityReturnCode
+                if ($classifyAttempted -is [bool] -and $classifyAttempted -and
+                    $classifySubscriptionOk -is [bool] -and -not $classifySubscriptionOk) {
+                  $expectedReturnCode = $classifyReturnCode
+                }
+                if ($schemaVersion -eq 8 -and $ipVersion -eq 6 -and
                     $attempted -is [bool] -and $attempted -and
                     ($returnCode -is [int] -or $returnCode -is [long]) -and
                     $returnCode -ge 0 -and $returnCode -le 4294967295 -and
+                    $returnCode -eq $expectedReturnCode -and
                     $handlePresent -is [bool] -and
                     $subscriptionOk -is [bool] -and
                     $unsubscribeOk -is [bool] -and
+                    $capabilityReceiptValid -and $classifyReceiptValid -and
+                    $handlePresent -eq ($capabilityHandlePresent -and $classifyHandlePresent) -and
+                    $subscriptionOk -eq ($capabilitySubscriptionOk -and $classifySubscriptionOk) -and
                     $observerProcess.ExitCode -eq 0 -and $unsubscribeOk) {
                   $observerReturnCode = '0x{0:X8}' -f [uint32]$returnCode
-                  if ($returnCode -eq 0 -and $handlePresent -and $subscriptionOk) {
+                  if ($returnCode -eq 0 -and $handlePresent -and $subscriptionOk -and
+                      $capabilitySubscriptionOk -and $classifySubscriptionOk) {
                     $observerPermissionState = 'subscription_succeeded'
-                  } elseif ($returnCode -eq 5 -and
-                      -not $handlePresent -and -not $subscriptionOk) {
+                  } elseif ($capabilityReturnCode -eq 5 -and
+                      -not $capabilityHandlePresent -and -not $capabilitySubscriptionOk) {
                     $observerPermissionState = 'access_denied'
                   } else {
                     $observerPermissionState = 'subscription_failed'
@@ -653,6 +702,7 @@ jobs:
           $runnerWfpCollectionState = 'unknown'
           $runnerWfpCandidateEvent = 'inconclusive'
           $runnerWfpMatchedCapabilityDropCount = 'not_checked'
+          $runnerWfpMatchedClassifyDropCount = 'not_checked'
           $runnerWfpCleanupState = 'not_started'
           $netsh = Join-Path $env:SystemRoot 'System32/netsh.exe'
           $profilePath = $null
@@ -1219,6 +1269,7 @@ jobs:
                               "sid-derive-failed`n" { 'sid_derive_failed' }
                               "engine-open-failed`n" { 'engine_open_failed' }
                               "subscribe-failed`n" { 'subscribe_failed' }
+                              "classify-subscribe-failed`n" { 'classify_subscribe_failed' }
                               default { 'unrecognized' }
                             }
                           }
@@ -1399,19 +1450,40 @@ jobs:
                         $observerReceipt.subscription_ok -is [bool] -and
                         $observerReceipt.subscription_ok -and
                         $observerReceipt.unsubscribe_ok -is [bool] -and
-                        $observerReceipt.unsubscribe_ok
+                        $observerReceipt.unsubscribe_ok -and
+                        $observerReceipt.capability_subscription_attempted -is [bool] -and
+                        $observerReceipt.capability_subscription_attempted -and
+                        ($observerReceipt.capability_subscription_return_code -is [int] -or
+                         $observerReceipt.capability_subscription_return_code -is [long]) -and
+                        $observerReceipt.capability_subscription_return_code -eq 0 -and
+                        $observerReceipt.capability_subscription_handle_present -is [bool] -and
+                        $observerReceipt.capability_subscription_handle_present -and
+                        $observerReceipt.capability_subscription_ok -is [bool] -and
+                        $observerReceipt.capability_subscription_ok -and
+                        $observerReceipt.capability_unsubscribe_ok -is [bool] -and
+                        $observerReceipt.capability_unsubscribe_ok -and
+                        $observerReceipt.classify_subscription_attempted -is [bool] -and
+                        $observerReceipt.classify_subscription_attempted -and
+                        ($observerReceipt.classify_subscription_return_code -is [int] -or
+                         $observerReceipt.classify_subscription_return_code -is [long]) -and
+                        $observerReceipt.classify_subscription_return_code -eq 0 -and
+                        $observerReceipt.classify_subscription_handle_present -is [bool] -and
+                        $observerReceipt.classify_subscription_handle_present -and
+                        $observerReceipt.classify_subscription_ok -is [bool] -and
+                        $observerReceipt.classify_subscription_ok -and
+                        $observerReceipt.classify_unsubscribe_ok -is [bool] -and
+                        $observerReceipt.classify_unsubscribe_ok
                       )
                       $observerTargetValid = (
-                        $observerSchema -eq 7 -and $observerIpVersion -eq 6 -and
+                        $observerSchema -eq 8 -and $observerIpVersion -eq 6 -and
                         $observerReceipt.target_is_loopback -is [bool] -and
                         $observerReceipt.target_is_loopback
                       )
                       $observerMatchesValid = (
                         $observerCountsValid -and
-                        $observerCallbackCount -eq $observerCapabilityCount -and
-                        $observerClassifyCount -eq 0 -and
+                        $observerCallbackCount -eq ($observerCapabilityCount + $observerClassifyCount) -and
                         $observerMatchedCapabilityCount -le $observerCapabilityCount -and
-                        $observerMatchedClassifyCount -eq 0 -and
+                        $observerMatchedClassifyCount -le $observerClassifyCount -and
                         $observerReceipt.network_capability_id_consistent -is [bool]
                       )
                       if ($observerMatchedCapabilityCount -gt 0) {
@@ -1436,12 +1508,15 @@ jobs:
                           }
                         }
                         $runnerWfpMatchedCapabilityDropCount = [string]$observerMatchedCapabilityCount
+                        $runnerWfpMatchedClassifyDropCount = [string]$observerMatchedClassifyCount
                         if ($observerNetworkEventsCollected -eq $false) {
                           $runnerWfpCandidateEvent = 'collection_disabled'
                         } elseif ($null -eq $observerNetworkEventsCollected) {
                           $runnerWfpCandidateEvent = 'collection_unknown'
                         } elseif ($observerMatchedCapabilityCount -gt 0) {
                           $runnerWfpCandidateEvent = 'capability_drop_matched'
+                        } elseif ($observerMatchedClassifyCount -gt 0) {
+                          $runnerWfpCandidateEvent = 'classify_drop_matched'
                         } else {
                           $runnerWfpCandidateEvent = 'no_matching_event'
                         }
@@ -1697,6 +1772,7 @@ jobs:
             }
             Write-Output '::group::Windows WFP supplemental capture states'
             Write-Output "observer_preflight=$runnerWfpObserverPreflightState capture_preflight=$wfpCapturePreflight archive_member_match_count=$wfpArchiveMemberMatchCount"
+            Write-Output "observer_matched_classify_drops=$runnerWfpMatchedClassifyDropCount"
             Write-Output '::endgroup::'
             Write-Output "::notice title=Windows WFP capture and runner observer::target_context=$runnerWfpTargetContextState observer=$runnerWfpObserverStatus collection=$runnerWfpCollectionState event=$runnerWfpCandidateEvent matched_capability_drops=$runnerWfpMatchedCapabilityDropCount cleanup=$runnerWfpCleanupState marker=$runnerWfpObserverMarkerState process=$runnerWfpObserverProcessState helper_rc=$runnerWfpObserverHelperExitCode receipt=$runnerWfpReceiptState capture_status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode cab_status=$wfpArchiveMemberStatus cab_members=$wfpArchiveMemberCount xml_members=$wfpArchiveXmlMemberCount wfpdiag_xml_members=$wfpArchiveWfpdiagXmlMemberCount"
             foreach ($name in $environmentNames) {

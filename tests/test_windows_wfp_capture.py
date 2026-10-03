@@ -197,6 +197,33 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertIn("PROFILE_DERIVE_RETRY_MS 10000", wfp_source)
         self.assertIn("derive_profile_sid_bounded(", wfp_source)
         self.assertIn("--collect-ipv6-loopback-wait-profile", wfp_source)
+        self.assertIn(
+            "observer_matched_classify_drops=$runnerWfpMatchedClassifyDropCount",
+            job,
+        )
+        self.assertIn("$observerReceipt.matched_classify_drop_count", job)
+        self.assertNotIn("connect_denied = $matchedClassifyDrop", job)
+
+    def test_ipv6_runner_observer_uses_separate_exact_drop_subscriptions(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        source = (
+            repository_root / "native/windows/icode_wfp_event_probe.c"
+        ).read_text(encoding="utf-8")
+        template_helper = source.split(
+            "static void initialize_ipv6_loopback_event_template(", 1,
+        )[1].split("\nstatic void increment_saturating", 1)[0]
+        collector = source.split(
+            "static int run_collector(", 1,
+        )[1].split("\nstatic int run_runner_subscription_probe(", 1)[0]
+
+        self.assertIn("UINT32 event_type", template_helper)
+        self.assertIn("conditionValue.uint32 = event_type", template_helper)
+        self.assertIn("FWPM_CONDITION_NET_EVENT_TYPE", template_helper)
+        self.assertIn("FWPM_NET_EVENT_TYPE_CAPABILITY_DROP", collector)
+        self.assertIn("FWPM_NET_EVENT_TYPE_CLASSIFY_DROP", collector)
+        self.assertEqual(collector.count("FwpmNetEventSubscribe2("), 2)
+        self.assertEqual(collector.count("FwpmNetEventUnsubscribe0("), 2)
+        self.assertIn("matched_classify_drop_count", source)
 
     def test_workflow_uses_bounded_setupapi_member_enumeration_before_extract(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]

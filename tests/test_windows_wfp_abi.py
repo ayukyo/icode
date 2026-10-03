@@ -155,7 +155,7 @@ class TestWindowsWfpAbi(unittest.TestCase):
         self.assertIn(r'\"subscription_attempted\":%s', source)
         self.assertIn(r'\"subscription_return_code\":%s', source)
         self.assertIn(r'\"subscription_handle_present\":%s', source)
-        self.assertIn(r'\"schema_version\":7', source)
+        self.assertIn(r'\"schema_version\":8', source)
         self.assertIn(r'\"schema_version\":6', source)
 
     def test_runner_permission_probe_creates_and_removes_only_its_profile(self) -> None:

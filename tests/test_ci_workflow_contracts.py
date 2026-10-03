@@ -394,6 +394,8 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
             "'engine_open_failed'",
             '"subscribe-failed`n"',
             "'subscribe_failed'",
+            '"classify-subscribe-failed`n"',
+            "'classify_subscribe_failed'",
             '"subscription-ready`n"',
             "'ready'",
             "default { 'unavailable' }",
@@ -496,8 +498,9 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
             "$runnerWfpCollectionState": "unknown",
             "$runnerWfpCandidateEvent": "cleanup_or_receipt_error",
             "$runnerWfpMatchedCapabilityDropCount": "not_checked",
+            "$runnerWfpMatchedClassifyDropCount": "not_checked",
             "$runnerWfpCleanupState": "not_started",
-            "$runnerWfpObserverMarkerState": "helper_exited_before_marker",
+            "$runnerWfpObserverMarkerState": "classify_subscribe_failed",
             "$runnerWfpObserverProcessState": "exit_unknown",
             "$runnerWfpObserverHelperExitCode": "out_of_range",
             "$runnerWfpReceiptState": "processing_error",
@@ -512,6 +515,60 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         for variable, value in longest_safe_values.items():
             notice_message = notice_message.replace(variable, value)
         self.assertLessEqual(len(notice_message), 500)
+
+    def test_runner_observer_requires_independent_capability_and_classify_receipts(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        candidate_job = workflow.split(
+            "  windows-reviewer-snapshot-probe:\n", 1,
+        )[1].split("\n  windows-appcontainer-read-handle-probe:", 1)[0]
+        candidate_step = candidate_job.split(
+            "      - name: Run Reviewer snapshot probe as temporary standard user\n",
+            1,
+        )[1]
+        identity_step = workflow.split(
+            "      - name: Probe WFP Subscribe2 access as runner identity\n", 1,
+        )[1].split(
+            "\n      - name: Run Reviewer snapshot probe as temporary standard user",
+            1,
+        )[0]
+
+        for required_contract in (
+            "$observerSchema -eq 8",
+            "$observerCallbackCount -eq ($observerCapabilityCount + $observerClassifyCount)",
+            "$observerMatchedClassifyCount -le $observerClassifyCount",
+            "$observerReceipt.capability_subscription_ok",
+            "$observerReceipt.capability_unsubscribe_ok",
+            "$observerReceipt.classify_subscription_ok",
+            "$observerReceipt.classify_unsubscribe_ok",
+            "$runnerWfpMatchedClassifyDropCount",
+            "matched_classify_drops=$runnerWfpMatchedClassifyDropCount",
+            "'classify_drop_matched'",
+        ):
+            with self.subTest(contract=required_contract):
+                self.assertIn(required_contract, candidate_step)
+        self.assertNotIn("$observerClassifyCount -eq 0", candidate_step)
+        self.assertNotIn("$observerMatchedClassifyCount -eq 0", candidate_step)
+
+        self.assertIn("$schemaVersion -eq 8", identity_step)
+        for receipt_field in (
+            "$observerReceipt.capability_subscription_attempted",
+            "$observerReceipt.capability_subscription_return_code",
+            "$observerReceipt.capability_subscription_ok",
+            "$observerReceipt.capability_unsubscribe_ok",
+            "$observerReceipt.classify_subscription_attempted",
+            "$observerReceipt.classify_subscription_return_code",
+            "$observerReceipt.classify_subscription_ok",
+            "$observerReceipt.classify_unsubscribe_ok",
+            "$capabilitySubscriptionOk -eq (",
+            "$classifySubscriptionOk -eq (",
+            "(-not $classifyHandlePresent -or $classifyUnsubscribeOk)",
+            "$returnCode -eq $expectedReturnCode",
+        ):
+            with self.subTest(identity_receipt_field=receipt_field):
+                self.assertIn(receipt_field, identity_step)
 
     def test_native_probe_publishes_receipts_only_after_complete_write(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]
