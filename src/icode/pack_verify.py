@@ -31,6 +31,9 @@ _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = stat.FILE_ATTRIBUTE_REPARSE_POINT
 _SHA256_FILE_READ_SIZE = 1024 * 1024
 _MAX_JSON_CONTAINER_DEPTH = 128
 _MAX_EVENT_CHAIN_DIAGNOSTIC_SAMPLES = 32
+_MAX_EVENT_CHAIN_LINE_BYTES = 1024 * 1024
+_MAX_EVENT_CHAIN_TOTAL_BYTES = 64 * 1024 * 1024
+_MAX_EVENT_CHAIN_EVENT_COUNT = 100_000
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -172,13 +175,26 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def sha256_file(path: Path) -> str:
+class _FileSizeLimitExceeded(Exception):
+    """Raised when a caller requested a bounded file hash and the limit is crossed."""
+
+
+def sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
     digest = hashlib.sha256()
+    total_bytes = 0
     with Path(path).open("rb") as stream:
         while True:
-            chunk = stream.read(_SHA256_FILE_READ_SIZE)
+            read_size = _SHA256_FILE_READ_SIZE
+            if max_bytes is not None:
+                # Read no more than one byte past the declared budget, even when
+                # the file grows after the caller's initial stat check.
+                read_size = min(read_size, max_bytes - total_bytes + 1)
+            chunk = stream.read(read_size)
             if not chunk:
                 break
+            total_bytes += len(chunk)
+            if max_bytes is not None and total_bytes > max_bytes:
+                raise _FileSizeLimitExceeded
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -348,6 +364,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
     if not file_entries:
         problems.append("清单 files 为空")
     entries: list[dict] = []
+    seen_entry_paths: set[str] = set()
     for index, entry in enumerate(file_entries, 1):
         if not isinstance(entry, dict):
             problems.append(f"清单 files 第 {index} 项结构无效（必须是对象）")
@@ -355,6 +372,10 @@ def verify_pack(pack_dir: Path) -> list[str]:
         if not isinstance(entry.get("path"), str) or not isinstance(entry.get("sha256"), str):
             problems.append(f"清单 files 第 {index} 项缺少有效 path 或 sha256")
             continue
+        if entry["path"] in seen_entry_paths:
+            problems.append(f"清单 files 第 {index} 项 path 重复")
+            continue
+        seen_entry_paths.add(entry["path"])
         entries.append(entry)
     for entry in entries:
         rel = entry["path"]
@@ -365,7 +386,22 @@ def verify_pack(pack_dir: Path) -> list[str]:
         if not target.is_file():
             problems.append(f"清单登记的文件缺失：{rel}")
             continue
-        actual = sha256_file(target)
+        if rel == EVENTS_REL:
+            try:
+                if target.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
+                    problems.append("事件链超过总输入字节数上限")
+                    continue
+            except OSError:
+                problems.append("事件链无法读取：OSError")
+                continue
+        try:
+            if rel == EVENTS_REL:
+                actual = sha256_file(target, max_bytes=_MAX_EVENT_CHAIN_TOTAL_BYTES)
+            else:
+                actual = sha256_file(target)
+        except _FileSizeLimitExceeded:
+            problems.append("事件链超过总输入字节数上限")
+            continue
         if actual != entry["sha256"]:
             problems.append(
                 f"文件内容与清单不符（疑似篡改）：{rel} "
@@ -488,18 +524,48 @@ def _verify_event_chain(
             target.append(f"事件不符合 pinned ticket-event schema（字段：{fields}）")
 
     try:
-        stream = path.open(encoding="utf-8")
+        if path.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
+            return {}, ["事件链超过总输入字节数上限"]
+    except (OSError, UnicodeError) as exc:
+        return {}, [*chain_problems.render(), f"事件链无法读取：{type(exc).__name__}"]
+
+    try:
+        # newline="" enables universal CR/LF framing without translating the
+        # terminator, while retaining RFC-valid Unicode separators in JSON text.
+        stream = path.open(encoding="utf-8", newline="")
     except (OSError, UnicodeError) as exc:
         return artifact_facts, [*chain_problems.render(), f"事件链无法读取：{type(exc).__name__}"]
 
     try:
         with stream:
-            for lineno, line in enumerate(stream, 1):
+            lineno = 0
+            total_input_bytes = 0
+            while True:
+                # TextIO's size is in decoded characters; this is a conservative
+                # allocation bound before enforcing the exact UTF-8 byte limit.
+                line = stream.readline(_MAX_EVENT_CHAIN_LINE_BYTES + 1)
+                if not line:
+                    break
+                lineno += 1
+                if len(line) > _MAX_EVENT_CHAIN_LINE_BYTES:
+                    return {}, [
+                        f"事件链第 {lineno} 行超过单条物理行字节数上限"
+                    ]
+                line_bytes = len(line.encode("utf-8"))
+                if line_bytes > _MAX_EVENT_CHAIN_LINE_BYTES:
+                    return {}, [
+                        f"事件链第 {lineno} 行超过单条物理行字节数上限"
+                    ]
+                total_input_bytes += line_bytes
+                if total_input_bytes > _MAX_EVENT_CHAIN_TOTAL_BYTES:
+                    return {}, ["事件链超过总输入字节数上限"]
                 # JSONL framing follows physical CR/LF lines. splitlines() also splits Unicode
                 # separators (NEL/LS/PS) that are valid JSON string data.
                 line = line.strip()
                 if not line:
                     continue
+                if event_count >= _MAX_EVENT_CHAIN_EVENT_COUNT:
+                    return {}, ["事件链超过最大事件条数上限"]
                 try:
                     event = loads_json_value(line)
                 except (RecursionError, ValueError) as exc:

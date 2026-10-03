@@ -139,6 +139,33 @@ class TestEvidencePack(unittest.TestCase):
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep existing evidence pack\n")
 
+    def test_导出器超限事件链在清理旧包前失败(self) -> None:
+        from unittest.mock import patch
+
+        import icode.evidence as evidence
+        from icode.evidence import EvidenceError
+
+        limits = (
+            ("_MAX_EVENT_CHAIN_LINE_BYTES", 64, "单条物理行"),
+            ("_MAX_EVENT_CHAIN_TOTAL_BYTES", 1, "总输入字节数"),
+            ("_MAX_EVENT_CHAIN_EVENT_COUNT", 0, "事件条数"),
+        )
+        for constant, limit, message in limits:
+            with self.subTest(limit=constant), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                dest = ws / "existing-pack"
+                dest.mkdir()
+                marker = dest / "keep.txt"
+                marker.write_text("preserve this pack\n", encoding="utf-8")
+
+                with patch.object(evidence, constant, limit, create=True):
+                    with self.assertRaisesRegex(EvidenceError, message):
+                        build_evidence_pack(
+                            out_dir, dest=dest, gates_json=self.settings.gates_json,
+                        )
+
+                self.assertEqual(marker.read_text(encoding="utf-8"), "preserve this pack\n")
+
     def test_任意事件类型的空对象payload仍兼容导出和校验(self) -> None:
         from icode.pack_verify import GENESIS_HASH, canonical_event_hash
 
@@ -1668,6 +1695,160 @@ class TestStandaloneVerifier(unittest.TestCase):
                 "逐行验证不应按全部非产物 payload 累积 Python 对象："
                 f"峰值分配 {peak_bytes} 字节",
             )
+
+    def test_event_chain对单条UTF8物理行字节数设置硬上限(self) -> None:
+        from unittest.mock import patch
+
+        from icode.pack_verify import _verify_event_chain, canonical_event_hash
+
+        with temp_workspace() as ws:
+            events_path = ws / "oversized-line.jsonl"
+            event = {
+                "schema_version": 1,
+                "event_id": "00000000-0000-4000-8000-000000000001",
+                "ticket_id": "bounded-line-ticket",
+                "timestamp": "2026-10-01T00:00:00+00:00",
+                "actor": "system",
+                "event_type": "ticket_created",
+                # ASCII 字符数低于阈值，但 UTF-8 字节数会超过阈值。
+                "payload": {"padding": "界" * 160, "secret": "must-not-echo"},
+                "previous_event_hash": "0" * 64,
+            }
+            event["event_hash"] = canonical_event_hash(event)
+            events_path.write_text(
+                json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+
+            with patch(
+                "icode.pack_verify._MAX_EVENT_CHAIN_LINE_BYTES", 700, create=True,
+            ):
+                artifact_facts, problems = _verify_event_chain(events_path)
+
+            self.assertEqual(artifact_facts, {})
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("单条物理行", problems[0])
+            self.assertNotIn("must-not-echo", "\n".join(problems))
+
+    def test_event_chain对总输入字节数设置硬上限(self) -> None:
+        from unittest.mock import patch
+
+        from icode.pack_verify import _verify_event_chain, canonical_event_hash
+
+        with temp_workspace() as ws:
+            events_path = ws / "oversized-total.jsonl"
+            event = {
+                "schema_version": 1,
+                "event_id": "00000000-0000-4000-8000-000000000001",
+                "ticket_id": "bounded-total-ticket",
+                "timestamp": "2026-10-01T00:00:00+00:00",
+                "actor": "system",
+                "event_type": "ticket_created",
+                "payload": {},
+                "previous_event_hash": "0" * 64,
+            }
+            event["event_hash"] = canonical_event_hash(event)
+            events_path.write_text(
+                json.dumps(event, separators=(",", ":")) + "\n", encoding="utf-8",
+            )
+
+            with patch(
+                "icode.pack_verify._MAX_EVENT_CHAIN_TOTAL_BYTES", 1, create=True,
+            ):
+                artifact_facts, problems = _verify_event_chain(events_path)
+
+            self.assertEqual(artifact_facts, {})
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("总输入字节数", problems[0])
+
+    def test_event_chain对记录数设置硬上限并兼容CR物理分帧(self) -> None:
+        from unittest.mock import patch
+
+        from icode.pack_verify import _verify_event_chain, canonical_event_hash
+
+        with temp_workspace() as ws:
+            events_path = ws / "too-many-events.jsonl"
+            previous_hash = "0" * 64
+            lines = []
+            for index, event_type in enumerate(("ticket_created", "step_finished")):
+                event = {
+                    "schema_version": 1,
+                    "event_id": f"00000000-0000-4000-8000-{index + 1:012x}",
+                    "ticket_id": "bounded-count-ticket",
+                    "timestamp": "2026-10-01T00:00:00+00:00",
+                    "actor": "system",
+                    "event_type": event_type,
+                    "payload": {"sequence": index},
+                    "previous_event_hash": previous_hash,
+                }
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+                lines.append(json.dumps(event, separators=(",", ":")))
+            # RFC-compatible CR-only framing 也应继续按物理行处理。
+            events_path.write_text("\r".join(lines) + "\r", encoding="utf-8")
+
+            with patch(
+                "icode.pack_verify._MAX_EVENT_CHAIN_EVENT_COUNT", 1, create=True,
+            ):
+                artifact_facts, problems = _verify_event_chain(events_path)
+
+            self.assertEqual(artifact_facts, {})
+            self.assertEqual(len(problems), 1, problems)
+            self.assertIn("事件条数", problems[0])
+
+    def test_verify_pack在哈希整个超限事件文件前拒绝(self) -> None:
+        from unittest.mock import patch
+
+        import icode.pack_verify as pack_verify
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+            events_path = dest / "ticket" / "events.jsonl"
+
+            with (
+                patch.object(pack_verify, "_MAX_EVENT_CHAIN_TOTAL_BYTES", 1, create=True),
+                patch.object(pack_verify, "sha256_file", wraps=pack_verify.sha256_file) as hasher,
+            ):
+                problems = verify_pack(dest)
+
+            self.assertTrue(any("总输入字节数" in problem for problem in problems), problems)
+            self.assertFalse(
+                any(call.args and Path(call.args[0]) == events_path for call in hasher.call_args_list),
+                "verify_pack 不应先对超限事件文件做完整 SHA-256 扫描",
+            )
+
+    def test_verify_pack拒绝重复登记事件路径(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            manifest_path = dest / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            event_entry = next(
+                item for item in manifest["files"]
+                if item["path"] == "ticket/events.jsonl"
+            )
+            manifest["files"].append(dict(event_entry))
+            from icode.pack_verify import pack_digest
+
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            problems = verify_pack(dest)
+
+            self.assertTrue(any("path 重复" in problem for problem in problems), problems)
 
     def test_event_chain校验仍拒绝重复event_id(self) -> None:
         from icode.pack_verify import _verify_event_chain, canonical_event_hash

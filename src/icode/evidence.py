@@ -31,6 +31,9 @@ from .contracts import ContractSet
 from .pack_verify import (
     ALLOWED_EVENT_TYPES,
     EVENTS_REL,
+    _MAX_EVENT_CHAIN_EVENT_COUNT,
+    _MAX_EVENT_CHAIN_LINE_BYTES,
+    _MAX_EVENT_CHAIN_TOTAL_BYTES,
     event_schema_issues,
     loads_json_value,
     verify_pack,
@@ -93,13 +96,39 @@ def _read_events(out_dir: Path, *, expected_ticket_id: str) -> _EventSummary:
     path = Path(out_dir) / EVENTS_NAME
     if not path.is_file():
         raise EvidenceError(f"事件链不存在：{path}")
+    try:
+        if path.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
+            raise EvidenceError("事件链超过总输入字节数上限")
+    except OSError as exc:
+        raise EvidenceError(f"事件链无法读取：{type(exc).__name__}") from None
     summary = _EventSummary()
     try:
-        with path.open(encoding="utf-8") as stream:
-            for lineno, line in enumerate(stream, 1):
+        with path.open(encoding="utf-8", newline="") as stream:
+            lineno = 0
+            total_input_bytes = 0
+            while True:
+                # Match the standalone verifier's CR/LF framing and resource budget.
+                line = stream.readline(_MAX_EVENT_CHAIN_LINE_BYTES + 1)
+                if not line:
+                    break
+                lineno += 1
+                if len(line) > _MAX_EVENT_CHAIN_LINE_BYTES:
+                    raise EvidenceError(
+                        f"事件链第 {lineno} 行超过单条物理行字节数上限"
+                    )
+                line_bytes = len(line.encode("utf-8"))
+                if line_bytes > _MAX_EVENT_CHAIN_LINE_BYTES:
+                    raise EvidenceError(
+                        f"事件链第 {lineno} 行超过单条物理行字节数上限"
+                    )
+                total_input_bytes += line_bytes
+                if total_input_bytes > _MAX_EVENT_CHAIN_TOTAL_BYTES:
+                    raise EvidenceError("事件链超过总输入字节数上限")
                 line = line.strip()
                 if not line:
                     continue
+                if summary.event_count >= _MAX_EVENT_CHAIN_EVENT_COUNT:
+                    raise EvidenceError("事件链超过最大事件条数上限")
                 try:
                     event = loads_json_value(line)
                 except (RecursionError, ValueError) as exc:
