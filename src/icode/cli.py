@@ -520,55 +520,39 @@ def _budget_line(backend) -> str:
 
 
 def cmd_evidence(args: argparse.Namespace) -> int:
-    import json as _json
-
-    from .evidence import build_evidence_pack, collect_verifications
-    from .pack_verify import loads_json_value
+    from .evidence import (
+        _MAX_VERIFICATION_RECEIPTS,
+        EvidenceError,
+        build_evidence_pack,
+        collect_verifications,
+        load_verification_receipts,
+    )
     from .runner import run_unittest
 
     settings = load_settings(args.skill_root)
 
-    receipts: list[dict] = []
-    for path in args.receipt:
-        p = Path(path)
-        if not p.is_file():
-            print(f"回执文件不存在：{p}", file=sys.stderr)
-            return 2
-        try:
-            receipt_text = p.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            print(f"回执文件不是有效 UTF-8：{p}", file=sys.stderr)
-            return 2
-        try:
-            data = loads_json_value(receipt_text)
-        except _json.JSONDecodeError as exc:
-            print(
-                f"回执文件 JSON 格式无效：{p}（第 {exc.lineno} 行第 {exc.colno} 列）",
-                file=sys.stderr,
-            )
-            return 2
-        except (ValueError, RecursionError):
-            print(f"回执文件 JSON 格式无效：{p}", file=sys.stderr)
-            return 2
-        if not isinstance(data, dict) and not (
-            isinstance(data, list) and all(isinstance(item, dict) for item in data)
-        ):
-            print(
-                f"回执文件结构无效（需 JSON 对象或仅含对象的数组）：{p}",
-                file=sys.stderr,
-            )
-            return 2
-        receipts.extend(data if isinstance(data, list) else [data])
+    try:
+        receipts = load_verification_receipts(args.receipt)
+    except EvidenceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     if args.receipt_from:
+        if len(receipts) >= _MAX_VERIFICATION_RECEIPTS:
+            print("验证回执条数超过安全上限", file=sys.stderr)
+            return 2
         workdir = Path(args.receipt_from).resolve()
         code, output = run_unittest(workdir)
         receipts.append(collect_verifications(code, [sys.executable, "-B", "-m", "unittest"], output))
         print(f"  外部验证回执：python -B -m unittest @ {workdir} → 退出码 {code}")
 
-    report = build_evidence_pack(
-        args.ticket, dest=args.dest, gates_json=settings.gates_json, verifications=receipts,
-    )
+    try:
+        report = build_evidence_pack(
+            args.ticket, dest=args.dest, gates_json=settings.gates_json, verifications=receipts,
+        )
+    except EvidenceError as exc:
+        print(f"证据包导出失败：{exc}", file=sys.stderr)
+        return 2
     print(report.render())
     if report.ok:
         print("\n独立校验（不依赖本工具）：")

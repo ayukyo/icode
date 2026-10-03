@@ -624,6 +624,193 @@ class TestEvidencePack(unittest.TestCase):
                 else:
                     self.assertFalse(pack_path.exists())
 
+    def test_evidence拒绝超大回执文件且保留旧包(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        from icode.cli import main
+
+        with temp_workspace() as ws:
+            ticket = make_finished_plan_ticket(self.settings, ws / "work")
+            receipt_path = ws / "oversized.json"
+            receipt_path.write_bytes(
+                b'{"value":"' + b"x" * (8 * 1024 * 1024) + b'"}'
+            )
+            pack_path = ws / "pack"
+            pack_path.mkdir()
+            marker = pack_path / "keep.txt"
+            marker.write_bytes(b"keep existing evidence pack")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            with (
+                patch("icode.cli.load_settings", return_value=self.settings),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main([
+                    "evidence", "--ticket", str(ticket), "--dest", str(pack_path),
+                    "--receipt", str(receipt_path),
+                ])
+
+            self.assertEqual(exit_code, 2, stdout.getvalue() + stderr.getvalue())
+            self.assertIn("回执文件超过单文件安全上限", stderr.getvalue())
+            self.assertEqual(marker.read_bytes(), b"keep existing evidence pack")
+            self.assertEqual(list(pack_path.iterdir()), [marker])
+
+    def test_evidence拒绝累计回执输入超限且保留旧包(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        import icode.evidence as evidence_module
+        from icode.cli import main
+
+        with temp_workspace() as ws:
+            ticket = make_finished_plan_ticket(self.settings, ws / "work")
+            receipt_paths = []
+            for index in range(3):
+                path = ws / f"receipt-{index}.json"
+                path.write_bytes(
+                    b'{"value":"' + b"x" * (6 * 1024 * 1024) + b'"}'
+                )
+                receipt_paths.append(path)
+            pack_path = ws / "pack"
+            pack_path.mkdir()
+            marker = pack_path / "keep.txt"
+            marker.write_bytes(b"keep existing evidence pack")
+            stdout = StringIO()
+            stderr = StringIO()
+            argv = ["evidence", "--ticket", str(ticket), "--dest", str(pack_path)]
+            for path in receipt_paths:
+                argv.extend(("--receipt", str(path)))
+            read_limits = []
+            original_reader = evidence_module.read_bounded_bytes
+
+            def tracking_reader(path, *, max_bytes):
+                read_limits.append(max_bytes)
+                return original_reader(path, max_bytes=max_bytes)
+
+            with (
+                patch("icode.cli.load_settings", return_value=self.settings),
+                patch(
+                    "icode.evidence.read_bounded_bytes",
+                    side_effect=tracking_reader,
+                ),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main(argv)
+
+            self.assertEqual(exit_code, 2, stdout.getvalue() + stderr.getvalue())
+            self.assertIn("回执文件累计输入超过安全上限", stderr.getvalue())
+            self.assertEqual(
+                read_limits,
+                [
+                    8 * 1024 * 1024,
+                    8 * 1024 * 1024,
+                    16 * 1024 * 1024
+                    - sum(path.stat().st_size for path in receipt_paths[:2]),
+                ],
+            )
+            self.assertEqual(marker.read_bytes(), b"keep existing evidence pack")
+            self.assertEqual(list(pack_path.iterdir()), [marker])
+
+    def test_evidence拒绝回执条数超限且保留旧包(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        from icode.cli import main
+
+        with temp_workspace() as ws:
+            ticket = make_finished_plan_ticket(self.settings, ws / "work")
+            receipt_path = ws / "too-many.json"
+            receipt_path.write_text(json.dumps([{}] * 10_001), encoding="utf-8")
+            pack_path = ws / "pack"
+            pack_path.mkdir()
+            marker = pack_path / "keep.txt"
+            marker.write_bytes(b"keep existing evidence pack")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            with (
+                patch("icode.cli.load_settings", return_value=self.settings),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main([
+                    "evidence", "--ticket", str(ticket), "--dest", str(pack_path),
+                    "--receipt", str(receipt_path),
+                ])
+
+            self.assertEqual(exit_code, 2, stdout.getvalue() + stderr.getvalue())
+            self.assertIn("验证回执条数超过安全上限", stderr.getvalue())
+            self.assertEqual(marker.read_bytes(), b"keep existing evidence pack")
+            self.assertEqual(list(pack_path.iterdir()), [marker])
+
+    def test_evidence拒绝生成超大verifications_json且保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            pack_path = ws / "pack"
+            pack_path.mkdir()
+            marker = pack_path / "keep.txt"
+            marker.write_bytes(b"keep existing evidence pack")
+
+            with self.assertRaisesRegex(EvidenceError, "验证回执输出超过安全上限"):
+                build_evidence_pack(
+                    out_dir,
+                    dest=pack_path,
+                    gates_json=self.settings.gates_json,
+                    verifications=[{"value": "x" * (8 * 1024 * 1024)}],
+                )
+
+            self.assertEqual(marker.read_bytes(), b"keep existing evidence pack")
+            self.assertEqual(list(pack_path.iterdir()), [marker])
+
+    def test_独立task回执序列化超限时不发布(self) -> None:
+        from icode.evidence import EvidenceError, save_verification_receipt
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            destination = ws / "receipt.json"
+            evidence = VerificationEvidence(
+                step="x" * (8 * 1024 * 1024), attempt="1", exit_code=0,
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "验证回执输出超过安全上限"):
+                save_verification_receipt(evidence, destination)
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(ws.iterdir()), [])
+
+    def test_独立task回执在生成fingerprint前拒绝超大字段(self) -> None:
+        from unittest.mock import patch
+
+        from icode.evidence import EvidenceError, save_verification_receipt
+        from icode.self_verify import VerificationEvidence
+
+        with temp_workspace() as ws:
+            destination = ws / "receipt.json"
+            evidence = VerificationEvidence(
+                step="x" * (8 * 1024 * 1024), attempt="1", exit_code=0,
+            )
+
+            with patch.object(
+                VerificationEvidence,
+                "to_receipt",
+                wraps=evidence.to_receipt,
+            ) as to_receipt:
+                with self.assertRaisesRegex(EvidenceError, "验证回执输出超过安全上限"):
+                    save_verification_receipt(evidence, destination)
+                to_receipt.assert_not_called()
+
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(ws.iterdir()), [])
+
     def test_evidence导入有限浮点回执后可生成并独立校验(self) -> None:
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO

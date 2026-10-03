@@ -19,9 +19,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +40,8 @@ from .pack_verify import (
     _MAX_EVENT_CHAIN_TOTAL_BYTES,
     _MAX_MANIFEST_FILE_ENTRIES,
     _MAX_METADATA_JSON_BYTES,
+    _MAX_JSON_CONTAINER_DEPTH,
+    _MAX_JSON_STRUCTURAL_TOKENS,
     _MAX_PACKAGE_ARTIFACT_BYTES,
     _MAX_PACKAGE_FILE_BYTES,
     _MAX_PACKAGE_HASH_READ_BYTES,
@@ -57,6 +61,14 @@ EVENTS_NAME = ".ico_events.jsonl"
 PACK_KIND = "icode-evidence-pack"
 PACK_SCHEMA_VERSION = 1
 
+# Verification receipts are user-supplied evidence input. Keep their import and
+# generated package representation bounded independently from artifact bodies.
+_MAX_VERIFICATION_RECEIPT_FILE_BYTES = 8 * 1024 * 1024
+_MAX_VERIFICATION_RECEIPT_INPUT_BYTES = 16 * 1024 * 1024
+_MAX_VERIFICATION_RECEIPT_FILES = 256
+_MAX_VERIFICATION_RECEIPTS = 10_000
+_MAX_VERIFICATIONS_JSON_BYTES = 8 * 1024 * 1024
+
 
 class EvidenceError(RuntimeError):
     """证据包构建失败。"""
@@ -64,6 +76,10 @@ class EvidenceError(RuntimeError):
 
 class _ArtifactSnapshotLimitExceeded(EvidenceError):
     """Raised when copied artifact bodies exceed the aggregate package limit."""
+
+
+class _VerificationJsonLimitExceeded(Exception):
+    """Raised before a verification payload exceeds its bounded JSON budget."""
 
 
 @dataclass
@@ -106,6 +122,286 @@ class _EventSummary:
 
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _json_string_size_bytes(value: str, *, max_bytes: int) -> int:
+    """Count ensure_ascii=False JSON string bytes without allocating its encoding."""
+    size_bytes = 2  # surrounding quotes
+    short_escapes = {'"', "\\", "\b", "\f", "\n", "\r", "\t"}
+    for char in value:
+        codepoint = ord(char)
+        if char in short_escapes:
+            size_bytes += 2
+        elif codepoint < 0x20:
+            size_bytes += 6  # \\u00xx
+        else:
+            try:
+                size_bytes += len(char.encode("utf-8"))
+            except UnicodeEncodeError:
+                raise ValueError("JSON 字符串包含无效 Unicode") from None
+        if size_bytes > max_bytes:
+            raise _VerificationJsonLimitExceeded
+    return size_bytes
+
+
+def _validate_verification_json_value(
+    value: object, *, max_bytes: int,
+) -> tuple[int, int]:
+    """Bound shape and individual encoder chunks before JSONEncoder allocates them."""
+    structural_tokens = 0
+    scalar_bytes = 0
+
+    def add_scalar_bytes(size_bytes: int) -> None:
+        nonlocal scalar_bytes
+        scalar_bytes += size_bytes
+        if scalar_bytes > max_bytes:
+            raise _VerificationJsonLimitExceeded
+
+    def integer_size_bytes(number: int) -> int:
+        bits = abs(number).bit_length()
+        # 0.30103 is a safe upper approximation for log10(2); no decimal copy needed.
+        return max(1, (bits * 30103) // 100000 + 1) + int(number < 0)
+
+    def visit(current: object, depth: int) -> None:
+        nonlocal structural_tokens
+        if isinstance(current, str):
+            add_scalar_bytes(_json_string_size_bytes(current, max_bytes=max_bytes))
+            return
+        if current is None:
+            add_scalar_bytes(4)  # null
+            return
+        if isinstance(current, bool):
+            add_scalar_bytes(4 if current else 5)
+            return
+        if isinstance(current, int):
+            # Avoid converting an attacker-sized integer to decimal just to size it.
+            size_bytes = integer_size_bytes(current)
+            if size_bytes > max_bytes:
+                raise _VerificationJsonLimitExceeded
+            add_scalar_bytes(size_bytes)
+            return
+        if isinstance(current, float):
+            if not math.isfinite(current):
+                raise ValueError("JSON 数值必须是有限 binary64")
+            add_scalar_bytes(len(json.dumps(current, allow_nan=False)))
+            return
+        if isinstance(current, Mapping):
+            next_depth = depth + 1
+            # A source receipt may be at the parser's exact depth cap, then gains
+            # two containers when wrapped as {receipts: [receipt, ...]}.
+            if next_depth > _MAX_JSON_CONTAINER_DEPTH + 2:
+                raise _VerificationJsonLimitExceeded
+            structural_tokens += 2 + max(0, len(current) - 1) + len(current)
+            if structural_tokens > _MAX_JSON_STRUCTURAL_TOKENS:
+                raise _VerificationJsonLimitExceeded
+            for key, item in current.items():
+                if isinstance(key, str):
+                    add_scalar_bytes(_json_string_size_bytes(key, max_bytes=max_bytes))
+                elif key is None:
+                    add_scalar_bytes(6)  # JSON encoder writes the key "null".
+                elif isinstance(key, bool):
+                    add_scalar_bytes(6 if key else 7)
+                elif isinstance(key, int):
+                    size_bytes = integer_size_bytes(key)
+                    if size_bytes + 2 > max_bytes:
+                        raise _VerificationJsonLimitExceeded
+                    add_scalar_bytes(size_bytes + 2)  # Numeric object keys become strings.
+                elif isinstance(key, float):
+                    if not math.isfinite(key):
+                        raise ValueError("JSON 对象键必须是有限数值")
+                    add_scalar_bytes(len(json.dumps(key, allow_nan=False)) + 2)
+                else:
+                    raise TypeError("JSON 对象键类型无效")
+                visit(item, next_depth)
+            return
+        if isinstance(current, (list, tuple)):
+            next_depth = depth + 1
+            if next_depth > _MAX_JSON_CONTAINER_DEPTH + 2:
+                raise _VerificationJsonLimitExceeded
+            structural_tokens += 2 + max(0, len(current) - 1)
+            if structural_tokens > _MAX_JSON_STRUCTURAL_TOKENS:
+                raise _VerificationJsonLimitExceeded
+            for item in current:
+                visit(item, next_depth)
+            return
+        raise TypeError("JSON 值类型无效")
+
+    visit(value, 0)
+    return scalar_bytes, structural_tokens
+
+
+def _encode_verification_json_bounded(
+    value: object,
+    *,
+    too_large_message: str,
+    invalid_message: str,
+) -> bytes:
+    """Serialize a receipt with a hard output cap before any destination is changed."""
+    try:
+        _validate_verification_json_value(value, max_bytes=_MAX_VERIFICATIONS_JSON_BYTES)
+    except _VerificationJsonLimitExceeded:
+        raise EvidenceError(too_large_message) from None
+    except (TypeError, ValueError, RecursionError, OverflowError):
+        raise EvidenceError(invalid_message) from None
+
+    try:
+        encoder = json.JSONEncoder(
+            ensure_ascii=False, indent=2, allow_nan=False,
+        )
+        payload = bytearray()
+        for chunk in encoder.iterencode(value):
+            encoded = chunk.encode("utf-8")
+            if len(payload) + len(encoded) + 1 > _MAX_VERIFICATIONS_JSON_BYTES:
+                raise _VerificationJsonLimitExceeded
+            payload.extend(encoded)
+        payload.append(0x0A)
+        return bytes(payload)
+    except _VerificationJsonLimitExceeded:
+        raise EvidenceError(too_large_message) from None
+    except (TypeError, ValueError, RecursionError, OverflowError, UnicodeError):
+        raise EvidenceError(invalid_message) from None
+
+
+def load_verification_receipts(paths: list[Path | str]) -> list[dict]:
+    """Read strict JSON receipt files under per-file, aggregate, file-count and item limits."""
+    if len(paths) > _MAX_VERIFICATION_RECEIPT_FILES:
+        raise EvidenceError("回执文件数量超过安全上限")
+
+    total_input_bytes = 0
+    receipts: list[dict] = []
+    for value in paths:
+        path = Path(value)
+        if not path.is_file():
+            raise EvidenceError(f"回执文件不存在：{path}")
+        remaining_input_bytes = (
+            _MAX_VERIFICATION_RECEIPT_INPUT_BYTES - total_input_bytes
+        )
+        read_limit = min(
+            _MAX_VERIFICATION_RECEIPT_FILE_BYTES,
+            remaining_input_bytes,
+        )
+        try:
+            contents = read_bounded_bytes(
+                path, max_bytes=read_limit,
+            )
+        except ValueError:
+            if read_limit < _MAX_VERIFICATION_RECEIPT_FILE_BYTES:
+                raise EvidenceError("回执文件累计输入超过安全上限") from None
+            raise EvidenceError(f"回执文件超过单文件安全上限：{path}") from None
+        except OSError:
+            raise EvidenceError(f"回执文件无法读取：{path}") from None
+        total_input_bytes += len(contents)
+        if total_input_bytes > _MAX_VERIFICATION_RECEIPT_INPUT_BYTES:
+            raise EvidenceError("回执文件累计输入超过安全上限")
+
+        try:
+            text = contents.decode("utf-8")
+        except UnicodeDecodeError:
+            raise EvidenceError(f"回执文件不是有效 UTF-8：{path}") from None
+        try:
+            data = loads_json_value(text)
+        except json.JSONDecodeError as exc:
+            raise EvidenceError(
+                f"回执文件 JSON 格式无效：{path}（第 {exc.lineno} 行第 {exc.colno} 列）"
+            ) from None
+        except (ValueError, RecursionError):
+            raise EvidenceError(f"回执文件 JSON 格式无效：{path}") from None
+
+        if isinstance(data, dict):
+            rows = [data]
+        elif isinstance(data, list):
+            if len(receipts) + len(data) > _MAX_VERIFICATION_RECEIPTS:
+                raise EvidenceError("验证回执条数超过安全上限")
+            if not all(isinstance(item, dict) for item in data):
+                raise EvidenceError(
+                    f"回执文件结构无效（需 JSON 对象或仅含对象的数组）：{path}"
+                )
+            rows = data
+        else:
+            raise EvidenceError(
+                f"回执文件结构无效（需 JSON 对象或仅含对象的数组）：{path}"
+            )
+        if len(receipts) + len(rows) > _MAX_VERIFICATION_RECEIPTS:
+            raise EvidenceError("验证回执条数超过安全上限")
+        receipts.extend(rows)
+    return receipts
+
+
+def _verification_payload(
+    verifications: list[dict] | None,
+    verification_runs: object,
+) -> tuple[bytes, int]:
+    """Build and bound all receipt rows before clean export can remove an old pack."""
+    receipts: list[object] = []
+    scalar_bytes = 0
+    structural_tokens = 7  # wrapper object + receipts array and their separators
+
+    def append_receipt(receipt: object) -> None:
+        nonlocal scalar_bytes, structural_tokens
+        if len(receipts) >= _MAX_VERIFICATION_RECEIPTS:
+            raise EvidenceError("验证回执条数超过安全上限")
+        if receipts:
+            structural_tokens += 1  # comma between receipt array elements
+        try:
+            row_bytes, row_tokens = _validate_verification_json_value(
+                receipt, max_bytes=_MAX_VERIFICATIONS_JSON_BYTES - scalar_bytes,
+            )
+        except _VerificationJsonLimitExceeded:
+            raise EvidenceError("验证回执输出超过安全上限") from None
+        except (TypeError, ValueError, RecursionError, OverflowError):
+            raise EvidenceError("验证回执结构无法序列化") from None
+        scalar_bytes += row_bytes
+        structural_tokens += row_tokens
+        if structural_tokens > _MAX_JSON_STRUCTURAL_TOKENS:
+            raise EvidenceError("验证回执输出超过安全上限")
+        receipts.append(receipt)
+
+    for verification in (verifications or []):
+        if len(receipts) >= _MAX_VERIFICATION_RECEIPTS:
+            raise EvidenceError("验证回执条数超过安全上限")
+        if isinstance(verification, dict):
+            append_receipt(verification)
+        elif hasattr(verification, "to_receipt"):
+            artifacts = getattr(verification, "artifact_hashes", None)
+            if isinstance(artifacts, Mapping):
+                try:
+                    _validate_verification_json_value(
+                        artifacts,
+                        max_bytes=_MAX_VERIFICATIONS_JSON_BYTES - scalar_bytes,
+                    )
+                except _VerificationJsonLimitExceeded:
+                    raise EvidenceError("验证回执输出超过安全上限") from None
+                except (TypeError, ValueError, RecursionError, OverflowError):
+                    raise EvidenceError("验证回执结构无法序列化") from None
+            append_receipt(verification.to_receipt())
+        else:
+            append_receipt({"kind": "verification", "note": str(verification)})
+
+    runs = verification_runs or []
+    if not isinstance(runs, list):
+        raise EvidenceError("工单 verification_runs 结构无效")
+    if len(receipts) + len(runs) > _MAX_VERIFICATION_RECEIPTS:
+        raise EvidenceError("验证回执条数超过安全上限")
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        append_receipt({
+            "kind": "verification_recorded",
+            "fingerprint": run.get("evidence", ""),
+            "baseline": run.get("baseline", ""),
+            "outcome": run.get("outcome", ""),
+            "layer": run.get("layer", ""),
+            "scenario": run.get("scenario", ""),
+            "note": run.get("note", ""),
+            "run_id": run.get("run_id", ""),
+            "recorded_at": run.get("at", ""),
+        })
+    # Count is returned separately to preserve the empty-receipt warning.
+    return _encode_verification_json_bounded(
+        {"schema_version": PACK_SCHEMA_VERSION, "receipts": receipts},
+        too_large_message="验证回执输出超过安全上限",
+        invalid_message="验证回执结构无法序列化",
+    ), len(receipts)
 
 
 def _read_events(out_dir: Path, *, expected_ticket_id: str) -> _EventSummary:
@@ -494,6 +790,9 @@ def build_evidence_pack(
         raise EvidenceError("证据包清单文件条目数量超过安全上限")
     _preflight_artifact_index_json(event_summary.artifact_events)
     _preflight_artifact_snapshot_bytes(event_summary.artifact_events)
+    verification_payload, verification_count = _verification_payload(
+        verifications, meta.get("verification_runs"),
+    )
     hash_budget = _HashReadBudget(_MAX_PACKAGE_HASH_READ_BYTES)
     artifact_budget = _HashReadBudget(_MAX_PACKAGE_ARTIFACT_BYTES)
 
@@ -537,36 +836,8 @@ def build_evidence_pack(
         warnings.append("未提供 gates.json，未包含契约快照")
 
     # 4) 外部验证回执（R3：VerificationEvidence 会自动序列化成绑定回执）
-    receipts: list[dict] = []
-    for verification in (verifications or []):
-        if isinstance(verification, dict):
-            receipts.append(verification)
-        elif hasattr(verification, "to_receipt"):
-            receipts.append(verification.to_receipt())
-        else:
-            receipts.append({"kind": "verification", "note": str(verification)})
-    # R3：事件链里通过 record-verification 登记过的验证 run（verification_recorded
-    # 事件 + metadata.verification_runs）也一并纳入回执，让回归证据随包可取证。
-    for run in (meta.get("verification_runs") or []):
-        if not isinstance(run, dict):
-            continue
-        receipts.append({
-            "kind": "verification_recorded",
-            "fingerprint": run.get("evidence", ""),
-            "baseline": run.get("baseline", ""),
-            "outcome": run.get("outcome", ""),
-            "layer": run.get("layer", ""),
-            "scenario": run.get("scenario", ""),
-            "note": run.get("note", ""),
-            "run_id": run.get("run_id", ""),
-            "recorded_at": run.get("at", ""),
-        })
-    (dest / "verifications.json").write_text(
-        json.dumps({"schema_version": PACK_SCHEMA_VERSION, "receipts": receipts},
-                   ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    if not receipts:
+    (dest / "verifications.json").write_bytes(verification_payload)
+    if not verification_count:
         warnings.append("未包含外部验证回执（如测试命令退出码），证据力受限")
 
     # 5) 独立校验器（原样复制，保持零依赖）
@@ -676,14 +947,28 @@ def save_verification_receipt(evidence: object, destination: Path | str) -> Path
         raise EvidenceError("验证证据不支持回执序列化")
 
     try:
+        # Check the fields that will be emitted before to_receipt() computes the
+        # fingerprint, which otherwise materializes a second JSON representation.
+        receipt_source = {
+            key: value
+            for key, value in vars(evidence).items()
+            if key not in {"output", "raw_error"}
+        }
+        _validate_verification_json_value(
+            receipt_source, max_bytes=_MAX_VERIFICATIONS_JSON_BYTES,
+        )
         receipt = evidence.to_receipt()
         if not isinstance(receipt, dict):
             raise EvidenceError("验证回执必须是 JSON 对象")
-        payload = (
-            json.dumps(receipt, ensure_ascii=False, indent=2) + "\n"
-        ).encode("utf-8")
+        payload = _encode_verification_json_bounded(
+            receipt,
+            too_large_message="验证回执输出超过安全上限",
+            invalid_message="验证回执无法编码为 JSON",
+        )
     except EvidenceError:
         raise
+    except _VerificationJsonLimitExceeded:
+        raise EvidenceError("验证回执输出超过安全上限") from None
     except (AttributeError, OverflowError, RecursionError, TypeError, ValueError, UnicodeError):
         raise EvidenceError("验证回执无法编码为 JSON") from None
 

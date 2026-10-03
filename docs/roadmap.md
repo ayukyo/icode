@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R3 回执 I/O 与摘要内存边界刷新（2026-10-03，本机聚焦组与全仓 preflight 通过，新 SHA CI 待验）：**在 receipt 输入/输出预算之上，将 `output_sha256` 改为增量 UTF-8 SHA-256，每次编码不超过 64 KiB；生成独立 task receipt 前先预检 fingerprint 序列化字段，超限早拒绝。累计 receipt 读取逐文件收紧到剩余总额度（只允许额外读取 1 字节判超限）；两个新增和一项强化的边界检查 RED→GREEN。自验证、证据包、R3 回归联合 181 项通过、1 项跳过，七项边界测试连续 20 轮通过。全仓 preflight 三道门与 compileall、竞品、治理、站点、diff 检查通过。R2 Windows Reviewer 的双栈 `10013` 硬门及 readiness 不变。
+
 - **R3 正文读取预算验收刷新（2026-10-03）：**5 项新增定向回归、`tests.test_evidence` 70 项及当前工作树 `scripts/preflight.py` 三道门全部通过；Python compileall、开源对照/治理/站点与 diff 检查通过。本机验收不等同新 SHA 跨平台原生 CI；该提交的远端状态将在推送后单独确认。
 
 - **R3 证据包正文与普通文件哈希预算（2026-10-03，本机定向组通过；全量 preflight/新 SHA CI 待验）：**独立校验器把单文件哈希输入限制为 256 MiB，每次验证累计 SHA-256 实际读取不超过 4 GiB，并让清单文件校验与 artifact-binding 正文二次哈希共享同一预算；超过累计正文快照 256 MiB 的包 fail closed，不先消耗余下正文哈希预算。导出器在 `clean=True` 删除旧包前按源文件 `stat` 预检正文单文件/累计容量，哈希与复制均按 1 MiB 分块且共用每次导出的 4 GiB 读取预算，复制时另以实际字节累计额度防止静态预检后的增长绕过。五项新回归覆盖普通文件、正文重复哈希累计、包正文总量、导出清理前拒绝及部分复制清理。限值是 ICODE 产品/兼容选择，不是从 OSS 常量推导；无现成归档分布样本，大于限制的旧包会失败。本项不限制 JSON 序列化瞬时分配、完整 CPU/RSS/墙钟或 OS 访问；CLI 外部 receipt 和生成 `verifications.json` 的字节/条数预检仍是独立待办。Codex 列表扫描额度不适用完整验包，OpenHands 的状态/事件扫描路径也未见同类封顶；无代码复制/新依赖。R2 network `10013` 门、R2/R3 readiness 与自动模式不变。研究细节见[持续竞品对照](./agent-landscape-live.md)，设计/测试/平台验收记录见[R3 自验证计划](./nbl/plans/2026-09-26-r3-self-verification.md)。
@@ -700,6 +702,10 @@ R3 核心切片已合入 main（2026-09-26）：`src/icode/self_verify.py` 实�
 2026-10-02 Windows Reviewer 原生 CI #485：[x64](https://github.com/ayukyo/icode/actions/runs/36908232174/job/110524079006) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36908232174/job/110524078846) 都通过 AppContainer 身份、approved snapshot 读取、删除/改名/DACL 拒绝和清理，但外部读取及写/新建错误回执为 `-1`、exit 78；未取得可用 WinError，不能归因为权限或路径问题。探针现同时输出 bounded `winerror` 与 `errno`，固定键、最坏错误回执不超过 500 字节。96 项 AppContainer/CI-contract 聚焦测试（83 通过、13 项按平台跳过）、Python 3.11.15 全量 preflight 三道门、站点/治理/竞品对照及语法/diff 检查均通过；新 SHA 双架构原生复验待跑，R2/R3 readiness 不变。
 
 2026-10-02 Windows Reviewer 原生 CI #486：[x64](https://github.com/ayukyo/icode/actions/runs/36909918830/job/110529731115) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/36909918830/job/110529730951) 均报告六项文件访问操作 `winerror=-1, errno=13`，身份、批准快照读取、删除/改名/DACL 拒绝与清理通过。`errno=13` 不能唯一代表 WinError 5：CPython 3.11.17/3.12.15 的[固定源码映射](https://github.com/python/cpython/blob/e6392eb68a39cef49c9fe6431253050caa17a426/PC/errmap.h#L77-L104)也把 WinError 32/33 等映射为 EACCES。因此候选拒绝 errno-only 判定，仍仅 WinError 5 计拒绝。当前测试候选改为 `CreateFileW` + 实际 `ReadFile`/`WriteFile`，原生调用失败后立即取 LastError，检查 `INVALID_HANDLE_VALUE`、句柄关闭、写 canary 未变以及意外创建文件已清理。独立复审还发现句柄关闭失败可能遮蔽原始 I/O 错误；现用有界独立 `close_errors` 保留两类诊断，且清理未确认不算拒绝。审查修正后 AppContainer 模块 86 项（73 通过、13 跳过），包含 CloseHandle 失败和 WinError 32 反例；本次完整 preflight 与文档检查待重跑。新 SHA Windows x64/ARM64 原生 CI 待复验。WinError 5 仅说明该 API 返回 ACCESS_DENIED，不证明 DACL 是根因；R2/R3 readiness 不变。
+
+2026-10-03 R3 回执资源边界（本机全仓 preflight 通过，新 SHA CI 待验）：CLI 外部回执单文件最多 8 MiB、总输入最多 16 MiB、文件最多 256 个、总记录最多 10,000 条；生成 `verifications.json` 和 `--receipt-out` 均最多 8 MiB，输出先做有界序列化与记录数检查，再清理旧证据包。超限明确失败且不截断、不替换已有包。TDD 新增 5 项在旧实现下先红后绿；`tests.test_evidence` 75 项、`tests.test_r3_regression` 74 项（1 skip）及完整 `scripts/preflight.py` 三道门通过，compileall/竞品/治理/站点/diff 检查通过。阈值属 ICODE 产品选择，暂无历史 receipt 分布证明兼容覆盖；对照结论见[持续竞品对照](./agent-landscape-live.md)。这只界定 receipt 文件与序列化，不证明任意调用方已驻留对象、总体 CPU/RSS/墙钟或 OS 隔离受限；R2 `10013` 硬门与 R2/R3 readiness 未变。
+
+2026-10-03 上一主 CI #565 对 [`72a2847`](https://github.com/ayukyo/icode/commit/72a284759cc801a358e9ed1c2e9d99a372bd5ef7) 的主检查失败：Windows x64 [job](https://github.com/ayukyo/icode/actions/runs/37113120582/job/111174718006) 与 ARM64 [job](https://github.com/ayukyo/icode/actions/runs/37113120582/job/111174717938) 双栈均为 `connect_ex=10035 + select timeout`，没有读取 `SO_ERROR` 或 `10013`；只读 `SIO_TCP_INFO` 为 unavailable/API error `10022`，精确 classify-drop 计数为 0，WFP 事件 `no_matching_event`。严格 reviewer 退出 1；这不是通过证据。R2 网络硬门仍保持双栈真实终态 `10013`，Windows 自动模式不开放；本轮回执改动不会改变该门。
 
 ## 4. 为什么是这个顺序
 

@@ -144,7 +144,12 @@ class VerificationEvidence:
 
     @property
     def output_sha256(self) -> str:
-        return _sha256(self.output.encode("utf-8"))
+        digest = hashlib.sha256()
+        # Unicode code points may encode to four UTF-8 bytes each.
+        chunk_size = 16 * 1024
+        for offset in range(0, len(self.output), chunk_size):
+            digest.update(self.output[offset:offset + chunk_size].encode("utf-8"))
+        return digest.hexdigest()
 
     @property
     def passed(self) -> bool:

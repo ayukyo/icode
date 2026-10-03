@@ -117,6 +117,37 @@ class EvidenceFingerprintTestCase(unittest.TestCase):
             evidence_fingerprint(self.make(output="AssertionError B")),
         )
 
+    def test_output_sha256按固定块增量更新(self) -> None:
+        import hashlib
+        from unittest.mock import patch
+
+        output = "😀" * (3 * 64 * 1024 + 7)
+        evidence = self.make(output=output)
+        expected = hashlib.sha256(output.encode("utf-8")).hexdigest()
+        real_digest = hashlib.sha256()
+        update_sizes: list[int] = []
+
+        class DigestProxy:
+            def update(self, data: bytes) -> None:
+                update_sizes.append(len(data))
+                real_digest.update(data)
+
+            def hexdigest(self) -> str:
+                return real_digest.hexdigest()
+
+        def tracking_sha256(data: bytes = b"") -> DigestProxy:
+            digest = DigestProxy()
+            if data:
+                digest.update(data)
+            return digest
+
+        with patch("icode.self_verify.hashlib.sha256", side_effect=tracking_sha256):
+            actual = evidence.output_sha256
+
+        self.assertEqual(actual, expected)
+        self.assertGreater(len(update_sizes), 1)
+        self.assertLessEqual(max(update_sizes), 64 * 1024)
+
     def test_exit_code_change_changes_fingerprint(self) -> None:
         self.assertNotEqual(
             evidence_fingerprint(self.make(exit_code=1)),
