@@ -50,6 +50,90 @@ from icode.windows_job import (
     run_windows_job,
 )
 
+_WINDOWS_TCP_INFO_DIAGNOSTIC_SOURCE = """\
+# SIO_TCP_INFO mirrors _WSAIORW(IOC_VENDOR, 39) from the Windows SDK header.
+IOC_INOUT = 0xC0000000
+IOC_VENDOR = 0x18000000
+SIO_TCP_INFO_OPCODE = 39
+SIO_TCP_INFO = IOC_INOUT | IOC_VENDOR | SIO_TCP_INFO_OPCODE
+_TCP_STATE_NAMES = {
+    0: "closed", 1: "listen", 2: "syn_sent", 3: "syn_rcvd",
+    4: "established", 5: "fin_wait_1", 6: "fin_wait_2", 7: "close_wait",
+    8: "closing", 9: "last_ack", 10: "time_wait", 11: "max",
+}
+
+class TCP_INFO_V0(ctypes.Structure):
+    _fields_ = [
+        ("state", ctypes.c_uint32),
+        ("mss", ctypes.c_uint32),
+        ("connection_time_ms", ctypes.c_uint64),
+        ("timestamps_enabled", ctypes.c_uint8),
+        ("rtt_us", ctypes.c_uint32),
+        ("min_rtt_us", ctypes.c_uint32),
+        ("bytes_in_flight", ctypes.c_uint32),
+        ("cwnd", ctypes.c_uint32),
+        ("snd_wnd", ctypes.c_uint32),
+        ("rcv_wnd", ctypes.c_uint32),
+        ("rcv_buf", ctypes.c_uint32),
+        ("bytes_out", ctypes.c_uint64),
+        ("bytes_in", ctypes.c_uint64),
+        ("bytes_reordered", ctypes.c_uint32),
+        ("bytes_retrans", ctypes.c_uint32),
+        ("fast_retrans", ctypes.c_uint32),
+        ("dup_acks_in", ctypes.c_uint32),
+        ("timeout_episodes", ctypes.c_uint32),
+        ("syn_retrans", ctypes.c_uint8),
+    ]
+
+def tcp_info_diagnostic(connection):
+    result = {
+        "tcp_info_status": "unavailable", "tcp_state": "not_available",
+        "tcp_info_api_error": -1, "tcp_info_bytes_returned": -1,
+        "tcp_connection_time_ms": -1, "tcp_syn_retrans": -1,
+    }
+    try:
+        # Fail closed as a diagnostic if ctypes does not match TCP_INFO_v0 ABI.
+        if ctypes.sizeof(TCP_INFO_V0) != 88:
+            return result
+        ws2 = ctypes.WinDLL("ws2_32", use_last_error=True)
+        ws2.WSAIoctl.argtypes = [
+            ctypes.c_size_t, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
+            ctypes.c_void_p, ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        ws2.WSAIoctl.restype = ctypes.c_int
+        ws2.WSAGetLastError.argtypes = []
+        ws2.WSAGetLastError.restype = ctypes.c_int
+        version = ctypes.c_uint32(0)
+        info = TCP_INFO_V0()
+        bytes_returned = ctypes.c_uint32()
+        status = ws2.WSAIoctl(
+            connection.fileno(), SIO_TCP_INFO,
+            ctypes.byref(version), ctypes.sizeof(version),
+            ctypes.byref(info), ctypes.sizeof(info), ctypes.byref(bytes_returned),
+            None, None,
+        )
+        if status != 0:
+            result["tcp_info_api_error"] = bounded_error_code(
+                int(ws2.WSAGetLastError()),
+            )
+            return result
+        result["tcp_info_bytes_returned"] = bounded_error_code(
+            int(bytes_returned.value),
+        )
+        if bytes_returned.value != ctypes.sizeof(TCP_INFO_V0):
+            result["tcp_info_status"] = "short_output"
+            return result
+        result["tcp_state"] = _TCP_STATE_NAMES.get(int(info.state), "unknown")
+        result["tcp_connection_time_ms"] = int(info.connection_time_ms)
+        result["tcp_syn_retrans"] = int(info.syn_retrans)
+        result["tcp_info_status"] = "available"
+    except Exception:
+        # This is diagnostic-only: unsupported APIs/ABI never alter the DENY result.
+        pass
+    return result
+"""
+
 _WINDOWS_WSAEWOULDBLOCK = 10035
 _WINDOWS_WSAETIMEDOUT = 10060
 
@@ -88,6 +172,14 @@ def _bounded_network_observation(value: object) -> dict[str, object]:
             else -1
         )
 
+    def unsigned_integer(key: str, maximum: int) -> int:
+        candidate = observation.get(key)
+        return (
+            candidate
+            if type(candidate) is int and 0 <= candidate <= maximum
+            else -1
+        )
+
     def boolean(key: str) -> bool:
         candidate = observation.get(key)
         return candidate if type(candidate) is bool else False
@@ -103,6 +195,22 @@ def _bounded_network_observation(value: object) -> dict[str, object]:
         "so_error_read": boolean("so_error_read"),
         "so_error_code": error_code("so_error_code"),
         "so_error_api_error": error_code("so_error_api_error"),
+        "tcp_info_status": enum_value(
+            "tcp_info_status", {"not_attempted", "available", "unavailable", "short_output"},
+        ),
+        "tcp_state": enum_value(
+            "tcp_state", {
+                "not_available", "closed", "listen", "syn_sent", "syn_rcvd",
+                "established", "fin_wait_1", "fin_wait_2", "close_wait",
+                "closing", "last_ack", "time_wait", "max", "unknown",
+            },
+        ),
+        "tcp_info_api_error": error_code("tcp_info_api_error"),
+        "tcp_info_bytes_returned": error_code("tcp_info_bytes_returned"),
+        "tcp_connection_time_ms": unsigned_integer(
+            "tcp_connection_time_ms", 0xFFFFFFFFFFFFFFFF,
+        ),
+        "tcp_syn_retrans": unsigned_integer("tcp_syn_retrans", 0xFF),
     }
 
 
@@ -1580,6 +1688,96 @@ class TestWindowsAppContainer(unittest.TestCase):
                     False,
                 )
 
+    def test_ReviewerTCP状态诊断读取同一socket且失败不影响网络结论(self) -> None:
+        class _Socket:
+            def fileno(self) -> int:
+                return 0x1234
+
+        class _ApiFunction:
+            def __init__(self, callback: Callable[..., int]) -> None:
+                self.callback = callback
+                self.argtypes: object = None
+                self.restype: object = None
+
+            def __call__(self, *args: object) -> int:
+                return self.callback(*args)
+
+        native_calls: list[tuple[object, ...]] = []
+        native_state = {"error": 0, "supported": True}
+        namespace: dict[str, object] = {
+            "ctypes": ctypes,
+            "bounded_error_code": lambda value: (
+                value if type(value) is int and 0 <= value <= 0xFFFFFFFF else -1
+            ),
+        }
+
+        def fake_wsa_ioctl(*args: object) -> int:
+            native_calls.append(args)
+            (
+                socket_handle, control_code, input_pointer, input_length,
+                output_pointer, output_length, bytes_pointer, _overlapped,
+                _completion_routine,
+            ) = args
+            self.assertEqual(socket_handle, 0x1234)
+            self.assertEqual(control_code, 0xD8000027)
+            self.assertEqual(input_length, ctypes.sizeof(ctypes.c_uint32))
+            self.assertEqual(output_length, ctypes.sizeof(namespace["TCP_INFO_V0"]))
+            self.assertEqual(
+                ctypes.cast(
+                    input_pointer, ctypes.POINTER(ctypes.c_uint32),
+                ).contents.value,
+                0,
+            )
+            if not native_state["supported"]:
+                return -1
+            info = ctypes.cast(
+                output_pointer,
+                ctypes.POINTER(namespace["TCP_INFO_V0"]),
+            ).contents
+            info.state = 2
+            info.connection_time_ms = 3000
+            info.bytes_out = 64
+            info.bytes_in = 0
+            info.syn_retrans = 1
+            ctypes.cast(
+                bytes_pointer, ctypes.POINTER(ctypes.c_uint32),
+            ).contents.value = output_length
+            return 0
+
+        native_library = type("WinsockApi", (), {})()
+        native_library.WSAIoctl = _ApiFunction(fake_wsa_ioctl)
+        native_library.WSAGetLastError = _ApiFunction(
+            lambda: int(native_state["error"]),
+        )
+
+        def load_windows_library(name: str, **_kwargs: object) -> object:
+            self.assertEqual(name, "ws2_32")
+            return native_library
+
+        with mock.patch.object(
+            ctypes, "WinDLL", side_effect=load_windows_library, create=True,
+        ):
+            exec(_WINDOWS_TCP_INFO_DIAGNOSTIC_SOURCE, namespace)
+            available = namespace["tcp_info_diagnostic"](_Socket())
+            native_state.update(error=10045, supported=False)
+            unavailable = namespace["tcp_info_diagnostic"](_Socket())
+
+        self.assertEqual(len(native_calls), 2)
+        self.assertEqual(available["tcp_info_status"], "available")
+        self.assertEqual(available["tcp_state"], "syn_sent")
+        self.assertEqual(available["tcp_info_bytes_returned"], 88)
+        self.assertEqual(available["tcp_connection_time_ms"], 3000)
+        self.assertEqual(available["tcp_syn_retrans"], 1)
+        self.assertEqual(unavailable["tcp_info_status"], "unavailable")
+        self.assertEqual(unavailable["tcp_state"], "not_available")
+        self.assertEqual(unavailable["tcp_info_api_error"], 10045)
+        tcp_info = namespace["TCP_INFO_V0"]
+        self.assertEqual(ctypes.sizeof(tcp_info), 88)
+        self.assertEqual(tcp_info.state.offset, 0)
+        self.assertEqual(tcp_info.connection_time_ms.offset, 8)
+        self.assertEqual(tcp_info.bytes_out.offset, 48)
+        self.assertEqual(tcp_info.syn_retrans.offset, 84)
+
     def test_Reviewer网络阶段回执只投影固定字段和枚举(self) -> None:
         valid = {
             "connect_ex_state": "returned",
@@ -1592,6 +1790,12 @@ class TestWindowsAppContainer(unittest.TestCase):
             "so_error_read": False,
             "so_error_code": -1,
             "so_error_api_error": -1,
+            "tcp_info_status": "available",
+            "tcp_state": "syn_sent",
+            "tcp_info_api_error": -1,
+            "tcp_info_bytes_returned": 88,
+            "tcp_connection_time_ms": 3000,
+            "tcp_syn_retrans": 1,
             "untrusted_extra": "private path must not escape",
         }
         projected = _bounded_network_observation(valid)
@@ -1602,6 +1806,10 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIs(projected["write_ready"], False)
         self.assertIs(projected["so_error_attempted"], False)
         self.assertEqual(projected["so_error_code"], -1)
+        self.assertEqual(projected["tcp_info_status"], "available")
+        self.assertEqual(projected["tcp_state"], "syn_sent")
+        self.assertEqual(projected["tcp_info_bytes_returned"], 88)
+        self.assertEqual(projected["tcp_syn_retrans"], 1)
         self.assertNotIn("untrusted_extra", projected)
         malformed = _bounded_network_observation({
             **valid,
@@ -1609,11 +1817,21 @@ class TestWindowsAppContainer(unittest.TestCase):
             "select_state": "D:\\private\\path",
             "write_ready": 1,
             "so_error_api_error": -0x80000001,
+            "tcp_info_status": "D:\\private\\path",
+            "tcp_state": "D:\\private\\path",
+            "tcp_info_bytes_returned": True,
+            "tcp_connection_time_ms": 0x10000000000000000,
+            "tcp_syn_retrans": -1,
         })
         self.assertEqual(malformed["connect_ex_code"], -1)
         self.assertEqual(malformed["select_state"], "unavailable")
         self.assertIs(malformed["write_ready"], False)
         self.assertEqual(malformed["so_error_api_error"], -1)
+        self.assertEqual(malformed["tcp_info_status"], "unavailable")
+        self.assertEqual(malformed["tcp_state"], "unavailable")
+        self.assertEqual(malformed["tcp_info_bytes_returned"], -1)
+        self.assertEqual(malformed["tcp_connection_time_ms"], -1)
+        self.assertEqual(malformed["tcp_syn_retrans"], -1)
 
     def test_Reviewer快照原生探针脚本在非Windows主机可静态解析(self) -> None:
         from contextlib import redirect_stdout
@@ -1889,6 +2107,12 @@ class TestWindowsAppContainer(unittest.TestCase):
             "so_error_read": True,
             "so_error_code": 0xFFFFFFFF,
             "so_error_api_error": 0xFFFFFFFF,
+            "tcp_info_status": "available",
+            "tcp_state": "syn_sent",
+            "tcp_info_api_error": 0xFFFFFFFF,
+            "tcp_info_bytes_returned": 0xFFFFFFFF,
+            "tcp_connection_time_ms": 0xFFFFFFFFFFFFFFFF,
+            "tcp_syn_retrans": 0xFFFFFFFF,
         }
         self.assertLessEqual(
             len(json.dumps(max_network_stage_notice, separators=(",", ":"))), 500,
@@ -1955,6 +2179,14 @@ class TestWindowsAppContainer(unittest.TestCase):
             "select.select([], [connection], [connection], 3)",
             "connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)",
             "network_observations={}",
+            "SIO_TCP_INFO",
+            "class TCP_INFO_V0(ctypes.Structure)",
+            "def tcp_info_diagnostic(connection):",
+            "ws2.WSAIoctl(",
+            "observation.update(tcp_info_diagnostic(connection))",
+            "tcp_info_status",
+            "tcp_connection_time_ms",
+            "tcp_syn_retrans",
             "family_key='ipv4' if family==socket.AF_INET else 'ipv6'",
             "facts['network_observations']=network_observations",
             "connect_ex_state",
@@ -1991,6 +2223,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self, result: int = 0, error: OSError | None = None,
                 completion: str = "write", completion_error: int = 0,
                 blocking_error: OSError | None = None,
+                tcp_info_supported: bool = True,
             ) -> None:
                 self.result = result
                 self.error = error
@@ -2002,6 +2235,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.blocking: bool | None = None
                 self.wait_timeout: float | None = None
                 self.timeout: float | None = None
+                self.tcp_info_supported = tcp_info_supported
+                self.tcp_info_called = False
+                self.tcp_info_version = -1
+                self.tcp_info_control_code = -1
 
             def setblocking(self, blocking: bool) -> None:
                 if self.blocking_error is not None:
@@ -2016,6 +2253,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 if self.error is not None:
                     raise self.error
                 return self.result
+
+            def fileno(self) -> int:
+                return 0x1234
 
             def getsockopt(self, _level: int, _option: int) -> int:
                 if self.completion == "socket_error":
@@ -2063,10 +2303,28 @@ class TestWindowsAppContainer(unittest.TestCase):
             namespace: dict[str, object] = {
                 "socket": socket_module,
                 "select": select_module,
+                "ctypes": ctypes,
             }
             exec(network_helper, namespace)
+
+            def observe_tcp_info(connection_arg: object) -> dict[str, object]:
+                self.assertIs(connection_arg, connection)
+                self.assertFalse(connection.closed)
+                connection.tcp_info_called = True
+                available = connection.tcp_info_supported
+                return {
+                    "tcp_info_status": "available" if available else "unavailable",
+                    "tcp_state": "syn_sent" if available else "not_available",
+                    "tcp_info_api_error": -1 if available else 10045,
+                    "tcp_info_bytes_returned": 88 if available else -1,
+                    "tcp_connection_time_ms": 3000 if available else -1,
+                    "tcp_syn_retrans": 1 if available else -1,
+                }
+
+            namespace["tcp_info_diagnostic"] = observe_tcp_info
             probe = namespace["network_connect_denied"]
-            return probe(socket.AF_INET, "127.0.0.1", 32123), namespace
+            outcome = probe(socket.AF_INET, "127.0.0.1", 32123)
+            return outcome, namespace
 
         for code, completion, completion_error, expected in (
             (10013, "write", 0, (True, False, True, 10013, False, True)),
@@ -2118,6 +2376,17 @@ class TestWindowsAppContainer(unittest.TestCase):
                     self.assertIs(observation["exception_ready"], False)
                     self.assertIs(observation["so_error_attempted"], False)
                     self.assertEqual(observation["so_error_code"], -1)
+                    self.assertTrue(connection.tcp_info_called)
+                    self.assertEqual(observation["tcp_info_status"], "available")
+                    self.assertEqual(observation["tcp_state"], "syn_sent")
+                    self.assertEqual(observation["tcp_info_bytes_returned"], 88)
+                    self.assertEqual(observation["tcp_connection_time_ms"], 3000)
+                    self.assertEqual(observation["tcp_syn_retrans"], 1)
+                else:
+                    self.assertFalse(connection.tcp_info_called)
+                    self.assertEqual(
+                        observation["tcp_info_status"], "not_attempted",
+                    )
                 if completion == "exception":
                     self.assertEqual(observation["so_error_code"], completion_error)
                 if completion == "select_error":
@@ -2138,6 +2407,21 @@ class TestWindowsAppContainer(unittest.TestCase):
                     self.assertEqual(connection.sent, namespace["network_canary"])
                 else:
                     self.assertIsNone(connection.sent)
+
+        unsupported = _ConnectExSocket(
+            result=10035, completion="timeout", tcp_info_supported=False,
+        )
+        unsupported_outcome, unsupported_namespace = run_network_probe(unsupported)
+        unsupported_observation = (
+            unsupported_namespace["network_observations"]["ipv4"]
+        )
+        self.assertEqual(
+            unsupported_outcome, (True, False, False, 10035, True, False),
+        )
+        self.assertEqual(unsupported_observation["tcp_info_status"], "unavailable")
+        self.assertEqual(unsupported_observation["tcp_state"], "not_available")
+        self.assertEqual(unsupported_observation["tcp_info_api_error"], 10045)
+        self.assertTrue(unsupported.closed)
 
         access_denied = OSError("access denied")
         access_denied.winerror = 10013
@@ -2240,7 +2524,12 @@ class TestWindowsAppContainer(unittest.TestCase):
             captured_scripts[0][helper_start:network_helper_start]
             + captured_scripts[0][access_helper_start:helper_end]
         )
-        error_helpers: dict[str, object] = {}
+        error_helpers: dict[str, object] = {
+            "ctypes": ctypes,
+            "bounded_error_code": lambda value: (
+                value if type(value) is int and -0x80000000 <= value <= 0xFFFFFFFF else -1
+            ),
+        }
         exec("import errno\n" + helper_source, error_helpers)
 
         def raising(error: OSError) -> Callable[[], None]:
@@ -6738,12 +7027,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "WSAEACCES=10013; WSAEWOULDBLOCK=10035; WSAEINPROGRESS=10036\n"
                     "def bounded_error_code(value):\n"
                     "    return value if type(value) is int and -0x80000000<=value<=0xffffffff else -1\n"
+                    f"exec({_WINDOWS_TCP_INFO_DIAGNOSTIC_SOURCE!r}, globals())\n"
                     "def network_connect_denied(family,address,port):\n"
                     "    family_key='ipv4' if family==socket.AF_INET else 'ipv6'\n"
                     "    observation={'connect_ex_state':'not_started','connect_ex_code':-1,"
                     "'select_state':'not_started','write_ready':False,'exception_ready':False,"
                     "'select_api_error':-1,'so_error_attempted':False,'so_error_read':False,"
-                    "'so_error_code':-1,'so_error_api_error':-1}\n"
+                    "'so_error_code':-1,'so_error_api_error':-1,"
+                    "'tcp_info_status':'not_attempted','tcp_state':'not_available',"
+                    "'tcp_info_api_error':-1,'tcp_info_bytes_returned':-1,"
+                    "'tcp_connection_time_ms':-1,'tcp_syn_retrans':-1}\n"
                     "    network_observations[family_key]=observation\n"
                     "    try: connection=socket.socket(family,socket.SOCK_STREAM)\n"
                     "    except OSError as exc:\n"
@@ -6776,7 +7069,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "                observation['select_state']='error'\n"
                     "                observation['select_api_error']=code\n"
                     "                return True,False,False,code,False,False\n"
-                    "            if not writable and not exceptional: return True,False,False,code,True,False\n"
+                    "            if not writable and not exceptional:\n"
+                    "                observation.update(tcp_info_diagnostic(connection))\n"
+                    "                return True,False,False,code,True,False\n"
                     "            try:\n"
                     "                observation['so_error_attempted']=True\n"
                     "                code=bounded_error_code(connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR))\n"
