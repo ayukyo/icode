@@ -77,6 +77,11 @@ class EvidenceError(RuntimeError):
     """证据包构建失败。"""
 
 
+def _paths_overlap(path: Path, other: Path) -> bool:
+    """Return whether two resolved paths are equal or one contains the other."""
+    return path == other or path.is_relative_to(other) or other.is_relative_to(path)
+
+
 class _ArtifactSnapshotLimitExceeded(EvidenceError):
     """Raised when copied artifact bodies exceed the aggregate package limit."""
 
@@ -776,6 +781,17 @@ def build_evidence_pack(
     """把一条完成（或部分完成）的工单导出为证据包。"""
     out_dir = Path(out_dir).resolve()
     dest = Path(dest).resolve()
+    gates_path = Path(gates_json).resolve() if gates_json is not None else None
+
+    # clean=True removes an existing destination. Never let that target alias
+    # or contain the ticket source or the contract input being exported.
+    # resolve() handles current symlink and '..' aliases; this is not a defense
+    # against another process replacing path components after this check.
+    if _paths_overlap(out_dir, dest):
+        raise EvidenceError("证据包输出目录不得与工单源目录重叠")
+    has_gates_file = gates_path is not None and gates_path.is_file()
+    if has_gates_file and _paths_overlap(dest, gates_path):
+        raise EvidenceError("证据包输出目录不得覆盖契约输入")
 
     meta_path = out_dir / METADATA_NAME
     if not meta_path.is_file():
@@ -800,8 +816,6 @@ def build_evidence_pack(
         raise EvidenceError("事件链为空，无法导出证据包")
     if len(event_summary.artifact_events) > _MAX_ARTIFACT_INDEX_ENTRIES:
         raise EvidenceError("产物索引条目数量超过安全上限")
-    gates_path = Path(gates_json) if gates_json is not None else None
-    has_gates_file = gates_path is not None and gates_path.is_file()
     fixed_file_count = 6 + int(has_gates_file)
     if len(event_summary.artifact_events) + fixed_file_count > _MAX_MANIFEST_FILE_ENTRIES:
         raise EvidenceError("证据包清单文件条目数量超过安全上限")

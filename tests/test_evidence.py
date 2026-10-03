@@ -123,6 +123,95 @@ class TestEvidencePack(unittest.TestCase):
                 marker.read_text(encoding="utf-8"), "preserve previous evidence pack\n",
             )
 
+    def test_导出器拒绝与工单源目录重叠的目标且不改动源(self) -> None:
+        from icode.evidence import EvidenceError
+
+        cases = ("same", "ancestor", "descendant", "dotdot")
+        for case in cases:
+            for clean in (True, False):
+                with self.subTest(destination=case, clean=clean), temp_workspace() as ws:
+                    out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                    before_entries = sorted(
+                        path.relative_to(out_dir).as_posix()
+                        for path in out_dir.rglob("*")
+                    )
+                    before_files = {
+                        path.relative_to(out_dir).as_posix(): path.read_bytes()
+                        for path in out_dir.rglob("*") if path.is_file()
+                    }
+
+                    if case == "same":
+                        dest = out_dir
+                    elif case == "ancestor":
+                        dest = ws
+                    elif case == "descendant":
+                        dest = out_dir / "nested-pack"
+                    else:
+                        dest = out_dir / ".." / out_dir.name
+
+                    with self.assertRaisesRegex(EvidenceError, "目录不得与工单源目录重叠"):
+                        build_evidence_pack(
+                            out_dir,
+                            dest=dest,
+                            gates_json=self.settings.gates_json,
+                            clean=clean,
+                        )
+
+                    self.assertTrue(out_dir.is_dir(), "拒绝重叠目标后工单源目录必须保留")
+                    self.assertEqual(
+                        sorted(path.relative_to(out_dir).as_posix() for path in out_dir.rglob("*")),
+                        before_entries,
+                        "拒绝重叠目标后源目录中不得新增证据包文件",
+                    )
+                    self.assertEqual(
+                        {
+                            path.relative_to(out_dir).as_posix(): path.read_bytes()
+                            for path in out_dir.rglob("*") if path.is_file()
+                        },
+                        before_files,
+                        "拒绝重叠目标后工单文件字节必须保持不变",
+                    )
+
+    def test_导出器拒绝符号链接别名目标且不改动工单源(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            before_events = (out_dir / ".ico_events.jsonl").read_bytes()
+            before_metadata = (out_dir / ".ico_metadata.json").read_bytes()
+            alias = ws / "ticket-alias"
+            try:
+                alias.symlink_to(out_dir, target_is_directory=True)
+            except (NotImplementedError, OSError) as exc:
+                self.skipTest(f"当前平台不允许创建目录符号链接：{type(exc).__name__}")
+
+            with self.assertRaisesRegex(EvidenceError, "目录不得与工单源目录重叠"):
+                build_evidence_pack(
+                    out_dir, dest=alias, gates_json=self.settings.gates_json,
+                )
+
+            self.assertEqual((out_dir / ".ico_events.jsonl").read_bytes(), before_events)
+            self.assertEqual((out_dir / ".ico_metadata.json").read_bytes(), before_metadata)
+
+    def test_导出器拒绝覆盖契约输入目录且保留全部输入(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            input_dir = ws / "contract-input"
+            input_dir.mkdir()
+            gates_json = input_dir / "gates.json"
+            gates_bytes = self.settings.gates_json.read_bytes()
+            gates_json.write_bytes(gates_bytes)
+            marker = input_dir / "keep.txt"
+            marker.write_bytes(b"unrelated input must remain\n")
+
+            with self.assertRaisesRegex(EvidenceError, "目录不得覆盖契约输入"):
+                build_evidence_pack(out_dir, dest=input_dir, gates_json=gates_json)
+
+            self.assertEqual(gates_json.read_bytes(), gates_bytes)
+            self.assertEqual(marker.read_bytes(), b"unrelated input must remain\n")
+
     def test_导出器对gates_json按字节上限有界读取并在超限时保留旧包(self) -> None:
         from unittest.mock import patch
 
