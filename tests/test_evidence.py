@@ -152,7 +152,7 @@ class TestEvidencePack(unittest.TestCase):
                 b'{"execution_model":{"step_contracts":{"plan":{"inputs":7}}}}',
                 "结构无效",
             ),
-            ("deeply-nested", deep_json, "嵌套超过解析上限"),
+            ("deeply-nested", deep_json, "嵌套深度超过安全上限"),
             ("oversized-integer", oversized_integer, "超出解析限制"),
         )
 
@@ -194,6 +194,111 @@ class TestEvidencePack(unittest.TestCase):
                 self.assertNotIn("Traceback", stderr.getvalue())
                 self.assertEqual(marker.read_bytes(), b"keep existing evidence pack")
                 self.assertEqual(list(pack_path.iterdir()), [marker])
+
+    def test_evidence契约JSON在解析前强制结构标点预算(self) -> None:
+        from unittest.mock import patch
+
+        import json
+
+        from icode.contracts import ContractError
+        from icode.evidence import _contract_snapshot
+
+        with temp_workspace() as ws:
+            gates_json = ws / "gates.json"
+            gates_json.write_text(
+                '{"execution_model":{"step_contracts":{"plan":'
+                '{"required_checks":["{}[],:\\\"quoted"]}}}}',
+                encoding="utf-8",
+            )
+
+            # The JSON has 14 structural punctuation characters; punctuation in
+            # the escaped string value must not consume the budget.
+            with patch("icode.pack_verify._MAX_JSON_STRUCTURAL_TOKENS", 14):
+                self.assertEqual(
+                    _contract_snapshot(gates_json, {"plan"})["steps"]["plan"]
+                    ["required_checks"],
+                    ["{}[],:\"quoted"],
+                )
+
+            with (
+                patch("icode.pack_verify._MAX_JSON_STRUCTURAL_TOKENS", 13),
+                patch("icode.evidence.json.loads", wraps=json.loads) as json_loads,
+            ):
+                with self.assertRaisesRegex(ContractError, "结构标点超过安全上限"):
+                    _contract_snapshot(gates_json, {"plan"})
+                json_loads.assert_not_called()
+
+    def test_evidence契约JSON嵌套深度边界在解析前执行(self) -> None:
+        from unittest.mock import patch
+
+        import json
+
+        from icode.contracts import ContractError
+        from icode.evidence import _contract_snapshot
+
+        with temp_workspace() as ws:
+            gates_json = ws / "gates.json"
+            for depth, allowed in ((127, True), (128, False)):
+                with self.subTest(total_depth=depth + 1):
+                    extension = b"[" * depth + b"0" + b"]" * depth
+                    gates_json.write_bytes(
+                        b'{"execution_model":{"step_contracts":{"plan":{}}},'
+                        b'"extension":' + extension + b"}"
+                    )
+                    if allowed:
+                        snapshot = _contract_snapshot(gates_json, {"plan"})
+                        self.assertIn("plan", snapshot["steps"])
+                        continue
+
+                    with patch(
+                        "icode.evidence.json.loads", wraps=json.loads,
+                    ) as json_loads:
+                        with self.assertRaisesRegex(ContractError, "嵌套深度超过安全上限"):
+                            _contract_snapshot(gates_json, {"plan"})
+                        json_loads.assert_not_called()
+
+    def test_evidence拒绝超结构预算gates_json且保留旧包(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from icode.cli import main
+
+        with temp_workspace() as ws:
+            ticket = make_finished_plan_ticket(self.settings, ws / "work")
+            gates_json = ws / "gates.json"
+            gates_json.write_bytes(
+                b'{"execution_model":{"step_contracts":{"plan":{}}},'
+                b'"extension":[' + b"0," * 500_000 + b"0]}"
+            )
+            pack_path = ws / "pack"
+            pack_path.mkdir()
+            marker = pack_path / "keep.txt"
+            marker.write_bytes(b"keep existing evidence pack")
+            stdout = StringIO()
+            stderr = StringIO()
+
+            with (
+                patch(
+                    "icode.cli.load_settings",
+                    return_value=SimpleNamespace(gates_json=gates_json),
+                ),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main([
+                    "evidence", "--ticket", str(ticket), "--dest", str(pack_path),
+                ])
+
+            self.assertEqual(
+                exit_code, 2,
+                f"stdout={stdout.getvalue()!r}, stderr={stderr.getvalue()!r}",
+            )
+            self.assertIn("结构标点超过安全上限", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertEqual(marker.read_bytes(), b"keep existing evidence pack")
+            self.assertEqual(list(pack_path.iterdir()), [marker])
 
     def test_导出器限制contracts快照UTF8输出字节并保留旧包(self) -> None:
         from unittest.mock import patch

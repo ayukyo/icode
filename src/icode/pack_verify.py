@@ -365,11 +365,14 @@ def _reject_non_json_numeric_constant(_value: str) -> object:
     raise ValueError("JSON 含有非标准 JSON 数值常量")
 
 
-def _check_json_structural_token_budget(text: str) -> None:
-    """Bound parser container work without counting punctuation inside strings."""
+def _check_json_structural_token_budget(
+    text: str, *, max_depth: int | None = None,
+) -> None:
+    """Pre-scan JSON punctuation and optionally container depth without parsing."""
     in_string = False
     escaped = False
     token_count = 0
+    container_stack: list[str] = []
     for char in text:
         if in_string:
             if escaped:
@@ -385,6 +388,15 @@ def _check_json_structural_token_budget(text: str) -> None:
             token_count += 1
             if token_count > _MAX_JSON_STRUCTURAL_TOKENS:
                 raise ValueError("JSON结构标点超过安全上限")
+            if max_depth is not None:
+                if char in "{[":
+                    container_stack.append(char)
+                    if len(container_stack) > max_depth:
+                        raise ValueError("JSON 容器嵌套深度超过安全上限")
+                elif char in "}]":
+                    expected_open = "{" if char == "}" else "["
+                    if container_stack and container_stack[-1] == expected_open:
+                        container_stack.pop()
 
 
 def _reject_non_interoperable_values(value: object) -> None:

@@ -1,5 +1,7 @@
 # R3 自验证与有界修复
 
+- **证据包契约 JSON 解析前结构预算（2026-10-04；本机全门通过，新 SHA CI 待验）：**gates 单文件字节预算后，对文本先运行现有标点扫描，并为本导出入口打开 128 层深度检查；采用本仓既有 500,000 结构 token / 128 容器常数，拒绝在 `json.loads()` 前发生且不清理旧包。测试覆盖深度边界、标点边界、字符串/转义内容不计数、超限未知扩展对象以及 parser 未调用；`tests.test_evidence tests.test_contracts tests.test_cli` 107 项、全仓 preflight 3/3、compileall、治理、站点、竞品排期与 diff 检查通过。整份 gates（包括不入 snapshot 的扩展）都受限；不改变通用 `loads_json_value()`/`ContractSet.load()`、重复键或 NaN 语义。Codex/serde 与 OpenHands 调用点的许可和适配性见[持续竞品对照](../../agent-landscape-live.md)。此项不是 RSS/CPU 绝对上限，阶段 readiness 不变。
+
 - **证据包契约解析的用户可读失败（2026-10-04；本机联合回归与 preflight 通过，新 SHA CI 待验）：**`_contract_snapshot()` 现在把非法 UTF-8、超深 JSON、运行时整数位数解析拒绝及已解析对象/嵌套契约类型错误收敛为 `ContractError`，CLI 返回 2 而不打印 traceback。测试涵盖语法错误、非对象根、`step_contracts`/`inputs` 错类型，并确认不删除既有包；`tests.test_evidence tests.test_contracts tests.test_cli` 共 104 项、全仓 preflight 3/3、compileall、治理、站点、竞品排期和 diff 检查通过。只修证据导入边界，不改通用 `ContractSet.load()`。固定 Codex conformance adapter 与 Python 文档的采纳/暂缓见[持续竞品对照](../../agent-landscape-live.md)。没有新字节、结构、RSS/CPU 或隔离承诺；整体 readiness 不变。
 
 - **`contracts.json` 输出预算本机验收完成（2026-10-04）：**4 项定向/兼容测试与 `tests.test_evidence tests.test_contracts` 95 项通过；compileall、全仓 preflight 3/3、治理、站点、竞品和 diff 检查通过。新 SHA 远端 CI 待验，不能据此标记 R3 总体就绪。

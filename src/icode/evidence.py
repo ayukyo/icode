@@ -710,6 +710,12 @@ def _contract_snapshot(gates_json: Path, steps: set[str]) -> dict:
     except UnicodeDecodeError:
         raise ContractError("契约文件不是有效 UTF-8") from None
     try:
+        _check_json_structural_token_budget(
+            gates_text, max_depth=_MAX_JSON_CONTAINER_DEPTH,
+        )
+    except ValueError as exc:
+        raise ContractError(f"契约文件 {exc}") from None
+    try:
         raw_contracts = json.loads(gates_text)
     except json.JSONDecodeError as exc:
         raise ContractError(f"契约文件不是合法 JSON：{exc}") from None
