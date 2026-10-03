@@ -134,6 +134,96 @@ def tcp_info_diagnostic(connection):
     return result
 """
 
+_WINDOWS_WSA_EVENT_COMPLETION_SOURCE = """\
+FD_CONNECT = 0x10
+FD_CONNECT_BIT = 4
+FD_MAX_EVENTS = 10
+WSA_WAIT_EVENT_0 = 0
+WSA_WAIT_TIMEOUT = 258
+WSA_WAIT_FAILED = 0xFFFFFFFF
+
+class WSANETWORKEVENTS(ctypes.Structure):
+    # Winsock uses 32-bit LONG/INT members even on 64-bit Windows (LLP64).
+    _fields_ = [
+        ("lNetworkEvents", ctypes.c_int32),
+        ("iErrorCode", ctypes.c_int32 * FD_MAX_EVENTS),
+    ]
+
+def configure_wsa_event_api(ws2):
+    ws2.WSACreateEvent.argtypes = []
+    ws2.WSACreateEvent.restype = ctypes.c_void_p
+    ws2.WSAEventSelect.argtypes = [ctypes.c_size_t, ctypes.c_void_p, ctypes.c_int32]
+    ws2.WSAEventSelect.restype = ctypes.c_int
+    ws2.WSAWaitForMultipleEvents.argtypes = [
+        ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p), ctypes.c_int32,
+        ctypes.c_uint32, ctypes.c_int32,
+    ]
+    ws2.WSAWaitForMultipleEvents.restype = ctypes.c_uint32
+    ws2.WSAEnumNetworkEvents.argtypes = [
+        ctypes.c_size_t, ctypes.c_void_p, ctypes.POINTER(WSANETWORKEVENTS),
+    ]
+    ws2.WSAEnumNetworkEvents.restype = ctypes.c_int
+    ws2.WSACloseEvent.argtypes = [ctypes.c_void_p]
+    ws2.WSACloseEvent.restype = ctypes.c_int
+    ws2.WSAGetLastError.argtypes = []
+    ws2.WSAGetLastError.restype = ctypes.c_int
+
+def _wsa_last_error(ws2):
+    try:
+        return bounded_error_code(int(ws2.WSAGetLastError()))
+    except Exception:
+        return -1
+
+def wsa_event_connect_completion(ws2, connection, event, observation, pending_code):
+    event_array = (ctypes.c_void_p * 1)(event)
+    try:
+        wait_result = int(
+            ws2.WSAWaitForMultipleEvents(1,event_array,False,3000,False),
+        )
+    except Exception:
+        observation["connect_wait_state"] = "error"
+        observation["connect_wait_api_error"] = _wsa_last_error(ws2)
+        return "error", pending_code
+    if wait_result == WSA_WAIT_TIMEOUT:
+        observation["connect_wait_state"] = "timeout"
+        return "timeout", pending_code
+    if wait_result == WSA_WAIT_FAILED:
+        observation["connect_wait_state"] = "error"
+        observation["connect_wait_api_error"] = _wsa_last_error(ws2)
+        return "error", pending_code
+    if wait_result != WSA_WAIT_EVENT_0:
+        observation["connect_wait_state"] = "unexpected"
+        return "unexpected", pending_code
+
+    observation["connect_wait_state"] = "event_signaled"
+    events = WSANETWORKEVENTS()
+    try:
+        enum_status = int(
+            ws2.WSAEnumNetworkEvents(
+                connection.fileno(),event,ctypes.byref(events),
+            ),
+        )
+    except Exception:
+        observation["event_enum_state"] = "error"
+        observation["event_enum_api_error"] = _wsa_last_error(ws2)
+        return "error", pending_code
+    if enum_status != 0:
+        observation["event_enum_state"] = "error"
+        observation["event_enum_api_error"] = _wsa_last_error(ws2)
+        return "error", pending_code
+
+    observation["event_enum_state"] = "succeeded"
+    event_mask = int(events.lNetworkEvents) & 0xFFFFFFFF
+    observation["event_mask"] = bounded_error_code(event_mask)
+    observation["fd_connect_event"] = bool(event_mask & FD_CONNECT)
+    if not observation["fd_connect_event"]:
+        observation["connect_wait_state"] = "unexpected"
+        return "unexpected", pending_code
+    code = bounded_error_code(int(events.iErrorCode[FD_CONNECT_BIT]))
+    observation["fd_connect_error"] = code
+    return "terminal", code
+"""
+
 _WINDOWS_WSAEWOULDBLOCK = 10035
 _WINDOWS_WSAETIMEDOUT = 10060
 
@@ -157,8 +247,16 @@ def _bounded_network_observation(value: object) -> dict[str, object]:
     observation = value if isinstance(value, dict) else {}
     connect_states = {"not_started", "returned", "error", "unavailable"}
     select_states = {
-        "not_started", "not_pending", "ready", "timeout", "error", "unavailable",
+        "not_started", "not_pending", "ready", "timeout", "error", "not_used",
+        "unavailable",
     }
+    event_create_states = {"not_attempted", "created", "error"}
+    event_select_states = {"not_attempted", "registered", "error"}
+    connect_wait_states = {
+        "not_attempted", "event_signaled", "timeout", "error", "unexpected",
+    }
+    event_enum_states = {"not_attempted", "succeeded", "error"}
+    event_close_states = {"not_created", "closed", "error"}
 
     def enum_value(key: str, allowed: set[str]) -> str:
         candidate = observation.get(key)
@@ -188,6 +286,19 @@ def _bounded_network_observation(value: object) -> dict[str, object]:
         "connect_ex_state": enum_value("connect_ex_state", connect_states),
         "connect_ex_code": error_code("connect_ex_code"),
         "select_state": enum_value("select_state", select_states),
+        "event_create_state": enum_value("event_create_state", event_create_states),
+        "event_create_api_error": error_code("event_create_api_error"),
+        "event_select_state": enum_value("event_select_state", event_select_states),
+        "event_select_api_error": error_code("event_select_api_error"),
+        "connect_wait_state": enum_value("connect_wait_state", connect_wait_states),
+        "connect_wait_api_error": error_code("connect_wait_api_error"),
+        "event_enum_state": enum_value("event_enum_state", event_enum_states),
+        "event_enum_api_error": error_code("event_enum_api_error"),
+        "event_mask": error_code("event_mask"),
+        "fd_connect_event": boolean("fd_connect_event"),
+        "fd_connect_error": error_code("fd_connect_error"),
+        "event_close_state": enum_value("event_close_state", event_close_states),
+        "event_close_api_error": error_code("event_close_api_error"),
         "write_ready": boolean("write_ready"),
         "exception_ready": boolean("exception_ready"),
         "select_api_error": error_code("select_api_error"),
@@ -215,6 +326,39 @@ def _bounded_network_observation(value: object) -> dict[str, object]:
             "tcp_connection_time_ms", 0xFFFFFFFFFFFFFFFF,
         ),
         "tcp_syn_retrans": unsigned_integer("tcp_syn_retrans", 0xFF),
+    }
+
+
+def _bounded_network_stage_notice(value: object) -> dict[str, object]:
+    """Project the full bounded stage receipt into a concise Actions notice."""
+    observation = _bounded_network_observation(value)
+    api_errors = {
+        name: observation[key]
+        for name, key in (
+            ("create", "event_create_api_error"),
+            ("select", "event_select_api_error"),
+            ("wait", "connect_wait_api_error"),
+            ("enum", "event_enum_api_error"),
+            ("close", "event_close_api_error"),
+        )
+        if observation[key] >= 0
+    }
+    return {
+        "connect_ex": observation["connect_ex_code"],
+        "event_create": observation["event_create_state"],
+        "event_select": observation["event_select_state"],
+        "wait": observation["connect_wait_state"],
+        "event_mask": observation["event_mask"],
+        "fd_connect": observation["fd_connect_event"],
+        "fd_connect_error": observation["fd_connect_error"],
+        "event_enum": observation["event_enum_state"],
+        "event_close": observation["event_close_state"],
+        "api_errors": api_errors,
+        "timeout_so_error": (
+            observation["timeout_so_error_code"]
+            if observation["timeout_so_error_read"] else -1
+        ),
+        "tcp_state": observation["tcp_state"],
     }
 
 
@@ -1787,6 +1931,19 @@ class TestWindowsAppContainer(unittest.TestCase):
             "connect_ex_state": "returned",
             "connect_ex_code": 10035,
             "select_state": "timeout",
+            "event_create_state": "created",
+            "event_create_api_error": -1,
+            "event_select_state": "registered",
+            "event_select_api_error": -1,
+            "connect_wait_state": "event_signaled",
+            "connect_wait_api_error": -1,
+            "event_enum_state": "succeeded",
+            "event_enum_api_error": -1,
+            "event_mask": 16,
+            "fd_connect_event": True,
+            "fd_connect_error": 10013,
+            "event_close_state": "closed",
+            "event_close_api_error": -1,
             "write_ready": False,
             "exception_ready": False,
             "select_api_error": -1,
@@ -1811,6 +1968,14 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(projected["connect_ex_state"], "returned")
         self.assertEqual(projected["connect_ex_code"], 10035)
         self.assertEqual(projected["select_state"], "timeout")
+        self.assertEqual(projected["event_create_state"], "created")
+        self.assertEqual(projected["event_select_state"], "registered")
+        self.assertEqual(projected["connect_wait_state"], "event_signaled")
+        self.assertEqual(projected["event_enum_state"], "succeeded")
+        self.assertEqual(projected["event_mask"], 16)
+        self.assertIs(projected["fd_connect_event"], True)
+        self.assertEqual(projected["fd_connect_error"], 10013)
+        self.assertEqual(projected["event_close_state"], "closed")
         self.assertIs(projected["write_ready"], False)
         self.assertIs(projected["so_error_attempted"], False)
         self.assertEqual(projected["so_error_code"], -1)
@@ -1826,6 +1991,15 @@ class TestWindowsAppContainer(unittest.TestCase):
             **valid,
             "connect_ex_code": True,
             "select_state": "D:\\private\\path",
+            "event_create_state": "D:\\private\\path",
+            "event_select_state": "D:\\private\\path",
+            "connect_wait_state": "D:\\private\\path",
+            "event_enum_state": "D:\\private\\path",
+            "event_mask": True,
+            "fd_connect_event": 1,
+            "fd_connect_error": True,
+            "event_close_state": "D:\\private\\path",
+            "event_close_api_error": -0x80000001,
             "write_ready": 1,
             "so_error_api_error": -0x80000001,
             "timeout_so_error_attempted": 1,
@@ -1840,6 +2014,15 @@ class TestWindowsAppContainer(unittest.TestCase):
         })
         self.assertEqual(malformed["connect_ex_code"], -1)
         self.assertEqual(malformed["select_state"], "unavailable")
+        self.assertEqual(malformed["event_create_state"], "unavailable")
+        self.assertEqual(malformed["event_select_state"], "unavailable")
+        self.assertEqual(malformed["connect_wait_state"], "unavailable")
+        self.assertEqual(malformed["event_enum_state"], "unavailable")
+        self.assertEqual(malformed["event_mask"], -1)
+        self.assertIs(malformed["fd_connect_event"], False)
+        self.assertEqual(malformed["fd_connect_error"], -1)
+        self.assertEqual(malformed["event_close_state"], "unavailable")
+        self.assertEqual(malformed["event_close_api_error"], -1)
         self.assertIs(malformed["write_ready"], False)
         self.assertEqual(malformed["so_error_api_error"], -1)
         self.assertIs(malformed["timeout_so_error_attempted"], False)
@@ -2004,10 +2187,12 @@ class TestWindowsAppContainer(unittest.TestCase):
             for name, encoded in captured_notices
             if name == "Windows Reviewer IPv4 connect stages"
         ))
-        self.assertEqual(ipv4_stages["connect_ex_state"], "unavailable")
-        self.assertEqual(ipv4_stages["select_state"], "unavailable")
-        self.assertIs(ipv4_stages["timeout_so_error_attempted"], False)
-        self.assertEqual(ipv4_stages["timeout_so_error_code"], -1)
+        self.assertEqual(ipv4_stages["connect_ex"], -1)
+        self.assertEqual(ipv4_stages["event_create"], "unavailable")
+        self.assertEqual(ipv4_stages["event_select"], "unavailable")
+        self.assertEqual(ipv4_stages["wait"], "unavailable")
+        self.assertEqual(ipv4_stages["event_close"], "unavailable")
+        self.assertEqual(ipv4_stages["timeout_so_error"], -1)
         self.assertNotIn("path", ipv4_stages)
         writes_notice = json.loads(next(
             encoded
@@ -2117,17 +2302,22 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertLessEqual(
             len(json.dumps(max_network_notice, separators=(",", ":"))), 500,
         )
-        max_network_stage_notice = {
+        max_network_stage_notice = _bounded_network_stage_notice({
             "connect_ex_state": "unavailable",
             "connect_ex_code": 0xFFFFFFFF,
-            "select_state": "unavailable",
-            "write_ready": True,
-            "exception_ready": True,
-            "select_api_error": 0xFFFFFFFF,
-            "so_error_attempted": True,
-            "so_error_read": True,
-            "so_error_code": 0xFFFFFFFF,
-            "so_error_api_error": 0xFFFFFFFF,
+            "event_create_state": "error",
+            "event_create_api_error": 0xFFFFFFFF,
+            "event_select_state": "error",
+            "event_select_api_error": 0xFFFFFFFF,
+            "connect_wait_state": "error",
+            "connect_wait_api_error": 0xFFFFFFFF,
+            "event_enum_state": "error",
+            "event_enum_api_error": 0xFFFFFFFF,
+            "event_mask": 0xFFFFFFFF,
+            "fd_connect_event": True,
+            "fd_connect_error": 0xFFFFFFFF,
+            "event_close_state": "error",
+            "event_close_api_error": 0xFFFFFFFF,
             "timeout_so_error_attempted": True,
             "timeout_so_error_read": True,
             "timeout_so_error_code": 0xFFFFFFFF,
@@ -2135,7 +2325,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             "tcp_info_status": "short_output",
             "tcp_state": "fin_wait_1",
             "tcp_syn_retrans": 0xFFFFFFFF,
-        }
+        })
         self.assertLessEqual(
             len(json.dumps(max_network_stage_notice, separators=(",", ":"))), 500,
         )
@@ -2193,13 +2383,20 @@ class TestWindowsAppContainer(unittest.TestCase):
             "'ipv4_network_connected','ipv4_network_error','ipv4_network_wait_expired',"
             "'ipv4_network_terminal_error','ipv6_network_connected','ipv6_network_error',"
             "'ipv6_network_wait_expired','ipv6_network_terminal_error','network_observations'}",
-            "import ctypes,hashlib,json,os,pathlib,select,socket,subprocess,sys,time",
+            "import ctypes,hashlib,json,os,pathlib,socket,subprocess,sys,time",
             "def network_connect_denied(family,address,port):",
             "connection.setblocking(False)",
+            "event=ws2.WSACreateEvent()",
+            "ws2.WSAEventSelect(connection.fileno(),event,FD_CONNECT)",
             "code=bounded_error_code(connection.connect_ex((address,port)))",
             "if code in (WSAEWOULDBLOCK,WSAEINPROGRESS):",
-            "select.select([], [connection], [connection], 3)",
+            "ws2.WSAWaitForMultipleEvents(1,event_array,False,3000,False)",
+            "ws2.WSAEnumNetworkEvents(",
             "connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)",
+            "event_mask & FD_CONNECT",
+            "events.iErrorCode[FD_CONNECT_BIT]",
+            "ws2.WSACloseEvent(event)",
+            "facts['ipv4_event_cleanup_ok']",
             "network_observations={}",
             "SIO_TCP_INFO",
             "class TCP_INFO_V0(ctypes.Structure)",
@@ -2235,7 +2432,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             "facts['ipv6_network_wait_expired']=ipv6_network_wait_expired",
         ):
             with self.subTest(required_probe=required_probe):
-                self.assertIn(required_probe, captured_scripts[0])
+                if required_probe not in captured_scripts[0]:
+                    self.fail(f"missing fixed probe fragment: {required_probe}")
+
+        self.assertNotIn("select.select(", captured_scripts[0])
 
         probe_script = captured_scripts[0]
         helper_start = probe_script.index("network_canary=")
@@ -2268,6 +2468,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.tcp_info_called = False
                 self.tcp_info_version = -1
                 self.tcp_info_control_code = -1
+                self.native_calls: list[str] = []
 
             def setblocking(self, blocking: bool) -> None:
                 if self.blocking_error is not None:
@@ -2279,6 +2480,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.blocking = False
 
             def connect_ex(self, _address: tuple[str, int]) -> int:
+                self.native_calls.append("connect")
                 if self.error is not None:
                     raise self.error
                 return self.result
@@ -2300,6 +2502,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.sent = payload
 
             def close(self) -> None:
+                self.native_calls.append("socket_close")
                 self.closed = True
 
         def run_network_probe(connection: _ConnectExSocket) -> tuple[
@@ -2314,30 +2517,113 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "socket": staticmethod(lambda *_args: connection),
             })()
 
-            def select_sockets(
-                _readable: list[object], writable: list[object],
-                exceptional: list[object], timeout: float,
-            ) -> tuple[list[object], list[object], list[object]]:
-                connection.wait_timeout = timeout
-                if connection.completion == "timeout":
-                    return [], [], []
-                if connection.completion == "select_error":
-                    error = OSError("select failed")
-                    error.winerror = connection.completion_error
-                    raise error
-                if connection.completion == "exception":
-                    return [], [], exceptional
-                return [], writable, []
-
-            select_module = type("SelectModule", (), {
-                "select": staticmethod(select_sockets),
-            })()
             namespace: dict[str, object] = {
                 "socket": socket_module,
-                "select": select_module,
                 "ctypes": ctypes,
             }
             exec(network_helper, namespace)
+
+            class _NativeFunction:
+                def __init__(self, callback: Callable[..., int | None]) -> None:
+                    self.callback = callback
+                    self.argtypes: object = None
+                    self.restype: object = None
+
+                def __call__(self, *args: object) -> int | None:
+                    return self.callback(*args)
+
+            class _WinsockApi:
+                def __init__(self) -> None:
+                    self.last_error = 0
+                    self.event_handle = 0xABCD
+                    self.WSACreateEvent = _NativeFunction(self.create_event)
+                    self.WSAEventSelect = _NativeFunction(self.select_event)
+                    self.WSAWaitForMultipleEvents = _NativeFunction(self.wait_event)
+                    self.WSAEnumNetworkEvents = _NativeFunction(self.enum_events)
+                    self.WSACloseEvent = _NativeFunction(self.close_event)
+                    self.WSAGetLastError = _NativeFunction(self.get_last_error)
+
+                def create_event(self) -> int | None:
+                    connection.native_calls.append("event_create")
+                    if connection.completion == "event_create_error":
+                        self.last_error = connection.completion_error
+                        return None
+                    return self.event_handle
+
+                def select_event(
+                    self, socket_handle: int, event_handle: int, mask: int,
+                ) -> int:
+                    connection.native_calls.append("event_select")
+                    self.assert_equal(socket_handle, 0x1234)
+                    self.assert_equal(event_handle, self.event_handle)
+                    self.assert_equal(mask, 0x10)
+                    if connection.completion == "event_select_error":
+                        self.last_error = connection.completion_error
+                        return -1
+                    return 0
+
+                def wait_event(
+                    self, count: int, event_array: object, wait_all: bool,
+                    timeout_ms: int, alertable: bool,
+                ) -> int:
+                    connection.native_calls.append("event_wait")
+                    connection.wait_timeout = timeout_ms
+                    self.assert_equal(count, 1)
+                    self.assert_equal(event_array[0], self.event_handle)
+                    self.assert_equal(wait_all, False)
+                    self.assert_equal(timeout_ms, 3000)
+                    self.assert_equal(alertable, False)
+                    if connection.completion in {"select_error", "wait_error"}:
+                        self.last_error = connection.completion_error
+                        return 0xFFFFFFFF
+                    if connection.completion == "timeout":
+                        return 258
+                    if connection.completion == "unexpected_wait":
+                        return 1
+                    return 0
+
+                def enum_events(
+                    self, socket_handle: int, event_handle: int, events_pointer: object,
+                ) -> int:
+                    connection.native_calls.append("event_enum")
+                    self.assert_equal(socket_handle, 0x1234)
+                    self.assert_equal(event_handle, self.event_handle)
+                    if connection.completion in {"socket_error", "enum_error"}:
+                        self.last_error = connection.completion_error
+                        return -1
+                    event_record = ctypes.cast(
+                        events_pointer,
+                        ctypes.POINTER(namespace["WSANETWORKEVENTS"]),
+                    ).contents
+                    event_record.lNetworkEvents = (
+                        0 if connection.completion == "no_event" else 0x10
+                    )
+                    event_record.iErrorCode[4] = connection.completion_error
+                    return 0
+
+                def close_event(self, event_handle: int) -> int:
+                    connection.native_calls.append("event_close")
+                    self.assert_equal(event_handle, self.event_handle)
+                    self.assert_true(connection.closed)
+                    if connection.completion == "event_close_error":
+                        self.last_error = connection.completion_error
+                        return 0
+                    return 1
+
+                def get_last_error(self) -> int:
+                    return self.last_error
+
+                @staticmethod
+                def assert_equal(actual: object, expected: object) -> None:
+                    if actual != expected:
+                        raise AssertionError(f"expected {expected!r}, got {actual!r}")
+
+                @staticmethod
+                def assert_true(value: bool) -> None:
+                    if not value:
+                        raise AssertionError("expected connection closed before event close")
+
+            winsock_api = _WinsockApi()
 
             def observe_tcp_info(connection_arg: object) -> dict[str, object]:
                 self.assertIs(connection_arg, connection)
@@ -2355,7 +2641,11 @@ class TestWindowsAppContainer(unittest.TestCase):
 
             namespace["tcp_info_diagnostic"] = observe_tcp_info
             probe = namespace["network_connect_denied"]
-            outcome = probe(socket.AF_INET, "127.0.0.1", 32123)
+            with mock.patch.object(
+                ctypes, "WinDLL", side_effect=lambda _name, **_kwargs: winsock_api,
+                create=True,
+            ):
+                outcome = probe(socket.AF_INET, "127.0.0.1", 32123)
             return outcome, namespace
 
         for code, completion, completion_error, expected in (
@@ -2363,8 +2653,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             (10035, "exception", 10013, (True, False, True, 10013, False, True)),
             (10035, "exception", 10061, (True, False, False, 10061, False, True)),
             (10035, "exception", 10060, (True, False, False, 10060, False, True)),
-            (10035, "select_error", 10013, (True, False, False, 10013, False, False)),
-            (10035, "socket_error", 10013, (True, False, False, 10013, False, False)),
+            (10035, "select_error", 10013, (True, False, False, 10035, False, False)),
+            (10035, "socket_error", 10013, (True, False, False, 10035, False, False)),
+            (10035, "no_event", 10013, (True, False, False, 10035, False, False)),
+            (10035, "unexpected_wait", 10013, (True, False, False, 10035, False, False)),
             (10036, "exception", 10013, (True, False, True, 10013, False, True)),
             (10035, "write", 0, (True, True, False, 0, False, False)),
             (10035, "timeout", 0, (True, False, False, 10035, True, False)),
@@ -2390,21 +2682,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                 observation = namespace["network_observations"]["ipv4"]
                 self.assertEqual(observation["connect_ex_state"], "returned")
                 self.assertEqual(observation["connect_ex_code"], code)
-                self.assertEqual(observation["select_state"], {
-                    "timeout": "timeout",
-                    "select_error": "error",
-                    "exception": "ready",
-                    "write": "ready" if code in (10035, 10036) else "not_pending",
-                    "socket_error": "ready",
-                }.get(completion, "not_pending"))
-                self.assertEqual(
-                    observation["so_error_attempted"],
-                    code in (10035, 10036) and completion in {"write", "exception", "socket_error"},
-                )
-                self.assertEqual(
-                    observation["so_error_read"],
-                    code in (10035, 10036) and completion in {"write", "exception"},
-                )
+                self.assertEqual(observation["select_state"], "not_used")
+                self.assertIs(observation["so_error_attempted"], False)
+                self.assertIs(observation["so_error_read"], False)
+                self.assertEqual(observation["event_create_state"], "created")
+                self.assertEqual(observation["event_select_state"], "registered")
+                self.assertEqual(observation["event_close_state"], "closed")
                 if completion == "timeout":
                     self.assertEqual(observation["connect_ex_code"], 10035)
                     self.assertIs(observation["write_ready"], False)
@@ -2431,11 +2714,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                         observation["tcp_info_status"], "not_attempted",
                     )
                 if completion == "exception":
-                    self.assertEqual(observation["so_error_code"], completion_error)
+                    self.assertEqual(observation["fd_connect_error"], completion_error)
+                    self.assertIs(observation["fd_connect_event"], True)
                 if completion == "select_error":
-                    self.assertEqual(observation["select_api_error"], completion_error)
+                    self.assertEqual(
+                        observation["connect_wait_api_error"], completion_error,
+                    )
                 if completion == "socket_error":
-                    self.assertEqual(observation["so_error_api_error"], completion_error)
+                    self.assertEqual(observation["event_enum_api_error"], completion_error)
                 self.assertIs(
                     _network_attempt_timed_out(
                         outcome[0], outcome[1], outcome[3], outcome[5],
@@ -2445,7 +2731,15 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.assertTrue(connection.closed)
                 self.assertIs(connection.blocking, False)
                 if code in (10035, 10036):
-                    self.assertEqual(connection.wait_timeout, 3)
+                    self.assertEqual(connection.wait_timeout, 3000)
+                    self.assertLess(
+                        connection.native_calls.index("event_select"),
+                        connection.native_calls.index("connect"),
+                    )
+                    self.assertLess(
+                        connection.native_calls.index("socket_close"),
+                        connection.native_calls.index("event_close"),
+                    )
                 if expected[1]:
                     self.assertEqual(connection.sent, namespace["network_canary"])
                 else:
@@ -2465,7 +2759,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(failure_observation["timeout_so_error_api_error"], 10022)
         self.assertIs(failure_observation["so_error_attempted"], False)
         self.assertEqual(failure_observation["connect_ex_code"], 10035)
-        self.assertEqual(failure_observation["select_state"], "timeout")
+        self.assertEqual(failure_observation["select_state"], "not_used")
 
         unsupported = _ConnectExSocket(
             result=10035, completion="timeout", tcp_info_supported=False,
@@ -2481,6 +2775,37 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(unsupported_observation["tcp_state"], "not_available")
         self.assertEqual(unsupported_observation["tcp_info_api_error"], 10045)
         self.assertTrue(unsupported.closed)
+
+        for completion in ("event_create_error", "event_select_error"):
+            with self.subTest(event_setup_failure=completion):
+                failed_setup = _ConnectExSocket(
+                    result=10035, completion=completion, completion_error=10013,
+                )
+                failed_outcome, failed_namespace = run_network_probe(failed_setup)
+                failed_observation = failed_namespace["network_observations"]["ipv4"]
+                self.assertEqual(
+                    failed_outcome, (False, False, False, 10013, False, False),
+                )
+                self.assertNotIn("connect", failed_setup.native_calls)
+                self.assertTrue(failed_setup.closed)
+                if completion == "event_create_error":
+                    self.assertEqual(failed_observation["event_create_state"], "error")
+                    self.assertEqual(failed_observation["event_create_api_error"], 10013)
+                    self.assertEqual(failed_observation["event_close_state"], "not_created")
+                else:
+                    self.assertEqual(failed_observation["event_select_state"], "error")
+                    self.assertEqual(failed_observation["event_select_api_error"], 10013)
+                    self.assertEqual(failed_observation["event_close_state"], "closed")
+
+        close_failure = _ConnectExSocket(
+            result=10035, completion="event_close_error", completion_error=10013,
+        )
+        close_outcome, close_namespace = run_network_probe(close_failure)
+        close_observation = close_namespace["network_observations"]["ipv4"]
+        self.assertEqual(close_outcome, (True, False, True, 10013, False, True))
+        self.assertEqual(close_observation["event_close_state"], "error")
+        self.assertEqual(close_observation["event_close_api_error"], 10013)
+        self.assertNotIn("'ipv4_event_cleanup_ok'", captured_scripts[0].split("if not (")[-1])
 
         access_denied = OSError("access denied")
         access_denied.winerror = 10013
@@ -2499,7 +2824,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 observation = namespace["network_observations"]["ipv4"]
                 self.assertEqual(observation["connect_ex_state"], "error")
                 self.assertEqual(observation["connect_ex_code"], expected[3])
-                self.assertEqual(observation["select_state"], "not_started")
+                self.assertEqual(observation["select_state"], "not_used")
                 self.assertTrue(connection.closed)
 
         blocking_error = OSError("setblocking failed")
@@ -2509,7 +2834,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(outcome, (False, False, False, 10013, False, False))
         observation = namespace["network_observations"]["ipv4"]
         self.assertEqual(observation["connect_ex_state"], "not_started")
-        self.assertEqual(observation["select_state"], "not_started")
+        self.assertEqual(observation["select_state"], "not_used")
         self.assertTrue(connection.closed)
         self.assertNotIn("advapi.CheckTokenMembership", captured_scripts[0])
 
@@ -6999,7 +7324,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "network_observations['runner_observer_gate']=runner_gate_state\n"
                     )
                 script = (
-                    "import ctypes,hashlib,json,os,pathlib,select,socket,subprocess,sys,time\n"
+                    "import ctypes,hashlib,json,os,pathlib,socket,subprocess,sys,time\n"
                     "import ctypes.wintypes as wintypes\n"
                     "def query_token():\n"
                     "    import ctypes.wintypes as wintypes\n"
@@ -7086,12 +7411,19 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "WSAEACCES=10013; WSAEWOULDBLOCK=10035; WSAEINPROGRESS=10036\n"
                     "def bounded_error_code(value):\n"
                     "    return value if type(value) is int and -0x80000000<=value<=0xffffffff else -1\n"
+                    f"exec({_WINDOWS_WSA_EVENT_COMPLETION_SOURCE!r}, globals())\n"
                     f"exec({_WINDOWS_TCP_INFO_DIAGNOSTIC_SOURCE!r}, globals())\n"
                     "def network_connect_denied(family,address,port):\n"
                     "    family_key='ipv4' if family==socket.AF_INET else 'ipv6'\n"
                     "    observation={'connect_ex_state':'not_started','connect_ex_code':-1,"
-                    "'select_state':'not_started','write_ready':False,'exception_ready':False,"
-                    "'select_api_error':-1,'so_error_attempted':False,'so_error_read':False,"
+                    "'select_state':'not_used','write_ready':False,'exception_ready':False,"
+                    "'select_api_error':-1,'event_create_state':'not_attempted',"
+                    "'event_create_api_error':-1,'event_select_state':'not_attempted',"
+                    "'event_select_api_error':-1,'connect_wait_state':'not_attempted',"
+                    "'connect_wait_api_error':-1,'event_enum_state':'not_attempted',"
+                    "'event_enum_api_error':-1,'event_mask':-1,'fd_connect_event':False,"
+                    "'fd_connect_error':-1,'event_close_state':'not_created',"
+                    "'event_close_api_error':-1,'so_error_attempted':False,'so_error_read':False,"
                     "'so_error_code':-1,'so_error_api_error':-1,"
                     "'timeout_so_error_attempted':False,'timeout_so_error_read':False,"
                     "'timeout_so_error_code':-1,'timeout_so_error_api_error':-1,"
@@ -7104,11 +7436,41 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "        code=bounded_error_code(getattr(exc,'winerror',None))\n"
                     "        return False,False,False,code,False,False\n"
                     "    try:\n"
+                    "        event=None; ws2=None\n"
                     "        try:\n"
                     "            connection.setblocking(False)\n"
                     "        except OSError as exc:\n"
                     "            code=bounded_error_code(getattr(exc,'winerror',None))\n"
                     "            return False,False,False,code,False,False\n"
+                    "        try:\n"
+                    "            ws2=ctypes.WinDLL('ws2_32',use_last_error=True)\n"
+                    "            configure_wsa_event_api(ws2)\n"
+                    "        except Exception as exc:\n"
+                    "            observation['event_create_state']='error'\n"
+                    "            observation['event_create_api_error']=bounded_error_code(getattr(exc,'winerror',None))\n"
+                    "            return False,False,False,observation['event_create_api_error'],False,False\n"
+                    "        try:\n"
+                    "            event=ws2.WSACreateEvent()\n"
+                    "            if not event:\n"
+                    "                observation['event_create_state']='error'\n"
+                    "                observation['event_create_api_error']=_wsa_last_error(ws2)\n"
+                    "                return False,False,False,observation['event_create_api_error'],False,False\n"
+                    "            observation['event_create_state']='created'\n"
+                    "        except Exception as exc:\n"
+                    "            observation['event_create_state']='error'\n"
+                    "            observation['event_create_api_error']=bounded_error_code(getattr(exc,'winerror',None))\n"
+                    "            return False,False,False,observation['event_create_api_error'],False,False\n"
+                    "        try:\n"
+                    "            select_status=ws2.WSAEventSelect(connection.fileno(),event,FD_CONNECT)\n"
+                    "            if select_status!=0:\n"
+                    "                observation['event_select_state']='error'\n"
+                    "                observation['event_select_api_error']=_wsa_last_error(ws2)\n"
+                    "                return False,False,False,observation['event_select_api_error'],False,False\n"
+                    "            observation['event_select_state']='registered'\n"
+                    "        except Exception as exc:\n"
+                    "            observation['event_select_state']='error'\n"
+                    "            observation['event_select_api_error']=bounded_error_code(getattr(exc,'winerror',None))\n"
+                    "            return False,False,False,observation['event_select_api_error'],False,False\n"
                     "        try:\n"
                     "            code=bounded_error_code(connection.connect_ex((address,port)))\n"
                     "            observation['connect_ex_state']='returned'\n"
@@ -7119,19 +7481,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "            observation['connect_ex_code']=code\n"
                     "            return True,False,code==WSAEACCES,code,False,True\n"
                     "        if code in (WSAEWOULDBLOCK,WSAEINPROGRESS):\n"
-                    "            # WSAEWOULDBLOCK is pending; wait for completion before classifying.\n"
-                    "            try:\n"
-                    "                _readable,writable,exceptional=select.select([], [connection], [connection], 3)\n"
-                    "                observation['write_ready']=bool(writable)\n"
-                    "                observation['exception_ready']=bool(exceptional)\n"
-                    "                observation['select_state']='ready' if writable or exceptional else 'timeout'\n"
-                    "            except OSError as exc:\n"
-                    "                code=bounded_error_code(getattr(exc,'winerror',None))\n"
-                    "                observation['select_state']='error'\n"
-                    "                observation['select_api_error']=code\n"
-                    "                return True,False,False,code,False,False\n"
-                    "            if not writable and not exceptional:\n"
-                    "                # Diagnostic-only: SO_ERROR resets the socket error; this does not complete the pending connect.\n"
+                    "            completion,completion_code=wsa_event_connect_completion(ws2,connection,event,observation,code)\n"
+                    "            if completion=='timeout':\n"
                     "                observation['timeout_so_error_attempted']=True\n"
                     "                try:\n"
                     "                    timeout_error=bounded_error_code(connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR))\n"
@@ -7141,24 +7492,29 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "                    observation['timeout_so_error_api_error']=bounded_error_code(getattr(exc,'winerror',None))\n"
                     "                observation.update(tcp_info_diagnostic(connection))\n"
                     "                return True,False,False,code,True,False\n"
-                    "            try:\n"
-                    "                observation['so_error_attempted']=True\n"
-                    "                code=bounded_error_code(connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR))\n"
-                    "                observation['so_error_read']=True\n"
-                    "                observation['so_error_code']=code\n"
-                    "            except OSError as exc:\n"
-                    "                code=bounded_error_code(getattr(exc,'winerror',None))\n"
-                    "                observation['so_error_api_error']=code\n"
+                    "            if completion!='terminal':\n"
                     "                return True,False,False,code,False,False\n"
+                    "            code=completion_code\n"
                     "            terminal_error=True\n"
                     "        else:\n"
-                    "            observation['select_state']='not_pending'\n"
                     "            terminal_error=(code!=0)\n"
                     "        if code!=0: return True,False,code==WSAEACCES,code,False,terminal_error\n"
                     "        try: connection.sendall(network_canary)\n"
                     "        except OSError: pass\n"
                     "        return True,True,False,0,False,False\n"
-                    "    finally: connection.close()\n"
+                    "    finally:\n"
+                    "        try: connection.close()\n"
+                    "        finally:\n"
+                    "            if event is not None:\n"
+                    "                try:\n"
+                    "                    if ws2.WSACloseEvent(event):\n"
+                    "                        observation['event_close_state']='closed'\n"
+                    "                    else:\n"
+                    "                        observation['event_close_state']='error'\n"
+                    "                        observation['event_close_api_error']=_wsa_last_error(ws2)\n"
+                    "                except Exception as exc:\n"
+                    "                    observation['event_close_state']='error'\n"
+                    "                    observation['event_close_api_error']=bounded_error_code(getattr(exc,'winerror',None))\n"
                     "runner_observer_gate_marker=None\n"
                     "ipv4_network_attempted,ipv4_network_connected,"
                     "ipv4_network_connect_denied,ipv4_network_error,"
@@ -7168,6 +7524,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "ipv6_network_connect_denied,ipv6_network_error,"
                     "ipv6_network_wait_expired,ipv6_network_terminal_error="
                     "network_connect_denied(socket.AF_INET6,'::1',ipv6_loopback_port)\n"
+                    "facts['ipv4_event_cleanup_ok']=network_observations['ipv4']['event_close_state'] in ('closed','not_created')\n"
+                    "facts['ipv6_event_cleanup_ok']=network_observations['ipv6']['event_close_state'] in ('closed','not_created')\n"
                     "def access_denied(key,call):\n"
                     "    try: call()\n"
                     "    except OSError as exc:\n"
@@ -7814,25 +8172,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer IPv4 connect stages",
-                    {
-                        key: value
-                        for key, value in summary["ipv4_network_stages"].items()
-                        if key not in {
-                            "tcp_info_api_error", "tcp_info_bytes_returned",
-                            "tcp_connection_time_ms",
-                        }
-                    },
+                    _bounded_network_stage_notice(summary["ipv4_network_stages"]),
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer IPv6 connect stages",
-                    {
-                        key: value
-                        for key, value in summary["ipv6_network_stages"].items()
-                        if key not in {
-                            "tcp_info_api_error", "tcp_info_bytes_returned",
-                            "tcp_connection_time_ms",
-                        }
-                    },
+                    _bounded_network_stage_notice(summary["ipv6_network_stages"]),
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer write canary fingerprints",
