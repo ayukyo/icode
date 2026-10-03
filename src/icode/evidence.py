@@ -785,9 +785,9 @@ def build_evidence_pack(
         raise EvidenceError("事件链为空，无法导出证据包")
     if len(event_summary.artifact_events) > _MAX_ARTIFACT_INDEX_ENTRIES:
         raise EvidenceError("产物索引条目数量超过安全上限")
-    fixed_file_count = 6 + int(
-        gates_json is not None and Path(gates_json).is_file()
-    )
+    gates_path = Path(gates_json) if gates_json is not None else None
+    has_gates_file = gates_path is not None and gates_path.is_file()
+    fixed_file_count = 6 + int(has_gates_file)
     if len(event_summary.artifact_events) + fixed_file_count > _MAX_MANIFEST_FILE_ENTRIES:
         raise EvidenceError("证据包清单文件条目数量超过安全上限")
     _preflight_artifact_index_json(event_summary.artifact_events)
@@ -795,6 +795,19 @@ def build_evidence_pack(
     verification_payload, verification_count = _verification_payload(
         verifications, meta.get("verification_runs"),
     )
+    # Validate and serialize contracts before removing an existing destination.
+    # Reuse the same text below and preserve Path.write_text newline behavior.
+    contracts_payload: str | None = None
+    if gates_path is not None and has_gates_file:
+        contracts_payload = (
+            json.dumps(
+                _contract_snapshot(gates_path, event_summary.steps),
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n"
+        )
+        # Catch encoding errors before deleting the previous package.
+        contracts_payload.encode("utf-8")
     hash_budget = _HashReadBudget(_MAX_PACKAGE_HASH_READ_BYTES)
     artifact_budget = _HashReadBudget(_MAX_PACKAGE_ARTIFACT_BYTES)
 
@@ -828,12 +841,8 @@ def build_evidence_pack(
     )
 
     # 3) 契约快照
-    if gates_json is not None and Path(gates_json).is_file():
-        (dest / "contracts.json").write_text(
-            json.dumps(_contract_snapshot(Path(gates_json), event_summary.steps),
-                       ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+    if contracts_payload is not None:
+        (dest / "contracts.json").write_text(contracts_payload, encoding="utf-8")
     else:
         warnings.append("未提供 gates.json，未包含契约快照")
 

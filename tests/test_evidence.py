@@ -103,6 +103,26 @@ class TestEvidencePack(unittest.TestCase):
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep existing evidence pack\n")
 
+    def test_导出器遇到无效契约文件时保留旧包(self) -> None:
+        from icode.contracts import ContractError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            gates_json = ws / "gates.json"
+            gates_json.write_text("{", encoding="utf-8")
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_text("preserve previous evidence pack\n", encoding="utf-8")
+
+            with self.assertRaises(ContractError):
+                build_evidence_pack(out_dir, dest=dest, gates_json=gates_json)
+
+            self.assertTrue(marker.is_file(), "无效契约不得先删除旧证据包")
+            self.assertEqual(
+                marker.read_text(encoding="utf-8"), "preserve previous evidence pack\n",
+            )
+
     def test_导出器拒绝任意事件类型的非对象payload并保留旧包(self) -> None:
         from icode.evidence import EvidenceError
         from icode.pack_verify import GENESIS_HASH, canonical_event_hash
