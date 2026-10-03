@@ -195,6 +195,10 @@ def _bounded_network_observation(value: object) -> dict[str, object]:
         "so_error_read": boolean("so_error_read"),
         "so_error_code": error_code("so_error_code"),
         "so_error_api_error": error_code("so_error_api_error"),
+        "timeout_so_error_attempted": boolean("timeout_so_error_attempted"),
+        "timeout_so_error_read": boolean("timeout_so_error_read"),
+        "timeout_so_error_code": error_code("timeout_so_error_code"),
+        "timeout_so_error_api_error": error_code("timeout_so_error_api_error"),
         "tcp_info_status": enum_value(
             "tcp_info_status", {"not_attempted", "available", "unavailable", "short_output"},
         ),
@@ -1790,6 +1794,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             "so_error_read": False,
             "so_error_code": -1,
             "so_error_api_error": -1,
+            "timeout_so_error_attempted": True,
+            "timeout_so_error_read": True,
+            "timeout_so_error_code": 10013,
+            "timeout_so_error_api_error": -1,
             "tcp_info_status": "available",
             "tcp_state": "syn_sent",
             "tcp_info_api_error": -1,
@@ -1806,6 +1814,9 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIs(projected["write_ready"], False)
         self.assertIs(projected["so_error_attempted"], False)
         self.assertEqual(projected["so_error_code"], -1)
+        self.assertIs(projected["timeout_so_error_attempted"], True)
+        self.assertIs(projected["timeout_so_error_read"], True)
+        self.assertEqual(projected["timeout_so_error_code"], 10013)
         self.assertEqual(projected["tcp_info_status"], "available")
         self.assertEqual(projected["tcp_state"], "syn_sent")
         self.assertEqual(projected["tcp_info_bytes_returned"], 88)
@@ -1817,6 +1828,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             "select_state": "D:\\private\\path",
             "write_ready": 1,
             "so_error_api_error": -0x80000001,
+            "timeout_so_error_attempted": 1,
+            "timeout_so_error_read": "yes",
+            "timeout_so_error_code": True,
+            "timeout_so_error_api_error": -0x80000001,
             "tcp_info_status": "D:\\private\\path",
             "tcp_state": "D:\\private\\path",
             "tcp_info_bytes_returned": True,
@@ -1827,6 +1842,10 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(malformed["select_state"], "unavailable")
         self.assertIs(malformed["write_ready"], False)
         self.assertEqual(malformed["so_error_api_error"], -1)
+        self.assertIs(malformed["timeout_so_error_attempted"], False)
+        self.assertIs(malformed["timeout_so_error_read"], False)
+        self.assertEqual(malformed["timeout_so_error_code"], -1)
+        self.assertEqual(malformed["timeout_so_error_api_error"], -1)
         self.assertEqual(malformed["tcp_info_status"], "unavailable")
         self.assertEqual(malformed["tcp_state"], "unavailable")
         self.assertEqual(malformed["tcp_info_bytes_returned"], -1)
@@ -1987,6 +2006,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         ))
         self.assertEqual(ipv4_stages["connect_ex_state"], "unavailable")
         self.assertEqual(ipv4_stages["select_state"], "unavailable")
+        self.assertIs(ipv4_stages["timeout_so_error_attempted"], False)
+        self.assertEqual(ipv4_stages["timeout_so_error_code"], -1)
         self.assertNotIn("path", ipv4_stages)
         writes_notice = json.loads(next(
             encoded
@@ -2097,7 +2118,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             len(json.dumps(max_network_notice, separators=(",", ":"))), 500,
         )
         max_network_stage_notice = {
-            "connect_ex_state": "returned",
+            "connect_ex_state": "unavailable",
             "connect_ex_code": 0xFFFFFFFF,
             "select_state": "unavailable",
             "write_ready": True,
@@ -2107,11 +2128,12 @@ class TestWindowsAppContainer(unittest.TestCase):
             "so_error_read": True,
             "so_error_code": 0xFFFFFFFF,
             "so_error_api_error": 0xFFFFFFFF,
-            "tcp_info_status": "available",
-            "tcp_state": "syn_sent",
-            "tcp_info_api_error": 0xFFFFFFFF,
-            "tcp_info_bytes_returned": 0xFFFFFFFF,
-            "tcp_connection_time_ms": 0xFFFFFFFFFFFFFFFF,
+            "timeout_so_error_attempted": True,
+            "timeout_so_error_read": True,
+            "timeout_so_error_code": 0xFFFFFFFF,
+            "timeout_so_error_api_error": 0xFFFFFFFF,
+            "tcp_info_status": "short_output",
+            "tcp_state": "fin_wait_1",
             "tcp_syn_retrans": 0xFFFFFFFF,
         }
         self.assertLessEqual(
@@ -2196,6 +2218,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             "so_error_read",
             "so_error_code",
             "so_error_api_error",
+            "timeout_so_error_attempted",
+            "timeout_so_error_read",
+            "timeout_so_error_code",
+            "timeout_so_error_api_error",
             "return True,False,False,code,True",
             "terminal_error=True",
             "terminal_error=(code!=0)",
@@ -2224,6 +2250,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 completion: str = "write", completion_error: int = 0,
                 blocking_error: OSError | None = None,
                 tcp_info_supported: bool = True,
+                timeout_so_error_failure: bool = False,
             ) -> None:
                 self.result = result
                 self.error = error
@@ -2236,6 +2263,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.wait_timeout: float | None = None
                 self.timeout: float | None = None
                 self.tcp_info_supported = tcp_info_supported
+                self.timeout_so_error_failure = timeout_so_error_failure
+                self.getsockopt_calls = 0
                 self.tcp_info_called = False
                 self.tcp_info_version = -1
                 self.tcp_info_control_code = -1
@@ -2258,7 +2287,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 return 0x1234
 
             def getsockopt(self, _level: int, _option: int) -> int:
-                if self.completion == "socket_error":
+                self.getsockopt_calls += 1
+                if self.completion == "socket_error" or (
+                    self.completion == "timeout" and self.timeout_so_error_failure
+                ):
                     error = OSError("getsockopt failed")
                     error.winerror = self.completion_error
                     raise error
@@ -2336,6 +2368,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             (10036, "exception", 10013, (True, False, True, 10013, False, True)),
             (10035, "write", 0, (True, True, False, 0, False, False)),
             (10035, "timeout", 0, (True, False, False, 10035, True, False)),
+            (10035, "timeout", 10035, (True, False, False, 10035, True, False)),
+            (10035, "timeout", 10013, (True, False, False, 10035, True, False)),
+            (10035, "timeout", 10061, (True, False, False, 10035, True, False)),
             (10061, "write", 0, (True, False, False, 10061, False, True)),
             (0, "write", 0, (True, True, False, 0, False, False)),
         ):
@@ -2376,6 +2411,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                     self.assertIs(observation["exception_ready"], False)
                     self.assertIs(observation["so_error_attempted"], False)
                     self.assertEqual(observation["so_error_code"], -1)
+                    self.assertIs(observation["timeout_so_error_attempted"], True)
+                    self.assertIs(observation["timeout_so_error_read"], True)
+                    self.assertEqual(
+                        observation["timeout_so_error_code"], completion_error,
+                    )
+                    self.assertEqual(observation["timeout_so_error_api_error"], -1)
+                    self.assertEqual(connection.getsockopt_calls, 1)
+                    self.assertEqual(outcome, (True, False, False, 10035, True, False))
                     self.assertTrue(connection.tcp_info_called)
                     self.assertEqual(observation["tcp_info_status"], "available")
                     self.assertEqual(observation["tcp_state"], "syn_sent")
@@ -2407,6 +2450,22 @@ class TestWindowsAppContainer(unittest.TestCase):
                     self.assertEqual(connection.sent, namespace["network_canary"])
                 else:
                     self.assertIsNone(connection.sent)
+
+        failure_connection = _ConnectExSocket(
+            result=10035, completion="timeout", completion_error=10022,
+            timeout_so_error_failure=True,
+        )
+        failure_outcome, failure_namespace = run_network_probe(failure_connection)
+        failure_observation = failure_namespace["network_observations"]["ipv4"]
+        self.assertEqual(failure_outcome, (True, False, False, 10035, True, False))
+        self.assertEqual(failure_connection.getsockopt_calls, 1)
+        self.assertIs(failure_observation["timeout_so_error_attempted"], True)
+        self.assertIs(failure_observation["timeout_so_error_read"], False)
+        self.assertEqual(failure_observation["timeout_so_error_code"], -1)
+        self.assertEqual(failure_observation["timeout_so_error_api_error"], 10022)
+        self.assertIs(failure_observation["so_error_attempted"], False)
+        self.assertEqual(failure_observation["connect_ex_code"], 10035)
+        self.assertEqual(failure_observation["select_state"], "timeout")
 
         unsupported = _ConnectExSocket(
             result=10035, completion="timeout", tcp_info_supported=False,
@@ -7034,6 +7093,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'select_state':'not_started','write_ready':False,'exception_ready':False,"
                     "'select_api_error':-1,'so_error_attempted':False,'so_error_read':False,"
                     "'so_error_code':-1,'so_error_api_error':-1,"
+                    "'timeout_so_error_attempted':False,'timeout_so_error_read':False,"
+                    "'timeout_so_error_code':-1,'timeout_so_error_api_error':-1,"
                     "'tcp_info_status':'not_attempted','tcp_state':'not_available',"
                     "'tcp_info_api_error':-1,'tcp_info_bytes_returned':-1,"
                     "'tcp_connection_time_ms':-1,'tcp_syn_retrans':-1}\n"
@@ -7070,6 +7131,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "                observation['select_api_error']=code\n"
                     "                return True,False,False,code,False,False\n"
                     "            if not writable and not exceptional:\n"
+                    "                # Diagnostic-only: SO_ERROR resets the socket error; this does not complete the pending connect.\n"
+                    "                observation['timeout_so_error_attempted']=True\n"
+                    "                try:\n"
+                    "                    timeout_error=bounded_error_code(connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR))\n"
+                    "                    observation['timeout_so_error_read']=True\n"
+                    "                    observation['timeout_so_error_code']=timeout_error\n"
+                    "                except Exception as exc:\n"
+                    "                    observation['timeout_so_error_api_error']=bounded_error_code(getattr(exc,'winerror',None))\n"
                     "                observation.update(tcp_info_diagnostic(connection))\n"
                     "                return True,False,False,code,True,False\n"
                     "            try:\n"
@@ -7745,11 +7814,25 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer IPv4 connect stages",
-                    summary["ipv4_network_stages"],
+                    {
+                        key: value
+                        for key, value in summary["ipv4_network_stages"].items()
+                        if key not in {
+                            "tcp_info_api_error", "tcp_info_bytes_returned",
+                            "tcp_connection_time_ms",
+                        }
+                    },
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer IPv6 connect stages",
-                    summary["ipv6_network_stages"],
+                    {
+                        key: value
+                        for key, value in summary["ipv6_network_stages"].items()
+                        if key not in {
+                            "tcp_info_api_error", "tcp_info_bytes_returned",
+                            "tcp_connection_time_ms",
+                        }
+                    },
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer write canary fingerprints",

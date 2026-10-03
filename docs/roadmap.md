@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R2 Windows pending-connect 超时诊断候选（2026-10-03，本机测试待全量预检/新 SHA CI）：**Reviewer test-only 探针在 `connect_ex=10035` 后等待 `select` 超时，现对同一 socket 仅读取一次 `SO_ERROR`，独立记录尝试/读取/返回码/API 错误；始终保留 `connect_ex=10035`、`select=timeout` 与原 pending/未分类返回。模拟覆盖 `SO_ERROR=0/10035/10013/10061` 及 API 失败；包括读到 `10013` 仍不算 DENY。读取会 reset socket error，故只作诊断；微软未定义 pending timeout 后的值可替代 readiness completion。Actions 单条 notice 仍限 500 字符，少数低优先级 TCP 数值只从短 notice 省略，完整固定字段仍保留在受限 stage receipt。**不变：**IPv4 与 IPv6 均须由连接终态满足 `10013`；不修改 R2/R3 readiness，不开放 Windows 自动模式。详情及 Codex / Anthropic 对照见[持续竞品对照](./agent-landscape-live.md)与[R2 Windows 计划](./nbl/plans/2026-09-25-r2-windows-appcontainer.md)。
+
 - **R3 回执 I/O 与摘要内存边界刷新（2026-10-03，本机聚焦组与全仓 preflight 通过，新 SHA CI 待验）：**在 receipt 输入/输出预算之上，将 `output_sha256` 改为增量 UTF-8 SHA-256，每次编码不超过 64 KiB；生成独立 task receipt 前先预检 fingerprint 序列化字段，超限早拒绝。累计 receipt 读取逐文件收紧到剩余总额度（只允许额外读取 1 字节判超限）；两个新增和一项强化的边界检查 RED→GREEN。自验证、证据包、R3 回归联合 181 项通过、1 项跳过，七项边界测试连续 20 轮通过。全仓 preflight 三道门与 compileall、竞品、治理、站点、diff 检查通过。R2 Windows Reviewer 的双栈 `10013` 硬门及 readiness 不变。
 
 - **R3 正文读取预算验收刷新（2026-10-03）：**5 项新增定向回归、`tests.test_evidence` 70 项及当前工作树 `scripts/preflight.py` 三道门全部通过；Python compileall、开源对照/治理/站点与 diff 检查通过。本机验收不等同新 SHA 跨平台原生 CI；该提交的远端状态将在推送后单独确认。
