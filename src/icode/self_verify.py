@@ -49,6 +49,15 @@ FAILURE_CATEGORIES = (
     FAILURE_SIDE_EFFECT_UNKNOWN,
 )
 
+# This describes the evidence format's coverage, not an observation made by the
+# verifier. Keep the values conservative until a separately validated trace
+# recorder can prove a narrower, explicit set of side effects.
+_VERIFICATION_RECEIPT_COVERAGE = {
+    "record_scope": "verification_result_snapshot",
+    "session_replay": "not_included",
+    "unrecorded_side_effects": "not_proven",
+}
+
 # 可自动重试 / 修复的类别；其余要求人工或停止（fail-safe）
 AUTO_REPAIRABLE_CATEGORIES = {FAILURE_CODE, FAILURE_TEST, FAILURE_MODEL_CAPABILITY}
 
@@ -161,10 +170,12 @@ class VerificationEvidence:
         """序列化成证据包 verifications.json 可用的回执（不含输出正文/敏感参数）。
 
         只放输出摘要与绑定事实；输出正文永不进回执，避免把大输出或
-        敏感内容写进证据包。
+        敏感内容写进证据包。coverage 是格式声明：回执只代表验证结果快照，
+        不等于完整会话回放或未记录副作用审计。
         """
         return {
             "kind": "verification",
+            "coverage": dict(_VERIFICATION_RECEIPT_COVERAGE),
             "step": self.step,
             "attempt": self.attempt,
             "verify_kind": self.kind,

@@ -726,6 +726,8 @@ python verify.py <本包目录>
 ## 诚实边界（请务必阅读）
 
 - 本包证明的是「**过程记录自洽且未被篡改**」，**不是**「代码绝对正确」。
+- task 回执仅记录验证结果快照；`coverage.session_replay=not_included`，不包含完整会话事件回放，
+  `coverage.unrecorded_side_effects=not_proven`，不证明过程中不存在未记录副作用。
 - `pack_digest` 需要**外部渠道锚定**（如发布到工单系统、邮件、日志留存）才具备抗抵赖力，
   否则持有整包的人可以整体重签。
 - 当前权限模型是**应用层限制，不是内核级沙箱**；沙箱在路线图 Phase 5 之前并不存在，

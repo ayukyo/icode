@@ -377,6 +377,9 @@ class TestEvidencePack(unittest.TestCase):
                 "过程记录自洽且未被篡改",
                 "不是",
                 "应用层限制，不是内核级沙箱",
+                "task 回执仅记录验证结果快照",
+                "不包含完整会话事件回放",
+                "不证明过程中不存在未记录副作用",
                 "外部渠道锚定",
                 "pack_digest",
             ):
@@ -412,6 +415,11 @@ class TestEvidencePack(unittest.TestCase):
             self.assertEqual(receipts[0]["initial_worktree_fingerprint"], "initial-tree")
             self.assertEqual(receipts[0]["tested_worktree_fingerprint"], "tested-tree")
             self.assertEqual(receipts[0]["artifact_hashes"], {"calc.py": "abc"})
+            self.assertEqual(receipts[0]["coverage"], {
+                "record_scope": "verification_result_snapshot",
+                "session_replay": "not_included",
+                "unrecorded_side_effects": "not_proven",
+            })
             self.assertTrue(receipts[0]["fingerprint"])
             self.assertNotIn("AssertionError: boom", json.dumps(receipts[0]))
 
@@ -552,6 +560,14 @@ class TestEvidencePack(unittest.TestCase):
             )
             self.assertEqual(
                 packed["receipts"][0]["result_commit_tree_status"], "matched",
+            )
+            self.assertEqual(
+                packed["receipts"][0]["coverage"]["session_replay"],
+                "not_included",
+            )
+            self.assertEqual(
+                packed["receipts"][0]["coverage"]["unrecorded_side_effects"],
+                "not_proven",
             )
             self.assertEqual(verify_pack(pack_path), [])
 

@@ -216,6 +216,11 @@ class EvidenceFingerprintTestCase(unittest.TestCase):
         self.assertEqual(receipt["command"], ["python", "-m", "unittest"])
         self.assertEqual(receipt["environment_fingerprint"], "env-1")
         self.assertEqual(receipt["artifact_hashes"], {"calc.py": "abc"})
+        self.assertEqual(receipt["coverage"], {
+            "record_scope": "verification_result_snapshot",
+            "session_replay": "not_included",
+            "unrecorded_side_effects": "not_proven",
+        })
         self.assertTrue(receipt["output_sha256"])
         self.assertEqual(receipt["fingerprint"], evidence_fingerprint(evidence))
         # 回执不得包含输出正文或敏感内容
