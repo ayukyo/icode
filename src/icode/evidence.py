@@ -706,10 +706,27 @@ def _contract_snapshot(gates_json: Path, steps: set[str]) -> dict:
     except ValueError:
         raise ContractError("gates.json 超过证据包导出的安全输入上限") from None
     try:
-        raw_contracts = json.loads(gates_bytes.decode("utf-8"))
+        gates_text = gates_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ContractError("契约文件不是有效 UTF-8") from None
+    try:
+        raw_contracts = json.loads(gates_text)
     except json.JSONDecodeError as exc:
         raise ContractError(f"契约文件不是合法 JSON：{exc}") from None
-    contracts = ContractSet(raw_contracts)
+    except RecursionError:
+        raise ContractError("契约文件 JSON 嵌套超过解析上限") from None
+    except ValueError:
+        # Python may reject JSON integers above its configured digit limit.
+        raise ContractError("契约文件 JSON 数据超出解析限制") from None
+    if not isinstance(raw_contracts, dict):
+        raise ContractError("契约文件结构无效（根节点必须是对象）")
+    try:
+        contracts = ContractSet(raw_contracts)
+    except ContractError:
+        raise
+    except (AttributeError, TypeError, ValueError, RecursionError):
+        # ContractSet expects nested mappings/sequences from the external gates file.
+        raise ContractError("契约文件结构无效") from None
     out: dict[str, dict] = {}
     for step in sorted(steps):
         if not contracts.has(step):

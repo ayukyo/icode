@@ -123,6 +123,78 @@ class TestEvidencePack(unittest.TestCase):
                 marker.read_text(encoding="utf-8"), "preserve previous evidence pack\n",
             )
 
+    def test_evidence畸形gates_json返回用户错误且保留旧包(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from icode.cli import main
+
+        deep_json = (
+            b'{"execution_model":{"step_contracts":{"plan":{"required_checks":'
+            + b"[" * 1200 + b"0" + b"]" * 1200 + b"}}}}"
+        )
+        oversized_integer = (
+            b'{"schema_version":' + b"9" * 5000 + b',"execution_model":{}}'
+        )
+        cases = (
+            ("invalid-utf8", b"\xff", "不是有效 UTF-8"),
+            ("invalid-json", b"{", "不是合法 JSON"),
+            ("non-object-root", b"[]", "结构无效"),
+            (
+                "invalid-step-contracts",
+                b'{"execution_model":{"step_contracts":7}}',
+                "结构无效",
+            ),
+            (
+                "invalid-inputs",
+                b'{"execution_model":{"step_contracts":{"plan":{"inputs":7}}}}',
+                "结构无效",
+            ),
+            ("deeply-nested", deep_json, "嵌套超过解析上限"),
+            ("oversized-integer", oversized_integer, "超出解析限制"),
+        )
+
+        for name, contents, expected_error in cases:
+            with self.subTest(gates_json=name), temp_workspace() as ws:
+                ticket = make_finished_plan_ticket(self.settings, ws / "work")
+                gates_json = ws / "gates.json"
+                gates_json.write_bytes(contents)
+                pack_path = ws / "pack"
+                pack_path.mkdir()
+                marker = pack_path / "keep.txt"
+                marker.write_bytes(b"keep existing evidence pack")
+                stdout = StringIO()
+                stderr = StringIO()
+
+                with (
+                    patch(
+                        "icode.cli.load_settings",
+                        return_value=SimpleNamespace(gates_json=gates_json),
+                    ),
+                    redirect_stdout(stdout),
+                    redirect_stderr(stderr),
+                ):
+                    try:
+                        exit_code = main([
+                            "evidence", "--ticket", str(ticket), "--dest", str(pack_path),
+                        ])
+                    except Exception as exc:  # noqa: BLE001 - assert CLI contains input failures
+                        self.fail(
+                            f"{name}: CLI leaked {type(exc).__name__}: {exc}; "
+                            f"stderr={stderr.getvalue()!r}"
+                        )
+
+                self.assertEqual(
+                    exit_code, 2,
+                    f"{name}: stdout={stdout.getvalue()!r}, stderr={stderr.getvalue()!r}",
+                )
+                self.assertIn(expected_error, stderr.getvalue())
+                self.assertNotIn("Traceback", stderr.getvalue())
+                self.assertEqual(marker.read_bytes(), b"keep existing evidence pack")
+                self.assertEqual(list(pack_path.iterdir()), [marker])
+
     def test_导出器限制contracts快照UTF8输出字节并保留旧包(self) -> None:
         from unittest.mock import patch
 

@@ -2,6 +2,10 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R3 证据包 `gates.json` 畸形输入错误映射（2026-10-04；TDD RED→GREEN，本机验收通过，新 SHA CI 待验）：**证据包导出读取可选契约文件时，非法 UTF-8、非对象 JSON 根、部分错误嵌套类型、超深 JSON 与超出 Python 整数解析位数限制，会逃逸为 traceback；合法语法错误原已映射。现在只在证据快照边界将这些解析/结构输入错误转换为既有 `ContractError`，不改通用 `ContractSet.load()`、JSON 合法输入语义、MCP 或运行时行为。7 类 CLI 负例均验证退出码 2、无 traceback、旧包 marker 不变；非法 JSON 正例保留既有提示。`tests.test_evidence tests.test_contracts tests.test_cli` 共 104 项通过；全仓 `scripts/preflight.py` 3/3、compileall、竞品排期、治理、站点与 `git diff --check` 均通过。当前 8 MiB 输入上限仍在，未新增结构标点/RSS/CPU 预算；更复杂的契约解析内存放大不在本切片承诺内。上游仅采纳根类型显式校验与解析错误分类，不复制代码/新增依赖；R2 Windows 网络硬门与整体 readiness 不变。
+
+- **提交 `8f05b3e` 的 CI #583 结果（2026-10-04）：**Python 3.11/3.12、Linux/macOS workspace 等已完成子门正常；[主 CI #583](https://github.com/ayukyo/icode/actions/runs/37153077092) 仍因 Windows x64 [Reviewer](https://github.com/ayukyo/icode/actions/runs/37153077092/job/111290769657) 与 ARM64 [Reviewer](https://github.com/ayukyo/icode/actions/runs/37153077092/job/111290769464) 网络硬门失败。两族都是 IPv4/IPv6 `connect_ex=10035 → wait timeout`、没有 `FD_CONNECT` 或终态 `10013`；x64 runner 侧 WFP observer 不可用，ARM64 observer ready 但没有匹配事件，两个 CAB 都没有精确 `wfpdiag.xml`。这些事实不能归因某个 filter 或记作 DENY；不写策略、不放宽门。R2 自动模式和 R2/R3 readiness 继续关闭。
+
 - **`contracts.json` 输出预算本机验收完成（2026-10-04）：**TDD 边界/格式定向组 4 项与 `tests.test_evidence tests.test_contracts` 95 项通过；compileall、全仓 `scripts/preflight.py` 3/3、治理、站点、竞品清单和 diff 检查均通过。新 SHA 远端 CI 待验；当前通过仅关闭本地切片，不是整体 R3 readiness。
 
 - **提交 `6f285a4` 的 CI #582 结果（2026-10-04）：**Python 3.11/3.12、Linux/macOS workspace、Docker/Podman Reviewer 和其余常规子门成功；[CI #582](https://github.com/ayukyo/icode/actions/runs/37152033520) 因 Windows x64 [Reviewer](https://github.com/ayukyo/icode/actions/runs/37152033520/job/111287713886) 与 ARM64 [Reviewer](https://github.com/ayukyo/icode/actions/runs/37152033520/job/111287713846) 未达网络硬门而 overall failure。双栈均 `10035 → wait timeout`、无 `FD_CONNECT`、无 `10013`；WFP observer 无匹配事件且 CAB 无精确 `wfpdiag.xml`，不推断具体过滤器原因，不改网络策略/门槛。官网 [#582](https://github.com/ayukyo/icode/actions/runs/37152033559) success；R2/R3 readiness 与自动模式保持关闭。
