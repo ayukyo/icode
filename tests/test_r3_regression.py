@@ -1590,6 +1590,127 @@ class TestModelReviewerExecution(unittest.TestCase):
             self.assertEqual(submit_schema["parameters"]["required"], ["summary", "findings"])
             self.assertFalse(submit_schema["parameters"]["additionalProperties"])
 
+    def test_Reviewer耗尽原读取回合后仍有预留回合提交审查(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.loop import LoopConfig
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            readme = dst / "README.md"
+            calc = dst / "calc.py"
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [
+                    {"id": "executor-readme", "name": "write_file", "arguments": {
+                        "path": "README.md",
+                        "content": readme.read_text(encoding="utf-8") + "\n# review budget test\n",
+                    }},
+                    {"id": "executor-calc", "name": "write_file", "arguments": {
+                        "path": "calc.py",
+                        "content": calc.read_text(encoding="utf-8") + "\n# review budget test\n",
+                    }},
+                ]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-readme", "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "review-calc", "name": "read_file",
+                    "arguments": {"path": "calc.py"},
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "review-submit", "name": "submit_review", "arguments": {
+                        "summary": "Reviewed both changed files.", "findings": [],
+                    },
+                }]},
+                "review submitted",
+            ])
+
+            report = run_task(
+                self.settings,
+                backend=backend,
+                workspace=dst,
+                loop_config=LoopConfig(max_turns=2, max_tool_calls_per_turn=8),
+            )
+
+        self.assertTrue(report.ok, report.render())
+        reviewer_calls = [
+            call for call in backend.calls
+            if call["messages"]
+            and call["messages"][0].get("content", "").startswith("你是独立代码审查代理")
+        ]
+        self.assertEqual(
+            [call["tool_choice"] for call in reviewer_calls],
+            ["read_file", "read_file", "submit_review", "auto"],
+        )
+        self.assertEqual(
+            [turn.index for turn in report.reviewer_loop.turns], [1, 2, 3, 4],
+        )
+        self.assertEqual(set(report.changed_files), {"README.md", "calc.py"})
+
+    def test_Reviewer未在读取额度内读全文件时不消耗提交预留且失败关闭(self) -> None:
+        from icode.backends import FakeBackend
+        from icode.loop import LoopConfig
+        from icode.runner import prepare_workspace, run_task
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            readme = dst / "README.md"
+            calc = dst / "calc.py"
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [
+                    {"id": "executor-readme", "name": "write_file", "arguments": {
+                        "path": "README.md",
+                        "content": readme.read_text(encoding="utf-8") + "\n# reserve test\n",
+                    }},
+                    {"id": "executor-calc", "name": "write_file", "arguments": {
+                        "path": "calc.py",
+                        "content": calc.read_text(encoding="utf-8") + "\n# reserve test\n",
+                    }},
+                    {"id": "executor-extra", "name": "write_file", "arguments": {
+                        "path": "extra.py", "content": "VALUE = 1\n",
+                    }},
+                ]},
+                "executor finished",
+                {"content": "", "tool_calls": [{
+                    "id": "review-readme", "name": "read_file",
+                    "arguments": {"path": "README.md"},
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "review-calc", "name": "read_file",
+                    "arguments": {"path": "calc.py"},
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "review-extra", "name": "read_file",
+                    "arguments": {"path": "extra.py"},
+                }]},
+            ])
+
+            report = run_task(
+                self.settings,
+                backend=backend,
+                workspace=dst,
+                loop_config=LoopConfig(max_turns=2, max_tool_calls_per_turn=8),
+            )
+
+        self.assertFalse(report.ok)
+        self.assertFalse(report.review.model_reviewed)
+        self.assertEqual(
+            report.reviewer_loop.stop_reason,
+            "required_tool_turn_reserve_exhausted",
+        )
+        self.assertEqual(
+            [turn.index for turn in report.reviewer_loop.turns], [1, 2],
+        )
+        self.assertEqual(
+            [invocation.arguments["path"]
+             for turn in report.reviewer_loop.turns
+             for invocation in turn.invocations],
+            ["README.md", "calc.py"],
+            "保留给 submit_review 的回合不可继续消耗来读取更多文件",
+        )
+
     def test_审查模型请求读取工单或尝试写执行时失败关闭(self) -> None:
         from icode.backends import FakeBackend
         from icode.runner import prepare_workspace, run_task

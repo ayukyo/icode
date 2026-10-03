@@ -40,6 +40,8 @@ class LoopConfig:
     max_output_tokens: int = 2048
     tool_choice: str = "auto"
     tool_choice_after_read: str | None = None
+    # 已读全白名单后，保留给必需工具提交、纠正和结束的回合。
+    required_tool_turn_reserve: int = 0
 
 
 @dataclass
@@ -122,6 +124,14 @@ class AgentLoop:
                 raise ValueError("tool_choice_after_read 必须是已注册工具名")
             if not self.guard.scope.allowed_read_files:
                 raise ValueError("tool_choice_after_read 需要精确文件读取白名单")
+        if (type(self.config.required_tool_turn_reserve) is not int
+                or self.config.required_tool_turn_reserve < 0):
+            raise ValueError("required_tool_turn_reserve 必须是非负整数")
+        if self.config.required_tool_turn_reserve:
+            if self.config.tool_choice_after_read is None:
+                raise ValueError("required_tool_turn_reserve 需要 tool_choice_after_read")
+            if self.config.required_tool_turn_reserve >= self.config.max_turns:
+                raise ValueError("required_tool_turn_reserve 必须小于 max_turns")
         self.on_event = on_event or (lambda kind, payload: None)
         # 每个回合结束后回调（用于写检查点；不得在此抛错中断循环）
         self.on_turn = on_turn
@@ -273,6 +283,17 @@ class AgentLoop:
         for index in range(1, self.config.max_turns + 1):
             if self.budget.verdict == "over_budget":
                 stop_reason = "budget_exceeded"
+                break
+            if (
+                self.config.required_tool_turn_reserve
+                and self.config.tool_choice_after_read is not None
+                and tool_choice == self.config.tool_choice
+                and index > (
+                    self.config.max_turns - self.config.required_tool_turn_reserve
+                )
+            ):
+                stop_reason = "required_tool_turn_reserve_exhausted"
+                error = "Reviewer 未在只读回合额度内完整读取改动；保留提交回合并失败关闭"
                 break
 
             try:

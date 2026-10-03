@@ -62,6 +62,8 @@ from .workspace import WorkspaceSession
 from .workspace_snapshot import worktree_git_tree_oid as _worktree_git_tree_oid
 
 _NO_TESTS_SUMMARY = re.compile(r"(?m)^Ran 0 tests? in\b")
+# Submit, one missing-tool retry, one contract correction, then natural completion.
+REVIEWER_SUBMIT_TURN_RESERVE = 4
 
 # 靶场默认位置（相对仓库根）
 FIXTURES_ROOT_REL = Path("tests") / "fixtures"
@@ -1542,7 +1544,11 @@ def _run_task_reviewer(
         approver=DenyAllApprover(),
         budget=budget_tracker,
         config=replace(
-            loop_config, tool_choice="read_file", tool_choice_after_read="submit_review",
+            loop_config,
+            max_turns=loop_config.max_turns + REVIEWER_SUBMIT_TURN_RESERVE,
+            tool_choice="read_file",
+            tool_choice_after_read="submit_review",
+            required_tool_turn_reserve=REVIEWER_SUBMIT_TURN_RESERVE,
         ),
     )
     from .self_verify import evidence_fingerprint

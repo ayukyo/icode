@@ -492,6 +492,39 @@ class TestLoopBounds(unittest.TestCase):
         self.assertEqual(r.stop_reason, "max_turns")
         self.assertEqual(len(r.turns), 3)
 
+    def test_必需工具回合预留必须绑定读取后工具且不可耗尽(self) -> None:
+        with self.assertRaisesRegex(ValueError, "需要 tool_choice_after_read"):
+            _loop(
+                ["done"], self.root,
+                config=LoopConfig(max_turns=5, required_tool_turn_reserve=1),
+            )
+
+        source = self.root / "reviewed.py"
+        source.write_text("value = 1\n", encoding="utf-8")
+        registry = default_registry()
+        registry.register(Tool(
+            name="submit_review",
+            description="test-only structured output",
+            parameters={"type": "object", "properties": {}, "required": [],
+                        "additionalProperties": False},
+            handler=lambda _ctx: ToolResult(True, "valid", {}),
+        ))
+        with self.assertRaisesRegex(ValueError, "必须小于 max_turns"):
+            AgentLoop(
+                backend=FakeBackend(["done"]),
+                registry=registry,
+                guard=Guard(Scope(
+                    workspace_root=self.root, allowed_read_files=(source,),
+                )),
+                ctx=ToolContext(root=self.root),
+                config=LoopConfig(
+                    max_turns=1,
+                    tool_choice="read_file",
+                    tool_choice_after_read="submit_review",
+                    required_tool_turn_reserve=1,
+                ),
+            )
+
     def test_单回合工具调用数受上限约束(self) -> None:
         many = {"content": "", "tool_calls": [
             {"id": f"c{i}", "name": "write_file", "arguments": {"path": f"g{i}.py", "content": "x"}}

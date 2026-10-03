@@ -42,6 +42,18 @@ enum RunnerProbeExitCode {
     RUNNER_PROBE_PATH_DESTINATION_NOT_MISSING = 11
 };
 
+enum WfpCollectorPreflightExitCode {
+    COLLECTOR_PREFLIGHT_INVALID_ARGUMENTS = 12,
+    COLLECTOR_PREFLIGHT_INVALID_PROFILE_NAME = 13,
+    COLLECTOR_PREFLIGHT_INVALID_PORT = 14,
+    COLLECTOR_PREFLIGHT_INVALID_PATHS = 15,
+    COLLECTOR_PREFLIGHT_PATH_FULL_PATH_FAILED = 16,
+    COLLECTOR_PREFLIGHT_PATH_LEAF_NAME_MISMATCH = 17,
+    COLLECTOR_PREFLIGHT_PATH_TEMP_ROOT_REJECTED = 18,
+    COLLECTOR_PREFLIGHT_PATH_PARENT_MISMATCH = 19,
+    COLLECTOR_PREFLIGHT_PATH_DESTINATION_NOT_MISSING = 20
+};
+
 enum ProbePathValidation {
     PROBE_PATHS_SAFE = 0,
     PROBE_PATHS_PROFILE_NAME_INVALID = 1,
@@ -1315,15 +1327,40 @@ int wmain(int argc, wchar_t **argv) {
             argv[4], argv[5], argv[6]
         );
     }
-    if (argc == 7 &&
+    if (argc >= 2 &&
         wcscmp(argv[1], L"--collect-ipv6-loopback-wait-profile") == 0) {
-        if (!is_generated_profile_name(argv[2]) ||
-            !parse_port(argv[3], &remote_port) ||
-            argv[4][0] == L'\0' || argv[5][0] == L'\0' || argv[6][0] == L'\0' ||
+        if (argc != 7) {
+            return COLLECTOR_PREFLIGHT_INVALID_ARGUMENTS;
+        }
+        if (!is_generated_profile_name(argv[2])) {
+            return COLLECTOR_PREFLIGHT_INVALID_PROFILE_NAME;
+        }
+        if (!parse_port(argv[3], &remote_port)) {
+            return COLLECTOR_PREFLIGHT_INVALID_PORT;
+        }
+        if (argv[4][0] == L'\0' || argv[5][0] == L'\0' || argv[6][0] == L'\0' ||
             _wcsicmp(argv[4], argv[5]) == 0 || _wcsicmp(argv[4], argv[6]) == 0 ||
-            _wcsicmp(argv[5], argv[6]) == 0 ||
-            !probe_paths_are_safe(argv[2], argv[4], argv[5], argv[6])) {
-            return 2;
+            _wcsicmp(argv[5], argv[6]) == 0) {
+            return COLLECTOR_PREFLIGHT_INVALID_PATHS;
+        }
+        path_status = validate_probe_paths(argv[2], argv[4], argv[5], argv[6]);
+        switch (path_status) {
+        case PROBE_PATHS_SAFE:
+            break;
+        case PROBE_PATHS_PROFILE_NAME_INVALID:
+            return COLLECTOR_PREFLIGHT_INVALID_PROFILE_NAME;
+        case PROBE_PATHS_FULL_PATH_FAILED:
+            return COLLECTOR_PREFLIGHT_PATH_FULL_PATH_FAILED;
+        case PROBE_PATHS_LEAF_NAME_MISMATCH:
+            return COLLECTOR_PREFLIGHT_PATH_LEAF_NAME_MISMATCH;
+        case PROBE_PATHS_TEMP_ROOT_REJECTED:
+            return COLLECTOR_PREFLIGHT_PATH_TEMP_ROOT_REJECTED;
+        case PROBE_PATHS_PARENT_MISMATCH:
+            return COLLECTOR_PREFLIGHT_PATH_PARENT_MISMATCH;
+        case PROBE_PATHS_DESTINATION_NOT_MISSING:
+            return COLLECTOR_PREFLIGHT_PATH_DESTINATION_NOT_MISSING;
+        default:
+            return COLLECTOR_PREFLIGHT_INVALID_PATHS;
         }
         return run_collector(
             argv[2], 0, remote_port, TRUE, TRUE, TRUE,

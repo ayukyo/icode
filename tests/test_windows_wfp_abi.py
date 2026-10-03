@@ -7,6 +7,7 @@ import importlib.util
 import os
 import sys
 import unittest
+from pathlib import Path
 
 
 _EXPECTED_64BIT_WINDOWS_LAYOUT = {
@@ -258,6 +259,55 @@ class TestWindowsWfpAbi(unittest.TestCase):
             with self.subTest(path_status=path_status):
                 self.assertIn(f"case {path_status}:", runner_mode)
                 self.assertIn(f"return {exit_code};", runner_mode)
+
+    def test_wait_profile_collector_reports_fixed_preflight_exit_codes(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        source = (repository_root / "native/windows/icode_wfp_event_probe.c").read_text(
+            encoding="utf-8",
+        )
+        expected_codes = {
+            "COLLECTOR_PREFLIGHT_INVALID_ARGUMENTS": 12,
+            "COLLECTOR_PREFLIGHT_INVALID_PROFILE_NAME": 13,
+            "COLLECTOR_PREFLIGHT_INVALID_PORT": 14,
+            "COLLECTOR_PREFLIGHT_INVALID_PATHS": 15,
+            "COLLECTOR_PREFLIGHT_PATH_FULL_PATH_FAILED": 16,
+            "COLLECTOR_PREFLIGHT_PATH_LEAF_NAME_MISMATCH": 17,
+            "COLLECTOR_PREFLIGHT_PATH_TEMP_ROOT_REJECTED": 18,
+            "COLLECTOR_PREFLIGHT_PATH_PARENT_MISMATCH": 19,
+            "COLLECTOR_PREFLIGHT_PATH_DESTINATION_NOT_MISSING": 20,
+        }
+        for name, code in expected_codes.items():
+            with self.subTest(name=name):
+                self.assertIn(f"{name} = {code}", source)
+
+        branch_start = source.index(
+            'if (argc >= 2 &&\n'
+            '        wcscmp(argv[1], L"--collect-ipv6-loopback-wait-profile") == 0)'
+        )
+        branch_end = source.index("\n    if (argc != 7 ||", branch_start)
+        branch = source[branch_start:branch_end]
+        self.assertIn("argc != 7", branch)
+        self.assertIn("COLLECTOR_PREFLIGHT_INVALID_ARGUMENTS", branch)
+        self.assertIn("COLLECTOR_PREFLIGHT_INVALID_PROFILE_NAME", branch)
+        self.assertIn("COLLECTOR_PREFLIGHT_INVALID_PORT", branch)
+        self.assertIn("COLLECTOR_PREFLIGHT_INVALID_PATHS", branch)
+        self.assertIn(
+            "path_status = validate_probe_paths(argv[2], argv[4], argv[5], argv[6]);",
+            branch,
+        )
+        for path_status, exit_code in (
+            ("PROBE_PATHS_FULL_PATH_FAILED", "COLLECTOR_PREFLIGHT_PATH_FULL_PATH_FAILED"),
+            ("PROBE_PATHS_LEAF_NAME_MISMATCH", "COLLECTOR_PREFLIGHT_PATH_LEAF_NAME_MISMATCH"),
+            ("PROBE_PATHS_TEMP_ROOT_REJECTED", "COLLECTOR_PREFLIGHT_PATH_TEMP_ROOT_REJECTED"),
+            ("PROBE_PATHS_PARENT_MISMATCH", "COLLECTOR_PREFLIGHT_PATH_PARENT_MISMATCH"),
+            (
+                "PROBE_PATHS_DESTINATION_NOT_MISSING",
+                "COLLECTOR_PREFLIGHT_PATH_DESTINATION_NOT_MISSING",
+            ),
+        ):
+            with self.subTest(path_status=path_status):
+                self.assertIn(f"case {path_status}:", branch)
+                self.assertIn(f"return {exit_code};", branch)
 
     def test_sdk_compile_failure_classification_does_not_return_raw_output(self) -> None:
         probe = _probe_module(self)

@@ -648,6 +648,7 @@ jobs:
           $runnerWfpObserverMarkerState = 'not_started'
           $runnerWfpObserverProcessState = 'not_started'
           $runnerWfpObserverHelperExitCode = 'not_exited'
+          $runnerWfpObserverPreflightState = 'not_checked'
           $runnerWfpReceiptState = 'not_checked'
           $runnerWfpCollectionState = 'unknown'
           $runnerWfpCandidateEvent = 'inconclusive'
@@ -1274,13 +1275,27 @@ jobs:
                         $observerExitCode -ge 0 -and $observerExitCode -le 65535
                       ) { [string]$observerExitCode } else { 'out_of_range' }
                     }
+                    $runnerWfpObserverPreflightState = switch ($observerExitCode) {
+                      12 { 'invalid_arguments' }
+                      13 { 'invalid_profile_name' }
+                      14 { 'invalid_port' }
+                      15 { 'invalid_paths' }
+                      16 { 'path_full_path_failed' }
+                      17 { 'path_leaf_name_mismatch' }
+                      18 { 'path_temp_root_rejected' }
+                      19 { 'path_parent_mismatch' }
+                      20 { 'path_destination_not_missing' }
+                      default { 'not_preflight_failure' }
+                    }
                   } catch {
                     $runnerWfpObserverProcessState = 'exit_unknown'
                     $runnerWfpObserverHelperExitCode = 'unavailable'
+                    $runnerWfpObserverPreflightState = 'unavailable'
                   }
                 } else {
                   $runnerWfpObserverProcessState = 'running'
                   $runnerWfpObserverHelperExitCode = 'not_exited'
+                  $runnerWfpObserverPreflightState = 'not_exited'
                 }
 
                 if (-not (Test-Path -LiteralPath $runnerWfpObserverResultPath -PathType Leaf)) {
@@ -1647,7 +1662,7 @@ jobs:
               }
             }
             Write-Output '::group::Windows WFP supplemental capture states'
-            Write-Output "preflight=$wfpCapturePreflight archive_member_match_count=$wfpArchiveMemberMatchCount"
+            Write-Output "observer_preflight=$runnerWfpObserverPreflightState capture_preflight=$wfpCapturePreflight archive_member_match_count=$wfpArchiveMemberMatchCount"
             Write-Output '::endgroup::'
             Write-Output "::notice title=Windows WFP capture and runner observer::observer=$runnerWfpObserverStatus collection=$runnerWfpCollectionState event=$runnerWfpCandidateEvent matched_capability_drops=$runnerWfpMatchedCapabilityDropCount cleanup=$runnerWfpCleanupState marker=$runnerWfpObserverMarkerState process=$runnerWfpObserverProcessState helper_rc=$runnerWfpObserverHelperExitCode receipt=$runnerWfpReceiptState capture_status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode archive_member_status=$wfpArchiveMemberStatus archive_member_count=$wfpArchiveMemberCount archive_xml_member_count=$wfpArchiveXmlMemberCount archive_wfpdiag_xml_member_count=$wfpArchiveWfpdiagXmlMemberCount"
             foreach ($name in $environmentNames) {
