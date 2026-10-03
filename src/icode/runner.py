@@ -25,9 +25,10 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Callable
+from typing import BinaryIO, Callable
 
 from .approvals import Approver, DenyAllApprover
 from .artifact_broker import ArtifactAccessError, ArtifactBroker
@@ -53,13 +54,29 @@ from .self_verify import (
     environment_fingerprint,
 )
 from .tools import Tool, ToolContext, ToolRegistry, ToolResult, default_registry
+from .workspace import WorkspaceSession
 from .workspace_snapshot import changed_files as _changed
 from .workspace_snapshot import diff_fingerprint as _diff_fingerprint
 from .workspace_snapshot import WorktreeTreeUnavailable
 from .workspace_snapshot import snapshot_fingerprint as _snapshot_fingerprint
 from .workspace_snapshot import snapshot_workspace as _snapshot
-from .workspace import WorkspaceSession
 from .workspace_snapshot import worktree_git_tree_oid as _worktree_git_tree_oid
+
+# Keep receipt-from's captured output aligned with the evidence pack's 8 MiB
+# verification JSON budget; overflow is drained but never turned into partial evidence.
+_MAX_VERIFICATION_OUTPUT_BYTES = 8 * 1024 * 1024
+_VERIFICATION_OUTPUT_READ_CHUNK_BYTES = 64 * 1024
+
+
+class VerificationOutputLimitError(RuntimeError):
+    """The independent verification output exceeded its receipt capture budget."""
+
+    def __init__(self, limit_bytes: int):
+        self.limit_bytes = limit_bytes
+        super().__init__(
+            f"独立验证输出超过安全上限（{limit_bytes:,} 字节），拒绝生成回执",
+        )
+
 
 _NO_TESTS_SUMMARY = re.compile(r"(?m)^Ran 0 tests? in\b")
 # Submit, one missing-tool retry, one contract correction, then natural completion.
@@ -273,13 +290,114 @@ def prepare_workspace(fixture: str, target: Path, *, repo_root: Path) -> Path:
     return dst
 
 
+def _run_unittest_with_bounded_output(
+    argv: list[str], *, workspace: Path, timeout: int, output_limit_bytes: int,
+) -> tuple[int, bytes, bytes]:
+    """Drain both child pipes while retaining at most the combined byte budget.
+
+    Once the budget is exceeded, continue draining so neither pipe can block the
+    test process, but the caller must reject the result instead of issuing a
+    receipt over partial output.
+    """
+    if type(output_limit_bytes) is not int or output_limit_bytes < 1:
+        raise ValueError("output_limit_bytes must be a positive integer")
+
+    proc = subprocess.Popen(  # noqa: S603 - argv 是固定 unittest 启动参数，shell=False
+        argv,
+        cwd=str(workspace),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=False,
+        bufsize=0,
+        shell=False,
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    stdout_chunks = bytearray()
+    stderr_chunks = bytearray()
+    captured_bytes = 0
+    exceeded = False
+    read_errors: list[Exception] = []
+    capture_lock = threading.Lock()
+
+    def drain(stream: BinaryIO, target: bytearray) -> None:
+        nonlocal captured_bytes, exceeded
+        try:
+            with stream:
+                while True:
+                    # Use unbuffered Popen pipes so each read drains currently
+                    # available bytes instead of waiting to fill a 64 KiB buffer.
+                    chunk = stream.read(_VERIFICATION_OUTPUT_READ_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    with capture_lock:
+                        available = max(0, output_limit_bytes - captured_bytes)
+                        keep = min(available, len(chunk))
+                        if keep:
+                            target.extend(chunk[:keep])
+                            captured_bytes += keep
+                        if keep != len(chunk):
+                            exceeded = True
+        except Exception as exc:  # noqa: BLE001 - a reader failure invalidates the evidence.
+            with capture_lock:
+                read_errors.append(exc)
+
+    readers = (
+        (threading.Thread(target=drain, args=(proc.stdout, stdout_chunks)), proc.stdout),
+        (threading.Thread(target=drain, args=(proc.stderr, stderr_chunks)), proc.stderr),
+    )
+    started_readers: list[threading.Thread] = []
+    started_streams: list[BinaryIO] = []
+    try:
+        for reader, stream in readers:
+            reader.start()
+            started_readers.append(reader)
+            started_streams.append(stream)
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        for reader in started_readers:
+            reader.join()
+        for _, stream in readers:
+            if stream not in started_streams:
+                stream.close()
+        raise
+
+    try:
+        return_code = proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        proc.wait()
+        for reader in started_readers:
+            reader.join()
+        exc.output = bytes(stdout_chunks)
+        exc.stderr = bytes(stderr_chunks)
+        raise
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        for reader in started_readers:
+            reader.join()
+        raise
+
+    for reader in started_readers:
+        reader.join()
+    if read_errors:
+        raise OSError("独立验证输出读取失败") from read_errors[0]
+    if exceeded:
+        raise VerificationOutputLimitError(output_limit_bytes)
+    return return_code, bytes(stdout_chunks), bytes(stderr_chunks)
+
+
 def run_unittest(
     workspace: Path, *, timeout: int = 180, sandbox: Sandbox | None = None,
+    output_limit_bytes: int | None = None,
 ) -> tuple[int, str]:
     """**由运行时自己**跑测试取退出码（模型自述不算证据）。
 
     调用方若正在执行隔离任务，必须传入同一 sandbox，避免测试代码借验证器
     绕过工作区文件与网络边界。独立 CLI 验证等既有调用可继续不传 sandbox。
+    显式设置 output_limit_bytes 时，stdout/stderr 共用该原始字节预算；超限会
+    排空剩余管道后抛出 VerificationOutputLimitError，不返回部分输出。
     """
     python = sys.executable
     if sandbox is not None:
@@ -294,17 +412,28 @@ def run_unittest(
     argv = [python, "-B", "-m", "unittest"]
     if sandbox is not None:
         argv = sandbox.wrap(argv, workspace=workspace, network=False)
-    proc = subprocess.run(  # noqa: S603 - 参数列表 + shell=False
-        argv,
-        cwd=str(workspace), capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=timeout, shell=False,
-    )
-    output = (proc.stdout or "") + (proc.stderr or "")
-    if _NO_TESTS_SUMMARY.search(output) and proc.returncode == 0:
+    if output_limit_bytes is None:
+        proc = subprocess.run(  # noqa: S603 - 参数列表 + shell=False
+            argv,
+            cwd=str(workspace), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout, shell=False,
+        )
+        return_code = proc.returncode
+        output = (proc.stdout or "") + (proc.stderr or "")
+    else:
+        return_code, stdout_bytes, stderr_bytes = _run_unittest_with_bounded_output(
+            argv, workspace=workspace, timeout=timeout,
+            output_limit_bytes=output_limit_bytes,
+        )
+        output = (
+            stdout_bytes.decode("utf-8", errors="replace")
+            + stderr_bytes.decode("utf-8", errors="replace")
+        )
+    if _NO_TESTS_SUMMARY.search(output) and return_code == 0:
         # Python unittest releases differ on whether an empty discovery is exit 0 or 5.
         # A zero-test run is never verification evidence, so normalize it to failure.
         return 5, output + "\nICODE: no tests were discovered; treating verification as failed.\n"
-    return proc.returncode, output
+    return return_code, output
 
 
 # ---------------------------------------------------------------------------

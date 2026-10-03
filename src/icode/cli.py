@@ -133,7 +133,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p_ev = _add("evidence", help="把工单导出为可独立校验的证据包")
     p_ev.add_argument("--ticket", required=True, help="v3 工单目录")
     p_ev.add_argument("--dest", required=True, help="证据包输出目录")
-    p_ev.add_argument("--receipt-from", help="在该目录独立跑 python -B -m unittest 并把退出码写入回执")
+    p_ev.add_argument(
+        "--receipt-from",
+        help="在该目录独立跑 python -B -m unittest 并把退出码写入回执；输出超限时拒绝出具回执",
+    )
     p_ev.add_argument("--receipt", action="append", default=[], help="额外回执 JSON 文件（可重复）")
 
     p_evv = _add("verify-pack", help="校验证据包（使用包内同一套逻辑）")
@@ -527,7 +530,11 @@ def cmd_evidence(args: argparse.Namespace) -> int:
         collect_verifications,
         load_verification_receipts,
     )
-    from .runner import run_unittest
+    from .runner import (
+        VerificationOutputLimitError,
+        _MAX_VERIFICATION_OUTPUT_BYTES,
+        run_unittest,
+    )
 
     settings = load_settings(args.skill_root)
 
@@ -542,7 +549,13 @@ def cmd_evidence(args: argparse.Namespace) -> int:
             print("验证回执条数超过安全上限", file=sys.stderr)
             return 2
         workdir = Path(args.receipt_from).resolve()
-        code, output = run_unittest(workdir)
+        try:
+            code, output = run_unittest(
+                workdir, output_limit_bytes=_MAX_VERIFICATION_OUTPUT_BYTES,
+            )
+        except VerificationOutputLimitError as exc:
+            print(f"外部验证失败：{exc}；证据包未生成或覆盖", file=sys.stderr)
+            return 2
         receipts.append(collect_verifications(code, [sys.executable, "-B", "-m", "unittest"], output))
         print(f"  外部验证回执：python -B -m unittest @ {workdir} → 退出码 {code}")
 

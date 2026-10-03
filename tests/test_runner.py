@@ -118,6 +118,86 @@ class TestIndependentVerification(unittest.TestCase):
             code, _ = run_unittest(dst)
             self.assertNotEqual(code, 0, "独立验证必须能识别破坏性改动")
 
+    def test_有界输出在预算内保留完整UTF8输出和原摘要输入(self) -> None:
+        from icode.runner import VerificationOutputLimitError
+
+        with temp_workspace() as ws:
+            (ws / "test_output.py").write_text(
+                "import sys, unittest\n"
+                "class OutputTest(unittest.TestCase):\n"
+                "    def test_output(self):\n"
+                "        sys.stdout.write('stdout-雪\\n')\n"
+                "        sys.stderr.write('stderr-🧪\\n')\n",
+                encoding="utf-8",
+            )
+            code, baseline = run_unittest(ws)
+            self.assertEqual(code, 0, baseline[-800:])
+            cap_bytes = len(baseline.encode("utf-8"))
+
+            bounded_code, bounded = run_unittest(
+                ws, output_limit_bytes=cap_bytes,
+            )
+
+            self.assertEqual((bounded_code, bounded), (code, baseline))
+            self.assertIn("stdout-雪", bounded)
+            self.assertIn("stderr-🧪", bounded)
+            with self.assertRaises(VerificationOutputLimitError):
+                run_unittest(ws, output_limit_bytes=cap_bytes - 1)
+
+    def test_有界捕获保持非法UTF8替换语义(self) -> None:
+        with temp_workspace() as ws:
+            (ws / "test_output.py").write_text(
+                "import sys, unittest\n"
+                "class OutputTest(unittest.TestCase):\n"
+                "    def test_output(self):\n"
+                "        sys.stdout.buffer.write(b'bad-\\xff\\n')\n"
+                "        sys.stderr.buffer.write(b'bad-\\xfe\\n')\n",
+                encoding="utf-8",
+            )
+            code, baseline = run_unittest(ws)
+            bounded_code, bounded = run_unittest(
+                ws, output_limit_bytes=len(baseline.encode("utf-8")),
+            )
+
+            self.assertEqual((bounded_code, bounded), (code, baseline))
+            self.assertIn("bad-�", bounded)
+
+    def test_有界捕获超时仍终止直接验证进程(self) -> None:
+        from subprocess import TimeoutExpired
+
+        with temp_workspace() as ws:
+            (ws / "test_slow.py").write_text(
+                "import time, unittest\n"
+                "class SlowTest(unittest.TestCase):\n"
+                "    def test_slow(self):\n"
+                "        time.sleep(10)\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(TimeoutExpired):
+                run_unittest(ws, timeout=1, output_limit_bytes=1024)
+
+    def test_双流持续输出超过预算时持续排空且显式拒绝(self) -> None:
+        from icode.runner import VerificationOutputLimitError
+
+        with temp_workspace() as ws:
+            (ws / "test_output.py").write_text(
+                "import sys, unittest\n"
+                "class OutputTest(unittest.TestCase):\n"
+                "    def test_output(self):\n"
+                "        for _ in range(256):\n"
+                "            sys.stdout.write('O' * 4096)\n"
+                "            sys.stderr.write('E' * 4096)\n"
+                "            sys.stdout.flush()\n"
+                "            sys.stderr.flush()\n"
+                "        sys.stdout.write('\\n')\n"
+                "        sys.stderr.write('\\n')\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(VerificationOutputLimitError, "超过安全上限"):
+                run_unittest(ws, timeout=15, output_limit_bytes=1024)
+
     def test_指定沙箱会包裹独立测试命令(self) -> None:
         from types import SimpleNamespace
         from unittest import mock

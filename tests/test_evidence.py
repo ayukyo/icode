@@ -1006,6 +1006,92 @@ class TestEvidencePack(unittest.TestCase):
             )
             self.assertEqual(verify_pack(pack_path), [])
 
+    def test_receipt_from输出超限时保留既有证据包(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        from icode.cli import _build_parser, cmd_evidence
+        from icode.runner import VerificationOutputLimitError, _MAX_VERIFICATION_OUTPUT_BYTES
+
+        with temp_workspace() as ws:
+            ticket = make_finished_plan_ticket(self.settings, ws / "work")
+            receipt_from = ws / "external-tests"
+            receipt_from.mkdir()
+            pack_path = ws / "existing-pack"
+            pack_path.mkdir()
+            marker = pack_path / "keep.txt"
+            marker.write_text("preserve old pack\n", encoding="utf-8")
+            args = _build_parser().parse_args([
+                "evidence", "--ticket", str(ticket), "--dest", str(pack_path),
+                "--receipt-from", str(receipt_from),
+            ])
+            stderr = StringIO()
+
+            with (
+                patch("icode.cli.load_settings", return_value=self.settings),
+                patch(
+                    "icode.runner.run_unittest",
+                    side_effect=VerificationOutputLimitError(1024),
+                ) as run_unittest,
+                patch("icode.evidence.build_evidence_pack") as build,
+                redirect_stdout(StringIO()),
+                redirect_stderr(stderr),
+            ):
+                exit_code = cmd_evidence(args)
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("未生成或覆盖", stderr.getvalue())
+            run_unittest.assert_called_once_with(
+                receipt_from.resolve(),
+                output_limit_bytes=_MAX_VERIFICATION_OUTPUT_BYTES,
+            )
+            build.assert_not_called()
+            self.assertEqual(marker.read_text(encoding="utf-8"), "preserve old pack\n")
+
+    def test_receipt_from小输出生成完整回执并通过独立校验(self) -> None:
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+
+        from icode.cli import _build_parser, cmd_evidence
+
+        with temp_workspace() as ws:
+            ticket = make_finished_plan_ticket(self.settings, ws / "work")
+            receipt_from = ws / "external-tests"
+            receipt_from.mkdir()
+            (receipt_from / "test_external.py").write_text(
+                "import sys, unittest\n"
+                "class ExternalTest(unittest.TestCase):\n"
+                "    def test_output(self):\n"
+                "        sys.stdout.write('external-stdout-marker\\n')\n"
+                "        sys.stderr.write('external-stderr-marker\\n')\n",
+                encoding="utf-8",
+            )
+            pack_path = ws / "pack"
+            args = _build_parser().parse_args([
+                "evidence", "--ticket", str(ticket), "--dest", str(pack_path),
+                "--receipt-from", str(receipt_from),
+            ])
+
+            with (
+                patch("icode.cli.load_settings", return_value=self.settings),
+                redirect_stdout(StringIO()),
+            ):
+                exit_code = cmd_evidence(args)
+
+            self.assertEqual(exit_code, 0)
+            receipts = json.loads(
+                (pack_path / "verifications.json").read_text(encoding="utf-8"),
+            )["receipts"]
+            self.assertEqual(len(receipts), 1)
+            receipt = receipts[0]
+            self.assertEqual(receipt["exit_code"], 0)
+            self.assertRegex(receipt["output_sha256"], r"^[0-9a-f]{64}$")
+            self.assertIn("external-stdout-marker", receipt["output_tail"])
+            self.assertIn("external-stderr-marker", receipt["output_tail"])
+            self.assertEqual(verify_pack(pack_path), [])
+
     def test_evidence导入无效回执时返回用户错误且不触碰目标包(self) -> None:
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO
