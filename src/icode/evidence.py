@@ -31,11 +31,17 @@ from .contracts import ContractSet
 from .pack_verify import (
     ALLOWED_EVENT_TYPES,
     EVENTS_REL,
+    _MAX_ARTIFACT_INDEX_ENTRIES,
+    _MAX_ARTIFACT_INDEX_JSON_BYTES,
     _MAX_EVENT_CHAIN_EVENT_COUNT,
     _MAX_EVENT_CHAIN_LINE_BYTES,
     _MAX_EVENT_CHAIN_TOTAL_BYTES,
+    _MAX_MANIFEST_FILE_ENTRIES,
+    _MAX_METADATA_JSON_BYTES,
+    _check_json_structural_token_budget,
     event_schema_issues,
     loads_json_value,
+    read_bounded_bytes,
     verify_pack,
 )
 
@@ -186,6 +192,47 @@ def _safe_name(text: str) -> str:
     return "".join(keep).strip("_") or "artifact"
 
 
+def _preflight_artifact_index_json(
+    artifact_events: list[dict],
+) -> None:
+    """Reject an oversized output index before clean export removes the old pack."""
+    entries: list[dict] = []
+    for event in artifact_events:
+        index = event["event_index"]
+        payload = event["payload"]
+        source = Path(str(payload.get("path") or ""))
+        output_id = str(payload.get("output") or "artifact")
+        # Use the collision fallback for sizing every row. It is never shorter
+        # than the ordinary name and avoids probing destination paths pre-clean.
+        name = _safe_name(f"{output_id}__{index}_{source.name}")
+        entries.append({
+            "output": output_id,
+            "step": payload.get("step"),
+            "scope": payload.get("scope"),
+            "source_path": str(source),
+            "chain_sha256": str(payload.get("sha256") or ""),
+            "snapshot": f"{EVENTS_REL.rsplit('/', 1)[0]}/bodies/{name}",
+            # Fixed-width placeholder makes the preview at least as large as a
+            # successful snapshot's eventual digest; missing sources serialize smaller.
+            "snapshot_sha256": "0" * 64,
+            "size": payload.get("size"),
+            "event_id": event.get("event_id"),
+            "event_index": index,
+            "matches_chain": False,
+        })
+    try:
+        text = json.dumps(
+            {"schema_version": PACK_SCHEMA_VERSION, "artifacts": entries},
+            ensure_ascii=False, indent=2, sort_keys=False,
+        ) + "\n"
+        _check_json_structural_token_budget(text)
+        size_bytes = len(text.encode("utf-8"))
+    except (RecursionError, UnicodeError, ValueError, TypeError):
+        raise EvidenceError("产物索引 JSON 结构超过安全上限") from None
+    if size_bytes > _MAX_ARTIFACT_INDEX_JSON_BYTES:
+        raise EvidenceError("产物索引 JSON 超过输入字节上限")
+
+
 def _snapshot_artifacts(
     out_dir: Path, artifact_events: list[dict], bodies_dir: Path
 ) -> tuple[list[dict], list[str], list[str]]:
@@ -319,7 +366,10 @@ def build_evidence_pack(
     if not meta_path.is_file():
         raise EvidenceError(f"不是 v3 工单目录（缺 {METADATA_NAME}）：{out_dir}")
     try:
-        meta = loads_json_value(meta_path.read_text(encoding="utf-8"))
+        metadata_bytes = read_bounded_bytes(
+            meta_path, max_bytes=_MAX_METADATA_JSON_BYTES,
+        )
+        meta = loads_json_value(metadata_bytes.decode("utf-8"))
     except (OSError, ValueError, RecursionError) as exc:
         raise EvidenceError(
             f"工单 metadata 不可解析：{type(exc).__name__}"
@@ -333,6 +383,14 @@ def build_evidence_pack(
     event_summary = _read_events(out_dir, expected_ticket_id=ticket_id)
     if not event_summary.event_count:
         raise EvidenceError("事件链为空，无法导出证据包")
+    if len(event_summary.artifact_events) > _MAX_ARTIFACT_INDEX_ENTRIES:
+        raise EvidenceError("产物索引条目数量超过安全上限")
+    fixed_file_count = 6 + int(
+        gates_json is not None and Path(gates_json).is_file()
+    )
+    if len(event_summary.artifact_events) + fixed_file_count > _MAX_MANIFEST_FILE_ENTRIES:
+        raise EvidenceError("证据包清单文件条目数量超过安全上限")
+    _preflight_artifact_index_json(event_summary.artifact_events)
 
     if clean and dest.exists():
         shutil.rmtree(dest)
@@ -340,7 +398,7 @@ def build_evidence_pack(
 
     # 1) 原样拷贝账本与元数据
     shutil.copyfile(out_dir / EVENTS_NAME, dest / EVENTS_REL)
-    shutil.copyfile(meta_path, dest / "ticket" / "metadata.json")
+    (dest / "ticket" / "metadata.json").write_bytes(metadata_bytes)
 
     # 2) 产物正文快照 + 对应表
     artifacts, problems, warnings = _snapshot_artifacts(

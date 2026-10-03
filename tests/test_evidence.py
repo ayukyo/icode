@@ -2399,6 +2399,163 @@ class TestStandaloneVerifier(unittest.TestCase):
             self.assertEqual(bad.returncode, 2)
             self.assertEqual(proc.returncode, 0)
 
+    def test_JSON结构预算只统计字符串外的JSON标点(self) -> None:
+        from unittest.mock import patch
+
+        from icode.pack_verify import loads_json_value
+
+        text = '{"note":"{}[],:","items":[1]}'
+        # 字符串中的括号/逗号/冒号不是结构标点；JSON 本身共有 7 个。
+        with patch("icode.pack_verify._MAX_JSON_STRUCTURAL_TOKENS", 7):
+            self.assertEqual(loads_json_value(text), {"note": "{}[],:", "items": [1]})
+        with patch("icode.pack_verify._MAX_JSON_STRUCTURAL_TOKENS", 6):
+            with self.assertRaisesRegex(ValueError, "JSON结构标点超过安全上限"):
+                loads_json_value(text)
+
+    def test_包内控制JSON超出字节预算时拒绝(self) -> None:
+        from unittest.mock import patch
+
+        limits = (
+            ("manifest.json", "_MAX_MANIFEST_JSON_BYTES"),
+            ("ticket/metadata.json", "_MAX_METADATA_JSON_BYTES"),
+            ("artifacts.json", "_MAX_ARTIFACT_INDEX_JSON_BYTES"),
+        )
+        for relative, constant in limits:
+            with self.subTest(member=relative), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                pack = ws / "pack"
+                report = build_evidence_pack(
+                    out_dir, dest=pack, gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+                exact_limit = (pack / relative).stat().st_size
+                with patch(f"icode.pack_verify.{constant}", exact_limit):
+                    self.assertEqual(verify_pack(pack), [])
+                with patch(f"icode.pack_verify.{constant}", exact_limit - 1):
+                    problems = verify_pack(pack)
+                self.assertTrue(
+                    any("控制JSON超过输入字节上限" in problem for problem in problems),
+                    problems,
+                )
+
+    def test_清单与正文索引条目数有上限(self) -> None:
+        from unittest.mock import patch
+
+        for relative, constant in (
+            ("manifest.json", "_MAX_MANIFEST_FILE_ENTRIES"),
+            ("artifacts.json", "_MAX_ARTIFACT_INDEX_ENTRIES"),
+        ):
+            with self.subTest(member=relative), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                pack = ws / "pack"
+                report = build_evidence_pack(
+                    out_dir, dest=pack, gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+                if relative == "manifest.json":
+                    count = len(json.loads(
+                        (pack / relative).read_text(encoding="utf-8"),
+                    )["files"])
+                else:
+                    count = len(json.loads(
+                        (pack / relative).read_text(encoding="utf-8"),
+                    )["artifacts"])
+                with patch(f"icode.pack_verify.{constant}", count):
+                    self.assertEqual(verify_pack(pack), [])
+                with patch(f"icode.pack_verify.{constant}", count - 1):
+                    problems = verify_pack(pack)
+                self.assertTrue(
+                    any("条目数量超过安全上限" in problem for problem in problems),
+                    problems,
+                )
+
+    def test_目录枚举在排序前执行条目数上限(self) -> None:
+        from unittest.mock import patch
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            pack = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=pack, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+            count = sum(1 for _ in pack.rglob("*"))
+            with patch("icode.pack_verify._MAX_PACKAGE_ENTRY_COUNT", count):
+                self.assertEqual(verify_pack(pack), [])
+            with patch("icode.pack_verify._MAX_PACKAGE_ENTRY_COUNT", count - 1):
+                problems = verify_pack(pack)
+            self.assertTrue(
+                any("目录条目数量超过安全上限" in problem for problem in problems),
+                problems,
+            )
+
+    def test_导出器拒绝超预算metadata且保留旧包(self) -> None:
+        from unittest.mock import patch
+
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_text("preserve previous evidence pack\n", encoding="utf-8")
+            metadata_size = (out_dir / ".ico_metadata.json").stat().st_size
+
+            with patch("icode.evidence._MAX_METADATA_JSON_BYTES", metadata_size - 1):
+                with self.assertRaises(EvidenceError):
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    )
+
+            self.assertEqual(
+                marker.read_text(encoding="utf-8"), "preserve previous evidence pack\n",
+            )
+
+    def test_导出器拒绝会超出产物索引预算的任务且保留旧包(self) -> None:
+        from unittest.mock import patch
+
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_text("preserve previous evidence pack\n", encoding="utf-8")
+
+            with patch("icode.evidence._MAX_ARTIFACT_INDEX_ENTRIES", 0):
+                with self.assertRaisesRegex(EvidenceError, "产物索引条目数量"):
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    )
+
+            self.assertEqual(
+                marker.read_text(encoding="utf-8"), "preserve previous evidence pack\n",
+            )
+
+    def test_导出器在产物索引JSON超预算前保留旧包(self) -> None:
+        from unittest.mock import patch
+
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_text("preserve previous evidence pack\n", encoding="utf-8")
+
+            with patch("icode.evidence._MAX_ARTIFACT_INDEX_JSON_BYTES", 1):
+                with self.assertRaisesRegex(EvidenceError, "产物索引 JSON 超过输入字节上限"):
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    )
+
+            self.assertEqual(
+                marker.read_text(encoding="utf-8"), "preserve previous evidence pack\n",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -29,7 +29,15 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT = stat.FILE_ATTRIBUTE_REPARSE_POINT
 _SHA256_FILE_READ_SIZE = 1024 * 1024
+_JSON_FILE_READ_SIZE = 64 * 1024
 _MAX_JSON_CONTAINER_DEPTH = 128
+_MAX_JSON_STRUCTURAL_TOKENS = 500_000
+_MAX_MANIFEST_JSON_BYTES = 16 * 1024 * 1024
+_MAX_METADATA_JSON_BYTES = 8 * 1024 * 1024
+_MAX_ARTIFACT_INDEX_JSON_BYTES = 8 * 1024 * 1024
+_MAX_MANIFEST_FILE_ENTRIES = 50_000
+_MAX_ARTIFACT_INDEX_ENTRIES = 50_000
+_MAX_PACKAGE_ENTRY_COUNT = 100_000
 _MAX_EVENT_CHAIN_DIAGNOSTIC_SAMPLES = 32
 _MAX_EVENT_CHAIN_LINE_BYTES = 1024 * 1024
 _MAX_EVENT_CHAIN_TOTAL_BYTES = 64 * 1024 * 1024
@@ -179,6 +187,10 @@ class _FileSizeLimitExceeded(Exception):
     """Raised when a caller requested a bounded file hash and the limit is crossed."""
 
 
+class _PackageEntryLimitExceeded(Exception):
+    """Raised before sorting or retaining more than the package-entry budget."""
+
+
 def sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
     digest = hashlib.sha256()
     total_bytes = 0
@@ -231,6 +243,28 @@ def _reject_non_json_numeric_constant(_value: str) -> object:
     raise ValueError("JSON 含有非标准 JSON 数值常量")
 
 
+def _check_json_structural_token_budget(text: str) -> None:
+    """Bound parser container work without counting punctuation inside strings."""
+    in_string = False
+    escaped = False
+    token_count = 0
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in "{}[],:":
+            token_count += 1
+            if token_count > _MAX_JSON_STRUCTURAL_TOKENS:
+                raise ValueError("JSON结构标点超过安全上限")
+
+
 def _reject_non_interoperable_values(value: object) -> None:
     """Reject values unsafe for the shared parser/hash/serializer contract."""
     pending: list[tuple[object, int]] = [(value, 0)]
@@ -256,6 +290,7 @@ def _reject_non_interoperable_values(value: object) -> None:
 
 def loads_json_value(text: str) -> object:
     """Parse JSON under the same strict interoperability rules used by verify.py."""
+    _check_json_structural_token_budget(text)
     value = json.loads(
         text,
         object_pairs_hook=_json_object_without_duplicates,
@@ -265,8 +300,33 @@ def loads_json_value(text: str) -> object:
     return value
 
 
-def _load_json(path: Path) -> dict:
-    value = loads_json_value(Path(path).read_text(encoding="utf-8"))
+def read_bounded_bytes(path: Path, *, max_bytes: int) -> bytes:
+    """Read at most max_bytes + 1 bytes using bounded chunks."""
+    if max_bytes < 0:
+        raise ValueError("控制JSON超过输入字节上限")
+    chunks: list[bytes] = []
+    total_bytes = 0
+    with Path(path).open("rb") as stream:
+        while True:
+            read_size = min(_JSON_FILE_READ_SIZE, max_bytes - total_bytes + 1)
+            chunk = stream.read(read_size)
+            if not chunk:
+                break
+            total_bytes += len(chunk)
+            if total_bytes > max_bytes:
+                raise ValueError("控制JSON超过输入字节上限")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def load_json_value(path: Path, *, max_bytes: int) -> object:
+    """Read at most max_bytes + 1 bytes, then parse under the JSON budget."""
+    raw = read_bounded_bytes(path, max_bytes=max_bytes)
+    return loads_json_value(raw.decode("utf-8"))
+
+
+def _load_json(path: Path, *, max_bytes: int) -> dict:
+    value = load_json_value(Path(path), max_bytes=max_bytes)
     if not isinstance(value, dict):
         raise ValueError("JSON 根节点必须是对象")
     return value
@@ -316,10 +376,17 @@ def _package_member_path(pack: Path, relative: str) -> Path | None:
 def _walk_package_entries(pack: Path):
     """遍历包项时不跟随符号链接或 Windows reparse point。"""
     pending = [pack]
+    entry_count = 0
     while pending:
         directory = pending.pop()
         with os.scandir(directory) as iterator:
-            entries = sorted(iterator, key=lambda entry: entry.name)
+            entries = []
+            for entry in iterator:
+                entry_count += 1
+                if entry_count > _MAX_PACKAGE_ENTRY_COUNT:
+                    raise _PackageEntryLimitExceeded
+                entries.append(entry)
+            entries.sort(key=lambda entry: entry.name)
         child_directories: list[Path] = []
         for entry in entries:
             path = Path(entry.path)
@@ -350,7 +417,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
     if not manifest_path.is_file():
         return [f"缺少清单文件：{MANIFEST_NAME}"]
     try:
-        manifest = _load_json(manifest_path)
+        manifest = _load_json(manifest_path, max_bytes=_MAX_MANIFEST_JSON_BYTES)
     except (OSError, ValueError, RecursionError) as exc:
         return [f"清单文件不可解析：{exc}"]
 
@@ -360,6 +427,9 @@ def verify_pack(pack_dir: Path) -> list[str]:
         file_entries = []
     if not isinstance(file_entries, list):
         problems.append("清单 files 结构无效（必须是数组）")
+        file_entries = []
+    elif len(file_entries) > _MAX_MANIFEST_FILE_ENTRIES:
+        problems.append("清单 files 条目数量超过安全上限")
         file_entries = []
     if not file_entries:
         problems.append("清单 files 为空")
@@ -394,13 +464,31 @@ def verify_pack(pack_dir: Path) -> list[str]:
             except OSError:
                 problems.append("事件链无法读取：OSError")
                 continue
+        json_limit = None
+        if rel == "ticket/metadata.json":
+            json_limit = _MAX_METADATA_JSON_BYTES
+        elif rel == "artifacts.json":
+            json_limit = _MAX_ARTIFACT_INDEX_JSON_BYTES
+        if json_limit is not None:
+            try:
+                if target.stat().st_size > json_limit:
+                    problems.append("清单登记的控制JSON超过输入字节上限")
+                    continue
+            except OSError:
+                problems.append("清单登记的控制JSON无法读取：OSError")
+                continue
         try:
             if rel == EVENTS_REL:
                 actual = sha256_file(target, max_bytes=_MAX_EVENT_CHAIN_TOTAL_BYTES)
+            elif json_limit is not None:
+                actual = sha256_file(target, max_bytes=json_limit)
             else:
                 actual = sha256_file(target)
         except _FileSizeLimitExceeded:
-            problems.append("事件链超过总输入字节数上限")
+            if rel == EVENTS_REL:
+                problems.append("事件链超过总输入字节数上限")
+            else:
+                problems.append("清单登记的控制JSON超过输入字节上限")
             continue
         if actual != entry["sha256"]:
             problems.append(
@@ -431,6 +519,8 @@ def verify_pack(pack_dir: Path) -> list[str]:
                 problems.append(f"证据包包含不允许的链接或特殊文件：{rel}")
             elif path.name != MANIFEST_NAME and rel not in listed:
                 problems.append(f"存在未登记的额外文件（清单未覆盖）：{rel}")
+    except _PackageEntryLimitExceeded:
+        problems.append("证据包目录条目数量超过安全上限")
     except (OSError, RuntimeError, ValueError):
         problems.append("证据包目录无法完整枚举")
 
@@ -454,7 +544,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
         problems.append("缺少工单 metadata：ticket/metadata.json")
     else:
         try:
-            metadata = _load_json(metadata_path)
+            metadata = _load_json(metadata_path, max_bytes=_MAX_METADATA_JSON_BYTES)
         except (OSError, ValueError, RecursionError):
             problems.append("工单 metadata 不可解析")
         else:
@@ -682,7 +772,9 @@ def _verify_artifact_binding(
         return problems
 
     try:
-        index = _load_json(index_path)
+        index = _load_json(
+            index_path, max_bytes=_MAX_ARTIFACT_INDEX_JSON_BYTES,
+        )
     except (OSError, ValueError, RecursionError) as exc:
         problems.append(f"artifacts.json 不可解析：{exc}")
         return problems
@@ -693,6 +785,9 @@ def _verify_artifact_binding(
     if not isinstance(artifact_entries, list):
         problems.append("artifacts.json 的 artifacts 结构无效（必须是数组）")
         artifact_entries = []
+    elif len(artifact_entries) > _MAX_ARTIFACT_INDEX_ENTRIES:
+        problems.append("artifacts.json 的 artifacts 条目数量超过安全上限")
+        return problems
     bound_digests: set[str] = set()
     for index_number, item in enumerate(artifact_entries, 1):
         if not isinstance(item, dict):
@@ -746,7 +841,9 @@ def main(argv: list[str] | None = None) -> int:
     ticket = ""
     if manifest_path is not None and manifest_path.is_file():
         try:
-            ticket_info = _load_json(manifest_path).get("ticket")
+            ticket_info = _load_json(
+                manifest_path, max_bytes=_MAX_MANIFEST_JSON_BYTES,
+            ).get("ticket")
             if isinstance(ticket_info, dict):
                 ticket = ticket_info.get("ticket_id", "")
         except (OSError, ValueError, RecursionError):
