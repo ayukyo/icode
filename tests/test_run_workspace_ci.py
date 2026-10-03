@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import unittest
 
 from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
@@ -49,3 +50,13 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
             CROSS_PLATFORM_R3_TESTS,
         ))
         self.assertNotIn("tests.test_r3_regression.TestResultCommitTreeBinding", DEFAULT_MODULES)
+
+    def test_posix_workspace_matrix_runs_native_tree_oid_git_differential(self) -> None:
+        tree_differential = (
+            "tests.test_r3_regression.TestWorktreeGitTreeOID."
+            "test_tree_oid与Git写树一致并覆盖忽略项链接和模式"
+        )
+        if os.name == "posix":
+            self.assertIn(tree_differential, DEFAULT_MODULES)
+        else:
+            self.assertNotIn(tree_differential, DEFAULT_MODULES)

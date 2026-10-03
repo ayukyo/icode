@@ -63,6 +63,10 @@ CROSS_PLATFORM_R3_TESTS = (
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_same_tree的后测commit仅标记内容匹配不倒推测试时序",
 )
 
+POSIX_R3_TESTS = (
+    "tests.test_r3_regression.TestWorktreeGitTreeOID.test_tree_oid与Git写树一致并覆盖忽略项链接和模式",
+)
+
 DEFAULT_MODULES = (
     "tests.test_workspace",
     "tests.test_autonomy",
@@ -70,6 +74,9 @@ DEFAULT_MODULES = (
     # Keep the integration matrix bounded while exercising task-tree capture,
     # result-commit binding, and receipt export/import on each workspace platform.
     *CROSS_PLATFORM_R3_TESTS,
+    # The no-follow POSIX tree walker is shared by Linux and macOS; don't add
+    # this POSIX-only Git differential to the Windows workspace test selection.
+    *(POSIX_R3_TESTS if os.name == "posix" else ()),
 )
 
 
