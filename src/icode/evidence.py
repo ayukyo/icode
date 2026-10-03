@@ -38,6 +38,12 @@ from .pack_verify import (
     _MAX_EVENT_CHAIN_TOTAL_BYTES,
     _MAX_MANIFEST_FILE_ENTRIES,
     _MAX_METADATA_JSON_BYTES,
+    _MAX_PACKAGE_ARTIFACT_BYTES,
+    _MAX_PACKAGE_FILE_BYTES,
+    _MAX_PACKAGE_HASH_READ_BYTES,
+    _FileSizeLimitExceeded,
+    _HashReadBudget,
+    _HashReadBudgetExceeded,
     _check_json_structural_token_budget,
     event_schema_issues,
     loads_json_value,
@@ -54,6 +60,10 @@ PACK_SCHEMA_VERSION = 1
 
 class EvidenceError(RuntimeError):
     """证据包构建失败。"""
+
+
+class _ArtifactSnapshotLimitExceeded(EvidenceError):
+    """Raised when copied artifact bodies exceed the aggregate package limit."""
 
 
 @dataclass
@@ -233,8 +243,90 @@ def _preflight_artifact_index_json(
         raise EvidenceError("产物索引 JSON 超过输入字节上限")
 
 
+def _preflight_artifact_snapshot_bytes(artifact_events: list[dict]) -> None:
+    """Bound copied body bytes before clean export can remove an existing pack."""
+    total_bytes = 0
+    for event in artifact_events:
+        payload = event["payload"]
+        source = Path(str(payload.get("path") or ""))
+        if not source.is_file():
+            continue
+        try:
+            size_bytes = source.stat().st_size
+        except OSError:
+            raise EvidenceError("产物快照源无法读取") from None
+        if size_bytes > _MAX_PACKAGE_FILE_BYTES:
+            raise EvidenceError("产物快照单文件超过安全上限")
+        total_bytes += size_bytes
+        if total_bytes > _MAX_PACKAGE_ARTIFACT_BYTES:
+            raise EvidenceError("产物快照累计字节超过安全上限")
+
+
+def _copy_file_bounded(
+    source: Path,
+    destination: Path,
+    *,
+    max_bytes: int,
+    read_budget: _HashReadBudget,
+    artifact_budget: _HashReadBudget,
+) -> None:
+    """Copy a body in bounded chunks while charging its source reads."""
+    copied_bytes = 0
+    destination = Path(destination)
+    created = False
+    created_identity: tuple[int, int] | None = None
+    try:
+        with Path(source).open("rb") as source_stream:
+            target_stream = destination.open("xb")
+            created = True
+            target_stat = os.fstat(target_stream.fileno())
+            if target_stat.st_ino:
+                created_identity = (target_stat.st_dev, target_stat.st_ino)
+            with target_stream:
+                while True:
+                    read_size = min(
+                        1024 * 1024,
+                        max_bytes - copied_bytes + 1,
+                        read_budget.remaining + 1,
+                        artifact_budget.remaining + 1,
+                    )
+                    chunk = source_stream.read(read_size)
+                    if not chunk:
+                        break
+                    copied_bytes += len(chunk)
+                    if copied_bytes > max_bytes:
+                        raise _FileSizeLimitExceeded
+                    if len(chunk) > read_budget.remaining:
+                        raise _HashReadBudgetExceeded
+                    if len(chunk) > artifact_budget.remaining:
+                        raise _ArtifactSnapshotLimitExceeded(
+                            "产物快照累计字节超过安全上限",
+                        )
+                    read_budget.consume(len(chunk))
+                    artifact_budget.consume(len(chunk))
+                    target_stream.write(chunk)
+    except BaseException:
+        # Only remove a partial file when the filesystem exposes a stable
+        # identity and the path still names the file this call created.
+        if created and created_identity is not None:
+            try:
+                path_stat = destination.lstat()
+                if created_identity == (path_stat.st_dev, path_stat.st_ino):
+                    destination.unlink(missing_ok=True)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+        raise
+
+
 def _snapshot_artifacts(
-    out_dir: Path, artifact_events: list[dict], bodies_dir: Path
+    out_dir: Path,
+    artifact_events: list[dict],
+    bodies_dir: Path,
+    *,
+    read_budget: _HashReadBudget,
+    artifact_budget: _HashReadBudget,
 ) -> tuple[list[dict], list[str], list[str]]:
     """把链上登记的产物正文快照进包里，并建立正文↔链上哈希的对应表。"""
     from .pack_verify import sha256_file
@@ -267,7 +359,9 @@ def _snapshot_artifacts(
             entries.append(entry)
             continue
 
-        actual = sha256_file(source)
+        actual = sha256_file(
+            source, max_bytes=_MAX_PACKAGE_FILE_BYTES, read_budget=read_budget,
+        )
         if actual != chain_hash:
             warnings.append(
                 f"产物当前内容与链上记录不一致（可能事后被修改）：{source} "
@@ -278,9 +372,17 @@ def _snapshot_artifacts(
         if snapshot.exists():
             name = _safe_name(f"{output_id}__{index}_{source.name}")
             snapshot = bodies_dir / name
-        shutil.copyfile(source, snapshot)
+        _copy_file_bounded(
+            source,
+            snapshot,
+            max_bytes=_MAX_PACKAGE_FILE_BYTES,
+            read_budget=read_budget,
+            artifact_budget=artifact_budget,
+        )
         entry["snapshot"] = f"{EVENTS_REL.rsplit('/', 1)[0]}/bodies/{name}"
-        entry["snapshot_sha256"] = sha256_file(snapshot)
+        entry["snapshot_sha256"] = sha256_file(
+            snapshot, max_bytes=_MAX_PACKAGE_FILE_BYTES, read_budget=read_budget,
+        )
         entry["matches_chain"] = entry["snapshot_sha256"] == chain_hash
         entries.append(entry)
 
@@ -391,6 +493,9 @@ def build_evidence_pack(
     if len(event_summary.artifact_events) + fixed_file_count > _MAX_MANIFEST_FILE_ENTRIES:
         raise EvidenceError("证据包清单文件条目数量超过安全上限")
     _preflight_artifact_index_json(event_summary.artifact_events)
+    _preflight_artifact_snapshot_bytes(event_summary.artifact_events)
+    hash_budget = _HashReadBudget(_MAX_PACKAGE_HASH_READ_BYTES)
+    artifact_budget = _HashReadBudget(_MAX_PACKAGE_ARTIFACT_BYTES)
 
     if clean and dest.exists():
         shutil.rmtree(dest)
@@ -401,9 +506,20 @@ def build_evidence_pack(
     (dest / "ticket" / "metadata.json").write_bytes(metadata_bytes)
 
     # 2) 产物正文快照 + 对应表
-    artifacts, problems, warnings = _snapshot_artifacts(
-        out_dir, event_summary.artifact_events, dest / "ticket" / "bodies",
-    )
+    try:
+        artifacts, problems, warnings = _snapshot_artifacts(
+            out_dir,
+            event_summary.artifact_events,
+            dest / "ticket" / "bodies",
+            read_budget=hash_budget,
+            artifact_budget=artifact_budget,
+        )
+    except _FileSizeLimitExceeded:
+        raise EvidenceError("产物快照单文件超过安全上限") from None
+    except _HashReadBudgetExceeded:
+        raise EvidenceError("证据包导出累计摘要读取超过安全上限") from None
+    except _ArtifactSnapshotLimitExceeded:
+        raise EvidenceError("产物快照累计字节超过安全上限") from None
     (dest / "artifacts.json").write_text(
         json.dumps({"schema_version": PACK_SCHEMA_VERSION, "artifacts": artifacts},
                    ensure_ascii=False, indent=2, sort_keys=False) + "\n",
@@ -469,14 +585,23 @@ def build_evidence_pack(
     from .pack_verify import pack_digest, sha256_file
 
     entries: list[dict] = []
-    for path in sorted(dest.rglob("*")):
-        if not path.is_file() or path.name == "manifest.json":
-            continue
-        entries.append({
-            "path": path.relative_to(dest).as_posix(),
-            "sha256": sha256_file(path),
-            "size": path.stat().st_size,
-        })
+    try:
+        for path in sorted(dest.rglob("*")):
+            if not path.is_file() or path.name == "manifest.json":
+                continue
+            entries.append({
+                "path": path.relative_to(dest).as_posix(),
+                "sha256": sha256_file(
+                    path,
+                    max_bytes=_MAX_PACKAGE_FILE_BYTES,
+                    read_budget=hash_budget,
+                ),
+                "size": path.stat().st_size,
+            })
+    except _FileSizeLimitExceeded:
+        raise EvidenceError("证据包单文件摘要超过安全上限") from None
+    except _HashReadBudgetExceeded:
+        raise EvidenceError("证据包导出累计摘要读取超过安全上限") from None
     digest = pack_digest(entries)
     manifest = {
         "schema_version": PACK_SCHEMA_VERSION,

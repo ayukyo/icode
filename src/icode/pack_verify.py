@@ -42,6 +42,10 @@ _MAX_EVENT_CHAIN_DIAGNOSTIC_SAMPLES = 32
 _MAX_EVENT_CHAIN_LINE_BYTES = 1024 * 1024
 _MAX_EVENT_CHAIN_TOTAL_BYTES = 64 * 1024 * 1024
 _MAX_EVENT_CHAIN_EVENT_COUNT = 100_000
+# Product-selected evidence-pack bounds; these are not borrowed from Agent UI limits.
+_MAX_PACKAGE_FILE_BYTES = 256 * 1024 * 1024
+_MAX_PACKAGE_HASH_READ_BYTES = 4 * 1024 * 1024 * 1024
+_MAX_PACKAGE_ARTIFACT_BYTES = 256 * 1024 * 1024
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -191,7 +195,35 @@ class _PackageEntryLimitExceeded(Exception):
     """Raised before sorting or retaining more than the package-entry budget."""
 
 
-def sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
+class _HashReadBudgetExceeded(Exception):
+    """Raised when hashing would read beyond the shared package byte budget."""
+
+
+class _HashReadBudget:
+    """Track actual file bytes consumed by related hashes in one operation."""
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        self.bytes_read = 0
+
+    @property
+    def remaining(self) -> int:
+        return self.max_bytes - self.bytes_read
+
+    def consume(self, amount: int) -> None:
+        if amount < 0 or amount > self.remaining:
+            raise _HashReadBudgetExceeded
+        self.bytes_read += amount
+
+
+def sha256_file(
+    path: Path,
+    *,
+    max_bytes: int | None = None,
+    read_budget: _HashReadBudget | None = None,
+) -> str:
+    if max_bytes is not None and max_bytes < 0:
+        raise ValueError("单文件摘要输入字节上限不能小于零")
     digest = hashlib.sha256()
     total_bytes = 0
     with Path(path).open("rb") as stream:
@@ -201,12 +233,20 @@ def sha256_file(path: Path, *, max_bytes: int | None = None) -> str:
                 # Read no more than one byte past the declared budget, even when
                 # the file grows after the caller's initial stat check.
                 read_size = min(read_size, max_bytes - total_bytes + 1)
+            if read_budget is not None:
+                # Keep the actual stream read to the shared budget plus one
+                # sentinel byte, including the artifact-binding re-hash pass.
+                read_size = min(read_size, read_budget.remaining + 1)
             chunk = stream.read(read_size)
             if not chunk:
                 break
             total_bytes += len(chunk)
             if max_bytes is not None and total_bytes > max_bytes:
                 raise _FileSizeLimitExceeded
+            if read_budget is not None:
+                if len(chunk) > read_budget.remaining:
+                    raise _HashReadBudgetExceeded
+                read_budget.consume(len(chunk))
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -447,6 +487,8 @@ def verify_pack(pack_dir: Path) -> list[str]:
             continue
         seen_entry_paths.add(entry["path"])
         entries.append(entry)
+    hash_budget = _HashReadBudget(_MAX_PACKAGE_HASH_READ_BYTES)
+    hash_budget_exceeded = False
     for entry in entries:
         rel = entry["path"]
         target = _package_member_path(pack, rel)
@@ -456,13 +498,17 @@ def verify_pack(pack_dir: Path) -> list[str]:
         if not target.is_file():
             problems.append(f"清单登记的文件缺失：{rel}")
             continue
+        try:
+            target_size = target.stat().st_size
+        except OSError:
+            problems.append("清单登记的文件无法读取：OSError")
+            continue
+        if target_size > _MAX_PACKAGE_FILE_BYTES:
+            problems.append("清单登记的文件超过单文件安全上限")
+            continue
         if rel == EVENTS_REL:
-            try:
-                if target.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
-                    problems.append("事件链超过总输入字节数上限")
-                    continue
-            except OSError:
-                problems.append("事件链无法读取：OSError")
+            if target_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
+                problems.append("事件链超过总输入字节数上限")
                 continue
         json_limit = None
         if rel == "ticket/metadata.json":
@@ -470,26 +516,30 @@ def verify_pack(pack_dir: Path) -> list[str]:
         elif rel == "artifacts.json":
             json_limit = _MAX_ARTIFACT_INDEX_JSON_BYTES
         if json_limit is not None:
-            try:
-                if target.stat().st_size > json_limit:
-                    problems.append("清单登记的控制JSON超过输入字节上限")
-                    continue
-            except OSError:
-                problems.append("清单登记的控制JSON无法读取：OSError")
+            if target_size > json_limit:
+                problems.append("清单登记的控制JSON超过输入字节上限")
                 continue
         try:
+            file_limit = _MAX_PACKAGE_FILE_BYTES
             if rel == EVENTS_REL:
-                actual = sha256_file(target, max_bytes=_MAX_EVENT_CHAIN_TOTAL_BYTES)
-            elif json_limit is not None:
-                actual = sha256_file(target, max_bytes=json_limit)
-            else:
-                actual = sha256_file(target)
+                file_limit = min(file_limit, _MAX_EVENT_CHAIN_TOTAL_BYTES)
+            if json_limit is not None:
+                file_limit = min(file_limit, json_limit)
+            actual = sha256_file(
+                target, max_bytes=file_limit, read_budget=hash_budget,
+            )
         except _FileSizeLimitExceeded:
             if rel == EVENTS_REL:
                 problems.append("事件链超过总输入字节数上限")
-            else:
+            elif json_limit is not None:
                 problems.append("清单登记的控制JSON超过输入字节上限")
+            else:
+                problems.append("清单登记的文件超过单文件安全上限")
             continue
+        except _HashReadBudgetExceeded:
+            problems.append("证据包累计摘要读取超过安全上限")
+            hash_budget_exceeded = True
+            break
         if actual != entry["sha256"]:
             problems.append(
                 f"文件内容与清单不符（疑似篡改）：{rel} "
@@ -573,7 +623,10 @@ def verify_pack(pack_dir: Path) -> list[str]:
             )
             problems.extend(chain_problems)
             # ④ 正文与链上哈希对应
-            problems.extend(_verify_artifact_binding(pack, artifact_facts))
+            if not hash_budget_exceeded:
+                problems.extend(_verify_artifact_binding(
+                    pack, artifact_facts, read_budget=hash_budget,
+                ))
         except (OSError, ValueError, RecursionError) as exc:
             problems.append(f"事件链或正文索引无法读取：{type(exc).__name__}")
 
@@ -757,6 +810,7 @@ def _verify_event_chain(
 
 def _verify_artifact_binding(
     pack: Path, artifact_facts: dict[str, tuple[str, str]],
+    *, read_budget: _HashReadBudget | None = None,
 ) -> list[str]:
     """正文快照必须与事件链上记录的 sha256 一致（D11 的核心）。"""
     problems: list[str] = []
@@ -788,7 +842,27 @@ def _verify_artifact_binding(
     elif len(artifact_entries) > _MAX_ARTIFACT_INDEX_ENTRIES:
         problems.append("artifacts.json 的 artifacts 条目数量超过安全上限")
         return problems
+    snapshot_bytes = 0
+    seen_snapshots: set[str] = set()
+    for item in artifact_entries:
+        if not isinstance(item, dict):
+            continue
+        snapshot_rel = item.get("snapshot")
+        if not isinstance(snapshot_rel, str) or snapshot_rel in seen_snapshots:
+            continue
+        seen_snapshots.add(snapshot_rel)
+        snapshot = _package_member_path(pack, snapshot_rel)
+        if snapshot is None or not snapshot.is_file():
+            continue
+        try:
+            snapshot_bytes += snapshot.stat().st_size
+        except OSError:
+            continue
+        if snapshot_bytes > _MAX_PACKAGE_ARTIFACT_BYTES:
+            problems.append("产物快照累计字节超过安全上限")
+            return problems
     bound_digests: set[str] = set()
+    binding_incomplete = False
     for index_number, item in enumerate(artifact_entries, 1):
         if not isinstance(item, dict):
             problems.append(f"artifacts.json 第 {index_number} 项结构无效（必须是对象）")
@@ -805,7 +879,19 @@ def _verify_artifact_binding(
         if not snapshot.is_file():
             problems.append(f"正文快照缺失：{snapshot_rel}")
             continue
-        actual = sha256_file(snapshot)
+        try:
+            actual = sha256_file(
+                snapshot,
+                max_bytes=_MAX_PACKAGE_FILE_BYTES,
+                read_budget=read_budget,
+            )
+        except _FileSizeLimitExceeded:
+            problems.append("正文快照超过单文件安全上限")
+            binding_incomplete = True
+            continue
+        except _HashReadBudgetExceeded:
+            problems.append("证据包累计摘要读取超过安全上限")
+            return problems
         if chain_hash and actual != chain_hash:
             problems.append(
                 f"正文快照与事件链记录不符（疑似篡改）：{snapshot_rel} "
@@ -815,6 +901,8 @@ def _verify_artifact_binding(
             problems.append(f"artifacts.json 引用了事件链上不存在的哈希：{chain_hash[:12]}")
         bound_digests.add(actual)
 
+    if binding_incomplete:
+        return problems
     missing = set(artifact_facts) - bound_digests
     for digest in sorted(missing):
         _event_id, source_path = artifact_facts[digest]

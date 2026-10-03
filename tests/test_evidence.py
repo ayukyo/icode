@@ -2438,6 +2438,216 @@ class TestStandaloneVerifier(unittest.TestCase):
                     problems,
                 )
 
+    def test_普通清单文件受单文件摘要上限约束(self) -> None:
+        from unittest.mock import patch
+
+        from icode.pack_verify import pack_digest, sha256_file
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            pack = ws / "pack"
+            report = build_evidence_pack(out_dir, dest=pack, gates_json=None)
+            self.assertTrue(report.ok, report.render())
+            manifest_path = pack / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            entries = manifest["files"]
+            largest_existing = max((pack / entry["path"]).stat().st_size for entry in entries)
+            target = next(entry for entry in entries if entry["path"] == "verifications.json")
+            payload = b"x" * (largest_existing + 1)
+            (pack / target["path"]).write_bytes(payload)
+            target["size"] = len(payload)
+            target["sha256"] = sha256_file(pack / target["path"])
+            manifest["pack_digest"] = pack_digest(entries)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+            with patch(
+                "icode.pack_verify._MAX_PACKAGE_FILE_BYTES", largest_existing, create=True,
+            ):
+                problems = verify_pack(pack)
+
+            self.assertTrue(
+                any("单文件安全上限" in problem for problem in problems), problems,
+            )
+
+            # Tighten only the copied independent verifier's test fixture limit;
+            # its result must match the in-process verifier without PYTHONPATH.
+            verifier_path = pack / "verify.py"
+            verifier_source = verifier_path.read_bytes()
+            limit_declaration = b"_MAX_PACKAGE_FILE_BYTES = 256 * 1024 * 1024"
+            self.assertIn(limit_declaration, verifier_source)
+            verifier_path.write_bytes(
+                verifier_source.replace(
+                    limit_declaration,
+                    f"_MAX_PACKAGE_FILE_BYTES = {largest_existing}".encode("ascii"),
+                ),
+            )
+            verifier_entry = next(entry for entry in entries if entry["path"] == "verify.py")
+            verifier_entry["size"] = verifier_path.stat().st_size
+            verifier_entry["sha256"] = sha256_file(verifier_path)
+            manifest["pack_digest"] = pack_digest(entries)
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            standalone = self._run_verifier(pack, cwd=ws)
+            self.assertEqual(standalone.returncode, 1, standalone.stdout + standalone.stderr)
+            self.assertIn("单文件安全上限", standalone.stdout)
+
+    def test_包摘要累计读取预算包含正文二次哈希(self) -> None:
+        from unittest.mock import patch
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            pack = ws / "pack"
+            report = build_evidence_pack(out_dir, dest=pack, gates_json=None)
+            self.assertTrue(report.ok, report.render())
+            manifest = json.loads((pack / "manifest.json").read_text(encoding="utf-8"))
+            package_file_bytes = sum(
+                (pack / entry["path"]).stat().st_size for entry in manifest["files"]
+            )
+            artifacts = json.loads((pack / "artifacts.json").read_text(encoding="utf-8"))
+            body_bytes = sum(
+                (pack / item["snapshot"]).stat().st_size
+                for item in artifacts["artifacts"] if item["snapshot"]
+            )
+
+            # 文件清单哈希恰好耗尽限额后，正文绑定的第二次哈希必须被计入。
+            with patch(
+                "icode.pack_verify._MAX_PACKAGE_HASH_READ_BYTES",
+                package_file_bytes,
+                create=True,
+            ):
+                problems = verify_pack(pack)
+            self.assertTrue(
+                any("累计摘要读取超过安全上限" in problem for problem in problems),
+                problems,
+            )
+            self.assertFalse(any("缺少正文快照" in problem for problem in problems), problems)
+
+            with patch(
+                "icode.pack_verify._MAX_PACKAGE_HASH_READ_BYTES",
+                package_file_bytes + body_bytes,
+                create=True,
+            ):
+                self.assertEqual(verify_pack(pack), [])
+
+    def test_校验器拒绝累计正文快照超限(self) -> None:
+        from unittest.mock import patch
+
+        from icode.pack_verify import pack_digest, sha256_file
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            pack = ws / "pack"
+            report = build_evidence_pack(out_dir, dest=pack, gates_json=None)
+            self.assertTrue(report.ok, report.render())
+            manifest_path = pack / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            index_path = pack / "artifacts.json"
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            artifact = index["artifacts"][0]
+            old_snapshot_rel = artifact["snapshot"]
+            new_snapshot_rel = "ticket/custom/plan.md"
+            new_snapshot = pack / new_snapshot_rel
+            new_snapshot.parent.mkdir(parents=True)
+            (pack / old_snapshot_rel).replace(new_snapshot)
+            artifact["snapshot"] = new_snapshot_rel
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            package_entry = next(
+                entry for entry in manifest["files"]
+                if entry["path"] == old_snapshot_rel
+            )
+            package_entry["path"] = new_snapshot_rel
+            package_entry["sha256"] = sha256_file(new_snapshot)
+            package_entry["size"] = new_snapshot.stat().st_size
+            index_entry = next(
+                entry for entry in manifest["files"]
+                if entry["path"] == "artifacts.json"
+            )
+            index_entry["sha256"] = sha256_file(index_path)
+            index_entry["size"] = index_path.stat().st_size
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            body_bytes = sum(
+                (pack / item["snapshot"]).stat().st_size
+                for item in index["artifacts"] if item["snapshot"]
+            )
+
+            with patch(
+                "icode.pack_verify._MAX_PACKAGE_ARTIFACT_BYTES", body_bytes - 1,
+                create=True,
+            ):
+                problems = verify_pack(pack)
+
+            self.assertTrue(
+                any("产物快照累计字节超过安全上限" in problem for problem in problems),
+                problems,
+            )
+
+    def test_导出器单文件或总快照字节超限时清理前保留旧包(self) -> None:
+        from unittest.mock import patch
+
+        from icode.evidence import EvidenceError
+
+        for limit_name in ("_MAX_PACKAGE_FILE_BYTES", "_MAX_PACKAGE_ARTIFACT_BYTES"):
+            with self.subTest(limit=limit_name), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                events = [
+                    json.loads(line)
+                    for line in (out_dir / ".ico_events.jsonl").read_text(
+                        encoding="utf-8",
+                    ).splitlines()
+                    if line.strip()
+                ]
+                artifact = next(
+                    event for event in events if event.get("event_type") == "artifact_written"
+                )
+                artifact_size = Path(artifact["payload"]["path"]).stat().st_size
+                dest = ws / "existing-pack"
+                dest.mkdir()
+                marker = dest / "keep.txt"
+                marker.write_text("preserve previous evidence pack\n", encoding="utf-8")
+
+                selected_limit = artifact_size - 1
+                with patch(
+                    f"icode.evidence.{limit_name}", selected_limit, create=True,
+                ):
+                    with self.assertRaisesRegex(EvidenceError, "产物快照.*安全上限"):
+                        build_evidence_pack(
+                            out_dir, dest=dest, gates_json=None,
+                        )
+
+                self.assertEqual(
+                    marker.read_text(encoding="utf-8"),
+                    "preserve previous evidence pack\n",
+                )
+
+    def test_正文复制对累计限额失败时只清理本次创建的部分文件(self) -> None:
+        from icode.evidence import EvidenceError, _copy_file_bounded
+        from icode.pack_verify import _HashReadBudget
+
+        with temp_workspace() as ws:
+            source = ws / "source.bin"
+            source.write_bytes(b"0123456789")
+            destination = ws / "snapshot.bin"
+            with self.assertRaisesRegex(EvidenceError, "产物快照累计字节超过安全上限"):
+                _copy_file_bounded(
+                    source,
+                    destination,
+                    max_bytes=20,
+                    read_budget=_HashReadBudget(20),
+                    artifact_budget=_HashReadBudget(9),
+                )
+            self.assertFalse(destination.exists())
+
+            destination.write_bytes(b"existing content")
+            with self.assertRaises(FileExistsError):
+                _copy_file_bounded(
+                    source,
+                    destination,
+                    max_bytes=20,
+                    read_budget=_HashReadBudget(20),
+                    artifact_budget=_HashReadBudget(20),
+                )
+            self.assertEqual(destination.read_bytes(), b"existing content")
+
     def test_清单与正文索引条目数有上限(self) -> None:
         from unittest.mock import patch
 
