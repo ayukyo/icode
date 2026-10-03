@@ -2204,6 +2204,14 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("sys.excepthook=report_unhandled_probe_exception", captured_scripts[0])
         self.assertIn("probe_stage='network_ipv4'", captured_scripts[0])
         self.assertIn("probe_stage='result_serialization'", captured_scripts[0])
+        facts_initialization = captured_scripts[0].index("facts={'approved_read':")
+        ipv4_cleanup_fact = captured_scripts[0].index("facts['ipv4_event_cleanup_ok']")
+        ipv6_cleanup_fact = captured_scripts[0].index("facts['ipv6_event_cleanup_ok']")
+        self.assertLess(
+            facts_initialization, ipv4_cleanup_fact,
+            "event cleanup facts must be recorded after the facts dictionary exists",
+        )
+        self.assertLess(facts_initialization, ipv6_cleanup_fact)
         self.assertIn("runner_wfp_observer_gate=ready", wfp_output.getvalue())
         self.assertIn("Windows Reviewer snapshot access", notice_names)
         self.assertIn("Windows Reviewer snapshot writes and cleanup", notice_names)
@@ -7612,8 +7620,6 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "ipv6_network_connect_denied,ipv6_network_error,"
                     "ipv6_network_wait_expired,ipv6_network_terminal_error="
                     "network_connect_denied(socket.AF_INET6,'::1',ipv6_loopback_port)\n"
-                    "facts['ipv4_event_cleanup_ok']=network_observations['ipv4']['event_close_state'] in ('closed','not_created')\n"
-                    "facts['ipv6_event_cleanup_ok']=network_observations['ipv6']['event_close_state'] in ('closed','not_created')\n"
                     "def access_denied(key,call):\n"
                     "    try: call()\n"
                     "    except OSError as exc:\n"
@@ -7730,6 +7736,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'rename_denied':access_denied('rename',lambda:rename_source.rename(rename_target)),"
                     "'create_denied':native_access_denied('create',new_file,0x40000000,None,1),"
                     "'dacl_write_dac_denied':dacl_write_dac_denied(dacl_file)}\n"
+                    "facts['ipv4_event_cleanup_ok']=network_observations['ipv4']['event_close_state'] in ('closed','not_created')\n"
+                    "facts['ipv6_event_cleanup_ok']=network_observations['ipv6']['event_close_state'] in ('closed','not_created')\n"
                     "facts['ipv4_network_attempted']=ipv4_network_attempted\n"
                     "facts['ipv4_network_connected']=ipv4_network_connected\n"
                     "facts['ipv4_network_connect_denied']=ipv4_network_connect_denied\n"
