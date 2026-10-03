@@ -123,6 +123,51 @@ class TestEvidencePack(unittest.TestCase):
                 marker.read_text(encoding="utf-8"), "preserve previous evidence pack\n",
             )
 
+    def test_导出器对gates_json按字节上限有界读取并在超限时保留旧包(self) -> None:
+        from unittest.mock import patch
+
+        from icode.contracts import ContractError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            gates_json = ws / "gates.json"
+            gates_bytes = self.settings.gates_json.read_bytes()
+            gates_json.write_bytes(gates_bytes)
+            dest = ws / "pack"
+            limit = len(gates_bytes)
+
+            # Exactly-at-limit input remains compatible with the current contract.
+            with patch("icode.evidence._MAX_EVIDENCE_GATES_JSON_BYTES", limit):
+                report = build_evidence_pack(
+                    out_dir, dest=dest, gates_json=gates_json,
+                )
+            self.assertTrue(report.ok, report.render())
+            contracts_before = (dest / "contracts.json").read_bytes()
+
+            gates_json.write_bytes(gates_bytes + b" ")
+            for clean in (True, False):
+                with self.subTest(clean=clean):
+                    marker = dest / "keep-existing-pack.txt"
+                    marker.write_text("preserve existing package\n", encoding="utf-8")
+                    with patch(
+                        "icode.evidence._MAX_EVIDENCE_GATES_JSON_BYTES",
+                        limit,
+                    ):
+                        with self.assertRaisesRegex(ContractError, "安全输入上限"):
+                            build_evidence_pack(
+                                out_dir,
+                                dest=dest,
+                                gates_json=gates_json,
+                                clean=clean,
+                            )
+                    self.assertEqual(
+                        marker.read_text(encoding="utf-8"),
+                        "preserve existing package\n",
+                    )
+                    self.assertEqual(
+                        (dest / "contracts.json").read_bytes(), contracts_before,
+                    )
+
     def test_导出器拒绝任意事件类型的非对象payload并保留旧包(self) -> None:
         from icode.evidence import EvidenceError
         from icode.pack_verify import GENESIS_HASH, canonical_event_hash

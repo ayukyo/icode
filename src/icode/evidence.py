@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .contracts import ContractSet
+from .contracts import ContractError, ContractSet
 from .pack_verify import (
     ALLOWED_EVENT_TYPES,
     EVENTS_REL,
@@ -68,6 +68,9 @@ _MAX_VERIFICATION_RECEIPT_INPUT_BYTES = 16 * 1024 * 1024
 _MAX_VERIFICATION_RECEIPT_FILES = 256
 _MAX_VERIFICATION_RECEIPTS = 10_000
 _MAX_VERIFICATIONS_JSON_BYTES = 8 * 1024 * 1024
+# Workflow contracts are copied into an evidence package. Bound this export
+# input independently; the general ContractSet loader remains unchanged.
+_MAX_EVIDENCE_GATES_JSON_BYTES = 8 * 1024 * 1024
 
 
 class EvidenceError(RuntimeError):
@@ -686,7 +689,19 @@ def _snapshot_artifacts(
 
 
 def _contract_snapshot(gates_json: Path, steps: set[str]) -> dict:
-    contracts = ContractSet.load(gates_json)
+    if not gates_json.is_file():
+        raise ContractError(f"契约文件不存在：{gates_json}")
+    try:
+        gates_bytes = read_bounded_bytes(
+            gates_json, max_bytes=_MAX_EVIDENCE_GATES_JSON_BYTES,
+        )
+    except ValueError:
+        raise ContractError("gates.json 超过证据包导出的安全输入上限") from None
+    try:
+        raw_contracts = json.loads(gates_bytes.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ContractError(f"契约文件不是合法 JSON：{exc}") from None
+    contracts = ContractSet(raw_contracts)
     out: dict[str, dict] = {}
     for step in sorted(steps):
         if not contracts.has(step):
