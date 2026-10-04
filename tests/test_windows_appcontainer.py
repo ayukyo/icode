@@ -24,6 +24,7 @@ import time
 import unittest
 import uuid
 from collections.abc import Callable
+from types import SimpleNamespace
 from unittest import mock
 from urllib.parse import urlsplit
 
@@ -1079,7 +1080,168 @@ def _compact_path_resolution_probe_notice(
     return {"complete": complete, "operations": operations}
 
 
+def _appcontainer_sid_text_is_valid(value: object) -> bool:
+    if type(value) is not str or not value.isascii() or len(value) > 184:
+        return False
+    if value[:2].casefold() != "s-":
+        return False
+    components = value[2:].split("-")
+    return bool(components) and all(component.isdecimal() for component in components)
+
+
+def _appcontainer_profile_sid_matches(actual_sid: object, expected_sid: object) -> bool:
+    return (
+        _appcontainer_sid_text_is_valid(actual_sid)
+        and _appcontainer_sid_text_is_valid(expected_sid)
+        and actual_sid.casefold() == expected_sid.casefold()
+    )
+
+
+def _derive_appcontainer_profile_sid(profile_name: str) -> str:
+    if type(profile_name) is not str or not profile_name:
+        raise ValueError("AppContainer profile name must be a non-empty string")
+
+    userenv = ctypes.WinDLL("userenv", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    userenv.DeriveAppContainerSidFromAppContainerName.argtypes = [
+        ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    userenv.DeriveAppContainerSidFromAppContainerName.restype = ctypes.c_long
+    advapi.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.ConvertSidToStringSidW.restype = ctypes.c_int
+    advapi.FreeSid.argtypes = [ctypes.c_void_p]
+    advapi.FreeSid.restype = ctypes.c_void_p
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+
+    profile_sid = ctypes.c_void_p()
+    sid_string = ctypes.c_void_p()
+    try:
+        hresult = int(userenv.DeriveAppContainerSidFromAppContainerName(
+            profile_name, ctypes.byref(profile_sid),
+        ))
+        if hresult != 0:
+            raise RuntimeError(
+                "DeriveAppContainerSidFromAppContainerName failed "
+                f"(HRESULT=0x{hresult & 0xFFFFFFFF:08x})",
+            )
+        if not profile_sid.value:
+            raise RuntimeError("profile SID derivation returned an empty SID")
+        if (
+            not advapi.ConvertSidToStringSidW(profile_sid, ctypes.byref(sid_string))
+            or not sid_string.value
+        ):
+            raise RuntimeError("ConvertSidToStringSidW failed for profile SID")
+        value = ctypes.wstring_at(sid_string.value)
+        if not _appcontainer_sid_text_is_valid(value):
+            raise RuntimeError("profile SID conversion returned invalid text")
+        return value
+    finally:
+        cleanup_errors: list[str] = []
+        if sid_string.value and kernel.LocalFree(sid_string):
+            cleanup_errors.append("LocalFree")
+        if profile_sid.value and advapi.FreeSid(profile_sid):
+            cleanup_errors.append("FreeSid")
+        if cleanup_errors and sys.exc_info()[0] is None:
+            raise RuntimeError(
+                "failed to release profile SID API buffers: " + ", ".join(cleanup_errors),
+            )
+
+
 class TestWindowsAppContainer(unittest.TestCase):
+    def test_appcontainer_profile_sid_comparison_rejects_missing_or_invalid_values(self) -> None:
+        compare_sid = globals().get("_appcontainer_profile_sid_matches")
+        self.assertTrue(callable(compare_sid), "profile SID identity check is missing")
+        expected = "S-1-15-2-123456789"
+        self.assertTrue(compare_sid(expected, expected.lower()))
+        self.assertFalse(compare_sid("S-1-15-2-987654321", expected))
+        self.assertFalse(compare_sid(None, expected))
+        self.assertFalse(compare_sid(expected, "not-a-sid"))
+        self.assertFalse(compare_sid("S-1-" + "1" * 190, expected))
+
+    def test_appcontainer_profile_sid_derivation_uses_userenv_and_releases_buffers(self) -> None:
+        derive_sid = globals().get("_derive_appcontainer_profile_sid")
+        self.assertTrue(callable(derive_sid), "profile SID derivation helper is missing")
+
+        sid_storage = ctypes.c_uint32(7)
+        sid_text_storage = ctypes.create_unicode_buffer("S-1-15-2-123456789")
+
+        def set_pointer(output: object, address: int) -> None:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = address
+
+        def derive(profile_name: str, output: object) -> int:
+            self.assertEqual(profile_name, "icode-reviewer-test")
+            set_pointer(output, ctypes.addressof(sid_storage))
+            return 0
+
+        def convert(sid: object, output: object) -> int:
+            self.assertEqual(sid.value, ctypes.addressof(sid_storage))
+            set_pointer(output, ctypes.addressof(sid_text_storage))
+            return 1
+
+        userenv = SimpleNamespace(
+            DeriveAppContainerSidFromAppContainerName=mock.Mock(side_effect=derive),
+        )
+        advapi = SimpleNamespace(
+            ConvertSidToStringSidW=mock.Mock(side_effect=convert),
+            FreeSid=mock.Mock(return_value=None),
+        )
+        kernel = SimpleNamespace(LocalFree=mock.Mock(return_value=None))
+        libraries = {"userenv": userenv, "advapi32": advapi, "kernel32": kernel}
+        with mock.patch.object(
+            ctypes, "WinDLL", create=True,
+            side_effect=lambda name, **_kwargs: libraries[name],
+        ):
+            result = derive_sid("icode-reviewer-test")
+
+        self.assertEqual(result, "S-1-15-2-123456789")
+        userenv.DeriveAppContainerSidFromAppContainerName.assert_called_once()
+        self.assertEqual(
+            userenv.DeriveAppContainerSidFromAppContainerName.argtypes,
+            [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p)],
+        )
+        self.assertIs(
+            userenv.DeriveAppContainerSidFromAppContainerName.restype, ctypes.c_long,
+        )
+        advapi.ConvertSidToStringSidW.assert_called_once()
+        advapi.FreeSid.assert_called_once()
+        kernel.LocalFree.assert_called_once()
+
+    def test_appcontainer_profile_sid_derivation_frees_sid_on_hresult_failure(self) -> None:
+        derive_sid = globals().get("_derive_appcontainer_profile_sid")
+        self.assertTrue(callable(derive_sid), "profile SID derivation helper is missing")
+
+        sid_storage = ctypes.c_uint32(7)
+
+        def derive(_profile_name: str, output: object) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = (
+                ctypes.addressof(sid_storage)
+            )
+            return -2147024891  # E_ACCESSDENIED as HRESULT.
+
+        userenv = SimpleNamespace(
+            DeriveAppContainerSidFromAppContainerName=mock.Mock(side_effect=derive),
+        )
+        advapi = SimpleNamespace(
+            ConvertSidToStringSidW=mock.Mock(return_value=0),
+            FreeSid=mock.Mock(return_value=None),
+        )
+        kernel = SimpleNamespace(LocalFree=mock.Mock(return_value=None))
+        libraries = {"userenv": userenv, "advapi32": advapi, "kernel32": kernel}
+        with mock.patch.object(
+            ctypes, "WinDLL", create=True,
+            side_effect=lambda name, **_kwargs: libraries[name],
+        ):
+            with self.assertRaisesRegex(RuntimeError, "HRESULT"):
+                derive_sid("icode-reviewer-test")
+
+        advapi.FreeSid.assert_called_once()
+        advapi.ConvertSidToStringSidW.assert_not_called()
+        kernel.LocalFree.assert_not_called()
+
     def test_reviewer_snapshot_root_requires_named_temp_directory_outside_scratch(self) -> None:
         validator = getattr(
             windows_appcontainer,
@@ -2179,6 +2341,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "ICODE_DIAGNOSTIC_WFP_RUNNER_TARGET_FILE": str(runner_target_path),
                         "ICODE_DIAGNOSTIC_WFP_RUNNER_READY_FILE": str(runner_ready_path),
                     },
+                ), mock.patch(
+                    "tests.test_windows_appcontainer._derive_appcontainer_profile_sid",
+                    return_value="S-1-15-2-123456789",
                 ), mock.patch(
                     "tests.test_windows_appcontainer.run_windows_appcontainer",
                     side_effect=capture_runner,
@@ -7336,6 +7501,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 ipv4_loopback_port = network_servers[0].server_address[1]
                 ipv6_loopback_port = network_servers[1].server_address[1]
                 reviewer_profile_name = f"icode-{uuid.uuid4().hex}"
+                expected_package_sid = _derive_appcontainer_profile_sid(
+                    reviewer_profile_name,
+                )
                 original_snapshot_hash = hashlib.sha256(approved_file.read_bytes()).hexdigest()
                 stage_summary = windows_appcontainer._copy_runtime_tree_for_diagnostic(
                     source_root, staged_runtime,
@@ -8142,6 +8310,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "cleanup": candidate.cleanup_ok,
                     "appcontainer": token.get("appcontainer") is True,
                     "package_sid": token.get("package_sid") is True,
+                    "package_sid_matches_profile": _appcontainer_profile_sid_matches(
+                        token.get("package_sid_value"), expected_package_sid,
+                    ),
                     "capabilities": token.get("capability_count"),
                     "elevated": token.get("elevated"),
                     "admin_group_enabled": token.get("admin_group_enabled"),
@@ -8226,7 +8397,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                             key: summary[key]
                             for key in (
                                 "executed", "exit", "cleanup", "appcontainer", "package_sid",
-                                "capabilities", "elevated", "admin_group_enabled", "approved_read",
+                                "package_sid_matches_profile", "capabilities", "elevated",
+                                "admin_group_enabled", "approved_read",
                                 "outside_snapshot_denied", "workspace_denied", "home_denied",
                                 "ledger_denied", "runner_wfp_observer_gate",
                             )
@@ -8297,7 +8469,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.assertTrue(parent_standard_user_verified, summary)
                 self.assertTrue(dacl_control_verified, summary)
                 self.assertTrue(all(summary[key] is True for key in (
-                    "appcontainer", "package_sid", "approved_read", "outside_snapshot_denied",
+                    "appcontainer", "package_sid", "package_sid_matches_profile",
+                    "approved_read", "outside_snapshot_denied",
                     "workspace_denied", "home_denied", "ledger_denied", "write_denied",
                     "delete_denied", "rename_denied", "create_denied", "dacl_write_dac_denied",
                     "child_started", "child_exited", "snapshot_acl_restored", "runtime_acl_restored",
