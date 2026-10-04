@@ -51,6 +51,7 @@ from .pack_verify import (
     _HashReadBudget,
     _HashReadBudgetExceeded,
     _AgentLifecycleMirror,
+    _ExecutionEventMirror,
     _TicketStateMirror,
     _AGENT_LIFECYCLE_EVENT_TYPES,
     _check_json_structural_token_budget,
@@ -61,6 +62,7 @@ from .pack_verify import (
     _metadata_content_hash,
     _metadata_event_mirror_records,
     _normalize_ticket_state_machine,
+    _execution_model_snapshot_from_raw,
     event_schema_issues,
     loads_json_value,
     read_bounded_bytes,
@@ -140,6 +142,7 @@ class _EventSummary:
     event_count: int = 0
     steps: set[str] = field(default_factory=set)
     artifact_events: list[dict] = field(default_factory=list)
+    has_versioned_execution_events: bool = False
 
 
 def _now() -> str:
@@ -434,6 +437,7 @@ def _read_events(
     expected_agent_spawns: object,
     expected_metadata_hash: str,
     expected_ticket_state_machine: object = None,
+    expected_execution_model: object = None,
     ticket_metadata: object = None,
 ) -> _EventSummary:
     path = Path(out_dir) / EVENTS_NAME
@@ -458,6 +462,7 @@ def _read_events(
     ticket_state_mirror = _TicketStateMirror(
         expected_ticket_state_machine, ticket_metadata,
     )
+    execution_event_mirror = _ExecutionEventMirror(expected_execution_model)
     try:
         if path.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
             raise EvidenceError("事件链超过总输入字节数上限")
@@ -532,6 +537,7 @@ def _read_events(
                         f"（字段：{fields}）"
                     )
                 ticket_state_mirror.consume(event, summary.event_count)
+                execution_event_mirror.consume(event, summary.event_count)
                 if event_type in _AGENT_LIFECYCLE_EVENT_TYPES:
                     agent_lifecycle_mirror.consume(event_type, payload)
                 if event_type not in ("step_started", "artifact_written"):
@@ -582,6 +588,14 @@ def _read_events(
     ticket_state_problems = ticket_state_mirror.finish()
     if ticket_state_problems:
         raise EvidenceError("工单状态事件语义无效：" + "；".join(ticket_state_problems))
+    execution_event_problems = execution_event_mirror.finish()
+    if execution_event_problems:
+        raise EvidenceError(
+            "执行模型事件语义无效：" + "；".join(execution_event_problems)
+        )
+    summary.has_versioned_execution_events = (
+        execution_event_mirror.has_versioned_events
+    )
     if has_metadata_hash_after and last_metadata_hash_after != expected_metadata_hash:
         raise EvidenceError(
             "事件链最终 metadata_hash_after 与工单 metadata 摘要不一致"
@@ -841,6 +855,12 @@ def _contract_snapshot_from_raw(raw_contracts: dict, steps: set[str]) -> dict:
             snapshot["state_machine"] = _normalize_ticket_state_machine(state_machine)
         except (TypeError, ValueError, RecursionError) as exc:
             raise ContractError(f"state_machine 契约结构无效：{exc}") from None
+    try:
+        execution_model = _execution_model_snapshot_from_raw(raw_contracts)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ContractError(f"execution_model 契约结构无效：{exc}") from None
+    if execution_model is not None:
+        snapshot["execution_model"] = execution_model
     return snapshot
 
 
@@ -891,7 +911,10 @@ PACK_README = """# 证据包（{ticket_id}）
 3. **v3 工单状态语义（仅 contracts.json 含 state_machine 快照时）** —— 独立校验器
    流式检查状态迁移、最终 status、关闭阶段顺序与重开条件。旧包或无此快照时保持兼容，
    但不声明该项语义已验证。
-4. **清单与包摘要** —— `manifest.json` 记录每个文件的 sha256 与 `pack_digest`。
+4. **execution-model v1 事件语义（仅 contracts.json 含 execution_model 快照时）** ——
+   校验 step/operation 的 attempt 配对、身份、结果词表与完成边界。未版本化历史事件保持兼容；
+   版本化事件缺少模型快照时，导出报告会明确降级，不声明该项语义已验证。
+5. **清单与包摘要** —— `manifest.json` 记录每个文件的 sha256 与 `pack_digest`。
 
 ## 校验方法（不需要安装 icode-agent）
 
@@ -979,6 +1002,7 @@ def build_evidence_pack(
 
     raw_contracts: dict | None = None
     ticket_state_machine: dict | None = None
+    ticket_execution_model: dict | None = None
     if has_gates_file and gates_path is not None:
         raw_contracts = _load_contract_source(gates_path)
         raw_state_machine = raw_contracts.get("state_machine")
@@ -991,6 +1015,14 @@ def build_evidence_pack(
                 raise ContractError(
                     f"state_machine 契约结构无效：{exc}"
                 ) from None
+        try:
+            ticket_execution_model = _execution_model_snapshot_from_raw(
+                raw_contracts,
+            )
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ContractError(
+                f"execution_model 契约结构无效：{exc}"
+            ) from None
 
     metadata_event_mirrors = {
         event_type: _metadata_event_mirror_records(meta, event_type)
@@ -1007,6 +1039,7 @@ def build_evidence_pack(
         expected_agent_spawns=metadata_agent_spawns,
         expected_metadata_hash=expected_metadata_hash,
         expected_ticket_state_machine=ticket_state_machine,
+        expected_execution_model=ticket_execution_model,
         ticket_metadata=meta,
     )
     if not event_summary.event_count:
@@ -1068,6 +1101,13 @@ def build_evidence_pack(
     ):
         warnings.append(
             "契约快照不含 state_machine，本包不声明已验证工单状态/关闭阶段语义"
+        )
+    if (
+        event_summary.has_versioned_execution_events
+        and ticket_execution_model is None
+    ):
+        warnings.append(
+            "缺少 execution_model v1 快照，本包不声明已验证 execution-model 事件语义"
         )
 
     # 4) 外部验证回执（R3：VerificationEvidence 会自动序列化成绑定回执）

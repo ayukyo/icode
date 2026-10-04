@@ -91,7 +91,7 @@ python scripts/preflight.py
 | 带边界的模型 Tool Loop | 可用 | `icode step-run`、`icode task` |
 | 默认拒绝 Guard 与人在环审批 | 可用 | 终端审批与仅 loopback 的 WebUI |
 | 副作用回执与歧义动作停止 | 可用 | operation start/finish 记录 |
-| 带独立校验器的证据包 | 可用 | `icode evidence`、`icode verify-pack` |
+| 带独立校验器的证据包 | 可用 | `icode evidence`、`icode verify-pack`（有契约快照时核验状态与执行事件语义） |
 | 检查点与证据驱动恢复 | 可用 | `icode recover` |
 | 本地审批台与双语工程工作台 | 可用 | `icode webui`、`icode workbench` |
 | 六阶段完全自主链路 | 开发中 | `plan` 已验证；后续阶段闭环仍在路线图中 |

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import importlib
 import os
 import unittest
 from contextlib import redirect_stderr
@@ -14,18 +15,19 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
     def test_cross_platform_matrix_selects_os_neutral_R3_regressions(self) -> None:
-        self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 49)
+        self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 50)
         self.assertTrue(set(CROSS_PLATFORM_R3_TESTS).issubset(DEFAULT_MODULES))
         required_r3_evidence_tests = {
             "tests.test_r3_regression.TestTaskReviewAndDiffBinding.test_run_task证据锚定真实Git基线和含预存脏改动的快照",
             "tests.test_r3_regression.TestTaskReviewAndDiffBinding.test_SHA256基线自动选择对应tree对象格式",
             "tests.test_r3_regression.TestResultCommitTreeBinding.test_run_task显式参数自动绑定结果commit",
             "tests.test_r3_regression.TestResultCommitTreeBinding.test_run_task成功测试绑定受测tree和结果commit",
+            "tests.test_run_workspace_ci.TestWorkspaceCiCoverage.test_cross_platform_matrix_only_names_existing_unittest_methods",
             "tests.test_evidence.TestEvidencePack.test真实task回执经CLI保存导入证据包并独立校验",
             "tests.test_evidence.TestEvidencePack.test_导出器保留JSON字符串中的Unicode行分隔符",
             "tests.test_evidence.TestEvidencePack.test_导出器拒绝非对象事件且在清理旧包前失败",
             "tests.test_evidence.TestEvidencePack.test_导出器拒绝任意事件类型的非对象payload并保留旧包",
-            "tests.test_evidence.TestEvidencePack.test_任意事件类型的空对象payload仍兼容导出和校验",
+            "tests.test_evidence.TestEvidencePack.test_非状态控制事件的空对象payload仍兼容导出和校验",
             "tests.test_evidence.TestEvidencePack.test_导出器拒绝不在SKILL枚举中的事件类型并保留旧包",
             "tests.test_evidence.TestEvidencePack.test_导出器拒绝不符合v1事件Schema的字段并保留旧包",
             "tests.test_evidence.TestEvidencePack.test_导出器拒绝缺失的工单身份且清理旧包前失败",
@@ -54,6 +56,13 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
             CROSS_PLATFORM_R3_TESTS,
         ))
         self.assertNotIn("tests.test_r3_regression.TestResultCommitTreeBinding", DEFAULT_MODULES)
+
+    def test_cross_platform_matrix_only_names_existing_unittest_methods(self) -> None:
+        for test_id in CROSS_PLATFORM_R3_TESTS:
+            module_name, class_name, method_name = test_id.rsplit(".", 2)
+            test_case = getattr(importlib.import_module(module_name), class_name)
+            with self.subTest(test_id=test_id):
+                self.assertTrue(callable(getattr(test_case, method_name, None)))
 
     def test_posix_workspace_matrix_runs_native_tree_oid_git_differential(self) -> None:
         tree_differential = (

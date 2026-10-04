@@ -91,7 +91,7 @@ python scripts/preflight.py
 | Model tool loop with bounded file/command tools | Ready | `icode step-run`, `icode task` |
 | Default-deny guard and human approval protocol | Ready | terminal approver and loopback-only WebUI |
 | Side-effect receipts and ambiguous-action stop | Ready | operation start/finish records |
-| Evidence package with standalone verifier | Ready | `icode evidence`, `icode verify-pack` |
+| Evidence package with standalone verifier | Ready | `icode evidence`, `icode verify-pack` (state and execution-event semantics when contract snapshots are present) |
 | Checkpoints and evidence-led recovery | Ready | `icode recover` |
 | Local approval console and bilingual project workbench | Ready | `icode webui`, `icode workbench` |
 | Full six-stage autonomous chain | In progress | `plan` is proven; later-stage closure remains on the roadmap |

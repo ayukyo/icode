@@ -775,6 +775,311 @@ class TestEvidencePack(unittest.TestCase):
             )
             self.assertIn("contracts.json state_machine", independent.stdout + independent.stderr)
 
+    def test_证据包携带版本化执行模型并接受真实step轨迹(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+
+            self.assertTrue(report.ok, report.render())
+            contracts = json.loads((dest / "contracts.json").read_text(encoding="utf-8"))
+            self.assertEqual(contracts["execution_model"]["schema_version"], 1)
+            self.assertIn("plan", contracts["execution_model"]["steps"])
+            self.assertEqual(verify_pack(dest), [])
+
+    def test_导出器拒绝没有启动事件的版本化step_finish(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "step_finished",
+                {"execution_model_version": 1, "attempt": "orphan-step",
+                 "step": "plan", "outcome": "success", "duration_ms": 1},
+                {},
+            )
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+
+            with self.assertRaisesRegex(EvidenceError, "step_finished"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    clean=True,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_导出器拒绝重复启动的版本化step_attempt(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            start_payload = next(
+                event["payload"] for event in events
+                if event["event_type"] == "step_started"
+                and event["payload"].get("execution_model_version") == 1
+            )
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", events_path,
+                "step_started", start_payload, {},
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "step_started"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝畸形版本化step字段且不抛出类型异常(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "step_started",
+                {"execution_model_version": 1, "attempt": "invalid-step-fields",
+                 "step": [], "input_digest": [], "contract_digest": "not-a-digest"},
+                {},
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "step_started"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝非法step_finished结果与耗时(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            attempt = "invalid-step-finish"
+            self._append_rehashed_event(
+                metadata_path, events_path, "step_started",
+                {"execution_model_version": 1, "attempt": attempt,
+                 "step": "plan", "input_digest": "d" * 64,
+                 "contract_digest": "e" * 64},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "step_finished",
+                {"execution_model_version": 1, "attempt": attempt,
+                 "step": "plan", "outcome": "unknown", "duration_ms": -1},
+                {},
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "step_finished"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器接受独立配对的版本化operation轨迹(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "read-operation",
+                 "name": "inspect dependency", "class": "read_only",
+                 "input_digest": "f" * 64, "idempotency_provided": False},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": "read-operation",
+                 "name": "inspect dependency", "class": "read_only",
+                 "outcome": "success", "duration_ms": 0,
+                 "evidence": "read receipt", "after_check": "read completed",
+                 "decision": {"action": "allow"}},
+                {},
+            )
+
+            report = build_evidence_pack(
+                out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+            )
+
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_导出器拒绝operation_finished缺少失败回执字段(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "incomplete-operation",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "c" * 64, "idempotency_provided": True},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": "incomplete-operation",
+                 "name": "publish", "class": "managed_write",
+                 "outcome": "failure", "duration_ms": 1,
+                 "evidence": "", "after_check": "", "decision": []},
+                {},
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "operation_finished"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝step完成后的gate_check(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            attempt = next(
+                event["payload"]["attempt"] for event in reversed(events)
+                if event["event_type"] == "step_finished"
+            )
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", events_path, "gate_checked",
+                {"execution_model_version": 1, "attempt": attempt,
+                 "step": "plan", "boundary": "before_write", "result": "pass",
+                 "captured_digest": "a" * 64, "current_digest": "a" * 64},
+                {},
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "gate_checked"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝没有启动事件的版本化operation_finish(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "operation_finished",
+                {"execution_model_version": 1, "attempt": "orphan-operation",
+                 "name": "publish", "class": "managed_write", "outcome": "success",
+                 "duration_ms": 1, "evidence": "receipt", "after_check": "observed",
+                 "decision": {"action": "complete", "reason": "success"}},
+                {},
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "operation_finished"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝operation_finish身份分叉(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "operation-attempt",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "b" * 64, "idempotency_provided": True},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": "operation-attempt",
+                 "name": "different operation", "class": "managed_write",
+                 "outcome": "success", "duration_ms": 1, "evidence": "receipt",
+                 "after_check": "observed",
+                 "decision": {"action": "complete", "reason": "success"}},
+                {},
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "operation_finished"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_独立校验器拒绝重签包中的未配对执行事件(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+            self._append_rehashed_event(
+                dest / "ticket" / "metadata.json",
+                dest / "ticket" / "events.jsonl",
+                "step_finished",
+                {"execution_model_version": 1, "attempt": "orphan-step",
+                 "step": "plan", "outcome": "success", "duration_ms": 1},
+                {},
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+            self._refresh_pack_member_hash(dest, "ticket/events.jsonl")
+
+            problems = verify_pack(dest)
+            self.assertTrue(any("step_finished" in item for item in problems), problems)
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("step_finished", independent.stdout + independent.stderr)
+
+    def test_无执行模型快照时版本化旧包兼容且明确降级(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "step_finished",
+                {"execution_model_version": 1, "attempt": "orphan-step",
+                 "step": "plan", "outcome": "success", "duration_ms": 1},
+                {},
+            )
+            report = build_evidence_pack(out_dir, dest=ws / "pack")
+
+            self.assertTrue(report.ok, report.render())
+            self.assertTrue(
+                any("不声明已验证 execution-model" in item for item in report.warnings),
+                report.warnings,
+            )
+            self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_未版本化历史step事件继续兼容(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "step_finished",
+                {"attempt": "legacy-orphan", "step": "plan",
+                 "outcome": "success", "duration_ms": 1},
+                {},
+            )
+
+            report = build_evidence_pack(
+                out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+            )
+
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(verify_pack(ws / "pack"), [])
+
     def test_导出器拒绝最终状态与metadata分叉(self) -> None:
         from icode.evidence import EvidenceError
 

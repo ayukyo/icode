@@ -1,6 +1,8 @@
 # R3 自验证与有界修复
 
-- **本片最终验证状态（2026-10-05）：**R3 工单状态/关闭阶段语义切片的全仓 preflight 三道门、compileall、治理、站点、持续竞品清单与 `git diff --check` 均已通过；完整 `tests.test_evidence` 132 项及 8 个核心回归 20 轮/160 次通过。新 SHA 的跨平台 CI 待提交后复核。
+- **当前 execution-model v1 切片（2026-10-05；本机完整验收通过，新 SHA CI 待验）：**新增证据包 `execution_model` 有界目录及流式 step/operation attempt 语义镜像；导出器与零依赖独立 verifier 复用它。`tests.test_evidence` 145 项通过；9 条关键路径 20 轮共 180 次通过，workspace matrix 197 项通过；全仓 preflight 3/3，compileall、治理、站点、竞品排期和 diff 检查通过。覆盖真实 versioned plan、attempt 缺配对/重复启动、step 完成后 gate、畸形字段、step 结果/耗时、合法/非法 operation、旧事件兼容、旧包无快照警告和独立 verifier 重签包拒绝。上一 SHA CI #622 的四个平台 workspace job 使用已改名的空对象测试选择器；现更新方法名并把全部选择器解析存在性纳入跨平台矩阵。未要求 EOF 所有 attempt 结束；不增加 operation→step 关联、不重算 failure policy、不认证来源；Windows Reviewer 网络门与 R2 Windows `10013`、R2/R3 readiness 不变。
+
+- **工单状态/关闭阶段语义切片最终验证状态（2026-10-05）：**R3 工单状态/关闭阶段事件语义切片的全仓 preflight 三道门、compileall、治理、站点、持续竞品清单与 `git diff --check` 均已通过；完整 `tests.test_evidence` 132 项及 8 个核心回归 20 轮/160 次通过。新 SHA 的跨平台 CI 待提交后复核。
 
 - **R3 工单状态/关闭阶段事件语义镜像（2026-10-05；evidence 132 项通过、8 个核心方法连续 20 轮/160 次通过，全仓 preflight 待跑）：**对齐 pinned ICODE-SKILL `b74c4c40f2246a6c4eea77e494dd57c642f3a9a3`（MIT）的 `validate_event_semantics()` 与动态 `state_machine`。Exporter 与零依赖包内 verifier 共享有界 reducer：检查 ticket birth/debug 对应、v3 `state_changed` 状态词表/合法边/当前状态连续性、`delivery_verdict`、最终 metadata.status，以及按序 close phase、closed→null reopen 和 metadata.close_state。契约快照仅携带 `states`、`transitions(from/to)`、`close_phases`，限制 8 MiB/结构预算；旧包或缺快照继续可验证，但 README/导出 warning 明确不声称此状态语义已验证。Exporter 使用同一次 gates parse 做预清理校验和 contracts snapshot，畸形状态机不会清除旧目标；独立 verifier 对重签包同样重验。NaN gates 扩展保持旧快照兼容，重复成员和超限结构 fail closed。TDD 覆盖正常迁移、完整关闭/重开、非法迁移/跳级/提前重开/metadata 分叉、畸形快照、旧包兼容和独立校验。当前状态机按导出时 pinned gates，不构成历史契约版本记录；规则未来变化时旧工单可能需要迁移。未复制控制面代码、不改子仓库、不加运行依赖，不做 execution-model step/operation 配对或来源认证；R2 `10013` 和 overall readiness 不变。
 

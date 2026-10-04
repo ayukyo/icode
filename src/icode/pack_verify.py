@@ -6,10 +6,10 @@
 
 它主要验证五类内容：
     ① 清单完整性 —— manifest.files 里每个文件的 sha256 与实际一致
-    ② 事件链完整性 —— 逐行复算 canonical_event_hash、检查 previous 链接、event_id 唯一
+    ② 事件链与元数据语义 —— 哈希链、镜像、v3 状态机及快照启用时的 execution-model v1 配对
     ③ 正文与链上哈希对应 —— 产物正文快照的 sha256 必须等于事件 payload 里记录的 sha256
-    ④ v3 状态语义 —— contracts.json 有状态机快照时重放状态/关闭事件
-    ⑤ 包摘要 —— 重算 pack_digest 与 manifest 声明值一致
+    ④ 包摘要 —— 重算 pack_digest 与 manifest 声明值一致
+    ⑤ 包结构 —— 拒绝未登记文件、路径逃逸、链接和超限输入
 
 用法：
     python verify.py <证据包目录>
@@ -54,6 +54,9 @@ _MAX_CONTRACTS_JSON_BYTES = 8 * 1024 * 1024
 _MAX_TICKET_STATES = 256
 _MAX_TICKET_TRANSITIONS = 4096
 _MAX_CLOSE_PHASES = 64
+_MAX_EXECUTION_MODEL_STEPS = 4096
+_MAX_EXECUTION_MODEL_ENUM_VALUES = 256
+_MAX_EXECUTION_MODEL_NAME_CHARS = 128
 _DELIVERY_VERDICTS = frozenset({
     "verified", "verification_pending", "blocked", "not_applicable",
 })
@@ -69,6 +72,7 @@ _UNSET_METADATA_AGENT_SPAWNS = object()
 _UNSET_EXPECTED_METADATA_HASH = object()
 _UNSET_TICKET_STATE_MACHINE = object()
 _UNSET_TICKET_METADATA = object()
+_UNSET_EXECUTION_MODEL = object()
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -617,6 +621,92 @@ def _normalize_ticket_state_machine(value: object) -> dict:
     }
 
 
+_EXECUTION_EVENT_TYPES = frozenset({
+    "step_started", "gate_checked", "artifact_written", "step_finished",
+    "operation_started", "operation_finished",
+})
+_EXECUTION_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _normalize_execution_model(value: object, *, snapshot: bool = False) -> dict:
+    """Normalize the small v1 catalog needed to independently replay event pairing."""
+    if not isinstance(value, dict):
+        raise ValueError("execution_model 必须是对象")
+    version = value.get("schema_version")
+    if type(version) is not int or version != 1:
+        raise ValueError("execution_model.schema_version 必须为 1")
+
+    raw_steps = value.get("steps" if snapshot else "step_contracts")
+    if snapshot:
+        if not isinstance(raw_steps, list):
+            raise ValueError("execution_model.steps 必须是数组")
+        steps = raw_steps
+    elif isinstance(raw_steps, dict):
+        steps = list(raw_steps)
+    else:
+        raise ValueError("execution_model.step_contracts 必须是对象")
+
+    def normalize_names(
+        field_name: str, raw_names: object, *, maximum: int,
+        allow_empty: bool = False,
+    ) -> list[str]:
+        if (
+            not isinstance(raw_names, list)
+            or len(raw_names) > maximum
+            or (not allow_empty and not raw_names)
+            or not all(
+                isinstance(name, str)
+                and 0 < len(name) <= _MAX_EXECUTION_MODEL_NAME_CHARS
+                for name in raw_names
+            )
+            or len(set(raw_names)) != len(raw_names)
+        ):
+            raise ValueError(f"execution_model.{field_name} 结构无效")
+        return list(raw_names)
+
+    normalized_steps = normalize_names(
+        "steps", steps, maximum=_MAX_EXECUTION_MODEL_STEPS,
+    )
+    boundaries = normalize_names(
+        "boundaries", value.get("boundaries"),
+        maximum=_MAX_EXECUTION_MODEL_ENUM_VALUES,
+    )
+    step_outcomes = normalize_names(
+        "step_outcomes", value.get("step_outcomes"),
+        maximum=_MAX_EXECUTION_MODEL_ENUM_VALUES,
+    )
+    raw_classes = value.get("operation_classes")
+    if snapshot:
+        operation_classes = normalize_names(
+            "operation_classes", raw_classes,
+            maximum=_MAX_EXECUTION_MODEL_ENUM_VALUES,
+        )
+    elif isinstance(raw_classes, dict):
+        operation_classes = normalize_names(
+            "operation_classes", list(raw_classes),
+            maximum=_MAX_EXECUTION_MODEL_ENUM_VALUES,
+        )
+    else:
+        raise ValueError("execution_model.operation_classes 必须是对象")
+
+    return {
+        "schema_version": 1,
+        "steps": sorted(normalized_steps),
+        "boundaries": boundaries,
+        "step_outcomes": step_outcomes,
+        "operation_classes": sorted(operation_classes),
+    }
+
+
+def _execution_model_snapshot_from_raw(raw_contracts: dict) -> dict | None:
+    value = raw_contracts.get("execution_model")
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int:
+        return None
+    if value.get("schema_version") != 1:
+        return None
+    return _normalize_execution_model(value)
+
+
 class _TicketStateMirror:
     """Stream v3 ticket state/close semantics without retaining the event chain."""
 
@@ -783,6 +873,240 @@ class _TicketStateMirror:
                 self.problems.append(
                     "事件序列最终 close_state 与 metadata.close_state 不一致"
                 )
+        return self.problems.render()
+
+
+class _ExecutionEventMirror:
+    """Replay versioned step/operation pairing with bounded retained identities."""
+
+    def __init__(self, execution_model: object) -> None:
+        self.enabled = (
+            execution_model is not _UNSET_EXECUTION_MODEL
+            and execution_model is not None
+        )
+        self.problems = _ProblemCollector()
+        self.has_versioned_events = False
+        self.steps: dict[bytes, dict[str, object]] = {}
+        self.operations: dict[bytes, dict[str, object]] = {}
+        self.step_names: set[str] = set()
+        self.boundaries: set[str] = set()
+        self.step_outcomes: set[str] = set()
+        self.operation_classes: set[str] = set()
+        if not self.enabled:
+            return
+        try:
+            normalized = _normalize_execution_model(execution_model, snapshot=True)
+        except (TypeError, ValueError, RecursionError):
+            self.problems.append("contracts.json execution_model 结构无效")
+            self.enabled = False
+            return
+        self.step_names = set(normalized["steps"])
+        self.boundaries = set(normalized["boundaries"])
+        self.step_outcomes = set(normalized["step_outcomes"])
+        self.operation_classes = set(normalized["operation_classes"])
+
+    @staticmethod
+    def _fingerprint(value: str) -> bytes:
+        # Event JSON lines are already limited to 1 MiB. Keep only a fixed-size
+        # key so attacker-controlled attempt/name strings do not accumulate.
+        return hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()
+
+    @staticmethod
+    def _valid_digest(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and _EXECUTION_DIGEST_PATTERN.fullmatch(value) is not None
+        )
+
+    def consume(self, event: dict, event_index: int) -> None:
+        event_type = event.get("event_type")
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            return
+        if payload.get("execution_model_version") != 1:
+            return
+        self.has_versioned_events = True
+        if not self.enabled:
+            return
+
+        type_label = (
+            event_type[:64] if isinstance(event_type, str)
+            else type(event_type).__name__
+        )
+        attempt = payload.get("attempt")
+        if not isinstance(attempt, str) or not attempt:
+            self.problems.append(
+                f"第 {event_index} 条 {type_label} 缺非空 attempt"
+            )
+            return
+        attempt_key = self._fingerprint(attempt)
+
+        if event_type == "step_started":
+            step = payload.get("step")
+            if not isinstance(step, str) or step not in self.step_names:
+                self.problems.append(
+                    f"第 {event_index} 条 step_started.step 非法"
+                )
+            if attempt_key in self.steps:
+                self.problems.append(
+                    f"第 {event_index} 条 step_started attempt 重复启动"
+                )
+            if not self._valid_digest(payload.get("input_digest")):
+                self.problems.append(
+                    f"第 {event_index} 条 step_started.input_digest 非法"
+                )
+            if not self._valid_digest(payload.get("contract_digest")):
+                self.problems.append(
+                    f"第 {event_index} 条 step_started.contract_digest 非法"
+                )
+            self.steps[attempt_key] = {
+                "step": step if isinstance(step, str) else None,
+                "finished": False,
+            }
+            return
+
+        if event_type in {
+            "gate_checked", "artifact_written", "step_finished",
+        }:
+            state = self.steps.get(attempt_key)
+            if state is None:
+                self.problems.append(
+                    f"第 {event_index} 条 {type_label} 引用不存在的 step attempt"
+                )
+                return
+            if state["finished"]:
+                if event_type == "step_finished":
+                    self.problems.append(
+                        f"第 {event_index} 条 step attempt 重复终结"
+                    )
+                else:
+                    self.problems.append(
+                        f"第 {event_index} 条 {type_label} 出现在 step_finished 之后"
+                    )
+            if payload.get("step") != state["step"]:
+                self.problems.append(
+                    f"第 {event_index} 条 {type_label}.step 与启动事件不一致"
+                )
+            if event_type == "gate_checked":
+                boundary = payload.get("boundary")
+                if not isinstance(boundary, str) or boundary not in self.boundaries:
+                    self.problems.append(
+                        f"第 {event_index} 条 gate_checked.boundary 非法"
+                    )
+                result = payload.get("result")
+                if not isinstance(result, str) or result not in {"pass", "blocked"}:
+                    self.problems.append(
+                        f"第 {event_index} 条 gate_checked.result 非法"
+                    )
+                for field_name in ("captured_digest", "current_digest"):
+                    if not self._valid_digest(payload.get(field_name)):
+                        self.problems.append(
+                            f"第 {event_index} 条 gate_checked.{field_name} 非法"
+                        )
+            elif event_type == "artifact_written":
+                if not self._valid_digest(payload.get("sha256")):
+                    self.problems.append(
+                        f"第 {event_index} 条 artifact_written.sha256 非法"
+                    )
+            else:
+                outcome = payload.get("outcome")
+                if (
+                    not isinstance(outcome, str)
+                    or outcome not in self.step_outcomes
+                ):
+                    self.problems.append(
+                        f"第 {event_index} 条 step_finished.outcome 非法"
+                    )
+                duration = payload.get("duration_ms")
+                if not isinstance(duration, int) or duration < 0:
+                    self.problems.append(
+                        f"第 {event_index} 条 step_finished.duration_ms 非法"
+                    )
+                state["finished"] = True
+            return
+
+        if event_type == "operation_started":
+            name = payload.get("name")
+            op_class = payload.get("class")
+            if not isinstance(name, str) or not name:
+                self.problems.append(
+                    f"第 {event_index} 条 operation_started.name 非法"
+                )
+            if (
+                not isinstance(op_class, str)
+                or op_class not in self.operation_classes
+            ):
+                self.problems.append(
+                    f"第 {event_index} 条 operation_started.class 非法"
+                )
+            if not self._valid_digest(payload.get("input_digest")):
+                self.problems.append(
+                    f"第 {event_index} 条 operation_started.input_digest 非法"
+                )
+            if not isinstance(payload.get("idempotency_provided"), bool):
+                self.problems.append(
+                    f"第 {event_index} 条 operation_started.idempotency_provided 非布尔"
+                )
+            if attempt_key in self.operations:
+                self.problems.append(
+                    f"第 {event_index} 条 operation attempt 重复启动"
+                )
+            self.operations[attempt_key] = {
+                "name": (
+                    self._fingerprint(name) if isinstance(name, str) else None
+                ),
+                "class": op_class if isinstance(op_class, str) else None,
+                "finished": False,
+            }
+            return
+
+        if event_type == "operation_finished":
+            state = self.operations.get(attempt_key)
+            if state is None:
+                self.problems.append(
+                    f"第 {event_index} 条 operation_finished 引用不存在的 attempt"
+                )
+                return
+            if state["finished"]:
+                self.problems.append(
+                    f"第 {event_index} 条 operation attempt 重复终结"
+                )
+            name = payload.get("name")
+            if (
+                not isinstance(name, str)
+                or self._fingerprint(name) != state["name"]
+                or payload.get("class") != state["class"]
+            ):
+                self.problems.append(
+                    f"第 {event_index} 条 operation_finished 与启动事件身份不一致"
+                )
+            outcome = payload.get("outcome")
+            if (
+                not isinstance(outcome, str)
+                or outcome not in self.step_outcomes
+            ):
+                self.problems.append(
+                    f"第 {event_index} 条 operation_finished.outcome 非法"
+                )
+            duration = payload.get("duration_ms")
+            if not isinstance(duration, int) or duration < 0:
+                self.problems.append(
+                    f"第 {event_index} 条 operation_finished.duration_ms 非法"
+                )
+            for field_name in ("evidence", "after_check"):
+                value = payload.get(field_name)
+                if not isinstance(value, str) or not value.strip():
+                    self.problems.append(
+                        f"第 {event_index} 条 operation_finished 缺 {field_name}"
+                    )
+            if not isinstance(payload.get("decision"), dict):
+                self.problems.append(
+                    f"第 {event_index} 条 operation_finished 缺 decision 对象"
+                )
+            state["finished"] = True
+
+    def finish(self) -> list[str]:
+        # The pinned v1 validator does not require open attempts to be closed at EOF.
         return self.problems.render()
 
 
@@ -1145,6 +1469,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
     expected_metadata_hash: object = _UNSET_EXPECTED_METADATA_HASH
     expected_ticket_metadata: object = _UNSET_TICKET_METADATA
     expected_ticket_state_machine: object = _UNSET_TICKET_STATE_MACHINE
+    expected_execution_model: object = _UNSET_EXECUTION_MODEL
     metadata_path = _package_member_path(pack, "ticket/metadata.json")
     if metadata_path is None:
         problems.append("工单 metadata 包内路径无效（必须是普通文件）")
@@ -1190,6 +1515,14 @@ def verify_pack(pack_dir: Path) -> list[str]:
                     )
                 except (TypeError, ValueError, RecursionError):
                     problems.append("contracts.json state_machine 结构无效")
+            raw_execution_model = contracts_snapshot.get("execution_model")
+            if raw_execution_model is not None:
+                try:
+                    expected_execution_model = _normalize_execution_model(
+                        raw_execution_model, snapshot=True,
+                    )
+                except (TypeError, ValueError, RecursionError):
+                    problems.append("contracts.json execution_model 结构无效")
     if (
         manifest_ticket_id is not None
         and metadata_ticket_id is not None
@@ -1212,6 +1545,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
                 expected_agent_spawns=metadata_agent_spawns,
                 expected_metadata_hash=expected_metadata_hash,
                 expected_ticket_state_machine=expected_ticket_state_machine,
+                expected_execution_model=expected_execution_model,
                 expected_ticket_metadata=expected_ticket_metadata,
             )
             problems.extend(chain_problems)
@@ -1232,6 +1566,7 @@ def _verify_event_chain(
     expected_agent_spawns: object = _UNSET_METADATA_AGENT_SPAWNS,
     expected_metadata_hash: object = _UNSET_EXPECTED_METADATA_HASH,
     expected_ticket_state_machine: object = _UNSET_TICKET_STATE_MACHINE,
+    expected_execution_model: object = _UNSET_EXECUTION_MODEL,
     expected_ticket_metadata: object = _UNSET_TICKET_METADATA,
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """逐条校验事件，只保留去重 ID 与产物绑定所需的紧凑事实。"""
@@ -1285,6 +1620,7 @@ def _verify_event_chain(
     ticket_state_mirror = _TicketStateMirror(
         expected_ticket_state_machine, expected_ticket_metadata,
     )
+    execution_event_mirror = _ExecutionEventMirror(expected_execution_model)
 
     def append_payload_shape_problems(target: _ProblemCollector) -> None:
         # Bound retained diagnostics even if a hostile event stream contains many
@@ -1429,6 +1765,7 @@ def _verify_event_chain(
                 event_type = event.get("event_type")
                 payload = event.get("payload")
                 ticket_state_mirror.consume(event, event_count)
+                execution_event_mirror.consume(event, event_count)
                 if isinstance(payload, dict):
                     marker = payload.get("metadata_hash_after")
                     if marker:
@@ -1518,6 +1855,7 @@ def _verify_event_chain(
             f"metadata.{_METADATA_AGENT_SPAWNS_FIELD} 不一致"
         )
     problems.extend(ticket_state_mirror.finish())
+    problems.extend(execution_event_mirror.finish())
     return artifact_facts, problems.render()
 
 
