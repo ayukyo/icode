@@ -115,6 +115,75 @@ class _WindowsTestProcessHandle:
 
 
 class TestWindowsTestProcessHandle(unittest.TestCase):
+    def test_open_process_failure_is_not_treated_as_exited(self) -> None:
+        import ctypes
+
+        kernel = SimpleNamespace(
+            OpenProcess=mock.Mock(return_value=0),
+            WaitForSingleObject=mock.Mock(return_value=0),
+            GetProcessTimes=mock.Mock(),
+            CloseHandle=mock.Mock(),
+            TerminateProcess=mock.Mock(),
+        )
+        with (
+            mock.patch.object(ctypes, "WinDLL", return_value=kernel, create=True),
+            mock.patch.object(ctypes, "get_last_error", return_value=5, create=True),
+        ):
+            with self.assertRaises(OSError) as caught:
+                _WindowsTestProcessHandle(42, 99)
+
+        self.assertEqual(caught.exception.args[:2], (5, "OpenProcess"))
+        kernel.GetProcessTimes.assert_not_called()
+        kernel.CloseHandle.assert_not_called()
+        kernel.TerminateProcess.assert_not_called()
+
+    def test_creation_time_query_failure_closes_handle_without_termination(self) -> None:
+        import ctypes
+
+        kernel = SimpleNamespace(
+            OpenProcess=mock.Mock(return_value=123),
+            WaitForSingleObject=mock.Mock(return_value=0),
+            GetProcessTimes=mock.Mock(return_value=0),
+            CloseHandle=mock.Mock(return_value=1),
+            TerminateProcess=mock.Mock(),
+        )
+        with (
+            mock.patch.object(ctypes, "WinDLL", return_value=kernel, create=True),
+            mock.patch.object(ctypes, "get_last_error", return_value=5, create=True),
+        ):
+            with self.assertRaises(OSError) as caught:
+                _WindowsTestProcessHandle(42, 99)
+
+        self.assertEqual(caught.exception.args[:2], (5, "GetProcessTimes"))
+        kernel.CloseHandle.assert_called_once_with(123)
+        kernel.TerminateProcess.assert_not_called()
+
+    def test_creation_time_mismatch_closes_handle_and_fails_closed(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        def write_creation_time(_handle, creation_ptr, *_other_times) -> int:
+            creation = ctypes.cast(
+                creation_ptr, ctypes.POINTER(wintypes.FILETIME),
+            ).contents
+            creation.dwHighDateTime = 0
+            creation.dwLowDateTime = 98
+            return 1
+
+        kernel = SimpleNamespace(
+            OpenProcess=mock.Mock(return_value=123),
+            WaitForSingleObject=mock.Mock(return_value=0),
+            GetProcessTimes=mock.Mock(side_effect=write_creation_time),
+            CloseHandle=mock.Mock(return_value=1),
+            TerminateProcess=mock.Mock(),
+        )
+        with mock.patch.object(ctypes, "WinDLL", return_value=kernel, create=True):
+            with self.assertRaisesRegex(RuntimeError, "PID was reused"):
+                _WindowsTestProcessHandle(42, 99)
+
+        kernel.CloseHandle.assert_called_once_with(123)
+        kernel.TerminateProcess.assert_not_called()
+
     def test_cleanup_identity不匹配时不终止同PID的其他进程(self) -> None:
         process = object.__new__(_WindowsTestProcessHandle)
         process.handle = object()
