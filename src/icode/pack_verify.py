@@ -689,13 +689,31 @@ def _normalize_execution_model(value: object, *, snapshot: bool = False) -> dict
     else:
         raise ValueError("execution_model.operation_classes 必须是对象")
 
-    return {
+    failure_classes: list[str] | None = None
+    failure_field = "failure_classes" if snapshot else "failure_policies"
+    if failure_field in value:
+        raw_failures = value[failure_field]
+        if snapshot:
+            failure_names = raw_failures
+        elif isinstance(raw_failures, dict):
+            failure_names = list(raw_failures)
+        else:
+            raise ValueError("execution_model.failure_policies 必须是对象")
+        failure_classes = normalize_names(
+            "failure_classes", failure_names,
+            maximum=_MAX_EXECUTION_MODEL_ENUM_VALUES,
+        )
+
+    normalized_model = {
         "schema_version": 1,
         "steps": sorted(normalized_steps),
         "boundaries": boundaries,
         "step_outcomes": step_outcomes,
         "operation_classes": sorted(operation_classes),
     }
+    if failure_classes is not None:
+        normalized_model["failure_classes"] = sorted(failure_classes)
+    return normalized_model
 
 
 def _execution_model_snapshot_from_raw(raw_contracts: dict) -> dict | None:
@@ -893,6 +911,7 @@ class _ExecutionEventMirror:
         self.boundaries: set[str] = set()
         self.step_outcomes: set[str] = set()
         self.operation_classes: set[str] = set()
+        self.failure_classes: set[str] | None = None
         if not self.enabled:
             return
         try:
@@ -905,6 +924,9 @@ class _ExecutionEventMirror:
         self.boundaries = set(normalized["boundaries"])
         self.step_outcomes = set(normalized["step_outcomes"])
         self.operation_classes = set(normalized["operation_classes"])
+        raw_failure_classes = normalized.get("failure_classes")
+        if isinstance(raw_failure_classes, list):
+            self.failure_classes = set(raw_failure_classes)
 
     @staticmethod
     def _fingerprint(value: str) -> bytes:
@@ -1121,6 +1143,21 @@ class _ExecutionEventMirror:
                 self.problems.append(
                     f"第 {event_index} 条 operation_finished 缺 decision 对象"
                 )
+            if self.failure_classes is not None:
+                failure = payload.get("failure")
+                if outcome == "success":
+                    if failure is not None and failure != "":
+                        self.problems.append(
+                            f"第 {event_index} 条 operation_finished.failure 与 success 冲突"
+                        )
+                elif not isinstance(failure, str) or not failure.strip():
+                    self.problems.append(
+                        f"第 {event_index} 条 operation_finished.failure 缺失"
+                    )
+                elif failure not in self.failure_classes:
+                    self.problems.append(
+                        f"第 {event_index} 条 operation_finished.failure 未登记"
+                    )
             state["finished"] = True
             if state["class"] != "read_only":
                 self.open_side_effect_operations.discard(attempt_key)

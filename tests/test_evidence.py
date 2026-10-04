@@ -785,6 +785,203 @@ class TestEvidencePack(unittest.TestCase):
             self.assertIn("plan", contracts["execution_model"]["steps"])
             self.assertEqual(verify_pack(dest), [])
 
+    def test_新execution_model快照包含排序后的failure类别(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+
+            self.assertTrue(report.ok, report.render())
+            contracts = json.loads((dest / "contracts.json").read_text(encoding="utf-8"))
+            gates = json.loads(self.settings.gates_json.read_text(encoding="utf-8"))
+            expected = sorted(gates["execution_model"]["failure_policies"])
+            self.assertEqual(
+                contracts["execution_model"].get("failure_classes"), expected,
+            )
+
+    def test_旧execution_model快照仍接受无failure类别的失败回执(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+
+            contracts_path = dest / "contracts.json"
+            contracts = json.loads(contracts_path.read_text(encoding="utf-8"))
+            contracts["execution_model"].pop("failure_classes")
+            contracts_path.write_text(
+                json.dumps(contracts, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "contracts.json")
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            events_path = dest / "ticket" / "events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "legacy-failure-no-category",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "d" * 64, "idempotency_provided": True},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": "legacy-failure-no-category",
+                 "name": "publish", "class": "managed_write", "outcome": "failure",
+                 "duration_ms": 1, "evidence": "legacy failure receipt",
+                 "after_check": "effect absent", "decision": {"action": "block"}},
+                {},
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+            self._refresh_pack_member_hash(dest, "ticket/events.jsonl")
+
+            self.assertEqual(verify_pack(dest), [])
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+
+    def test_导出器拒绝缺少failure分类的非成功operation(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "missing-failure-class",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "f" * 64, "idempotency_provided": True},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": "missing-failure-class",
+                 "name": "publish", "class": "managed_write", "outcome": "failure",
+                 "duration_ms": 1, "evidence": "failure receipt",
+                 "after_check": "effect absent", "decision": {"action": "block"}},
+                {},
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "operation_finished.failure"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝未登记的operation_failure分类(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "unknown-failure-class",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "a" * 64, "idempotency_provided": True},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": "unknown-failure-class",
+                 "name": "publish", "class": "managed_write", "outcome": "failure",
+                 "failure": "invented_failure", "duration_ms": 1,
+                 "evidence": "failure receipt", "after_check": "effect absent",
+                 "decision": {"action": "block"}},
+                {},
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "operation_finished.failure"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝success携带operation_failure分类(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "success-with-failure-class",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "b" * 64, "idempotency_provided": True},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": "success-with-failure-class",
+                 "name": "publish", "class": "managed_write", "outcome": "success",
+                 "failure": "deterministic_failure", "duration_ms": 1,
+                 "evidence": "success receipt", "after_check": "effect verified",
+                 "decision": {"action": "complete"}},
+                {},
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "operation_finished.failure"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_内置和独立校验器拒绝新快照中缺少的operation_failure分类(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+
+            contracts_path = dest / "contracts.json"
+            contracts = json.loads(contracts_path.read_text(encoding="utf-8"))
+            contracts["execution_model"]["failure_classes"] = sorted([
+                "capability_unavailable", "destructive_risk", "deterministic_failure",
+                "policy_schema_security", "retryable_transport", "ambiguous_side_effect",
+            ])
+            contracts_path.write_text(
+                json.dumps(contracts, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "contracts.json")
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            events_path = dest / "ticket" / "events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "pack-missing-failure-class",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "c" * 64, "idempotency_provided": True},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": "pack-missing-failure-class",
+                 "name": "publish", "class": "managed_write", "outcome": "failure",
+                 "duration_ms": 1, "evidence": "failure receipt",
+                 "after_check": "effect absent", "decision": {"action": "block"}},
+                {},
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+            self._refresh_pack_member_hash(dest, "ticket/events.jsonl")
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("operation_finished.failure" in item for item in problems), problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("operation_finished.failure", independent.stdout + independent.stderr)
+
     def test_导出器拒绝没有启动事件的版本化step_finish(self) -> None:
         from icode.evidence import EvidenceError
 
@@ -1077,7 +1274,8 @@ class TestEvidencePack(unittest.TestCase):
                 metadata_path, events_path, "operation_finished",
                 {"execution_model_version": 1, "attempt": "closed-managed-write",
                  "name": "publish", "class": "managed_write",
-                 "outcome": "failure", "duration_ms": 1,
+                 "outcome": "failure", "failure": "deterministic_failure",
+                 "duration_ms": 1,
                  "evidence": "failed write receipt",
                  "after_check": "write absence verified",
                  "decision": {"action": "block"}},
