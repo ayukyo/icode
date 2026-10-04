@@ -74,11 +74,11 @@ class TestUpstreamAcceptFixture(unittest.TestCase):
     "requires POSIX Unix-domain socket descriptors",
 )
 class TestInheritedUnixSocketFdRunner(unittest.TestCase):
-    def test_preconnected_fd_probe_notice_has_only_bounded_status_fields(self) -> None:
-        formatter = getattr(probe, "format_preconnected_fd_probe_notice", None)
+    def test_network_deny_probe_notice_has_only_bounded_status_fields(self) -> None:
+        formatter = getattr(probe, "format_seatbelt_network_deny_probe_notice", None)
         self.assertTrue(
             callable(formatter),
-            "fixed-field native probe notice formatter is missing",
+            "fixed-field Seatbelt network-deny notice formatter is missing",
         )
         self.assertEqual(
             formatter(
@@ -86,12 +86,18 @@ class TestInheritedUnixSocketFdRunner(unittest.TestCase):
                 exit_code=0,
                 marker_count=1,
                 fd_status="roundtrip",
-                tcp_socket_status="denied",
-                unix_socket_status="denied",
+                tcp_socket_status="created",
+                tcp_connect_status="denied",
+                unix_socket_status="created",
+                unix_connect_status="denied",
+                tcp_canary_status="not_accepted",
+                unix_canary_status="not_accepted",
             ),
             "::notice::macos-seatbelt-preconnected-uds-fd stage=observed "
             "exit_code=0 marker_count=1 preconnected_fd=roundtrip "
-            "new_tcp_socket=denied new_unix_socket=denied "
+            "tcp_socket_create=created tcp_connect=denied "
+            "unix_socket_create=created unix_connect=denied "
+            "tcp_canary=not_accepted unix_canary=not_accepted "
             "conformance_credit=none",
         )
         with self.assertRaises(ValueError):
@@ -100,8 +106,12 @@ class TestInheritedUnixSocketFdRunner(unittest.TestCase):
                 exit_code=0,
                 marker_count=1,
                 fd_status="roundtrip ::error::forged",
-                tcp_socket_status="denied",
-                unix_socket_status="denied",
+                tcp_socket_status="created",
+                tcp_connect_status="denied",
+                unix_socket_status="created",
+                unix_connect_status="denied",
+                tcp_canary_status="not_accepted",
+                unix_canary_status="not_accepted",
             )
 
     def test_child_can_roundtrip_over_an_explicitly_inherited_connected_fd(self) -> None:
@@ -1007,7 +1017,7 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             raise AssertionError("sandboxed socket probe returned an invalid marker")
         return markers[0]
 
-    def test_preconnected_unix_fd_without_worker_socket_grants(self) -> None:
+    def test_network_deny_does_not_treat_socket_creation_as_a_connect(self) -> None:
         sandbox_exec = shutil.which("sandbox-exec") or "/usr/bin/sandbox-exec"
         if not Path(sandbox_exec).is_file():
             self.skipTest("sandbox-exec is unavailable; no conformance credit")
@@ -1018,6 +1028,7 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             root = Path(raw_root).resolve()
             workspace = root / "workspace"
             workspace.mkdir(mode=0o700)
+            unix_socket_path = workspace / "denied-connect.sock"
             policy = SandboxPolicy(
                 schema_version=1,
                 run_id="run-macos-preconnected-fd-test",
@@ -1037,85 +1048,136 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             )
             sandbox = MacSeatbeltSandbox(sandbox_exec=sandbox_exec)
             profile = sandbox._policy_profile(policy)
-            host_connection, worker_connection = socket.socketpair(
-                socket.AF_UNIX, socket.SOCK_STREAM,
-            )
-            host_connection.sendall(b"seatbelt-fd-reply")
-            host_connection.settimeout(0.5)
-            source = (
-                "import errno, socket, sys\n"
-                "denied = (errno.EPERM, errno.EACCES)\n"
-                "connection = None\n"
-                "try:\n"
-                "    connection = socket.socket(fileno=int(sys.argv[1]))\n"
-                "    connection.settimeout(1.0)\n"
-                "    if connection.recv(64) != b'seatbelt-fd-reply':\n"
-                "        fd_status = 'error'\n"
-                "    else:\n"
-                "        connection.sendall(b'seatbelt-fd-request')\n"
-                "        fd_status = 'roundtrip'\n"
-                "except OSError as error:\n"
-                "    fd_status = 'denied' if error.errno in denied else 'error'\n"
-                "finally:\n"
-                "    if connection is not None: connection.close()\n"
-                "socket_status = {}\n"
-                "for name, family in (('tcp', socket.AF_INET), ('unix', socket.AF_UNIX)):\n"
-                "    try:\n"
-                "        candidate = socket.socket(family, socket.SOCK_STREAM)\n"
-                "    except OSError as error:\n"
-                "        socket_status[name] = 'denied' if error.errno in denied else 'error'\n"
-                "    else:\n"
-                "        candidate.close()\n"
-                "        socket_status[name] = 'created'\n"
-                "print('probe:' + ','.join((fd_status, socket_status['tcp'], "
-                "socket_status['unix'])))\n"
-            )
-            print(
-                probe.format_preconnected_fd_probe_notice(
-                    stage="started",
-                    exit_code=None,
-                    marker_count=0,
-                    fd_status="not_run",
-                    tcp_socket_status="not_run",
-                    unix_socket_status="not_run",
-                ),
-                flush=True,
-            )
-            try:
-                result = probe.run_with_inherited_fds(
-                    [
-                        sandbox_exec, "-p", profile, sys.executable, "-S", "-c",
-                        source, str(worker_connection.fileno()),
-                    ],
-                    pass_fds=(worker_connection.fileno(),),
-                    cwd=workspace,
-                    timeout_seconds=7.0,
-                )
-                try:
-                    host_request = host_connection.recv(64)
-                except TimeoutError:
-                    host_request = b""
-            finally:
-                worker_connection.close()
-                host_connection.close()
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_listener:
+                tcp_listener.bind(("127.0.0.1", 0))
+                tcp_listener.listen(1)
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as unix_listener:
+                    unix_listener.bind(str(unix_socket_path))
+                    unix_listener.listen(1)
+                    host_connection, worker_connection = socket.socketpair(
+                        socket.AF_UNIX, socket.SOCK_STREAM,
+                    )
+                    host_connection.sendall(b"seatbelt-fd-reply")
+                    host_connection.settimeout(0.5)
+                    source = (
+                        "import errno, socket, sys\n"
+                        "denied = (errno.EPERM, errno.EACCES)\n"
+                        "def classify(error):\n"
+                        "    if error.errno in denied: return 'denied'\n"
+                        "    if error.errno == errno.ECONNREFUSED: return 'refused'\n"
+                        "    if error.errno in (errno.ETIMEDOUT, errno.EAGAIN, errno.EWOULDBLOCK):\n"
+                        "        return 'timed_out'\n"
+                        "    return 'error'\n"
+                        "connection = None\n"
+                        "try:\n"
+                        "    connection = socket.socket(fileno=int(sys.argv[1]))\n"
+                        "    connection.settimeout(1.0)\n"
+                        "    if connection.recv(64) != b'seatbelt-fd-reply':\n"
+                        "        fd_status = 'error'\n"
+                        "    else:\n"
+                        "        connection.sendall(b'seatbelt-fd-request')\n"
+                        "        fd_status = 'roundtrip'\n"
+                        "except OSError as error:\n"
+                        "    fd_status = classify(error)\n"
+                        "finally:\n"
+                        "    if connection is not None: connection.close()\n"
+                        "def probe_connect(family, address):\n"
+                        "    try:\n"
+                        "        candidate = socket.socket(family, socket.SOCK_STREAM)\n"
+                        "    except OSError as error:\n"
+                        "        status = classify(error)\n"
+                        "        return ('denied' if status == 'denied' else 'error', 'not_run')\n"
+                        "    try:\n"
+                        "        candidate.settimeout(1.0)\n"
+                        "        candidate.connect(address)\n"
+                        "    except OSError as error:\n"
+                        "        connect_status = classify(error)\n"
+                        "    else:\n"
+                        "        connect_status = 'connected'\n"
+                        "        try: candidate.sendall(b'seatbelt-network-canary')\n"
+                        "        except OSError: pass\n"
+                        "    finally:\n"
+                        "        candidate.close()\n"
+                        "    return ('created', connect_status)\n"
+                        "tcp_created, tcp_connect = probe_connect(\n"
+                        "    socket.AF_INET, ('127.0.0.1', int(sys.argv[2])))\n"
+                        "unix_created, unix_connect = probe_connect(\n"
+                        "    socket.AF_UNIX, sys.argv[3])\n"
+                        "print('probe:' + ','.join((fd_status, tcp_created, tcp_connect, "
+                        "unix_created, unix_connect)))\n"
+                    )
+                    print(
+                        probe.format_seatbelt_network_deny_probe_notice(
+                            stage="started",
+                            exit_code=None,
+                            marker_count=0,
+                            fd_status="not_run",
+                            tcp_socket_status="not_run",
+                            tcp_connect_status="not_run",
+                            unix_socket_status="not_run",
+                            unix_connect_status="not_run",
+                            tcp_canary_status="not_run",
+                            unix_canary_status="not_run",
+                        ),
+                        flush=True,
+                    )
+                    try:
+                        result = probe.run_with_inherited_fds(
+                            [
+                                sandbox_exec, "-p", profile, sys.executable, "-S", "-c",
+                                source, str(worker_connection.fileno()),
+                                str(tcp_listener.getsockname()[1]), str(unix_socket_path),
+                            ],
+                            pass_fds=(worker_connection.fileno(),),
+                            cwd=workspace,
+                            timeout_seconds=7.0,
+                        )
+                        try:
+                            host_request = host_connection.recv(64)
+                        except (TimeoutError, OSError):
+                            host_request = b""
+                    finally:
+                        worker_connection.close()
+                        host_connection.close()
 
-            markers = [
-                line for line in result.stdout.splitlines()
-                if line.startswith("probe:")
-            ]
+                    def observe_canary(listener: socket.socket) -> str:
+                        listener.settimeout(0.25)
+                        try:
+                            accepted, _address = listener.accept()
+                        except TimeoutError:
+                            return "not_accepted"
+                        with accepted:
+                            accepted.settimeout(0.5)
+                            try:
+                                observed = accepted.recv(64)
+                            except TimeoutError:
+                                return "accepted_no_payload"
+                        if observed == b"seatbelt-network-canary":
+                            return "canary_received"
+                        return "payload_mismatch"
+
+                    tcp_canary_status = observe_canary(tcp_listener)
+                    unix_canary_status = observe_canary(unix_listener)
+
+            markers = [line for line in result.stdout.splitlines() if line.startswith("probe:")]
             fields = markers[0][len("probe:"):].split(",") if len(markers) == 1 else []
-            if len(fields) == 3:
-                fd_status, tcp_socket_status, unix_socket_status = fields
+            if len(fields) == 5:
+                fd_status, tcp_socket_status, tcp_connect_status, unix_socket_status, unix_connect_status = fields
             else:
-                fd_status = tcp_socket_status = unix_socket_status = "unparsed"
+                (
+                    fd_status,
+                    tcp_socket_status,
+                    tcp_connect_status,
+                    unix_socket_status,
+                    unix_connect_status,
+                ) = ("unparsed",) * 5
             print(
-                probe.format_preconnected_fd_probe_notice(
+                probe.format_seatbelt_network_deny_probe_notice(
                     stage="observed",
                     exit_code=result.returncode,
                     marker_count=len(markers),
                     fd_status=(
-                        fd_status
-                        if fd_status in {"roundtrip", "denied", "error", "unparsed"}
+                        fd_status if fd_status in {"roundtrip", "denied", "error", "unparsed"}
                         else "unparsed"
                     ),
                     tcp_socket_status=(
@@ -1123,11 +1185,27 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                         if tcp_socket_status in {"denied", "created", "error", "unparsed"}
                         else "unparsed"
                     ),
+                    tcp_connect_status=(
+                        tcp_connect_status
+                        if tcp_connect_status in {
+                            "denied", "connected", "refused", "timed_out", "error", "not_run", "unparsed",
+                        }
+                        else "unparsed"
+                    ),
                     unix_socket_status=(
                         unix_socket_status
                         if unix_socket_status in {"denied", "created", "error", "unparsed"}
                         else "unparsed"
                     ),
+                    unix_connect_status=(
+                        unix_connect_status
+                        if unix_connect_status in {
+                            "denied", "connected", "refused", "timed_out", "error", "not_run", "unparsed",
+                        }
+                        else "unparsed"
+                    ),
+                    tcp_canary_status=tcp_canary_status,
+                    unix_canary_status=unix_canary_status,
                 ),
                 flush=True,
             )
@@ -1135,12 +1213,18 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
             self.assertIn(host_request, (b"", b"seatbelt-fd-request"))
             self.assertEqual(result.returncode, 0)
             self.assertEqual(len(markers), 1)
-            self.assertEqual(len(fields), 3)
+            self.assertEqual(len(fields), 5)
             self.assertIn(fd_status, {"roundtrip", "denied", "error"})
-            self.assertIn(tcp_socket_status, {"denied", "created"})
-            self.assertIn(unix_socket_status, {"denied", "created"})
-            self.assertEqual(tcp_socket_status, "denied")
-            self.assertEqual(unix_socket_status, "denied")
+            for socket_status, connect_status, canary_status in (
+                (tcp_socket_status, tcp_connect_status, tcp_canary_status),
+                (unix_socket_status, unix_connect_status, unix_canary_status),
+            ):
+                self.assertIn(socket_status, {"denied", "created"})
+                if socket_status == "denied":
+                    self.assertEqual(connect_status, "not_run")
+                else:
+                    self.assertEqual(connect_status, "denied")
+                self.assertEqual(canary_status, "not_accepted")
             if fd_status == "roundtrip":
                 self.assertEqual(host_request, b"seatbelt-fd-request")
             else:

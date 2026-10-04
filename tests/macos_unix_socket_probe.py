@@ -38,9 +38,16 @@ _PEER_CLOSED_SEND_ERRORS = (
     ConnectionAbortedError,
 )
 
-_PRECONNECTED_FD_STAGES = frozenset(("started", "observed"))
+_NETWORK_DENY_PROBE_STAGES = frozenset(("started", "observed"))
 _PRECONNECTED_FD_STATUS = frozenset(("not_run", "roundtrip", "denied", "error", "unparsed"))
-_PRECONNECTED_SOCKET_STATUS = frozenset(("not_run", "denied", "created", "error", "unparsed"))
+_SOCKET_CREATE_STATUS = frozenset(("not_run", "denied", "created", "error", "unparsed"))
+_SOCKET_CONNECT_STATUS = frozenset((
+    "not_run", "denied", "connected", "refused", "timed_out", "error", "unparsed",
+))
+_SOCKET_CANARY_STATUS = frozenset((
+    "not_run", "not_accepted", "accepted_no_payload", "canary_received",
+    "payload_mismatch", "unparsed",
+))
 
 
 def run_with_inherited_fds(
@@ -77,35 +84,45 @@ def run_with_inherited_fds(
     )
 
 
-def format_preconnected_fd_probe_notice(
+def format_seatbelt_network_deny_probe_notice(
     *,
     stage: str,
     exit_code: int | None,
     marker_count: int,
     fd_status: str,
     tcp_socket_status: str,
+    tcp_connect_status: str,
     unix_socket_status: str,
+    unix_connect_status: str,
+    tcp_canary_status: str,
+    unix_canary_status: str,
 ) -> str:
-    """Format only fixed, bounded state for native CI annotations."""
+    """Format fixed creation, connect, and local-canary outcomes for CI."""
 
     if (
-        stage not in _PRECONNECTED_FD_STAGES
+        stage not in _NETWORK_DENY_PROBE_STAGES
         or (exit_code is not None and type(exit_code) is not int)
         or (exit_code is not None and not -255 <= exit_code <= 255)
         or type(marker_count) is not int
         or not 0 <= marker_count <= 9999
         or fd_status not in _PRECONNECTED_FD_STATUS
-        or tcp_socket_status not in _PRECONNECTED_SOCKET_STATUS
-        or unix_socket_status not in _PRECONNECTED_SOCKET_STATUS
+        or tcp_socket_status not in _SOCKET_CREATE_STATUS
+        or tcp_connect_status not in _SOCKET_CONNECT_STATUS
+        or unix_socket_status not in _SOCKET_CREATE_STATUS
+        or unix_connect_status not in _SOCKET_CONNECT_STATUS
+        or tcp_canary_status not in _SOCKET_CANARY_STATUS
+        or unix_canary_status not in _SOCKET_CANARY_STATUS
     ):
-        raise ValueError("invalid preconnected-FD probe notice fields")
+        raise ValueError("invalid Seatbelt network-deny probe notice fields")
     rendered_exit_code = "not_started" if exit_code is None else str(exit_code)
     return (
         "::notice::macos-seatbelt-preconnected-uds-fd "
         f"stage={stage} exit_code={rendered_exit_code} "
         f"marker_count={marker_count} preconnected_fd={fd_status} "
-        f"new_tcp_socket={tcp_socket_status} "
-        f"new_unix_socket={unix_socket_status} conformance_credit=none"
+        f"tcp_socket_create={tcp_socket_status} tcp_connect={tcp_connect_status} "
+        f"unix_socket_create={unix_socket_status} unix_connect={unix_connect_status} "
+        f"tcp_canary={tcp_canary_status} unix_canary={unix_canary_status} "
+        "conformance_credit=none"
     )
 
 
