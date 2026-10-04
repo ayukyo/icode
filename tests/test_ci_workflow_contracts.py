@@ -90,6 +90,10 @@ class TestLinuxReviewerBoundaryCi(unittest.TestCase):
         if: runner.os == 'Linux'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_bwrap_只读Reviewer真实隐藏账本且阻断工作区内外写入 -v
 """,
+            """      - name: Verify Linux Reviewer excluded directory replacement fails closed
+        if: runner.os == 'Linux'
+        run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_bwrap只读Reviewer排除目录启动前替换为外部symlink不能读取 -v
+""",
         )
 
         for required_step in required_steps:
@@ -105,6 +109,7 @@ class TestLinuxReviewerBoundaryCi(unittest.TestCase):
             "      - name: Load the pinned Bubblewrap AppArmor profile when required",
             "      - name: Verify Linux Reviewer ToolContext boundary",
             "      - name: Verify Linux read-only Reviewer OS boundary",
+            "      - name: Verify Linux Reviewer excluded directory replacement fails closed",
         )
         step_positions = tuple(workflow.index(name) for name in ordered_step_names)
         self.assertEqual(

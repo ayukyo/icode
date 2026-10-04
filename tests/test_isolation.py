@@ -1778,6 +1778,66 @@ print("metadata-read-only-ok")
 
     @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"),
                          "需要 Linux bubblewrap")
+    def test_bwrap只读Reviewer排除目录启动前替换为外部symlink不能读取(self) -> None:
+        with temp_workspace() as temporary_root:
+            workspace = temporary_root / "workspace"
+            workspace.mkdir()
+            output_root = workspace / ".icode_output"
+            ledger = output_root / "ticket-1" / "ledger.txt"
+            ledger.parent.mkdir(parents=True)
+            ledger.write_text("private-ledger-marker\n", encoding="utf-8")
+            outside = temporary_root / "outside-reviewer"
+            outside.mkdir()
+            outside_secret = outside / "secret.txt"
+            outside_secret.write_text("outside-secret-marker\n", encoding="utf-8")
+
+            ctx = ToolContext(
+                root=workspace, sandbox=BubblewrapSandbox(), read_only_workspace=True,
+                deny_read_roots=(output_root,),
+            )
+            ctx.pin_read_only_workspace()
+            python = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())
+            code = (
+                "from pathlib import Path\n"
+                f"secret = Path({str(outside_secret)!r})\n"
+                "try:\n"
+                "    print(secret.read_text(encoding='utf-8'))\n"
+                "except OSError:\n"
+                "    print('outside-secret-unavailable')\n"
+            )
+            real_run = subprocess.run
+
+            def replace_exclusion_then_launch(*args, **kwargs):
+                output_root.rename(workspace / ".icode_output-original")
+                output_root.symlink_to(outside, target_is_directory=True)
+                return real_run(*args, **kwargs)
+
+            try:
+                with mock.patch("subprocess.run", side_effect=replace_exclusion_then_launch):
+                    result = run_command(ctx, [python, "-c", code], timeout=15)
+            finally:
+                ctx.close()
+
+            self.assertIn("exit_code", result.meta)
+            self.assertTrue(
+                result.meta["exit_code"] != 0
+                or "outside-secret-unavailable" in result.content,
+                result.content,
+            )
+            self.assertNotIn("outside-secret-marker", result.content)
+            self.assertEqual(
+                outside_secret.read_text(encoding="utf-8"),
+                "outside-secret-marker\n",
+            )
+            self.assertEqual(
+                (workspace / ".icode_output-original" / "ticket-1" / "ledger.txt").read_text(
+                    encoding="utf-8",
+                ),
+                "private-ledger-marker\n",
+            )
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("bwrap"),
+                         "需要 Linux bubblewrap")
     def test_bwrap_只读Reviewer实际隐藏工单账本且阻断所有写入(self) -> None:
         with temp_workspace() as temporary_root:
             workspace = temporary_root / "workspace"

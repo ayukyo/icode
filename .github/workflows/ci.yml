@@ -333,6 +333,9 @@ jobs:
       - name: Verify Linux read-only Reviewer OS boundary
         if: runner.os == 'Linux'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_bwrap_只读Reviewer真实隐藏账本且阻断工作区内外写入 -v
+      - name: Verify Linux Reviewer excluded directory replacement fails closed
+        if: runner.os == 'Linux'
+        run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_bwrap只读Reviewer排除目录启动前替换为外部symlink不能读取 -v
       - name: Verify Linux Reviewer pinned workspace root survives path replacement
         if: runner.os == 'Linux'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_bwrap只读Reviewer在启动前根路径被替换仍绑定已固定目录 -v
