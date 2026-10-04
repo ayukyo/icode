@@ -765,6 +765,43 @@ class TestVerificationOutputLifecycleCi(unittest.TestCase):
         self.assertIn("::error title=Native lifecycle test details::", job)
         self.assertIn("Replace('%', '%25').Replace(\"`r\", '%0D').Replace(\"`n\", '%0A')", job)
 
+    def test_windows_verifier_lifecycle_runs_on_python312_x64_and_arm64(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        expected_job = """  windows-verification-lifecycle-python312:
+    name: R3 verification output lifecycle (Python 3.12, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            python-architecture: x64
+          - os: windows-11-arm
+            python-architecture: arm64
+"""
+        self.assertTrue(
+            expected_job in workflow,
+            "Windows verifier lifecycle must have Python 3.12 x64 and ARM64 native jobs",
+        )
+        job = workflow.split("  windows-verification-lifecycle-python312:\n", 1)[1].split(
+            "  container-reviewer:\n", 1,
+        )[0]
+        self.assertIn('python-version: "3.12"', job)
+        self.assertIn("architecture: ${{ matrix.python-architecture }}", job)
+        self.assertIn(
+            "run: python -m unittest tests.test_runner.TestIndependentVerification -v",
+            job,
+        )
+        self.assertIn(
+            "run: python -m unittest tests.test_runner.TestWindowsTestProcessHandle -v",
+            job,
+        )
+        self.assertNotIn("continue-on-error:", job)
+
 
 class TestLinuxInstalledWheelViolationReceiptCi(unittest.TestCase):
     def test_installed_wheel_runner_executes_native_receipt_probe_after_install(
