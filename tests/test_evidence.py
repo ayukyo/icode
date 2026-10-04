@@ -909,6 +909,219 @@ class TestEvidencePack(unittest.TestCase):
             self.assertTrue(report.ok, report.render())
             self.assertEqual(verify_pack(ws / "pack"), [])
 
+    def test_导出器拒绝未终结副作用operation之后的状态迁移并保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "open-managed-write",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "a" * 64, "idempotency_provided": True},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "state_changed",
+                {"from": "init_in_progress", "to": "plan_done",
+                 "delivery_verdict": None},
+                {"status": "plan_done"},
+            )
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+
+            with self.assertRaisesRegex(EvidenceError, "state_changed"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    clean=True,
+                )
+
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_独立校验器拒绝重签包中未终结副作用operation后的状态迁移(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "open-managed-write",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "a" * 64, "idempotency_provided": True},
+                {},
+            )
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            self._append_rehashed_event(
+                dest / "ticket" / "metadata.json",
+                dest / "ticket" / "events.jsonl", "state_changed",
+                {"from": "init_in_progress", "to": "plan_done",
+                 "delivery_verdict": None},
+                {"status": "plan_done"},
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+            self._refresh_pack_member_hash(dest, "ticket/events.jsonl")
+
+            problems = verify_pack(dest)
+            self.assertTrue(any("state_changed" in item for item in problems), problems)
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("state_changed", independent.stdout + independent.stderr)
+
+    def test_独立校验器无execution_model快照仍拒绝重签的开放副作用迁移(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "open-write-no-model",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "e" * 64, "idempotency_provided": True},
+                {},
+            )
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            contracts_path = dest / "contracts.json"
+            contracts = json.loads(contracts_path.read_text(encoding="utf-8"))
+            contracts.pop("execution_model")
+            contracts_path.write_text(
+                json.dumps(contracts, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "contracts.json")
+
+            self._append_rehashed_event(
+                dest / "ticket" / "metadata.json",
+                dest / "ticket" / "events.jsonl", "state_changed",
+                {"from": "init_in_progress", "to": "plan_done",
+                 "delivery_verdict": None},
+                {"status": "plan_done"},
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+            self._refresh_pack_member_hash(dest, "ticket/events.jsonl")
+
+            problems = verify_pack(dest)
+            self.assertTrue(any("state_changed" in item for item in problems), problems)
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("state_changed", independent.stdout + independent.stderr)
+
+    def test_未终结read_only_operation不阻止状态迁移(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "open-read-only",
+                 "name": "inspect dependency", "class": "read_only",
+                 "input_digest": "b" * 64, "idempotency_provided": False},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "state_changed",
+                {"from": "init_in_progress", "to": "plan_done",
+                 "delivery_verdict": None},
+                {"status": "plan_done"},
+            )
+
+            report = build_evidence_pack(
+                out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+            )
+
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_已终结副作用operation允许状态迁移(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": "closed-managed-write",
+                 "name": "publish", "class": "managed_write",
+                 "input_digest": "c" * 64, "idempotency_provided": True},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": "closed-managed-write",
+                 "name": "publish", "class": "managed_write",
+                 "outcome": "failure", "duration_ms": 1,
+                 "evidence": "failed write receipt",
+                 "after_check": "write absence verified",
+                 "decision": {"action": "block"}},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "state_changed",
+                {"from": "init_in_progress", "to": "plan_done",
+                 "delivery_verdict": None},
+                {"status": "plan_done"},
+            )
+
+            report = build_evidence_pack(
+                out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+            )
+
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_未版本化历史operation不影响状态迁移兼容性(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"attempt": "legacy-open-operation", "name": "legacy write",
+                 "class": "managed_write"},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "state_changed",
+                {"from": "init_in_progress", "to": "plan_done",
+                 "delivery_verdict": None},
+                {"status": "plan_done"},
+            )
+
+            report = build_evidence_pack(
+                out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+            )
+
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(verify_pack(ws / "pack"), [])
+
     def test_导出器拒绝operation_finished缺少失败回执字段(self) -> None:
         from icode.evidence import EvidenceError
 

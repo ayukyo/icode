@@ -877,7 +877,7 @@ class _TicketStateMirror:
 
 
 class _ExecutionEventMirror:
-    """Replay versioned step/operation pairing with bounded retained identities."""
+    """Replay versioned execution pairing and status-transition receipts."""
 
     def __init__(self, execution_model: object) -> None:
         self.enabled = (
@@ -888,6 +888,7 @@ class _ExecutionEventMirror:
         self.has_versioned_events = False
         self.steps: dict[bytes, dict[str, object]] = {}
         self.operations: dict[bytes, dict[str, object]] = {}
+        self.open_side_effect_operations: set[bytes] = set()
         self.step_names: set[str] = set()
         self.boundaries: set[str] = set()
         self.step_outcomes: set[str] = set()
@@ -923,10 +924,25 @@ class _ExecutionEventMirror:
         payload = event.get("payload")
         if not isinstance(payload, dict):
             return
+        if event_type == "state_changed":
+            if self.open_side_effect_operations:
+                self.problems.append(
+                    f"第 {event_index} 条 state_changed 在有副作用 operation 未终结时推进状态"
+                )
+            return
         if payload.get("execution_model_version") != 1:
             return
         self.has_versioned_events = True
         if not self.enabled:
+            attempt = payload.get("attempt")
+            if not isinstance(attempt, str) or not attempt:
+                return
+            attempt_key = self._fingerprint(attempt)
+            if event_type == "operation_started":
+                if payload.get("class") != "read_only":
+                    self.open_side_effect_operations.add(attempt_key)
+            elif event_type == "operation_finished":
+                self.open_side_effect_operations.discard(attempt_key)
             return
 
         type_label = (
@@ -1058,6 +1074,8 @@ class _ExecutionEventMirror:
                 "class": op_class if isinstance(op_class, str) else None,
                 "finished": False,
             }
+            if op_class != "read_only":
+                self.open_side_effect_operations.add(attempt_key)
             return
 
         if event_type == "operation_finished":
@@ -1104,6 +1122,8 @@ class _ExecutionEventMirror:
                     f"第 {event_index} 条 operation_finished 缺 decision 对象"
                 )
             state["finished"] = True
+            if state["class"] != "read_only":
+                self.open_side_effect_operations.discard(attempt_key)
 
     def finish(self) -> list[str]:
         # The pinned v1 validator does not require open attempts to be closed at EOF.
