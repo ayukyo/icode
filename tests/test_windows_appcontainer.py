@@ -24,6 +24,7 @@ import time
 import unittest
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest import mock
 from urllib.parse import urlsplit
@@ -531,6 +532,135 @@ def _current_process_standard_user_status(expected_sid: str) -> str:
                 kernel.LocalFree(pointer)
         if token.value:
             kernel.CloseHandle(token)
+
+
+@dataclass(frozen=True)
+class _NativeWriteCanaryControlResult:
+    create_succeeded: bool
+    create_error: int
+    write_succeeded: bool | None
+    requested_bytes: int
+    bytes_transferred: int
+    write_error: int
+    close_succeeded: bool
+    close_error: int
+
+    @property
+    def verified(self) -> bool:
+        return (
+            self.create_succeeded
+            and self.write_succeeded is True
+            and self.requested_bytes > 0
+            and self.bytes_transferred == self.requested_bytes
+            and self.write_error == 0
+            and self.close_succeeded
+            and self.create_error == 0
+            and self.close_error == 0
+        )
+
+
+def _native_write_canary_control(
+    path: Path,
+    payload: bytes,
+    *,
+    api: object | None = None,
+    set_last_error: Callable[[int], None] | None = None,
+    get_last_error: Callable[[], int] | None = None,
+) -> _NativeWriteCanaryControlResult:
+    """Exercise the Reviewer write API on its disposable canary before sandboxing."""
+    if not isinstance(path, Path) or type(payload) is not bytes or not payload:
+        raise ValueError("invalid native write-control input")
+    if api is None:
+        if sys.platform != "win32":
+            raise OSError(errno.ENOSYS, "Windows file API is unavailable")
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+    if set_last_error is None:
+        set_last_error = getattr(ctypes, "set_last_error", None)
+    if get_last_error is None:
+        get_last_error = getattr(ctypes, "get_last_error", None)
+    if not callable(set_last_error) or not callable(get_last_error):
+        raise OSError(errno.ENOSYS, "Windows last-error API is unavailable")
+
+    create_file = getattr(api, "CreateFileW", None)
+    write_file = getattr(api, "WriteFile", None)
+    close_handle = getattr(api, "CloseHandle", None)
+    if not all(callable(function) for function in (create_file, write_file, close_handle)):
+        raise ValueError("incomplete Windows file API")
+
+    create_file.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    ]
+    create_file.restype = ctypes.c_void_p
+    write_file.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p,
+    ]
+    write_file.restype = ctypes.c_int
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+
+    def last_error() -> int:
+        try:
+            value = get_last_error()
+        except Exception:  # noqa: BLE001 - diagnostics are limited to fixed numeric fields.
+            return -1
+        return value if type(value) is int and 0 <= value <= 0xFFFFFFFF else -1
+
+    def reset_error() -> None:
+        set_last_error(0)
+
+    requested_bytes = len(payload)
+    invalid_handle = ctypes.c_void_p(-1).value
+    try:
+        reset_error()
+        handle = create_file(
+            str(path), 0x40000000, 0x7, None, 3, 0x80, None,
+        )
+    except Exception:  # noqa: BLE001 - the control is valid only on API success.
+        return _NativeWriteCanaryControlResult(
+            False, -1, None, requested_bytes, 0, 0, True, 0,
+        )
+    if handle is None or handle == invalid_handle:
+        return _NativeWriteCanaryControlResult(
+            False, last_error(), None, requested_bytes, 0, 0, True, 0,
+        )
+
+    write_succeeded: bool | None = None
+    bytes_transferred = 0
+    write_error = 0
+    close_succeeded = False
+    close_error = 0
+    try:
+        transferred = ctypes.c_uint32()
+        buffer = ctypes.create_string_buffer(payload)
+        reset_error()
+        write_succeeded = bool(
+            write_file(
+                handle, buffer, requested_bytes,
+                ctypes.byref(transferred), None,
+            ),
+        )
+        bytes_transferred = int(transferred.value)
+        if not write_succeeded:
+            write_error = last_error()
+    except Exception:  # noqa: BLE001 - preserve closure even when the API call fails.
+        write_succeeded = False
+        write_error = last_error() or -1
+    finally:
+        try:
+            reset_error()
+            close_succeeded = bool(close_handle(handle))
+            if not close_succeeded:
+                close_error = last_error()
+        except Exception:  # noqa: BLE001 - cleanup failure invalidates the control.
+            close_succeeded = False
+            close_error = last_error() or -1
+
+    return _NativeWriteCanaryControlResult(
+        True, 0, write_succeeded, requested_bytes, bytes_transferred,
+        write_error, close_succeeded, close_error,
+    )
 
 
 def _dacl_write_control_succeeds(path: Path) -> bool:
@@ -2254,6 +2384,137 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(malformed["tcp_connection_time_ms"], -1)
         self.assertEqual(malformed["tcp_syn_retrans"], -1)
 
+    def test_native_write_canary_control_requires_complete_write_and_closed_handle(self) -> None:
+        helper = globals().get("_native_write_canary_control")
+        self.assertTrue(callable(helper), "native write canary control helper is missing")
+
+        last_error = {"value": 0}
+        calls: list[tuple[str, object]] = []
+
+        def write_file(*args: object) -> bool:
+            self.assertEqual(args[2], len(b"changed"))
+            args[3]._obj.value = len(b"changed")
+            last_error["value"] = 0
+            calls.append(("write", args[0]))
+            return True
+
+        api = SimpleNamespace(
+            CreateFileW=mock.Mock(side_effect=lambda *_args: 1234),
+            WriteFile=mock.Mock(side_effect=write_file),
+            CloseHandle=mock.Mock(side_effect=lambda _handle: True),
+        )
+        result = helper(
+            Path("disposable-canary.bin"), b"changed", api=api,
+            set_last_error=lambda value: last_error.__setitem__("value", value),
+            get_last_error=lambda: last_error["value"],
+        )
+
+        self.assertTrue(result.verified)
+        self.assertTrue(result.create_succeeded)
+        self.assertTrue(result.write_succeeded)
+        self.assertEqual(result.requested_bytes, len(b"changed"))
+        self.assertEqual(result.bytes_transferred, len(b"changed"))
+        self.assertTrue(result.close_succeeded)
+        api.CreateFileW.assert_called_once_with(
+            "disposable-canary.bin", 0x40000000, 0x7, None, 3, 0x80, None,
+        )
+        api.WriteFile.assert_called_once()
+        api.CloseHandle.assert_called_once_with(1234)
+        self.assertEqual(calls, [("write", 1234)])
+
+        for write_ok, transferred, close_ok, expected_verified in (
+            (True, len(b"changed") - 1, True, False),
+            (False, 0, True, False),
+            (True, len(b"changed"), False, False),
+        ):
+            with self.subTest(
+                write_ok=write_ok, transferred=transferred, close_ok=close_ok,
+            ):
+                state = {"error": 0}
+
+                def partial_write(*args: object) -> bool:
+                    args[3]._obj.value = transferred
+                    state["error"] = 5 if not write_ok else 0
+                    return write_ok
+
+                failing_api = SimpleNamespace(
+                    CreateFileW=mock.Mock(return_value=1234),
+                    WriteFile=mock.Mock(side_effect=partial_write),
+                    CloseHandle=mock.Mock(
+                        side_effect=lambda _handle: close_ok,
+                    ),
+                )
+                outcome = helper(
+                    Path("disposable-canary.bin"), b"changed", api=failing_api,
+                    set_last_error=lambda value: state.__setitem__("error", value),
+                    get_last_error=lambda: state["error"],
+                )
+                self.assertIs(outcome.verified, expected_verified)
+                self.assertEqual(failing_api.CloseHandle.call_count, 1)
+
+    def test_native_write_canary_control_stops_when_createfile_fails(self) -> None:
+        helper = globals().get("_native_write_canary_control")
+        self.assertTrue(callable(helper), "native write canary control helper is missing")
+
+        state = {"error": 5}
+        api = SimpleNamespace(
+            CreateFileW=mock.Mock(
+                side_effect=lambda *_args: (
+                    state.__setitem__("error", 5)
+                    or ctypes.c_void_p(-1).value
+                ),
+            ),
+            WriteFile=mock.Mock(),
+            CloseHandle=mock.Mock(),
+        )
+        result = helper(
+            Path("disposable-canary.bin"), b"changed", api=api,
+            set_last_error=lambda value: state.__setitem__("error", value),
+            get_last_error=lambda: state["error"],
+        )
+
+        self.assertFalse(result.verified)
+        self.assertFalse(result.create_succeeded)
+        self.assertIsNone(result.write_succeeded)
+        self.assertEqual(result.create_error, 5)
+        api.WriteFile.assert_not_called()
+        api.CloseHandle.assert_not_called()
+
+    def test_native_write_canary_control_cleans_up_after_api_exceptions(self) -> None:
+        helper = globals().get("_native_write_canary_control")
+        self.assertTrue(callable(helper), "native write canary control helper is missing")
+
+        for failing_api in ("CreateFileW", "WriteFile", "CloseHandle"):
+            with self.subTest(failing_api=failing_api):
+                api = SimpleNamespace(
+                    CreateFileW=mock.Mock(return_value=1234),
+                    WriteFile=mock.Mock(),
+                    CloseHandle=mock.Mock(return_value=True),
+                )
+                getattr(api, failing_api).side_effect = OSError("synthetic API failure")
+                state = {"error": 0}
+                result = helper(
+                    Path("disposable-canary.bin"), b"changed", api=api,
+                    set_last_error=lambda value: state.__setitem__("error", value),
+                    get_last_error=lambda: state["error"],
+                )
+                self.assertFalse(result.verified)
+                if failing_api == "CreateFileW":
+                    self.assertFalse(result.create_succeeded)
+                    self.assertIsNone(result.write_succeeded)
+                    api.WriteFile.assert_not_called()
+                    api.CloseHandle.assert_not_called()
+                else:
+                    self.assertTrue(result.create_succeeded)
+                    self.assertIs(result.write_succeeded, failing_api == "CloseHandle")
+                    self.assertEqual(api.CloseHandle.call_count, 1)
+                    if failing_api == "WriteFile":
+                        self.assertFalse(result.write_succeeded)
+                        self.assertTrue(result.close_succeeded)
+                    else:
+                        self.assertTrue(result.write_succeeded)
+                        self.assertFalse(result.close_succeeded)
+
     def test_Reviewer快照原生探针脚本在非Windows主机可静态解析(self) -> None:
         from contextlib import redirect_stdout
         from io import StringIO
@@ -2328,9 +2589,26 @@ class TestWindowsAppContainer(unittest.TestCase):
                  ), mock.patch(
                      "tests.test_windows_appcontainer._current_process_standard_user_status",
                      return_value="verified",
-                 ), mock.patch(
-                     "tests.test_windows_appcontainer._dacl_write_control_succeeds",
-                     return_value=True,
+                ), mock.patch(
+                    "tests.test_windows_appcontainer._dacl_write_control_succeeds",
+                    return_value=True,
+                ), mock.patch(
+                    "tests.test_windows_appcontainer._native_write_canary_control",
+                    create=True,
+                    side_effect=lambda path, payload, **_kwargs: (
+                        path.write_bytes(payload + path.read_bytes()[len(payload):])
+                        and SimpleNamespace(
+                            verified=True,
+                            create_succeeded=True,
+                            write_succeeded=True,
+                            requested_bytes=len(payload),
+                            bytes_transferred=len(payload),
+                            close_succeeded=True,
+                            create_error=0,
+                            write_error=0,
+                            close_error=0,
+                        )
+                    ),
                 ), mock.patch.dict(
                     os.environ,
                     {
@@ -2387,6 +2665,16 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer IPv6 connect stages", notice_names)
         self.assertIn("Windows Reviewer write canary fingerprints", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
+        write_fingerprint_notice = json.loads(next(
+            encoded
+            for name, encoded in captured_notices
+            if name == "Windows Reviewer write canary fingerprints"
+        ))
+        self.assertTrue(write_fingerprint_notice["write_positive_control"]["verified"])
+        self.assertEqual(
+            write_fingerprint_notice["write_positive_control"]["bytes_transferred"],
+            len(b"changed"),
+        )
         self.assertNotIn("Windows Reviewer probe preflight", notice_names)
         wfp_notice_prefix = (
             "::notice title=Windows Reviewer WFP diagnostic only::"
@@ -3086,6 +3374,20 @@ class TestWindowsAppContainer(unittest.TestCase):
         reviewer_source = inspect.getsource(
             TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理,
         )
+        self.assertIn(
+            "write_canary_control = _native_write_canary_control(", reviewer_source,
+        )
+        self.assertIn("mutable_file, write_payload,", reviewer_source)
+        self.assertIn('"write_positive_control": {', reviewer_source)
+        self.assertIn("write_canary_control_readback_matches", reviewer_source)
+        self.assertIn("write_canary_control_restored", reviewer_source)
+        positive_control_assertion = reviewer_source.index(
+            "write_canary_control_verified,",
+        )
+        reviewer_candidate_launch = reviewer_source.index(
+            "candidate = run_windows_appcontainer(",
+        )
+        self.assertLess(positive_control_assertion, reviewer_candidate_launch)
         self.assertIn('"Windows Reviewer loopback network denial"', reviewer_source)
         acceptance_start = reviewer_source.index(
             "self.assertTrue(all(summary[key] is True for key in (",
@@ -7410,6 +7712,46 @@ class TestWindowsAppContainer(unittest.TestCase):
             write_canary_original = b"original\n"
             write_payload = b"changed"
             mutable_file.write_bytes(write_canary_original)
+            write_canary_control = _native_write_canary_control(
+                mutable_file, write_payload,
+            )
+            expected_write_control_content = (
+                write_payload + write_canary_original[len(write_payload):]
+            )
+            try:
+                write_canary_control_readback_matches = (
+                    mutable_file.read_bytes() == expected_write_control_content
+                )
+            except OSError:
+                write_canary_control_readback_matches = False
+            write_canary_control_restored = False
+            try:
+                mutable_file.write_bytes(write_canary_original)
+                write_canary_control_restored = (
+                    mutable_file.read_bytes() == write_canary_original
+                )
+            except OSError:
+                write_canary_control_restored = False
+            write_canary_control_verified = (
+                write_canary_control.verified
+                and write_canary_control_readback_matches
+                and write_canary_control_restored
+            )
+            positive_control_error = next(
+                (
+                    error for error in (
+                        write_canary_control.create_error,
+                        write_canary_control.write_error,
+                        write_canary_control.close_error,
+                    )
+                    if error != 0
+                ),
+                0,
+            )
+            self.assertTrue(
+                write_canary_control_verified,
+                "native write positive control failed; sandbox denial is inconclusive",
+            )
             deletable_file = snapshot / "delete.py"
             deletable_file.write_bytes(b"delete sentinel\n")
             rename_file = snapshot / "rename.py"
@@ -8461,7 +8803,17 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer write canary fingerprints",
-                    summary["write_canary_fingerprints"],
+                    {
+                        **summary["write_canary_fingerprints"],
+                        "write_positive_control": {
+                            "verified": write_canary_control_verified,
+                            "requested_bytes": write_canary_control.requested_bytes,
+                            "bytes_transferred": write_canary_control.bytes_transferred,
+                            "readback_matches": write_canary_control_readback_matches,
+                            "canary_restored": write_canary_control_restored,
+                            "winerror": positive_control_error,
+                        },
+                    },
                 )
                 self.assertTrue(candidate.executed, candidate)
                 self.assertEqual(candidate.exit_code, 0, candidate)
