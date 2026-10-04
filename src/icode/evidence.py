@@ -393,9 +393,11 @@ def _verification_payload(
         raise EvidenceError("工单 verification_runs 结构无效")
     if len(receipts) + len(runs) > _MAX_VERIFICATION_RECEIPTS:
         raise EvidenceError("验证回执条数超过安全上限")
-    for run in runs:
+    for index, run in enumerate(runs):
         if not isinstance(run, dict):
-            continue
+            raise EvidenceError(
+                f"工单 verification_runs[{index}] 结构无效（必须是对象）"
+            )
         append_receipt({
             "kind": "verification_recorded",
             "fingerprint": run.get("evidence", ""),

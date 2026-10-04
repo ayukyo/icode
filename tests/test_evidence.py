@@ -103,6 +103,33 @@ class TestEvidencePack(unittest.TestCase):
 
             self.assertEqual(marker.read_text(encoding="utf-8"), "keep existing evidence pack\n")
 
+    def test_导出器拒绝畸形verification_runs且保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["verification_runs"] = [None]
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+
+            for clean in (True, False):
+                with self.subTest(clean=clean):
+                    dest = ws / f"existing-pack-{clean}"
+                    dest.mkdir()
+                    marker = dest / "keep.txt"
+                    marker.write_bytes(b"preserve previous evidence pack\n")
+
+                    with self.assertRaises(EvidenceError):
+                        build_evidence_pack(
+                            out_dir, dest=dest, gates_json=self.settings.gates_json,
+                            clean=clean,
+                        )
+
+                    self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
     def test_导出器遇到无效契约文件时保留旧包(self) -> None:
         from icode.contracts import ContractError
 
