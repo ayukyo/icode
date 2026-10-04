@@ -82,10 +82,16 @@ ALLOWED_EVENT_TYPES = frozenset({
     "idempotent_hit",
     "external_note",
 })
-_METADATA_EVENT_MIRROR_FIELDS = {
-    "verification_recorded": "verification_runs",
-    "claim_recorded": "claims",
+_METADATA_EVENT_MIRROR_PATHS = {
+    "verification_recorded": ("verification_runs",),
+    "claim_recorded": ("claims",),
+    "skill_run_recorded": ("extensions", "skills", "runs"),
 }
+_METADATA_EVENT_MIRROR_FIELDS = {
+    event_type: ".".join(path)
+    for event_type, path in _METADATA_EVENT_MIRROR_PATHS.items()
+}
+_INVALID_METADATA_EVENT_MIRROR = object()
 ALLOWED_EVENT_ACTORS = frozenset({"icode", "user", "watch", "system"})
 EVENT_SCHEMA_VERSION = 1
 EVENT_REQUIRED_FIELDS = frozenset({
@@ -167,6 +173,21 @@ def _event_payload_metadata_record(payload: dict) -> dict:
         key: value for key, value in payload.items()
         if key != "metadata_hash_after"
     }
+
+
+def _metadata_event_mirror_records(metadata: object, event_type: str) -> object:
+    """Read a mirrored metadata array by path; missing/null path parts mean empty."""
+    path = _METADATA_EVENT_MIRROR_PATHS.get(event_type)
+    if path is None:
+        return _INVALID_METADATA_EVENT_MIRROR
+    value = metadata
+    for field in path:
+        if value is None:
+            return []
+        if not isinstance(value, dict):
+            return _INVALID_METADATA_EVENT_MIRROR
+        value = value.get(field)
+    return [] if value is None else value
 
 
 def _event_payload_matches_metadata_record(payload: dict, metadata_record: dict) -> bool:
@@ -717,12 +738,9 @@ def verify_pack(pack_dir: Path) -> list[str]:
             problems.append("工单 metadata 不可解析")
         else:
             metadata_event_mirrors = {
-                event_type: metadata.get(metadata_field, [])
-                for event_type, metadata_field in _METADATA_EVENT_MIRROR_FIELDS.items()
+                event_type: _metadata_event_mirror_records(metadata, event_type)
+                for event_type in _METADATA_EVENT_MIRROR_FIELDS
             }
-            for event_type, records in metadata_event_mirrors.items():
-                if records is None:
-                    metadata_event_mirrors[event_type] = []
             candidate = metadata.get("ticket_id")
             if not isinstance(candidate, str) or not candidate:
                 problems.append("工单 metadata.ticket_id 无效")

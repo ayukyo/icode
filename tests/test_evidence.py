@@ -56,6 +56,27 @@ class TestEvidencePack(unittest.TestCase):
         self.assertIsInstance(claim, dict)
         return claim
 
+    def _record_skill_run(
+        self, out_dir: Path, *, ticket_id: str, skill: str = "evidence-check",
+        trigger: str = "evidence-pack mirror regression", occurrence: int = 1,
+    ) -> dict:
+        from icode.control import ControlPlane
+
+        result = ControlPlane(self.settings).run(
+            "record-skill-run", "--dir", str(out_dir),
+            "--skill", skill, "--trigger", trigger,
+            "--result", "success", "--adopted", "true",
+            "--evidence-ref", f"fp-skill-run-{ticket_id}-{occurrence}",
+            "--elapsed-ms", "12", "--estimated-tokens", "34",
+            "--unique-finding", f"finding-{occurrence}",
+            "--request-id", f"evidence-pack-skill-run-{ticket_id}-{occurrence}",
+            check=False,
+        )
+        self.assertTrue(result.ok, result.data)
+        run = result.data.get("run")
+        self.assertIsInstance(run, dict)
+        return run
+
     def _rewrite_event_chain(self, events_path: Path, events: list[dict]) -> None:
         from icode.pack_verify import GENESIS_HASH, canonical_event_hash
 
@@ -180,6 +201,246 @@ class TestEvidencePack(unittest.TestCase):
                                 marker.read_bytes(),
                                 b"preserve previous evidence pack\n",
                             )
+
+    def test_导出器拒绝metadata_skill_run与事件分叉且保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self._record_skill_run(
+                out_dir, ticket_id=metadata["ticket_id"],
+            )
+
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["extensions"]["skills"]["runs"][0]["skill"] = "metadata-only"
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+            with self.assertRaisesRegex(EvidenceError, "skill_run_recorded"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    clean=True,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_导出器拒绝重算哈希后的skill_run事件分叉(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata = json.loads(
+                (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+            )
+            self._record_skill_run(out_dir, ticket_id=metadata["ticket_id"])
+
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            skill_events = [
+                event for event in events
+                if event.get("event_type") == "skill_run_recorded"
+            ]
+            self.assertEqual(len(skill_events), 1)
+            skill_events[0]["payload"]["trigger"] = "event-only mutation"
+            self._rewrite_event_chain(events_path, events)
+
+            with self.assertRaisesRegex(EvidenceError, "skill_run_recorded"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝skill_run事件缺失或倒序(self) -> None:
+        from icode.evidence import EvidenceError
+
+        for mode in ("missing", "reordered"):
+            with self.subTest(mode=mode), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                metadata = json.loads(
+                    (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+                )
+                for occurrence in (1, 2):
+                    self._record_skill_run(
+                        out_dir, ticket_id=metadata["ticket_id"],
+                        skill=f"evidence-check-{occurrence}", occurrence=occurrence,
+                    )
+
+                events_path = out_dir / ".ico_events.jsonl"
+                events = [
+                    json.loads(line)
+                    for line in events_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                skill_run_indexes = [
+                    index for index, event in enumerate(events)
+                    if event.get("event_type") == "skill_run_recorded"
+                ]
+                self.assertEqual(len(skill_run_indexes), 2)
+                if mode == "missing":
+                    events.pop(skill_run_indexes[0])
+                else:
+                    first, second = skill_run_indexes
+                    events[first], events[second] = events[second], events[first]
+                self._rewrite_event_chain(events_path, events)
+
+                dest = ws / "existing-pack"
+                dest.mkdir()
+                marker = dest / "keep.txt"
+                marker.write_bytes(b"preserve previous evidence pack\n")
+                with self.assertRaisesRegex(EvidenceError, "skill_run_recorded"):
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                        clean=True,
+                    )
+                self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_导出器拒绝畸形嵌套skill_runs且保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+
+        malformed_extensions = (
+            "invalid",
+            False,
+            0,
+            {"skills": "invalid"},
+            {"skills": False},
+            {"skills": 0},
+            {"skills": {"runs": "invalid"}},
+            {"skills": {"runs": False}},
+            {"skills": {"runs": 0}},
+            {"skills": {"runs": [None]}},
+        )
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            for index, malformed in enumerate(malformed_extensions):
+                with self.subTest(extensions=malformed):
+                    metadata["extensions"] = malformed
+                    metadata_path.write_text(
+                        json.dumps(metadata, ensure_ascii=False) + "\n",
+                        encoding="utf-8",
+                    )
+                    dest = ws / f"existing-pack-{index}"
+                    dest.mkdir()
+                    marker = dest / "keep.txt"
+                    marker.write_bytes(b"preserve previous evidence pack\n")
+                    with self.assertRaises(EvidenceError):
+                        build_evidence_pack(
+                            out_dir, dest=dest,
+                            gates_json=self.settings.gates_json, clean=True,
+                        )
+                    self.assertEqual(
+                        marker.read_bytes(), b"preserve previous evidence pack\n",
+                    )
+
+    def test_导出器兼容缺省与null的skill_run扩展(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            compatible_extensions = (
+                "missing", None, {"skills": None}, {"skills": {}},
+                {"skills": {"runs": None}},
+            )
+            for index, extensions in enumerate(compatible_extensions):
+                with self.subTest(extensions=extensions):
+                    if extensions == "missing":
+                        metadata.pop("extensions", None)
+                    else:
+                        metadata["extensions"] = extensions
+                    metadata_path.write_text(
+                        json.dumps(metadata, ensure_ascii=False) + "\n",
+                        encoding="utf-8",
+                    )
+                    report = build_evidence_pack(
+                        out_dir, dest=ws / f"pack-{index}",
+                        gates_json=self.settings.gates_json,
+                    )
+                    self.assertTrue(report.ok, report.render())
+
+    def test_独立校验器拒绝重签包中skill_runs与事件不一致(self) -> None:
+        from icode.pack_verify import pack_digest, sha256_file
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata = json.loads(
+                (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+            )
+            self._record_skill_run(out_dir, ticket_id=metadata["ticket_id"])
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["extensions"]["skills"]["runs"][0]["trigger"] = (
+                "resigned metadata-only mutation"
+            )
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("skill_run_recorded" in problem for problem in problems), problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("skill_run_recorded", independent.stdout + independent.stderr)
+
+    def test_独立校验器拒绝畸形嵌套skill_runs(self) -> None:
+        with temp_workspace() as ws:
+            _out_dir, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+            metadata_path = dest / "ticket" / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["extensions"] = {"skills": {"runs": [None]}}
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("metadata.extensions.skills.runs" in problem for problem in problems),
+                problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn(
+                "metadata.extensions.skills.runs",
+                independent.stdout + independent.stderr,
+            )
 
     def test_导出器拒绝metadata与verification事件不一致且保留旧包(self) -> None:
         from icode.control import ControlPlane

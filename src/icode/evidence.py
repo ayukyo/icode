@@ -52,6 +52,7 @@ from .pack_verify import (
     _check_json_structural_token_budget,
     _METADATA_EVENT_MIRROR_FIELDS,
     _event_payload_matches_metadata_record,
+    _metadata_event_mirror_records,
     event_schema_issues,
     loads_json_value,
     read_bounded_bytes,
@@ -907,12 +908,9 @@ def build_evidence_pack(
         raise EvidenceError("工单 metadata 缺少有效 ticket_id")
 
     metadata_event_mirrors = {
-        event_type: meta.get(metadata_field, [])
-        for event_type, metadata_field in _METADATA_EVENT_MIRROR_FIELDS.items()
+        event_type: _metadata_event_mirror_records(meta, event_type)
+        for event_type in _METADATA_EVENT_MIRROR_FIELDS
     }
-    for event_type, records in metadata_event_mirrors.items():
-        if records is None:
-            metadata_event_mirrors[event_type] = []
     verification_payload, verification_count = _verification_payload(
         verifications, metadata_event_mirrors["verification_recorded"],
     )
