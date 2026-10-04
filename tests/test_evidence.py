@@ -110,25 +110,286 @@ class TestEvidencePack(unittest.TestCase):
             out_dir = make_finished_plan_ticket(self.settings, ws / "work")
             metadata_path = out_dir / ".ico_metadata.json"
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-            metadata["verification_runs"] = [None]
+            for index, malformed_runs in enumerate(([None], "", False, 0)):
+                with self.subTest(verification_runs=malformed_runs):
+                    metadata["verification_runs"] = malformed_runs
+                    metadata_path.write_text(
+                        json.dumps(metadata, ensure_ascii=False) + "\n",
+                        encoding="utf-8",
+                    )
+
+                    for clean in (True, False):
+                        with self.subTest(clean=clean):
+                            dest = ws / f"existing-pack-{index}-{clean}"
+                            dest.mkdir()
+                            marker = dest / "keep.txt"
+                            marker.write_bytes(b"preserve previous evidence pack\n")
+
+                            with self.assertRaises(EvidenceError):
+                                build_evidence_pack(
+                                    out_dir, dest=dest,
+                                    gates_json=self.settings.gates_json,
+                                    clean=clean,
+                                )
+
+                            self.assertEqual(
+                                marker.read_bytes(),
+                                b"preserve previous evidence pack\n",
+                            )
+
+    def test_导出器拒绝metadata与verification事件不一致且保留旧包(self) -> None:
+        from icode.control import ControlPlane
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            recorded = ControlPlane(self.settings).record_verification(
+                out_dir, ticket_id=metadata["ticket_id"], kind="device_test",
+                outcome="pass", evidence="fp-verification-run-1",
+                baseline="diff-verification-run-1", layer="unit",
+                scenario="evidence-pack-consistency",
+            )
+            self.assertTrue(recorded.ok, recorded.data)
+
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["verification_runs"][0]["evidence"] = "metadata-only-change"
             metadata_path.write_text(
                 json.dumps(metadata, ensure_ascii=False) + "\n", encoding="utf-8",
             )
 
-            for clean in (True, False):
-                with self.subTest(clean=clean):
-                    dest = ws / f"existing-pack-{clean}"
-                    dest.mkdir()
-                    marker = dest / "keep.txt"
-                    marker.write_bytes(b"preserve previous evidence pack\n")
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+            with self.assertRaisesRegex(EvidenceError, "verification_recorded"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json, clean=True,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
 
-                    with self.assertRaises(EvidenceError):
-                        build_evidence_pack(
-                            out_dir, dest=dest, gates_json=self.settings.gates_json,
-                            clean=clean,
-                        )
+    def test_导出器拒绝已重算哈希的verification事件分叉(self) -> None:
+        from icode.control import ControlPlane
+        from icode.evidence import EvidenceError
+        from icode.pack_verify import GENESIS_HASH, canonical_event_hash
 
-                    self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata = json.loads(
+                (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+            )
+            recorded = ControlPlane(self.settings).record_verification(
+                out_dir, ticket_id=metadata["ticket_id"], kind="device_test",
+                outcome="pass", evidence="fp-verification-run-2",
+                baseline="diff-verification-run-2", layer="unit",
+                scenario="evidence-pack-consistency",
+            )
+            self.assertTrue(recorded.ok, recorded.data)
+
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            verification_events = [
+                event for event in events
+                if event.get("event_type") == "verification_recorded"
+            ]
+            self.assertEqual(len(verification_events), 1)
+            verification_events[0]["payload"]["evidence"] = "event-only-change"
+            previous_hash = GENESIS_HASH
+            for event in events:
+                event["previous_event_hash"] = previous_hash
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+                encoding="utf-8",
+            )
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+            with self.assertRaisesRegex(EvidenceError, "verification_recorded"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json, clean=True,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_导出器区分verification值的JSON类型(self) -> None:
+        from icode.control import ControlPlane
+        from icode.evidence import EvidenceError
+        from icode.pack_verify import GENESIS_HASH, canonical_event_hash
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            recorded = ControlPlane(self.settings).record_verification(
+                out_dir, ticket_id=metadata["ticket_id"], kind="device_test",
+                outcome="pass", evidence="fp-verification-run-json-type",
+                baseline="diff-verification-run-json-type", layer="unit",
+                scenario="evidence-pack-consistency",
+            )
+            self.assertTrue(recorded.ok, recorded.data)
+
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["verification_runs"][0]["outcome"] = 1
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            verification_events = [
+                event for event in events
+                if event.get("event_type") == "verification_recorded"
+            ]
+            self.assertEqual(len(verification_events), 1)
+            verification_events[0]["payload"]["outcome"] = True
+            previous_hash = GENESIS_HASH
+            for event in events:
+                event["previous_event_hash"] = previous_hash
+                event["event_hash"] = canonical_event_hash(event)
+                previous_hash = event["event_hash"]
+            events_path.write_text(
+                "\n".join(json.dumps(event, ensure_ascii=False) for event in events)
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(EvidenceError, "verification_recorded"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝verification事件缺失或顺序不一致(self) -> None:
+        from icode.control import ControlPlane
+        from icode.evidence import EvidenceError
+        from icode.pack_verify import GENESIS_HASH, canonical_event_hash
+
+        for mode in ("missing", "reordered"):
+            with self.subTest(mode=mode), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                metadata = json.loads(
+                    (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+                )
+                control = ControlPlane(self.settings)
+                for index in (1, 2):
+                    recorded = control.record_verification(
+                        out_dir, ticket_id=metadata["ticket_id"], kind="device_test",
+                        outcome="pass", evidence=f"fp-verification-run-{mode}-{index}",
+                        baseline=f"diff-verification-run-{mode}-{index}", layer="unit",
+                        scenario="evidence-pack-consistency",
+                    )
+                    self.assertTrue(recorded.ok, recorded.data)
+
+                events_path = out_dir / ".ico_events.jsonl"
+                events = [
+                    json.loads(line)
+                    for line in events_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                verification_indexes = [
+                    index for index, event in enumerate(events)
+                    if event.get("event_type") == "verification_recorded"
+                ]
+                self.assertEqual(len(verification_indexes), 2)
+                if mode == "missing":
+                    events.pop(verification_indexes[0])
+                else:
+                    first, second = verification_indexes
+                    events[first], events[second] = events[second], events[first]
+                previous_hash = GENESIS_HASH
+                for event in events:
+                    event["previous_event_hash"] = previous_hash
+                    event["event_hash"] = canonical_event_hash(event)
+                    previous_hash = event["event_hash"]
+                events_path.write_text(
+                    "\n".join(
+                        json.dumps(event, ensure_ascii=False) for event in events
+                    ) + "\n",
+                    encoding="utf-8",
+                )
+
+                dest = ws / "existing-pack"
+                dest.mkdir()
+                marker = dest / "keep.txt"
+                marker.write_bytes(b"preserve previous evidence pack\n")
+                with self.assertRaisesRegex(EvidenceError, "verification_recorded"):
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                        clean=True,
+                    )
+                self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_独立校验器拒绝摘要自洽但metadata与事件不一致(self) -> None:
+        from icode.control import ControlPlane
+        from icode.pack_verify import pack_digest, sha256_file
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata = json.loads(
+                (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+            )
+            recorded = ControlPlane(self.settings).record_verification(
+                out_dir, ticket_id=metadata["ticket_id"], kind="device_test",
+                outcome="pass", evidence="fp-verification-run-3",
+                baseline="diff-verification-run-3", layer="unit",
+                scenario="evidence-pack-consistency",
+            )
+            self.assertTrue(recorded.ok, recorded.data)
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["verification_runs"][0]["evidence"] = "metadata-only-change"
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = dest / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            metadata_entry = next(
+                item for item in manifest["files"]
+                if item["path"] == "ticket/metadata.json"
+            )
+            metadata_entry["sha256"] = sha256_file(metadata_path)
+            metadata_entry["size"] = metadata_path.stat().st_size
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("verification_recorded" in problem for problem in problems),
+                problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn(
+                "verification_recorded", independent.stdout + independent.stderr,
+            )
 
     def test_导出器遇到无效契约文件时保留旧包(self) -> None:
         from icode.contracts import ContractError

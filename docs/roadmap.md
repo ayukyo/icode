@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R3 evidence-pack `verification_recorded` 双视图一致性（2026-10-05；本机阶段验收通过，新 SHA CI 待验）：**exporter 与内置/独立 verifier 按事件顺序逐条核对 `metadata.verification_runs`，只排除控制面专用的 `metadata_hash_after`；比较采用规范 JSON，保留 `true`/`1` 等 JSON 类型差异。缺项、多项、顺序错、内容错及错误的非数组结构均 fail-closed；缺字段或显式 `null` 仍按既有兼容约定视为空数组。导出校验发生在清理目标包之前，事件链保持流式处理。TDD 新增 metadata-only、重算 event hash 的 event-only、缺失/倒序、类型错、错误 falsy metadata 与摘要自洽重签包用例；证据包及关联回归 97 项通过，4 项核心异常回归连续 20 轮（80 次执行）通过。全仓 preflight 三道守护、compileall、站点/治理/竞品检查及 diff 检查已通过；此处不认证来源、不实现事件重放，不改变 Windows `10013` 硬门或 R2/R3 readiness。
+
 - **CI #614：metadata 导出修复 Python 全量测试与 macOS lifecycle 通过；Windows Reviewer 门仍失败关闭（2026-10-05；`c356b13`）：**Python 3.11 [job](https://github.com/ayukyo/icode/actions/runs/37215531521/job/111475143256)、Python 3.12 [job](https://github.com/ayukyo/icode/actions/runs/37215531521/job/111475143316) 和 macOS Intel/Apple Silicon lifecycle [jobs](https://github.com/ayukyo/icode/actions/runs/37215531521) 均成功；主 CI 30 success、2 failure、3 skipped。唯二失败是 Windows Reviewer snapshot candidate x64/ARM64 两项；GitHub job 日志 API 返回 403，不能对本轮具体 socket errno/失败根因作推断，也没有新的网络拒绝通过证据。[CI #614](https://github.com/ayukyo/icode/actions/runs/37215531521)，网站 [#490](https://github.com/ayukyo/icode/actions/runs/37215531516) success。畸形 metadata 切片已有双版本全量测试通过；Windows 双栈 `10013` 硬门与 R2/R3 readiness 仍未关闭。
 
 - **R3 evidence exporter 拒绝畸形 `verification_runs`（2026-10-05；本机验收通过，新 SHA CI 待验）：**`_verification_payload()` 不再静默跳过非对象记录；`clean=True/False` 均在触碰输出前失败并保留旧包。证据包完整模块 91 项、控制面正常记录集成项通过；新回归连续 20 轮通过。全仓 `scripts/preflight.py` 三道守护、compileall、站点/治理/竞品检查及 `git diff --check` 全通过。当前只保证畸形数组元素不被漏掉，不扩大为完整 metadata schema 重建或事件链重放；远端新 SHA 验收待 CI，不改变 R2/R3 readiness。

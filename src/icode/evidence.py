@@ -53,6 +53,7 @@ from .pack_verify import (
     event_schema_issues,
     loads_json_value,
     read_bounded_bytes,
+    _verification_run_matches_metadata,
     verify_pack,
 )
 
@@ -388,7 +389,7 @@ def _verification_payload(
         else:
             append_receipt({"kind": "verification", "note": str(verification)})
 
-    runs = verification_runs or []
+    runs = [] if verification_runs is None else verification_runs
     if not isinstance(runs, list):
         raise EvidenceError("工单 verification_runs 结构无效")
     if len(receipts) + len(runs) > _MAX_VERIFICATION_RECEIPTS:
@@ -417,16 +418,24 @@ def _verification_payload(
     ), len(receipts)
 
 
-def _read_events(out_dir: Path, *, expected_ticket_id: str) -> _EventSummary:
+def _read_events(
+    out_dir: Path, *, expected_ticket_id: str,
+    expected_verification_runs: list[dict],
+) -> _EventSummary:
     path = Path(out_dir) / EVENTS_NAME
     if not path.is_file():
         raise EvidenceError(f"事件链不存在：{path}")
+    if not isinstance(expected_verification_runs, list) or not all(
+        isinstance(run, dict) for run in expected_verification_runs
+    ):
+        raise EvidenceError("工单 verification_runs 结构无效（必须是仅含对象的数组）")
     try:
         if path.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
             raise EvidenceError("事件链超过总输入字节数上限")
     except OSError as exc:
         raise EvidenceError(f"事件链无法读取：{type(exc).__name__}") from None
     summary = _EventSummary()
+    verification_run_index = 0
     try:
         with path.open(encoding="utf-8", newline="") as stream:
             lineno = 0
@@ -486,6 +495,21 @@ def _read_events(out_dir: Path, *, expected_ticket_id: str) -> _EventSummary:
                         f"（字段：{fields}）"
                     )
                 if event_type not in ("step_started", "artifact_written"):
+                    if event_type == "verification_recorded":
+                        if verification_run_index >= len(expected_verification_runs):
+                            raise EvidenceError(
+                                "verification_recorded 事件与 metadata.verification_runs 不一致"
+                            )
+                        if (
+                            not _verification_run_matches_metadata(
+                                payload,
+                                expected_verification_runs[verification_run_index],
+                            )
+                        ):
+                            raise EvidenceError(
+                                "verification_recorded 事件与 metadata.verification_runs 不一致"
+                            )
+                        verification_run_index += 1
                     continue
                 if event_type == "step_started":
                     step = payload.get("step")
@@ -503,6 +527,10 @@ def _read_events(out_dir: Path, *, expected_ticket_id: str) -> _EventSummary:
                 })
     except (OSError, UnicodeError) as exc:
         raise EvidenceError(f"事件链无法读取：{type(exc).__name__}") from None
+    if verification_run_index != len(expected_verification_runs):
+        raise EvidenceError(
+            "verification_recorded 事件与 metadata.verification_runs 不一致"
+        )
     return summary
 
 
@@ -866,7 +894,17 @@ def build_evidence_pack(
     if not isinstance(ticket_id, str) or not ticket_id:
         raise EvidenceError("工单 metadata 缺少有效 ticket_id")
 
-    event_summary = _read_events(out_dir, expected_ticket_id=ticket_id)
+    metadata_verification_runs = meta.get("verification_runs", [])
+    if metadata_verification_runs is None:
+        metadata_verification_runs = []
+    verification_payload, verification_count = _verification_payload(
+        verifications, metadata_verification_runs,
+    )
+    event_summary = _read_events(
+        out_dir,
+        expected_ticket_id=ticket_id,
+        expected_verification_runs=metadata_verification_runs,
+    )
     if not event_summary.event_count:
         raise EvidenceError("事件链为空，无法导出证据包")
     if len(event_summary.artifact_events) > _MAX_ARTIFACT_INDEX_ENTRIES:
@@ -876,9 +914,6 @@ def build_evidence_pack(
         raise EvidenceError("证据包清单文件条目数量超过安全上限")
     _preflight_artifact_index_json(event_summary.artifact_events)
     _preflight_artifact_snapshot_bytes(event_summary.artifact_events)
-    verification_payload, verification_count = _verification_payload(
-        verifications, meta.get("verification_runs"),
-    )
     # Validate and serialize contracts before removing an existing destination.
     # Reuse the same text below and preserve Path.write_text newline behavior.
     contracts_payload: str | None = None
