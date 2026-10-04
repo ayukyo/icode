@@ -11,7 +11,8 @@
     - **独立校验器 `verify.py`**（零依赖、不 import 本仓任何代码）
 
 诚实边界（会写进包内 README，不得省略）：
-    - 本包证明的是"事件链自洽 + 正文与链上哈希对应"，不是"代码绝对正确"；
+    - 本包证明的是"事件链自洽 + metadata/事件绑定（marker 存在时）+ 正文与链上哈希对应"，
+      不是"来源真实性或代码绝对正确"；
     - 包摘要 `pack_digest` 需要**外部渠道锚定**才有抗抵赖力，否则可被整体重签；
     - 权限模型是**应用层限制，不是沙箱**（沙箱在 Phase 5 之前不存在）。
 """
@@ -56,6 +57,7 @@ from .pack_verify import (
     _METADATA_EVENT_MIRROR_FIELDS,
     _event_payload_matches_metadata_record,
     _metadata_agent_spawn_records,
+    _metadata_content_hash,
     _metadata_event_mirror_records,
     event_schema_issues,
     loads_json_value,
@@ -428,6 +430,7 @@ def _read_events(
     out_dir: Path, *, expected_ticket_id: str,
     expected_event_mirrors: dict[str, list[dict]],
     expected_agent_spawns: object,
+    expected_metadata_hash: str,
 ) -> _EventSummary:
     path = Path(out_dir) / EVENTS_NAME
     if not path.is_file():
@@ -457,6 +460,8 @@ def _read_events(
     event_mirror_indexes = {
         event_type: 0 for event_type in _METADATA_EVENT_MIRROR_FIELDS
     }
+    last_metadata_hash_after: object = None
+    has_metadata_hash_after = False
     try:
         with path.open(encoding="utf-8", newline="") as stream:
             lineno = 0
@@ -506,6 +511,10 @@ def _read_events(
                     raise EvidenceError(
                         f"事件链第 {lineno} 行 payload 结构无效（必须是对象）"
                     )
+                marker = payload.get("metadata_hash_after")
+                if marker:
+                    last_metadata_hash_after = marker
+                    has_metadata_hash_after = True
                 schema_issues = event_schema_issues(
                     event, expected_ticket_id=expected_ticket_id,
                 )
@@ -561,6 +570,10 @@ def _read_events(
         raise EvidenceError(
             "agent_spawned/agent_result 事件与 "
             f"metadata.{_METADATA_AGENT_SPAWNS_FIELD} 不一致"
+        )
+    if has_metadata_hash_after and last_metadata_hash_after != expected_metadata_hash:
+        raise EvidenceError(
+            "事件链最终 metadata_hash_after 与工单 metadata 摘要不一致"
         )
     return summary
 
@@ -842,8 +855,11 @@ PACK_README = """# 证据包（{ticket_id}）
 
 ## 这个包证明什么
 
-1. **事件链自洽** —— 每条事件的 `event_hash` 与其内容一致，且 `previous_event_hash` 逐条链接，
-   首条为 `ticket_created`。任何人删改、插入、重排事件都会被检出。
+1. **事件链与 metadata 一致性** —— 每条事件的 `event_hash` 与其内容一致，且
+   `previous_event_hash` 逐条链接，首条为 `ticket_created`。若事件包含受控写入摘要
+   `metadata_hash_after`，最后一个摘要必须对应整份 metadata，已镜像的 metadata 记录也必须
+   与事件顺序和内容一致。没有 `metadata_hash_after` 的历史链保持兼容，不据此声明 metadata
+   已绑定到事件。
 2. **正文与链上哈希对应** —— 链上只存 sha256（不存正文），本包附上正文快照 +
    `artifacts.json` 对应表；校验器会重算正文 sha256 并与链上记录比对。
 3. **清单与包摘要** —— `manifest.json` 记录每个文件的 sha256 与 `pack_digest`。
@@ -859,7 +875,8 @@ python verify.py <本包目录>
 
 ## 诚实边界（请务必阅读）
 
-- 本包证明的是「**过程记录自洽且未被篡改**」，**不是**「代码绝对正确」。
+- 本包校验的是「**当前过程记录、metadata 与包内成员相互自洽**」，**不是**「记录来源真实」或「代码绝对正确」。
+- metadata 摘要与事件 hash 都不是签名；能够重写并重签整包的人仍可制造自洽包，因此不能认证事件来源。
 - task 回执仅记录验证结果快照；`coverage.session_replay=not_included`，不包含完整会话事件回放，
   `coverage.unrecorded_side_effects=not_proven`，不证明过程中不存在未记录副作用。
 - `pack_digest` 需要**外部渠道锚定**（如发布到工单系统、邮件、日志留存）才具备抗抵赖力，
@@ -921,6 +938,12 @@ def build_evidence_pack(
         ) from None
     if not isinstance(meta, dict):
         raise EvidenceError("工单 metadata 结构无效（必须是对象）")
+    try:
+        expected_metadata_hash = _metadata_content_hash(meta)
+    except (TypeError, ValueError, RecursionError, UnicodeError) as exc:
+        raise EvidenceError(
+            f"工单 metadata 无法计算 metadata_hash_after 摘要：{type(exc).__name__}"
+        ) from None
     ticket_id = meta.get("ticket_id")
     if not isinstance(ticket_id, str) or not ticket_id:
         raise EvidenceError("工单 metadata 缺少有效 ticket_id")
@@ -938,6 +961,7 @@ def build_evidence_pack(
         expected_ticket_id=ticket_id,
         expected_event_mirrors=metadata_event_mirrors,
         expected_agent_spawns=metadata_agent_spawns,
+        expected_metadata_hash=expected_metadata_hash,
     )
     if not event_summary.event_count:
         raise EvidenceError("事件链为空，无法导出证据包")

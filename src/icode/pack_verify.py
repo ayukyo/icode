@@ -51,6 +51,7 @@ _MAX_PACKAGE_HASH_READ_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_PACKAGE_ARTIFACT_BYTES = 256 * 1024 * 1024
 _UNSET_METADATA_EVENT_MIRRORS = object()
 _UNSET_METADATA_AGENT_SPAWNS = object()
+_UNSET_EXPECTED_METADATA_HASH = object()
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -540,6 +541,14 @@ def canonical_event_hash(event: dict) -> str:
     return sha256_bytes(raw.encode("utf-8"))
 
 
+def _metadata_content_hash(metadata: dict) -> str:
+    """与 pinned ICODE-SKILL metadata_hash 保持相同的全对象摘要合同。"""
+    raw = json.dumps(
+        metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    return sha256_bytes(raw.encode("utf-8"))
+
+
 def pack_digest(entries: list[dict]) -> str:
     """与生成端逐字对齐：对 (path, sha256) 排序后做规范 JSON 再取 sha256。"""
     material = sorted(
@@ -883,6 +892,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
     metadata_ticket_id: str | None = None
     metadata_event_mirrors: object = _UNSET_METADATA_EVENT_MIRRORS
     metadata_agent_spawns: object = _UNSET_METADATA_AGENT_SPAWNS
+    expected_metadata_hash: object = _UNSET_EXPECTED_METADATA_HASH
     metadata_path = _package_member_path(pack, "ticket/metadata.json")
     if metadata_path is None:
         problems.append("工单 metadata 包内路径无效（必须是普通文件）")
@@ -894,6 +904,11 @@ def verify_pack(pack_dir: Path) -> list[str]:
         except (OSError, ValueError, RecursionError):
             problems.append("工单 metadata 不可解析")
         else:
+            try:
+                expected_metadata_hash = _metadata_content_hash(metadata)
+            except (TypeError, ValueError, RecursionError, UnicodeError):
+                problems.append("工单 metadata 无法计算 metadata_hash_after 摘要")
+                expected_metadata_hash = None
             metadata_event_mirrors = {
                 event_type: _metadata_event_mirror_records(metadata, event_type)
                 for event_type in _METADATA_EVENT_MIRROR_FIELDS
@@ -924,6 +939,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
                 expected_ticket_id=metadata_ticket_id,
                 expected_event_mirrors=metadata_event_mirrors,
                 expected_agent_spawns=metadata_agent_spawns,
+                expected_metadata_hash=expected_metadata_hash,
             )
             problems.extend(chain_problems)
             # ④ 正文与链上哈希对应
@@ -941,6 +957,7 @@ def _verify_event_chain(
     path: Path, *, expected_ticket_id: str | None = None,
     expected_event_mirrors: object = _UNSET_METADATA_EVENT_MIRRORS,
     expected_agent_spawns: object = _UNSET_METADATA_AGENT_SPAWNS,
+    expected_metadata_hash: object = _UNSET_EXPECTED_METADATA_HASH,
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """逐条校验事件，只保留去重 ID 与产物绑定所需的紧凑事实。"""
     problems = _ProblemCollector()
@@ -954,6 +971,8 @@ def _verify_event_chain(
     invalid_payload_kinds: set[str] = set()
     invalid_event_type_seen = False
     invalid_schema_fields: set[str] = set()
+    last_metadata_hash_after: object = None
+    has_metadata_hash_after = False
     compare_event_mirrors = (
         expected_event_mirrors is not _UNSET_METADATA_EVENT_MIRRORS
     )
@@ -1131,6 +1150,11 @@ def _verify_event_chain(
 
                 event_type = event.get("event_type")
                 payload = event.get("payload")
+                if isinstance(payload, dict):
+                    marker = payload.get("metadata_hash_after")
+                    if marker:
+                        last_metadata_hash_after = marker
+                        has_metadata_hash_after = True
                 if not isinstance(event_type, str) or event_type not in ALLOWED_EVENT_TYPES:
                     invalid_event_type_seen = True
                 if (
@@ -1188,6 +1212,14 @@ def _verify_event_chain(
     append_payload_shape_problems(problems)
     append_event_type_problem(problems)
     append_event_schema_problem(problems)
+    if (
+        has_metadata_hash_after
+        and expected_metadata_hash is not _UNSET_EXPECTED_METADATA_HASH
+        and last_metadata_hash_after != expected_metadata_hash
+    ):
+        problems.append(
+            "事件链最终 metadata_hash_after 与工单 metadata 摘要不一致"
+        )
     for event_type, records in event_mirror_records.items():
         if (
             event_mirror_indexes[event_type] != len(records)

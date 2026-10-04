@@ -137,6 +137,19 @@ class TestEvidencePack(unittest.TestCase):
             encoding="utf-8",
         )
 
+    def _drop_metadata_hash_markers(self, events_path: Path) -> None:
+        """把手改metadata的旧格式测试夹具明确建成 marker-free 事件链。"""
+        events = [
+            json.loads(line)
+            for line in events_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        for event in events:
+            payload = event.get("payload")
+            if isinstance(payload, dict):
+                payload.pop("metadata_hash_after", None)
+        self._rewrite_event_chain(events_path, events)
+
     def _refresh_pack_member_hash(self, pack_dir: Path, relative_path: str) -> None:
         from icode.pack_verify import pack_digest, sha256_file
 
@@ -426,6 +439,7 @@ class TestEvidencePack(unittest.TestCase):
         with temp_workspace() as ws:
             out_dir = make_finished_plan_ticket(self.settings, ws / "work")
             metadata_path = out_dir / ".ico_metadata.json"
+            self._drop_metadata_hash_markers(out_dir / ".ico_events.jsonl")
             original = json.loads(metadata_path.read_text(encoding="utf-8"))
             for index, extensions in enumerate(malformed_extensions):
                 with self.subTest(extensions=extensions):
@@ -537,6 +551,102 @@ class TestEvidencePack(unittest.TestCase):
                 "metadata.extensions.agent.spawns",
                 independent.stdout + independent.stderr,
             )
+
+    def test_导出器拒绝未镜像metadata直写且保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["requirement"] = "unrecorded metadata-only change"
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+            with self.assertRaisesRegex(EvidenceError, "metadata_hash_after"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    clean=True,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_导出器拒绝重算事件链后的metadata_hash_after分叉(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            hashed_events = [
+                event for event in events
+                if event.get("payload", {}).get("metadata_hash_after")
+            ]
+            self.assertTrue(hashed_events)
+            hashed_events[-1]["payload"]["metadata_hash_after"] = "0" * 64
+            self._rewrite_event_chain(events_path, events)
+
+            with self.assertRaisesRegex(EvidenceError, "metadata_hash_after"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器兼容没有metadata_hash_after的旧事件链(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            for event in events:
+                event.get("payload", {}).pop("metadata_hash_after", None)
+            self._rewrite_event_chain(events_path, events)
+
+            report = build_evidence_pack(
+                out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_独立校验器拒绝重签包中未镜像metadata直写(self) -> None:
+        with temp_workspace() as ws:
+            out_dir, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["requirement"] = "resigned metadata-only change"
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("metadata_hash_after" in problem for problem in problems), problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("metadata_hash_after", independent.stdout + independent.stderr)
 
     def test_导出器保留JSON字符串中的Unicode行分隔符(self) -> None:
         from icode.pack_verify import GENESIS_HASH, canonical_event_hash
@@ -766,6 +876,7 @@ class TestEvidencePack(unittest.TestCase):
         with temp_workspace() as ws:
             out_dir = make_finished_plan_ticket(self.settings, ws / "work")
             metadata_path = out_dir / ".ico_metadata.json"
+            self._drop_metadata_hash_markers(out_dir / ".ico_events.jsonl")
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             compatible_extensions = (
                 "missing", None, {"skills": None}, {"skills": {}},
@@ -3892,7 +4003,13 @@ class TestStandaloneVerifier(unittest.TestCase):
 
     def test_所有Verifier拒绝孤立代理项并接受合法代理对(self) -> None:
         invalid_scalar = chr(0xD800)
-        from icode.pack_verify import GENESIS_HASH, canonical_event_hash, pack_digest, sha256_file
+        from icode.pack_verify import (
+            GENESIS_HASH,
+            _metadata_content_hash,
+            canonical_event_hash,
+            pack_digest,
+            sha256_file,
+        )
 
         cases = (
             ("manifest object key", "manifest_key", 1),
@@ -3969,6 +4086,15 @@ class TestStandaloneVerifier(unittest.TestCase):
                         for line in events_path.read_text(encoding="utf-8").splitlines()
                         if line.strip()
                     ]
+                    hashed_events = [
+                        event for event in events
+                        if isinstance(event.get("payload"), dict)
+                        and event["payload"].get("metadata_hash_after")
+                    ]
+                    self.assertTrue(hashed_events)
+                    hashed_events[-1]["payload"]["metadata_hash_after"] = (
+                        _metadata_content_hash(metadata)
+                    )
                     previous_hash = GENESIS_HASH
                     for event in events:
                         event["ticket_id"] = ticket_id

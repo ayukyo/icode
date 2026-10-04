@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R3 最终受控写入的完整 metadata 摘要门（2026-10-05；本机验收通过，新 SHA CI 待验）：**对齐 pinned ICODE-SKILL `metadata_hash()`：检查事件链最后一个 truthy `metadata_hash_after` 是否绑定整份当前 metadata；没有 marker 的旧事件链仍兼容，但不声明此项绑定。Exporter 在清理输出前校验，内置及零依赖独立 verifier 同样检查；验证器可拒绝改写 metadata 并重签普通包清单的攻击者，但不能防止攻击者重签 marker 和整条事件链，**不是**来源签名。evidence 专项 123 项通过，四个核心回归 20 轮/80 次通过，全仓 preflight 3/3 通过；不复制子仓库代码、不加依赖、不做全事件 replay，不改变 R2 Windows `10013` 门或 R2/R3 readiness。
+
 - **R3 `agent_spawned`/`agent_result` → `metadata.extensions.agent.spawns` 生命周期重建镜像（2026-10-05；本机 evidence 119 项 + 5 个核心拒绝方法各 20 轮、全仓 preflight 三道门通过）：**固定 ICODE-SKILL `b74c4c40f2246a6c4eea77e494dd57c642f3a9a3`（MIT）中 control plane `reconstruct_agent_spawns` 的生命周期合同现在由本仓 exporter、内置校验器和包内独立 verifier 共用有界 reducer 实现。metadata 数组严格按 spawn 顺序对照；最多保留 3 条开放调用状态、结果事件合并到对应记录，合法未结束 spawn 仍通过；内容/顺序/数量/能力/终态、重复或未知 ID、非对象数组和嵌套形状失配均 fail closed，缺失/null 路径保持空数组兼容。真实 pinned 专用记录命令为正例；独立 verify.py 在攻击者重签 metadata hash/manifest 后也拒绝分叉；导出前检查失败保留旧包。不改 submodule、不复制代码、不加依赖、不做全事件 replay/来源认证。TDD 旧实现 RED；新 SHA 原生 CI 待推送验收；R2 Windows `10013`、自动模式与 R2/R3 overall readiness 未变。
 
 - **CI #619（前序 R3 skill-run 镜像 SHA `01a25fba8099d93110313b74a41641de7a111756`，2026-10-05）：**Python 3.11/3.12、R3 verification-output lifecycle 全部平台、R2.1 workspace 与大多数原生辅助作业通过；官网 [#495](https://github.com/ayukyo/icode/actions/runs/37223883485) success。整体 CI 仍 failure：Windows x64/ARM64 Reviewer candidate 的 IPv4/IPv6 `connect_ex=10035`、等待超时、无 `FD_CONNECT`/WFP 事件，未达到既定终态 `10013` 网络拒绝硬门；macOS arm `R2.2 native probe` 在 GitHub `Set up job` 阶段终止（没有运行项目步骤，不据此归因源代码）。此记录不改变 R2 网络门、自动模式或 R2/R3 readiness。完整[主 CI #619](https://github.com/ayukyo/icode/actions/runs/37223883379)。
