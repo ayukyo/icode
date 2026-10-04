@@ -1,5 +1,7 @@
 # R3 自验证与有界修复
 
+- **验证输出生命周期原生 CI 覆盖（2026-10-04；本地类 18 项中 16 通过、2 项 Windows skip，preflight 3/3 通过；新 SHA CI 待验）：**发现全量 unittest 只在 Ubuntu 跑，跨平台 workspace 子集未包含 `TestIndependentVerification`。新增独立五平台矩阵，让 Ubuntu、macOS arm64/x64、Windows x64/arm64 运行该类，覆盖 macOS kqueue 路径和 Windows pipe reader/取消路径。当前 Linux 本机结果不代表原生 macOS/Windows 验收；本改动仅补 CI 覆盖，不扩张 R3 readiness 或后代清理保证。
+
 - **POSIX 超时与 EOF 错误优先级（2026-10-04）：**正常退出后，主动脱组后代持管道导致 EOF 超过排空期限时为 `VerificationOutputCaptureError`；若验证进程自身执行超时，则优先保留 `subprocess.TimeoutExpired`，即使 EOF 也不完整。两种情况都不能签发 `VerificationEvidence`；本文相关“EOF 不完整时报 capture error”仅针对验证进程正常退出的分支，不代表超时错误类型或主动脱组进程清理保证。
 
 - **报告成功谓词与独立证据一致性（2026-10-04；`tests.test_runner` + `tests.test_r3_regression` 137 项通过、4 项跳过；完整 preflight/远端 CI 待验）：**回看本轮超限失败路径时发现，`TaskReport.ok` 原谓词未直接要求 `VerificationEvidence` 存在，也未核对其退出码或 `passed` 状态。现要求证据为真实 `VerificationEvidence`、`passed=True` 且 report/evidence 两个退出码都等于 0；渲染行使用证据绑定的退出码。回归覆盖其它阶段均成功但无验证证据、report/evidence 退出码错配及 `exit_code=0` 但失败类别的证据；缺证据用例旧实现先 RED。此门防止未来失败路径把缺证据或失败证据包装成成功；与输出边界共同形成完整性门，不扩大 R3 readiness。

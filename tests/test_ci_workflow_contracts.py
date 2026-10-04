@@ -718,6 +718,30 @@ class TestWindowsRunnerPipeNativeCi(unittest.TestCase):
         )
 
 
+class TestVerificationOutputLifecycleCi(unittest.TestCase):
+    def test_bounded_verifier_pipe_lifecycle_runs_on_native_platforms(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        expected_job = """  verification-output-lifecycle:
+    name: R3 verification output lifecycle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest, windows-11-arm]
+"""
+        expected_test = (
+            "        run: python -m unittest "
+            "tests.test_runner.TestIndependentVerification -v\n"
+        )
+
+        self.assertIn(expected_job, workflow)
+        self.assertIn(expected_test, workflow)
+
+
 class TestLinuxInstalledWheelViolationReceiptCi(unittest.TestCase):
     def test_installed_wheel_runner_executes_native_receipt_probe_after_install(
         self,
