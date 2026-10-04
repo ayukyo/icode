@@ -50,10 +50,11 @@ from .pack_verify import (
     _HashReadBudget,
     _HashReadBudgetExceeded,
     _check_json_structural_token_budget,
+    _METADATA_EVENT_MIRROR_FIELDS,
+    _event_payload_matches_metadata_record,
     event_schema_issues,
     loads_json_value,
     read_bounded_bytes,
-    _verification_run_matches_metadata,
     verify_pack,
 )
 
@@ -420,22 +421,30 @@ def _verification_payload(
 
 def _read_events(
     out_dir: Path, *, expected_ticket_id: str,
-    expected_verification_runs: list[dict],
+    expected_event_mirrors: dict[str, list[dict]],
 ) -> _EventSummary:
     path = Path(out_dir) / EVENTS_NAME
     if not path.is_file():
         raise EvidenceError(f"事件链不存在：{path}")
-    if not isinstance(expected_verification_runs, list) or not all(
-        isinstance(run, dict) for run in expected_verification_runs
-    ):
-        raise EvidenceError("工单 verification_runs 结构无效（必须是仅含对象的数组）")
+    if not isinstance(expected_event_mirrors, dict):
+        raise EvidenceError("工单事件镜像结构无效")
+    for event_type, metadata_field in _METADATA_EVENT_MIRROR_FIELDS.items():
+        expected_records = expected_event_mirrors.get(event_type)
+        if not isinstance(expected_records, list) or not all(
+            isinstance(record, dict) for record in expected_records
+        ):
+            raise EvidenceError(
+                f"工单 metadata.{metadata_field} 结构无效（必须是仅含对象的数组）"
+            )
     try:
         if path.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
             raise EvidenceError("事件链超过总输入字节数上限")
     except OSError as exc:
         raise EvidenceError(f"事件链无法读取：{type(exc).__name__}") from None
     summary = _EventSummary()
-    verification_run_index = 0
+    event_mirror_indexes = {
+        event_type: 0 for event_type in _METADATA_EVENT_MIRROR_FIELDS
+    }
     try:
         with path.open(encoding="utf-8", newline="") as stream:
             lineno = 0
@@ -495,21 +504,23 @@ def _read_events(
                         f"（字段：{fields}）"
                     )
                 if event_type not in ("step_started", "artifact_written"):
-                    if event_type == "verification_recorded":
-                        if verification_run_index >= len(expected_verification_runs):
+                    if event_type in _METADATA_EVENT_MIRROR_FIELDS:
+                        expected_records = expected_event_mirrors[event_type]
+                        record_index = event_mirror_indexes[event_type]
+                        metadata_field = _METADATA_EVENT_MIRROR_FIELDS[event_type]
+                        if record_index >= len(expected_records):
                             raise EvidenceError(
-                                "verification_recorded 事件与 metadata.verification_runs 不一致"
+                                f"{event_type} 事件与 metadata.{metadata_field} 不一致"
                             )
                         if (
-                            not _verification_run_matches_metadata(
-                                payload,
-                                expected_verification_runs[verification_run_index],
+                            not _event_payload_matches_metadata_record(
+                                payload, expected_records[record_index],
                             )
                         ):
                             raise EvidenceError(
-                                "verification_recorded 事件与 metadata.verification_runs 不一致"
+                                f"{event_type} 事件与 metadata.{metadata_field} 不一致"
                             )
-                        verification_run_index += 1
+                        event_mirror_indexes[event_type] += 1
                     continue
                 if event_type == "step_started":
                     step = payload.get("step")
@@ -527,10 +538,11 @@ def _read_events(
                 })
     except (OSError, UnicodeError) as exc:
         raise EvidenceError(f"事件链无法读取：{type(exc).__name__}") from None
-    if verification_run_index != len(expected_verification_runs):
-        raise EvidenceError(
-            "verification_recorded 事件与 metadata.verification_runs 不一致"
-        )
+    for event_type, metadata_field in _METADATA_EVENT_MIRROR_FIELDS.items():
+        if event_mirror_indexes[event_type] != len(expected_event_mirrors[event_type]):
+            raise EvidenceError(
+                f"{event_type} 事件与 metadata.{metadata_field} 不一致"
+            )
     return summary
 
 
@@ -894,16 +906,20 @@ def build_evidence_pack(
     if not isinstance(ticket_id, str) or not ticket_id:
         raise EvidenceError("工单 metadata 缺少有效 ticket_id")
 
-    metadata_verification_runs = meta.get("verification_runs", [])
-    if metadata_verification_runs is None:
-        metadata_verification_runs = []
+    metadata_event_mirrors = {
+        event_type: meta.get(metadata_field, [])
+        for event_type, metadata_field in _METADATA_EVENT_MIRROR_FIELDS.items()
+    }
+    for event_type, records in metadata_event_mirrors.items():
+        if records is None:
+            metadata_event_mirrors[event_type] = []
     verification_payload, verification_count = _verification_payload(
-        verifications, metadata_verification_runs,
+        verifications, metadata_event_mirrors["verification_recorded"],
     )
     event_summary = _read_events(
         out_dir,
         expected_ticket_id=ticket_id,
-        expected_verification_runs=metadata_verification_runs,
+        expected_event_mirrors=metadata_event_mirrors,
     )
     if not event_summary.event_count:
         raise EvidenceError("事件链为空，无法导出证据包")

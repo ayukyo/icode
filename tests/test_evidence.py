@@ -40,6 +40,50 @@ class TestEvidencePack(unittest.TestCase):
         )
         return out_dir, dest, report
 
+    def _record_claim(self, out_dir: Path, *, ticket_id: str, statement: str) -> dict:
+        from icode.control import ControlPlane
+
+        result = ControlPlane(self.settings).run(
+            "record-claim", "--dir", str(out_dir), "--kind", "fact",
+            "--statement", statement, "--source", "evidence-pack regression",
+            "--boundary", "claim/event mirror contract",
+            "--evidence", "fp-claim-evidence-pack",
+            "--request-id", f"evidence-pack-claim-{ticket_id}-{statement}",
+            check=False,
+        )
+        self.assertTrue(result.ok, result.data)
+        claim = result.data.get("claim")
+        self.assertIsInstance(claim, dict)
+        return claim
+
+    def _rewrite_event_chain(self, events_path: Path, events: list[dict]) -> None:
+        from icode.pack_verify import GENESIS_HASH, canonical_event_hash
+
+        previous_hash = GENESIS_HASH
+        for event in events:
+            event["previous_event_hash"] = previous_hash
+            event["event_hash"] = canonical_event_hash(event)
+            previous_hash = event["event_hash"]
+        events_path.write_text(
+            "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
+            encoding="utf-8",
+        )
+
+    def _refresh_pack_member_hash(self, pack_dir: Path, relative_path: str) -> None:
+        from icode.pack_verify import pack_digest, sha256_file
+
+        member = pack_dir / relative_path
+        manifest_path = pack_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        entry = next(item for item in manifest["files"] if item["path"] == relative_path)
+        entry["sha256"] = sha256_file(member)
+        entry["size"] = member.stat().st_size
+        manifest["pack_digest"] = pack_digest(manifest["files"])
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
     # ---- 正常路径 ----
 
     def test_导出证据包并通过包内校验(self) -> None:
@@ -390,6 +434,225 @@ class TestEvidencePack(unittest.TestCase):
             self.assertIn(
                 "verification_recorded", independent.stdout + independent.stderr,
             )
+
+    def test_导出器拒绝metadata_claim与事件不一致且保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self._record_claim(
+                out_dir, ticket_id=metadata["ticket_id"], statement="claim mirror original",
+            )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["claims"][0]["statement"] = "metadata-only claim mutation"
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+            with self.assertRaisesRegex(EvidenceError, "claim_recorded"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json, clean=True,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_导出器拒绝畸形claims且保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            for index, malformed_claims in enumerate(([None], "", False, 0)):
+                with self.subTest(claims=malformed_claims):
+                    metadata["claims"] = malformed_claims
+                    metadata_path.write_text(
+                        json.dumps(metadata, ensure_ascii=False) + "\n",
+                        encoding="utf-8",
+                    )
+                    dest = ws / f"existing-pack-{index}"
+                    dest.mkdir()
+                    marker = dest / "keep.txt"
+                    marker.write_bytes(b"preserve previous evidence pack\n")
+                    with self.assertRaises(EvidenceError):
+                        build_evidence_pack(
+                            out_dir, dest=dest,
+                            gates_json=self.settings.gates_json, clean=True,
+                        )
+                    self.assertEqual(
+                        marker.read_bytes(), b"preserve previous evidence pack\n",
+                    )
+
+    def test_导出器拒绝重算哈希后的claim事件分叉(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata = json.loads(
+                (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+            )
+            self._record_claim(
+                out_dir, ticket_id=metadata["ticket_id"], statement="claim event original",
+            )
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            claim_events = [
+                event for event in events if event.get("event_type") == "claim_recorded"
+            ]
+            self.assertEqual(len(claim_events), 1)
+            claim_events[0]["payload"]["statement"] = "event-only claim mutation"
+            self._rewrite_event_chain(events_path, events)
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+            with self.assertRaisesRegex(EvidenceError, "claim_recorded"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json, clean=True,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_导出器拒绝claim事件缺失或顺序不一致(self) -> None:
+        from icode.evidence import EvidenceError
+
+        for mode in ("missing", "reordered"):
+            with self.subTest(mode=mode), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                metadata = json.loads(
+                    (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+                )
+                for index in (1, 2):
+                    self._record_claim(
+                        out_dir,
+                        ticket_id=metadata["ticket_id"],
+                        statement=f"claim mirror {mode} {index}",
+                    )
+                events_path = out_dir / ".ico_events.jsonl"
+                events = [
+                    json.loads(line)
+                    for line in events_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                claim_indexes = [
+                    index for index, event in enumerate(events)
+                    if event.get("event_type") == "claim_recorded"
+                ]
+                self.assertEqual(len(claim_indexes), 2)
+                if mode == "missing":
+                    events.pop(claim_indexes[0])
+                else:
+                    first, second = claim_indexes
+                    events[first], events[second] = events[second], events[first]
+                self._rewrite_event_chain(events_path, events)
+
+                dest = ws / "existing-pack"
+                dest.mkdir()
+                marker = dest / "keep.txt"
+                marker.write_bytes(b"preserve previous evidence pack\n")
+                with self.assertRaisesRegex(EvidenceError, "claim_recorded"):
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                        clean=True,
+                    )
+                self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_独立校验器拒绝摘要自洽但claims与事件不一致(self) -> None:
+        from icode.pack_verify import pack_digest, sha256_file
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata = json.loads(
+                (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+            )
+            self._record_claim(
+                out_dir, ticket_id=metadata["ticket_id"], statement="claim for verifier",
+            )
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["claims"][0]["statement"] = "metadata-only signed claim mutation"
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = dest / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            metadata_entry = next(
+                item for item in manifest["files"]
+                if item["path"] == "ticket/metadata.json"
+            )
+            metadata_entry["sha256"] = sha256_file(metadata_path)
+            metadata_entry["size"] = metadata_path.stat().st_size
+            manifest["pack_digest"] = pack_digest(manifest["files"])
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("claim_recorded" in problem for problem in problems), problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("claim_recorded", independent.stdout + independent.stderr)
+
+    def test_独立校验器拒绝metadata中的畸形claims(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["claims"] = [None]
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("metadata.claims" in problem for problem in problems), problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("metadata.claims", independent.stdout + independent.stderr)
 
     def test_导出器遇到无效契约文件时保留旧包(self) -> None:
         from icode.contracts import ContractError

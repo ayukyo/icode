@@ -49,7 +49,7 @@ _MAX_EVENT_CHAIN_EVENT_COUNT = 100_000
 _MAX_PACKAGE_FILE_BYTES = 256 * 1024 * 1024
 _MAX_PACKAGE_HASH_READ_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_PACKAGE_ARTIFACT_BYTES = 256 * 1024 * 1024
-_UNSET_VERIFICATION_RUNS = object()
+_UNSET_METADATA_EVENT_MIRRORS = object()
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -82,6 +82,10 @@ ALLOWED_EVENT_TYPES = frozenset({
     "idempotent_hit",
     "external_note",
 })
+_METADATA_EVENT_MIRROR_FIELDS = {
+    "verification_recorded": "verification_runs",
+    "claim_recorded": "claims",
+}
 ALLOWED_EVENT_ACTORS = frozenset({"icode", "user", "watch", "system"})
 EVENT_SCHEMA_VERSION = 1
 EVENT_REQUIRED_FIELDS = frozenset({
@@ -157,21 +161,21 @@ def event_schema_issues(
     return issues
 
 
-def _verification_run_from_event_payload(payload: dict) -> dict:
-    """Return the control-plane metadata view of a verification event."""
+def _event_payload_metadata_record(payload: dict) -> dict:
+    """Return the control-plane metadata view of a mirrored event payload."""
     return {
         key: value for key, value in payload.items()
         if key != "metadata_hash_after"
     }
 
 
-def _verification_run_matches_metadata(payload: dict, metadata_run: dict) -> bool:
-    """Compare JSON values canonically, preserving distinctions such as true vs 1."""
-    event_run = _verification_run_from_event_payload(payload)
+def _event_payload_matches_metadata_record(payload: dict, metadata_record: dict) -> bool:
+    """Compare JSON records canonically, preserving distinctions such as true vs 1."""
+    event_record = _event_payload_metadata_record(payload)
     return json.dumps(
-        event_run, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        event_record, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     ) == json.dumps(
-        metadata_run, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        metadata_record, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
 
 
@@ -700,7 +704,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
             manifest_ticket_id = candidate
 
     metadata_ticket_id: str | None = None
-    metadata_verification_runs: object = _UNSET_VERIFICATION_RUNS
+    metadata_event_mirrors: object = _UNSET_METADATA_EVENT_MIRRORS
     metadata_path = _package_member_path(pack, "ticket/metadata.json")
     if metadata_path is None:
         problems.append("工单 metadata 包内路径无效（必须是普通文件）")
@@ -712,9 +716,13 @@ def verify_pack(pack_dir: Path) -> list[str]:
         except (OSError, ValueError, RecursionError):
             problems.append("工单 metadata 不可解析")
         else:
-            metadata_verification_runs = metadata.get("verification_runs", [])
-            if metadata_verification_runs is None:
-                metadata_verification_runs = []
+            metadata_event_mirrors = {
+                event_type: metadata.get(metadata_field, [])
+                for event_type, metadata_field in _METADATA_EVENT_MIRROR_FIELDS.items()
+            }
+            for event_type, records in metadata_event_mirrors.items():
+                if records is None:
+                    metadata_event_mirrors[event_type] = []
             candidate = metadata.get("ticket_id")
             if not isinstance(candidate, str) or not candidate:
                 problems.append("工单 metadata.ticket_id 无效")
@@ -738,7 +746,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
             artifact_facts, chain_problems = _verify_event_chain(
                 events_path,
                 expected_ticket_id=metadata_ticket_id,
-                expected_verification_runs=metadata_verification_runs,
+                expected_event_mirrors=metadata_event_mirrors,
             )
             problems.extend(chain_problems)
             # ④ 正文与链上哈希对应
@@ -754,7 +762,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
 
 def _verify_event_chain(
     path: Path, *, expected_ticket_id: str | None = None,
-    expected_verification_runs: object = _UNSET_VERIFICATION_RUNS,
+    expected_event_mirrors: object = _UNSET_METADATA_EVENT_MIRRORS,
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """逐条校验事件，只保留去重 ID 与产物绑定所需的紧凑事实。"""
     problems = _ProblemCollector()
@@ -768,22 +776,32 @@ def _verify_event_chain(
     invalid_payload_kinds: set[str] = set()
     invalid_event_type_seen = False
     invalid_schema_fields: set[str] = set()
-    compare_verification_runs = expected_verification_runs is not _UNSET_VERIFICATION_RUNS
-    if expected_verification_runs is None:
-        expected_runs: list[dict] = []
-    elif isinstance(expected_verification_runs, list) and all(
-        isinstance(run, dict) for run in expected_verification_runs
-    ):
-        expected_runs = expected_verification_runs
-    else:
-        expected_runs = []
-        if compare_verification_runs:
-            problems.append(
-                "工单 metadata.verification_runs 结构无效（必须是仅含对象的数组或 null）"
-            )
-            compare_verification_runs = False
-    verification_run_index = 0
-    verification_run_mismatch = False
+    compare_event_mirrors = (
+        expected_event_mirrors is not _UNSET_METADATA_EVENT_MIRRORS
+    )
+    event_mirror_records: dict[str, list[dict]] = {}
+    if compare_event_mirrors:
+        if not isinstance(expected_event_mirrors, dict):
+            problems.append("工单 metadata 事件镜像结构无效")
+            compare_event_mirrors = False
+        else:
+            for event_type, metadata_field in _METADATA_EVENT_MIRROR_FIELDS.items():
+                records = expected_event_mirrors.get(event_type, [])
+                if records is None:
+                    records = []
+                if not isinstance(records, list) or not all(
+                    isinstance(record, dict) for record in records
+                ):
+                    problems.append(
+                        f"工单 metadata.{metadata_field} 结构无效 "
+                        "（必须是仅含对象的数组或 null）"
+                    )
+                    continue
+                event_mirror_records[event_type] = records
+    event_mirror_indexes = {
+        event_type: 0 for event_type in event_mirror_records
+    }
+    event_mirror_mismatches: set[str] = set()
 
     def append_payload_shape_problems(target: _ProblemCollector) -> None:
         # Bound retained diagnostics even if a hostile event stream contains many
@@ -940,25 +958,30 @@ def _verify_event_chain(
                             str(event.get("event_id")),
                             str(payload.get("path") or ""),
                         )
-                if compare_verification_runs and event_type == "verification_recorded":
-                    if isinstance(payload, dict):
-                        if verification_run_index >= len(expected_runs):
-                            if not verification_run_mismatch:
-                                problems.append(
-                                    "verification_recorded 事件与 metadata.verification_runs 不一致"
-                                )
-                                verification_run_mismatch = True
-                        elif (
-                            not _verification_run_matches_metadata(
-                                payload, expected_runs[verification_run_index],
-                            )
-                        ):
-                            if not verification_run_mismatch:
-                                problems.append(
-                                    "verification_recorded 事件与 metadata.verification_runs 不一致"
-                                )
-                                verification_run_mismatch = True
-                    verification_run_index += 1
+                if (
+                    compare_event_mirrors
+                    and isinstance(event_type, str)
+                    and event_type in _METADATA_EVENT_MIRROR_FIELDS
+                    and event_type in event_mirror_records
+                ):
+                    metadata_field = _METADATA_EVENT_MIRROR_FIELDS[event_type]
+                    expected_records = event_mirror_records[event_type]
+                    record_index = event_mirror_indexes[event_type]
+                    mismatch = record_index >= len(expected_records)
+                    if (
+                        not mismatch
+                        and isinstance(payload, dict)
+                        and not _event_payload_matches_metadata_record(
+                            payload, expected_records[record_index],
+                        )
+                    ):
+                        mismatch = True
+                    if mismatch and event_type not in event_mirror_mismatches:
+                        problems.append(
+                            f"{event_type} 事件与 metadata.{metadata_field} 不一致"
+                        )
+                        event_mirror_mismatches.add(event_type)
+                    event_mirror_indexes[event_type] += 1
     except (OSError, UnicodeError) as exc:
         problems.append(f"事件链无法读取：{type(exc).__name__}")
         problems.extend(chain_problems.render())
@@ -973,14 +996,15 @@ def _verify_event_chain(
     append_payload_shape_problems(problems)
     append_event_type_problem(problems)
     append_event_schema_problem(problems)
-    if (
-        compare_verification_runs
-        and not verification_run_mismatch
-        and verification_run_index != len(expected_runs)
-    ):
-        problems.append(
-            "verification_recorded 事件与 metadata.verification_runs 不一致"
-        )
+    for event_type, records in event_mirror_records.items():
+        if (
+            event_mirror_indexes[event_type] != len(records)
+            and event_type not in event_mirror_mismatches
+        ):
+            metadata_field = _METADATA_EVENT_MIRROR_FIELDS[event_type]
+            problems.append(
+                f"{event_type} 事件与 metadata.{metadata_field} 不一致"
+            )
     return artifact_facts, problems.render()
 
 
