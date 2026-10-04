@@ -215,7 +215,6 @@ class TestWindowsWfpCapture(unittest.TestCase):
         collector = source.split(
             "static int run_collector(", 1,
         )[1].split("\nstatic int run_runner_subscription_probe(", 1)[0]
-
         self.assertIn("UINT32 event_type", template_helper)
         self.assertIn("conditionValue.uint32 = event_type", template_helper)
         self.assertIn("FWPM_CONDITION_NET_EVENT_TYPE", template_helper)
@@ -224,6 +223,64 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertEqual(collector.count("FwpmNetEventSubscribe2("), 2)
         self.assertEqual(collector.count("FwpmNetEventUnsubscribe0("), 2)
         self.assertIn("matched_classify_drop_count", source)
+
+    def test_runner_history_query_uses_bounded_enum3_after_callback_unsubscribe(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        source = (
+            repository_root / "native/windows/icode_wfp_event_probe.c"
+        ).read_text(encoding="utf-8")
+        collector = source.split(
+            "static int run_collector(", 1,
+        )[1].split("\nstatic int run_runner_subscription_probe(", 1)[0]
+        runner_probe = source.split(
+            "static int run_runner_subscription_probe(", 1,
+        )[1].split("\nint wmain(", 1)[0]
+        self.assertIn("static void run_historical_event_query(", source)
+        history_query = source.split(
+            "static void run_historical_event_query(", 1,
+        )[1].split("\nstatic HRESULT derive_profile_sid_bounded(", 1)[0]
+        candidate_job = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        ).split("  windows-reviewer-snapshot-probe:\n", 1)[1].split(
+            "  windows-appcontainer-read-handle-probe:\n", 1,
+        )[0]
+
+        self.assertIn("#define MAX_WFP_HISTORY_PAGE_SIZE 64", source)
+        for api in (
+            "FwpmNetEventCreateEnumHandle0(",
+            "FwpmNetEventEnum3(",
+            "FwpmNetEventDestroyEnumHandle0(",
+            "FwpmFreeMemory0((void **)&entries)",
+        ):
+            with self.subTest(api=api):
+                self.assertIn(api, history_query)
+        self.assertEqual(history_query.count("FwpmNetEventEnum3("), 1)
+        self.assertIn("history_event_matches_target(", history_query)
+        self.assertIn("MAX_WFP_HISTORY_PAGE_SIZE", history_query)
+        self.assertIn("returned_count == MAX_WFP_HISTORY_PAGE_SIZE", history_query)
+        self.assertIn("event->header.timeStamp", source)
+        self.assertIn("EqualSid(header->packageSid, context->expected_package_sid)", source)
+        self.assertIn("history_capability_api_code", source)
+        self.assertIn("history_classify_api_code", source)
+        self.assertNotIn("FwpmEngineSetOption0(", source)
+        self.assertEqual(collector.count("run_historical_event_query("), 2)
+        self.assertIn("TRUE, TRUE, FALSE, TRUE,", runner_probe)
+        self.assertIn("history_diagnostics.capability.status =\n                    WFP_HISTORY_COLLECTION_DISABLED", collector)
+
+        stop = collector.index("stop_seen = wait_for_stop(stop_path)")
+        unsubscribe = collector.index("FwpmNetEventUnsubscribe0(")
+        history = collector.index("run_historical_event_query(")
+        engine_close = collector.index("FwpmEngineClose0(engine)")
+        sid_free = collector.index("FreeSid(expected_sid)")
+        self.assertLess(stop, unsubscribe)
+        self.assertLess(unsubscribe, history)
+        self.assertLess(history, engine_close)
+        self.assertLess(history, sid_free)
+        self.assertIn("$observerReceipt.history_capability_status", candidate_job)
+        self.assertIn("$observerReceipt.history_classify_status", candidate_job)
+        self.assertIn("$observerHistoryFieldsValid", candidate_job)
+        self.assertIn("history_capability=$runnerWfpHistoryCapability", candidate_job)
+        self.assertNotIn("connect_denied = $observerReceipt.history", candidate_job)
 
     def test_workflow_uses_bounded_setupapi_member_enumeration_before_extract(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]

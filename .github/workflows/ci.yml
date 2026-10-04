@@ -99,6 +99,16 @@ jobs:
             $details = $details.Substring($details.Length - 12000)
           }
           Write-Output $details
+          if ($testExitCode -ne 0) {
+            $annotationDetails = $details
+            if ($annotationDetails.Length -gt 3000) {
+              $annotationDetails = $annotationDetails.Substring(
+                $annotationDetails.Length - 3000
+              )
+            }
+            $annotationDetails = $annotationDetails.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Native lifecycle test details::$annotationDetails"
+          }
           if ($testExitCode -ne 0 -and
               -not [string]::IsNullOrWhiteSpace($env:GITHUB_STEP_SUMMARY)) {
             try {
@@ -757,6 +767,8 @@ jobs:
           $runnerWfpCandidateEvent = 'inconclusive'
           $runnerWfpMatchedCapabilityDropCount = 'not_checked'
           $runnerWfpMatchedClassifyDropCount = 'not_checked'
+          $runnerWfpHistoryCapability = 'not_checked'
+          $runnerWfpHistoryClassify = 'not_checked'
           $runnerWfpCleanupState = 'not_started'
           $netsh = Join-Path $env:SystemRoot 'System32/netsh.exe'
           $profilePath = $null
@@ -1481,6 +1493,64 @@ jobs:
                       $observerMatchedCapabilityCount = $observerReceipt.matched_capability_drop_count
                       $observerMatchedClassifyCount = $observerReceipt.matched_classify_drop_count
                       $observerCapabilityId = $observerReceipt.matched_network_capability_id
+                      $observerHistoryWindowValid = $observerReceipt.history_time_window_valid
+                      $observerHistoryFieldsValid = (
+                        $null -eq $observerHistoryWindowValid -or
+                        $observerHistoryWindowValid -is [bool]
+                      )
+                      $observerHistoryStatuses = @(
+                        'not_attempted', 'complete', 'limit_reached', 'api_error',
+                        'invalid_data', 'invalid_window', 'collection_disabled', 'unavailable'
+                      )
+                      $observerHistoryStages = @('none', 'create', 'enumerate', 'destroy')
+                      foreach ($historyKind in @('capability', 'classify')) {
+                        $historyStatusProperty = "history_${historyKind}_status"
+                        $historyStageProperty = "history_${historyKind}_api_stage"
+                        $historyCodeProperty = "history_${historyKind}_api_code"
+                        $historyReturnedProperty = "history_${historyKind}_returned_count"
+                        $historyMatchedProperty = "history_${historyKind}_matched_count"
+                        $historyStatus = [string]$observerReceipt.$historyStatusProperty
+                        $historyStage = [string]$observerReceipt.$historyStageProperty
+                        $historyApiCode = $observerReceipt.$historyCodeProperty
+                        $historyReturnedCount = $observerReceipt.$historyReturnedProperty
+                        $historyMatchedCount = $observerReceipt.$historyMatchedProperty
+                        if ($observerHistoryStatuses -notcontains $historyStatus -or
+                            $observerHistoryStages -notcontains $historyStage -or
+                            (-not ($historyReturnedCount -is [int] -or $historyReturnedCount -is [long])) -or
+                            $historyReturnedCount -lt 0 -or $historyReturnedCount -gt 64 -or
+                            (-not ($historyMatchedCount -is [int] -or $historyMatchedCount -is [long])) -or
+                            $historyMatchedCount -lt 0 -or $historyMatchedCount -gt $historyReturnedCount) {
+                          $observerHistoryFieldsValid = $false
+                        }
+                        if ($historyStatus -eq 'api_error') {
+                          if ($observerHistoryStages -notcontains $historyStage -or
+                              $historyStage -eq 'none' -or
+                              (-not ($historyApiCode -is [int] -or $historyApiCode -is [long])) -or
+                              $historyApiCode -lt 0 -or $historyApiCode -gt 4294967295) {
+                            $observerHistoryFieldsValid = $false
+                          }
+                        } elseif ($null -ne $historyApiCode -or $historyStage -ne 'none') {
+                          $observerHistoryFieldsValid = $false
+                        }
+                        if (($historyStatus -eq 'limit_reached' -and $historyReturnedCount -ne 64) -or
+                            ($historyStatus -eq 'complete' -and $historyReturnedCount -ge 64) -or
+                            ($historyStatus -eq 'invalid_window' -and $observerHistoryWindowValid -ne $false)) {
+                          $observerHistoryFieldsValid = $false
+                        }
+                      }
+                      if ($observerHistoryFieldsValid) {
+                        $runnerWfpHistoryCapability = '{0}/{1}/{2}' -f `
+                          $observerReceipt.history_capability_status, `
+                          $observerReceipt.history_capability_returned_count, `
+                          $observerReceipt.history_capability_matched_count
+                        $runnerWfpHistoryClassify = '{0}/{1}/{2}' -f `
+                          $observerReceipt.history_classify_status, `
+                          $observerReceipt.history_classify_returned_count, `
+                          $observerReceipt.history_classify_matched_count
+                      } else {
+                        $runnerWfpHistoryCapability = 'invalid'
+                        $runnerWfpHistoryClassify = 'invalid'
+                      }
                       $observerCountsValid = $true
                       foreach ($count in @(
                         $observerCallbackCount, $observerCapabilityCount,
@@ -1550,7 +1620,7 @@ jobs:
                         $observerMatchesValid = $false
                       }
                       if ($observerSubscriptionValid -and $observerTargetValid -and
-                          $observerMatchesValid -and
+                          $observerMatchesValid -and $observerHistoryFieldsValid -and
                           ($null -eq $observerNetworkEventsCollected -or
                            $observerNetworkEventsCollected -is [bool])) {
                         $runnerWfpReceiptState = 'valid'
@@ -1826,9 +1896,10 @@ jobs:
             }
             Write-Output '::group::Windows WFP supplemental capture states'
             Write-Output "observer_preflight=$runnerWfpObserverPreflightState capture_preflight=$wfpCapturePreflight archive_member_match_count=$wfpArchiveMemberMatchCount"
-            Write-Output "observer_matched_classify_drops=$runnerWfpMatchedClassifyDropCount"
+            Write-Output "observer_matched_classify_drops=$runnerWfpMatchedClassifyDropCount matched_capability_drops=$runnerWfpMatchedCapabilityDropCount history_capability=$runnerWfpHistoryCapability history_classify=$runnerWfpHistoryClassify"
+            Write-Output "capture_status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode cab_status=$wfpArchiveMemberStatus cab_members=$wfpArchiveMemberCount xml_members=$wfpArchiveXmlMemberCount wfpdiag_xml_members=$wfpArchiveWfpdiagXmlMemberCount"
             Write-Output '::endgroup::'
-            Write-Output "::notice title=Windows WFP capture and runner observer::target_context=$runnerWfpTargetContextState observer=$runnerWfpObserverStatus collection=$runnerWfpCollectionState event=$runnerWfpCandidateEvent matched_capability_drops=$runnerWfpMatchedCapabilityDropCount cleanup=$runnerWfpCleanupState marker=$runnerWfpObserverMarkerState process=$runnerWfpObserverProcessState helper_rc=$runnerWfpObserverHelperExitCode receipt=$runnerWfpReceiptState capture_status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode cab_status=$wfpArchiveMemberStatus cab_members=$wfpArchiveMemberCount xml_members=$wfpArchiveXmlMemberCount wfpdiag_xml_members=$wfpArchiveWfpdiagXmlMemberCount"
+            Write-Output "::notice title=Windows WFP capture and runner observer::target_context=$runnerWfpTargetContextState observer=$runnerWfpObserverStatus collection=$runnerWfpCollectionState event=$runnerWfpCandidateEvent cap_drop=$runnerWfpMatchedCapabilityDropCount hist_cap=$runnerWfpHistoryCapability hist_cls=$runnerWfpHistoryClassify cleanup=$runnerWfpCleanupState marker=$runnerWfpObserverMarkerState process=$runnerWfpObserverProcessState helper_rc=$runnerWfpObserverHelperExitCode receipt=$runnerWfpReceiptState capture=$wfpCaptureStatus"
             foreach ($name in $environmentNames) {
               [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
             }

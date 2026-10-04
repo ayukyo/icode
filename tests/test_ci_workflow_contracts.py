@@ -499,6 +499,8 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
             "$runnerWfpCandidateEvent": "cleanup_or_receipt_error",
             "$runnerWfpMatchedCapabilityDropCount": "not_checked",
             "$runnerWfpMatchedClassifyDropCount": "not_checked",
+            "$runnerWfpHistoryCapability": "collection_disabled/64/64",
+            "$runnerWfpHistoryClassify": "collection_disabled/64/64",
             "$runnerWfpCleanupState": "not_started",
             "$runnerWfpObserverMarkerState": "classify_subscribe_failed",
             "$runnerWfpObserverProcessState": "exit_unknown",
@@ -746,6 +748,10 @@ class TestVerificationOutputLifecycleCi(unittest.TestCase):
         self.assertIn("$testOutput | Select-Object -Last 80", job)
         self.assertIn("if ($details.Length -gt 12000)", job)
         self.assertIn("$env:GITHUB_STEP_SUMMARY", job)
+        self.assertIn("$annotationDetails = $details", job)
+        self.assertIn("$annotationDetails.Length -gt 3000", job)
+        self.assertIn("::error title=Native lifecycle test details::", job)
+        self.assertIn("Replace('%', '%25').Replace(\"`r\", '%0D').Replace(\"`n\", '%0A')", job)
 
 
 class TestLinuxInstalledWheelViolationReceiptCi(unittest.TestCase):

@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R2 Windows WFP 历史事件只读诊断实现（2026-10-04；本机 34 项定向测试通过/1 项平台跳过，Windows 原生验收待新 SHA）：**按 `FWPM_NET_EVENT3` 使用同代 Enum3：runner observer 在 ready 前取起始 UTC `FILETIME`，stop 后 200 ms drain、两路 unsubscribe 后取结束时间；按 CAPABILITY_DROP / CLASSIFY_DROP 分别查询精确 `::1`、端口、TCP 模板，每类最多一页 64 条并逐项核对时间与 package SID。状态/返回码/计数是 additive schema v8 诊断；AppContainer collector 不查询，WFP 设置保持只读，历史零匹配或满页都不替代 `10013` 判据。静态测试覆盖枚举调用次数/释放与生命周期顺序、失败分类和不接 gate；本机无 Windows SDK/PowerShell，C ABI、原生 self-test 与消费逻辑必须待 x64/ARM64 CI。并为既有五平台生命周期失败新增 ≤3,000 字符、GitHub command-escaped `::error` 摘要注解；旧 SHA #589 尚未使用此注解，当前仍没有对应原生结果。研究采纳范围、成本和来源记录见[持续对照](./agent-landscape-live.md)。
+
 - **CI #588 暴露验证管道跨平台回归失败；补充有界失败摘要（2026-10-04）：**提交 `6fbf9d5` 的 `TestIndependentVerification` 在 Ubuntu 通过，但 macOS Apple Silicon/Intel、Windows x64/ARM64 原生作业失败。现有公开检查仅给出进程退出码，具体失败断言尚未取得；因此不推测根因，也不把这些平台标为通过。工作流候选仅在失败时向 job summary 输出 HTML 转义、最多 80 行且最多 12,000 字符的诊断尾部，供下一轮原生 CI 定位；本切片只改善失败可诊断性，不改 runner 行为或 readiness。候选需重新跑五平台矩阵后再决定是否进入 R2 WFP 代码切片。
 
 - **R3 验证输出/管道生命周期加入原生五平台 CI（2026-10-04；本机完整 preflight 3/3 通过，新 SHA 原生 CI 待验）：**复核发现主全量 unittest 只在 Ubuntu 执行，既有跨平台 workspace 子集和 Windows named-pipe 子门均未运行 `TestIndependentVerification`，因此新 runner 的 kqueue 与 Windows 同步管道取消分支没有原生覆盖。新增独立轻量矩阵：Ubuntu、macOS Apple Silicon/Intel、Windows x64/ARM64 均执行该测试类；本机 Python 3.11.15 定向类 18 项中 16 通过、2 项按 Windows 平台跳过，新增 CI 合同测试先 RED、工作流接线后 GREEN。此项只扩大验收覆盖，不改运行时行为；远端原生作业尚未完成前不把 macOS/Windows runner 分支标成已验收，也不改变 R2/R3 readiness。

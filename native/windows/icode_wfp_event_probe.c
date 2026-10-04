@@ -18,6 +18,7 @@
 #define EVENT_DRAIN_DELAY_MS 200
 #define PROFILE_DERIVE_RETRY_MS 10000
 #define MAX_RECEIPT_EVENT_COUNT 65536
+#define MAX_WFP_HISTORY_PAGE_SIZE 64
 #define TARGET_FILTER_CONDITION_COUNT 3
 #define IPV6_LOOPBACK_FILTER_CONDITION_COUNT 4
 #define RFC1918_10_ADDRESS 0x0A000000U
@@ -79,6 +80,40 @@ typedef struct WfpProbeContext {
     volatile LONG matched_network_capability_id;
     volatile LONG network_capability_id_consistent;
 } WfpProbeContext;
+
+enum WfpHistoryStatus {
+    WFP_HISTORY_NOT_ATTEMPTED = 0,
+    WFP_HISTORY_COMPLETE = 1,
+    WFP_HISTORY_LIMIT_REACHED = 2,
+    WFP_HISTORY_API_ERROR = 3,
+    WFP_HISTORY_INVALID_DATA = 4,
+    WFP_HISTORY_INVALID_WINDOW = 5,
+    WFP_HISTORY_COLLECTION_DISABLED = 6,
+    WFP_HISTORY_UNAVAILABLE = 7
+};
+
+enum WfpHistoryApiStage {
+    WFP_HISTORY_STAGE_NONE = 0,
+    WFP_HISTORY_STAGE_CREATE = 1,
+    WFP_HISTORY_STAGE_ENUMERATE = 2,
+    WFP_HISTORY_STAGE_DESTROY = 3
+};
+
+typedef struct WfpHistoryQueryResult {
+    enum WfpHistoryStatus status;
+    enum WfpHistoryApiStage api_stage;
+    BOOL api_code_present;
+    DWORD api_code;
+    UINT32 returned_count;
+    UINT32 matched_count;
+} WfpHistoryQueryResult;
+
+typedef struct WfpHistoryDiagnostics {
+    BOOL time_window_known;
+    BOOL time_window_valid;
+    WfpHistoryQueryResult capability;
+    WfpHistoryQueryResult classify;
+} WfpHistoryDiagnostics;
 
 static BOOL is_generated_profile_name(const wchar_t *value) {
     size_t index;
@@ -301,6 +336,159 @@ static BOOL event_matches_classify_drop(
         event->classifyDrop != NULL &&
         event->classifyDrop->isLoopback == context->expected_loopback &&
         event_header_matches_target(event, context);
+}
+
+static ULONGLONG filetime_value(const FILETIME *value) {
+    ULARGE_INTEGER combined;
+
+    combined.LowPart = value->dwLowDateTime;
+    combined.HighPart = value->dwHighDateTime;
+    return combined.QuadPart;
+}
+
+static BOOL history_event_matches_target(
+    const FWPM_NET_EVENT3 *event,
+    const WfpProbeContext *context,
+    const FILETIME *start_time,
+    const FILETIME *end_time,
+    BOOL classify_drop
+) {
+    ULONGLONG event_time;
+
+    if (event == NULL || context == NULL || start_time == NULL ||
+        end_time == NULL || filetime_value(end_time) < filetime_value(start_time)) {
+        return FALSE;
+    }
+    event_time = filetime_value(&event->header.timeStamp);
+    if (event_time < filetime_value(start_time) ||
+        event_time > filetime_value(end_time)) {
+        return FALSE;
+    }
+    return classify_drop
+        ? event_matches_classify_drop(event, context)
+        : event_matches_target(event, context);
+}
+
+static const char *history_status_name(enum WfpHistoryStatus status) {
+    switch (status) {
+    case WFP_HISTORY_NOT_ATTEMPTED: return "not_attempted";
+    case WFP_HISTORY_COMPLETE: return "complete";
+    case WFP_HISTORY_LIMIT_REACHED: return "limit_reached";
+    case WFP_HISTORY_API_ERROR: return "api_error";
+    case WFP_HISTORY_INVALID_DATA: return "invalid_data";
+    case WFP_HISTORY_INVALID_WINDOW: return "invalid_window";
+    case WFP_HISTORY_COLLECTION_DISABLED: return "collection_disabled";
+    case WFP_HISTORY_UNAVAILABLE: return "unavailable";
+    default: return "unavailable";
+    }
+}
+
+static const char *history_stage_name(enum WfpHistoryApiStage stage) {
+    switch (stage) {
+    case WFP_HISTORY_STAGE_NONE: return "none";
+    case WFP_HISTORY_STAGE_CREATE: return "create";
+    case WFP_HISTORY_STAGE_ENUMERATE: return "enumerate";
+    case WFP_HISTORY_STAGE_DESTROY: return "destroy";
+    default: return "none";
+    }
+}
+
+static void run_historical_event_query(
+    HANDLE engine,
+    FWPM_NET_EVENT_ENUM_TEMPLATE0 *event_template,
+    const WfpProbeContext *context,
+    BOOL classify_drop,
+    const FILETIME *start_time,
+    const FILETIME *end_time,
+    WfpHistoryQueryResult *result
+) {
+    HANDLE enum_handle = NULL;
+    FWPM_NET_EVENT3 **entries = NULL;
+    UINT32 returned_count = 0;
+    UINT32 index;
+    DWORD api_result;
+    enum WfpHistoryApiStage failed_api_stage = WFP_HISTORY_STAGE_NONE;
+
+    if (result == NULL) {
+        return;
+    }
+    ZeroMemory(result, sizeof(*result));
+    result->status = WFP_HISTORY_UNAVAILABLE;
+    if (engine == NULL || event_template == NULL || context == NULL ||
+        start_time == NULL || end_time == NULL) {
+        return;
+    }
+    if (filetime_value(end_time) < filetime_value(start_time)) {
+        result->status = WFP_HISTORY_INVALID_WINDOW;
+        return;
+    }
+
+    event_template->startTime = *start_time;
+    event_template->endTime = *end_time;
+    result->api_stage = WFP_HISTORY_STAGE_CREATE;
+    api_result = FwpmNetEventCreateEnumHandle0(
+        engine, event_template, &enum_handle
+    );
+    if (api_result != ERROR_SUCCESS) {
+        result->status = WFP_HISTORY_API_ERROR;
+        result->api_code_present = TRUE;
+        result->api_code = api_result;
+        return;
+    }
+    if (enum_handle == NULL) {
+        result->status = WFP_HISTORY_INVALID_DATA;
+        result->api_stage = WFP_HISTORY_STAGE_NONE;
+        return;
+    }
+
+    result->api_stage = WFP_HISTORY_STAGE_ENUMERATE;
+    api_result = FwpmNetEventEnum3(
+        engine, enum_handle, MAX_WFP_HISTORY_PAGE_SIZE,
+        &entries, &returned_count
+    );
+    if (api_result != ERROR_SUCCESS) {
+        result->status = WFP_HISTORY_API_ERROR;
+        failed_api_stage = WFP_HISTORY_STAGE_ENUMERATE;
+        result->api_code_present = TRUE;
+        result->api_code = api_result;
+    } else if (returned_count > MAX_WFP_HISTORY_PAGE_SIZE ||
+        (returned_count > 0 && entries == NULL)) {
+        result->status = WFP_HISTORY_INVALID_DATA;
+    } else {
+        result->returned_count = returned_count;
+        for (index = 0; index < returned_count; ++index) {
+            if (entries[index] == NULL) {
+                result->status = WFP_HISTORY_INVALID_DATA;
+                break;
+            }
+            if (history_event_matches_target(
+                    entries[index], context, start_time, end_time,
+                    classify_drop)) {
+                ++result->matched_count;
+            }
+        }
+        if (result->status != WFP_HISTORY_INVALID_DATA) {
+            result->status = returned_count == MAX_WFP_HISTORY_PAGE_SIZE
+                ? WFP_HISTORY_LIMIT_REACHED
+                : WFP_HISTORY_COMPLETE;
+        }
+    }
+
+    if (entries != NULL) {
+        FwpmFreeMemory0((void **)&entries);
+    }
+    result->api_stage = WFP_HISTORY_STAGE_DESTROY;
+    api_result = FwpmNetEventDestroyEnumHandle0(engine, enum_handle);
+    if (api_result != ERROR_SUCCESS) {
+        result->status = WFP_HISTORY_API_ERROR;
+        result->api_stage = WFP_HISTORY_STAGE_DESTROY;
+        result->api_code_present = TRUE;
+        result->api_code = api_result;
+    } else if (result->status != WFP_HISTORY_API_ERROR) {
+        result->api_stage = WFP_HISTORY_STAGE_NONE;
+    } else {
+        result->api_stage = failed_api_stage;
+    }
 }
 
 static HRESULT derive_profile_sid_bounded(
@@ -616,13 +804,20 @@ static BOOL write_result(
     LONG matched_capability_drop_count,
     LONG matched_classify_drop_count,
     LONG matched_network_capability_id,
-    BOOL network_capability_id_consistent
+    BOOL network_capability_id_consistent,
+    const WfpHistoryDiagnostics *history
 ) {
-    char json[1536];
+    char json[2048];
     char capability_id_text[16];
     char subscription_code_text[16];
     char capability_subscription_code_text[16];
     char classify_subscription_code_text[16];
+    char history_capability_code_text[16];
+    char history_classify_code_text[16];
+    WfpHistoryDiagnostics empty_history = {0};
+    const WfpHistoryDiagnostics *history_values = history != NULL
+        ? history
+        : &empty_history;
     int written;
     if (subscription_attempted) {
         _snprintf_s(
@@ -667,6 +862,26 @@ static BOOL write_result(
     } else {
         strcpy_s(capability_id_text, sizeof(capability_id_text), "null");
     }
+    if (history_values->capability.api_code_present) {
+        _snprintf_s(
+            history_capability_code_text,
+            sizeof(history_capability_code_text), _TRUNCATE,
+            "%lu", (unsigned long)history_values->capability.api_code
+        );
+    } else {
+        strcpy_s(history_capability_code_text,
+            sizeof(history_capability_code_text), "null");
+    }
+    if (history_values->classify.api_code_present) {
+        _snprintf_s(
+            history_classify_code_text,
+            sizeof(history_classify_code_text), _TRUNCATE,
+            "%lu", (unsigned long)history_values->classify.api_code
+        );
+    } else {
+        strcpy_s(history_classify_code_text,
+            sizeof(history_classify_code_text), "null");
+    }
     if (ipv6_loopback) {
         written = _snprintf_s(
             json, sizeof(json), _TRUNCATE,
@@ -692,7 +907,18 @@ static BOOL write_result(
             "\"matched_capability_drop_count\":%ld,"
             "\"matched_classify_drop_count\":%ld,"
             "\"matched_network_capability_id\":%s,"
-            "\"network_capability_id_consistent\":%s}\n",
+            "\"network_capability_id_consistent\":%s,"
+            "\"history_time_window_valid\":%s,"
+            "\"history_capability_status\":\"%s\","
+            "\"history_capability_api_stage\":\"%s\","
+            "\"history_capability_api_code\":%s,"
+            "\"history_capability_returned_count\":%lu,"
+            "\"history_capability_matched_count\":%lu,"
+            "\"history_classify_status\":\"%s\","
+            "\"history_classify_api_stage\":\"%s\","
+            "\"history_classify_api_code\":%s,"
+            "\"history_classify_returned_count\":%lu,"
+            "\"history_classify_matched_count\":%lu}\n",
             subscription_attempted ? "true" : "false",
             subscription_code_text,
             subscription_handle_present ? "true" : "false",
@@ -717,7 +943,20 @@ static BOOL write_result(
             matched_capability_drop_count,
             matched_classify_drop_count,
             capability_id_text,
-            network_capability_id_consistent ? "true" : "false"
+            network_capability_id_consistent ? "true" : "false",
+            history_values->time_window_known
+                ? (history_values->time_window_valid ? "true" : "false")
+                : "null",
+            history_status_name(history_values->capability.status),
+            history_stage_name(history_values->capability.api_stage),
+            history_capability_code_text,
+            (unsigned long)history_values->capability.returned_count,
+            (unsigned long)history_values->capability.matched_count,
+            history_status_name(history_values->classify.status),
+            history_stage_name(history_values->classify.api_stage),
+            history_classify_code_text,
+            (unsigned long)history_values->classify.returned_count,
+            (unsigned long)history_values->classify.matched_count
         );
     } else {
         written = _snprintf_s(
@@ -761,6 +1000,8 @@ static BOOL classifier_self_test(void) {
     FWPM_NET_EVENT_ENUM_TEMPLATE0 event_template;
     FWPM_FILTER_CONDITION0 filter_conditions[TARGET_FILTER_CONDITION_COUNT];
     WfpProbeContext context = {0};
+    FILETIME history_start = {100, 0};
+    FILETIME history_end = {200, 0};
     PSID expected_sid = NULL;
     PSID other_sid = NULL;
     wchar_t temp_path[MAX_PROBE_PATH];
@@ -841,6 +1082,27 @@ static BOOL classifier_self_test(void) {
     if (!event_matches_target(&event, &context)) {
         goto cleanup;
     }
+    event.header.timeStamp = history_start;
+    if (!history_event_matches_target(
+            &event, &context, &history_start, &history_end, FALSE)) {
+        goto cleanup;
+    }
+    event.header.timeStamp.dwLowDateTime = history_end.dwLowDateTime;
+    if (!history_event_matches_target(
+            &event, &context, &history_start, &history_end, FALSE)) {
+        goto cleanup;
+    }
+    event.header.timeStamp.dwLowDateTime = history_start.dwLowDateTime - 1;
+    if (history_event_matches_target(
+            &event, &context, &history_start, &history_end, FALSE)) {
+        goto cleanup;
+    }
+    event.header.timeStamp.dwLowDateTime = history_end.dwLowDateTime + 1;
+    if (history_event_matches_target(
+            &event, &context, &history_start, &history_end, FALSE)) {
+        goto cleanup;
+    }
+    event.header.timeStamp = history_start;
     on_net_event(&context, &event);
     if (context.event_callback_count != 1 ||
         context.capability_drop_event_count != 1 ||
@@ -852,7 +1114,9 @@ static BOOL classifier_self_test(void) {
     }
     event.type = FWPM_NET_EVENT_TYPE_CLASSIFY_DROP;
     event.classifyDrop = &classify_drop;
-    if (!event_matches_classify_drop(&event, &context)) {
+    if (!event_matches_classify_drop(&event, &context) ||
+        !history_event_matches_target(
+            &event, &context, &history_start, &history_end, TRUE)) {
         goto cleanup;
     }
     on_net_event(&context, &event);
@@ -1149,6 +1413,7 @@ static int run_collector(
     BOOL ipv6_loopback,
     BOOL report_setup_stage,
     BOOL wait_for_profile,
+    BOOL enumerate_history,
     const wchar_t *ready_path,
     const wchar_t *stop_path,
     const wchar_t *result_path
@@ -1171,6 +1436,9 @@ static int run_collector(
     DWORD api_result;
     DWORD close_result = ERROR_SUCCESS;
     FWP_VALUE0 *network_event_option = NULL;
+    WfpHistoryDiagnostics history_diagnostics = {0};
+    FILETIME history_start_time = {0};
+    FILETIME history_end_time = {0};
     DWORD option_result = ERROR_SUCCESS;
     DWORD subscription_return_code = ERROR_SUCCESS;
     DWORD capability_subscription_return_code = ERROR_SUCCESS;
@@ -1192,6 +1460,7 @@ static int run_collector(
     BOOL stop_seen = FALSE;
     BOOL ready_written = FALSE;
     BOOL result_written = FALSE;
+    BOOL history_start_known = FALSE;
     const char *setup_failure_status = "unavailable\n";
     LONG event_callback_count = 0;
     LONG capability_drop_event_count = 0;
@@ -1201,6 +1470,13 @@ static int run_collector(
     LONG matched_network_capability_id = -1;
     BOOL network_capability_id_consistent = FALSE;
     int exit_code = 1;
+
+    history_diagnostics.capability.status = enumerate_history
+        ? WFP_HISTORY_UNAVAILABLE
+        : WFP_HISTORY_NOT_ATTEMPTED;
+    history_diagnostics.classify.status = enumerate_history
+        ? WFP_HISTORY_UNAVAILABLE
+        : WFP_HISTORY_NOT_ATTEMPTED;
 
     ZeroMemory(&ipv6_loopback_address, sizeof(ipv6_loopback_address));
     ZeroMemory(&classify_ipv6_loopback_address, sizeof(classify_ipv6_loopback_address));
@@ -1327,6 +1603,11 @@ static int run_collector(
         }
         goto cleanup;
     }
+    if (enumerate_history) {
+        /* Bound historical evidence to this observer run, not prior sessions. */
+        GetSystemTimeAsFileTime(&history_start_time);
+        history_start_known = TRUE;
+    }
     ready_written = write_ascii_file(
         ready_path,
         report_setup_stage ? "subscription-ready\n" : "ready\n"
@@ -1365,6 +1646,44 @@ cleanup:
             ExitProcess(ERROR_GEN_FAILURE);
         }
         classify_subscription_handle = NULL;
+    }
+    if (enumerate_history) {
+        if (history_start_known && ready_written && stop_seen &&
+            subscription_ok && capability_unsubscribe_ok &&
+            classify_unsubscribe_ok) {
+            GetSystemTimeAsFileTime(&history_end_time);
+            history_diagnostics.time_window_known = TRUE;
+            history_diagnostics.time_window_valid =
+                filetime_value(&history_end_time) >=
+                filetime_value(&history_start_time);
+            if (!history_diagnostics.time_window_valid) {
+                history_diagnostics.capability.status =
+                    WFP_HISTORY_INVALID_WINDOW;
+                history_diagnostics.classify.status =
+                    WFP_HISTORY_INVALID_WINDOW;
+            } else if (!network_events_state_known) {
+                history_diagnostics.capability.status =
+                    WFP_HISTORY_UNAVAILABLE;
+                history_diagnostics.classify.status =
+                    WFP_HISTORY_UNAVAILABLE;
+            } else if (!network_events_collected) {
+                history_diagnostics.capability.status =
+                    WFP_HISTORY_COLLECTION_DISABLED;
+                history_diagnostics.classify.status =
+                    WFP_HISTORY_COLLECTION_DISABLED;
+            } else {
+                run_historical_event_query(
+                    engine, &event_template, &context, FALSE,
+                    &history_start_time, &history_end_time,
+                    &history_diagnostics.capability
+                );
+                run_historical_event_query(
+                    engine, &classify_event_template, &context, TRUE,
+                    &history_start_time, &history_end_time,
+                    &history_diagnostics.classify
+                );
+            }
+        }
     }
     if (engine != NULL) {
         close_result = FwpmEngineClose0(engine);
@@ -1408,7 +1727,8 @@ cleanup:
         event_callback_count, capability_drop_event_count,
         classify_drop_event_count,
         matched_capability_drop_count, matched_classify_drop_count,
-        matched_network_capability_id, network_capability_id_consistent
+        matched_network_capability_id, network_capability_id_consistent,
+        &history_diagnostics
     );
     if (result_written && ready_written && close_result == ERROR_SUCCESS &&
         (!subscription_ok || (stop_seen && unsubscribe_ok))) {
@@ -1459,7 +1779,7 @@ static int run_runner_subscription_probe(
 
     /* run_collector unsubscribes and closes its engine before it returns. */
     probe_result = run_collector(
-        profile_name, 0, remote_port, TRUE, TRUE, FALSE,
+        profile_name, 0, remote_port, TRUE, TRUE, FALSE, TRUE,
         ready_path, stop_path, result_path
     );
     FreeSid(created_sid);
@@ -1528,7 +1848,7 @@ int wmain(int argc, wchar_t **argv) {
             return 2;
         }
         return run_collector(
-            argv[2], 0, remote_port, TRUE, FALSE, FALSE,
+            argv[2], 0, remote_port, TRUE, FALSE, FALSE, FALSE,
             argv[4], argv[5], argv[6]
         );
     }
@@ -1568,7 +1888,7 @@ int wmain(int argc, wchar_t **argv) {
             return COLLECTOR_PREFLIGHT_INVALID_PATHS;
         }
         return run_collector(
-            argv[2], 0, remote_port, TRUE, TRUE, TRUE,
+            argv[2], 0, remote_port, TRUE, TRUE, TRUE, FALSE,
             argv[4], argv[5], argv[6]
         );
     }
@@ -1584,7 +1904,7 @@ int wmain(int argc, wchar_t **argv) {
         return 2;
     }
     return run_collector(
-        argv[1], remote_address, remote_port, FALSE, FALSE, FALSE,
+        argv[1], remote_address, remote_port, FALSE, FALSE, FALSE, FALSE,
         argv[4], argv[5], argv[6]
     );
 }
