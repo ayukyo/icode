@@ -745,6 +745,13 @@ class TestVerificationOutputLifecycleCi(unittest.TestCase):
             "tests.test_runner.TestIndependentVerification -v 2>&1)\n",
             job,
         )
+        self.assertIn(
+            "      - name: Verify Windows process identity failure mocks\n"
+            "        if: runner.os == 'Windows'\n"
+            "        run: python -m unittest "
+            "tests.test_runner.TestWindowsTestProcessHandle -v\n",
+            job,
+        )
         self.assertIn("$testOutput | Select-Object -Last 80", job)
         self.assertIn("if ($details.Length -gt 12000)", job)
         self.assertIn("$env:GITHUB_STEP_SUMMARY", job)
