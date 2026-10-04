@@ -2823,9 +2823,9 @@ def _bind_task_evidence(
     for rel in changed:
         path = workspace / rel
         if path.is_file():
-            import hashlib as _hashlib
+            from .pack_verify import sha256_file
 
-            artifact_hashes[rel] = _hashlib.sha256(path.read_bytes()).hexdigest()
+            artifact_hashes[rel] = sha256_file(path)
     evidence = VerificationEvidence(
         step="task", attempt=attempt, kind="test",
         command=("python", "-B", "-m", "unittest"),

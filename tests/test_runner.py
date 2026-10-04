@@ -111,6 +111,65 @@ class TestIndependentVerification(unittest.TestCase):
         )
         return result.returncode, result.stdout, result.stderr
 
+    def test_任务证据对大型改动文件使用有界分块哈希(self) -> None:
+        from pathlib import Path
+
+        from icode.runner import _bind_task_evidence
+
+        content = b"large evidence artifact\n" * 90_000
+        expected_digest = hashlib.sha256(content).hexdigest()
+        chunk_limit = 1024 * 1024
+        with temp_workspace() as workspace:
+            artifact = workspace / "large.bin"
+            artifact.write_bytes(content)
+            original_open = Path.open
+            original_read_bytes = Path.read_bytes
+            read_bytes_paths: list[Path] = []
+            read_sizes: list[int] = []
+
+            class _ReadSizeTracker:
+                def __init__(self, stream):
+                    self.stream = stream
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, _exc_type, _exc, _traceback):
+                    self.stream.close()
+                    return False
+
+                def read(self, size=-1):
+                    read_sizes.append(size)
+                    return self.stream.read(size)
+
+            def tracked_open(path, *args, **kwargs):
+                stream = original_open(path, *args, **kwargs)
+                if path == artifact:
+                    return _ReadSizeTracker(stream)
+                return stream
+
+            def tracked_read_bytes(path):
+                read_bytes_paths.append(path)
+                return original_read_bytes(path)
+
+            with (
+                mock.patch.object(Path, "open", new=tracked_open),
+                mock.patch.object(Path, "read_bytes", new=tracked_read_bytes),
+            ):
+                changed, evidence = _bind_task_evidence(
+                    {"large.bin": "before"}, {"large.bin": "after"},
+                    0, "", workspace,
+                )
+
+            self.assertEqual(changed, ["large.bin"])
+            self.assertEqual(evidence.artifact_hashes["large.bin"], expected_digest)
+            self.assertEqual(read_bytes_paths, [], "不得整文件载入到内存")
+            self.assertTrue(read_sizes, "改动文件必须确实经过分块读取")
+            self.assertTrue(
+                all(0 < size <= chunk_limit for size in read_sizes),
+                f"文件读取块必须不超过 {chunk_limit} 字节：{read_sizes!r}",
+            )
+
     def test_有界输出解码保持universal_newlines和非法UTF8兼容(self) -> None:
         from icode import runner
 
