@@ -119,6 +119,7 @@ class TestIndependentVerification(unittest.TestCase):
             "a\nb\nc\n�",
         )
 
+    @unittest.skipUnless(os.name == "posix", "POSIX killpg cleanup semantics")
     def test_macos进程组EPERM仅在独立确认无存活成员后视为已清理(self) -> None:
         from icode import runner
 
@@ -133,6 +134,7 @@ class TestIndependentVerification(unittest.TestCase):
                 (True, None),
             )
 
+    @unittest.skipUnless(os.name == "posix", "POSIX killpg cleanup semantics")
     def test_macos进程组EPERM且仍有存活成员时保持失败(self) -> None:
         from icode import runner
 
@@ -163,12 +165,54 @@ class TestIndependentVerification(unittest.TestCase):
                 wait=mock.Mock(return_value=0),
                 kill=mock.Mock(),
             )
-            with mock.patch.object(runner.subprocess, "Popen", return_value=process):
-                return runner._darwin_process_group_has_live_members(1234)
+            with mock.patch.dict(os.environ, {"COMMAND_MODE": "legacy"}):
+                with mock.patch.object(
+                    runner.subprocess, "Popen", return_value=process,
+                ) as popen:
+                    result = runner._darwin_process_group_has_live_members(1234)
+            self.assertEqual(
+                popen.call_args.args[0],
+                ["/bin/ps", "-g", "1234", "-x", "-o", "stat="],
+            )
+            self.assertEqual(
+                popen.call_args.kwargs["env"]["COMMAND_MODE"], "unix2003",
+                "审计必须覆盖继承的 legacy 模式，确保 -g 参数按 PGID 解释",
+            )
+            return result
 
         self.assertIs(inspect(b"Z+\n"), False)
         self.assertIs(inspect(b"Z+\nS\n"), True)
         self.assertIsNone(inspect(b""), "没有 zombie 锚点时不能确认审计范围")
+
+    @unittest.skipUnless(sys.platform == "darwin", "需要 macOS 原生 zombie/ps 语义")
+    def test_macos进程组审计能识别未回收的退出leader(self) -> None:
+        from icode import runner
+
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-c", "pass"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            start_new_session=True,
+        )
+        monitor = None
+        try:
+            monitor = runner._PosixVerificationExitMonitor(process)
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and not monitor.exited(process):
+                time.sleep(0.01)
+
+            self.assertTrue(monitor.exited(process), "测试 leader 应在期限内退出")
+            self.assertIs(
+                runner._darwin_process_group_has_live_members(process.pid),
+                False,
+                "ps 必须只查询目标进程组，并确认未回收 zombie leader 无存活同组后代",
+            )
+        finally:
+            if monitor is not None:
+                monitor.close()
+            process.wait(timeout=2.0)
 
     @unittest.skipUnless(os.name == "posix", "POSIX bounded runner 清理路径")
     def test_selector初始化失败仍终止并回收已启动的验证进程(self) -> None:

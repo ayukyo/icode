@@ -370,11 +370,18 @@ def _darwin_process_group_has_live_members(pgid: int) -> bool | None:
     present.  Any inspection error, timeout, or output overflow is inconclusive.
     """
     try:
+        env = os.environ.copy()
+        # macOS legacy command mode ignores `ps -g`'s PGID argument; pin the
+        # selector semantics for this read-only audit without changing callers.
+        env["COMMAND_MODE"] = "unix2003"
+        # Do not add `-A`: macOS ps unions multiple selectors, so `-A -g PGID`
+        # would expand this audit to all processes. `-x` includes no-tty members.
         proc = subprocess.Popen(
-            ["/bin/ps", "-A", "-g", str(pgid), "-o", "stat="],
+            ["/bin/ps", "-g", str(pgid), "-x", "-o", "stat="],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
+            env=env,
             text=False,
             bufsize=0,
             shell=False,
