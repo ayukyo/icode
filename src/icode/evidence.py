@@ -51,6 +51,7 @@ from .pack_verify import (
     _HashReadBudget,
     _HashReadBudgetExceeded,
     _AgentLifecycleMirror,
+    _TicketStateMirror,
     _AGENT_LIFECYCLE_EVENT_TYPES,
     _check_json_structural_token_budget,
     _METADATA_AGENT_SPAWNS_FIELD,
@@ -59,6 +60,7 @@ from .pack_verify import (
     _metadata_agent_spawn_records,
     _metadata_content_hash,
     _metadata_event_mirror_records,
+    _normalize_ticket_state_machine,
     event_schema_issues,
     loads_json_value,
     read_bounded_bytes,
@@ -431,6 +433,8 @@ def _read_events(
     expected_event_mirrors: dict[str, list[dict]],
     expected_agent_spawns: object,
     expected_metadata_hash: str,
+    expected_ticket_state_machine: object = None,
+    ticket_metadata: object = None,
 ) -> _EventSummary:
     path = Path(out_dir) / EVENTS_NAME
     if not path.is_file():
@@ -451,6 +455,9 @@ def _read_events(
             f"工单 metadata.{_METADATA_AGENT_SPAWNS_FIELD} 结构无效 "
             "（必须是仅含对象的数组）"
         )
+    ticket_state_mirror = _TicketStateMirror(
+        expected_ticket_state_machine, ticket_metadata,
+    )
     try:
         if path.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
             raise EvidenceError("事件链超过总输入字节数上限")
@@ -524,6 +531,7 @@ def _read_events(
                         f"事件链第 {lineno} 行不符合 pinned ticket-event schema "
                         f"（字段：{fields}）"
                     )
+                ticket_state_mirror.consume(event, summary.event_count)
                 if event_type in _AGENT_LIFECYCLE_EVENT_TYPES:
                     agent_lifecycle_mirror.consume(event_type, payload)
                 if event_type not in ("step_started", "artifact_written"):
@@ -571,6 +579,9 @@ def _read_events(
             "agent_spawned/agent_result 事件与 "
             f"metadata.{_METADATA_AGENT_SPAWNS_FIELD} 不一致"
         )
+    ticket_state_problems = ticket_state_mirror.finish()
+    if ticket_state_problems:
+        raise EvidenceError("工单状态事件语义无效：" + "；".join(ticket_state_problems))
     if has_metadata_hash_after and last_metadata_hash_after != expected_metadata_hash:
         raise EvidenceError(
             "事件链最终 metadata_hash_after 与工单 metadata 摘要不一致"
@@ -770,7 +781,7 @@ def _snapshot_artifacts(
     return entries, problems, warnings
 
 
-def _contract_snapshot(gates_json: Path, steps: set[str]) -> dict:
+def _load_contract_source(gates_json: Path) -> dict:
     if not gates_json.is_file():
         raise ContractError(f"契约文件不存在：{gates_json}")
     try:
@@ -800,6 +811,10 @@ def _contract_snapshot(gates_json: Path, steps: set[str]) -> dict:
         raise ContractError("契约文件 JSON 数据超出解析限制") from None
     if not isinstance(raw_contracts, dict):
         raise ContractError("契约文件结构无效（根节点必须是对象）")
+    return raw_contracts
+
+
+def _contract_snapshot_from_raw(raw_contracts: dict, steps: set[str]) -> dict:
     try:
         contracts = ContractSet(raw_contracts)
     except ContractError:
@@ -814,12 +829,23 @@ def _contract_snapshot(gates_json: Path, steps: set[str]) -> dict:
         raw = contracts.raw().get("step_contracts", {}).get(step)
         if raw is not None:
             out[step] = raw
-    return {
+    snapshot = {
         "schema_version": PACK_SCHEMA_VERSION,
         "source": "icode-skill/mcp/workflow-gate/gates.json",
         "gates_schema_version": contracts.schema_version,
         "steps": out,
     }
+    state_machine = raw_contracts.get("state_machine")
+    if state_machine is not None:
+        try:
+            snapshot["state_machine"] = _normalize_ticket_state_machine(state_machine)
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ContractError(f"state_machine 契约结构无效：{exc}") from None
+    return snapshot
+
+
+def _contract_snapshot(gates_json: Path, steps: set[str]) -> dict:
+    return _contract_snapshot_from_raw(_load_contract_source(gates_json), steps)
 
 
 def _encode_contract_snapshot_bounded(snapshot: object) -> str:
@@ -862,7 +888,10 @@ PACK_README = """# 证据包（{ticket_id}）
    已绑定到事件。
 2. **正文与链上哈希对应** —— 链上只存 sha256（不存正文），本包附上正文快照 +
    `artifacts.json` 对应表；校验器会重算正文 sha256 并与链上记录比对。
-3. **清单与包摘要** —— `manifest.json` 记录每个文件的 sha256 与 `pack_digest`。
+3. **v3 工单状态语义（仅 contracts.json 含 state_machine 快照时）** —— 独立校验器
+   流式检查状态迁移、最终 status、关闭阶段顺序与重开条件。旧包或无此快照时保持兼容，
+   但不声明该项语义已验证。
+4. **清单与包摘要** —— `manifest.json` 记录每个文件的 sha256 与 `pack_digest`。
 
 ## 校验方法（不需要安装 icode-agent）
 
@@ -948,6 +977,21 @@ def build_evidence_pack(
     if not isinstance(ticket_id, str) or not ticket_id:
         raise EvidenceError("工单 metadata 缺少有效 ticket_id")
 
+    raw_contracts: dict | None = None
+    ticket_state_machine: dict | None = None
+    if has_gates_file and gates_path is not None:
+        raw_contracts = _load_contract_source(gates_path)
+        raw_state_machine = raw_contracts.get("state_machine")
+        if raw_state_machine is not None:
+            try:
+                ticket_state_machine = _normalize_ticket_state_machine(
+                    raw_state_machine,
+                )
+            except (TypeError, ValueError, RecursionError) as exc:
+                raise ContractError(
+                    f"state_machine 契约结构无效：{exc}"
+                ) from None
+
     metadata_event_mirrors = {
         event_type: _metadata_event_mirror_records(meta, event_type)
         for event_type in _METADATA_EVENT_MIRROR_FIELDS
@@ -962,6 +1006,8 @@ def build_evidence_pack(
         expected_event_mirrors=metadata_event_mirrors,
         expected_agent_spawns=metadata_agent_spawns,
         expected_metadata_hash=expected_metadata_hash,
+        expected_ticket_state_machine=ticket_state_machine,
+        ticket_metadata=meta,
     )
     if not event_summary.event_count:
         raise EvidenceError("事件链为空，无法导出证据包")
@@ -975,9 +1021,9 @@ def build_evidence_pack(
     # Validate and serialize contracts before removing an existing destination.
     # Reuse the same text below and preserve Path.write_text newline behavior.
     contracts_payload: str | None = None
-    if gates_path is not None and has_gates_file:
+    if raw_contracts is not None:
         contracts_payload = _encode_contract_snapshot_bounded(
-            _contract_snapshot(gates_path, event_summary.steps)
+            _contract_snapshot_from_raw(raw_contracts, event_summary.steps)
         )
     hash_budget = _HashReadBudget(_MAX_PACKAGE_HASH_READ_BYTES)
     artifact_budget = _HashReadBudget(_MAX_PACKAGE_ARTIFACT_BYTES)
@@ -1016,6 +1062,13 @@ def build_evidence_pack(
         (dest / "contracts.json").write_text(contracts_payload, encoding="utf-8")
     else:
         warnings.append("未提供 gates.json，未包含契约快照")
+    if (
+        (raw_contracts is None or raw_contracts.get("state_machine") is None)
+        and meta.get("schema_version") == 3
+    ):
+        warnings.append(
+            "契约快照不含 state_machine，本包不声明已验证工单状态/关闭阶段语义"
+        )
 
     # 4) 外部验证回执（R3：VerificationEvidence 会自动序列化成绑定回执）
     (dest / "verifications.json").write_bytes(verification_payload)

@@ -4,11 +4,12 @@
 这个文件会被原样复制进证据包。它的存在意义是：
 **审计方不需要安装、也不需要信任 icode-agent，就能独立校验证据包是否被篡改。**
 
-它只做四件事：
+它主要验证五类内容：
     ① 清单完整性 —— manifest.files 里每个文件的 sha256 与实际一致
     ② 事件链完整性 —— 逐行复算 canonical_event_hash、检查 previous 链接、event_id 唯一
     ③ 正文与链上哈希对应 —— 产物正文快照的 sha256 必须等于事件 payload 里记录的 sha256
-    ④ 包摘要 —— 重算 pack_digest 与 manifest 声明值一致
+    ④ v3 状态语义 —— contracts.json 有状态机快照时重放状态/关闭事件
+    ⑤ 包摘要 —— 重算 pack_digest 与 manifest 声明值一致
 
 用法：
     python verify.py <证据包目录>
@@ -49,9 +50,25 @@ _MAX_EVENT_CHAIN_EVENT_COUNT = 100_000
 _MAX_PACKAGE_FILE_BYTES = 256 * 1024 * 1024
 _MAX_PACKAGE_HASH_READ_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_PACKAGE_ARTIFACT_BYTES = 256 * 1024 * 1024
+_MAX_CONTRACTS_JSON_BYTES = 8 * 1024 * 1024
+_MAX_TICKET_STATES = 256
+_MAX_TICKET_TRANSITIONS = 4096
+_MAX_CLOSE_PHASES = 64
+_DELIVERY_VERDICTS = frozenset({
+    "verified", "verification_pending", "blocked", "not_applicable",
+})
+_TICKET_INITIAL_STATES = {
+    "init": "init_in_progress",
+    "plan": "init_in_progress",
+    "log": "log_in_progress",
+    "debug-init": "debug_in_progress",
+    "debug-log": "debug_in_progress",
+}
 _UNSET_METADATA_EVENT_MIRRORS = object()
 _UNSET_METADATA_AGENT_SPAWNS = object()
 _UNSET_EXPECTED_METADATA_HASH = object()
+_UNSET_TICKET_STATE_MACHINE = object()
+_UNSET_TICKET_METADATA = object()
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -549,6 +566,226 @@ def _metadata_content_hash(metadata: dict) -> str:
     return sha256_bytes(raw.encode("utf-8"))
 
 
+def _normalize_ticket_state_machine(value: object) -> dict:
+    """Keep the independently-verifiable ticket-state contract small and explicit."""
+    if not isinstance(value, dict):
+        raise ValueError("state_machine 必须是对象")
+    states = value.get("states")
+    transitions = value.get("transitions")
+    close_phases = value.get("close_phases")
+    if (
+        not isinstance(states, list)
+        or not 1 <= len(states) <= _MAX_TICKET_STATES
+        or not all(isinstance(state, str) and 0 < len(state) <= 128 for state in states)
+        or len(set(states)) != len(states)
+    ):
+        raise ValueError("state_machine.states 结构无效")
+    if (
+        not isinstance(transitions, list)
+        or len(transitions) > _MAX_TICKET_TRANSITIONS
+    ):
+        raise ValueError("state_machine.transitions 结构无效")
+    normalized_transitions: list[dict[str, str]] = []
+    for transition in transitions:
+        if not isinstance(transition, dict):
+            raise ValueError("state_machine.transitions 项必须是对象")
+        source = transition.get("from")
+        target = transition.get("to")
+        if (
+            not isinstance(source, str)
+            or not isinstance(target, str)
+            or source not in states
+            or target not in states
+        ):
+            raise ValueError("state_machine.transitions 引用未知状态")
+        normalized_transitions.append({"from": source, "to": target})
+    if (
+        not isinstance(close_phases, list)
+        or not 1 <= len(close_phases) <= _MAX_CLOSE_PHASES
+        or not all(
+            isinstance(phase, str) and 0 < len(phase) <= 128
+            for phase in close_phases
+        )
+        or len(set(close_phases)) != len(close_phases)
+        or close_phases[-1] != "closed"
+    ):
+        raise ValueError("state_machine.close_phases 结构无效")
+    return {
+        "states": list(states),
+        "transitions": normalized_transitions,
+        "close_phases": list(close_phases),
+    }
+
+
+class _TicketStateMirror:
+    """Stream v3 ticket state/close semantics without retaining the event chain."""
+
+    def __init__(self, state_machine: object, metadata: object) -> None:
+        self.enabled = (
+            isinstance(metadata, dict)
+            and type(metadata.get("schema_version")) is int
+            and metadata.get("schema_version") == 3
+            and state_machine is not _UNSET_TICKET_STATE_MACHINE
+            and state_machine is not None
+        )
+        self.metadata = metadata if isinstance(metadata, dict) else {}
+        self.problems = _ProblemCollector()
+        self.current_state: str | None = None
+        self.close_state: str | None = None
+        self.birth_count = 0
+        self.migration_count = 0
+        self.state_machine: dict | None = None
+        self.states: set[str] = set()
+        self.transitions: set[tuple[str, str]] = set()
+        self.close_phases: list[str] = []
+        self.close_phase_indexes: dict[str, int] = {}
+
+        if not self.enabled:
+            return
+        try:
+            normalized = _normalize_ticket_state_machine(state_machine)
+        except (TypeError, ValueError, RecursionError):
+            self.problems.append("contracts.json state_machine 结构无效")
+            return
+        self.state_machine = normalized
+        self.states = set(normalized["states"])
+        self.transitions = {
+            (item["from"], item["to"])
+            for item in normalized["transitions"]
+        }
+        self.close_phases = normalized["close_phases"]
+        self.close_phase_indexes = {
+            phase: index for index, phase in enumerate(self.close_phases)
+        }
+
+    def consume(self, event: dict, event_index: int) -> None:
+        if not self.enabled or self.state_machine is None:
+            return
+        event_type = event.get("event_type")
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            return
+
+        if event_index == 1 and (
+            not isinstance(event_type, str) or event_type not in ALLOWED_FIRST_EVENT
+        ):
+            self.problems.append(
+                "首条事件必须是 ticket_created 或 migration_applied"
+            )
+
+        if event_type == "ticket_created":
+            self.birth_count += 1
+            if self.birth_count > 1:
+                self.problems.append("ticket_created 事件只能出现一次")
+            if self.migration_count:
+                self.problems.append(
+                    "事件链同时含 ticket_created 与 migration_applied，工单来源多义"
+                )
+            if event_index != 1:
+                self.problems.append("ticket_created 必须是事件链首事件")
+            birth_kind = payload.get("birth_kind")
+            initial_state = (
+                _TICKET_INITIAL_STATES.get(birth_kind)
+                if isinstance(birth_kind, str) else None
+            )
+            if initial_state is None:
+                self.problems.append("ticket_created.birth_kind 非法或缺失")
+            self.current_state = initial_state
+            expected_debug = (
+                isinstance(birth_kind, str) and birth_kind.startswith("debug-")
+            )
+            if bool(self.metadata.get("debug")) != expected_debug:
+                self.problems.append(
+                    "ticket_created.birth_kind 与 metadata.debug 不一致"
+                )
+        elif event_type == "migration_applied":
+            self.migration_count += 1
+            if self.migration_count > 1:
+                self.problems.append("migration_applied 事件只能出现一次")
+            if self.birth_count:
+                self.problems.append(
+                    "事件链同时含 ticket_created 与 migration_applied，工单来源多义"
+                )
+
+        if event_type == "state_changed":
+            source = payload.get("from")
+            target = payload.get("to")
+            if (
+                not isinstance(source, str) or source not in self.states
+                or not isinstance(target, str) or target not in self.states
+            ):
+                self.problems.append(
+                    f"第 {event_index} 条 state_changed.from/to 不在状态词表"
+                )
+                return
+            if self.current_state is not None and source != self.current_state:
+                self.problems.append(
+                    f"第 {event_index} 条 state_changed.from 与事件序列当前状态不一致"
+                )
+            if (source, target) not in self.transitions:
+                self.problems.append(
+                    f"第 {event_index} 条 state_changed 记录非法状态流转"
+                )
+            delivery = payload.get("delivery_verdict")
+            if target == "completed" and (
+                not isinstance(delivery, str) or delivery not in _DELIVERY_VERDICTS
+            ):
+                self.problems.append(
+                    f"第 {event_index} 条 completed 流转缺合法 delivery_verdict"
+                )
+            if target != "completed" and delivery is not None:
+                self.problems.append(
+                    f"第 {event_index} 条非 completed 流转携带 delivery_verdict"
+                )
+            self.current_state = target
+
+        elif event_type == "close_phase":
+            source = payload.get("from")
+            target = payload.get("to")
+            expected_index = (
+                0 if self.close_state is None
+                else self.close_phase_indexes[self.close_state] + 1
+            )
+            expected_target = (
+                self.close_phases[expected_index]
+                if expected_index < len(self.close_phases) else None
+            )
+            if source != self.close_state or target != expected_target:
+                self.problems.append(
+                    f"第 {event_index} 条 close_phase 顺序非法"
+                )
+            if isinstance(target, str) and target in self.close_phase_indexes:
+                self.close_state = target
+
+        elif event_type == "ticket_reopened":
+            if (
+                self.close_state != "closed"
+                or payload.get("from") != "closed"
+                or payload.get("to") is not None
+            ):
+                self.problems.append(
+                    f"第 {event_index} 条 ticket_reopened 只能从 closed 原子解冻到 null"
+                )
+            self.close_state = None
+
+    def finish(self) -> list[str]:
+        if not self.enabled:
+            return []
+        if self.state_machine is not None:
+            if (
+                self.current_state is not None
+                and self.current_state != self.metadata.get("status")
+            ):
+                self.problems.append(
+                    "事件序列最终状态与 metadata.status 不一致"
+                )
+            if self.close_state != self.metadata.get("close_state"):
+                self.problems.append(
+                    "事件序列最终 close_state 与 metadata.close_state 不一致"
+                )
+        return self.problems.render()
+
+
 def pack_digest(entries: list[dict]) -> str:
     """与生成端逐字对齐：对 (path, sha256) 排序后做规范 JSON 再取 sha256。"""
     material = sorted(
@@ -672,6 +909,17 @@ def _load_json(path: Path, *, max_bytes: int) -> dict:
     value = load_json_value(Path(path), max_bytes=max_bytes)
     if not isinstance(value, dict):
         raise ValueError("JSON 根节点必须是对象")
+    return value
+
+
+def _load_contract_snapshot(path: Path) -> dict:
+    """Parse contracts with duplicate-key/size guards while preserving legacy NaN values."""
+    raw = read_bounded_bytes(Path(path), max_bytes=_MAX_CONTRACTS_JSON_BYTES)
+    text = raw.decode("utf-8")
+    _check_json_structural_token_budget(text, max_depth=_MAX_JSON_CONTAINER_DEPTH)
+    value = json.loads(text, object_pairs_hook=_json_object_without_duplicates)
+    if not isinstance(value, dict):
+        raise ValueError("contracts.json 根节点必须是对象")
     return value
 
 
@@ -818,6 +1066,8 @@ def verify_pack(pack_dir: Path) -> list[str]:
             json_limit = _MAX_METADATA_JSON_BYTES
         elif rel == "artifacts.json":
             json_limit = _MAX_ARTIFACT_INDEX_JSON_BYTES
+        elif rel == "contracts.json":
+            json_limit = _MAX_CONTRACTS_JSON_BYTES
         if json_limit is not None:
             if target_size > json_limit:
                 problems.append("清单登记的控制JSON超过输入字节上限")
@@ -893,6 +1143,8 @@ def verify_pack(pack_dir: Path) -> list[str]:
     metadata_event_mirrors: object = _UNSET_METADATA_EVENT_MIRRORS
     metadata_agent_spawns: object = _UNSET_METADATA_AGENT_SPAWNS
     expected_metadata_hash: object = _UNSET_EXPECTED_METADATA_HASH
+    expected_ticket_metadata: object = _UNSET_TICKET_METADATA
+    expected_ticket_state_machine: object = _UNSET_TICKET_STATE_MACHINE
     metadata_path = _package_member_path(pack, "ticket/metadata.json")
     if metadata_path is None:
         problems.append("工单 metadata 包内路径无效（必须是普通文件）")
@@ -904,6 +1156,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
         except (OSError, ValueError, RecursionError):
             problems.append("工单 metadata 不可解析")
         else:
+            expected_ticket_metadata = metadata
             try:
                 expected_metadata_hash = _metadata_content_hash(metadata)
             except (TypeError, ValueError, RecursionError, UnicodeError):
@@ -919,6 +1172,24 @@ def verify_pack(pack_dir: Path) -> list[str]:
                 problems.append("工单 metadata.ticket_id 无效")
             else:
                 metadata_ticket_id = candidate
+
+    contracts_path = _package_member_path(pack, "contracts.json")
+    if contracts_path is None:
+        problems.append("contracts.json 包内路径无效（必须是普通文件）")
+    elif contracts_path.is_file():
+        try:
+            contracts_snapshot = _load_contract_snapshot(contracts_path)
+        except (OSError, ValueError, RecursionError):
+            problems.append("contracts.json 不可解析或超过安全上限")
+        else:
+            raw_state_machine = contracts_snapshot.get("state_machine")
+            if raw_state_machine is not None:
+                try:
+                    expected_ticket_state_machine = (
+                        _normalize_ticket_state_machine(raw_state_machine)
+                    )
+                except (TypeError, ValueError, RecursionError):
+                    problems.append("contracts.json state_machine 结构无效")
     if (
         manifest_ticket_id is not None
         and metadata_ticket_id is not None
@@ -940,6 +1211,8 @@ def verify_pack(pack_dir: Path) -> list[str]:
                 expected_event_mirrors=metadata_event_mirrors,
                 expected_agent_spawns=metadata_agent_spawns,
                 expected_metadata_hash=expected_metadata_hash,
+                expected_ticket_state_machine=expected_ticket_state_machine,
+                expected_ticket_metadata=expected_ticket_metadata,
             )
             problems.extend(chain_problems)
             # ④ 正文与链上哈希对应
@@ -958,6 +1231,8 @@ def _verify_event_chain(
     expected_event_mirrors: object = _UNSET_METADATA_EVENT_MIRRORS,
     expected_agent_spawns: object = _UNSET_METADATA_AGENT_SPAWNS,
     expected_metadata_hash: object = _UNSET_EXPECTED_METADATA_HASH,
+    expected_ticket_state_machine: object = _UNSET_TICKET_STATE_MACHINE,
+    expected_ticket_metadata: object = _UNSET_TICKET_METADATA,
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """逐条校验事件，只保留去重 ID 与产物绑定所需的紧凑事实。"""
     problems = _ProblemCollector()
@@ -1007,6 +1282,9 @@ def _verify_event_chain(
                 f"工单 metadata.{_METADATA_AGENT_SPAWNS_FIELD} 结构无效 "
                 "（必须是仅含对象的数组或 null）"
             )
+    ticket_state_mirror = _TicketStateMirror(
+        expected_ticket_state_machine, expected_ticket_metadata,
+    )
 
     def append_payload_shape_problems(target: _ProblemCollector) -> None:
         # Bound retained diagnostics even if a hostile event stream contains many
@@ -1150,6 +1428,7 @@ def _verify_event_chain(
 
                 event_type = event.get("event_type")
                 payload = event.get("payload")
+                ticket_state_mirror.consume(event, event_count)
                 if isinstance(payload, dict):
                     marker = payload.get("metadata_hash_after")
                     if marker:
@@ -1238,6 +1517,7 @@ def _verify_event_chain(
             "agent_spawned/agent_result 事件与 "
             f"metadata.{_METADATA_AGENT_SPAWNS_FIELD} 不一致"
         )
+    problems.extend(ticket_state_mirror.finish())
     return artifact_facts, problems.render()
 
 

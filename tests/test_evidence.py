@@ -150,6 +150,44 @@ class TestEvidencePack(unittest.TestCase):
                 payload.pop("metadata_hash_after", None)
         self._rewrite_event_chain(events_path, events)
 
+    def _append_rehashed_event(
+        self, metadata_path: Path, events_path: Path, event_type: str,
+        payload: dict, metadata_updates: dict,
+    ) -> None:
+        """Append a schema-valid synthetic event and bind its resulting metadata."""
+        import uuid
+
+        from icode.pack_verify import _metadata_content_hash, canonical_event_hash
+
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata.update(metadata_updates)
+        event_payload = dict(payload)
+        event_payload["metadata_hash_after"] = _metadata_content_hash(metadata)
+        events = [
+            json.loads(line)
+            for line in events_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        event = {
+            "schema_version": 1,
+            "event_id": str(uuid.uuid4()),
+            "ticket_id": metadata["ticket_id"],
+            "timestamp": "2026-10-05T00:00:00+00:00",
+            "actor": "system",
+            "event_type": event_type,
+            "payload": event_payload,
+            "previous_event_hash": events[-1]["event_hash"],
+        }
+        event["event_hash"] = canonical_event_hash(event)
+        events.append(event)
+        metadata_path.write_text(
+            json.dumps(metadata, ensure_ascii=False) + "\n", encoding="utf-8",
+        )
+        events_path.write_text(
+            "\n".join(json.dumps(item, ensure_ascii=False) for item in events) + "\n",
+            encoding="utf-8",
+        )
+
     def _refresh_pack_member_hash(self, pack_dir: Path, relative_path: str) -> None:
         from icode.pack_verify import pack_digest, sha256_file
 
@@ -647,6 +685,213 @@ class TestEvidencePack(unittest.TestCase):
                 independent.returncode, 0, independent.stdout + independent.stderr,
             )
             self.assertIn("metadata_hash_after", independent.stdout + independent.stderr)
+
+    def test_导出器拒绝重签事件链中的非法状态迁移(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "state_changed",
+                {"from": "init_in_progress", "to": "completed",
+                 "delivery_verdict": "verified"},
+                {"status": "completed", "delivery_verdict": "verified"},
+            )
+            with self.assertRaisesRegex(EvidenceError, "state_changed"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝关闭阶段跳跃并保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "close_phase", {"from": None, "to": "archived"},
+                {"close_state": "archived"},
+            )
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+            with self.assertRaisesRegex(EvidenceError, "close_phase"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    clean=True,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_导出器拒绝畸形状态机契约并保留旧包(self) -> None:
+        from icode.contracts import ContractError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            gates = json.loads(self.settings.gates_json.read_text(encoding="utf-8"))
+            gates["state_machine"]["close_phases"] = ["not-closed"]
+            gates_json = ws / "gates.json"
+            gates_json.write_text(json.dumps(gates), encoding="utf-8")
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+
+            with self.assertRaisesRegex(ContractError, "state_machine"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=gates_json, clean=True,
+                )
+
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_独立校验器拒绝重签包中的畸形状态机快照(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+            contracts_path = dest / "contracts.json"
+            contracts = json.loads(contracts_path.read_text(encoding="utf-8"))
+            contracts["state_machine"]["close_phases"] = ["not-closed"]
+            contracts_path.write_text(
+                json.dumps(contracts, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "contracts.json")
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("contracts.json state_machine" in item for item in problems),
+                problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("contracts.json state_machine", independent.stdout + independent.stderr)
+
+    def test_导出器拒绝最终状态与metadata分叉(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "state_changed",
+                {"from": "init_in_progress", "to": "plan_done",
+                 "delivery_verdict": None},
+                {"requirement": "metadata.status intentionally not updated"},
+            )
+            with self.assertRaisesRegex(EvidenceError, "metadata.status"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_无状态机契约快照时旧包兼容且明确降级(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "state_changed",
+                {"from": "init_in_progress", "to": "completed",
+                 "delivery_verdict": "verified"},
+                {"status": "completed", "delivery_verdict": "verified"},
+            )
+            report = build_evidence_pack(out_dir, dest=ws / "pack")
+
+            self.assertTrue(report.ok, report.render())
+            self.assertTrue(
+                any("不声明已验证工单状态/关闭阶段语义" in item for item in report.warnings),
+                report.warnings,
+            )
+            self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_导出器拒绝未完成关闭时重开(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "ticket_reopened", {"from": "closed", "to": None},
+                {"close_state": None},
+            )
+            with self.assertRaisesRegex(EvidenceError, "ticket_reopened"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_状态镜像接受合法状态迁移和完整关闭后重开(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "state_changed",
+                {"from": "init_in_progress", "to": "plan_done",
+                 "delivery_verdict": None},
+                {"status": "plan_done"},
+            )
+            phases = [
+                "close_planned", "archived", "roots_verified", "checkouts_removed",
+                "branches_removed", "closed",
+            ]
+            previous = None
+            for phase in phases:
+                self._append_rehashed_event(
+                    out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                    "close_phase", {"from": previous, "to": phase},
+                    {"close_state": phase},
+                )
+                previous = phase
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "ticket_reopened", {"from": "closed", "to": None},
+                {"close_state": None},
+            )
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "close_phase", {"from": None, "to": "close_planned"},
+                {"close_state": "close_planned"},
+            )
+            report = build_evidence_pack(
+                out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_独立校验器拒绝重签包中的非法状态迁移(self) -> None:
+        with temp_workspace() as ws:
+            out_dir, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+            self._append_rehashed_event(
+                dest / "ticket" / "metadata.json",
+                dest / "ticket" / "events.jsonl",
+                "state_changed",
+                {"from": "init_in_progress", "to": "completed",
+                 "delivery_verdict": "verified"},
+                {"status": "completed", "delivery_verdict": "verified"},
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+            self._refresh_pack_member_hash(dest, "ticket/events.jsonl")
+
+            problems = verify_pack(dest)
+            self.assertTrue(any("state_changed" in item for item in problems), problems)
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("state_changed", independent.stdout + independent.stderr)
 
     def test_导出器保留JSON字符串中的Unicode行分隔符(self) -> None:
         from icode.pack_verify import GENESIS_HASH, canonical_event_hash
@@ -1944,7 +2189,7 @@ class TestEvidencePack(unittest.TestCase):
 
                 self.assertEqual(marker.read_text(encoding="utf-8"), "preserve this pack\n")
 
-    def test_任意事件类型的空对象payload仍兼容导出和校验(self) -> None:
+    def test_非状态控制事件的空对象payload仍兼容导出和校验(self) -> None:
         from icode.pack_verify import GENESIS_HASH, canonical_event_hash
 
         with temp_workspace() as ws:
@@ -1956,7 +2201,7 @@ class TestEvidencePack(unittest.TestCase):
                 if line.strip()
             ]
             self.assertEqual(events[0]["event_type"], "ticket_created")
-            events[0]["payload"] = {}
+            events[0]["payload"] = {"birth_kind": "plan"}
             previous_hash = GENESIS_HASH
             for event in events:
                 event["previous_event_hash"] = previous_hash
@@ -1965,6 +2210,10 @@ class TestEvidencePack(unittest.TestCase):
             events_path.write_text(
                 "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
                 encoding="utf-8",
+            )
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", events_path,
+                "external_note", {}, {},
             )
 
             dest = ws / "pack"
@@ -2152,7 +2401,7 @@ class TestEvidencePack(unittest.TestCase):
             # 必须说明"不需要安装本工具"才能校验，以及四条诚实边界
             for token in (
                 "不需要安装 icode-agent",
-                "过程记录自洽且未被篡改",
+                "当前过程记录、metadata 与包内成员相互自洽",
                 "不是",
                 "应用层限制，不是内核级沙箱",
                 "task 回执仅记录验证结果快照",
