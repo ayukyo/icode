@@ -11,9 +11,10 @@ import stat
 from pathlib import Path
 import re
 import socket
+import subprocess
 import threading
 import time
-from typing import Callable
+from typing import Callable, Sequence
 from urllib.parse import quote
 
 from icode.connect_request import ConnectRequestError, parse_https_connect_request_head
@@ -36,6 +37,40 @@ _PEER_CLOSED_SEND_ERRORS = (
     ConnectionResetError,
     ConnectionAbortedError,
 )
+
+
+def run_with_inherited_fds(
+    argv: Sequence[str],
+    *,
+    pass_fds: Sequence[int],
+    cwd: Path,
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run a bounded POSIX test child with only the explicitly named FDs."""
+
+    if (
+        not isinstance(argv, (list, tuple))
+        or not argv
+        or any(type(part) is not str or not part or "\x00" in part for part in argv)
+        or not isinstance(pass_fds, (list, tuple))
+        or any(type(fd) is not int or fd < 3 for fd in pass_fds)
+        or len(set(pass_fds)) != len(pass_fds)
+        or not isinstance(cwd, Path)
+        or not cwd.is_dir()
+        or isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or timeout_seconds <= 0
+    ):
+        raise ValueError("invalid inherited-FD test command")
+    return subprocess.run(
+        list(argv),
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+        pass_fds=tuple(pass_fds),
+    )
 
 
 def send_if_peer_open(connection: socket.socket, payload: bytes) -> bool:

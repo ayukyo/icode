@@ -69,6 +69,66 @@ class TestUpstreamAcceptFixture(unittest.TestCase):
             listener.close()
 
 
+@unittest.skipUnless(
+    os.name == "posix" and hasattr(socket, "AF_UNIX"),
+    "requires POSIX Unix-domain socket descriptors",
+)
+class TestInheritedUnixSocketFdRunner(unittest.TestCase):
+    def test_child_can_roundtrip_over_an_explicitly_inherited_connected_fd(self) -> None:
+        runner = getattr(probe, "run_with_inherited_fds", None)
+        self.assertTrue(
+            callable(runner),
+            "bounded subprocess helper for explicitly inherited descriptors is missing",
+        )
+
+        host_connection, worker_connection = socket.socketpair(
+            socket.AF_UNIX, socket.SOCK_STREAM,
+        )
+        host_connection.settimeout(3.0)
+        replies: list[bytes] = []
+        failures: list[str] = []
+
+        def respond_once() -> None:
+            try:
+                request = host_connection.recv(64)
+                replies.append(request)
+                if request == b"host-fd-request":
+                    host_connection.sendall(b"host-fd-reply")
+            except OSError as error:
+                failures.append(type(error).__name__)
+
+        responder = threading.Thread(target=respond_once, daemon=True)
+        responder.start()
+        source = (
+            "import socket, sys\n"
+            "connection = socket.socket(fileno=int(sys.argv[1]))\n"
+            "connection.settimeout(2.0)\n"
+            "try:\n"
+            "    connection.sendall(b'host-fd-request')\n"
+            "    reply = connection.recv(64)\n"
+            "    print('probe:roundtrip' if reply == b'host-fd-reply' else 'probe:bad-reply')\n"
+            "finally:\n"
+            "    connection.close()\n"
+        )
+        try:
+            result = runner(
+                [sys.executable, "-S", "-c", source, str(worker_connection.fileno())],
+                pass_fds=(worker_connection.fileno(),),
+                cwd=Path.cwd(),
+                timeout_seconds=5.0,
+            )
+        finally:
+            worker_connection.close()
+            responder.join(timeout=3.0)
+            host_connection.close()
+
+        self.assertFalse(responder.is_alive(), "host-side FD fixture did not finish")
+        self.assertEqual(failures, [])
+        self.assertEqual(replies, [b"host-fd-request"])
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "probe:roundtrip")
+
+
 class TestUnixSocketPolicyBuilder(unittest.TestCase):
     def test_curl_socks5_uds_support_requires_version_and_build_feature(self) -> None:
         supports = getattr(probe, "supports_curl_socks5_uds", None)
@@ -916,6 +976,115 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
         if len(markers) != 1:
             raise AssertionError("sandboxed socket probe returned an invalid marker")
         return markers[0]
+
+    def test_preconnected_unix_fd_without_worker_socket_grants(self) -> None:
+        sandbox_exec = shutil.which("sandbox-exec") or "/usr/bin/sandbox-exec"
+        if not Path(sandbox_exec).is_file():
+            self.skipTest("sandbox-exec is unavailable; no conformance credit")
+
+        with tempfile.TemporaryDirectory(
+            prefix="icode-seatbelt-preconnected-fd-", dir="/private/tmp",
+        ) as raw_root:
+            root = Path(raw_root).resolve()
+            workspace = root / "workspace"
+            workspace.mkdir(mode=0o700)
+            policy = SandboxPolicy(
+                schema_version=1,
+                run_id="run-macos-preconnected-fd-test",
+                ticket_id="ICODE-MACOS-PRECONNECTED-FD-1",
+                step="code",
+                workspace_root=workspace,
+                read_roots=(workspace,),
+                write_roots=(workspace,),
+                deny_read_roots=(),
+                deny_write_roots=(),
+                network_mode=NetworkMode.DENY,
+                allowed_domains=(),
+                process_limit=8,
+                wall_timeout_seconds=10,
+                output_limit_bytes=4096,
+                protected_paths=(),
+            )
+            sandbox = MacSeatbeltSandbox(sandbox_exec=sandbox_exec)
+            profile = sandbox._policy_profile(policy)
+            host_connection, worker_connection = socket.socketpair(
+                socket.AF_UNIX, socket.SOCK_STREAM,
+            )
+            host_connection.sendall(b"seatbelt-fd-reply")
+            host_connection.settimeout(0.5)
+            source = (
+                "import errno, socket, sys\n"
+                "denied = (errno.EPERM, errno.EACCES)\n"
+                "connection = None\n"
+                "try:\n"
+                "    connection = socket.socket(fileno=int(sys.argv[1]))\n"
+                "    connection.settimeout(1.0)\n"
+                "    if connection.recv(64) != b'seatbelt-fd-reply':\n"
+                "        fd_status = 'error'\n"
+                "    else:\n"
+                "        connection.sendall(b'seatbelt-fd-request')\n"
+                "        fd_status = 'roundtrip'\n"
+                "except OSError as error:\n"
+                "    fd_status = 'denied' if error.errno in denied else 'error'\n"
+                "finally:\n"
+                "    if connection is not None: connection.close()\n"
+                "socket_status = {}\n"
+                "for name, family in (('tcp', socket.AF_INET), ('unix', socket.AF_UNIX)):\n"
+                "    try:\n"
+                "        candidate = socket.socket(family, socket.SOCK_STREAM)\n"
+                "    except OSError as error:\n"
+                "        socket_status[name] = 'denied' if error.errno in denied else 'error'\n"
+                "    else:\n"
+                "        candidate.close()\n"
+                "        socket_status[name] = 'created'\n"
+                "print('probe:' + ','.join((fd_status, socket_status['tcp'], "
+                "socket_status['unix'])))\n"
+            )
+            try:
+                result = probe.run_with_inherited_fds(
+                    [
+                        sandbox_exec, "-p", profile, sys.executable, "-S", "-c",
+                        source, str(worker_connection.fileno()),
+                    ],
+                    pass_fds=(worker_connection.fileno(),),
+                    cwd=workspace,
+                    timeout_seconds=7.0,
+                )
+                try:
+                    host_request = host_connection.recv(64)
+                except TimeoutError:
+                    host_request = b""
+            finally:
+                worker_connection.close()
+                host_connection.close()
+
+            self.assertIn(host_request, (b"", b"seatbelt-fd-request"))
+            self.assertEqual(result.returncode, 0)
+            markers = [
+                line for line in result.stdout.splitlines()
+                if line.startswith("probe:")
+            ]
+            self.assertEqual(len(markers), 1)
+            fields = markers[0][len("probe:"):].split(",")
+            self.assertEqual(len(fields), 3)
+            fd_status, tcp_socket_status, unix_socket_status = fields
+            self.assertIn(fd_status, {"roundtrip", "denied", "error"})
+            self.assertIn(tcp_socket_status, {"denied", "created"})
+            self.assertIn(unix_socket_status, {"denied", "created"})
+            self.assertEqual(tcp_socket_status, "denied")
+            self.assertEqual(unix_socket_status, "denied")
+            if fd_status == "roundtrip":
+                self.assertEqual(host_request, b"seatbelt-fd-request")
+            else:
+                self.assertEqual(host_request, b"")
+
+            candidate_status = "passed" if fd_status == "roundtrip" else "unavailable"
+            print(
+                "::notice::macos-seatbelt-preconnected-uds-fd "
+                f"preconnected_fd={candidate_status} new_tcp_socket=denied "
+                "new_unix_socket=denied conformance_credit=none",
+                flush=True,
+            )
 
     @staticmethod
     def _run_sandboxed_curl(
