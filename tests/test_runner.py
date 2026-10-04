@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 import signal
 import shutil
 import subprocess
@@ -20,6 +21,14 @@ from tests._support import REPO_ROOT, require_skill, temp_workspace
 
 from icode.backends import BackendError, OpenAICompatibleBackend, Usage, build_backend
 from icode.runner import _changed, _snapshot, prepare_workspace, run_unittest
+
+
+def _normalize_unittest_elapsed_time(output: str) -> str:
+    return re.sub(
+        r"(?m)^Ran ([0-9]+) tests? in [0-9]+(?:\.[0-9]+)?s$",
+        r"Ran \1 tests in <elapsed>s",
+        output,
+    )
 
 
 class _WindowsTestProcessHandle:
@@ -435,6 +444,12 @@ class TestSnapshot(unittest.TestCase):
 
 
 class TestIndependentVerification(unittest.TestCase):
+    def test_unittest摘要归一化忽略非确定耗时(self) -> None:
+        self.assertEqual(
+            _normalize_unittest_elapsed_time("Ran 1 test in 0.000s\nOK\n"),
+            _normalize_unittest_elapsed_time("Ran 1 test in 0.001s\nOK\n"),
+        )
+
     @staticmethod
     def _raw_unittest_output(workspace):
         result = subprocess.run(
@@ -970,7 +985,11 @@ class TestIndependentVerification(unittest.TestCase):
                 ws, output_limit_bytes=cap_bytes,
             )
 
-            self.assertEqual((bounded_code, bounded), (code, baseline))
+            self.assertEqual(bounded_code, code)
+            self.assertEqual(
+                _normalize_unittest_elapsed_time(bounded),
+                _normalize_unittest_elapsed_time(baseline),
+            )
             self.assertIn("stdout-雪", bounded)
             self.assertIn("stderr-🧪", bounded)
             with self.assertRaises(VerificationOutputLimitError) as raised:
@@ -1011,7 +1030,11 @@ class TestIndependentVerification(unittest.TestCase):
                 ws, output_limit_bytes=len(raw_stdout) + len(raw_stderr),
             )
 
-            self.assertEqual((bounded_code, bounded), (code, baseline))
+            self.assertEqual(bounded_code, code)
+            self.assertEqual(
+                _normalize_unittest_elapsed_time(bounded),
+                _normalize_unittest_elapsed_time(baseline),
+            )
             self.assertIn("bad-�", bounded)
 
     def test_有界捕获超时仍终止直接验证进程(self) -> None:
