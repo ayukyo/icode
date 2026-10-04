@@ -49,9 +49,13 @@ from .pack_verify import (
     _FileSizeLimitExceeded,
     _HashReadBudget,
     _HashReadBudgetExceeded,
+    _AgentLifecycleMirror,
+    _AGENT_LIFECYCLE_EVENT_TYPES,
     _check_json_structural_token_budget,
+    _METADATA_AGENT_SPAWNS_FIELD,
     _METADATA_EVENT_MIRROR_FIELDS,
     _event_payload_matches_metadata_record,
+    _metadata_agent_spawn_records,
     _metadata_event_mirror_records,
     event_schema_issues,
     loads_json_value,
@@ -423,6 +427,7 @@ def _verification_payload(
 def _read_events(
     out_dir: Path, *, expected_ticket_id: str,
     expected_event_mirrors: dict[str, list[dict]],
+    expected_agent_spawns: object,
 ) -> _EventSummary:
     path = Path(out_dir) / EVENTS_NAME
     if not path.is_file():
@@ -437,6 +442,12 @@ def _read_events(
             raise EvidenceError(
                 f"工单 metadata.{metadata_field} 结构无效（必须是仅含对象的数组）"
             )
+    agent_lifecycle_mirror = _AgentLifecycleMirror(expected_agent_spawns)
+    if not agent_lifecycle_mirror.structurally_valid:
+        raise EvidenceError(
+            f"工单 metadata.{_METADATA_AGENT_SPAWNS_FIELD} 结构无效 "
+            "（必须是仅含对象的数组）"
+        )
     try:
         if path.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
             raise EvidenceError("事件链超过总输入字节数上限")
@@ -504,6 +515,8 @@ def _read_events(
                         f"事件链第 {lineno} 行不符合 pinned ticket-event schema "
                         f"（字段：{fields}）"
                     )
+                if event_type in _AGENT_LIFECYCLE_EVENT_TYPES:
+                    agent_lifecycle_mirror.consume(event_type, payload)
                 if event_type not in ("step_started", "artifact_written"):
                     if event_type in _METADATA_EVENT_MIRROR_FIELDS:
                         expected_records = expected_event_mirrors[event_type]
@@ -544,6 +557,11 @@ def _read_events(
             raise EvidenceError(
                 f"{event_type} 事件与 metadata.{metadata_field} 不一致"
             )
+    if not agent_lifecycle_mirror.finish():
+        raise EvidenceError(
+            "agent_spawned/agent_result 事件与 "
+            f"metadata.{_METADATA_AGENT_SPAWNS_FIELD} 不一致"
+        )
     return summary
 
 
@@ -911,6 +929,7 @@ def build_evidence_pack(
         event_type: _metadata_event_mirror_records(meta, event_type)
         for event_type in _METADATA_EVENT_MIRROR_FIELDS
     }
+    metadata_agent_spawns = _metadata_agent_spawn_records(meta)
     verification_payload, verification_count = _verification_payload(
         verifications, metadata_event_mirrors["verification_recorded"],
     )
@@ -918,6 +937,7 @@ def build_evidence_pack(
         out_dir,
         expected_ticket_id=ticket_id,
         expected_event_mirrors=metadata_event_mirrors,
+        expected_agent_spawns=metadata_agent_spawns,
     )
     if not event_summary.event_count:
         raise EvidenceError("事件链为空，无法导出证据包")

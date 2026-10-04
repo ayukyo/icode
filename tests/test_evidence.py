@@ -77,6 +77,53 @@ class TestEvidencePack(unittest.TestCase):
         self.assertIsInstance(run, dict)
         return run
 
+    def _record_agent_spawn(
+        self, out_dir: Path, *, ticket_id: str, scope: str = "evidence review",
+        occurrence: int = 1,
+    ) -> dict:
+        from icode.control import ControlPlane
+
+        result = ControlPlane(self.settings).run(
+            "record-agent-spawn", "--dir", str(out_dir),
+            "--task-scope", scope,
+            "--expected-artifact", f"bounded finding {occurrence}",
+            "--evidence-boundary", "ticket evidence only",
+            "--join-condition", "one documented finding",
+            "--backend", "test-backend", "--model", "test-model",
+            "--capability", "text", "--capability", "reasoning",
+            "--request-id", f"evidence-pack-agent-spawn-{ticket_id}-{occurrence}",
+            check=False,
+        )
+        self.assertTrue(result.ok, result.data)
+        spawn = result.data.get("spawn")
+        self.assertIsInstance(spawn, dict)
+        return spawn
+
+    def _record_agent_result(
+        self, out_dir: Path, *, ticket_id: str, spawn_id: str,
+        occurrence: int = 1, result_name: str = "joined",
+        adopted: str = "yes", error_class: str | None = None,
+    ) -> dict:
+        from icode.control import ControlPlane
+
+        args = [
+            "record-agent-result", "--dir", str(out_dir),
+            "--spawn-id", spawn_id, "--result", result_name, "--adopted", adopted,
+            "--adoption-reason", "bounded result accepted",
+            "--evidence-ref", f"fp-agent-result-{ticket_id}-{occurrence}",
+            "--summary", f"result summary {occurrence}",
+        ]
+        if error_class is not None:
+            args.extend(["--error-class", error_class])
+        args.extend([
+            "--request-id", f"evidence-pack-agent-result-{ticket_id}-{occurrence}",
+        ])
+        result = ControlPlane(self.settings).run(*args, check=False)
+        self.assertTrue(result.ok, result.data)
+        spawn = result.data.get("spawn")
+        self.assertIsInstance(spawn, dict)
+        return spawn
+
     def _rewrite_event_chain(self, events_path: Path, events: list[dict]) -> None:
         from icode.pack_verify import GENESIS_HASH, canonical_event_hash
 
@@ -117,6 +164,379 @@ class TestEvidencePack(unittest.TestCase):
             self.assertEqual(report.artifact_count, 1)
             self.assertTrue(report.pack_digest)
             self.assertEqual(verify_pack(dest), [])
+
+    def test_导出器接受交错Agent生命周期及合法未终结spawn(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata = json.loads(
+                (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+            )
+            first = self._record_agent_spawn(
+                out_dir, ticket_id=metadata["ticket_id"], occurrence=1,
+            )
+            second = self._record_agent_spawn(
+                out_dir, ticket_id=metadata["ticket_id"], scope="independent check",
+                occurrence=2,
+            )
+            completed_second = self._record_agent_result(
+                out_dir, ticket_id=metadata["ticket_id"],
+                spawn_id=second["spawn_id"], occurrence=2,
+            )
+
+            report = build_evidence_pack(
+                out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(verify_pack(ws / "pack"), [])
+            packed = json.loads(
+                (ws / "pack" / "ticket" / "metadata.json").read_text(encoding="utf-8"),
+            )
+            spawns = packed["extensions"]["agent"]["spawns"]
+            self.assertEqual([item["spawn_id"] for item in spawns], [
+                first["spawn_id"], completed_second["spawn_id"],
+            ])
+            self.assertNotIn("result", spawns[0])
+            self.assertEqual(spawns[1]["result"], "joined")
+
+    def test_导出器接受Agent全部合法终态与采纳组合(self) -> None:
+        valid_outcomes = (
+            ("joined", "yes"), ("joined", "partial"), ("joined", "no"),
+            ("timed_out", "no"), ("stopped", "no"), ("failed", "no"),
+        )
+        for index, (result_name, adopted) in enumerate(valid_outcomes, start=1):
+            with self.subTest(result=result_name, adopted=adopted), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                metadata = json.loads(
+                    (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+                )
+                spawn = self._record_agent_spawn(
+                    out_dir, ticket_id=metadata["ticket_id"], occurrence=index,
+                )
+                self._record_agent_result(
+                    out_dir, ticket_id=metadata["ticket_id"],
+                    spawn_id=spawn["spawn_id"], occurrence=index,
+                    result_name=result_name, adopted=adopted,
+                    error_class="backend_error" if result_name != "joined" else None,
+                )
+                report = build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+                self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_导出器拒绝metadata_agent_lifecycle与事件分叉且保留旧包(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            self._record_agent_spawn(out_dir, ticket_id=metadata["ticket_id"])
+
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["extensions"]["agent"]["spawns"][0]["task_scope"] = "metadata-only"
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False) + "\n", encoding="utf-8",
+            )
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            marker = dest / "keep.txt"
+            marker.write_bytes(b"preserve previous evidence pack\n")
+            with self.assertRaisesRegex(
+                EvidenceError, "agent_spawned/agent_result",
+            ):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    clean=True,
+                )
+            self.assertEqual(marker.read_bytes(), b"preserve previous evidence pack\n")
+
+    def test_导出器拒绝agent事件改写缺失或倒序(self) -> None:
+        from icode.evidence import EvidenceError
+
+        for mode in ("event-only", "missing-result", "missing-spawn", "spawn-order"):
+            with self.subTest(mode=mode), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                metadata = json.loads(
+                    (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+                )
+                first = self._record_agent_spawn(
+                    out_dir, ticket_id=metadata["ticket_id"], occurrence=1,
+                )
+                if mode == "spawn-order":
+                    self._record_agent_spawn(
+                        out_dir, ticket_id=metadata["ticket_id"], scope="second",
+                        occurrence=2,
+                    )
+                else:
+                    self._record_agent_result(
+                        out_dir, ticket_id=metadata["ticket_id"],
+                        spawn_id=first["spawn_id"],
+                    )
+
+                events_path = out_dir / ".ico_events.jsonl"
+                events = [
+                    json.loads(line)
+                    for line in events_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+                spawn_indexes = [
+                    index for index, event in enumerate(events)
+                    if event.get("event_type") == "agent_spawned"
+                ]
+                result_indexes = [
+                    index for index, event in enumerate(events)
+                    if event.get("event_type") == "agent_result"
+                ]
+                if mode == "event-only":
+                    events[spawn_indexes[0]]["payload"]["task_scope"] = "event-only"
+                elif mode == "missing-result":
+                    self.assertEqual(len(result_indexes), 1)
+                    events.pop(result_indexes[0])
+                elif mode == "missing-spawn":
+                    events.pop(spawn_indexes[0])
+                else:
+                    self.assertEqual(len(spawn_indexes), 2)
+                    left, right = spawn_indexes
+                    events[left], events[right] = events[right], events[left]
+                self._rewrite_event_chain(events_path, events)
+
+                with self.assertRaisesRegex(
+                    EvidenceError, "agent_spawned/agent_result",
+                ):
+                    build_evidence_pack(
+                        out_dir, dest=ws / "pack",
+                        gates_json=self.settings.gates_json,
+                    )
+
+    def test_导出器拒绝result早于spawn的非法Agent生命周期(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata = json.loads(
+                (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+            )
+            spawn = self._record_agent_spawn(out_dir, ticket_id=metadata["ticket_id"])
+            self._record_agent_result(
+                out_dir, ticket_id=metadata["ticket_id"], spawn_id=spawn["spawn_id"],
+            )
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            spawn_index = next(
+                index for index, event in enumerate(events)
+                if event.get("event_type") == "agent_spawned"
+            )
+            result_index = next(
+                index for index, event in enumerate(events)
+                if event.get("event_type") == "agent_result"
+            )
+            events[spawn_index], events[result_index] = events[result_index], events[spawn_index]
+            self._rewrite_event_chain(events_path, events)
+
+            with self.assertRaisesRegex(
+                EvidenceError, "agent_spawned/agent_result",
+            ):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝重复终结Agent生命周期(self) -> None:
+        import uuid
+
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata = json.loads(
+                (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+            )
+            spawn = self._record_agent_spawn(out_dir, ticket_id=metadata["ticket_id"])
+            self._record_agent_result(
+                out_dir, ticket_id=metadata["ticket_id"], spawn_id=spawn["spawn_id"],
+            )
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            result_event = next(
+                event for event in events
+                if event.get("event_type") == "agent_result"
+            )
+            duplicate = json.loads(json.dumps(result_event))
+            duplicate["event_id"] = str(uuid.uuid4())
+            duplicate["request_id"] = "evidence-pack-agent-result-duplicate"
+            events.append(duplicate)
+            self._rewrite_event_chain(events_path, events)
+
+            with self.assertRaisesRegex(
+                EvidenceError, "agent_spawned/agent_result",
+            ):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_Agent生命周期归约器遵守三个开放spawn边界(self) -> None:
+        from icode.pack_verify import _AgentLifecycleMirror
+
+        def spawn_record(index: int) -> dict:
+            return {
+                "spawn_id": f"spawn-{index}", "at": "2026-10-05T00:00:00Z",
+                "task_scope": f"scope-{index}",
+                "expected_artifact": f"artifact-{index}",
+                "evidence_boundary": "ticket-only",
+                "join_condition": "one finding", "backend": "test",
+                "model": "test-model", "capabilities": ["text"],
+            }
+
+        three_records = [spawn_record(index) for index in range(3)]
+        accepted = _AgentLifecycleMirror(three_records)
+        for record in three_records:
+            accepted.consume("agent_spawned", dict(record))
+        self.assertTrue(accepted.finish())
+
+        four_records = [spawn_record(index) for index in range(4)]
+        rejected = _AgentLifecycleMirror(four_records)
+        for record in four_records:
+            rejected.consume("agent_spawned", dict(record))
+        self.assertFalse(rejected.finish())
+
+        duplicate_records = [spawn_record(1), spawn_record(1)]
+        duplicate = _AgentLifecycleMirror(duplicate_records)
+        for record in duplicate_records:
+            duplicate.consume("agent_spawned", dict(record))
+        self.assertFalse(duplicate.finish())
+
+    def test_导出器拒绝畸形agent_spawns并兼容缺省或null路径(self) -> None:
+        from icode.evidence import EvidenceError
+
+        malformed_extensions = (
+            "invalid", False, 0, {"agent": "invalid"}, {"agent": False},
+            {"agent": 0}, {"agent": {"spawns": "invalid"}},
+            {"agent": {"spawns": False}}, {"agent": {"spawns": 0}},
+            {"agent": {"spawns": [None]}},
+        )
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            original = json.loads(metadata_path.read_text(encoding="utf-8"))
+            for index, extensions in enumerate(malformed_extensions):
+                with self.subTest(extensions=extensions):
+                    metadata = dict(original)
+                    metadata["extensions"] = extensions
+                    metadata_path.write_text(
+                        json.dumps(metadata, ensure_ascii=False) + "\n",
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(EvidenceError):
+                        build_evidence_pack(
+                            out_dir, dest=ws / f"bad-pack-{index}",
+                            gates_json=self.settings.gates_json,
+                        )
+
+            compatible_extensions = (
+                "missing", None, {"agent": None}, {"agent": {}},
+                {"agent": {"spawns": None}},
+            )
+            for index, extensions in enumerate(compatible_extensions):
+                with self.subTest(extensions=extensions):
+                    metadata = dict(original)
+                    if extensions == "missing":
+                        metadata.pop("extensions", None)
+                    else:
+                        metadata["extensions"] = extensions
+                    metadata_path.write_text(
+                        json.dumps(metadata, ensure_ascii=False) + "\n",
+                        encoding="utf-8",
+                    )
+                    report = build_evidence_pack(
+                        out_dir, dest=ws / f"compatible-pack-{index}",
+                        gates_json=self.settings.gates_json,
+                    )
+                    self.assertTrue(report.ok, report.render())
+
+    def test_独立校验器拒绝重签包中Agent生命周期metadata分叉(self) -> None:
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata = json.loads(
+                (out_dir / ".ico_metadata.json").read_text(encoding="utf-8"),
+            )
+            self._record_agent_spawn(out_dir, ticket_id=metadata["ticket_id"])
+            dest = ws / "pack"
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertTrue(report.ok, report.render())
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["extensions"]["agent"]["spawns"][0]["task_scope"] = (
+                "resigned metadata-only mutation"
+            )
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("agent_spawned/agent_result" in problem for problem in problems),
+                problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn(
+                "agent_spawned/agent_result", independent.stdout + independent.stderr,
+            )
+
+    def test_独立校验器拒绝畸形agent_spawns(self) -> None:
+        with temp_workspace() as ws:
+            _out_dir, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+            metadata_path = dest / "ticket" / "metadata.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["extensions"] = {"agent": {"spawns": [None]}}
+            metadata_path.write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("metadata.extensions.agent.spawns" in problem for problem in problems),
+                problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn(
+                "metadata.extensions.agent.spawns",
+                independent.stdout + independent.stderr,
+            )
 
     def test_导出器保留JSON字符串中的Unicode行分隔符(self) -> None:
         from icode.pack_verify import GENESIS_HASH, canonical_event_hash

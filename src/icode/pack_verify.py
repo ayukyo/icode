@@ -50,6 +50,7 @@ _MAX_PACKAGE_FILE_BYTES = 256 * 1024 * 1024
 _MAX_PACKAGE_HASH_READ_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_PACKAGE_ARTIFACT_BYTES = 256 * 1024 * 1024
 _UNSET_METADATA_EVENT_MIRRORS = object()
+_UNSET_METADATA_AGENT_SPAWNS = object()
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -87,6 +88,23 @@ _METADATA_EVENT_MIRROR_PATHS = {
     "claim_recorded": ("claims",),
     "skill_run_recorded": ("extensions", "skills", "runs"),
 }
+_METADATA_AGENT_SPAWNS_PATH = ("extensions", "agent", "spawns")
+_METADATA_AGENT_SPAWNS_FIELD = ".".join(_METADATA_AGENT_SPAWNS_PATH)
+_AGENT_LIFECYCLE_EVENT_TYPES = frozenset({"agent_spawned", "agent_result"})
+_AGENT_SPAWN_REQUIRED_FIELDS = frozenset({
+    "spawn_id", "at", "task_scope", "expected_artifact", "evidence_boundary",
+    "join_condition", "backend", "model", "capabilities",
+})
+_AGENT_SPAWN_ALLOWED_FIELDS = _AGENT_SPAWN_REQUIRED_FIELDS | {"exclusive_key"}
+_AGENT_RESULT_REQUIRED_FIELDS = frozenset({
+    "spawn_id", "result", "adopted", "adoption_reason", "result_at",
+    "evidence_refs", "summary_digest",
+})
+_AGENT_RESULT_ALLOWED_FIELDS = _AGENT_RESULT_REQUIRED_FIELDS | {"error_class"}
+_AGENT_CAPABILITIES = frozenset({"text", "image", "tools", "reasoning"})
+_AGENT_RESULTS = frozenset({"joined", "timed_out", "stopped", "failed"})
+_AGENT_ADOPTION_VALUES = frozenset({"yes", "partial", "no"})
+_MAX_OPEN_AGENT_SPAWNS = 3
 _METADATA_EVENT_MIRROR_FIELDS = {
     event_type: ".".join(path)
     for event_type, path in _METADATA_EVENT_MIRROR_PATHS.items()
@@ -180,6 +198,15 @@ def _metadata_event_mirror_records(metadata: object, event_type: str) -> object:
     path = _METADATA_EVENT_MIRROR_PATHS.get(event_type)
     if path is None:
         return _INVALID_METADATA_EVENT_MIRROR
+    return _metadata_records_at_path(metadata, path)
+
+
+def _metadata_agent_spawn_records(metadata: object) -> object:
+    """Read the materialized Agent lifecycle array; missing/null remains empty."""
+    return _metadata_records_at_path(metadata, _METADATA_AGENT_SPAWNS_PATH)
+
+
+def _metadata_records_at_path(metadata: object, path: tuple[str, ...]) -> object:
     value = metadata
     for field in path:
         if value is None:
@@ -198,6 +225,135 @@ def _event_payload_matches_metadata_record(payload: dict, metadata_record: dict)
     ) == json.dumps(
         metadata_record, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
     )
+
+
+class _AgentLifecycleMirror:
+    """Reconstruct Agent spawn records from ordered events, retaining only open calls."""
+
+    def __init__(self, metadata_records: object) -> None:
+        self.structurally_valid = isinstance(metadata_records, list) and all(
+            isinstance(record, dict) for record in metadata_records
+        )
+        self.records = metadata_records if self.structurally_valid else []
+        self.record_index = 0
+        self.open_records: dict[str, tuple[dict, dict]] = {}
+        self.valid = self.structurally_valid
+        if self.structurally_valid:
+            expected_spawn_ids: set[str] = set()
+            for record in self.records:
+                spawn_id = record.get("spawn_id")
+                if isinstance(spawn_id, str):
+                    if spawn_id in expected_spawn_ids:
+                        self.valid = False
+                    expected_spawn_ids.add(spawn_id)
+
+    @staticmethod
+    def _has_nonempty_text(value: object) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    @classmethod
+    def _valid_spawn_payload(cls, payload: dict) -> bool:
+        if not _AGENT_SPAWN_REQUIRED_FIELDS.issubset(payload):
+            return False
+        if not _AGENT_SPAWN_ALLOWED_FIELDS.issuperset(payload):
+            return False
+        if not all(cls._has_nonempty_text(payload.get(key)) for key in (
+            "spawn_id", "at", "task_scope", "expected_artifact",
+            "evidence_boundary", "join_condition", "backend", "model",
+        )):
+            return False
+        if "exclusive_key" in payload:
+            exclusive_key = payload.get("exclusive_key")
+            if not cls._has_nonempty_text(exclusive_key) or len(exclusive_key) > 80:
+                return False
+        capabilities = payload.get("capabilities")
+        if not isinstance(capabilities, list) or not capabilities \
+                or not all(isinstance(item, str) for item in capabilities):
+            return False
+        return (
+            "text" in capabilities
+            and all(item in _AGENT_CAPABILITIES for item in capabilities)
+            and len(set(capabilities)) == len(capabilities)
+        )
+
+    @classmethod
+    def _valid_result_payload(cls, payload: dict) -> bool:
+        if not _AGENT_RESULT_REQUIRED_FIELDS.issubset(payload):
+            return False
+        if not _AGENT_RESULT_ALLOWED_FIELDS.issuperset(payload):
+            return False
+        if not cls._has_nonempty_text(payload.get("spawn_id")):
+            return False
+        result = payload.get("result")
+        if not isinstance(result, str) or result not in _AGENT_RESULTS:
+            return False
+        adopted = payload.get("adopted")
+        if not isinstance(adopted, str) or adopted not in _AGENT_ADOPTION_VALUES:
+            return False
+        if result != "joined" and adopted != "no":
+            return False
+        if not cls._has_nonempty_text(payload.get("adoption_reason")):
+            return False
+        if not cls._has_nonempty_text(payload.get("result_at")):
+            return False
+        evidence_refs = payload.get("evidence_refs")
+        if not isinstance(evidence_refs, list) or not evidence_refs \
+                or not all(cls._has_nonempty_text(item) for item in evidence_refs):
+            return False
+        digest = payload.get("summary_digest")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            return False
+        return "error_class" not in payload or cls._has_nonempty_text(
+            payload.get("error_class"),
+        )
+
+    def consume(self, event_type: str, payload: object) -> None:
+        if not self.structurally_valid or event_type not in _AGENT_LIFECYCLE_EVENT_TYPES:
+            return
+        if not isinstance(payload, dict):
+            self.valid = False
+            return
+        record = _event_payload_metadata_record(payload)
+        if event_type == "agent_spawned":
+            if not self._valid_spawn_payload(record):
+                self.valid = False
+                return
+            spawn_id = record["spawn_id"]
+            if len(self.open_records) >= _MAX_OPEN_AGENT_SPAWNS:
+                self.valid = False
+                return
+            if self.record_index >= len(self.records):
+                self.valid = False
+                return
+            expected = self.records[self.record_index]
+            if expected.get("spawn_id") != spawn_id:
+                self.valid = False
+            self.record_index += 1
+            self.open_records[spawn_id] = (record, expected)
+            return
+
+        if not self._valid_result_payload(record):
+            self.valid = False
+            return
+        spawn_id = record["spawn_id"]
+        open_record = self.open_records.pop(spawn_id, None)
+        if open_record is None:
+            self.valid = False
+            return
+        reconstructed, expected = open_record
+        reconstructed.update({key: value for key, value in record.items() if key != "spawn_id"})
+        if not _event_payload_matches_metadata_record(reconstructed, expected):
+            self.valid = False
+
+    def finish(self) -> bool:
+        if not self.structurally_valid:
+            return False
+        if self.record_index != len(self.records):
+            self.valid = False
+        for reconstructed, expected in self.open_records.values():
+            if not _event_payload_matches_metadata_record(reconstructed, expected):
+                self.valid = False
+        return self.valid
 
 
 class _BoundedProblemReport(list[str]):
@@ -726,6 +882,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
 
     metadata_ticket_id: str | None = None
     metadata_event_mirrors: object = _UNSET_METADATA_EVENT_MIRRORS
+    metadata_agent_spawns: object = _UNSET_METADATA_AGENT_SPAWNS
     metadata_path = _package_member_path(pack, "ticket/metadata.json")
     if metadata_path is None:
         problems.append("工单 metadata 包内路径无效（必须是普通文件）")
@@ -741,6 +898,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
                 event_type: _metadata_event_mirror_records(metadata, event_type)
                 for event_type in _METADATA_EVENT_MIRROR_FIELDS
             }
+            metadata_agent_spawns = _metadata_agent_spawn_records(metadata)
             candidate = metadata.get("ticket_id")
             if not isinstance(candidate, str) or not candidate:
                 problems.append("工单 metadata.ticket_id 无效")
@@ -765,6 +923,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
                 events_path,
                 expected_ticket_id=metadata_ticket_id,
                 expected_event_mirrors=metadata_event_mirrors,
+                expected_agent_spawns=metadata_agent_spawns,
             )
             problems.extend(chain_problems)
             # ④ 正文与链上哈希对应
@@ -781,6 +940,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
 def _verify_event_chain(
     path: Path, *, expected_ticket_id: str | None = None,
     expected_event_mirrors: object = _UNSET_METADATA_EVENT_MIRRORS,
+    expected_agent_spawns: object = _UNSET_METADATA_AGENT_SPAWNS,
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """逐条校验事件，只保留去重 ID 与产物绑定所需的紧凑事实。"""
     problems = _ProblemCollector()
@@ -820,6 +980,14 @@ def _verify_event_chain(
         event_type: 0 for event_type in event_mirror_records
     }
     event_mirror_mismatches: set[str] = set()
+    agent_lifecycle_mirror = None
+    if expected_agent_spawns is not _UNSET_METADATA_AGENT_SPAWNS:
+        agent_lifecycle_mirror = _AgentLifecycleMirror(expected_agent_spawns)
+        if not agent_lifecycle_mirror.structurally_valid:
+            problems.append(
+                f"工单 metadata.{_METADATA_AGENT_SPAWNS_FIELD} 结构无效 "
+                "（必须是仅含对象的数组或 null）"
+            )
 
     def append_payload_shape_problems(target: _ProblemCollector) -> None:
         # Bound retained diagnostics even if a hostile event stream contains many
@@ -965,6 +1133,12 @@ def _verify_event_chain(
                 payload = event.get("payload")
                 if not isinstance(event_type, str) or event_type not in ALLOWED_EVENT_TYPES:
                     invalid_event_type_seen = True
+                if (
+                    agent_lifecycle_mirror is not None
+                    and isinstance(event_type, str)
+                    and event_type in _AGENT_LIFECYCLE_EVENT_TYPES
+                ):
+                    agent_lifecycle_mirror.consume(event_type, payload)
                 if not isinstance(payload, dict):
                     invalid_payload_kinds.add(
                         "artifact_written" if event_type == "artifact_written" else "event"
@@ -1023,6 +1197,15 @@ def _verify_event_chain(
             problems.append(
                 f"{event_type} 事件与 metadata.{metadata_field} 不一致"
             )
+    if (
+        agent_lifecycle_mirror is not None
+        and agent_lifecycle_mirror.structurally_valid
+        and not agent_lifecycle_mirror.finish()
+    ):
+        problems.append(
+            "agent_spawned/agent_result 事件与 "
+            f"metadata.{_METADATA_AGENT_SPAWNS_FIELD} 不一致"
+        )
     return artifact_facts, problems.render()
 
 
