@@ -20,6 +20,80 @@ from icode.backends import BackendError, OpenAICompatibleBackend, Usage, build_b
 from icode.runner import _changed, _snapshot, prepare_workspace, run_unittest
 
 
+class _WindowsTestProcessHandle:
+    """Keep one native process handle across assertion and fallback cleanup."""
+
+    def __init__(self, pid: int) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        self.ctypes = ctypes
+        self.wintypes = wintypes
+        self.kernel = self.ctypes.WinDLL("kernel32", use_last_error=True)
+        self.kernel.OpenProcess.argtypes = [
+            self.wintypes.DWORD, self.wintypes.BOOL, self.wintypes.DWORD,
+        ]
+        self.kernel.OpenProcess.restype = self.wintypes.HANDLE
+        self.kernel.WaitForSingleObject.argtypes = [
+            self.wintypes.HANDLE, self.wintypes.DWORD,
+        ]
+        self.kernel.WaitForSingleObject.restype = self.wintypes.DWORD
+        self.kernel.TerminateProcess.argtypes = [
+            self.wintypes.HANDLE, self.wintypes.UINT,
+        ]
+        self.kernel.TerminateProcess.restype = self.wintypes.BOOL
+        self.kernel.CloseHandle.argtypes = [self.wintypes.HANDLE]
+        self.kernel.CloseHandle.restype = self.wintypes.BOOL
+        self.handle = self.kernel.OpenProcess(0x00100001, False, pid)
+        self.already_exited = False
+        if not self.handle:
+            error = self.ctypes.get_last_error()
+            # ERROR_INVALID_PARAMETER means the process has exited and its PID
+            # is no longer openable. Access denied is inconclusive, not success.
+            if error != 87:
+                raise OSError(error, "OpenProcess")
+            self.already_exited = True
+
+    def exited_within(self, timeout_seconds: float) -> bool:
+        if self.already_exited:
+            return True
+        status = self.kernel.WaitForSingleObject(
+            self.handle, max(0, int(timeout_seconds * 1000)),
+        )
+        if status == 0:
+            return True
+        if status == 0x00000102:  # WAIT_TIMEOUT
+            return False
+        raise OSError(self.ctypes.get_last_error(), "WaitForSingleObject")
+
+    def terminate_for_test_cleanup(self) -> None:
+        """Best-effort fallback, using the already-open handle, not a reused PID."""
+        if self.handle:
+            self.kernel.TerminateProcess(self.handle, 1)
+            self.kernel.WaitForSingleObject(self.handle, 5000)
+
+    def close(self) -> None:
+        if self.handle:
+            self.kernel.CloseHandle(self.handle)
+            self.handle = None
+
+
+def _windows_process_exits_within(pid: int, timeout_seconds: float) -> bool:
+    process = _WindowsTestProcessHandle(pid)
+    try:
+        return process.exited_within(timeout_seconds)
+    finally:
+        process.close()
+
+
+def _terminate_windows_process_for_test_cleanup(pid: int) -> None:
+    process = _WindowsTestProcessHandle(pid)
+    try:
+        process.terminate_for_test_cleanup()
+    finally:
+        process.close()
+
+
 class TestFixtureIsolation(unittest.TestCase):
     def test_靶场复制到隔离目录(self) -> None:
         with temp_workspace() as ws:
@@ -591,12 +665,14 @@ class TestIndependentVerification(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "Windows 同步 pipe read 取消")
     def test_windows_后代持有管道时有界失败且清理读取线程(self) -> None:
+        from icode.runner import VerificationOutputCaptureError
+
         with temp_workspace() as ws:
             pid_file = ws / "windows-child.pid"
             child_code = (
                 "import time\nfrom pathlib import Path\n"
                 f"Path({str(pid_file)!r}).write_text(str(__import__('os').getpid()))\n"
-                "time.sleep(4.0)\n"
+                "time.sleep(30.0)\n"
             )
             (ws / "test_windows_child.py").write_text(
                 "import subprocess, sys, unittest\n"
@@ -611,16 +687,22 @@ class TestIndependentVerification(unittest.TestCase):
             )
 
             started = time.monotonic()
+            child_pid: int | None = None
             try:
-                with self.assertRaisesRegex(RuntimeError, "输出管道未在"):
+                with self.assertRaises(VerificationOutputCaptureError):
                     run_unittest(ws, timeout=5, output_limit_bytes=1024)
                 self.assertLess(time.monotonic() - started, 4.0)
+                self.assertTrue(pid_file.is_file(), "子进程必须已报告测试 PID")
+                child_pid = int(pid_file.read_text(encoding="utf-8"))
+                self.assertTrue(
+                    _windows_process_exits_within(child_pid, 0.5),
+                    "验证器退出后仍持有输出管道的后代必须被回收",
+                )
             finally:
-                if pid_file.is_file():
-                    try:
-                        os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
+                if child_pid is None and pid_file.is_file():
+                    child_pid = int(pid_file.read_text(encoding="utf-8"))
+                if child_pid is not None:
+                    _terminate_windows_process_for_test_cleanup(child_pid)
 
     @unittest.skipUnless(os.name == "nt", "Windows 超时后的同步 pipe read 取消")
     def test_windows_验证超时且后代持管道时有界终止(self) -> None:
@@ -633,7 +715,7 @@ class TestIndependentVerification(unittest.TestCase):
             child_code = (
                 "import time\nfrom pathlib import Path\n"
                 f"Path({str(pid_file)!r}).write_text(str(__import__('os').getpid()))\n"
-                "time.sleep(5.0)\n"
+                "time.sleep(30.0)\n"
             )
             (ws / "test_windows_timeout_child.py").write_text(
                 "import subprocess, sys, time, unittest\n"
@@ -646,16 +728,48 @@ class TestIndependentVerification(unittest.TestCase):
             )
 
             started = time.monotonic()
+            child_pid: int | None = None
             try:
                 with self.assertRaises((TimeoutExpired, VerificationOutputCaptureError)):
                     run_unittest(ws, timeout=1, output_limit_bytes=1024)
                 self.assertLess(time.monotonic() - started, 7.0)
+                self.assertTrue(pid_file.is_file(), "子进程必须已报告测试 PID")
+                child_pid = int(pid_file.read_text(encoding="utf-8"))
+                self.assertTrue(
+                    _windows_process_exits_within(child_pid, 0.5),
+                    "验证器超时必须通过 Job 回收仍持有输出管道的后代",
+                )
             finally:
-                if pid_file.is_file():
-                    try:
-                        os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
+                if child_pid is None and pid_file.is_file():
+                    child_pid = int(pid_file.read_text(encoding="utf-8"))
+                if child_pid is not None:
+                    _terminate_windows_process_for_test_cleanup(child_pid)
+
+    @unittest.skipUnless(os.name == "nt", "Windows CREATE_SUSPENDED/Job Object 启动顺序")
+    def test_windows_Job分配失败时payload不会启动(self) -> None:
+        from icode.runner import VerificationOutputCaptureError
+        from icode.windows_process_tree import WindowsProcessTree
+
+        with temp_workspace() as ws:
+            marker = ws / "payload-started"
+            (ws / "test_payload_start.py").write_text(
+                "import unittest\n"
+                "from pathlib import Path\n"
+                f"Path({str(marker)!r}).write_text('started')\n"
+                "class PayloadStartTest(unittest.TestCase):\n"
+                "    def test_payload_loaded(self):\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                WindowsProcessTree, "assign_and_resume",
+                side_effect=OSError("injected Job assignment failure"),
+            ):
+                with self.assertRaises(VerificationOutputCaptureError):
+                    run_unittest(ws, timeout=5, output_limit_bytes=1024)
+
+            self.assertFalse(marker.exists(), "Job 分配失败时 Python payload 不得执行")
 
     def test_双流持续输出超过预算时持续排空且显式拒绝(self) -> None:
         from icode.runner import VerificationOutputLimitError

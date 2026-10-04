@@ -797,16 +797,79 @@ def _cancel_windows_pipe_readers(
 def _run_threaded_bounded_output(
     argv: list[str], *, workspace: Path, timeout: int, output_limit_bytes: int,
 ) -> tuple[int, bytes, bytes]:
+    job = None
+    if sys.platform == "win32":
+        from .windows_process_tree import WindowsProcessTree
+
+        job = WindowsProcessTree()
+    try:
+        return _run_threaded_bounded_output_impl(
+            argv, workspace=workspace, timeout=timeout,
+            output_limit_bytes=output_limit_bytes, job=job,
+        )
+    finally:
+        if job is not None:
+            job.close()
+
+
+def _terminate_threaded_verification_tree(proc, job) -> bool:
+    """Boundedly stop the Job (when present) and reap its verifier root."""
+    if job is not None and job.assigned:
+        try:
+            job.terminate_and_wait(_VERIFICATION_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+        except OSError:
+            pass
+
+    if proc.poll() is None:
+        try:
+            proc.kill()
+        except OSError:
+            if proc.poll() is None:
+                return False
+    try:
+        proc.wait(timeout=_VERIFICATION_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+    if job is not None and job.assigned:
+        try:
+            return job.wait_until_empty(_VERIFICATION_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+        except OSError:
+            return False
+    return True
+
+
+def _join_or_cancel_threaded_readers(
+    readers: list[threading.Thread], stop_readers: threading.Event,
+) -> bool:
+    drain_deadline = time.monotonic() + _VERIFICATION_OUTPUT_DRAIN_TIMEOUT_SECONDS
+    for reader in readers:
+        reader.join(timeout=max(0.0, drain_deadline - time.monotonic()))
+    if any(reader.is_alive() for reader in readers):
+        return _cancel_windows_pipe_readers(readers, stop_readers)
+    return True
+
+
+def _run_threaded_bounded_output_impl(
+    argv: list[str], *, workspace: Path, timeout: int, output_limit_bytes: int,
+    job=None,
+) -> tuple[int, bytes, bytes]:
     """Windows pipe reader threads with a bounded drain and explicit cancellation."""
 
+    popen_options = {
+        "cwd": str(workspace),
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": False,
+        "bufsize": 0,
+        "shell": False,
+    }
+    if job is not None:
+        from .windows_process_tree import CREATE_SUSPENDED
+
+        popen_options["creationflags"] = CREATE_SUSPENDED
     proc = subprocess.Popen(  # noqa: S603 - argv 是固定 unittest 启动参数，shell=False
-        argv,
-        cwd=str(workspace),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=False,
-        bufsize=0,
-        shell=False,
+        argv, **popen_options,
     )
     assert proc.stdout is not None and proc.stderr is not None
     stdout_chunks = bytearray()
@@ -861,39 +924,88 @@ def _run_threaded_bounded_output(
             started_readers.append(reader)
             started_streams.append(stream)
     except BaseException:
-        proc.kill()
-        proc.wait()
+        cleanup_ok = _terminate_threaded_verification_tree(proc, job)
         _cancel_windows_pipe_readers(started_readers, stop_readers)
         for _, stream in readers:
             if stream not in started_streams:
                 stream.close()
+        if not cleanup_ok:
+            raise VerificationOutputCaptureError(
+                "独立验证启动失败后，验证进程树清理未确认",
+            )
         raise
+
+    if job is not None:
+        try:
+            # CPython's Windows Popen retains the original process HANDLE;
+            # using it avoids reopening a potentially recycled PID.
+            process_handle = getattr(proc, "_handle", None)
+            if (
+                isinstance(process_handle, bool)
+                or not isinstance(process_handle, int)
+                or process_handle < 1
+            ):
+                raise RuntimeError("Windows Popen did not expose its native process handle")
+            job.assign_and_resume(proc.pid, int(process_handle))
+        except BaseException as exc:
+            cleanup_ok = _terminate_threaded_verification_tree(proc, job)
+            readers_ok = _join_or_cancel_threaded_readers(
+                started_readers, stop_readers,
+            )
+            if not cleanup_ok or not readers_ok:
+                raise VerificationOutputCaptureError(
+                    "Windows Job 绑定失败后，未能确认验证进程树和管道均已清理",
+                    return_code=proc.returncode,
+                ) from exc
+            raise VerificationOutputCaptureError(
+                "Windows Job 绑定或主线程恢复失败；验证 payload 未获准运行",
+                return_code=proc.returncode,
+            ) from exc
 
     try:
         return_code = proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        proc.kill()
-        proc.wait()
-        drain_deadline = time.monotonic() + _VERIFICATION_OUTPUT_DRAIN_TIMEOUT_SECONDS
-        for reader in started_readers:
-            reader.join(timeout=max(0.0, drain_deadline - time.monotonic()))
-        if any(reader.is_alive() for reader in started_readers):
-            readers_stopped = _cancel_windows_pipe_readers(
-                started_readers, stop_readers,
-            )
-            if not readers_stopped:
-                raise VerificationOutputCaptureError(
-                    "独立验证超时后，输出读取线程清理未确认",
-                    return_code=proc.returncode,
-                ) from exc
+        cleanup_ok = _terminate_threaded_verification_tree(proc, job)
+        readers_ok = _join_or_cancel_threaded_readers(
+            started_readers, stop_readers,
+        )
+        if not cleanup_ok or not readers_ok:
+            raise VerificationOutputCaptureError(
+                "独立验证超时后，验证进程树或输出读取线程清理未确认",
+                return_code=proc.returncode,
+            ) from exc
         exc.output = bytes(stdout_chunks)
         exc.stderr = bytes(stderr_chunks)
         raise
-    except BaseException:
-        proc.kill()
-        proc.wait()
+    except BaseException as exc:
+        cleanup_ok = _terminate_threaded_verification_tree(proc, job)
         _cancel_windows_pipe_readers(started_readers, stop_readers)
+        if not cleanup_ok:
+            raise VerificationOutputCaptureError(
+                "独立验证异常后，验证进程树清理未确认",
+                return_code=proc.returncode,
+            ) from exc
         raise
+
+    if job is not None:
+        try:
+            descendants_gone = job.wait_until_empty(0.05)
+        except OSError:
+            descendants_gone = False
+        if not descendants_gone:
+            cleanup_ok = _terminate_threaded_verification_tree(proc, job)
+            readers_ok = _join_or_cancel_threaded_readers(
+                started_readers, stop_readers,
+            )
+            if not cleanup_ok or not readers_ok:
+                raise VerificationOutputCaptureError(
+                    "验证器退出后仍有 Job 成员，且进程树/管道清理未确认",
+                    return_code=return_code,
+                )
+            raise VerificationOutputCaptureError(
+                "验证器退出后仍有 Job 后代；已终止进程树并拒绝生成验证证据",
+                return_code=return_code,
+            )
 
     drain_deadline = time.monotonic() + _VERIFICATION_OUTPUT_DRAIN_TIMEOUT_SECONDS
     for reader in started_readers:
