@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **CI #588 暴露验证管道跨平台回归失败；补充有界失败摘要（2026-10-04）：**提交 `6fbf9d5` 的 `TestIndependentVerification` 在 Ubuntu 通过，但 macOS Apple Silicon/Intel、Windows x64/ARM64 原生作业失败。现有公开检查仅给出进程退出码，具体失败断言尚未取得；因此不推测根因，也不把这些平台标为通过。工作流候选仅在失败时向 job summary 输出 HTML 转义、最多 80 行且最多 12,000 字符的诊断尾部，供下一轮原生 CI 定位；本切片只改善失败可诊断性，不改 runner 行为或 readiness。候选需重新跑五平台矩阵后再决定是否进入 R2 WFP 代码切片。
+
 - **R3 验证输出/管道生命周期加入原生五平台 CI（2026-10-04；本机完整 preflight 3/3 通过，新 SHA 原生 CI 待验）：**复核发现主全量 unittest 只在 Ubuntu 执行，既有跨平台 workspace 子集和 Windows named-pipe 子门均未运行 `TestIndependentVerification`，因此新 runner 的 kqueue 与 Windows 同步管道取消分支没有原生覆盖。新增独立轻量矩阵：Ubuntu、macOS Apple Silicon/Intel、Windows x64/ARM64 均执行该测试类；本机 Python 3.11.15 定向类 18 项中 16 通过、2 项按 Windows 平台跳过，新增 CI 合同测试先 RED、工作流接线后 GREEN。此项只扩大验收覆盖，不改运行时行为；远端原生作业尚未完成前不把 macOS/Windows runner 分支标成已验收，也不改变 R2/R3 readiness。
 
 - **R3 `evidence --receipt-from` 子进程输出预算（2026-10-04；本地完整验收通过，新 SHA CI 待验）：**该入口之前使用 `subprocess.run(capture_output=True)`，stdout/stderr 全量留存在内存后才制作回执。现只给此独立证据路径增加 8 MiB 合计捕获上限；两路输出并行排空以免子进程因管道填满而挂住，超限则返回明确错误，不把截断内容当完整 `output_sha256`，也不进入证据包清理/写入阶段。预算内 stdout+stderr 拼接、UTF-8 `errors=replace` 与摘要输入保持原语义；不带预算的 `run_unittest` 调用路径不变。测试覆盖精确上限/超限、Unicode 与非法 UTF-8、双流持续写入、timeout 终止、正常 CLI receipt 独立校验和超限时旧包保全；`tests.test_evidence tests.test_self_verify tests.test_r3_regression` 为 195 项通过、1 项跳过，`TestIndependentVerification` 9 项通过，五项资源边界用例连续 20 轮通过。全仓 preflight 3/3、compileall、竞品排期、治理、站点与 diff 检查均通过。Python 官方文档确认 `communicate()` 将捕获输出缓存在内存；Codex 1 MiB/stream 预览上限及 OpenCode 50 KiB 尾部预览/临时文件策略的固定版本取舍见[持续竞品对照](./agent-landscape-live.md)。ICODE 不采用截断摘要或临时溢写作为持久证据，无源码复制/新依赖。该改动收紧 `--receipt-from` 超 8 MiB 的兼容行为；继续排空意味着不限制子进程超限后的总运行时间/CPU/I/O，现有 timeout 只回收直接验证进程，不新增整树清理、RSS 或 OS 隔离保证。R2 网络硬门和整体 readiness 不变。

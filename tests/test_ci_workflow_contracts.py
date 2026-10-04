@@ -733,13 +733,19 @@ class TestVerificationOutputLifecycleCi(unittest.TestCase):
       matrix:
         os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest, windows-11-arm]
 """
-        expected_test = (
-            "        run: python -m unittest "
-            "tests.test_runner.TestIndependentVerification -v\n"
-        )
-
         self.assertIn(expected_job, workflow)
-        self.assertIn(expected_test, workflow)
+        job = workflow.split("  verification-output-lifecycle:\n", 1)[1].split(
+            "  container-reviewer:\n", 1,
+        )[0]
+        self.assertIn("        shell: pwsh\n", job)
+        self.assertIn(
+            "            $testOutput = @(& python -m unittest "
+            "tests.test_runner.TestIndependentVerification -v 2>&1)\n",
+            job,
+        )
+        self.assertIn("$testOutput | Select-Object -Last 80", job)
+        self.assertIn("if ($details.Length -gt 12000)", job)
+        self.assertIn("$env:GITHUB_STEP_SUMMARY", job)
 
 
 class TestLinuxInstalledWheelViolationReceiptCi(unittest.TestCase):

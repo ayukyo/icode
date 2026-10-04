@@ -1,5 +1,7 @@
 # R3 自验证与有界修复
 
+- **五平台生命周期矩阵的失败诊断（2026-10-04；CI #588）：**新增矩阵在 Ubuntu 通过，但 macOS arm64/x64 与 Windows x64/arm64 的 `TestIndependentVerification` 失败，公开检查目前未提供失败断言，故不推测原因、不标记原生验收通过。当前工作流候选在失败时写入最多 80 行/12,000 字符、经 HTML 转义的 job summary；下一 SHA 原生 CI 用于获得可审查的具体异常。该步骤不改 runner 运行语义、后代清理边界或 R3 readiness。
+
 - **验证输出生命周期原生 CI 覆盖（2026-10-04；本地类 18 项中 16 通过、2 项 Windows skip，preflight 3/3 通过；新 SHA CI 待验）：**发现全量 unittest 只在 Ubuntu 跑，跨平台 workspace 子集未包含 `TestIndependentVerification`。新增独立五平台矩阵，让 Ubuntu、macOS arm64/x64、Windows x64/arm64 运行该类，覆盖 macOS kqueue 路径和 Windows pipe reader/取消路径。当前 Linux 本机结果不代表原生 macOS/Windows 验收；本改动仅补 CI 覆盖，不扩张 R3 readiness 或后代清理保证。
 
 - **POSIX 超时与 EOF 错误优先级（2026-10-04）：**正常退出后，主动脱组后代持管道导致 EOF 超过排空期限时为 `VerificationOutputCaptureError`；若验证进程自身执行超时，则优先保留 `subprocess.TimeoutExpired`，即使 EOF 也不完整。两种情况都不能签发 `VerificationEvidence`；本文相关“EOF 不完整时报 capture error”仅针对验证进程正常退出的分支，不代表超时错误类型或主动脱组进程清理保证。
