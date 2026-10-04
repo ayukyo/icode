@@ -38,6 +38,10 @@ _PEER_CLOSED_SEND_ERRORS = (
     ConnectionAbortedError,
 )
 
+_PRECONNECTED_FD_STAGES = frozenset(("started", "observed"))
+_PRECONNECTED_FD_STATUS = frozenset(("not_run", "roundtrip", "denied", "error", "unparsed"))
+_PRECONNECTED_SOCKET_STATUS = frozenset(("not_run", "denied", "created", "error", "unparsed"))
+
 
 def run_with_inherited_fds(
     argv: Sequence[str],
@@ -70,6 +74,38 @@ def run_with_inherited_fds(
         timeout=timeout_seconds,
         check=False,
         pass_fds=tuple(pass_fds),
+    )
+
+
+def format_preconnected_fd_probe_notice(
+    *,
+    stage: str,
+    exit_code: int | None,
+    marker_count: int,
+    fd_status: str,
+    tcp_socket_status: str,
+    unix_socket_status: str,
+) -> str:
+    """Format only fixed, bounded state for native CI annotations."""
+
+    if (
+        stage not in _PRECONNECTED_FD_STAGES
+        or (exit_code is not None and type(exit_code) is not int)
+        or (exit_code is not None and not -255 <= exit_code <= 255)
+        or type(marker_count) is not int
+        or not 0 <= marker_count <= 9999
+        or fd_status not in _PRECONNECTED_FD_STATUS
+        or tcp_socket_status not in _PRECONNECTED_SOCKET_STATUS
+        or unix_socket_status not in _PRECONNECTED_SOCKET_STATUS
+    ):
+        raise ValueError("invalid preconnected-FD probe notice fields")
+    rendered_exit_code = "not_started" if exit_code is None else str(exit_code)
+    return (
+        "::notice::macos-seatbelt-preconnected-uds-fd "
+        f"stage={stage} exit_code={rendered_exit_code} "
+        f"marker_count={marker_count} preconnected_fd={fd_status} "
+        f"new_tcp_socket={tcp_socket_status} "
+        f"new_unix_socket={unix_socket_status} conformance_credit=none"
     )
 
 

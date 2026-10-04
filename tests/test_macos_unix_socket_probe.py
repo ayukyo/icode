@@ -74,6 +74,36 @@ class TestUpstreamAcceptFixture(unittest.TestCase):
     "requires POSIX Unix-domain socket descriptors",
 )
 class TestInheritedUnixSocketFdRunner(unittest.TestCase):
+    def test_preconnected_fd_probe_notice_has_only_bounded_status_fields(self) -> None:
+        formatter = getattr(probe, "format_preconnected_fd_probe_notice", None)
+        self.assertTrue(
+            callable(formatter),
+            "fixed-field native probe notice formatter is missing",
+        )
+        self.assertEqual(
+            formatter(
+                stage="observed",
+                exit_code=0,
+                marker_count=1,
+                fd_status="roundtrip",
+                tcp_socket_status="denied",
+                unix_socket_status="denied",
+            ),
+            "::notice::macos-seatbelt-preconnected-uds-fd stage=observed "
+            "exit_code=0 marker_count=1 preconnected_fd=roundtrip "
+            "new_tcp_socket=denied new_unix_socket=denied "
+            "conformance_credit=none",
+        )
+        with self.assertRaises(ValueError):
+            formatter(
+                stage="observed",
+                exit_code=0,
+                marker_count=1,
+                fd_status="roundtrip ::error::forged",
+                tcp_socket_status="denied",
+                unix_socket_status="denied",
+            )
+
     def test_child_can_roundtrip_over_an_explicitly_inherited_connected_fd(self) -> None:
         runner = getattr(probe, "run_with_inherited_fds", None)
         self.assertTrue(
@@ -1040,6 +1070,17 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                 "print('probe:' + ','.join((fd_status, socket_status['tcp'], "
                 "socket_status['unix'])))\n"
             )
+            print(
+                probe.format_preconnected_fd_probe_notice(
+                    stage="started",
+                    exit_code=None,
+                    marker_count=0,
+                    fd_status="not_run",
+                    tcp_socket_status="not_run",
+                    unix_socket_status="not_run",
+                ),
+                flush=True,
+            )
             try:
                 result = probe.run_with_inherited_fds(
                     [
@@ -1058,16 +1099,43 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                 worker_connection.close()
                 host_connection.close()
 
-            self.assertIn(host_request, (b"", b"seatbelt-fd-request"))
-            self.assertEqual(result.returncode, 0)
             markers = [
                 line for line in result.stdout.splitlines()
                 if line.startswith("probe:")
             ]
+            fields = markers[0][len("probe:"):].split(",") if len(markers) == 1 else []
+            if len(fields) == 3:
+                fd_status, tcp_socket_status, unix_socket_status = fields
+            else:
+                fd_status = tcp_socket_status = unix_socket_status = "unparsed"
+            print(
+                probe.format_preconnected_fd_probe_notice(
+                    stage="observed",
+                    exit_code=result.returncode,
+                    marker_count=len(markers),
+                    fd_status=(
+                        fd_status
+                        if fd_status in {"roundtrip", "denied", "error", "unparsed"}
+                        else "unparsed"
+                    ),
+                    tcp_socket_status=(
+                        tcp_socket_status
+                        if tcp_socket_status in {"denied", "created", "error", "unparsed"}
+                        else "unparsed"
+                    ),
+                    unix_socket_status=(
+                        unix_socket_status
+                        if unix_socket_status in {"denied", "created", "error", "unparsed"}
+                        else "unparsed"
+                    ),
+                ),
+                flush=True,
+            )
+
+            self.assertIn(host_request, (b"", b"seatbelt-fd-request"))
+            self.assertEqual(result.returncode, 0)
             self.assertEqual(len(markers), 1)
-            fields = markers[0][len("probe:"):].split(",")
             self.assertEqual(len(fields), 3)
-            fd_status, tcp_socket_status, unix_socket_status = fields
             self.assertIn(fd_status, {"roundtrip", "denied", "error"})
             self.assertIn(tcp_socket_status, {"denied", "created"})
             self.assertIn(unix_socket_status, {"denied", "created"})
@@ -1077,14 +1145,6 @@ class TestNativeUnixSocketPolicy(unittest.TestCase):
                 self.assertEqual(host_request, b"seatbelt-fd-request")
             else:
                 self.assertEqual(host_request, b"")
-
-            candidate_status = "passed" if fd_status == "roundtrip" else "unavailable"
-            print(
-                "::notice::macos-seatbelt-preconnected-uds-fd "
-                f"preconnected_fd={candidate_status} new_tcp_socket=denied "
-                "new_unix_socket=denied conformance_credit=none",
-                flush=True,
-            )
 
     @staticmethod
     def _run_sandboxed_curl(
