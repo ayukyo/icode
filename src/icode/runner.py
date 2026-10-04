@@ -527,7 +527,7 @@ class _PosixVerificationExitMonitor:
                     fflags=select.KQ_NOTE_EXIT,
                 )
                 self._exited = self._kqueue_reports_exit(
-                    kqueue.control([event], 1, 0),
+                    kqueue.control([event], 1, 0), allow_missing=True,
                 )
             except BaseException:
                 try:
@@ -557,12 +557,17 @@ class _PosixVerificationExitMonitor:
         return self._exited
 
     @staticmethod
-    def _kqueue_reports_exit(events) -> bool:
+    def _kqueue_reports_exit(events, *, allow_missing: bool = False) -> bool:
         error_events = [
             item for item in events
             if getattr(item, "flags", 0) & select.KQ_EV_ERROR
         ]
         if error_events:
+            if allow_missing and error_events[0].data == errno.ESRCH:
+                # The verifier may exit before Darwin installs its EVFILT_PROC
+                # watcher. It is still our unreaped child; the caller must
+                # terminate its process group before waitpid() reaps it.
+                return True
             raise OSError(
                 error_events[0].data,
                 "kqueue could not monitor the verifier process exit",
@@ -579,12 +584,27 @@ class _PosixVerificationExitMonitor:
 
 
 def _reap_posix_verification_process(proc: subprocess.Popen[bytes]) -> int:
-    try:
-        return proc.wait(timeout=_VERIFICATION_PROCESS_CLEANUP_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired as exc:
-        raise VerificationOutputCaptureError(
-            "独立验证进程在终止信号后仍未退出；拒绝生成完整验证证据",
-        ) from exc
+    if proc.returncode is not None:
+        return proc.returncode
+
+    deadline = time.monotonic() + _VERIFICATION_PROCESS_CLEANUP_TIMEOUT_SECONDS
+    while True:
+        try:
+            pid, status = os.waitpid(proc.pid, os.WNOHANG)
+        except ChildProcessError as exc:
+            raise VerificationOutputCaptureError(
+                "独立验证子进程状态已被外部回收；拒绝生成完整验证证据",
+            ) from exc
+        if pid == proc.pid:
+            proc.returncode = os.waitstatus_to_exitcode(status)
+            return proc.returncode
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise VerificationOutputCaptureError(
+                "独立验证进程在终止信号后仍未退出；拒绝生成完整验证证据",
+            )
+        time.sleep(min(0.01, remaining))
 
 
 def _run_posix_bounded_output(
@@ -608,6 +628,9 @@ def _run_posix_bounded_output(
     incomplete = False
     group_cleanup_ok = True
     group_cleanup_errno: int | None = None
+    # A killpg attempt may take effect even if reaping later fails; never
+    # retry a numeric PGID after status loss, where that ID could be reused.
+    group_cleanup_attempted = False
     exit_monitor: _PosixVerificationExitMonitor | None = None
 
     try:
@@ -639,6 +662,7 @@ def _run_posix_bounded_output(
             assert selector is not None
             process_exited = exit_monitor.exited(proc)
             if process_exited and return_code is None:
+                group_cleanup_attempted = True
                 group_cleanup_ok, group_cleanup_errno = _terminate_posix_verification_group(
                     proc, process_exited=True,
                 )
@@ -648,6 +672,7 @@ def _run_posix_bounded_output(
                 break
             if not process_exited and return_code is None and now >= process_deadline:
                 timed_out = True
+                group_cleanup_attempted = True
                 cleanup_ok, cleanup_errno = _terminate_posix_verification_group(
                     proc, process_exited=False,
                 )
@@ -694,6 +719,7 @@ def _run_posix_bounded_output(
                 exceeded = exceeded or over_limit
 
         if return_code is None:
+            group_cleanup_attempted = True
             cleanup_ok, cleanup_errno = _terminate_posix_verification_group(
                 proc, process_exited=False,
             )
@@ -726,7 +752,8 @@ def _run_posix_bounded_output(
         assert return_code is not None
         return return_code, bytes(stdout_chunks), bytes(stderr_chunks)
     except BaseException:
-        if proc.returncode is None:
+        if proc.returncode is None and not group_cleanup_attempted:
+            group_cleanup_attempted = True
             _terminate_posix_verification_group(proc, process_exited=False)
             try:
                 _reap_posix_verification_process(proc)
