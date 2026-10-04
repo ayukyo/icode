@@ -667,6 +667,7 @@ class TestResultCommitTreeBinding(unittest.TestCase):
             )
             evidence = VerificationEvidence(
                 step="task", attempt="1", kind="test", exit_code=0,
+                category="",
                 git_object_format="sha1",
                 test_head_before_sha=commit_sha,
                 test_head_after_sha=commit_sha,
@@ -1326,7 +1327,8 @@ class TestTaskReviewAndDiffBinding(unittest.TestCase):
             subprocess.run(["git", "-C", str(repo), "add", "calc.py"], check=True)
             subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "baseline"], check=True)
 
-            def mutate_during_test(workspace, *, sandbox):
+            def mutate_during_test(workspace, *, sandbox, output_limit_bytes):
+                self.assertEqual(output_limit_bytes, 8 * 1024 * 1024)
                 (workspace / "calc.py").write_text(
                     "def add(a, b):\n    return a + b + 1\n", encoding="utf-8",
                 )
@@ -2132,6 +2134,131 @@ class TestBoundedRepairLoop(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.settings = require_skill()
 
+    def test_首次验证输出超限时失败关闭且不生成回执或启动Reviewer(self) -> None:
+        from unittest.mock import patch
+
+        from icode.backends import FakeBackend
+        from icode.evidence import EvidenceError, save_verification_receipt
+        from icode.isolation import NoIsolation
+        from icode.runner import (
+            VerificationOutputLimitError,
+            prepare_workspace,
+            run_task,
+        )
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            receipt = ws / "receipt.json"
+            with (
+                patch(
+                    "icode.runner.run_unittest",
+                    side_effect=VerificationOutputLimitError(64, return_code=0),
+                ) as verify,
+                patch("icode.runner._run_task_reviewer") as reviewer,
+            ):
+                report = run_task(
+                    self.settings, backend=FakeBackend(["完成"]), workspace=dst,
+                    sandbox=NoIsolation(),
+                )
+
+            self.assertIsNone(report.verification)
+            self.assertEqual(report.exit_code, 0)
+            self.assertFalse(report.ok)
+            self.assertIn("未形成完整验证证据", report.error)
+            self.assertIn("未取得完整验证证据", report.render())
+            self.assertEqual(
+                verify.call_args.kwargs["output_limit_bytes"],
+                8 * 1024 * 1024,
+            )
+            reviewer.assert_not_called()
+            with self.assertRaisesRegex(EvidenceError, "不支持回执序列化"):
+                save_verification_receipt(report.verification, receipt)
+            self.assertFalse(receipt.exists())
+
+    def test_首次验证管道排空不完整时失败关闭且不启动Reviewer(self) -> None:
+        from unittest.mock import patch
+
+        from icode.backends import FakeBackend
+        from icode.isolation import NoIsolation
+        from icode.runner import (
+            VerificationOutputCaptureError,
+            prepare_workspace,
+            run_task,
+        )
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            with (
+                patch(
+                    "icode.runner.run_unittest",
+                    side_effect=VerificationOutputCaptureError(
+                        "独立验证退出后，输出管道未在有界期限内关闭",
+                        return_code=0,
+                    ),
+                ),
+                patch("icode.runner._run_task_reviewer") as reviewer,
+            ):
+                report = run_task(
+                    self.settings, backend=FakeBackend(["完成"]), workspace=dst,
+                    sandbox=NoIsolation(),
+                )
+
+        self.assertIsNone(report.verification)
+        self.assertEqual(report.exit_code, 0)
+        self.assertFalse(report.ok)
+        self.assertIn("未形成完整验证证据", report.error)
+        reviewer.assert_not_called()
+
+    def test_修复复测输出超限保留历史证据但拒绝签发最终证据(self) -> None:
+        from unittest.mock import patch
+
+        from icode.backends import FakeBackend
+        from icode.isolation import NoIsolation
+        from icode.runner import (
+            VerificationOutputLimitError,
+            prepare_workspace,
+            run_task,
+        )
+
+        with temp_workspace() as ws:
+            dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
+            calc_path = str(dst / "calc.py")
+            backend = FakeBackend([
+                {"content": "", "tool_calls": [{
+                    "id": "break", "name": "write_file",
+                    "arguments": {"path": calc_path, "content": "raise RuntimeError('boom')\n"},
+                }]},
+                "首次任务结束",
+                "修复回合结束",
+            ])
+            with (
+                patch(
+                    "icode.runner.run_unittest",
+                    side_effect=[
+                        (1, "Traceback (most recent call last):\nAssertionError: boom\n"),
+                        VerificationOutputLimitError(64, return_code=0),
+                    ],
+                ) as verify,
+                patch("icode.runner._run_task_reviewer") as reviewer,
+            ):
+                report = run_task(
+                    self.settings, backend=backend, workspace=dst,
+                    sandbox=NoIsolation(), max_repairs=1,
+                )
+
+        self.assertIsNone(report.verification)
+        self.assertEqual(report.exit_code, 0)
+        self.assertFalse(report.ok)
+        self.assertEqual(len(report.repair_attempts), 1)
+        self.assertEqual(report.repair_decisions, ["allow"])
+        self.assertIn("未形成完整验证证据", report.error)
+        self.assertEqual(verify.call_count, 2)
+        self.assertTrue(all(
+            call.kwargs["output_limit_bytes"] == 8 * 1024 * 1024
+            for call in verify.call_args_list
+        ))
+        reviewer.assert_not_called()
+
     def test_zero_repairs_disables_retry_without_rejecting_task(self) -> None:
         from icode.backends import FakeBackend
         from icode.runner import prepare_workspace, run_task
@@ -2355,6 +2482,38 @@ class TestMaxRepairsArgument(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertIn("验证回执未保存：safe failure", stderr.getvalue())
+
+    def test_cli缺少完整验证证据时拒绝写回执并使用错误码二(self) -> None:
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from icode.cli import _build_parser, cmd_task
+
+        report = SimpleNamespace(
+            render=lambda: "验证输出超限", ok=False, verification=None,
+        )
+        with temp_workspace() as ws:
+            receipt = ws / "receipt.json"
+            receipt.write_bytes(b"keep prior complete receipt")
+            args = _build_parser().parse_args([
+                "task", "--workspace", ".", "--receipt-out", str(receipt),
+            ])
+            with (
+                patch("icode.cli.load_settings", return_value=object()),
+                patch("icode.cli._build_runner", return_value=(None, None, None, None, None)),
+                patch("icode.runner.run_task", return_value=report),
+                patch("icode.evidence.save_verification_receipt") as save_receipt,
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()) as stderr,
+            ):
+                exit_code = cmd_task(args)
+
+            self.assertEqual(exit_code, 2)
+            self.assertIn("未形成完整验证证据", stderr.getvalue())
+            save_receipt.assert_not_called()
+            self.assertEqual(receipt.read_bytes(), b"keep prior complete receipt")
 
 
 class TestEvidencePackCollectsVerificationRuns(unittest.TestCase):

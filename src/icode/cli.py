@@ -500,6 +500,13 @@ def cmd_task(args: argparse.Namespace) -> int:
     if args.receipt_out:
         from .evidence import EvidenceError, save_verification_receipt
 
+        if report.verification is None:
+            print(
+                "验证回执未保存：独立验证未形成完整验证证据。",
+                file=sys.stderr,
+            )
+            print("成本：" + _budget_line(backend))
+            return 2
         try:
             receipt_path = save_verification_receipt(
                 report.verification, Path(args.receipt_out),
@@ -531,7 +538,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
         load_verification_receipts,
     )
     from .runner import (
-        VerificationOutputLimitError,
+        VerificationOutputError,
         _MAX_VERIFICATION_OUTPUT_BYTES,
         run_unittest,
     )
@@ -553,7 +560,7 @@ def cmd_evidence(args: argparse.Namespace) -> int:
             code, output = run_unittest(
                 workdir, output_limit_bytes=_MAX_VERIFICATION_OUTPUT_BYTES,
             )
-        except VerificationOutputLimitError as exc:
+        except VerificationOutputError as exc:
             print(f"外部验证失败：{exc}；证据包未生成或覆盖", file=sys.stderr)
             return 2
         receipts.append(collect_verifications(code, [sys.executable, "-B", "-m", "unittest"], output))

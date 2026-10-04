@@ -5,9 +5,13 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import signal
 import shutil
 import sys
+import time
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from tests._support import REPO_ROOT, require_skill, temp_workspace
 
@@ -97,6 +101,128 @@ class TestSnapshot(unittest.TestCase):
 
 
 class TestIndependentVerification(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "POSIX bounded runner 清理路径")
+    def test_selector初始化失败仍终止并回收已启动的验证进程(self) -> None:
+        from icode import runner
+        from icode.runner import VerificationOutputCaptureError
+
+        class FakeProcess:
+            pid = 987654321
+            returncode = None
+
+            def __init__(self) -> None:
+                self.stdout = open(os.devnull, "rb")
+                self.stderr = open(os.devnull, "rb")
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.returncode = 0
+                return 0
+
+        process = FakeProcess()
+        with (
+            mock.patch.object(runner.subprocess, "Popen", return_value=process),
+            mock.patch.object(
+                runner.selectors, "DefaultSelector",
+                side_effect=OSError("too many open files"),
+            ),
+            mock.patch.object(
+                runner, "_terminate_posix_verification_group", return_value=True,
+            ) as terminate,
+        ):
+            with self.assertRaises(VerificationOutputCaptureError):
+                runner._run_posix_bounded_output(
+                    ["python", "-m", "unittest"],
+                    workspace=REPO_ROOT,
+                    timeout=10,
+                    output_limit_bytes=1024,
+                )
+
+        terminate.assert_called_once_with(process, process_exited=False)
+        self.assertEqual(process.returncode, 0)
+        self.assertTrue(process.stdout.closed)
+        self.assertTrue(process.stderr.closed)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX kqueue/waitid 分派")
+    def test_macos退出监视使用kqueue且不调用waitid(self) -> None:
+        from icode import runner
+
+        class FakeKqueue:
+            def __init__(self) -> None:
+                self.poll_count = 0
+                self.closed = False
+
+            def control(self, changes, max_events, timeout):
+                if changes is not None:
+                    return []
+                self.poll_count += 1
+                return [SimpleNamespace(flags=0, fflags=16, data=0)]
+
+            def close(self) -> None:
+                self.closed = True
+
+        queue = FakeKqueue()
+        fake_select = SimpleNamespace(
+            kqueue=lambda: queue,
+            kevent=lambda *args, **kwargs: object(),
+            KQ_FILTER_PROC=1,
+            KQ_EV_ADD=2,
+            KQ_EV_ENABLE=4,
+            KQ_EV_ONESHOT=8,
+            KQ_EV_ERROR=32,
+            KQ_NOTE_EXIT=16,
+        )
+        process = SimpleNamespace(pid=1234, returncode=None)
+        with (
+            mock.patch.object(runner, "select", fake_select),
+            mock.patch.object(runner, "sys", SimpleNamespace(platform="darwin")),
+            mock.patch.object(
+                runner.os, "waitid", create=True,
+                side_effect=AssertionError("waitid must not be used"),
+            ),
+        ):
+            monitor = runner._PosixVerificationExitMonitor(process)
+            self.assertTrue(monitor.exited(process))
+            monitor.close()
+
+        self.assertTrue(queue.closed)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX kqueue 错误事件清理")
+    def test_kqueue注册错误会关闭监视器并拒绝继续(self) -> None:
+        from icode import runner
+
+        class ErrorEvent:
+            flags = 32
+            data = 1
+
+        class FakeKqueue:
+            closed = False
+
+            def control(self, changes, max_events, timeout):
+                return [ErrorEvent()]
+
+            def close(self) -> None:
+                self.closed = True
+
+        queue = FakeKqueue()
+        fake_select = SimpleNamespace(
+            kqueue=lambda: queue,
+            kevent=lambda *args, **kwargs: object(),
+            KQ_FILTER_PROC=1,
+            KQ_EV_ADD=2,
+            KQ_EV_ENABLE=4,
+            KQ_EV_ONESHOT=8,
+            KQ_EV_ERROR=32,
+            KQ_NOTE_EXIT=16,
+        )
+        with (
+            mock.patch.object(runner, "select", fake_select),
+            mock.patch.object(runner, "sys", SimpleNamespace(platform="darwin")),
+        ):
+            with self.assertRaises(OSError):
+                runner._PosixVerificationExitMonitor(SimpleNamespace(pid=1234))
+
+        self.assertTrue(queue.closed)
+
     def test_靶场基线独立跑测试通过(self) -> None:
         with temp_workspace() as ws:
             dst = prepare_workspace("pycalc", ws / "work", repo_root=REPO_ROOT)
@@ -141,8 +267,26 @@ class TestIndependentVerification(unittest.TestCase):
             self.assertEqual((bounded_code, bounded), (code, baseline))
             self.assertIn("stdout-雪", bounded)
             self.assertIn("stderr-🧪", bounded)
-            with self.assertRaises(VerificationOutputLimitError):
+            with self.assertRaises(VerificationOutputLimitError) as raised:
                 run_unittest(ws, output_limit_bytes=cap_bytes - 1)
+            self.assertEqual(raised.exception.return_code, 0)
+
+    def test_有界捕获超限时保留非零子进程退出码(self) -> None:
+        from icode.runner import VerificationOutputLimitError
+
+        with temp_workspace() as ws:
+            (ws / "test_output.py").write_text(
+                "import sys, unittest\n"
+                "class OutputTest(unittest.TestCase):\n"
+                "    def test_output(self):\n"
+                "        sys.stdout.write('x' * 4096)\n"
+                "        self.fail('verification failed after output')\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(VerificationOutputLimitError) as raised:
+                run_unittest(ws, output_limit_bytes=128)
+
+        self.assertEqual(raised.exception.return_code, 1)
 
     def test_有界捕获保持非法UTF8替换语义(self) -> None:
         with temp_workspace() as ws:
@@ -176,6 +320,166 @@ class TestIndependentVerification(unittest.TestCase):
 
             with self.assertRaises(TimeoutExpired):
                 run_unittest(ws, timeout=1, output_limit_bytes=1024)
+
+    @unittest.skipUnless(os.name == "posix", "进程组回收只在 POSIX 上验证")
+    def test_父进程退出后回收同组持管道后代(self) -> None:
+        with temp_workspace() as ws:
+            pid_file = ws / "child.pid"
+            late_marker = ws / "late-marker"
+            child_code = (
+                "import time\nfrom pathlib import Path\n"
+                f"time.sleep(2.0)\nPath({str(late_marker)!r}).write_text('late')\n"
+            )
+            (ws / "test_child.py").write_text(
+                "import subprocess, sys, unittest\n"
+                "from pathlib import Path\n"
+                "class ChildTest(unittest.TestCase):\n"
+                "    def test_background_child(self):\n"
+                f"        child = subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                "stdout=sys.stdout, stderr=sys.stderr)\n"
+                f"        Path({str(pid_file)!r}).write_text(str(child.pid))\n",
+                encoding="utf-8",
+            )
+
+            started = time.monotonic()
+            code, _ = run_unittest(ws, timeout=5, output_limit_bytes=1024)
+            elapsed = time.monotonic() - started
+
+            self.assertEqual(code, 0)
+            self.assertLess(elapsed, 1.5, "同组后代不应让排空等待其自然退出")
+            self.assertFalse(late_marker.exists(), "父进程退出后同组后代应被回收")
+
+    @unittest.skipUnless(os.name == "posix", "POSIX setsid 后代边界")
+    def test_主动脱组持有管道时有界失败且不返回部分输出(self) -> None:
+        with temp_workspace() as ws:
+            pid_file = ws / "detached-child.pid"
+            child_code = (
+                "import os, time\nfrom pathlib import Path\n"
+                "os.setsid()\n"
+                f"Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+                "time.sleep(3.0)\n"
+            )
+            (ws / "test_detached_child.py").write_text(
+                "import subprocess, sys, time, unittest\n"
+                "from pathlib import Path\n"
+                "class DetachedChildTest(unittest.TestCase):\n"
+                "    def test_detached_child(self):\n"
+                f"        subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                "stdout=sys.stdout, stderr=sys.stderr)\n"
+                f"        for _ in range(200):\n            if Path({str(pid_file)!r}).exists(): break\n"
+                "            time.sleep(0.01)\n",
+                encoding="utf-8",
+            )
+
+            started = time.monotonic()
+            try:
+                with self.assertRaisesRegex(RuntimeError, "输出管道未在"):
+                    run_unittest(ws, timeout=5, output_limit_bytes=1024)
+                self.assertLess(
+                    time.monotonic() - started, 4.0,
+                    "主动脱组后代不能令独立验证无限等待",
+                )
+            finally:
+                if pid_file.is_file():
+                    try:
+                        os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+    @unittest.skipUnless(os.name == "posix", "进程组回收只在 POSIX 上验证")
+    def test_验证进程超时会回收仍持有输出管道的同组后代(self) -> None:
+        from subprocess import TimeoutExpired
+
+        with temp_workspace() as ws:
+            late_marker = ws / "timeout-child-late-marker"
+            child_code = (
+                "import time\nfrom pathlib import Path\n"
+                f"time.sleep(2.0)\nPath({str(late_marker)!r}).write_text('late')\n"
+            )
+            (ws / "test_timeout_child.py").write_text(
+                "import subprocess, sys, time, unittest\n"
+                "class TimeoutChildTest(unittest.TestCase):\n"
+                "    def test_background_child(self):\n"
+                f"        subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                "stdout=sys.stdout, stderr=sys.stderr)\n"
+                "        time.sleep(10)\n",
+                encoding="utf-8",
+            )
+
+            started = time.monotonic()
+            with self.assertRaises(TimeoutExpired):
+                run_unittest(ws, timeout=1, output_limit_bytes=1024)
+
+            self.assertLess(time.monotonic() - started, 3.0)
+            self.assertFalse(late_marker.exists(), "超时清理必须覆盖仍持有管道的同组后代")
+
+    @unittest.skipUnless(os.name == "nt", "Windows 同步 pipe read 取消")
+    def test_windows_后代持有管道时有界失败且清理读取线程(self) -> None:
+        with temp_workspace() as ws:
+            pid_file = ws / "windows-child.pid"
+            child_code = (
+                "import time\nfrom pathlib import Path\n"
+                f"Path({str(pid_file)!r}).write_text(str(__import__('os').getpid()))\n"
+                "time.sleep(4.0)\n"
+            )
+            (ws / "test_windows_child.py").write_text(
+                "import subprocess, sys, unittest\n"
+                "from pathlib import Path\n"
+                "class WindowsChildTest(unittest.TestCase):\n"
+                "    def test_background_child(self):\n"
+                f"        subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                "stdout=sys.stdout, stderr=sys.stderr)\n"
+                f"        for _ in range(200):\n            if Path({str(pid_file)!r}).exists(): break\n"
+                "            __import__('time').sleep(0.01)\n",
+                encoding="utf-8",
+            )
+
+            started = time.monotonic()
+            try:
+                with self.assertRaisesRegex(RuntimeError, "输出管道未在"):
+                    run_unittest(ws, timeout=5, output_limit_bytes=1024)
+                self.assertLess(time.monotonic() - started, 4.0)
+            finally:
+                if pid_file.is_file():
+                    try:
+                        os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+
+    @unittest.skipUnless(os.name == "nt", "Windows 超时后的同步 pipe read 取消")
+    def test_windows_验证超时且后代持管道时有界终止(self) -> None:
+        from subprocess import TimeoutExpired
+
+        from icode.runner import VerificationOutputCaptureError
+
+        with temp_workspace() as ws:
+            pid_file = ws / "windows-timeout-child.pid"
+            child_code = (
+                "import time\nfrom pathlib import Path\n"
+                f"Path({str(pid_file)!r}).write_text(str(__import__('os').getpid()))\n"
+                "time.sleep(5.0)\n"
+            )
+            (ws / "test_windows_timeout_child.py").write_text(
+                "import subprocess, sys, time, unittest\n"
+                "class WindowsTimeoutChildTest(unittest.TestCase):\n"
+                "    def test_background_child(self):\n"
+                f"        subprocess.Popen([sys.executable, '-c', {child_code!r}], "
+                "stdout=sys.stdout, stderr=sys.stderr)\n"
+                "        time.sleep(10)\n",
+                encoding="utf-8",
+            )
+
+            started = time.monotonic()
+            try:
+                with self.assertRaises((TimeoutExpired, VerificationOutputCaptureError)):
+                    run_unittest(ws, timeout=1, output_limit_bytes=1024)
+                self.assertLess(time.monotonic() - started, 7.0)
+            finally:
+                if pid_file.is_file():
+                    try:
+                        os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
 
     def test_双流持续输出超过预算时持续排空且显式拒绝(self) -> None:
         from icode.runner import VerificationOutputLimitError
@@ -636,6 +940,42 @@ class TestBackendRetry(unittest.TestCase):
 
 class TestTaskVerificationEvidence(unittest.TestCase):
     """R3：run_task 的独立测试回执必须绑定到证据，模型自述不算。"""
+
+    def test缺少验证证据时其他所有阶段通过也不能报告任务成功(self) -> None:
+        from types import SimpleNamespace
+
+        from icode.runner import TaskReport
+        from icode.self_verify import VerificationEvidence
+
+        report_without_evidence = TaskReport(
+            task="missing evidence", workspace="/unused", exit_code=0,
+            test_output="", loop=SimpleNamespace(ok=True),
+            reviewer_loop=SimpleNamespace(ok=True), changed_files=["source.py"],
+            review=SimpleNamespace(ok=True, model_reviewed=True),
+        )
+        report_with_failed_evidence = TaskReport(
+            task="mismatched evidence", workspace="/unused", exit_code=0,
+            test_output="", loop=SimpleNamespace(ok=True),
+            reviewer_loop=SimpleNamespace(ok=True), changed_files=["source.py"],
+            review=SimpleNamespace(ok=True, model_reviewed=True),
+            verification=VerificationEvidence(
+                step="task", attempt="1", exit_code=1,
+            ),
+        )
+        report_with_unpassed_evidence = TaskReport(
+            task="unpassed evidence", workspace="/unused", exit_code=0,
+            test_output="", loop=SimpleNamespace(ok=True),
+            reviewer_loop=SimpleNamespace(ok=True), changed_files=["source.py"],
+            review=SimpleNamespace(ok=True, model_reviewed=True),
+                verification=VerificationEvidence(
+                step="task", attempt="1", exit_code=0,
+                category="side_effect_unknown",
+            ),
+        )
+
+        self.assertFalse(report_without_evidence.ok)
+        self.assertFalse(report_with_failed_evidence.ok)
+        self.assertFalse(report_with_unpassed_evidence.ok)
 
     def test_独立测试回执绑定到证据(self) -> None:
         from icode.backends import FakeBackend
