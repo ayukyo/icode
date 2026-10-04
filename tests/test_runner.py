@@ -9,8 +9,10 @@ import signal
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -21,9 +23,9 @@ from icode.runner import _changed, _snapshot, prepare_workspace, run_unittest
 
 
 class _WindowsTestProcessHandle:
-    """Keep one native process handle across assertion and fallback cleanup."""
+    """Keep one verified process handle across assertion and fallback cleanup."""
 
-    def __init__(self, pid: int) -> None:
+    def __init__(self, pid: int, expected_creation_filetime: int) -> None:
         import ctypes
         from ctypes import wintypes
 
@@ -38,25 +40,53 @@ class _WindowsTestProcessHandle:
             self.wintypes.HANDLE, self.wintypes.DWORD,
         ]
         self.kernel.WaitForSingleObject.restype = self.wintypes.DWORD
+        self.kernel.GetProcessTimes.argtypes = [
+            self.wintypes.HANDLE,
+            ctypes.POINTER(self.wintypes.FILETIME),
+            ctypes.POINTER(self.wintypes.FILETIME),
+            ctypes.POINTER(self.wintypes.FILETIME),
+            ctypes.POINTER(self.wintypes.FILETIME),
+        ]
+        self.kernel.GetProcessTimes.restype = self.wintypes.BOOL
         self.kernel.TerminateProcess.argtypes = [
             self.wintypes.HANDLE, self.wintypes.UINT,
         ]
         self.kernel.TerminateProcess.restype = self.wintypes.BOOL
         self.kernel.CloseHandle.argtypes = [self.wintypes.HANDLE]
         self.kernel.CloseHandle.restype = self.wintypes.BOOL
-        self.handle = self.kernel.OpenProcess(0x00100001, False, pid)
-        self.already_exited = False
+        self.handle = self.kernel.OpenProcess(0x00101001, False, pid)
         if not self.handle:
             error = self.ctypes.get_last_error()
-            # ERROR_INVALID_PARAMETER means the process has exited and its PID
-            # is no longer openable. Access denied is inconclusive, not success.
-            if error != 87:
-                raise OSError(error, "OpenProcess")
-            self.already_exited = True
+            raise OSError(error, "OpenProcess")
+
+        creation_time = self.wintypes.FILETIME()
+        other_times = [self.wintypes.FILETIME() for _ in range(3)]
+        if not self.kernel.GetProcessTimes(
+            self.handle,
+            self.ctypes.byref(creation_time),
+            self.ctypes.byref(other_times[0]),
+            self.ctypes.byref(other_times[1]),
+            self.ctypes.byref(other_times[2]),
+        ):
+            error = self.ctypes.get_last_error()
+            self.kernel.CloseHandle(self.handle)
+            self.handle = None
+            raise OSError(error, "GetProcessTimes")
+
+        actual_creation_filetime = (
+            (int(creation_time.dwHighDateTime) & 0xFFFFFFFF) << 32
+        ) | (int(creation_time.dwLowDateTime) & 0xFFFFFFFF)
+        self.identity_matches = (
+            actual_creation_filetime == expected_creation_filetime
+        )
+        if not self.identity_matches:
+            self.kernel.CloseHandle(self.handle)
+            self.handle = None
+            raise RuntimeError("Windows process PID was reused before handle capture")
 
     def exited_within(self, timeout_seconds: float) -> bool:
-        if self.already_exited:
-            return True
+        if not self.handle or not self.identity_matches:
+            raise RuntimeError("Windows process identity was not verified")
         status = self.kernel.WaitForSingleObject(
             self.handle, max(0, int(timeout_seconds * 1000)),
         )
@@ -67,9 +97,15 @@ class _WindowsTestProcessHandle:
         raise OSError(self.ctypes.get_last_error(), "WaitForSingleObject")
 
     def terminate_for_test_cleanup(self) -> None:
-        """Best-effort fallback, using the already-open handle, not a reused PID."""
-        if self.handle:
-            self.kernel.TerminateProcess(self.handle, 1)
+        """Terminate only the process whose creation identity was verified."""
+        if not self.handle or not self.identity_matches:
+            return
+        status = self.kernel.WaitForSingleObject(self.handle, 0)
+        if status == 0:  # WAIT_OBJECT_0: the verified target already exited.
+            return
+        if status != 0x00000102:  # WAIT_TIMEOUT; other failures are inconclusive.
+            return
+        if self.kernel.TerminateProcess(self.handle, 1):
             self.kernel.WaitForSingleObject(self.handle, 5000)
 
     def close(self) -> None:
@@ -78,20 +114,174 @@ class _WindowsTestProcessHandle:
             self.handle = None
 
 
-def _windows_process_exits_within(pid: int, timeout_seconds: float) -> bool:
-    process = _WindowsTestProcessHandle(pid)
-    try:
-        return process.exited_within(timeout_seconds)
-    finally:
-        process.close()
+class TestWindowsTestProcessHandle(unittest.TestCase):
+    def test_cleanup_identity不匹配时不终止同PID的其他进程(self) -> None:
+        process = object.__new__(_WindowsTestProcessHandle)
+        process.handle = object()
+        process.identity_matches = False
+        process.kernel = SimpleNamespace(
+            TerminateProcess=mock.Mock(return_value=1),
+            WaitForSingleObject=mock.Mock(return_value=0),
+        )
 
-
-def _terminate_windows_process_for_test_cleanup(pid: int) -> None:
-    process = _WindowsTestProcessHandle(pid)
-    try:
         process.terminate_for_test_cleanup()
-    finally:
-        process.close()
+
+        process.kernel.TerminateProcess.assert_not_called()
+        process.kernel.WaitForSingleObject.assert_not_called()
+
+
+class _WindowsTestProcessObserver:
+    """Capture and retain the child's verified process handle before it exits."""
+
+    def __init__(self, identity_path: Path, acknowledgement_path: Path) -> None:
+        self.identity_path = identity_path
+        self.acknowledgement_path = acknowledgement_path
+        self._ready = threading.Event()
+        self._stop = threading.Event()
+        self._process_lock = threading.Lock()
+        self._closed = False
+        self._process: _WindowsTestProcessHandle | None = None
+        self._error: Exception | None = None
+        self._thread = threading.Thread(target=self._observe, daemon=True)
+
+    @property
+    def process_handle(self) -> _WindowsTestProcessHandle | None:
+        with self._process_lock:
+            return self._process
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _observe(self) -> None:
+        deadline = time.monotonic() + 5.0
+        while not self._stop.is_set() and time.monotonic() < deadline:
+            if self.identity_path.is_file():
+                try:
+                    pid, creation_filetime = _read_windows_process_identity(
+                        self.identity_path,
+                    )
+                    process = _WindowsTestProcessHandle(pid, creation_filetime)
+                    with self._process_lock:
+                        closed = self._closed
+                        if not closed:
+                            self._process = process
+                    if closed:
+                        try:
+                            process.terminate_for_test_cleanup()
+                        finally:
+                            process.close()
+                        return
+                    self.acknowledgement_path.write_text("captured", encoding="ascii")
+                except Exception as error:
+                    self._error = error
+                finally:
+                    self._ready.set()
+                return
+            self._stop.wait(0.01)
+        if not self._stop.is_set():
+            self._error = TimeoutError("Windows test child identity was not observed")
+            self._ready.set()
+
+    def wait_for_process(self, timeout_seconds: float) -> _WindowsTestProcessHandle:
+        if not self._ready.wait(timeout_seconds):
+            raise TimeoutError("Windows test process handle was not captured")
+        if self._error is not None:
+            raise self._error
+        if self._process is None:
+            raise RuntimeError("Windows observer finished without a process handle")
+        return self._process
+
+    def close(self) -> None:
+        with self._process_lock:
+            self._closed = True
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+        if self._thread.is_alive():
+            raise RuntimeError("Windows test process observer did not stop")
+
+
+class TestWindowsTestProcessObserver(unittest.TestCase):
+    def test_close_during_handle_capture_closes_late_handle(self) -> None:
+        with temp_workspace() as ws:
+            identity_path = ws / "identity"
+            identity_path.write_text("42 99", encoding="ascii")
+            entered_capture = threading.Event()
+            release_capture = threading.Event()
+            process = SimpleNamespace(
+                terminate_for_test_cleanup=mock.Mock(),
+                close=mock.Mock(),
+            )
+
+            def delayed_process_capture(pid: int, creation_filetime: int):
+                self.assertEqual((pid, creation_filetime), (42, 99))
+                entered_capture.set()
+                if not release_capture.wait(2.0):
+                    raise TimeoutError("test did not release process capture")
+                return process
+
+            observer = _WindowsTestProcessObserver(
+                identity_path, ws / "acknowledged",
+            )
+            with mock.patch(
+                "tests.test_runner._WindowsTestProcessHandle",
+                side_effect=delayed_process_capture,
+            ):
+                observer.start()
+                self.assertTrue(entered_capture.wait(1.0))
+                try:
+                    with self.assertRaisesRegex(
+                        RuntimeError, "observer did not stop",
+                    ):
+                        observer.close()
+                finally:
+                    release_capture.set()
+                observer._thread.join(timeout=1.0)
+
+            self.assertFalse(observer._thread.is_alive())
+            process.terminate_for_test_cleanup.assert_called_once_with()
+            process.close.assert_called_once_with()
+            self.assertIsNone(observer.process_handle)
+            self.assertFalse((ws / "acknowledged").exists())
+
+
+def _read_windows_process_identity(path: Path) -> tuple[int, int]:
+    fields = path.read_text(encoding="ascii").split()
+    if len(fields) != 2:
+        raise ValueError("Windows child identity must contain PID and creation FILETIME")
+    pid, creation_filetime = (int(field, 10) for field in fields)
+    if pid <= 0 or creation_filetime <= 0:
+        raise ValueError("Windows child identity values must be positive")
+    return pid, creation_filetime
+
+
+def _windows_child_identity_writer(identity_path: Path, after_write: str) -> str:
+    """Return a Windows-only child prelude recording its PID and creation time."""
+    return (
+        "import ctypes, os\n"
+        "from ctypes import wintypes\n"
+        "from pathlib import Path\n"
+        "kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)\n"
+        "kernel32.GetCurrentProcess.restype = wintypes.HANDLE\n"
+        "kernel32.GetProcessTimes.argtypes = [\n"
+        "    wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),\n"
+        "    ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),\n"
+        "    ctypes.POINTER(wintypes.FILETIME),\n"
+        "]\n"
+        "kernel32.GetProcessTimes.restype = wintypes.BOOL\n"
+        "creation = wintypes.FILETIME()\n"
+        "others = [wintypes.FILETIME() for _ in range(3)]\n"
+        "if not kernel32.GetProcessTimes(\n"
+        "    kernel32.GetCurrentProcess(), ctypes.byref(creation),\n"
+        "    ctypes.byref(others[0]), ctypes.byref(others[1]), ctypes.byref(others[2]),\n"
+        "):\n"
+        "    raise OSError(ctypes.get_last_error(), 'GetProcessTimes')\n"
+        "creation_filetime = ((creation.dwHighDateTime & 0xFFFFFFFF) << 32) | (creation.dwLowDateTime & 0xFFFFFFFF)\n"
+        f"identity_path = Path({str(identity_path)!r})\n"
+        "identity_temp = identity_path.with_suffix(identity_path.suffix + '.tmp')\n"
+        "identity_temp.write_text(f'{os.getpid()} {creation_filetime}', encoding='ascii')\n"
+        "identity_temp.replace(identity_path)\n"
+        + after_write
+    )
 
 
 class TestFixtureIsolation(unittest.TestCase):
@@ -669,40 +859,48 @@ class TestIndependentVerification(unittest.TestCase):
 
         with temp_workspace() as ws:
             pid_file = ws / "windows-child.pid"
-            child_code = (
-                "import time\nfrom pathlib import Path\n"
-                f"Path({str(pid_file)!r}).write_text(str(__import__('os').getpid()))\n"
-                "time.sleep(30.0)\n"
+            acknowledged_file = ws / "windows-child-handle-captured"
+            child_code = _windows_child_identity_writer(
+                pid_file, "import time\ntime.sleep(30.0)\n",
             )
             (ws / "test_windows_child.py").write_text(
-                "import subprocess, sys, unittest\n"
+                "import subprocess, sys, time, unittest\n"
                 "from pathlib import Path\n"
                 "class WindowsChildTest(unittest.TestCase):\n"
                 "    def test_background_child(self):\n"
                 f"        subprocess.Popen([sys.executable, '-c', {child_code!r}], "
                 "stdout=sys.stdout, stderr=sys.stderr)\n"
-                f"        for _ in range(200):\n            if Path({str(pid_file)!r}).exists(): break\n"
-                "            __import__('time').sleep(0.01)\n",
+                f"        for _ in range(200):\n            if Path({str(acknowledged_file)!r}).is_file(): break\n"
+                "            time.sleep(0.01)\n"
+                "        else:\n            raise AssertionError('child handle was not captured')\n",
                 encoding="utf-8",
             )
 
             started = time.monotonic()
-            child_pid: int | None = None
+            observer = _WindowsTestProcessObserver(pid_file, acknowledged_file)
+            observer.start()
+            child_process: _WindowsTestProcessHandle | None = None
             try:
                 with self.assertRaises(VerificationOutputCaptureError):
                     run_unittest(ws, timeout=5, output_limit_bytes=1024)
                 self.assertLess(time.monotonic() - started, 4.0)
                 self.assertTrue(pid_file.is_file(), "子进程必须已报告测试 PID")
-                child_pid = int(pid_file.read_text(encoding="utf-8"))
+                child_process = observer.wait_for_process(0.5)
                 self.assertTrue(
-                    _windows_process_exits_within(child_pid, 0.5),
+                    child_process.exited_within(0.5),
                     "验证器退出后仍持有输出管道的后代必须被回收",
                 )
             finally:
-                if child_pid is None and pid_file.is_file():
-                    child_pid = int(pid_file.read_text(encoding="utf-8"))
-                if child_pid is not None:
-                    _terminate_windows_process_for_test_cleanup(child_pid)
+                try:
+                    observer.close()
+                finally:
+                    if child_process is None:
+                        child_process = observer.process_handle
+                    if child_process is not None:
+                        try:
+                            child_process.terminate_for_test_cleanup()
+                        finally:
+                            child_process.close()
 
     @unittest.skipUnless(os.name == "nt", "Windows 超时后的同步 pipe read 取消")
     def test_windows_验证超时且后代持管道时有界终止(self) -> None:
@@ -712,10 +910,9 @@ class TestIndependentVerification(unittest.TestCase):
 
         with temp_workspace() as ws:
             pid_file = ws / "windows-timeout-child.pid"
-            child_code = (
-                "import time\nfrom pathlib import Path\n"
-                f"Path({str(pid_file)!r}).write_text(str(__import__('os').getpid()))\n"
-                "time.sleep(30.0)\n"
+            acknowledged_file = ws / "windows-timeout-child-handle-captured"
+            child_code = _windows_child_identity_writer(
+                pid_file, "import time\ntime.sleep(30.0)\n",
             )
             (ws / "test_windows_timeout_child.py").write_text(
                 "import subprocess, sys, time, unittest\n"
@@ -723,27 +920,38 @@ class TestIndependentVerification(unittest.TestCase):
                 "    def test_background_child(self):\n"
                 f"        subprocess.Popen([sys.executable, '-c', {child_code!r}], "
                 "stdout=sys.stdout, stderr=sys.stderr)\n"
+                f"        for _ in range(200):\n            if __import__('pathlib').Path({str(acknowledged_file)!r}).is_file(): break\n"
+                "            time.sleep(0.01)\n"
+                "        else:\n            raise AssertionError('child handle was not captured')\n"
                 "        time.sleep(10)\n",
                 encoding="utf-8",
             )
 
             started = time.monotonic()
-            child_pid: int | None = None
+            observer = _WindowsTestProcessObserver(pid_file, acknowledged_file)
+            observer.start()
+            child_process: _WindowsTestProcessHandle | None = None
             try:
                 with self.assertRaises((TimeoutExpired, VerificationOutputCaptureError)):
-                    run_unittest(ws, timeout=1, output_limit_bytes=1024)
+                    run_unittest(ws, timeout=5, output_limit_bytes=1024)
                 self.assertLess(time.monotonic() - started, 7.0)
                 self.assertTrue(pid_file.is_file(), "子进程必须已报告测试 PID")
-                child_pid = int(pid_file.read_text(encoding="utf-8"))
+                child_process = observer.wait_for_process(0.5)
                 self.assertTrue(
-                    _windows_process_exits_within(child_pid, 0.5),
+                    child_process.exited_within(0.5),
                     "验证器超时必须通过 Job 回收仍持有输出管道的后代",
                 )
             finally:
-                if child_pid is None and pid_file.is_file():
-                    child_pid = int(pid_file.read_text(encoding="utf-8"))
-                if child_pid is not None:
-                    _terminate_windows_process_for_test_cleanup(child_pid)
+                try:
+                    observer.close()
+                finally:
+                    if child_process is None:
+                        child_process = observer.process_handle
+                    if child_process is not None:
+                        try:
+                            child_process.terminate_for_test_cleanup()
+                        finally:
+                            child_process.close()
 
     @unittest.skipUnless(os.name == "nt", "Windows CREATE_SUSPENDED/Job Object 启动顺序")
     def test_windows_Job分配失败时payload不会启动(self) -> None:

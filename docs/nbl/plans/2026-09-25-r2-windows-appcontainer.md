@@ -628,3 +628,8 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 
 - [CI #393](https://github.com/ayukyo/icode/actions/runs/36667601307) 的手动 Windows x64/ARM64 标准用户诊断都在客户端 `CreateFileW` 返回 `ERROR_ACCESS_DENIED`（WinError 5）处失败，有限回执包含 `client_open_access_denied`、`sqos_default_access_denied`。这说明去掉显式 SQOS 的差分候选也未获得成功对照；不能把失败归因为 SQOS、本身 ACL、MIC 或命名管道协议根因，也不能据此调整生产 flag/ACL。
 - 本次执行只作 test-only、手动诊断，默认工作流与产品权限未变化。后续可选择核查 OS 返回码、同令牌自建 pipe/跨进程 server 的差异和清理证据；任何新变量仍一次只改一项，失败继续保持 Windows R2 gate 关闭。该 run SHA `9b84fec` 也早于当前未提交 R3 生产 walker，因此不能作为当前 R3 Windows 原生验收。
+
+## 2026-10-04 Asia/Shanghai：CI #605 Reviewer candidate 双架构网络事件仍不可归因
+
+- **原生结果：**CI [#605](https://github.com/ayukyo/icode/actions/runs/37198729549) 的 Windows x64 [job](https://github.com/ayukyo/icode/actions/runs/37198729549/job/111425836819) 与 ARM64 [job](https://github.com/ayukyo/icode/actions/runs/37198729549/job/111425836769) 均通过标准用户/AppContainer SID、零网络 capability、文件拒读/拒写、子进程退出和 ACL 恢复检查，但候选以 exit 78 失败：IPv4/IPv6 `connect_ex=10035` 后等待超时，`FD_CONNECT` 与拒绝状态均无；runner observer 无精确 WFP event，archive 缺少 `wfpdiag.xml`。这只证明探测未完成/诊断不可用，不是网络拒绝证据。
+- **边界与结论：**不放宽要求、不把 pending socket、超时、空 CAB 或 `network_events_collected` 状态替代目标级拒绝证据；不改 capability、loopback exemption、WFP、防火墙、ACL 或产品执行器。Windows 网络 `network_temporary_allowlist` 仍未验收，R2/R3 readiness 与自动模式继续关闭。本次 CI 的五平台 verifier 生命周期、Windows x64/ARM64 Job cleanup 与 authenticated runner pipe jobs 通过，与该网络失败相互独立。
