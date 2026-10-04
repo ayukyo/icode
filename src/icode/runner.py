@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -73,6 +74,8 @@ _MAX_VERIFICATION_OUTPUT_BYTES = 8 * 1024 * 1024
 _VERIFICATION_OUTPUT_READ_CHUNK_BYTES = 64 * 1024
 _VERIFICATION_OUTPUT_DRAIN_TIMEOUT_SECONDS = 2.0
 _VERIFICATION_PROCESS_CLEANUP_TIMEOUT_SECONDS = 2.0
+_DARWIN_PROCESS_GROUP_AUDIT_LIMIT_BYTES = 64 * 1024
+_DARWIN_PROCESS_GROUP_AUDIT_TIMEOUT_SECONDS = 1.0
 
 
 class VerificationOutputError(RuntimeError):
@@ -357,9 +360,107 @@ def _retain_verification_output(
     return captured_bytes + keep, keep != len(chunk)
 
 
+def _darwin_process_group_has_live_members(pgid: int) -> bool | None:
+    """Boundedly inspect a Darwin process group when killpg reports EPERM.
+
+    XNU leaves an exited child in its process group until it is reaped, while
+    killpg's signal walk skips zombies.  On that exact path EPERM can therefore
+    mean either "only zombies remain" or "a live member could not be signalled".
+    Treat it as clean only after `/bin/ps` confirms that no non-zombie member is
+    present.  Any inspection error, timeout, or output overflow is inconclusive.
+    """
+    try:
+        proc = subprocess.Popen(
+            ["/bin/ps", "-A", "-g", str(pgid), "-o", "stat="],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=False,
+            bufsize=0,
+            shell=False,
+            start_new_session=True,
+        )
+    except (OSError, ValueError):
+        return None
+
+    output = bytearray()
+    selector: selectors.BaseSelector | None = None
+    deadline = time.monotonic() + _DARWIN_PROCESS_GROUP_AUDIT_TIMEOUT_SECONDS
+    try:
+        if proc.stdout is None:
+            return None
+        selector = selectors.DefaultSelector()
+        os.set_blocking(proc.stdout.fileno(), False)
+        selector.register(proc.stdout, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            for key, _ in selector.select(min(remaining, 0.05)):
+                try:
+                    chunk = os.read(key.fd, _VERIFICATION_OUTPUT_READ_CHUNK_BYTES)
+                except BlockingIOError:
+                    continue
+                except OSError:
+                    return None
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+                    continue
+                if len(output) + len(chunk) > _DARWIN_PROCESS_GROUP_AUDIT_LIMIT_BYTES:
+                    return None
+                output.extend(chunk)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        try:
+            return_code = proc.wait(timeout=remaining)
+        except subprocess.TimeoutExpired:
+            return None
+        if return_code != 0:
+            return None
+        try:
+            states = output.decode("ascii").splitlines()
+        except UnicodeDecodeError:
+            return None
+        normalized_states = [state.strip() for state in states if state.strip()]
+        # The unreaped leader must still be visible as a zombie.  Requiring it
+        # prevents an empty/mis-scoped ps result from being treated as proof.
+        if not normalized_states or not any(
+            state.startswith("Z") for state in normalized_states
+        ):
+            return None
+        return any(not state.startswith("Z") for state in normalized_states)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+    finally:
+        if selector is not None:
+            try:
+                selector.close()
+            except OSError:
+                pass
+        if proc.stdout is not None and not proc.stdout.closed:
+            try:
+                proc.stdout.close()
+            except OSError:
+                pass
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=_VERIFICATION_PROCESS_CLEANUP_TIMEOUT_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+
+
 def _terminate_posix_verification_group(
     proc: subprocess.Popen[bytes], *, process_exited: bool,
-) -> bool:
+) -> tuple[bool, int | None]:
     """Stop the verifier's isolated session without reaping its numeric PGID first."""
     try:
         os.killpg(proc.pid, signal.SIGKILL)
@@ -369,19 +470,26 @@ def _terminate_posix_verification_group(
                 proc.kill()
             except ProcessLookupError:
                 pass
-            except OSError:
-                return False
-        return True
-    except OSError:
+            except OSError as exc:
+                return False, exc.errno
+        return True, None
+    except OSError as exc:
+        if (
+            process_exited
+            and sys.platform == "darwin"
+            and exc.errno == errno.EPERM
+            and _darwin_process_group_has_live_members(proc.pid) is False
+        ):
+            return True, None
         if not process_exited:
             try:
                 proc.kill()
             except ProcessLookupError:
                 pass
             except OSError:
-                return False
-        return False
-    return True
+                pass
+        return False, exc.errno
+    return True, None
 
 
 class _PosixVerificationExitMonitor:
@@ -492,6 +600,7 @@ def _run_posix_bounded_output(
     timed_out = False
     incomplete = False
     group_cleanup_ok = True
+    group_cleanup_errno: int | None = None
     exit_monitor: _PosixVerificationExitMonitor | None = None
 
     try:
@@ -523,7 +632,7 @@ def _run_posix_bounded_output(
             assert selector is not None
             process_exited = exit_monitor.exited(proc)
             if process_exited and return_code is None:
-                group_cleanup_ok = _terminate_posix_verification_group(
+                group_cleanup_ok, group_cleanup_errno = _terminate_posix_verification_group(
                     proc, process_exited=True,
                 )
                 return_code = _reap_posix_verification_process(proc)
@@ -532,9 +641,11 @@ def _run_posix_bounded_output(
                 break
             if not process_exited and return_code is None and now >= process_deadline:
                 timed_out = True
-                group_cleanup_ok = _terminate_posix_verification_group(
+                cleanup_ok, cleanup_errno = _terminate_posix_verification_group(
                     proc, process_exited=False,
                 )
+                group_cleanup_ok = cleanup_ok and group_cleanup_ok
+                group_cleanup_errno = cleanup_errno or group_cleanup_errno
                 return_code = _reap_posix_verification_process(proc)
                 drain_deadline = time.monotonic() + _VERIFICATION_OUTPUT_DRAIN_TIMEOUT_SECONDS
 
@@ -576,9 +687,11 @@ def _run_posix_bounded_output(
                 exceeded = exceeded or over_limit
 
         if return_code is None:
-            group_cleanup_ok = _terminate_posix_verification_group(
+            cleanup_ok, cleanup_errno = _terminate_posix_verification_group(
                 proc, process_exited=False,
-            ) and group_cleanup_ok
+            )
+            group_cleanup_ok = cleanup_ok and group_cleanup_ok
+            group_cleanup_errno = cleanup_errno or group_cleanup_errno
             return_code = _reap_posix_verification_process(proc)
         if timed_out:
             timeout_error = subprocess.TimeoutExpired(argv, timeout)
@@ -592,7 +705,9 @@ def _run_posix_bounded_output(
             )
         if not group_cleanup_ok:
             raise VerificationOutputCaptureError(
-                "独立验证进程组清理未确认；拒绝生成完整验证证据",
+                "独立验证进程组清理未确认"
+                + (f"（errno={group_cleanup_errno}）" if group_cleanup_errno is not None else "")
+                + "；拒绝生成完整验证证据",
                 return_code=return_code,
             )
         if read_errors:
@@ -798,6 +913,12 @@ def _run_threaded_bounded_output(
     return return_code, bytes(stdout_chunks), bytes(stderr_chunks)
 
 
+def _decode_verification_output(output: bytes) -> str:
+    """Match subprocess text-mode UTF-8 replacement and universal newlines."""
+    text = output.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def run_unittest(
     workspace: Path, *, timeout: int = 180, sandbox: Sandbox | None = None,
     output_limit_bytes: int | None = None,
@@ -838,9 +959,8 @@ def run_unittest(
             argv, workspace=workspace, timeout=timeout,
             output_limit_bytes=output_limit_bytes,
         )
-        output = (
-            stdout_bytes.decode("utf-8", errors="replace")
-            + stderr_bytes.decode("utf-8", errors="replace")
+        output = _decode_verification_output(stdout_bytes) + _decode_verification_output(
+            stderr_bytes,
         )
     if _NO_TESTS_SUMMARY.search(output) and return_code == 0:
         # Python unittest releases differ on whether an empty discovery is exit 0 or 5.

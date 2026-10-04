@@ -7,6 +7,7 @@ import hashlib
 import os
 import signal
 import shutil
+import subprocess
 import sys
 import time
 import unittest
@@ -101,6 +102,74 @@ class TestSnapshot(unittest.TestCase):
 
 
 class TestIndependentVerification(unittest.TestCase):
+    @staticmethod
+    def _raw_unittest_output(workspace):
+        result = subprocess.run(
+            [sys.executable, "-B", "-m", "unittest"],
+            cwd=str(workspace), capture_output=True, text=False,
+            timeout=180, shell=False,
+        )
+        return result.returncode, result.stdout, result.stderr
+
+    def test_有界输出解码保持universal_newlines和非法UTF8兼容(self) -> None:
+        from icode import runner
+
+        self.assertEqual(
+            runner._decode_verification_output(b"a\r\nb\rc\n\xff"),
+            "a\nb\nc\n�",
+        )
+
+    def test_macos进程组EPERM仅在独立确认无存活成员后视为已清理(self) -> None:
+        from icode import runner
+
+        process = SimpleNamespace(pid=4321, returncode=0)
+        with (
+            mock.patch.object(runner, "sys", SimpleNamespace(platform="darwin")),
+            mock.patch.object(runner.os, "killpg", side_effect=PermissionError(1, "denied")),
+            mock.patch.object(runner, "_darwin_process_group_has_live_members", return_value=False),
+        ):
+            self.assertEqual(
+                runner._terminate_posix_verification_group(process, process_exited=True),
+                (True, None),
+            )
+
+    def test_macos进程组EPERM且仍有存活成员时保持失败(self) -> None:
+        from icode import runner
+
+        process = SimpleNamespace(pid=4321, returncode=0)
+        with (
+            mock.patch.object(runner, "sys", SimpleNamespace(platform="darwin")),
+            mock.patch.object(runner.os, "killpg", side_effect=PermissionError(1, "denied")),
+            mock.patch.object(runner, "_darwin_process_group_has_live_members", return_value=True),
+        ):
+            self.assertEqual(
+                runner._terminate_posix_verification_group(process, process_exited=True),
+                (False, 1),
+            )
+
+    @unittest.skipUnless(os.name == "posix", "Darwin ps 审计使用 POSIX 管道")
+    def test_macos进程组审计要求看见zombie锚点并拒绝存活成员(self) -> None:
+        from icode import runner
+
+        def inspect(states: bytes) -> bool | None:
+            read_fd, write_fd = os.pipe()
+            try:
+                os.write(write_fd, states)
+            finally:
+                os.close(write_fd)
+            process = SimpleNamespace(
+                stdout=os.fdopen(read_fd, "rb", buffering=0),
+                returncode=0,
+                wait=mock.Mock(return_value=0),
+                kill=mock.Mock(),
+            )
+            with mock.patch.object(runner.subprocess, "Popen", return_value=process):
+                return runner._darwin_process_group_has_live_members(1234)
+
+        self.assertIs(inspect(b"Z+\n"), False)
+        self.assertIs(inspect(b"Z+\nS\n"), True)
+        self.assertIsNone(inspect(b""), "没有 zombie 锚点时不能确认审计范围")
+
     @unittest.skipUnless(os.name == "posix", "POSIX bounded runner 清理路径")
     def test_selector初始化失败仍终止并回收已启动的验证进程(self) -> None:
         from icode import runner
@@ -126,7 +195,7 @@ class TestIndependentVerification(unittest.TestCase):
                 side_effect=OSError("too many open files"),
             ),
             mock.patch.object(
-                runner, "_terminate_posix_verification_group", return_value=True,
+                runner, "_terminate_posix_verification_group", return_value=(True, None),
             ) as terminate,
         ):
             with self.assertRaises(VerificationOutputCaptureError):
@@ -258,7 +327,9 @@ class TestIndependentVerification(unittest.TestCase):
             )
             code, baseline = run_unittest(ws)
             self.assertEqual(code, 0, baseline[-800:])
-            cap_bytes = len(baseline.encode("utf-8"))
+            raw_code, raw_stdout, raw_stderr = self._raw_unittest_output(ws)
+            self.assertEqual(raw_code, code)
+            cap_bytes = len(raw_stdout) + len(raw_stderr)
 
             bounded_code, bounded = run_unittest(
                 ws, output_limit_bytes=cap_bytes,
@@ -299,8 +370,10 @@ class TestIndependentVerification(unittest.TestCase):
                 encoding="utf-8",
             )
             code, baseline = run_unittest(ws)
+            raw_code, raw_stdout, raw_stderr = self._raw_unittest_output(ws)
+            self.assertEqual(raw_code, code)
             bounded_code, bounded = run_unittest(
-                ws, output_limit_bytes=len(baseline.encode("utf-8")),
+                ws, output_limit_bytes=len(raw_stdout) + len(raw_stderr),
             )
 
             self.assertEqual((bounded_code, bounded), (code, baseline))

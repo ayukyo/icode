@@ -1,5 +1,7 @@
 # R3 自验证与有界修复
 
+- **CI #590 原生失败诊断与修复候选（2026-10-04；本机 `TestIndependentVerification` 22 项通过、2 项平台跳过；全量 preflight/新 SHA 原生验收待跑）：**macOS arm64/Intel 生命周期与 R2.1 workspace 子门因 `_terminate_posix_verification_group()` 将 `killpg` 错误折叠为布尔失败，现改为保留 errno；Apple XNU 中未 reap leader 仍留在进程组、信号枚举跳过 zombie，故 EPERM 是歧义信号。只在 Darwin + 已观察 leader 退出 + EPERM 时，以 1 秒/64 KiB 上限查询 `/bin/ps`；必须观察到 zombie leader 锚点、且没有非 zombie 组成员才视作无待清理进程。组内有活进程、锚点不可见、ps 失败/超时/输出超限时仍 fail-closed。Windows x64/ARM64 精确边界测试先前以 `len(text_baseline.encode())` 作 raw byte cap；现在通过无界兼容路径和 raw 管道预算分离验证，保留原始 bytes cap，并对 bounded 文本结果做 UTF-8 replacement 与 universal newline 归一，匹配旧 `text=True` API。Python 3.11 官方契约说明 text mode 会将 stdout/stderr 的行尾转为 `\n`。本机未有 macOS/Windows 原生环境；修复需通过新 SHA 原生矩阵验证。**不解决的独立硬门：**#590 Windows x64/ARM64 Reviewer snapshot candidate 仍 `connect_ex=10035` → wait timeout、`SO_ERROR=0`，无终态 `10013`，所以网络拒绝验收失败；不得用超时替代 `10013`。R2/R3 readiness 不变。
+
 - **五平台生命周期矩阵的失败诊断（2026-10-04；CI #588）：**新增矩阵在 Ubuntu 通过，但 macOS arm64/x64 与 Windows x64/arm64 的 `TestIndependentVerification` 失败，公开检查目前未提供失败断言，故不推测原因、不标记原生验收通过。当前工作流候选在失败时写入最多 80 行/12,000 字符、经 HTML 转义的 job summary；下一 SHA 原生 CI 用于获得可审查的具体异常。该步骤不改 runner 运行语义、后代清理边界或 R3 readiness。
 
 - **验证输出生命周期原生 CI 覆盖（2026-10-04；本地类 18 项中 16 通过、2 项 Windows skip，preflight 3/3 通过；新 SHA CI 待验）：**发现全量 unittest 只在 Ubuntu 跑，跨平台 workspace 子集未包含 `TestIndependentVerification`。新增独立五平台矩阵，让 Ubuntu、macOS arm64/x64、Windows x64/arm64 运行该类，覆盖 macOS kqueue 路径和 Windows pipe reader/取消路径。当前 Linux 本机结果不代表原生 macOS/Windows 验收；本改动仅补 CI 覆盖，不扩张 R3 readiness 或后代清理保证。
