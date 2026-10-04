@@ -496,11 +496,19 @@ class TestWindowsWfpCapture(unittest.TestCase):
             "$cabinetMemberSummary = $memberListResult.Stdout | ConvertFrom-Json",
             member_list_result,
         )
-        member_count_zero = job.index("if ($matchCount -eq 0)", summary_parse)
-        member_count_multiple = job.index("elseif ($matchCount -gt 1)", member_count_zero)
+        disposition = job.index(
+            "$matchDisposition = Get-WfpExactCabinetMemberDisposition",
+            summary_parse,
+        )
+        member_count_zero = job.index("if ($matchDisposition -eq 'missing')", disposition)
+        member_count_multiple = job.index(
+            "elseif ($matchDisposition -eq 'ambiguous')",
+            member_count_zero,
+        )
         extraction_mode = job.index("$expandArguments = if ($wfpMemberSelfTestExtractMode -eq 'file')", member_count_multiple)
         extraction_call = job.index("-Path $expand -Arguments $expandArguments", extraction_mode)
-        self.assertLess(member_list_call, member_count_zero)
+        self.assertLess(member_list_call, disposition)
+        self.assertLess(disposition, member_count_zero)
         self.assertLess(member_count_zero, member_count_multiple)
         self.assertLess(member_count_multiple, extraction_mode)
         self.assertLess(extraction_mode, extraction_call)
@@ -656,13 +664,18 @@ class TestWindowsWfpCapture(unittest.TestCase):
             "$cabinetMemberSummary = $memberListResult.Stdout | ConvertFrom-Json",
             member_probe,
         )
-        unique_gate = job.index("if ($matchCount -eq 0)", summary_parse)
+        unique_gate = job.index(
+            "$matchDisposition = Get-WfpExactCabinetMemberDisposition",
+            summary_parse,
+        )
         extract_call = job.index("-Path $expand -Arguments $expandArguments", unique_gate)
         self.assertLess(member_probe, summary_parse)
         self.assertLess(summary_parse, unique_gate)
         self.assertLess(unique_gate, extract_call)
-        self.assertIn("$wfpArchiveMemberMatchCount = if ($matchCount -eq 0)", job)
-        self.assertIn("$matchCount -gt 1", job)
+        self.assertIn("function Get-WfpExactCabinetMemberDisposition", job)
+        self.assertIn("$wfpArchiveMemberMatchCount = switch ($matchDisposition)", job)
+        self.assertIn("if ($matchDisposition -eq 'missing')", job)
+        self.assertIn("elseif ($matchDisposition -eq 'ambiguous')", job)
         self.assertNotIn("'-D', $wfpCaptureArchive", job)
         self.assertNotIn("$wfpCaptureArchive, '-F:*'", job)
 
@@ -709,6 +722,61 @@ class TestWindowsWfpCapture(unittest.TestCase):
         self.assertNotIn("Write-Output $memberListResult.Stdout", job)
         self.assertIn("throw 'wfp_cab_member_parser_self_test_cleanup_failed'", job)
         self.assertIn("Remove-Item -LiteralPath $wfpMemberSelfTestRoot -Recurse -Force", job)
+
+    def test_workflow_has_native_prefix_only_cab_negative_control_without_extracting(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job_start = workflow.index("  windows-reviewer-snapshot-probe:")
+        job_end = workflow.index("  windows-appcontainer-read-handle-probe:", job_start)
+        job = workflow[job_start:job_end]
+
+        source = "$wfpMemberPrefixSelfTestSource = Join-Path $wfpMemberSelfTestRoot 'wfpdiag_extra.xml'"
+        cab = "$wfpMemberPrefixSelfTestCab = Join-Path $wfpMemberSelfTestRoot 'prefix-member-selftest.cab'"
+        self.assertIn(source, job)
+        self.assertIn(cab, job)
+
+        makecab_call = job.index("-Path $makecab -Arguments @(", job.index(source))
+        self.assertIn("$wfpMemberPrefixSelfTestSource, $wfpMemberPrefixSelfTestCab", job[makecab_call:])
+        probe_call = job.index(
+            "'--archive', $wfpMemberPrefixSelfTestCab",
+            makecab_call,
+        )
+        prefix_decision = job.index("$wfpPrefixSelfTestMatchCount", probe_call)
+        extract_stage = job.index("$wfpMemberSelfTestStage = 'extract'", prefix_decision)
+        negative_control = job[makecab_call:extract_stage]
+
+        self.assertIn("$prefixCabinetMemberSummary.status -ne 'listed'", negative_control)
+        self.assertIn(
+            "($prefixCabinetMemberSummary.member_count -isnot [int] -and",
+            negative_control,
+        )
+        self.assertIn(
+            "($prefixCabinetMemberSummary.target_match_count -isnot [int] -and",
+            negative_control,
+        )
+        self.assertIn(
+            "($prefixCabinetMemberSummary.xml_member_count -isnot [int] -and",
+            negative_control,
+        )
+        self.assertIn(
+            "($prefixCabinetMemberSummary.wfpdiag_prefixed_xml_member_count -isnot [int] -and",
+            negative_control,
+        )
+        self.assertIn("$prefixCabinetMemberSummary.target_match_count -ne 0", negative_control)
+        self.assertIn("$prefixCabinetMemberSummary.xml_member_count -ne 1", negative_control)
+        self.assertIn("$prefixCabinetMemberSummary.wfpdiag_prefixed_xml_member_count -ne 1", negative_control)
+        self.assertIn(
+            "$wfpPrefixSelfTestMatchCount = [long]$prefixCabinetMemberSummary.target_match_count",
+            negative_control,
+        )
+        self.assertIn(
+            "$wfpPrefixSelfTestDisposition = Get-WfpExactCabinetMemberDisposition",
+            negative_control,
+        )
+        self.assertIn("$wfpPrefixSelfTestStatus = if ($wfpPrefixSelfTestDisposition -eq 'missing')", negative_control)
+        self.assertIn("'archive_member_missing'", negative_control)
+        self.assertNotIn("-Path $expand", negative_control)
+        self.assertIn("wfp_cab_prefix_only_negative_control=passed", negative_control)
 
     def test_workflow_diagnoses_synthetic_cab_extract_destination_and_filter_variants(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]

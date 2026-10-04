@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R2 Windows CAB 精确成员名原生负控（2026-10-05；定向回归 49 项通过，PowerShell 与新 SHA x64/ARM64 CI 待验）：**给既有真实 MakeCab/SetupAPI CAB 自测补充只含 `wfpdiag_extra.xml` 的负控，必须得到 `listed / target=0 / xml=1 / wfpdiag-prefix=1`，通过与真实 capture 共用的精确匹配分类判为 `archive_member_missing`，不得调用 `expand`。原有精确 `wfpdiag.xml` 正控不变。CI #623 的真实 capture CAB 缺精确目标，但可访问的页面没有完整 CAB 成员清单，不能据此推断 capture 根因或无 WFP drop。采纳 Codex 固定版 smoke test 的有界负测/独立正控结构；不复制代码。Microsoft SetupAPI 只提供成员枚举/跳过机制；其结果不能代替网络验收。Windows 双栈终态 `10013`、R2/R3 readiness 与自动模式均不变。
+
 - **R3 operation receipt 的旧包快照兼容补强（2026-10-05；evidence 151 项、6 个关键路径 20 轮/120 次、workspace matrix 197 项、preflight 3/3、compileall、治理、站点、竞品与 diff 检查通过）：**pinned ICODE-SKILL 的状态迁移门不依赖证据包 `contracts.json` 快照。故独立 verifier 即使读取无 `execution_model` 的旧包，也按 v1 `attempt` 最小归约开放操作：精确 `read_only` 豁免，其他开放 v1 operation 阻止任意后续 `state_changed`，同 attempt 的 v1 finish 关闭；历史未版本化事件与 EOF 开放操作仍兼容。这个缺快照路径不声称完成其他 execution-model 语义验证。TDD 先构造无快照旧包、重签清单并追加合法迁移，旧 verifier 放行，修复后拒绝；没有 exporter 自身造不出的 gates 输入。只加固定长 attempt 指纹、线性扫描；不复制源码、不加依赖、不改 submodule，也不重算 operation 成功策略或认证来源。新 SHA 远端 CI 待验。
 
 - **R3 operation receipt 状态迁移门（2026-10-05；证据包 150 项、关键回归 5 项连续 20 轮/100 次、workspace matrix 197 项、preflight 3/3、compileall、治理、站点、竞品与 diff 检查通过；commit/push 后新 SHA CI 待验）：**按 pinned ICODE-SKILL 的每次状态迁移门禁，增量归约 v1 非 `read_only` operation 的开放 attempt 指纹；finish 以同 attempt 关闭；其间出现任意 `state_changed` 即拒绝。只读与未版本化历史保持兼容，EOF 仍允许开放 attempt；合法失败回执只证明 operation 已终结，不重算其决策策略。exporter 在触碰旧包前失败，内置 verifier 和零依赖独立 verifier 同样拒绝。新增旧包保全、重签包与独立校验、兼容和失败 outcome 测试。固定 Codex item 生命周期仅作为关联/显式终态的设计参照，不复制源码、不增依赖、不改子模块。R2 `10013`、R2/R3 总 readiness 及自动模式不变。

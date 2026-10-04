@@ -770,6 +770,9 @@ jobs:
           $wfpMemberSelfTestRoot = Join-Path $env:RUNNER_TEMP "icode-wfp-member-selftest-$suffix"
           $wfpMemberSelfTestSource = Join-Path $wfpMemberSelfTestRoot 'wfpdiag.xml'
           $wfpMemberSelfTestCab = Join-Path $wfpMemberSelfTestRoot 'member-selftest.cab'
+          $wfpMemberPrefixSelfTestSource = Join-Path $wfpMemberSelfTestRoot 'wfpdiag_extra.xml'
+          $wfpMemberPrefixSelfTestCab = Join-Path $wfpMemberSelfTestRoot 'prefix-member-selftest.cab'
+          $wfpMemberPrefixSelfTestExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract-prefix-only'
           $wfpMemberSelfTestExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract-exact-directory'
           $wfpMemberSelfTestWildcardExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract-wildcard-directory'
           $wfpMemberSelfTestExplicitExtractFile = Join-Path $wfpMemberSelfTestRoot 'extract-exact-file.xml'
@@ -933,6 +936,15 @@ jobs:
             }
             return 'unknown'
           }
+          function Get-WfpExactCabinetMemberDisposition {
+            param([Parameter(Mandatory = $true)][long]$TargetMatchCount)
+            if ($TargetMatchCount -lt 0) {
+              throw 'wfp_cab_member_match_count_invalid'
+            }
+            if ($TargetMatchCount -eq 0) { return 'missing' }
+            if ($TargetMatchCount -eq 1) { return 'unique' }
+            return 'ambiguous'
+          }
           try {
             $wfpMemberSelfTestStage = 'prepare'
             New-Item -ItemType Directory -Path $wfpMemberSelfTestRoot | Out-Null
@@ -984,6 +996,58 @@ jobs:
                 $cabinetMemberSummary.target_match_count -gt $cabinetMemberSummary.wfpdiag_prefixed_xml_member_count) {
               throw 'wfp_cab_member_parser_self_test_failed'
             }
+            $wfpMemberSelfTestStage = 'prefix_negative_control'
+            [IO.File]::WriteAllText(
+              $wfpMemberPrefixSelfTestSource,
+              'ICODE synthetic CAB prefix-only negative control',
+              [Text.Encoding]::ASCII
+            )
+            $prefixMakecabResult = Invoke-BoundedDiagnosticCommand `
+              -Path $makecab -Arguments @(
+                $wfpMemberPrefixSelfTestSource, $wfpMemberPrefixSelfTestCab
+              ) -TimeoutMilliseconds 5000
+            if ($prefixMakecabResult.TimedOut -or $prefixMakecabResult.ExitCode -ne 0 -or
+                -not (Test-Path -LiteralPath $wfpMemberPrefixSelfTestCab -PathType Leaf)) {
+              throw 'wfp_cab_member_parser_self_test_failed'
+            }
+            $prefixMemberListResult = Invoke-BoundedDiagnosticCommand `
+              -Path $python -Arguments @(
+                $cabinetMemberProbe, '--archive', $wfpMemberPrefixSelfTestCab
+              ) -TimeoutMilliseconds 5000 -CaptureStdout
+            if ($prefixMemberListResult.TimedOut -or $prefixMemberListResult.ExitCode -ne 0) {
+              throw 'wfp_cab_member_parser_self_test_failed'
+            }
+            $prefixCabinetMemberSummary = $prefixMemberListResult.Stdout | ConvertFrom-Json
+            if ($prefixCabinetMemberSummary.schema_version -ne 3 -or
+                $prefixCabinetMemberSummary.status -ne 'listed' -or
+                ($prefixCabinetMemberSummary.member_count -isnot [int] -and
+                 $prefixCabinetMemberSummary.member_count -isnot [long]) -or
+                $prefixCabinetMemberSummary.member_count -ne 1 -or
+                ($prefixCabinetMemberSummary.target_match_count -isnot [int] -and
+                 $prefixCabinetMemberSummary.target_match_count -isnot [long]) -or
+                $prefixCabinetMemberSummary.target_match_count -ne 0 -or
+                ($prefixCabinetMemberSummary.xml_member_count -isnot [int] -and
+                 $prefixCabinetMemberSummary.xml_member_count -isnot [long]) -or
+                $prefixCabinetMemberSummary.xml_member_count -ne 1 -or
+                ($prefixCabinetMemberSummary.wfpdiag_prefixed_xml_member_count -isnot [int] -and
+                 $prefixCabinetMemberSummary.wfpdiag_prefixed_xml_member_count -isnot [long]) -or
+                $prefixCabinetMemberSummary.wfpdiag_prefixed_xml_member_count -ne 1) {
+              throw 'wfp_cab_member_parser_self_test_failed'
+            }
+            $wfpPrefixSelfTestMatchCount = [long]$prefixCabinetMemberSummary.target_match_count
+            $wfpPrefixSelfTestDisposition = Get-WfpExactCabinetMemberDisposition `
+              -TargetMatchCount $wfpPrefixSelfTestMatchCount
+            $wfpPrefixSelfTestStatus = if ($wfpPrefixSelfTestDisposition -eq 'missing') {
+              'archive_member_missing'
+            } else {
+              'unexpected_exact_match'
+            }
+            if ($wfpPrefixSelfTestDisposition -ne 'missing' -or
+                $wfpPrefixSelfTestStatus -ne 'archive_member_missing' -or
+                (Test-Path -LiteralPath $wfpMemberPrefixSelfTestExtractRoot)) {
+              throw 'wfp_cab_member_parser_self_test_failed'
+            }
+            Write-Output "wfp_cab_prefix_only_negative_control=passed status=$wfpPrefixSelfTestStatus exact_matches=$wfpPrefixSelfTestMatchCount xml_members=$($prefixCabinetMemberSummary.xml_member_count) wfpdiag_prefixed_xml_members=$($prefixCabinetMemberSummary.wfpdiag_prefixed_xml_member_count) extracted=false"
             $wfpMemberSelfTestStage = 'member_match'
             $wfpMemberSelfTestStage = 'extract'
             New-Item -ItemType Directory -Path $wfpMemberSelfTestExtractRoot | Out-Null
@@ -1823,17 +1887,17 @@ jobs:
                           $wfpCaptureStatus = 'member_list_failed'
                         } else {
                           $matchCount = [long]$cabinetMemberSummary.target_match_count
-                          $wfpArchiveMemberMatchCount = if ($matchCount -eq 0) {
-                            'zero'
-                          } elseif ($matchCount -eq 1) {
-                            'one'
-                          } else {
-                            'multiple'
+                          $matchDisposition = Get-WfpExactCabinetMemberDisposition `
+                            -TargetMatchCount $matchCount
+                          $wfpArchiveMemberMatchCount = switch ($matchDisposition) {
+                            'missing' { 'zero' }
+                            'unique' { 'one' }
+                            default { 'multiple' }
                           }
-                          if ($matchCount -eq 0) {
+                          if ($matchDisposition -eq 'missing') {
                             $wfpArchiveMemberStatus = 'missing'
                             $wfpCaptureStatus = 'archive_member_missing'
-                          } elseif ($matchCount -gt 1) {
+                          } elseif ($matchDisposition -eq 'ambiguous') {
                             $wfpArchiveMemberStatus = 'multiple'
                             $wfpCaptureStatus = 'archive_member_ambiguous'
                           } else {
