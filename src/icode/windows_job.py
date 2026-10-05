@@ -47,6 +47,21 @@ def _read_single_token_capability(buffer_address, buffer_capacity, returned_leng
         raise ValueError('missing capability SID')
     return capability.Sid, int(capability.Attributes)
 """
+_TOKEN_CAPABILITY_SID_CLASSIFIER_CODE = """\
+def _private_network_capability_sid_mismatch_exit_code(sid_text):
+    if type(sid_text) is not str:
+        return 99
+    if sid_text == 'S-1-15-3-1':
+        return 96
+    if sid_text == 'S-1-15-3-2':
+        return 97
+    if sid_text in {
+        'S-1-15-3-4', 'S-1-15-3-5', 'S-1-15-3-6',
+        'S-1-15-3-7', 'S-1-15-3-8', 'S-1-15-3-9', 'S-1-15-3-10',
+    }:
+        return 98
+    return 99
+"""
 
 _PRIVATE_NETWORK_CAPABILITY_PROBE_CODE = (
     """\
@@ -61,6 +76,7 @@ import ctypes, json, socket
 from ctypes import wintypes
 """
     + _TOKEN_GROUPS_CAPABILITY_PARSER_CODE
+    + _TOKEN_CAPABILITY_SID_CLASSIFIER_CODE
     + """\
 kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 advapi = ctypes.WinDLL('advapi32', use_last_error=True)
@@ -123,6 +139,9 @@ try:
         raise RuntimeError('unexpected AppContainer package SID')
     _failure_exit_code = 89
     if capability_text != 'S-1-15-3-3':
+        _failure_exit_code = _private_network_capability_sid_mismatch_exit_code(
+            capability_text,
+        )
         raise RuntimeError('unexpected AppContainer capability SID')
     if not (capability_attributes & SE_GROUP_ENABLED):
         # Keep the failed bit check, but distinguish an empty attribute word
@@ -167,6 +186,10 @@ _PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES = {
     93: "ipv6_connect",
     94: "ipv6_send",
     95: "token_capability_enabled_missing_nonzero_attributes",
+    96: "token_capability_sid_internet_client",
+    97: "token_capability_sid_internet_client_server",
+    98: "token_capability_sid_other_well_known",
+    99: "token_capability_sid_unrecognized",
 }
 
 

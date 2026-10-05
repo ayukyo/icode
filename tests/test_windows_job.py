@@ -91,6 +91,10 @@ class TestWindowsJob(unittest.TestCase):
             (93, "ipv6_connect"),
             (94, "ipv6_send"),
             (95, "token_capability_enabled_missing_nonzero_attributes"),
+            (96, "token_capability_sid_internet_client"),
+            (97, "token_capability_sid_internet_client_server"),
+            (98, "token_capability_sid_other_well_known"),
+            (99, "token_capability_sid_unrecognized"),
             (1, "unclassified"),
             (-1, "unclassified"),
             (True, "unclassified"),
@@ -117,6 +121,10 @@ class TestWindowsJob(unittest.TestCase):
         self.assertIn("_failure_exit_code = 87", argv[3])
         self.assertIn("_failure_exit_code = 88", argv[3])
         self.assertIn("_failure_exit_code = 89", argv[3])
+        self.assertIn(
+            "_failure_exit_code = _private_network_capability_sid_mismatch_exit_code(",
+            argv[3],
+        )
         self.assertIn("_failure_exit_code = 90", argv[3])
         self.assertIn(
             "_failure_exit_code = 90 if capability_attributes == 0 else 95",
@@ -140,6 +148,29 @@ class TestWindowsJob(unittest.TestCase):
             argv[3].index("sys.excepthook = _stage_failure_hook"),
             argv[3].index("import ctypes, json, socket"),
         )
+
+    def test_private_network正控只把未知SID分类到固定阶段码(self) -> None:
+        namespace: dict[str, object] = {}
+        exec(
+            compile(
+                windows_job_module._TOKEN_CAPABILITY_SID_CLASSIFIER_CODE,
+                "<token-capability-sid-classifier>", "exec",
+            ),
+            namespace,
+        )
+        classify = namespace["_private_network_capability_sid_mismatch_exit_code"]
+        cases = (
+            ("S-1-15-3-1", 96),
+            ("S-1-15-3-2", 97),
+            ("S-1-15-3-4", 98),
+            ("S-1-15-3-10", 98),
+            ("S-1-15-3-1024-123456", 99),
+            ("S-1-5-21-123456", 99),
+            (None, 99),
+        )
+        for sid_text, expected in cases:
+            with self.subTest(sid_text=sid_text):
+                self.assertEqual(classify(sid_text), expected)
 
     def test_private_network能力正控只接受固定CI回环探针(self) -> None:
         environment = {
