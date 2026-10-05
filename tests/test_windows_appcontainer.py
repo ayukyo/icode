@@ -2609,7 +2609,15 @@ class TestWindowsAppContainer(unittest.TestCase):
                     script = argv[3]
                     compile(script, "<private-network-capability-probe-captured>", "exec")
                     captured_network_control_scripts.append(script)
-                    return WindowsJobResult(True, 0, None, True, "diagnostic only")
+                    parent_token_receipt = (
+                        windows_job_module._WindowsAppContainerTokenReceipt(
+                            "matched", True, True, 1, True, True, True,
+                        )
+                    )
+                    return WindowsJobResult(
+                        True, 0, None, True, "diagnostic only",
+                        parent_token_receipt,
+                    )
                 script = argv[-1]
                 compile(script, "<reviewer-snapshot-probe-captured>", "exec")
                 command_line = subprocess.list2cmdline([
@@ -2728,6 +2736,17 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer IPv6 connect stages", notice_names)
         self.assertIn("Windows Reviewer write canary fingerprints", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
+        access_notice = json.loads(next(
+            encoded
+            for name, encoded in captured_notices
+            if name == "Windows Reviewer access diagnostics"
+        ))
+        self.assertEqual(access_notice["parent_token"], {
+            "stage": "matched", "appcontainer": True,
+            "package_sid_match": True, "count": 1,
+            "cap_sid_match": True, "enabled": True, "closed": True,
+        })
+        self.assertNotIn("S-1-", json.dumps(access_notice, ensure_ascii=True))
         ipv6_notice = json.loads(next(
             encoded
             for name, encoded in captured_notices
@@ -5323,7 +5342,12 @@ class TestWindowsAppContainer(unittest.TestCase):
         apis["userenv"].CreateAppContainerProfile.side_effect = create_profile
         apis["advapi32"].ConvertStringSidToSidW.side_effect = convert_capability_sid
         apis["kernel32"].LocalFree.return_value = 0
-        runtime_result = WindowsJobResult(True, 0, None, True, "")
+        parent_token_receipt = windows_job_module._WindowsAppContainerTokenReceipt(
+            "matched", True, True, 1, True, True, True,
+        )
+        runtime_result = WindowsJobResult(
+            True, 0, None, True, "", parent_token_receipt,
+        )
         seen_job_options: list[dict[str, object]] = []
 
         def run_job(*_args: object, **kwargs: object) -> WindowsJobResult:
@@ -5415,6 +5439,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertTrue(result.executed, result)
         self.assertEqual(result.exit_code, 0)
         self.assertTrue(result.cleanup_ok, result)
+        self.assertIs(result.child_token_receipt, parent_token_receipt)
         self.assertEqual(observed_profile, {
             "count": 1,
             "sid": ctypes.addressof(capability_sid_storage),
@@ -8139,10 +8164,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                     network_servers[1].received_canaries
                     == [expected_capability_payload]
                 )
+                capability_parent_token = capability_control.child_token_receipt
                 capability_control_observed = (
                     capability_control.executed
                     and capability_control.exit_code == 0
                     and capability_control.cleanup_ok
+                    and capability_parent_token is not None
+                    and capability_parent_token.verified
                     and capability_ipv4_received
                     and capability_ipv6_received
                 )
@@ -8165,9 +8193,53 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f"ipv6_canary={str(capability_ipv6_received).lower()} "
                     "requested_capability_count=1 capability_sid=privateNetworkClientServer "
                     f"requested_attributes=0x{windows_job_module._SE_GROUP_ENABLED:08x} "
+                    "parent_token_stage="
+                    f"{capability_parent_token.stage if capability_parent_token else 'unavailable'} "
+                    "parent_token_appcontainer="
+                    f"{str(capability_parent_token.appcontainer).lower() if capability_parent_token and capability_parent_token.appcontainer is not None else 'unknown'} "
+                    "parent_token_package_sid_match="
+                    f"{str(capability_parent_token.package_sid_match).lower() if capability_parent_token and capability_parent_token.package_sid_match is not None else 'unknown'} "
+                    "parent_token_capability_count="
+                    f"{capability_parent_token.capability_count if capability_parent_token and capability_parent_token.capability_count is not None else 'unknown'} "
+                    "parent_token_capability_sid_match="
+                    f"{str(capability_parent_token.capability_sid_match).lower() if capability_parent_token and capability_parent_token.capability_sid_match is not None else 'unknown'} "
+                    "parent_token_capability_enabled="
+                    f"{str(capability_parent_token.capability_enabled).lower() if capability_parent_token and capability_parent_token.capability_enabled is not None else 'unknown'} "
+                    "parent_token_handle_closed="
+                    f"{str(capability_parent_token.token_handle_closed).lower() if capability_parent_token and capability_parent_token.token_handle_closed is not None else 'unknown'} "
                     "readiness_credit=false zero_capability_candidate_unchanged=true",
                     flush=True,
                 )
+                parent_token_diagnostics = {
+                    "stage": (
+                        capability_parent_token.stage
+                        if capability_parent_token else "unavailable"
+                    ),
+                    "appcontainer": (
+                        capability_parent_token.appcontainer
+                        if capability_parent_token else None
+                    ),
+                    "package_sid_match": (
+                        capability_parent_token.package_sid_match
+                        if capability_parent_token else None
+                    ),
+                    "count": (
+                        capability_parent_token.capability_count
+                        if capability_parent_token else None
+                    ),
+                    "cap_sid_match": (
+                        capability_parent_token.capability_sid_match
+                        if capability_parent_token else None
+                    ),
+                    "enabled": (
+                        capability_parent_token.capability_enabled
+                        if capability_parent_token else None
+                    ),
+                    "closed": (
+                        capability_parent_token.token_handle_closed
+                        if capability_parent_token else None
+                    ),
+                }
                 for listener in network_servers:
                     listener.received_canaries.clear()
 
@@ -9071,7 +9143,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer access diagnostics",
-                    summary["access_errors"],
+                    {
+                        **summary["access_errors"],
+                        "parent_token": parent_token_diagnostics,
+                    },
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer handle cleanup diagnostics",

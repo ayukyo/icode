@@ -18,6 +18,11 @@ from typing import Sequence
 _READ_HANDLE_PLACEHOLDER = "{ICODE_READ_HANDLE}"
 _PRIVATE_NETWORK_CAPABILITY_SID = "S-1-15-3-3"
 _SE_GROUP_ENABLED = 0x00000004
+_TOKEN_QUERY = 0x0008
+_TOKEN_INFO_IS_APPCONTAINER = 29
+_TOKEN_INFO_CAPABILITIES = 30
+_TOKEN_INFO_APPCONTAINER_SID = 31
+_PRIVATE_NETWORK_CAPABILITY_TOKEN_BUFFER_BYTES = 4096
 _TOKEN_GROUPS_CAPABILITY_PARSER_CODE = """\
 class SID_AND_ATTRIBUTES(ctypes.Structure):
     _fields_ = [('Sid', ctypes.c_void_p), ('Attributes', wintypes.DWORD)]
@@ -211,6 +216,233 @@ def _private_network_capability_exit_stage(exit_code: int | None) -> str:
     )
 
 
+class _TOKEN_PROBE_SID_AND_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", ctypes.c_uint32)]
+
+
+class _TOKEN_PROBE_GROUPS(ctypes.Structure):
+    _fields_ = [
+        ("GroupCount", ctypes.c_uint32),
+        ("Groups", _TOKEN_PROBE_SID_AND_ATTRIBUTES * 1),
+    ]
+
+
+class _TOKEN_PROBE_APPCONTAINER_INFORMATION(ctypes.Structure):
+    _fields_ = [("TokenAppContainer", ctypes.c_void_p)]
+
+
+@dataclass(frozen=True)
+class _WindowsAppContainerTokenReceipt:
+    """父进程对挂起子进程 token 的有界核验结果，不包含 SID 原值。"""
+
+    stage: str
+    appcontainer: bool | None = None
+    package_sid_match: bool | None = None
+    capability_count: int | None = None
+    capability_sid_match: bool | None = None
+    capability_enabled: bool | None = None
+    token_handle_closed: bool | None = None
+
+    @property
+    def verified(self) -> bool:
+        return (
+            self.stage == "matched"
+            and self.appcontainer is True
+            and self.package_sid_match is True
+            and self.capability_count == 1
+            and self.capability_sid_match is True
+            and self.capability_enabled is True
+            and self.token_handle_closed is True
+        )
+
+
+def _read_windows_appcontainer_token_receipt(
+    process_handle: int,
+    expected_package_sid: int,
+    expected_capability_sid: int,
+    *,
+    advapi: object,
+    kernel: object,
+) -> _WindowsAppContainerTokenReceipt:
+    """只读核验挂起子进程实际 token；所有失败均压缩为固定阶段。"""
+    open_process_token = advapi.OpenProcessToken
+    get_token_information = advapi.GetTokenInformation
+    equal_sid = advapi.EqualSid
+    close_handle = kernel.CloseHandle
+    open_process_token.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    open_process_token.restype = ctypes.c_int
+    get_token_information.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_uint32),
+    ]
+    get_token_information.restype = ctypes.c_int
+    equal_sid.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    equal_sid.restype = ctypes.c_int
+    close_handle.argtypes = [ctypes.c_void_p]
+    close_handle.restype = ctypes.c_int
+
+    if not process_handle or not expected_package_sid or not expected_capability_sid:
+        return _WindowsAppContainerTokenReceipt("invalid_expected_token_inputs")
+
+    token = ctypes.c_void_p()
+    if not open_process_token(process_handle, _TOKEN_QUERY, ctypes.byref(token)) or not token.value:
+        return _WindowsAppContainerTokenReceipt("open_process_token_failed")
+
+    receipt = _WindowsAppContainerTokenReceipt("token_query_failed")
+    try:
+        appcontainer_value = ctypes.c_uint32()
+        appcontainer_returned = ctypes.c_uint32()
+        if not get_token_information(
+            token, _TOKEN_INFO_IS_APPCONTAINER, ctypes.byref(appcontainer_value),
+            ctypes.sizeof(appcontainer_value), ctypes.byref(appcontainer_returned),
+        ) or appcontainer_returned.value < ctypes.sizeof(appcontainer_value):
+            receipt = _WindowsAppContainerTokenReceipt("appcontainer_query_failed")
+        else:
+            appcontainer = bool(appcontainer_value.value)
+            if not appcontainer:
+                receipt = _WindowsAppContainerTokenReceipt(
+                    "appcontainer_mismatch", appcontainer=False,
+                )
+            else:
+                # TokenAppContainerSid includes the SID referenced by its
+                # TOKEN_APPCONTAINER_INFORMATION pointer in the returned
+                # variable-length buffer; reserve a fixed, bounded window.
+                package_buffer = ctypes.create_string_buffer(
+                    _PRIVATE_NETWORK_CAPABILITY_TOKEN_BUFFER_BYTES,
+                )
+                package_returned = ctypes.c_uint32()
+                if not get_token_information(
+                    token, _TOKEN_INFO_APPCONTAINER_SID,
+                    package_buffer, len(package_buffer),
+                    ctypes.byref(package_returned),
+                ) or package_returned.value < ctypes.sizeof(
+                    _TOKEN_PROBE_APPCONTAINER_INFORMATION,
+                ) or package_returned.value > len(package_buffer):
+                    receipt = _WindowsAppContainerTokenReceipt(
+                        "package_sid_query_failed", appcontainer=True,
+                    )
+                else:
+                    package_sid = (
+                        _TOKEN_PROBE_APPCONTAINER_INFORMATION.from_buffer(
+                            package_buffer,
+                        ).TokenAppContainer
+                    )
+                    package_matches = bool(
+                        package_sid
+                        and equal_sid(package_sid, expected_package_sid)
+                    )
+                    if not package_matches:
+                        receipt = _WindowsAppContainerTokenReceipt(
+                            "package_sid_mismatch", appcontainer=True,
+                            package_sid_match=False,
+                        )
+                    else:
+                        capability_buffer = ctypes.create_string_buffer(
+                            _PRIVATE_NETWORK_CAPABILITY_TOKEN_BUFFER_BYTES,
+                        )
+                        capability_returned = ctypes.c_uint32()
+                        if not get_token_information(
+                            token, _TOKEN_INFO_CAPABILITIES,
+                            capability_buffer, len(capability_buffer),
+                            ctypes.byref(capability_returned),
+                        ):
+                            receipt = _WindowsAppContainerTokenReceipt(
+                                "capabilities_query_failed", appcontainer=True,
+                                package_sid_match=True,
+                            )
+                        elif (
+                            capability_returned.value
+                            < _TOKEN_PROBE_GROUPS.Groups.offset
+                            or capability_returned.value > len(capability_buffer)
+                        ):
+                            receipt = _WindowsAppContainerTokenReceipt(
+                                "capabilities_return_length_invalid",
+                                appcontainer=True, package_sid_match=True,
+                            )
+                        else:
+                            groups = _TOKEN_PROBE_GROUPS.from_buffer(
+                                capability_buffer,
+                            )
+                            capability_count = int(groups.GroupCount)
+                            required_length = (
+                                _TOKEN_PROBE_GROUPS.Groups.offset
+                                + capability_count
+                                * ctypes.sizeof(_TOKEN_PROBE_SID_AND_ATTRIBUTES)
+                            )
+                            if required_length > capability_returned.value:
+                                receipt = _WindowsAppContainerTokenReceipt(
+                                    "capabilities_return_length_invalid",
+                                    appcontainer=True, package_sid_match=True,
+                                    capability_count=capability_count,
+                                )
+                            elif capability_count != 1:
+                                receipt = _WindowsAppContainerTokenReceipt(
+                                    "capability_count_mismatch",
+                                    appcontainer=True, package_sid_match=True,
+                                    capability_count=capability_count,
+                                )
+                            else:
+                                capability = ctypes.cast(
+                                    ctypes.addressof(capability_buffer)
+                                    + _TOKEN_PROBE_GROUPS.Groups.offset,
+                                    ctypes.POINTER(_TOKEN_PROBE_SID_AND_ATTRIBUTES),
+                                ).contents
+                                capability_matches = bool(
+                                    capability.Sid
+                                    and equal_sid(
+                                        capability.Sid, expected_capability_sid,
+                                    )
+                                )
+                                capability_enabled = bool(
+                                    capability.Attributes & _SE_GROUP_ENABLED
+                                )
+                                if not capability_matches:
+                                    stage = "capability_sid_mismatch"
+                                elif not capability_enabled:
+                                    stage = "capability_not_enabled"
+                                else:
+                                    stage = "matched"
+                                receipt = _WindowsAppContainerTokenReceipt(
+                                    stage, appcontainer=True,
+                                    package_sid_match=True,
+                                    capability_count=capability_count,
+                                    capability_sid_match=capability_matches,
+                                    capability_enabled=capability_enabled,
+                                )
+    except Exception:  # noqa: BLE001 - 固定诊断的API异常只降级为inconclusive
+        receipt = _WindowsAppContainerTokenReceipt(
+            "token_query_error", appcontainer=receipt.appcontainer,
+            package_sid_match=receipt.package_sid_match,
+            capability_count=receipt.capability_count,
+            capability_sid_match=receipt.capability_sid_match,
+            capability_enabled=receipt.capability_enabled,
+        )
+
+    try:
+        token_handle_closed = bool(close_handle(token))
+    except Exception:  # noqa: BLE001 - 句柄关闭异常必须保留为未验证
+        token_handle_closed = False
+    if not token_handle_closed:
+        return _WindowsAppContainerTokenReceipt(
+            "token_handle_close_failed", appcontainer=receipt.appcontainer,
+            package_sid_match=receipt.package_sid_match,
+            capability_count=receipt.capability_count,
+            capability_sid_match=receipt.capability_sid_match,
+            capability_enabled=receipt.capability_enabled,
+            token_handle_closed=False,
+        )
+    return _WindowsAppContainerTokenReceipt(
+        receipt.stage, appcontainer=receipt.appcontainer,
+        package_sid_match=receipt.package_sid_match,
+        capability_count=receipt.capability_count,
+        capability_sid_match=receipt.capability_sid_match,
+        capability_enabled=receipt.capability_enabled,
+        token_handle_closed=True,
+    )
+
+
 def _build_private_network_capability_probe_argv(
     python_executable: str | os.PathLike[str], ipv4_port: int, ipv6_port: int,
     nonce: str, package_sid: str,
@@ -294,6 +526,7 @@ class WindowsJobResult:
     error: str | None
     cleanup_ok: bool
     detail: str
+    child_token_receipt: _WindowsAppContainerTokenReceipt | None = None
 
 
 @dataclass(frozen=True)
@@ -810,6 +1043,7 @@ def run_windows_job(
     diagnostics: list[str] = []
     cleanup_ok = False
     capability_sid_cleanup_ok = True
+    child_token_receipt: _WindowsAppContainerTokenReceipt | None = None
     attribute_storage: ctypes.Array | None = None
     attribute_list: ctypes.c_void_p | None = None
     attributes_initialized = False
@@ -950,6 +1184,21 @@ def run_windows_job(
         if not kernel.AssignProcessToJobObject(job, process.hProcess):
             raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject")
         assigned = True
+        if _diagnostic_private_network_capability:
+            # The process is still suspended. Inspect the token Windows actually
+            # created before the fixed child probe reads its own token or connects.
+            try:
+                child_token_receipt = _read_windows_appcontainer_token_receipt(
+                    process.hProcess,
+                    _appcontainer_sid,
+                    int(private_network_capability_sid.value),
+                    advapi=advapi,
+                    kernel=kernel,
+                )
+            except Exception:  # noqa: BLE001 - 诊断异常不得跳过Job回收
+                child_token_receipt = _WindowsAppContainerTokenReceipt(
+                    "token_query_error",
+                )
         resume_count = kernel.ResumeThread(process.hThread)
         if resume_count in (0, 0xFFFFFFFF):
             raise OSError(ctypes.get_last_error(), "ResumeThread")
@@ -1002,11 +1251,25 @@ def run_windows_job(
             # No child was created, so there is no process or descendant to reap.
             # Preserve the original launch error instead of relabeling it as cleanup.
             cleanup_ok = True
-        cleanup_ok = cleanup_ok and capability_sid_cleanup_ok
+        token_handle_cleanup_ok = (
+            child_token_receipt is None
+            or child_token_receipt.token_handle_closed is not False
+        )
+        if not token_handle_cleanup_ok:
+            error = "cleanup_failed"
+            detail = "; ".join(
+                part for part in (detail, "CloseHandle(child process token) failed")
+                if part
+            )
+        cleanup_ok = (
+            cleanup_ok and capability_sid_cleanup_ok and token_handle_cleanup_ok
+        )
         if created:
             kernel.CloseHandle(process.hThread)
             kernel.CloseHandle(process.hProcess)
         kernel.CloseHandle(job)
     if diagnostics:
         detail = "; ".join(part for part in (detail, *diagnostics) if part)
-    return WindowsJobResult(created, exit_code, error, cleanup_ok, detail)
+    return WindowsJobResult(
+        created, exit_code, error, cleanup_ok, detail, child_token_receipt,
+    )

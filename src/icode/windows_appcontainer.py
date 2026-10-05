@@ -1806,4 +1806,5 @@ def run_windows_appcontainer(
     detail = "; ".join(part for part in (main.detail, *diagnostics, *details) if part)
     return WindowsJobResult(
         main.executed, main.exit_code, error, final_cleanup_ok, detail,
+        main.child_token_receipt,
     )

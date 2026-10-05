@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import ctypes
+import inspect
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from tests._support import temp_workspace
@@ -29,6 +31,240 @@ from icode.windows_job import (
 
 
 class TestWindowsJob(unittest.TestCase):
+    def test_挂起进程token核验位于入Job之后且ResumeThread之前(self) -> None:
+        source = inspect.getsource(run_windows_job)
+        assignment = source.index("kernel.AssignProcessToJobObject(job, process.hProcess)")
+        inspection = source.index("_read_windows_appcontainer_token_receipt(")
+        resume = source.index("kernel.ResumeThread(process.hThread)")
+        self.assertLess(assignment, inspection)
+        self.assertLess(inspection, resume)
+        self.assertIn("if _diagnostic_private_network_capability:", source)
+
+    def test_父进程实读挂起子进程token并校验capability(self) -> None:
+        receipt_type = windows_job_module._WindowsAppContainerTokenReceipt
+        sid_and_attributes_type = windows_job_module._TOKEN_PROBE_SID_AND_ATTRIBUTES
+        token_groups_type = windows_job_module._TOKEN_PROBE_GROUPS
+        token_appcontainer_type = windows_job_module._TOKEN_PROBE_APPCONTAINER_INFORMATION
+
+        package_sid_storage = ctypes.create_string_buffer(16)
+        capability_sid_storage = ctypes.create_string_buffer(16)
+        unexpected_sid_storage = ctypes.create_string_buffer(16)
+        package_sid_storage.raw = b"package-sid-test"
+        capability_sid_storage.raw = b"capability-sid!!"
+        unexpected_sid_storage.raw = b"unexpected-sid!!"
+
+        def make_api(*, appcontainer: int = 1, capability_count: int = 1,
+                     package_sid: int | None = None,
+                     capability_sid: int | None = None, attributes: int = 0x4,
+                     fail_class: int | None = None, close_ok: bool = True):
+            package_sid_address = (
+                package_sid if package_sid is not None
+                else ctypes.addressof(package_sid_storage)
+            )
+            capability_sid_address = (
+                capability_sid if capability_sid is not None
+                else ctypes.addressof(capability_sid_storage)
+            )
+
+            def write_returned_length(pointer, value):
+                ctypes.cast(pointer, ctypes.POINTER(ctypes.c_uint32))[0] = value
+
+            def open_process_token(_process, desired_access, token_out):
+                self.assertEqual(desired_access, 0x0008)  # TOKEN_QUERY
+                ctypes.cast(token_out, ctypes.POINTER(ctypes.c_void_p))[0] = 123
+                return 1
+
+            def get_token_information(_token, info_class, output, capacity, returned):
+                if info_class == fail_class:
+                    return 0
+                if info_class == 29:  # TokenIsAppContainer
+                    value = ctypes.c_uint32(appcontainer)
+                    required = ctypes.sizeof(value)
+                    if capacity < required:
+                        write_returned_length(returned, required)
+                        return 0
+                    ctypes.memmove(output, ctypes.byref(value), required)
+                elif info_class == 31:  # TokenAppContainerSid
+                    structure_bytes = ctypes.sizeof(token_appcontainer_type)
+                    sid_bytes = ctypes.string_at(package_sid_address, 16)
+                    required = structure_bytes + len(sid_bytes)
+                    if capacity < required:
+                        write_returned_length(returned, required)
+                        return 0
+                    output_address = ctypes.cast(output, ctypes.c_void_p).value
+                    value = token_appcontainer_type()
+                    value.TokenAppContainer = output_address + structure_bytes
+                    ctypes.memmove(output, ctypes.byref(value), structure_bytes)
+                    ctypes.memmove(
+                        output_address + structure_bytes, sid_bytes, len(sid_bytes),
+                    )
+                elif info_class == 30:  # TokenCapabilities
+                    header_bytes = token_groups_type.Groups.offset
+                    entry_bytes = ctypes.sizeof(sid_and_attributes_type)
+                    sid_bytes = (
+                        ctypes.string_at(capability_sid_address, 16)
+                        if capability_count else b""
+                    )
+                    required = (
+                        header_bytes + capability_count * entry_bytes + len(sid_bytes)
+                    )
+                    if capacity < required:
+                        write_returned_length(returned, required)
+                        return 0
+                    output_address = ctypes.cast(output, ctypes.c_void_p).value
+                    ctypes.memset(output, 0, required)
+                    groups = ctypes.cast(
+                        output, ctypes.POINTER(token_groups_type),
+                    ).contents
+                    groups.GroupCount = capability_count
+                    if capability_count:
+                        groups.Groups[0].Sid = output_address + header_bytes + (
+                            capability_count * entry_bytes
+                        )
+                        groups.Groups[0].Attributes = attributes
+                        ctypes.memmove(
+                            groups.Groups[0].Sid, sid_bytes, len(sid_bytes),
+                        )
+                else:
+                    self.fail(f"unexpected token information class: {info_class}")
+                write_returned_length(returned, required)
+                return 1
+
+            def equal_sid(left, right):
+                left_value = ctypes.cast(left, ctypes.c_void_p).value
+                right_value = ctypes.cast(right, ctypes.c_void_p).value
+                return int(ctypes.string_at(left_value, 16) == ctypes.string_at(right_value, 16))
+
+            return (
+                SimpleNamespace(
+                    OpenProcessToken=open_process_token,
+                    GetTokenInformation=get_token_information,
+                    EqualSid=equal_sid,
+                ),
+                SimpleNamespace(CloseHandle=lambda _handle: int(close_ok)),
+            )
+
+        advapi, kernel = make_api()
+        matched = windows_job_module._read_windows_appcontainer_token_receipt(
+            456, ctypes.addressof(package_sid_storage),
+            ctypes.addressof(capability_sid_storage), advapi=advapi, kernel=kernel,
+        )
+        self.assertIsInstance(matched, receipt_type)
+        self.assertEqual(matched.stage, "matched")
+        self.assertTrue(matched.verified)
+        self.assertEqual(matched.capability_count, 1)
+        self.assertTrue(matched.package_sid_match)
+        self.assertTrue(matched.capability_sid_match)
+        self.assertTrue(matched.capability_enabled)
+        self.assertTrue(matched.token_handle_closed)
+        self.assertNotIn("S-1-", repr(matched))
+
+        mismatch_cases = (
+            ({"package_sid": ctypes.addressof(unexpected_sid_storage)},
+             "package_sid_mismatch"),
+            ({"capability_sid": ctypes.addressof(unexpected_sid_storage)},
+             "capability_sid_mismatch"),
+            ({"attributes": 0}, "capability_not_enabled"),
+            ({"capability_count": 0}, "capability_count_mismatch"),
+            ({"capability_count": 2}, "capability_count_mismatch"),
+            ({"appcontainer": 0}, "appcontainer_mismatch"),
+            ({"fail_class": 30}, "capabilities_query_failed"),
+            ({"close_ok": False}, "token_handle_close_failed"),
+        )
+        for options, expected_stage in mismatch_cases:
+            with self.subTest(expected_stage=expected_stage):
+                advapi, kernel = make_api(**options)
+                receipt = windows_job_module._read_windows_appcontainer_token_receipt(
+                    456, ctypes.addressof(package_sid_storage),
+                    ctypes.addressof(capability_sid_storage),
+                    advapi=advapi, kernel=kernel,
+                )
+                self.assertEqual(receipt.stage, expected_stage)
+                self.assertFalse(receipt.verified)
+
+    def test_private_network正控token句柄关闭失败不报告cleanup通过(self) -> None:
+        class ProcessInformation(ctypes.Structure):
+            _fields_ = [
+                ("hProcess", ctypes.c_void_p), ("hThread", ctypes.c_void_p),
+                ("dwProcessId", ctypes.c_uint32), ("dwThreadId", ctypes.c_uint32),
+            ]
+
+        kernel = mock.Mock()
+        advapi = mock.Mock()
+        capability_sid = ctypes.create_string_buffer(16)
+        kernel.CreateJobObjectW.return_value = 101
+        kernel.SetInformationJobObject.return_value = 1
+        kernel.UpdateProcThreadAttribute.return_value = 1
+        kernel.AssignProcessToJobObject.return_value = 1
+        kernel.ResumeThread.return_value = 1
+        kernel.WaitForSingleObject.return_value = 0
+        kernel.GetExitCodeProcess.return_value = 1
+        kernel.TerminateJobObject.return_value = 1
+        kernel.QueryInformationJobObject.return_value = 1
+        kernel.CloseHandle.return_value = 1
+        kernel.LocalFree.return_value = 0
+
+        def initialize_attribute_list(attribute_list, _count, _flags, size):
+            if attribute_list is None:
+                ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t)).contents.value = 64
+                return 0
+            return 1
+
+        def convert_capability_sid(_name, sid_out):
+            ctypes.cast(sid_out, ctypes.POINTER(ctypes.c_void_p)).contents.value = (
+                ctypes.addressof(capability_sid)
+            )
+            return 1
+
+        def create_process(*arguments):
+            process = ctypes.cast(
+                arguments[-1], ctypes.POINTER(ProcessInformation),
+            ).contents
+            process.hProcess = 202
+            process.hThread = 303
+            return 1
+
+        kernel.InitializeProcThreadAttributeList.side_effect = initialize_attribute_list
+        kernel.CreateProcessW.side_effect = create_process
+        advapi.ConvertStringSidToSidW.side_effect = convert_capability_sid
+        failed_close_receipt = windows_job_module._WindowsAppContainerTokenReceipt(
+            "token_handle_close_failed", True, True, 1, True, True, False,
+        )
+
+        with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch(
+                 "icode.windows_job._is_fixed_private_network_capability_probe",
+                 return_value=True,
+             ), \
+             mock.patch("icode.windows_job.Path.is_absolute", return_value=True), \
+             mock.patch("icode.windows_job.Path.is_file", return_value=True), \
+             mock.patch("icode.windows_job.Path.resolve", return_value=workspace), \
+             mock.patch("icode.windows_job.Path.is_dir", return_value=True), \
+             mock.patch(
+                 "ctypes.WinDLL",
+                 side_effect=lambda name, **_kwargs: kernel if name == "kernel32" else advapi,
+                 create=True,
+             ), \
+             mock.patch("ctypes.set_last_error", create=True), \
+             mock.patch("ctypes.get_last_error", return_value=122, create=True), \
+             mock.patch("ctypes.FormatError", return_value="expected test", create=True), \
+             mock.patch(
+                 "icode.windows_job._read_windows_appcontainer_token_receipt",
+                 return_value=failed_close_receipt,
+             ):
+            result = run_windows_job(
+                [r"C:\Python\python.exe"], cwd=workspace, timeout_seconds=2,
+                _appcontainer_sid=123, _diagnostic_private_network_capability=True,
+            )
+
+        self.assertTrue(result.executed)
+        self.assertEqual(result.exit_code, 0)
+        self.assertIs(result.child_token_receipt, failed_close_receipt)
+        self.assertFalse(result.cleanup_ok)
+        self.assertEqual(result.error, "cleanup_failed")
+        self.assertIn("token", result.detail.casefold())
+
     def test_TokenCapabilities按TOKEN_GROUPS布局并校验返回长度(self) -> None:
         helper_code = windows_job_module._TOKEN_GROUPS_CAPABILITY_PARSER_CODE
         namespace: dict[str, object] = {
