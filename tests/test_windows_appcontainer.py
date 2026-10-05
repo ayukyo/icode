@@ -2733,9 +2733,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             for name, encoded in captured_notices
             if name == "Windows Reviewer IPv6 connect stages"
         ))
-        self.assertEqual(ipv6_notice["cap_control_status"], "inconclusive")
         self.assertIs(ipv6_notice["cap_control_executed"], True)
         self.assertEqual(ipv6_notice["cap_control_exit"], 0)
+        self.assertEqual(ipv6_notice["cap_control_stage"], "probe_completed")
         self.assertIs(ipv6_notice["cap_control_cleanup"], True)
         self.assertIs(ipv6_notice["cap_control_ipv4_canary"], False)
         self.assertIs(ipv6_notice["cap_control_ipv6_canary"], False)
@@ -8148,11 +8148,17 @@ class TestWindowsAppContainer(unittest.TestCase):
                 capability_control_status = (
                     "observed" if capability_control_observed else "inconclusive"
                 )
+                capability_control_stage = (
+                    windows_job_module._private_network_capability_exit_stage(
+                        capability_control.exit_code,
+                    )
+                )
                 print(
                     "windows_appcontainer_private_network_positive_control="
                     f"status={capability_control_status} "
                     f"executed={str(capability_control.executed).lower()} "
                     f"exit={capability_control.exit_code if capability_control.exit_code is not None else 'none'} "
+                    f"stage={capability_control_stage} "
                     f"cleanup={str(capability_control.cleanup_ok).lower()} "
                     f"ipv4_canary={str(capability_ipv4_received).lower()} "
                     f"ipv6_canary={str(capability_ipv6_received).lower()} "
@@ -9100,9 +9106,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                         **_bounded_network_stage_notice(
                             summary["ipv6_network_stages"],
                         ),
-                        "cap_control_status": capability_control_status,
                         "cap_control_executed": capability_control.executed,
                         "cap_control_exit": capability_control.exit_code,
+                        "cap_control_stage": capability_control_stage,
                         "cap_control_cleanup": capability_control.cleanup_ok,
                         "cap_control_ipv4_canary": capability_ipv4_received,
                         "cap_control_ipv6_canary": capability_ipv6_received,

@@ -19,7 +19,14 @@ _READ_HANDLE_PLACEHOLDER = "{ICODE_READ_HANDLE}"
 _PRIVATE_NETWORK_CAPABILITY_SID = "S-1-15-3-3"
 _SE_GROUP_ENABLED = 0x00000004
 _PRIVATE_NETWORK_CAPABILITY_PROBE_CODE = """\
-import ctypes, json, socket, sys
+import sys
+_failure_exit_code = 80
+def _stage_failure_hook(exc_type, _exc_value, _traceback):
+    if issubclass(exc_type, Exception):
+        sys.exit(_failure_exit_code)
+    sys.__excepthook__(exc_type, _exc_value, _traceback)
+sys.excepthook = _stage_failure_hook
+import ctypes, json, socket
 from ctypes import wintypes
 kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 advapi = ctypes.WinDLL('advapi32', use_last_error=True)
@@ -43,14 +50,17 @@ def sid_text(sid):
         return text.value
     finally:
         kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+_failure_exit_code = 81
 token = wintypes.HANDLE()
 if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
     raise ctypes.WinError(ctypes.get_last_error())
 try:
     returned = wintypes.DWORD()
     appcontainer = wintypes.DWORD()
+    _failure_exit_code = 82
     if not advapi.GetTokenInformation(token, 29, ctypes.byref(appcontainer), ctypes.sizeof(appcontainer), ctypes.byref(returned)):
         raise ctypes.WinError(ctypes.get_last_error())
+    _failure_exit_code = 83
     package_size = wintypes.DWORD()
     ctypes.set_last_error(0)
     advapi.GetTokenInformation(token, 31, None, 0, ctypes.byref(package_size))
@@ -60,6 +70,7 @@ try:
     if not advapi.GetTokenInformation(token, 31, package_buffer, package_size.value, ctypes.byref(returned)):
         raise ctypes.WinError(ctypes.get_last_error())
     package_sid = ctypes.cast(package_buffer, ctypes.POINTER(ctypes.c_void_p)).contents.value
+    _failure_exit_code = 84
     capability_buffer = ctypes.create_string_buffer(4096)
     if not advapi.GetTokenInformation(token, 30, capability_buffer, len(capability_buffer), ctypes.byref(returned)):
         raise ctypes.WinError(ctypes.get_last_error())
@@ -74,6 +85,7 @@ try:
         ctypes.addressof(capability_buffer) + TOKEN_CAPABILITIES.Capabilities.offset,
         ctypes.POINTER(SID_AND_ATTRIBUTES),
     ).contents
+    _failure_exit_code = 85
     package_text = sid_text(package_sid)
     capability_text = sid_text(capability.Sid)
     if appcontainer.value != 1 or package_text != sys.argv[4] or capability_text != 'S-1-15-3-3' or not (capability.Attributes & SE_GROUP_ENABLED):
@@ -86,14 +98,41 @@ try:
 finally:
     kernel.CloseHandle(token)
 for family, address, port in (
-    (socket.AF_INET, '127.0.0.1', int(sys.argv[1])),
-    (socket.AF_INET6, '::1', int(sys.argv[2])),
+    (socket.AF_INET, '127.0.0.1', int(sys.argv[1]), 86, 87),
+    (socket.AF_INET6, '::1', int(sys.argv[2]), 88, 89),
 ):
+    _failure_exit_code = 86 if family == socket.AF_INET else 88
     with socket.socket(family, socket.SOCK_STREAM) as connection:
         connection.settimeout(3)
         connection.connect((address, port))
+        _failure_exit_code = 87 if family == socket.AF_INET else 89
         connection.sendall(payload)
 """
+
+_PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES = {
+    0: "probe_completed",
+    80: "probe_initialization",
+    81: "token_open",
+    82: "token_appcontainer",
+    83: "token_package_sid",
+    84: "token_capabilities",
+    85: "token_match",
+    86: "ipv4_connect",
+    87: "ipv4_send",
+    88: "ipv6_connect",
+    89: "ipv6_send",
+}
+
+
+def _private_network_capability_exit_stage(exit_code: int | None) -> str:
+    """Translate only fixed probe exits into bounded, non-sensitive stages."""
+    if exit_code is None:
+        return "no_exit_code"
+    if type(exit_code) is not int:
+        return "unclassified"
+    return _PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES.get(
+        exit_code, "unclassified",
+    )
 
 
 def _build_private_network_capability_probe_argv(

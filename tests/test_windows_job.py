@@ -22,12 +22,63 @@ from icode.windows_job import (
     _build_private_network_capability_probe_argv,
     _is_fixed_private_network_capability_probe,
     _is_fixed_system_whoami_probe,
+    _private_network_capability_exit_stage,
     probe_windows_job_cleanup,
     run_windows_job,
 )
 
 
 class TestWindowsJob(unittest.TestCase):
+    def test_private_network正控失败阶段使用有界exit码(self) -> None:
+        expected_stages = [
+            (None, "no_exit_code"),
+            (0, "probe_completed"),
+            (80, "probe_initialization"),
+            (81, "token_open"),
+            (82, "token_appcontainer"),
+            (83, "token_package_sid"),
+            (84, "token_capabilities"),
+            (85, "token_match"),
+            (86, "ipv4_connect"),
+            (87, "ipv4_send"),
+            (88, "ipv6_connect"),
+            (89, "ipv6_send"),
+            (1, "unclassified"),
+            (-1, "unclassified"),
+            (True, "unclassified"),
+        ]
+        for exit_code, expected in expected_stages:
+            with self.subTest(exit_code=exit_code):
+                self.assertEqual(
+                    _private_network_capability_exit_stage(exit_code), expected,
+                )
+
+        argv = _build_private_network_capability_probe_argv(
+            r"C:\actions\_temp\icode-runtime-staging-reviewer-fixed\python.exe",
+            43123, 43124, "0123456789abcdef0123456789abcdef",
+            "S-1-15-2-123456789-123456789-123456789-123456789",
+        )
+        self.assertIn("_failure_exit_code = 80", argv[3])
+        self.assertIn("_failure_exit_code = 81", argv[3])
+        self.assertIn("_failure_exit_code = 82", argv[3])
+        self.assertIn("_failure_exit_code = 83", argv[3])
+        self.assertIn("_failure_exit_code = 84", argv[3])
+        self.assertIn("_failure_exit_code = 85", argv[3])
+        self.assertIn("'127.0.0.1', int(sys.argv[1]), 86, 87)", argv[3])
+        self.assertIn("'::1', int(sys.argv[2]), 88, 89)", argv[3])
+        self.assertIn("86 if family == socket.AF_INET else 88", argv[3])
+        self.assertIn("87 if family == socket.AF_INET else 89", argv[3])
+        self.assertIn("sys.exit(_failure_exit_code)", argv[3])
+        self.assertIn("import sys\n_failure_exit_code = 80", argv[3])
+        self.assertLess(
+            argv[3].index("import sys\n_failure_exit_code = 80"),
+            argv[3].index("sys.excepthook = _stage_failure_hook"),
+        )
+        self.assertLess(
+            argv[3].index("sys.excepthook = _stage_failure_hook"),
+            argv[3].index("import ctypes, json, socket"),
+        )
+
     def test_private_network能力正控只接受固定CI回环探针(self) -> None:
         environment = {
             "GITHUB_ACTIONS": "true",
