@@ -143,6 +143,9 @@ FD_MAX_EVENTS = 10
 WSA_WAIT_EVENT_0 = 0
 WSA_WAIT_TIMEOUT = 258
 WSA_WAIT_FAILED = 0xFFFFFFFF
+CONNECT_WAIT_TOTAL_MS = 10000
+CONNECT_WAIT_INTERVAL_MS = 1000
+CONNECT_WAIT_MAX_ATTEMPTS = 10
 
 class WSANETWORKEVENTS(ctypes.Structure):
     # Winsock uses 32-bit LONG/INT members even on 64-bit Windows (LLP64).
@@ -178,24 +181,50 @@ def _wsa_last_error(ws2):
 
 def wsa_event_connect_completion(ws2, connection, event, observation, pending_code):
     event_array = (ctypes.c_void_p * 1)(event)
+    observation["connect_wait_attempts"] = 0
+    observation["connect_wait_timeouts"] = 0
     try:
-        wait_result = int(
-            ws2.WSAWaitForMultipleEvents(1,event_array,False,3000,False),
-        )
+        deadline = time.monotonic() + CONNECT_WAIT_TOTAL_MS / 1000.0
     except Exception:
         observation["connect_wait_state"] = "error"
-        observation["connect_wait_api_error"] = _wsa_last_error(ws2)
+        observation["connect_wait_api_error"] = -1
         return "error", pending_code
-    if wait_result == WSA_WAIT_TIMEOUT:
+    while observation["connect_wait_attempts"] < CONNECT_WAIT_MAX_ATTEMPTS:
+        try:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+        except Exception:
+            observation["connect_wait_state"] = "error"
+            observation["connect_wait_api_error"] = -1
+            return "error", pending_code
+        if remaining_ms <= 0:
+            observation["connect_wait_state"] = "timeout"
+            return "timeout", pending_code
+        wait_timeout_ms = min(CONNECT_WAIT_INTERVAL_MS, remaining_ms)
+        try:
+            observation["connect_wait_attempts"] += 1
+            wait_result = int(
+                ws2.WSAWaitForMultipleEvents(
+                    1,event_array,False,wait_timeout_ms,False,
+                ),
+            )
+        except Exception:
+            observation["connect_wait_state"] = "error"
+            observation["connect_wait_api_error"] = _wsa_last_error(ws2)
+            return "error", pending_code
+        if wait_result == WSA_WAIT_TIMEOUT:
+            observation["connect_wait_timeouts"] += 1
+            continue
+        if wait_result == WSA_WAIT_FAILED:
+            observation["connect_wait_state"] = "error"
+            observation["connect_wait_api_error"] = _wsa_last_error(ws2)
+            return "error", pending_code
+        if wait_result != WSA_WAIT_EVENT_0:
+            observation["connect_wait_state"] = "unexpected"
+            return "unexpected", pending_code
+        break
+    else:
         observation["connect_wait_state"] = "timeout"
         return "timeout", pending_code
-    if wait_result == WSA_WAIT_FAILED:
-        observation["connect_wait_state"] = "error"
-        observation["connect_wait_api_error"] = _wsa_last_error(ws2)
-        return "error", pending_code
-    if wait_result != WSA_WAIT_EVENT_0:
-        observation["connect_wait_state"] = "unexpected"
-        return "unexpected", pending_code
 
     observation["connect_wait_state"] = "event_signaled"
     events = WSANETWORKEVENTS()
@@ -295,6 +324,8 @@ def _bounded_network_observation(value: object) -> dict[str, object]:
         "event_select_api_error": error_code("event_select_api_error"),
         "connect_wait_state": enum_value("connect_wait_state", connect_wait_states),
         "connect_wait_api_error": error_code("connect_wait_api_error"),
+        "connect_wait_attempts": unsigned_integer("connect_wait_attempts", 10),
+        "connect_wait_timeouts": unsigned_integer("connect_wait_timeouts", 10),
         "event_enum_state": enum_value("event_enum_state", event_enum_states),
         "event_enum_api_error": error_code("event_enum_api_error"),
         "event_mask": error_code("event_mask"),
@@ -351,6 +382,7 @@ def _bounded_network_stage_notice(value: object) -> dict[str, object]:
         "event_create": observation["event_create_state"],
         "event_select": observation["event_select_state"],
         "wait": observation["connect_wait_state"],
+        "wait_t": observation["connect_wait_timeouts"],
         "event_mask": observation["event_mask"],
         "fd_connect": observation["fd_connect_event"],
         "fd_connect_error": observation["fd_connect_error"],
@@ -2328,6 +2360,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             "event_select_api_error": -1,
             "connect_wait_state": "event_signaled",
             "connect_wait_api_error": -1,
+            "connect_wait_attempts": 2,
+            "connect_wait_timeouts": 1,
             "event_enum_state": "succeeded",
             "event_enum_api_error": -1,
             "event_mask": 16,
@@ -2362,6 +2396,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(projected["event_create_state"], "created")
         self.assertEqual(projected["event_select_state"], "registered")
         self.assertEqual(projected["connect_wait_state"], "event_signaled")
+        self.assertEqual(projected["connect_wait_attempts"], 2)
+        self.assertEqual(projected["connect_wait_timeouts"], 1)
         self.assertEqual(projected["event_enum_state"], "succeeded")
         self.assertEqual(projected["event_mask"], 16)
         self.assertIs(projected["fd_connect_event"], True)
@@ -2385,6 +2421,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             "event_create_state": "D:\\private\\path",
             "event_select_state": "D:\\private\\path",
             "connect_wait_state": "D:\\private\\path",
+            "connect_wait_attempts": True,
+            "connect_wait_timeouts": 0xFFFFFFFF,
             "event_enum_state": "D:\\private\\path",
             "event_mask": True,
             "fd_connect_event": 1,
@@ -2408,6 +2446,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(malformed["event_create_state"], "unavailable")
         self.assertEqual(malformed["event_select_state"], "unavailable")
         self.assertEqual(malformed["connect_wait_state"], "unavailable")
+        self.assertEqual(malformed["connect_wait_attempts"], -1)
+        self.assertEqual(malformed["connect_wait_timeouts"], -1)
         self.assertEqual(malformed["event_enum_state"], "unavailable")
         self.assertEqual(malformed["event_mask"], -1)
         self.assertIs(malformed["fd_connect_event"], False)
@@ -2585,7 +2625,10 @@ class TestWindowsAppContainer(unittest.TestCase):
             ) -> None:
                 encoded = json.dumps(detail, ensure_ascii=True, separators=(",", ":"))
                 if len(encoded) > 500:
-                    raise AssertionError("native Reviewer probe notice exceeds GitHub limit")
+                    raise AssertionError(
+                        f"native Reviewer probe notice exceeds GitHub limit: "
+                        f"{name} ({len(encoded)} bytes)",
+                    )
                 captured_notices.append((name, encoded))
 
         with tempfile.TemporaryDirectory(prefix="icode-reviewer-probe-script-") as raw:
@@ -2936,6 +2979,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             "event_select_api_error": 0xFFFFFFFF,
             "connect_wait_state": "error",
             "connect_wait_api_error": 0xFFFFFFFF,
+            "connect_wait_attempts": 10,
+            "connect_wait_timeouts": 10,
             "event_enum_state": "error",
             "event_enum_api_error": 0xFFFFFFFF,
             "event_mask": 0xFFFFFFFF,
@@ -3018,7 +3063,9 @@ class TestWindowsAppContainer(unittest.TestCase):
             "ws2.WSAEventSelect(connection.fileno(),event,FD_CONNECT)",
             "code=bounded_error_code(connection.connect_ex((address,port)))",
             "if code in (WSAEWOULDBLOCK,WSAEINPROGRESS):",
-            "ws2.WSAWaitForMultipleEvents(1,event_array,False,3000,False)",
+            "CONNECT_WAIT_TOTAL_MS = 10000",
+            "CONNECT_WAIT_INTERVAL_MS = 1000",
+            "time.monotonic()",
             "ws2.WSAEnumNetworkEvents(",
             "connection.getsockopt(socket.SOL_SOCKET,socket.SO_ERROR)",
             "event_mask & FD_CONNECT",
@@ -3089,10 +3136,12 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.sent: bytes | None = None
                 self.blocking: bool | None = None
                 self.wait_timeout: float | None = None
+                self.wait_timeouts: list[int] = []
                 self.timeout: float | None = None
                 self.tcp_info_supported = tcp_info_supported
                 self.timeout_so_error_failure = timeout_so_error_failure
                 self.getsockopt_calls = 0
+                self.wait_call_count = 0
                 self.tcp_info_called = False
                 self.tcp_info_version = -1
                 self.tcp_info_control_code = -1
@@ -3149,6 +3198,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                 "socket": socket_module,
                 "ctypes": ctypes,
             }
+
+            class _FakeClock:
+                def __init__(self) -> None:
+                    self.now = 0.0
+
+                def monotonic(self) -> float:
+                    return self.now
+
+            fake_clock = _FakeClock()
+            namespace["time"] = SimpleNamespace(monotonic=fake_clock.monotonic)
             exec(network_helper, namespace)
 
             class _NativeFunction:
@@ -3195,16 +3254,22 @@ class TestWindowsAppContainer(unittest.TestCase):
                     timeout_ms: int, alertable: bool,
                 ) -> int:
                     connection.native_calls.append("event_wait")
+                    connection.wait_call_count += 1
+                    connection.wait_timeouts.append(timeout_ms)
                     connection.wait_timeout = timeout_ms
                     self.assert_equal(count, 1)
                     self.assert_equal(event_array[0], self.event_handle)
                     self.assert_equal(wait_all, False)
-                    self.assert_equal(timeout_ms, 3000)
+                    self.assert_true(0 < timeout_ms <= 1000)
                     self.assert_equal(alertable, False)
                     if connection.completion in {"select_error", "wait_error"}:
                         self.last_error = connection.completion_error
                         return 0xFFFFFFFF
-                    if connection.completion == "timeout":
+                    if connection.completion == "timeout" or (
+                        connection.completion == "late_event"
+                        and connection.wait_call_count == 1
+                    ):
+                        fake_clock.now += timeout_ms / 1000
                         return 258
                     if connection.completion == "unexpected_wait":
                         return 1
@@ -3263,7 +3328,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "tcp_state": "syn_sent" if available else "not_available",
                     "tcp_info_api_error": -1 if available else 10045,
                     "tcp_info_bytes_returned": 88 if available else -1,
-                    "tcp_connection_time_ms": 3000 if available else -1,
+                    "tcp_connection_time_ms": 10000 if available else -1,
                     "tcp_syn_retrans": 1 if available else -1,
                 }
 
@@ -3330,11 +3395,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                     self.assertEqual(observation["timeout_so_error_api_error"], -1)
                     self.assertEqual(connection.getsockopt_calls, 1)
                     self.assertEqual(outcome, (True, False, False, 10035, True, False))
+                    self.assertEqual(observation["connect_wait_attempts"], 10)
+                    self.assertEqual(observation["connect_wait_timeouts"], 10)
+                    self.assertEqual(connection.wait_timeouts, [1000] * 10)
                     self.assertTrue(connection.tcp_info_called)
                     self.assertEqual(observation["tcp_info_status"], "available")
                     self.assertEqual(observation["tcp_state"], "syn_sent")
                     self.assertEqual(observation["tcp_info_bytes_returned"], 88)
-                    self.assertEqual(observation["tcp_connection_time_ms"], 3000)
+                    self.assertEqual(observation["tcp_connection_time_ms"], 10000)
                     self.assertEqual(observation["tcp_syn_retrans"], 1)
                 else:
                     self.assertFalse(connection.tcp_info_called)
@@ -3359,7 +3427,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self.assertTrue(connection.closed)
                 self.assertIs(connection.blocking, False)
                 if code in (10035, 10036):
-                    self.assertEqual(connection.wait_timeout, 3000)
+                    self.assertEqual(connection.wait_timeout, 1000)
                     self.assertLess(
                         connection.native_calls.index("event_select"),
                         connection.native_calls.index("connect"),
@@ -3372,6 +3440,27 @@ class TestWindowsAppContainer(unittest.TestCase):
                     self.assertEqual(connection.sent, namespace["network_canary"])
                 else:
                     self.assertIsNone(connection.sent)
+
+        late_event_connection = _ConnectExSocket(
+            result=10035, completion="late_event", completion_error=10013,
+        )
+        late_event_outcome, late_event_namespace = run_network_probe(
+            late_event_connection,
+        )
+        late_event_observation = late_event_namespace["network_observations"]["ipv4"]
+        self.assertEqual(
+            late_event_outcome, (True, False, True, 10013, False, True),
+        )
+        self.assertEqual(late_event_connection.wait_call_count, 2)
+        self.assertEqual(
+            late_event_observation["connect_wait_attempts"], 2,
+        )
+        self.assertEqual(late_event_observation["connect_wait_timeouts"], 1)
+        self.assertEqual(late_event_connection.wait_timeouts, [1000, 1000])
+        self.assertEqual(late_event_observation["fd_connect_error"], 10013)
+        self.assertIs(late_event_observation["fd_connect_event"], True)
+        self.assertEqual(late_event_connection.native_calls.count("event_enum"), 1)
+        self.assertIsNone(late_event_connection.sent)
 
         failure_connection = _ConnectExSocket(
             result=10035, completion="timeout", completion_error=10022,
@@ -8401,7 +8490,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "'select_api_error':-1,'event_create_state':'not_attempted',"
                     "'event_create_api_error':-1,'event_select_state':'not_attempted',"
                     "'event_select_api_error':-1,'connect_wait_state':'not_attempted',"
-                    "'connect_wait_api_error':-1,'event_enum_state':'not_attempted',"
+                    "'connect_wait_api_error':-1,'connect_wait_attempts':0,"
+                    "'connect_wait_timeouts':0,'event_enum_state':'not_attempted',"
                     "'event_enum_api_error':-1,'event_mask':-1,'fd_connect_event':False,"
                     "'fd_connect_error':-1,'event_close_state':'not_created',"
                     "'event_close_api_error':-1,'so_error_attempted':False,'so_error_read':False,"
