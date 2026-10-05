@@ -2728,6 +2728,18 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer IPv6 connect stages", notice_names)
         self.assertIn("Windows Reviewer write canary fingerprints", notice_names)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
+        ipv6_notice = json.loads(next(
+            encoded
+            for name, encoded in captured_notices
+            if name == "Windows Reviewer IPv6 connect stages"
+        ))
+        self.assertEqual(ipv6_notice["cap_control_status"], "inconclusive")
+        self.assertIs(ipv6_notice["cap_control_executed"], True)
+        self.assertEqual(ipv6_notice["cap_control_exit"], 0)
+        self.assertIs(ipv6_notice["cap_control_cleanup"], True)
+        self.assertIs(ipv6_notice["cap_control_ipv4_canary"], False)
+        self.assertIs(ipv6_notice["cap_control_ipv6_canary"], False)
+        self.assertIs(ipv6_notice["cap_control_readiness_credit"], False)
         write_fingerprint_notice = json.loads(next(
             encoded
             for name, encoded in captured_notices
@@ -9084,7 +9096,18 @@ class TestWindowsAppContainer(unittest.TestCase):
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer IPv6 connect stages",
-                    _bounded_network_stage_notice(summary["ipv6_network_stages"]),
+                    {
+                        **_bounded_network_stage_notice(
+                            summary["ipv6_network_stages"],
+                        ),
+                        "cap_control_status": capability_control_status,
+                        "cap_control_executed": capability_control.executed,
+                        "cap_control_exit": capability_control.exit_code,
+                        "cap_control_cleanup": capability_control.cleanup_ok,
+                        "cap_control_ipv4_canary": capability_ipv4_received,
+                        "cap_control_ipv6_canary": capability_ipv6_received,
+                        "cap_control_readiness_credit": False,
+                    },
                 )
                 self._workflow_json_notice(
                     "Windows Reviewer write canary fingerprints",
