@@ -87,8 +87,19 @@ try:
     ).contents
     _failure_exit_code = 85
     package_text = sid_text(package_sid)
+    _failure_exit_code = 86
     capability_text = sid_text(capability.Sid)
-    if appcontainer.value != 1 or package_text != sys.argv[4] or capability_text != 'S-1-15-3-3' or not (capability.Attributes & SE_GROUP_ENABLED):
+    _failure_exit_code = 87
+    if not appcontainer.value:
+        raise RuntimeError('unexpected AppContainer token flag')
+    _failure_exit_code = 88
+    if package_text != sys.argv[4]:
+        raise RuntimeError('unexpected AppContainer package SID')
+    _failure_exit_code = 89
+    if capability_text != 'S-1-15-3-3':
+        raise RuntimeError('unexpected AppContainer capability SID')
+    _failure_exit_code = 90
+    if not (capability.Attributes & SE_GROUP_ENABLED):
         raise RuntimeError('unexpected AppContainer token capability')
     payload = json.dumps({
         'nonce': sys.argv[3], 'appcontainer': True,
@@ -98,14 +109,14 @@ try:
 finally:
     kernel.CloseHandle(token)
 for family, address, port in (
-    (socket.AF_INET, '127.0.0.1', int(sys.argv[1]), 86, 87),
-    (socket.AF_INET6, '::1', int(sys.argv[2]), 88, 89),
+    (socket.AF_INET, '127.0.0.1', int(sys.argv[1]), 91, 92),
+    (socket.AF_INET6, '::1', int(sys.argv[2]), 93, 94),
 ):
-    _failure_exit_code = 86 if family == socket.AF_INET else 88
+    _failure_exit_code = 91 if family == socket.AF_INET else 93
     with socket.socket(family, socket.SOCK_STREAM) as connection:
         connection.settimeout(3)
         connection.connect((address, port))
-        _failure_exit_code = 87 if family == socket.AF_INET else 89
+        _failure_exit_code = 92 if family == socket.AF_INET else 94
         connection.sendall(payload)
 """
 
@@ -116,11 +127,16 @@ _PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES = {
     82: "token_appcontainer",
     83: "token_package_sid",
     84: "token_capabilities",
-    85: "token_match",
-    86: "ipv4_connect",
-    87: "ipv4_send",
-    88: "ipv6_connect",
-    89: "ipv6_send",
+    85: "token_package_sid_text",
+    86: "token_capability_sid_text",
+    87: "token_appcontainer_match",
+    88: "token_package_sid_match",
+    89: "token_capability_sid_match",
+    90: "token_capability_enabled",
+    91: "ipv4_connect",
+    92: "ipv4_send",
+    93: "ipv6_connect",
+    94: "ipv6_send",
 }
 
 

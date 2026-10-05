@@ -38,11 +38,16 @@ class TestWindowsJob(unittest.TestCase):
             (82, "token_appcontainer"),
             (83, "token_package_sid"),
             (84, "token_capabilities"),
-            (85, "token_match"),
-            (86, "ipv4_connect"),
-            (87, "ipv4_send"),
-            (88, "ipv6_connect"),
-            (89, "ipv6_send"),
+            (85, "token_package_sid_text"),
+            (86, "token_capability_sid_text"),
+            (87, "token_appcontainer_match"),
+            (88, "token_package_sid_match"),
+            (89, "token_capability_sid_match"),
+            (90, "token_capability_enabled"),
+            (91, "ipv4_connect"),
+            (92, "ipv4_send"),
+            (93, "ipv6_connect"),
+            (94, "ipv6_send"),
             (1, "unclassified"),
             (-1, "unclassified"),
             (True, "unclassified"),
@@ -64,10 +69,17 @@ class TestWindowsJob(unittest.TestCase):
         self.assertIn("_failure_exit_code = 83", argv[3])
         self.assertIn("_failure_exit_code = 84", argv[3])
         self.assertIn("_failure_exit_code = 85", argv[3])
-        self.assertIn("'127.0.0.1', int(sys.argv[1]), 86, 87)", argv[3])
-        self.assertIn("'::1', int(sys.argv[2]), 88, 89)", argv[3])
-        self.assertIn("86 if family == socket.AF_INET else 88", argv[3])
-        self.assertIn("87 if family == socket.AF_INET else 89", argv[3])
+        self.assertIn("_failure_exit_code = 86", argv[3])
+        self.assertIn("_failure_exit_code = 87", argv[3])
+        self.assertIn("_failure_exit_code = 88", argv[3])
+        self.assertIn("_failure_exit_code = 89", argv[3])
+        self.assertIn("_failure_exit_code = 90", argv[3])
+        self.assertIn("if not appcontainer.value:", argv[3])
+        self.assertNotIn("appcontainer.value != 1", argv[3])
+        self.assertIn("'127.0.0.1', int(sys.argv[1]), 91, 92)", argv[3])
+        self.assertIn("'::1', int(sys.argv[2]), 93, 94)", argv[3])
+        self.assertIn("91 if family == socket.AF_INET else 93", argv[3])
+        self.assertIn("92 if family == socket.AF_INET else 94", argv[3])
         self.assertIn("sys.exit(_failure_exit_code)", argv[3])
         self.assertIn("import sys\n_failure_exit_code = 80", argv[3])
         self.assertLess(
