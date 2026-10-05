@@ -19,6 +19,8 @@ from icode.windows_job import (
     _allocate_attribute_list_buffer,
     _append_windows_environment_value,
     _build_windows_environment_block,
+    _build_private_network_capability_probe_argv,
+    _is_fixed_private_network_capability_probe,
     _is_fixed_system_whoami_probe,
     probe_windows_job_cleanup,
     run_windows_job,
@@ -26,6 +28,181 @@ from icode.windows_job import (
 
 
 class TestWindowsJob(unittest.TestCase):
+    def test_private_network能力正控只接受固定CI回环探针(self) -> None:
+        environment = {
+            "GITHUB_ACTIONS": "true",
+            "RUNNER_OS": "Windows",
+            "ICODE_DIAGNOSTIC_NETWORK_CAPABILITY": "true",
+            "RUNNER_TEMP": r"C:\actions\_temp",
+        }
+        runtime = (
+            r"C:\actions\_temp\icode-runtime-staging-reviewer-"
+            "0123456789abcdef0123456789abcdef"
+        )
+        executable = runtime + r"\python.exe"
+        workspace = (
+            r"C:\actions\_temp\icode-reviewer-appcontainer-probe-fixed\task-scratch"
+        )
+        argv = _build_private_network_capability_probe_argv(
+            executable, 43123, 43124, "0123456789abcdef0123456789abcdef",
+            "S-1-15-2-123456789-123456789-123456789-123456789",
+        )
+        with mock.patch.dict(os.environ, environment, clear=True), \
+             mock.patch(
+                 "icode.windows_job.tempfile.gettempdir",
+                 return_value=r"C:\actions\_temp",
+             ):
+            self.assertTrue(_is_fixed_private_network_capability_probe(argv, workspace))
+
+            invalid_argv = (
+                [argv[0], argv[1], argv[2],
+                 "import socket; socket.create_connection(('1.1.1.1', 443))", *argv[4:]],
+                [*argv[:-4], "0", *argv[-3:]],
+                [*argv, "extra"],
+            )
+            for candidate in invalid_argv:
+                with self.subTest(candidate=candidate):
+                    self.assertFalse(
+                        _is_fixed_private_network_capability_probe(candidate, workspace),
+                    )
+            self.assertFalse(
+                _is_fixed_private_network_capability_probe(
+                    argv, r"C:\actions\_work\repo\task-scratch",
+                ),
+            )
+
+        with mock.patch.dict(
+            os.environ,
+            {**environment, "ICODE_DIAGNOSTIC_NETWORK_CAPABILITY": "false"},
+            clear=True,
+        ), mock.patch(
+            "icode.windows_job.tempfile.gettempdir",
+            return_value=r"C:\actions\_temp",
+        ):
+            self.assertFalse(_is_fixed_private_network_capability_probe(argv, workspace))
+
+    def test_private_network能力入口拒绝非固定命令和错误能力数量(self) -> None:
+        with temp_workspace() as workspace, \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch("ctypes.WinDLL", create=True) as load_api:
+            result = run_windows_job(
+                [sys.executable, "-I", "-c", "pass"], cwd=workspace,
+                timeout_seconds=2, _appcontainer_sid=123,
+                _diagnostic_private_network_capability=True,
+            )
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "invalid_diagnostic_probe")
+        load_api.assert_not_called()
+
+    def test_private_network能力启动属性仅请求单一SID(self) -> None:
+        from ctypes import wintypes
+
+        api = mock.Mock()
+        api.CreateJobObjectW.return_value = 1
+        api.SetInformationJobObject.return_value = 1
+        api.UpdateProcThreadAttribute.return_value = 1
+        api.CreateProcessW.return_value = 0
+        api.CloseHandle.return_value = 1
+        api.LocalFree.side_effect = (0, 1)
+        sid_storage = ctypes.create_string_buffer(16)
+
+        def convert_capability_sid(_name: str, output: object) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = (
+                ctypes.addressof(sid_storage)
+            )
+            return 1
+
+        api.ConvertStringSidToSidW.side_effect = convert_capability_sid
+
+        def initialize_attribute_list(
+            attribute_list: object, _count: int, _flags: int, size: object,
+        ) -> int:
+            if attribute_list is None:
+                ctypes.cast(size, ctypes.POINTER(ctypes.c_size_t)).contents.value = 64
+                return 0
+            return 1
+
+        api.InitializeProcThreadAttributeList.side_effect = initialize_attribute_list
+        observed: dict[str, int] = {}
+
+        class SID_AND_ATTRIBUTES(ctypes.Structure):
+            _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+        class SECURITY_CAPABILITIES(ctypes.Structure):
+            _fields_ = [
+                ("AppContainerSid", ctypes.c_void_p),
+                ("Capabilities", ctypes.POINTER(SID_AND_ATTRIBUTES)),
+                ("CapabilityCount", wintypes.DWORD),
+                ("Reserved", wintypes.DWORD),
+            ]
+
+        def observe_security_attribute(
+            _attribute_list: object, _flags: int, attribute: int, payload: object,
+            _size: int, _previous: object, _return_size: object,
+        ) -> int:
+            if attribute == 0x00020009:
+                security = ctypes.cast(
+                    payload, ctypes.POINTER(SECURITY_CAPABILITIES),
+                ).contents
+                observed["count"] = int(security.CapabilityCount)
+                observed["reserved"] = int(security.Reserved)
+                observed["sid"] = int(security.AppContainerSid or 0)
+                observed["capability_sid"] = int(security.Capabilities[0].Sid or 0)
+                observed["attributes"] = int(security.Capabilities[0].Attributes)
+            return 1
+
+        api.UpdateProcThreadAttribute.side_effect = observe_security_attribute
+        environment = {
+            "GITHUB_ACTIONS": "true",
+            "RUNNER_OS": "Windows",
+            "ICODE_DIAGNOSTIC_NETWORK_CAPABILITY": "true",
+            "RUNNER_TEMP": r"C:\actions\_temp",
+        }
+        executable = (
+            r"C:\actions\_temp\icode-runtime-staging-reviewer-"
+            "0123456789abcdef0123456789abcdef\python.exe"
+        )
+        workspace = (
+            r"C:\actions\_temp\icode-reviewer-appcontainer-probe-fixed\task-scratch"
+        )
+        argv = _build_private_network_capability_probe_argv(
+            executable, 43123, 43124, "0123456789abcdef0123456789abcdef",
+            "S-1-15-2-123456789-123456789-123456789-123456789",
+        )
+        with temp_workspace() as local_workspace, \
+             mock.patch("icode.windows_job._is_fixed_private_network_capability_probe", return_value=True), \
+             mock.patch("icode.windows_job.Path.is_absolute", return_value=True), \
+             mock.patch("icode.windows_job.Path.is_file", return_value=True), \
+             mock.patch("icode.windows_job.Path.resolve", return_value=local_workspace), \
+             mock.patch("icode.windows_job.Path.is_dir", return_value=True), \
+             mock.patch("icode.windows_job.sys.platform", "win32"), \
+             mock.patch.dict(os.environ, environment, clear=True), \
+             mock.patch("ctypes.WinDLL", return_value=api, create=True), \
+             mock.patch("ctypes.set_last_error", create=True), \
+             mock.patch(
+                 "ctypes.get_last_error", side_effect=(122, 203, 122, 203), create=True,
+             ), \
+             mock.patch("ctypes.FormatError", return_value="expected test stop", create=True):
+            result = run_windows_job(
+                argv, cwd=workspace, timeout_seconds=2, _appcontainer_sid=123,
+                _diagnostic_private_network_capability=True,
+            )
+            local_free_failure = run_windows_job(
+                argv, cwd=workspace, timeout_seconds=2, _appcontainer_sid=123,
+                _diagnostic_private_network_capability=True,
+            )
+
+        self.assertFalse(result.executed)
+        self.assertEqual(result.error, "native_api_failed")
+        self.assertTrue(result.cleanup_ok)
+        self.assertFalse(local_free_failure.cleanup_ok)
+        self.assertEqual(local_free_failure.error, "cleanup_failed")
+        self.assertEqual(observed, {
+            "count": 1, "reserved": 0, "sid": 123,
+            "capability_sid": ctypes.addressof(sid_storage), "attributes": 0x00000004,
+        })
+
     def test_FILE_STANDARD_INFO使用Win32BOOLEAN字段布局(self) -> None:
         standard_info = getattr(windows_job_module, "_FILE_STANDARD_INFO", None)
         self.assertIsNotNone(standard_info, "FILE_STANDARD_INFO layout is not exposed for validation")

@@ -1454,6 +1454,48 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertFalse(result.cleanup_ok)
         load_api.assert_not_called()
 
+    def test_private_network能力正控必须使用固定CI探针和staged_runtime(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="icode-private-network-gate-") as raw:
+            root = Path(raw)
+            scratch = root / "task-scratch"
+            runtime = root / "icode-runtime-staging-reviewer-0123456789abcdef"
+            scratch.mkdir()
+            runtime.mkdir()
+            executable = runtime / "python.exe"
+            executable.write_bytes(b"fixed-probe-placeholder")
+            argv = windows_job_module._build_private_network_capability_probe_argv(
+                str(executable), 43123, 43124, "0123456789abcdef0123456789abcdef",
+                "S-1-15-2-123456789-123456789-123456789-123456789",
+            )
+            with mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+                 mock.patch.dict(
+                     os.environ,
+                     {
+                         "GITHUB_ACTIONS": "true",
+                         "RUNNER_OS": "Windows",
+                         "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
+                         "ICODE_DIAGNOSTIC_NETWORK_CAPABILITY": "true",
+                         "RUNNER_TEMP": str(root),
+                     },
+                     clear=True,
+                 ), mock.patch("ctypes.WinDLL", create=True) as load_api:
+                missing_staged_runtime = run_windows_appcontainer(
+                    argv, cwd=scratch, timeout_seconds=8,
+                    _diagnostic_private_network_capability=True,
+                )
+                ordinary_code = run_windows_appcontainer(
+                    [str(executable), "-I", "-c", "pass"], cwd=scratch,
+                    timeout_seconds=8, _diagnostic_runtime_acl=True,
+                    _diagnostic_runtime_roots=(runtime,),
+                    _diagnostic_private_network_capability=True,
+                )
+
+        for result in (missing_staged_runtime, ordinary_code):
+            self.assertFalse(result.executed)
+            self.assertEqual(result.error, "invalid_diagnostic_probe")
+            self.assertFalse(result.cleanup_ok)
+        load_api.assert_not_called()
+
     def test_reviewer_snapshot_profile_name_can_be_pinned_only_under_ci_optins(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-reviewer-profile-name-gate-") as raw:
             root = Path(raw)
@@ -2520,11 +2562,15 @@ class TestWindowsAppContainer(unittest.TestCase):
         from io import StringIO
 
         captured_scripts: list[str] = []
+        captured_network_control_scripts: list[str] = []
         captured_notices: list[tuple[str, str]] = []
         captured_runner_targets: list[dict[str, object]] = []
         wfp_output = StringIO()
 
         class _CaptureAssertions:
+            def fail(self, message: str = "") -> None:
+                raise AssertionError(message)
+
             def assertTrue(self, *_args: object, **_kwargs: object) -> None:
                 return None
 
@@ -2559,6 +2605,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                 return {"staged_entries": 1}
 
             def capture_runner(argv: list[str], **_kwargs: object) -> WindowsJobResult:
+                if _kwargs.get("_diagnostic_private_network_capability") is True:
+                    script = argv[3]
+                    compile(script, "<private-network-capability-probe-captured>", "exec")
+                    captured_network_control_scripts.append(script)
+                    return WindowsJobResult(True, 0, None, True, "diagnostic only")
                 script = argv[-1]
                 compile(script, "<reviewer-snapshot-probe-captured>", "exec")
                 command_line = subprocess.list2cmdline([
@@ -2632,6 +2683,10 @@ class TestWindowsAppContainer(unittest.TestCase):
 
         notice_names = {name for name, _encoded in captured_notices}
         self.assertEqual(len(captured_runner_targets), 1)
+        self.assertEqual(
+            captured_network_control_scripts,
+            [windows_job_module._PRIVATE_NETWORK_CAPABILITY_PROBE_CODE],
+        )
         self.assertEqual(captured_runner_targets[0]["version"], 1)
         profile_name = captured_runner_targets[0]["profile_name"]
         self.assertIsInstance(profile_name, str)
@@ -2645,6 +2700,14 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("runner_gate_deadline=time.monotonic()+20", captured_scripts[0])
         self.assertIn("network_observations['runner_observer_gate']", captured_scripts[0])
         self.assertIn("sys.excepthook=report_unhandled_probe_exception", captured_scripts[0])
+        self.assertIn(
+            "windows_appcontainer_private_network_positive_control=status=inconclusive",
+            wfp_output.getvalue(),
+        )
+        self.assertIn(
+            "readiness_credit=false zero_capability_candidate_unchanged=true",
+            wfp_output.getvalue(),
+        )
         self.assertIn("probe_stage='network_ipv4'", captured_scripts[0])
         self.assertIn("probe_stage='result_serialization'", captured_scripts[0])
         facts_initialization = captured_scripts[0].index("facts={'approved_read':")
@@ -5216,6 +5279,149 @@ class TestWindowsAppContainer(unittest.TestCase):
         apis["advapi32"].IsValidSid.return_value = True
         apis["advapi32"].GetLengthSid.return_value = 12
         return apis
+
+    def test_private_network正控profile和CreateProcess都绑定单一capability(self) -> None:
+        from ctypes import wintypes
+
+        apis = self._mock_profile_apis()
+        capability_sid_storage = ctypes.create_string_buffer(16)
+        observed_profile: dict[str, int] = {}
+
+        class SID_AND_ATTRIBUTES(ctypes.Structure):
+            _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+        def create_profile(*args: object) -> int:
+            observed_profile["count"] = int(args[4])
+            if args[3] is not None:
+                capability = ctypes.cast(
+                    args[3], ctypes.POINTER(SID_AND_ATTRIBUTES),
+                ).contents
+                observed_profile["sid"] = int(capability.Sid or 0)
+                observed_profile["attributes"] = int(capability.Attributes)
+            ctypes.cast(args[-1], ctypes.POINTER(ctypes.c_void_p)).contents.value = 123
+            return 0
+
+        def convert_capability_sid(_name: str, output: object) -> int:
+            ctypes.cast(output, ctypes.POINTER(ctypes.c_void_p)).contents.value = (
+                ctypes.addressof(capability_sid_storage)
+            )
+            return 1
+
+        apis["userenv"].CreateAppContainerProfile.side_effect = create_profile
+        apis["advapi32"].ConvertStringSidToSidW.side_effect = convert_capability_sid
+        apis["kernel32"].LocalFree.return_value = 0
+        runtime_result = WindowsJobResult(True, 0, None, True, "")
+        seen_job_options: list[dict[str, object]] = []
+
+        def run_job(*_args: object, **kwargs: object) -> WindowsJobResult:
+            seen_job_options.append(kwargs)
+            return runtime_result
+
+        with tempfile.TemporaryDirectory(
+            prefix="icode-reviewer-appcontainer-probe-",
+        ) as raw:
+            root = Path(raw)
+            scratch = root / "task-scratch"
+            scratch.mkdir()
+            runtime = root / (
+                "icode-runtime-staging-reviewer-0123456789abcdef0123456789abcdef"
+            )
+            runtime.mkdir()
+            executable = runtime / "python.exe"
+            executable.write_bytes(b"fixed-probe-placeholder")
+            profile_name = "icode-0123456789abcdef0123456789abcdef"
+            package_sid = "S-1-15-2-123456789-123456789-123456789-123456789"
+            argv = windows_job_module._build_private_network_capability_probe_argv(
+                str(executable), 43123, 43124,
+                "0123456789abcdef0123456789abcdef", package_sid,
+            )
+            with mock.patch("icode.windows_appcontainer.sys.platform", "win32"), \
+                 mock.patch.dict(
+                     os.environ,
+                     {
+                         "GITHUB_ACTIONS": "true",
+                         "RUNNER_OS": "Windows",
+                         "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
+                         "ICODE_DIAGNOSTIC_NETWORK_CAPABILITY": "true",
+                     },
+                     clear=True,
+                 ), mock.patch(
+                     "icode.windows_appcontainer.ctypes.WinDLL",
+                     create=True,
+                     side_effect=lambda name, **_kwargs: apis[name],
+                 ), mock.patch(
+                     "icode.windows_appcontainer._grant_workspace_acl",
+                     return_value=(b"workspace-dacl", apis["advapi32"], apis["kernel32"]),
+                 ), mock.patch(
+                 "icode.windows_appcontainer._get_appcontainer_localappdata_path",
+                 return_value=str(root / "missing-profile-data" / "AC"),
+             ) as profile_path_lookup, mock.patch(
+                     "icode.windows_appcontainer._normalize_staged_runtime_acl_baseline",
+                     return_value=0,
+                 ), mock.patch(
+                     "icode.windows_appcontainer._snapshot_runtime_acl_roots",
+                     return_value=windows_appcontainer._RuntimeAclTransaction(
+                         roots=(runtime,), entries=(), advapi=apis["advapi32"],
+                         kernel=apis["kernel32"], snapshot_duration_ms=1,
+                     ),
+                 ), mock.patch(
+                     "icode.windows_appcontainer._grant_runtime_acl_roots",
+                 ), mock.patch(
+                     "icode.windows_appcontainer._restore_runtime_acl_roots",
+                     return_value=True,
+                 ), mock.patch(
+                     "icode.windows_appcontainer._restore_workspace_acl",
+                     return_value=True,
+                 ), mock.patch(
+                     "icode.windows_appcontainer.run_windows_job",
+                     side_effect=run_job,
+                 ):
+                result = run_windows_appcontainer(
+                    argv, cwd=scratch, timeout_seconds=8, process_limit=2,
+                    _diagnostic_profile_name=profile_name,
+                    _diagnostic_runtime_acl=True,
+                    _diagnostic_runtime_roots=(runtime,),
+                    _diagnostic_private_network_capability=True,
+                )
+                profile_path_lookup.side_effect = _AppContainerSetupError(
+                    "appcontainer_profile_path_failed", "test path unavailable",
+                )
+                missing_path_profile = "icode-fedcba9876543210fedcba9876543210"
+                missing_path_argv = windows_job_module._build_private_network_capability_probe_argv(
+                    str(executable), 43123, 43124,
+                    "fedcba9876543210fedcba9876543210", package_sid,
+                )
+                unverified_storage_result = run_windows_appcontainer(
+                    missing_path_argv, cwd=scratch, timeout_seconds=8,
+                    process_limit=2, _diagnostic_profile_name=missing_path_profile,
+                    _diagnostic_runtime_acl=True,
+                    _diagnostic_runtime_roots=(runtime,),
+                    _diagnostic_private_network_capability=True,
+                )
+
+        self.assertTrue(result.executed, result)
+        self.assertEqual(result.exit_code, 0)
+        self.assertTrue(result.cleanup_ok, result)
+        self.assertEqual(observed_profile, {
+            "count": 1,
+            "sid": ctypes.addressof(capability_sid_storage),
+            "attributes": 0x00000004,
+        })
+        self.assertEqual(len(seen_job_options), 2)
+        self.assertIs(seen_job_options[0]["_diagnostic_private_network_capability"], True)
+        self.assertIs(
+            seen_job_options[1].get("_diagnostic_private_network_capability", False),
+            False,
+        )
+        self.assertTrue(apis["userenv"].DeleteAppContainerProfile.called)
+        self.assertTrue(apis["kernel32"].LocalFree.called)
+        self.assertFalse(unverified_storage_result.executed)
+        self.assertFalse(unverified_storage_result.cleanup_ok)
+        self.assertEqual(unverified_storage_result.error, "cleanup_failed")
+        self.assertIn(
+            "private_network_control_profile_storage_unverified",
+            unverified_storage_result.detail,
+        )
 
     def test_workspace目录拒绝链接与硬链接(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-appcontainer-paths-") as raw:
@@ -7865,6 +8071,85 @@ class TestWindowsAppContainer(unittest.TestCase):
                     positive_control.returncode, 0,
                     "staged Python host positive control failed",
                 )
+
+                capability_profile_name = f"icode-{uuid.uuid4().hex}"
+                capability_package_sid = _derive_appcontainer_profile_sid(
+                    capability_profile_name,
+                )
+                capability_nonce = uuid.uuid4().hex
+                capability_argv = windows_job_module._build_private_network_capability_probe_argv(
+                    str(staged_executable), ipv4_loopback_port, ipv6_loopback_port,
+                    capability_nonce, capability_package_sid,
+                )
+                try:
+                    capability_control = run_windows_appcontainer(
+                        capability_argv, cwd=scratch, timeout_seconds=12,
+                        process_limit=2, _diagnostic_profile_name=capability_profile_name,
+                        _diagnostic_runtime_acl=True,
+                        _diagnostic_runtime_roots=(staged_runtime,),
+                        _diagnostic_private_network_capability=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 - diagnostic failure is inconclusive
+                    capability_control = WindowsJobResult(
+                        False, None, "diagnostic_exception", False,
+                        type(exc).__name__,
+                    )
+                if not capability_control.cleanup_ok:
+                    self.fail(
+                        "private-network positive-control Job/profile/ACL cleanup did not verify: "
+                        f"{capability_control.detail}"
+                    )
+                expected_capability_payload = json.dumps(
+                    {
+                        "nonce": capability_nonce,
+                        "appcontainer": True,
+                        "package_sid": capability_package_sid,
+                        "capability_count": 1,
+                        "capability_sid": "S-1-15-3-3",
+                    },
+                    sort_keys=True, separators=(",", ":"),
+                ).encode("ascii")
+                capability_deadline = time.monotonic() + 2
+                while (
+                    time.monotonic() < capability_deadline
+                    and not all(
+                        listener.received_canaries == [expected_capability_payload]
+                        for listener in network_servers
+                    )
+                ):
+                    time.sleep(0.01)
+                capability_ipv4_received = (
+                    network_servers[0].received_canaries
+                    == [expected_capability_payload]
+                )
+                capability_ipv6_received = (
+                    network_servers[1].received_canaries
+                    == [expected_capability_payload]
+                )
+                capability_control_observed = (
+                    capability_control.executed
+                    and capability_control.exit_code == 0
+                    and capability_control.cleanup_ok
+                    and capability_ipv4_received
+                    and capability_ipv6_received
+                )
+                capability_control_status = (
+                    "observed" if capability_control_observed else "inconclusive"
+                )
+                print(
+                    "windows_appcontainer_private_network_positive_control="
+                    f"status={capability_control_status} "
+                    f"executed={str(capability_control.executed).lower()} "
+                    f"exit={capability_control.exit_code if capability_control.exit_code is not None else 'none'} "
+                    f"cleanup={str(capability_control.cleanup_ok).lower()} "
+                    f"ipv4_canary={str(capability_ipv4_received).lower()} "
+                    f"ipv6_canary={str(capability_ipv6_received).lower()} "
+                    "requested_capability_count=1 capability_sid=privateNetworkClientServer "
+                    "readiness_credit=false zero_capability_candidate_unchanged=true",
+                    flush=True,
+                )
+                for listener in network_servers:
+                    listener.received_canaries.clear()
 
                 result_file = scratch / "reviewer-probe-result.json"
                 child_ready_file = scratch / "reviewer-child-ready"

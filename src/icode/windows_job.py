@@ -16,6 +16,160 @@ from typing import Sequence
 
 
 _READ_HANDLE_PLACEHOLDER = "{ICODE_READ_HANDLE}"
+_PRIVATE_NETWORK_CAPABILITY_SID = "S-1-15-3-3"
+_SE_GROUP_ENABLED = 0x00000004
+_PRIVATE_NETWORK_CAPABILITY_PROBE_CODE = """\
+import ctypes, json, socket, sys
+from ctypes import wintypes
+kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+advapi = ctypes.WinDLL('advapi32', use_last_error=True)
+SE_GROUP_ENABLED = 0x00000004
+advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+advapi.OpenProcessToken.restype = wintypes.BOOL
+advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+advapi.GetTokenInformation.restype = wintypes.BOOL
+advapi.ConvertSidToStringSidW.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR)]
+advapi.ConvertSidToStringSidW.restype = wintypes.BOOL
+kernel.GetCurrentProcess.restype = wintypes.HANDLE
+kernel.LocalFree.argtypes = [ctypes.c_void_p]
+kernel.LocalFree.restype = ctypes.c_void_p
+kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+kernel.CloseHandle.restype = wintypes.BOOL
+def sid_text(sid):
+    text = wintypes.LPWSTR()
+    if not advapi.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return text.value
+    finally:
+        kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+token = wintypes.HANDLE()
+if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+    raise ctypes.WinError(ctypes.get_last_error())
+try:
+    returned = wintypes.DWORD()
+    appcontainer = wintypes.DWORD()
+    if not advapi.GetTokenInformation(token, 29, ctypes.byref(appcontainer), ctypes.sizeof(appcontainer), ctypes.byref(returned)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    package_size = wintypes.DWORD()
+    ctypes.set_last_error(0)
+    advapi.GetTokenInformation(token, 31, None, 0, ctypes.byref(package_size))
+    if ctypes.get_last_error() != 122 or package_size.value < ctypes.sizeof(ctypes.c_void_p):
+        raise ctypes.WinError(ctypes.get_last_error() or 87)
+    package_buffer = ctypes.create_string_buffer(package_size.value)
+    if not advapi.GetTokenInformation(token, 31, package_buffer, package_size.value, ctypes.byref(returned)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    package_sid = ctypes.cast(package_buffer, ctypes.POINTER(ctypes.c_void_p)).contents.value
+    capability_buffer = ctypes.create_string_buffer(4096)
+    if not advapi.GetTokenInformation(token, 30, capability_buffer, len(capability_buffer), ctypes.byref(returned)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    capability_count = ctypes.cast(capability_buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
+    class SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [('Sid', ctypes.c_void_p), ('Attributes', wintypes.DWORD)]
+    class TOKEN_CAPABILITIES(ctypes.Structure):
+        _fields_ = [('CapabilityCount', wintypes.DWORD), ('Capabilities', SID_AND_ATTRIBUTES * 1)]
+    if capability_count != 1:
+        raise RuntimeError('unexpected capability count')
+    capability = ctypes.cast(
+        ctypes.addressof(capability_buffer) + TOKEN_CAPABILITIES.Capabilities.offset,
+        ctypes.POINTER(SID_AND_ATTRIBUTES),
+    ).contents
+    package_text = sid_text(package_sid)
+    capability_text = sid_text(capability.Sid)
+    if appcontainer.value != 1 or package_text != sys.argv[4] or capability_text != 'S-1-15-3-3' or not (capability.Attributes & SE_GROUP_ENABLED):
+        raise RuntimeError('unexpected AppContainer token capability')
+    payload = json.dumps({
+        'nonce': sys.argv[3], 'appcontainer': True,
+        'package_sid': package_text, 'capability_count': capability_count,
+        'capability_sid': capability_text,
+    }, sort_keys=True, separators=(',', ':')).encode('ascii')
+finally:
+    kernel.CloseHandle(token)
+for family, address, port in (
+    (socket.AF_INET, '127.0.0.1', int(sys.argv[1])),
+    (socket.AF_INET6, '::1', int(sys.argv[2])),
+):
+    with socket.socket(family, socket.SOCK_STREAM) as connection:
+        connection.settimeout(3)
+        connection.connect((address, port))
+        connection.sendall(payload)
+"""
+
+
+def _build_private_network_capability_probe_argv(
+    python_executable: str | os.PathLike[str], ipv4_port: int, ipv6_port: int,
+    nonce: str, package_sid: str,
+) -> list[str]:
+    """Construct the only Python payload accepted by the CI-only capability probe."""
+    if (
+        type(ipv4_port) is not int or not 1 <= ipv4_port <= 65535
+        or type(ipv6_port) is not int or not 1 <= ipv6_port <= 65535
+        or not isinstance(nonce, str) or len(nonce) != 32
+        or any(character not in "0123456789abcdef" for character in nonce)
+        or not isinstance(package_sid, str)
+        or not package_sid.startswith("S-1-15-2-")
+        or len(package_sid) > 256
+        or "\0" in package_sid
+    ):
+        raise ValueError("invalid fixed private-network AppContainer probe parameters")
+    return [
+        os.fspath(python_executable), "-I", "-c",
+        _PRIVATE_NETWORK_CAPABILITY_PROBE_CODE,
+        str(ipv4_port), str(ipv6_port), nonce, package_sid,
+    ]
+
+
+def _is_fixed_private_network_capability_probe(
+    argv: Sequence[str], cwd: str | os.PathLike[str],
+) -> bool:
+    """Fail closed unless this is the fixed dual-loopback CI diagnostic command."""
+    if (
+        os.environ.get("GITHUB_ACTIONS") != "true"
+        or os.environ.get("RUNNER_OS") != "Windows"
+        or os.environ.get("ICODE_DIAGNOSTIC_NETWORK_CAPABILITY") != "true"
+        or isinstance(argv, (str, bytes))
+        or not isinstance(argv, Sequence)
+        or len(argv) != 8
+        or any(not isinstance(argument, str) or "\0" in argument for argument in argv)
+        or argv[1] != "-I"
+        or argv[2] != "-c"
+        or argv[3] != _PRIVATE_NETWORK_CAPABILITY_PROBE_CODE
+        or ntpath.basename(argv[0]).casefold() != "python.exe"
+    ):
+        return False
+    try:
+        executable = ntpath.normcase(ntpath.normpath(argv[0]))
+        workspace = ntpath.normcase(ntpath.normpath(os.fspath(cwd)))
+        temp_root = ntpath.normcase(ntpath.normpath(tempfile.gettempdir()))
+        runtime_dir = ntpath.basename(ntpath.dirname(executable)).casefold()
+        workspace_name = ntpath.basename(workspace).casefold()
+        probe_dir = ntpath.basename(ntpath.dirname(workspace)).casefold()
+        if (
+            not ntpath.isabs(executable) or not ntpath.isabs(workspace)
+            or not ntpath.isabs(temp_root)
+            or ntpath.commonpath((temp_root, executable)) != temp_root
+            or ntpath.commonpath((temp_root, workspace)) != temp_root
+            or not runtime_dir.startswith("icode-runtime-staging-reviewer-")
+            or workspace_name != "task-scratch"
+            or not probe_dir.startswith("icode-reviewer-appcontainer-probe-")
+        ):
+            return False
+        if any(
+            not value.isascii() or not value.isdecimal()
+            or not 1 <= int(value) <= 65535
+            for value in argv[4:6]
+        ):
+            return False
+        if (
+            len(argv[6]) != 32
+            or any(character not in "0123456789abcdef" for character in argv[6])
+            or not argv[7].startswith("S-1-15-2-")
+            or len(argv[7]) > 256
+        ):
+            return False
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -256,6 +410,7 @@ def run_windows_job(
     _diagnostic_read_handle: int | None = None,
     _diagnostic_null_application_name: bool = False,
     _appcontainer_localappdata: str | None = None,
+    _diagnostic_private_network_capability: bool = False,
 ) -> WindowsJobResult:
     """挂起启动、入独立 Job、再恢复；所有失败都禁止当成沙箱成功。
 
@@ -265,7 +420,24 @@ def run_windows_job(
     常规调用仍不继承任何宿主凭据或文件句柄。
     私有 app-name 诊断只允许 AppContainer 启动固定的无参数 whoami 探针；容器 profile
     路径只由上层 AppContainer 包装器通过 Win32 API 获取并传入。
+    私有网络 capability 只允许固定双栈 loopback 正控；该权限实际覆盖私有网络，
+    不得传入工单命令，也不计入零 capability 隔离验收。
     """
+    if not isinstance(_diagnostic_private_network_capability, bool):
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", False,
+            "私有网络 capability 诊断标记无效",
+        )
+    if _diagnostic_private_network_capability and (
+        _appcontainer_sid is None
+        or _diagnostic_read_handle is not None
+        or _diagnostic_null_application_name
+        or not _is_fixed_private_network_capability_probe(argv, cwd)
+    ):
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", False,
+            "私有网络 capability 仅允许固定的 GitHub Windows 双栈回环探针",
+        )
     if _diagnostic_read_handle is not None:
         if (
             _appcontainer_sid is None
@@ -463,6 +635,8 @@ def run_windows_job(
     kernel.DuplicateHandle.restype = wintypes.BOOL
 
     duplicate_read_handle = wintypes.HANDLE()
+    private_network_capability_sid = ctypes.c_void_p()
+    private_network_capability_attributes = None
     bound_argv = list(argv)
     if _diagnostic_read_handle is not None:
         source_handle = wintypes.HANDLE(_diagnostic_read_handle)
@@ -520,6 +694,7 @@ def run_windows_job(
     detail = ""
     diagnostics: list[str] = []
     cleanup_ok = False
+    capability_sid_cleanup_ok = True
     attribute_storage: ctypes.Array | None = None
     attribute_list: ctypes.c_void_p | None = None
     attributes_initialized = False
@@ -545,6 +720,26 @@ def run_windows_job(
             creation_flags = 0x00000004 | 0x00000400  # CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT
         else:
             attribute_count = 2 if duplicate_read_handle.value else 1
+            if _diagnostic_private_network_capability:
+                advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+                advapi.ConvertStringSidToSidW.argtypes = [
+                    wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+                ]
+                advapi.ConvertStringSidToSidW.restype = wintypes.BOOL
+                kernel.LocalFree.argtypes = [ctypes.c_void_p]
+                kernel.LocalFree.restype = ctypes.c_void_p
+                if not advapi.ConvertStringSidToSidW(
+                    _PRIVATE_NETWORK_CAPABILITY_SID,
+                    ctypes.byref(private_network_capability_sid),
+                ) or not private_network_capability_sid.value:
+                    raise OSError(
+                        ctypes.get_last_error(), "ConvertStringSidToSidW(capability)",
+                    )
+                private_network_capability_attributes = (SID_AND_ATTRIBUTES * 1)(
+                    SID_AND_ATTRIBUTES(
+                        private_network_capability_sid, _SE_GROUP_ENABLED,
+                    ),
+                )
             attribute_size = ctypes.c_size_t()
             ctypes.set_last_error(0)
             size_query_ok = bool(kernel.InitializeProcThreadAttributeList(
@@ -574,16 +769,25 @@ def run_windows_job(
             if not attr_init_ok:
                 raise OSError(attr_init_error, "InitializeProcThreadAttributeList")
             attributes_initialized = True
-            security = SECURITY_CAPABILITIES(
-                ctypes.c_void_p(_appcontainer_sid), None, 0, 0,
-            )
+            if private_network_capability_attributes is None:
+                security = SECURITY_CAPABILITIES(
+                    ctypes.c_void_p(_appcontainer_sid), None, 0, 0,
+                )
+            else:
+                security = SECURITY_CAPABILITIES(
+                    ctypes.c_void_p(_appcontainer_sid),
+                    ctypes.cast(private_network_capability_attributes,
+                                ctypes.POINTER(SID_AND_ATTRIBUTES)),
+                    1, 0,
+                )
             diagnostics.append(
                 "security_attribute=0x00020009 "
                 f"payload_bytes={ctypes.sizeof(security)} "
                 f"sid_present={bool(security.AppContainerSid)} "
-                f"capability_count={security.CapabilityCount} reserved={security.Reserved}"
+                f"capability_count={security.CapabilityCount} reserved={security.Reserved} "
+                f"private_network_control={_diagnostic_private_network_capability}"
             )
-            # PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES; no network capabilities
+            # Only the isolated diagnostic branch may supply one private-network SID.
             attr_update_ok = bool(kernel.UpdateProcThreadAttribute(
                 attribute_list, 0, 0x00020009, ctypes.byref(security),
                 ctypes.sizeof(security), None, None,
@@ -651,6 +855,11 @@ def run_windows_job(
     finally:
         if duplicate_read_handle.value:
             kernel.CloseHandle(duplicate_read_handle)
+        if private_network_capability_sid.value:
+            if kernel.LocalFree(private_network_capability_sid):
+                capability_sid_cleanup_ok = False
+                error = "cleanup_failed"
+                detail = "LocalFree(private network capability SID) failed"
         if attributes_initialized and attribute_list is not None:
             kernel.DeleteProcThreadAttributeList(attribute_list)
         if assigned:
@@ -678,6 +887,7 @@ def run_windows_job(
             # No child was created, so there is no process or descendant to reap.
             # Preserve the original launch error instead of relabeling it as cleanup.
             cleanup_ok = True
+        cleanup_ok = cleanup_ok and capability_sid_cleanup_ok
         if created:
             kernel.CloseHandle(process.hThread)
             kernel.CloseHandle(process.hProcess)

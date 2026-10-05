@@ -489,6 +489,7 @@ jobs:
       PYTHONUTF8: "1"
       ICODE_DIAGNOSTIC_RUNTIME_STAGING: "true"
       ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT: "true"
+      ICODE_DIAGNOSTIC_NETWORK_CAPABILITY: "true"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

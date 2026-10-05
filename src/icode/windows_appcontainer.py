@@ -22,6 +22,9 @@ from ctypes import wintypes
 from typing import Sequence
 
 from .windows_job import (
+    _PRIVATE_NETWORK_CAPABILITY_SID,
+    _SE_GROUP_ENABLED,
+    _is_fixed_private_network_capability_probe,
     _is_fixed_read_handle_probe,
     WindowsJobResult,
     _is_fixed_system_whoami_probe,
@@ -1287,8 +1290,9 @@ def run_windows_appcontainer(
     _diagnostic_runtime_acl: bool = False,
     _diagnostic_runtime_roots: Sequence[str | os.PathLike[str]] | None = None,
     _diagnostic_reviewer_snapshot_roots: Sequence[str | os.PathLike[str]] | None = None,
+    _diagnostic_private_network_capability: bool = False,
 ) -> WindowsJobResult:
-    """在无网络能力的 AppContainer + 独立 Job 中运行单条命令。
+    """默认在零网络 capability 的 AppContainer + 独立 Job 中运行单条命令。
 
     此为 R2.3 开发期原生实验，不接自动工单。它临时给 ``cwd`` 的 AppContainer
     Package SID 授权，并提供当前 profile 专属的 LOCALAPPDATA 临时存储；退出后恢复工作区 ACL，
@@ -1300,7 +1304,14 @@ def run_windows_appcontainer(
     其它私有启动差分仅允许固定无参数 whoami 探针，不用于任何工单命令。
     只读句柄差分仅允许 GitHub Windows runner 上固定名称的原生测试探针，
     并要求参数中恰有一个完整占位符；它不构成生产 Reviewer 隔离证明。
+    私有网络 capability 正控仅允许 GitHub Windows runner 上固定的 Python 双栈 loopback
+    探针；profile 与安全进程属性都只携带该 capability，且绝不替代零 capability 验收。
     """
+    if not isinstance(_diagnostic_private_network_capability, bool):
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", False,
+            "私有网络 capability 诊断标记无效",
+        )
     if _diagnostic_read_handle is not None:
         if (
             not _is_fixed_read_handle_probe(argv, cwd, _diagnostic_read_handle)
@@ -1326,11 +1337,31 @@ def run_windows_appcontainer(
         _diagnostic_read_handle is not None
         and _is_fixed_read_handle_probe(argv, cwd, _diagnostic_read_handle)
     )
+    private_network_control_opted_in = (
+        _diagnostic_private_network_capability is True
+        and _diagnostic_runtime_acl is True
+        and _diagnostic_runtime_roots is not None
+        and _diagnostic_reviewer_snapshot_roots is None
+        and _diagnostic_read_handle is None
+        and not _diagnostic_null_application_name
+        and not _diagnostic_omit_localappdata
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_OS") == "Windows"
+        and os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_STAGING") == "true"
+        and os.environ.get("ICODE_DIAGNOSTIC_NETWORK_CAPABILITY") == "true"
+        and _is_fixed_private_network_capability_probe(argv, cwd)
+    )
+    if _diagnostic_private_network_capability and not private_network_control_opted_in:
+        return WindowsJobResult(
+            False, None, "invalid_diagnostic_probe", False,
+            "私有网络 capability 仅允许受控 staged-runtime 双栈 loopback 正控",
+        )
     if _diagnostic_profile_name is not None and (
         not _is_diagnostic_profile_name(_diagnostic_profile_name)
         or not (
             read_handle_profile_name_opted_in
             or reviewer_profile_name_opted_in
+            or private_network_control_opted_in
         )
     ):
         return WindowsJobResult(
@@ -1510,9 +1541,20 @@ def run_windows_appcontainer(
     advapi.IsValidSid.restype = wintypes.BOOL
     advapi.GetLengthSid.argtypes = [ctypes.c_void_p]
     advapi.GetLengthSid.restype = wintypes.DWORD
+    advapi.ConvertStringSidToSidW.argtypes = [
+        wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p),
+    ]
+    advapi.ConvertStringSidToSidW.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+
+    class SID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
 
     profile = _diagnostic_profile_name or f"icode-{uuid.uuid4().hex}"
     sid = ctypes.c_void_p()
+    capability_sid = ctypes.c_void_p()
+    capability_attributes = None
     profile_created = False
     original_dacl: bytes | None = None
     acl_api: tuple[ctypes.WinDLL, ctypes.WinDLL] | None = None
@@ -1529,8 +1571,29 @@ def run_windows_appcontainer(
     runtime_acl_transaction: _RuntimeAclTransaction | None = None
     reviewer_snapshot_acl_transaction: _RuntimeAclTransaction | None = None
     try:
+        if private_network_control_opted_in:
+            if not advapi.ConvertStringSidToSidW(
+                _PRIVATE_NETWORK_CAPABILITY_SID, ctypes.byref(capability_sid),
+            ) or not capability_sid.value:
+                raise _AppContainerSetupError(
+                    "appcontainer_capability_sid_failed",
+                    f"private network capability SID error={ctypes.get_last_error()}",
+                )
+            capability_attributes = (SID_AND_ATTRIBUTES * 1)(
+                SID_AND_ATTRIBUTES(capability_sid, _SE_GROUP_ENABLED),
+            )
+            diagnostics.append(
+                "private_network_control_capability=one_private_network_client_server"
+            )
+        profile_capabilities = (
+            ctypes.cast(capability_attributes, ctypes.c_void_p)
+            if capability_attributes is not None else None
+        )
         hr = int(userenv.CreateAppContainerProfile(
-            profile, "ICODE task", "Temporary task isolation", None, 0, ctypes.byref(sid),
+            profile, "ICODE task", "Temporary task isolation",
+            profile_capabilities,
+            1 if capability_attributes is not None else 0,
+            ctypes.byref(sid),
         ))
         profile_created = hr == 0
         sid_valid = bool(sid.value and advapi.IsValidSid(sid))
@@ -1637,6 +1700,7 @@ def run_windows_appcontainer(
                 _appcontainer_localappdata=profile_local_app_data,
                 _diagnostic_read_handle=_diagnostic_read_handle,
                 _diagnostic_null_application_name=_diagnostic_null_application_name,
+                _diagnostic_private_network_capability=private_network_control_opted_in,
             )
             primary_job_cleanup_ok = main.cleanup_ok
     except _AppContainerSetupError as exc:
@@ -1711,6 +1775,9 @@ def run_windows_appcontainer(
                     cleanup_ok = False
                     details.append("workspace_acl_revocation_unverified")
         if profile_created:
+            if private_network_control_opted_in and profile_local_app_data is None:
+                cleanup_ok = False
+                details.append("private_network_control_profile_storage_unverified")
             deleted, delete_detail = _delete_appcontainer_profile(
                 profile, userenv, profile_local_app_data,
             )
@@ -1723,6 +1790,14 @@ def run_windows_appcontainer(
             except Exception:  # noqa: BLE001 - SID 释放失败不能中断结果回执
                 cleanup_ok = False
                 details.append("sid_release_failed")
+        if capability_sid.value:
+            try:
+                if kernel.LocalFree(capability_sid):
+                    cleanup_ok = False
+                    details.append("capability_sid_release_failed")
+            except Exception:  # noqa: BLE001 - 原生 SID 缓冲区释放失败不能静默通过
+                cleanup_ok = False
+                details.append("capability_sid_release_failed")
 
     final_cleanup_ok = bool(main.cleanup_ok and cleanup_ok)
     error = main.error
