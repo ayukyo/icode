@@ -184,10 +184,96 @@ class TestEvidencePack(unittest.TestCase):
             json.dumps(metadata, ensure_ascii=False) + "\n", encoding="utf-8",
         )
         events_path.write_text(
-            "\n".join(json.dumps(item, ensure_ascii=False) for item in events) + "\n",
+            "\n".join(json.dumps(event, ensure_ascii=False) for event in events) + "\n",
             encoding="utf-8",
         )
 
+    def _append_audit_receipt(
+        self, out_dir: Path, *, attempt: str = "r3-audit-attempt",
+        outcome: str = "success", check_results: dict[str, list[str]] | None = None,
+        finish_checks: dict[str, str] | None = None, include_finish: bool = True,
+        finish_attempt: str | None = None, finish_step: str = "audit",
+    ) -> None:
+        metadata_path = out_dir / ".ico_metadata.json"
+        events_path = out_dir / ".ico_events.jsonl"
+        gates = json.loads(self.settings.gates_json.read_text(encoding="utf-8"))
+        required = gates["execution_model"]["step_contracts"]["audit"]["required_checks"]
+        self._append_rehashed_event(
+            metadata_path, events_path, "step_started",
+            {"execution_model_version": 1, "attempt": attempt, "step": "audit",
+             "input_digest": "d" * 64, "contract_digest": "e" * 64}, {},
+        )
+        latest_checks: dict[str, str] = {}
+        for boundary in required:
+            results = (check_results or {}).get(boundary, ["pass"])
+            for result in results:
+                self._append_rehashed_event(
+                    metadata_path, events_path, "gate_checked",
+                    {"execution_model_version": 1, "attempt": attempt,
+                     "step": "audit", "boundary": boundary, "result": result,
+                     "captured_digest": "d" * 64, "current_digest": "d" * 64}, {},
+                )
+                latest_checks[boundary] = result
+        if include_finish:
+            self._append_rehashed_event(
+                metadata_path, events_path, "step_finished",
+                {"execution_model_version": 1,
+                 "attempt": finish_attempt or attempt, "step": finish_step,
+                 "outcome": outcome, "duration_ms": 1,
+                 "checks": finish_checks if finish_checks is not None else latest_checks,
+                 "outputs": [], "evidence": "test audit receipt"}, {},
+            )
+
+    def _append_completed_transitions(
+        self, out_dir: Path, *, gates_skipped: bool = False,
+        finish_after_transition: bool = False,
+    ) -> None:
+        if (out_dir / ".ico_metadata.json").is_file():
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+        else:
+            metadata_path = out_dir / "metadata.json"
+            events_path = out_dir / "events.jsonl"
+        transitions = [
+            ("init_in_progress", "plan_done", "1"),
+            ("plan_done", "review_in_progress", None),
+            ("review_in_progress", "review_done", "2"),
+            ("review_done", "plan_finalized", "3"),
+            ("plan_finalized", "code_in_progress", None),
+            ("code_in_progress", "code_done", "4"),
+            ("code_done", "deepcheck_in_progress", None),
+            ("deepcheck_in_progress", "deepcheck_done", "5"),
+            ("deepcheck_done", "completed", "6"),
+        ]
+        completed_steps: list[str] = []
+        for source, target, marker in transitions:
+            if marker is not None:
+                completed_steps.append(marker)
+            payload = {
+                "from": source, "to": target,
+                "delivery_verdict": "verified" if target == "completed" else None,
+            }
+            if target == "completed" and gates_skipped:
+                payload["gates_skipped_for_test"] = True
+            if target == "completed" and finish_after_transition:
+                continue
+            metadata_updates = {"status": target, "completed_steps": list(completed_steps)}
+            if target == "completed":
+                metadata_updates["delivery_verdict"] = "verified"
+            self._append_rehashed_event(
+                metadata_path, events_path, "state_changed", payload, metadata_updates,
+            )
+        if finish_after_transition:
+            # Complete the final state transition first, then append a late audit finish.
+            payload = {"from": "deepcheck_done", "to": "completed",
+                       "delivery_verdict": "verified"}
+            if gates_skipped:
+                payload["gates_skipped_for_test"] = True
+            self._append_rehashed_event(
+                metadata_path, events_path, "state_changed", payload,
+                {"status": "completed", "completed_steps": list(completed_steps),
+                 "delivery_verdict": "verified"},
+            )
     def _refresh_pack_member_hash(self, pack_dir: Path, relative_path: str) -> None:
         from icode.pack_verify import pack_digest, sha256_file
 
@@ -787,6 +873,21 @@ class TestEvidencePack(unittest.TestCase):
             )
             self.assertIn("plan", contracts["execution_model"]["steps"])
             self.assertEqual(verify_pack(dest), [])
+
+    def test_新契约快照明确声明completed对应的audit回执(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+
+            self.assertTrue(report.ok, report.render())
+            contracts = json.loads((dest / "contracts.json").read_text(encoding="utf-8"))
+            self.assertEqual(contracts["completion_receipt"], {
+                "schema_version": 1,
+                "target": "completed",
+                "step": "audit",
+                "required_checks": [
+                    "before_write", "after_wait", "before_transition",
+                ],
+            })
 
     def test_新execution_model快照包含排序后的failure类别(self) -> None:
         with temp_workspace() as ws:
@@ -1658,6 +1759,14 @@ class TestEvidencePack(unittest.TestCase):
     def test_无状态机契约快照时旧包兼容且明确降级(self) -> None:
         with temp_workspace() as ws:
             out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            events_path = out_dir / ".ico_events.jsonl"
+            events = [
+                json.loads(line)
+                for line in events_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            events[0]["payload"].pop("execution_contract_version", None)
+            self._rewrite_event_chain(events_path, events)
             self._append_rehashed_event(
                 out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
                 "state_changed",
@@ -1673,6 +1782,264 @@ class TestEvidencePack(unittest.TestCase):
                 report.warnings,
             )
             self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_导出器拒绝版本化工单缺失completed_audit回执(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_completed_transitions(out_dir)
+            with self.assertRaisesRegex(EvidenceError, "completion_receipt"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_导出器拒绝缺少completed映射的当前契约且不清理目标(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_completed_transitions(out_dir)
+
+            malformed_gates = json.loads(
+                self.settings.gates_json.read_text(encoding="utf-8"),
+            )
+            malformed_gates["state_machine"].pop("gate_policy")
+            gates_path = ws / "gates-without-completed-policy.json"
+            gates_path.write_text(
+                json.dumps(malformed_gates, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            sentinel = dest / "keep-me.txt"
+            sentinel.write_text("preserve destination until contract validation", encoding="utf-8")
+
+            with self.assertRaisesRegex(EvidenceError, "completed.*completion_receipt"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=gates_path,
+                )
+
+            self.assertEqual(
+                sentinel.read_text(encoding="utf-8"),
+                "preserve destination until contract validation",
+            )
+
+    def test_版本化completed工单不提供契约时拒绝导出(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_completed_transitions(out_dir)
+
+            dest = ws / "existing-pack"
+            dest.mkdir()
+            sentinel = dest / "keep-me.txt"
+            sentinel.write_text("preserve destination without receipt contract", encoding="utf-8")
+
+            with self.assertRaisesRegex(EvidenceError, "completed.*completion_receipt"):
+                build_evidence_pack(out_dir, dest=dest, gates_json=None)
+
+            self.assertEqual(
+                sentinel.read_text(encoding="utf-8"),
+                "preserve destination without receipt contract",
+            )
+
+    def test_导出器接受audit成功与降级回执但只验证事件回执语义(self) -> None:
+        for outcome in ("success", "degraded"):
+            with self.subTest(outcome=outcome), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                self._append_audit_receipt(out_dir, outcome=outcome)
+                self._append_completed_transitions(out_dir)
+
+                report = build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+                self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_completed_requires_latest_required_audit_checks_and_matching_finish(self) -> None:
+        from icode.evidence import EvidenceError
+
+        invalid_receipts = (
+            ("missing finish", {"include_finish": False}, "completion_receipt"),
+            ("non-advancing finish", {"outcome": "blocked"}, "completion_receipt"),
+            ("malformed finish outcome", {"outcome": []}, "step_finished"),
+            ("missing required check", {
+                "check_results": {"after_wait": []},
+            }, "completion_receipt"),
+            ("latest check blocked", {
+                "check_results": {"before_write": ["pass", "blocked"]},
+            }, "completion_receipt"),
+            ("finish snapshot mismatch", {
+                "finish_checks": {"before_write": "blocked", "after_wait": "pass",
+                                  "before_transition": "pass"},
+            }, "completion_receipt"),
+            ("wrong attempt", {"finish_attempt": "different-attempt"}, "step_finished"),
+            ("wrong step", {"finish_step": "review"}, "step_finished"),
+        )
+        for label, receipt_options, expected in invalid_receipts:
+            with self.subTest(receipt=label), temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                self._append_audit_receipt(out_dir, **receipt_options)
+                self._append_completed_transitions(out_dir)
+                with self.assertRaisesRegex(EvidenceError, expected):
+                    build_evidence_pack(
+                        out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                    )
+
+    def test_completed不得由迁移后的late_audit_finish补票(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_audit_receipt(out_dir, include_finish=False)
+            self._append_completed_transitions(out_dir, finish_after_transition=True)
+            self._append_rehashed_event(
+                out_dir / ".ico_metadata.json", out_dir / ".ico_events.jsonl",
+                "step_finished",
+                {"execution_model_version": 1, "attempt": "r3-audit-attempt",
+                 "step": "audit", "outcome": "success", "duration_ms": 1,
+                 "checks": {"before_write": "pass", "after_wait": "pass",
+                            "before_transition": "pass"},
+                 "outputs": [], "evidence": "late audit receipt"}, {},
+            )
+            with self.assertRaisesRegex(EvidenceError, "completion_receipt"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_completed只认最新audit_attempt的finish与检查(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_audit_receipt(out_dir, attempt="older-audit", outcome="success")
+            self._append_audit_receipt(out_dir, attempt="latest-audit", outcome="blocked")
+            self._append_completed_transitions(out_dir)
+            with self.assertRaisesRegex(EvidenceError, "completion_receipt"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_未版本化历史出生和测试跳过门禁保持上游兼容(self) -> None:
+        for legacy_birth, gates_skipped in ((True, False), (False, True)):
+            with self.subTest(legacy_birth=legacy_birth, gates_skipped=gates_skipped), \
+                    temp_workspace() as ws:
+                out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+                if legacy_birth:
+                    events_path = out_dir / ".ico_events.jsonl"
+                    events = [
+                        json.loads(line)
+                        for line in events_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    events[0]["payload"].pop("execution_contract_version", None)
+                    self._rewrite_event_chain(events_path, events)
+                self._append_completed_transitions(
+                    out_dir, gates_skipped=gates_skipped,
+                )
+                report = build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+                self.assertTrue(report.ok, report.render())
+                self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_新版本工单即使测试跳过标记也不能跳过已启动的audit(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            self._append_audit_receipt(out_dir, include_finish=False)
+            self._append_completed_transitions(out_dir, gates_skipped=True)
+            with self.assertRaisesRegex(EvidenceError, "completion_receipt"):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
+
+    def test_独立校验器拒绝重签包里的completed缺失audit回执(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+            self._append_completed_transitions(dest / "ticket")
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+            self._refresh_pack_member_hash(dest, "ticket/events.jsonl")
+
+            problems = verify_pack(dest)
+            self.assertTrue(any("completion_receipt" in item for item in problems), problems)
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn("completion_receipt", independent.stdout + independent.stderr)
+
+    def test_旧contracts快照缺失completion_receipt时维持历史包兼容(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+            contracts_path = dest / "contracts.json"
+            contracts = json.loads(contracts_path.read_text(encoding="utf-8"))
+            contracts.pop("completion_receipt", None)
+            contracts_path.write_text(
+                json.dumps(contracts, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "contracts.json")
+            self._append_completed_transitions(dest / "ticket")
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+            self._refresh_pack_member_hash(dest, "ticket/events.jsonl")
+
+            self.assertEqual(verify_pack(dest), [])
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+
+    def test_completion_receipt快照要求匹配的execution_model(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+            contracts_path = dest / "contracts.json"
+            contracts = json.loads(contracts_path.read_text(encoding="utf-8"))
+            contracts.pop("execution_model", None)
+            contracts_path.write_text(
+                json.dumps(contracts, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "contracts.json")
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("completion_receipt 缺 execution_model" in item for item in problems),
+                problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn(
+                "completion_receipt 缺 execution_model",
+                independent.stdout + independent.stderr,
+            )
 
     def test_导出器拒绝未完成关闭时重开(self) -> None:
         from icode.evidence import EvidenceError

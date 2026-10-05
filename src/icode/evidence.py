@@ -54,6 +54,7 @@ from .pack_verify import (
     _ExecutionEventMirror,
     _TicketStateMirror,
     _AGENT_LIFECYCLE_EVENT_TYPES,
+    _UNSET_COMPLETION_RECEIPT,
     _check_json_structural_token_budget,
     _METADATA_AGENT_SPAWNS_FIELD,
     _METADATA_EVENT_MIRROR_FIELDS,
@@ -63,6 +64,7 @@ from .pack_verify import (
     _metadata_event_mirror_records,
     _normalize_ticket_state_machine,
     _execution_model_snapshot_from_raw,
+    _completion_receipt_snapshot_from_raw,
     event_schema_issues,
     loads_json_value,
     read_bounded_bytes,
@@ -143,6 +145,8 @@ class _EventSummary:
     steps: set[str] = field(default_factory=set)
     artifact_events: list[dict] = field(default_factory=list)
     has_versioned_execution_events: bool = False
+    has_versioned_ticket_birth: bool = False
+    has_completed_transition: bool = False
 
 
 def _now() -> str:
@@ -438,6 +442,7 @@ def _read_events(
     expected_metadata_hash: str,
     expected_ticket_state_machine: object = None,
     expected_execution_model: object = None,
+    expected_completion_receipt: object = _UNSET_COMPLETION_RECEIPT,
     ticket_metadata: object = None,
 ) -> _EventSummary:
     path = Path(out_dir) / EVENTS_NAME
@@ -462,7 +467,9 @@ def _read_events(
     ticket_state_mirror = _TicketStateMirror(
         expected_ticket_state_machine, ticket_metadata,
     )
-    execution_event_mirror = _ExecutionEventMirror(expected_execution_model)
+    execution_event_mirror = _ExecutionEventMirror(
+        expected_execution_model, expected_completion_receipt,
+    )
     try:
         if path.stat().st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
             raise EvidenceError("事件链超过总输入字节数上限")
@@ -596,6 +603,8 @@ def _read_events(
     summary.has_versioned_execution_events = (
         execution_event_mirror.has_versioned_events
     )
+    summary.has_versioned_ticket_birth = execution_event_mirror.versioned_ticket_birth
+    summary.has_completed_transition = execution_event_mirror.completed_transition_seen
     if has_metadata_hash_after and last_metadata_hash_after != expected_metadata_hash:
         raise EvidenceError(
             "事件链最终 metadata_hash_after 与工单 metadata 摘要不一致"
@@ -861,6 +870,12 @@ def _contract_snapshot_from_raw(raw_contracts: dict, steps: set[str]) -> dict:
         raise ContractError(f"execution_model 契约结构无效：{exc}") from None
     if execution_model is not None:
         snapshot["execution_model"] = execution_model
+    try:
+        completion_receipt = _completion_receipt_snapshot_from_raw(raw_contracts)
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ContractError(f"completion_receipt 契约结构无效：{exc}") from None
+    if completion_receipt is not None:
+        snapshot["completion_receipt"] = completion_receipt
     return snapshot
 
 
@@ -914,7 +929,11 @@ PACK_README = """# 证据包（{ticket_id}）
 4. **execution-model v1 事件语义（仅 contracts.json 含 execution_model 快照时）** ——
    校验 step/operation 的 attempt 配对、身份、结果词表与完成边界。未版本化历史事件保持兼容；
    版本化事件缺少模型快照时，导出报告会明确降级，不声明该项语义已验证。
-5. **清单与包摘要** —— `manifest.json` 记录每个文件的 sha256 与 `pack_digest`。
+5. **completed→audit 回执（仅 contracts.json 含 completion_receipt 快照时）** ——
+   流式关联最新 audit attempt、同 attempt 的推进型 finish，以及 required checks 的最新 pass。
+   这只验证记录之间的关系，不代表重新运行了 linter、核验当前工作区产物或证明记录来源。
+   新版本化 completed 工单导出要求此快照；历史包缺少此快照时保持兼容，但不声明该项语义已验证。
+6. **清单与包摘要** —— `manifest.json` 记录每个文件的 sha256 与 `pack_digest`。
 
 ## 校验方法（不需要安装 icode-agent）
 
@@ -931,6 +950,7 @@ python verify.py <本包目录>
 - metadata 摘要与事件 hash 都不是签名；能够重写并重签整包的人仍可制造自洽包，因此不能认证事件来源。
 - task 回执仅记录验证结果快照；`coverage.session_replay=not_included`，不包含完整会话事件回放，
   `coverage.unrecorded_side_effects=not_proven`，不证明过程中不存在未记录副作用。
+- completed→audit 检查不重跑上游 gate linter，不验证当前工作区输出或降级债务，也不认证事件来源。
 - `pack_digest` 需要**外部渠道锚定**（如发布到工单系统、邮件、日志留存）才具备抗抵赖力，
   否则持有整包的人可以整体重签。
 - 当前权限模型是**应用层限制，不是内核级沙箱**；沙箱在路线图 Phase 5 之前并不存在，
@@ -1003,6 +1023,7 @@ def build_evidence_pack(
     raw_contracts: dict | None = None
     ticket_state_machine: dict | None = None
     ticket_execution_model: dict | None = None
+    ticket_completion_receipt: dict | None = None
     if has_gates_file and gates_path is not None:
         raw_contracts = _load_contract_source(gates_path)
         raw_state_machine = raw_contracts.get("state_machine")
@@ -1023,6 +1044,14 @@ def build_evidence_pack(
             raise ContractError(
                 f"execution_model 契约结构无效：{exc}"
             ) from None
+        try:
+            ticket_completion_receipt = _completion_receipt_snapshot_from_raw(
+                raw_contracts,
+            )
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ContractError(
+                f"completion_receipt 契约结构无效：{exc}"
+            ) from None
 
     metadata_event_mirrors = {
         event_type: _metadata_event_mirror_records(meta, event_type)
@@ -1040,10 +1069,23 @@ def build_evidence_pack(
         expected_metadata_hash=expected_metadata_hash,
         expected_ticket_state_machine=ticket_state_machine,
         expected_execution_model=ticket_execution_model,
+        expected_completion_receipt=(
+            ticket_completion_receipt
+            if ticket_completion_receipt is not None
+            else _UNSET_COMPLETION_RECEIPT
+        ),
         ticket_metadata=meta,
     )
     if not event_summary.event_count:
         raise EvidenceError("事件链为空，无法导出证据包")
+    if (
+        ticket_completion_receipt is None
+        and event_summary.has_versioned_ticket_birth
+        and event_summary.has_completed_transition
+    ):
+        raise EvidenceError(
+            "已完成的版本化工单缺少可验证的 completed→audit completion_receipt 契约，拒绝导出"
+        )
     if len(event_summary.artifact_events) > _MAX_ARTIFACT_INDEX_ENTRIES:
         raise EvidenceError("产物索引条目数量超过安全上限")
     fixed_file_count = 6 + int(has_gates_file)
@@ -1108,6 +1150,10 @@ def build_evidence_pack(
     ):
         warnings.append(
             "缺少 execution_model v1 快照，本包不声明已验证 execution-model 事件语义"
+        )
+    if ticket_completion_receipt is None:
+        warnings.append(
+            "契约快照不含 completion_receipt，本包不声明已验证 completed/audit 回执语义"
         )
 
     # 4) 外部验证回执（R3：VerificationEvidence 会自动序列化成绑定回执）

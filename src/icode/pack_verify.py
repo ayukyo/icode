@@ -73,6 +73,7 @@ _UNSET_EXPECTED_METADATA_HASH = object()
 _UNSET_TICKET_STATE_MACHINE = object()
 _UNSET_TICKET_METADATA = object()
 _UNSET_EXECUTION_MODEL = object()
+_UNSET_COMPLETION_RECEIPT = object()
 
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
@@ -739,6 +740,96 @@ def _execution_model_snapshot_from_raw(raw_contracts: dict) -> dict | None:
     return snapshot
 
 
+def _normalize_completion_receipt(value: object) -> dict:
+    """Validate the small contract linking completed state to one execution step."""
+    if not isinstance(value, dict):
+        raise ValueError("completion_receipt 必须是对象")
+    if set(value) != {"schema_version", "target", "step", "required_checks"}:
+        raise ValueError("completion_receipt 字段集合无效")
+    if type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        raise ValueError("completion_receipt.schema_version 必须为 1")
+    target = value.get("target")
+    if target != "completed":
+        raise ValueError("completion_receipt.target 必须为 completed")
+    step = value.get("step")
+    if (
+        not isinstance(step, str)
+        or not step
+        or len(step) > _MAX_EXECUTION_MODEL_NAME_CHARS
+    ):
+        raise ValueError("completion_receipt.step 结构无效")
+    required_checks = value.get("required_checks")
+    if (
+        not isinstance(required_checks, list)
+        or not 1 <= len(required_checks) <= _MAX_EXECUTION_MODEL_ENUM_VALUES
+        or not all(
+            isinstance(boundary, str)
+            and 0 < len(boundary) <= _MAX_EXECUTION_MODEL_NAME_CHARS
+            for boundary in required_checks
+        )
+        or len(set(required_checks)) != len(required_checks)
+    ):
+        raise ValueError("completion_receipt.required_checks 结构无效")
+    return {
+        "schema_version": 1,
+        "target": target,
+        "step": step,
+        "required_checks": list(required_checks),
+    }
+
+
+def _completion_receipt_snapshot_from_raw(raw_contracts: dict) -> dict | None:
+    """Snapshot completed→audit receipt policy from the pinned workflow contract."""
+    state_machine = raw_contracts.get("state_machine")
+    if not isinstance(state_machine, dict):
+        return None
+    gate_policy = state_machine.get("gate_policy")
+    if not isinstance(gate_policy, dict):
+        return None
+    step_by_target = gate_policy.get("step_by_target")
+    if not isinstance(step_by_target, dict):
+        raise ValueError("state_machine.gate_policy.step_by_target 结构无效")
+    if "completed" not in step_by_target:
+        return None
+    step = step_by_target.get("completed")
+    if (
+        not isinstance(step, str)
+        or not step
+        or len(step) > _MAX_EXECUTION_MODEL_NAME_CHARS
+    ):
+        raise ValueError("state_machine.gate_policy.step_by_target.completed 结构无效")
+
+    execution_model = raw_contracts.get("execution_model")
+    if (
+        not isinstance(execution_model, dict)
+        or type(execution_model.get("schema_version")) is not int
+        or execution_model["schema_version"] != 1
+    ):
+        raise ValueError("completed 映射要求 execution_model v1 契约")
+    step_contracts = execution_model.get("step_contracts")
+    if not isinstance(step_contracts, dict) or step not in step_contracts:
+        raise ValueError("completed 映射步骤缺 execution_model.step_contracts")
+    step_contract = step_contracts[step]
+    if not isinstance(step_contract, dict):
+        raise ValueError("completed 映射步骤契约结构无效")
+    required_checks = step_contract.get("required_checks")
+    boundaries = execution_model.get("boundaries")
+    if (
+        not isinstance(boundaries, list)
+        or not all(isinstance(boundary, str) for boundary in boundaries)
+    ):
+        raise ValueError("execution_model.boundaries 结构无效")
+    snapshot = _normalize_completion_receipt({
+        "schema_version": 1,
+        "target": "completed",
+        "step": step,
+        "required_checks": required_checks,
+    })
+    if any(boundary not in boundaries for boundary in snapshot["required_checks"]):
+        raise ValueError("completion_receipt.required_checks 含未知 boundary")
+    return snapshot
+
+
 class _TicketStateMirror:
     """Stream v3 ticket state/close semantics without retaining the event chain."""
 
@@ -911,7 +1002,10 @@ class _TicketStateMirror:
 class _ExecutionEventMirror:
     """Replay versioned execution pairing and status-transition receipts."""
 
-    def __init__(self, execution_model: object) -> None:
+    def __init__(
+        self, execution_model: object,
+        completion_receipt: object = _UNSET_COMPLETION_RECEIPT,
+    ) -> None:
         self.enabled = (
             execution_model is not _UNSET_EXECUTION_MODEL
             and execution_model is not None
@@ -921,12 +1015,28 @@ class _ExecutionEventMirror:
         self.steps: dict[bytes, dict[str, object]] = {}
         self.operations: dict[bytes, dict[str, object]] = {}
         self.open_side_effect_operations: set[bytes] = set()
+        self.completion_policy: dict | None = None
+        self.versioned_ticket_birth = False
+        self.completed_transition_seen = False
+        self.latest_completion_attempt: bytes | None = None
+        self.latest_completion_state: dict[str, object] | None = None
         self.step_names: set[str] = set()
         self.boundaries: set[str] = set()
         self.step_outcomes: set[str] = set()
         self.operation_classes: set[str] = set()
         self.failure_classes: set[str] | None = None
         self.success_decision_version: int | None = None
+        if completion_receipt is not _UNSET_COMPLETION_RECEIPT:
+            try:
+                self.completion_policy = _normalize_completion_receipt(
+                    completion_receipt,
+                )
+            except (TypeError, ValueError, RecursionError):
+                self.problems.append("contracts.json completion_receipt 结构无效")
+        if self.completion_policy is not None and not self.enabled:
+            self.problems.append(
+                "contracts.json completion_receipt 缺 execution_model 快照"
+            )
         if not self.enabled:
             return
         try:
@@ -939,12 +1049,109 @@ class _ExecutionEventMirror:
         self.boundaries = set(normalized["boundaries"])
         self.step_outcomes = set(normalized["step_outcomes"])
         self.operation_classes = set(normalized["operation_classes"])
+        if self.completion_policy is not None and (
+            self.completion_policy["step"] not in self.step_names
+            or any(
+                boundary not in self.boundaries
+                for boundary in self.completion_policy["required_checks"]
+            )
+        ):
+            self.problems.append(
+                "contracts.json completion_receipt 与 execution_model 不一致"
+            )
         raw_failure_classes = normalized.get("failure_classes")
         if isinstance(raw_failure_classes, list):
             self.failure_classes = set(raw_failure_classes)
         raw_success_decision_version = normalized.get("success_decision_version")
         if type(raw_success_decision_version) is int:
             self.success_decision_version = raw_success_decision_version
+
+    def _track_completion_attempt(
+        self, event_type: object, payload: dict, event_index: int,
+    ) -> None:
+        """Retain only the latest mapped step attempt and its bounded gate receipt."""
+        policy = self.completion_policy
+        if policy is None:
+            return
+        attempt = payload.get("attempt")
+        if not isinstance(attempt, str) or not attempt:
+            return
+        attempt_key = self._fingerprint(attempt)
+        step = policy["step"]
+        if event_type == "step_started" and payload.get("step") == step:
+            self.latest_completion_attempt = attempt_key
+            self.latest_completion_state = {
+                "step": step,
+                "started_at": event_index,
+                "gate_results": {},
+                "outcome": None,
+                "checks": None,
+                "finished_at": None,
+            }
+            return
+        state = self.latest_completion_state
+        if (
+            state is None
+            or attempt_key != self.latest_completion_attempt
+            or payload.get("step") != step
+        ):
+            return
+        if event_type == "gate_checked":
+            boundary = payload.get("boundary")
+            result = payload.get("result")
+            if isinstance(boundary, str) and isinstance(result, str):
+                state["gate_results"][boundary] = result
+        elif event_type == "step_finished":
+            state["outcome"] = payload.get("outcome")
+            state["checks"] = payload.get("checks")
+            state["finished_at"] = event_index
+
+    def _check_completion_receipt(
+        self, payload: dict, event_index: int,
+    ) -> None:
+        policy = self.completion_policy
+        if policy is None:
+            return
+        state = self.latest_completion_state
+        has_attempt = state is not None
+        skipped = payload.get("gates_skipped_for_test") is True
+        required = has_attempt or (self.versioned_ticket_birth and not skipped)
+        if not required:
+            return
+        if state is None:
+            self.problems.append(
+                f"第 {event_index} 条 state_changed.completed 缺 completion_receipt "
+                f"{policy['step']} step_started"
+            )
+            return
+        finish_index = state.get("finished_at")
+        if not isinstance(finish_index, int) or finish_index >= event_index:
+            self.problems.append(
+                f"第 {event_index} 条 state_changed.completed 缺先于迁移的 "
+                f"completion_receipt {policy['step']} step_finished"
+            )
+            return
+        outcome = state.get("outcome")
+        if not isinstance(outcome, str) or outcome not in {"success", "degraded"}:
+            self.problems.append(
+                f"第 {event_index} 条 state_changed.completed 的 "
+                "completion_receipt outcome 不可推进"
+            )
+        latest_checks = state.get("gate_results")
+        finish_checks = state.get("checks")
+        if not isinstance(latest_checks, dict):
+            latest_checks = {}
+        if not isinstance(finish_checks, dict) or finish_checks != latest_checks:
+            self.problems.append(
+                f"第 {event_index} 条 state_changed.completed 的 "
+                "completion_receipt finish checks 与 gate_checked 不一致"
+            )
+        for boundary in policy["required_checks"]:
+            if latest_checks.get(boundary) != "pass":
+                self.problems.append(
+                    f"第 {event_index} 条 state_changed.completed 的 "
+                    f"completion_receipt 最新必需检查未通过：{boundary}"
+                )
 
     @staticmethod
     def _fingerprint(value: str) -> bytes:
@@ -976,15 +1183,24 @@ class _ExecutionEventMirror:
         payload = event.get("payload")
         if not isinstance(payload, dict):
             return
+        if event_type == "ticket_created":
+            marker = payload.get("execution_contract_version")
+            if type(marker) is int and marker == 1:
+                self.versioned_ticket_birth = True
+            return
         if event_type == "state_changed":
             if self.open_side_effect_operations:
                 self.problems.append(
                     f"第 {event_index} 条 state_changed 在有副作用 operation 未终结时推进状态"
                 )
+            if payload.get("to") == "completed":
+                self.completed_transition_seen = True
+                self._check_completion_receipt(payload, event_index)
             return
         if payload.get("execution_model_version") != 1:
             return
         self.has_versioned_events = True
+        self._track_completion_attempt(event_type, payload, event_index)
         if not self.enabled:
             attempt = payload.get("attempt")
             if not isinstance(attempt, str) or not attempt:
@@ -1567,6 +1783,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
     expected_ticket_metadata: object = _UNSET_TICKET_METADATA
     expected_ticket_state_machine: object = _UNSET_TICKET_STATE_MACHINE
     expected_execution_model: object = _UNSET_EXECUTION_MODEL
+    expected_completion_receipt: object = _UNSET_COMPLETION_RECEIPT
     metadata_path = _package_member_path(pack, "ticket/metadata.json")
     if metadata_path is None:
         problems.append("工单 metadata 包内路径无效（必须是普通文件）")
@@ -1620,6 +1837,10 @@ def verify_pack(pack_dir: Path) -> list[str]:
                     )
                 except (TypeError, ValueError, RecursionError):
                     problems.append("contracts.json execution_model 结构无效")
+            if "completion_receipt" in contracts_snapshot:
+                expected_completion_receipt = contracts_snapshot[
+                    "completion_receipt"
+                ]
     if (
         manifest_ticket_id is not None
         and metadata_ticket_id is not None
@@ -1643,6 +1864,7 @@ def verify_pack(pack_dir: Path) -> list[str]:
                 expected_metadata_hash=expected_metadata_hash,
                 expected_ticket_state_machine=expected_ticket_state_machine,
                 expected_execution_model=expected_execution_model,
+                expected_completion_receipt=expected_completion_receipt,
                 expected_ticket_metadata=expected_ticket_metadata,
             )
             problems.extend(chain_problems)
@@ -1664,6 +1886,7 @@ def _verify_event_chain(
     expected_metadata_hash: object = _UNSET_EXPECTED_METADATA_HASH,
     expected_ticket_state_machine: object = _UNSET_TICKET_STATE_MACHINE,
     expected_execution_model: object = _UNSET_EXECUTION_MODEL,
+    expected_completion_receipt: object = _UNSET_COMPLETION_RECEIPT,
     expected_ticket_metadata: object = _UNSET_TICKET_METADATA,
 ) -> tuple[dict[str, tuple[str, str]], list[str]]:
     """逐条校验事件，只保留去重 ID 与产物绑定所需的紧凑事实。"""
@@ -1717,7 +1940,9 @@ def _verify_event_chain(
     ticket_state_mirror = _TicketStateMirror(
         expected_ticket_state_machine, expected_ticket_metadata,
     )
-    execution_event_mirror = _ExecutionEventMirror(expected_execution_model)
+    execution_event_mirror = _ExecutionEventMirror(
+        expected_execution_model, expected_completion_receipt,
+    )
 
     def append_payload_shape_problems(target: _ProblemCollector) -> None:
         # Bound retained diagnostics even if a hostile event stream contains many
