@@ -124,8 +124,10 @@ try:
     _failure_exit_code = 89
     if capability_text != 'S-1-15-3-3':
         raise RuntimeError('unexpected AppContainer capability SID')
-    _failure_exit_code = 90
     if not (capability_attributes & SE_GROUP_ENABLED):
+        # Keep the failed bit check, but distinguish an empty attribute word
+        # from nonzero flags in the native CI receipt without changing policy.
+        _failure_exit_code = 90 if capability_attributes == 0 else 95
         raise RuntimeError('unexpected AppContainer token capability')
     payload = json.dumps({
         'nonce': sys.argv[3], 'appcontainer': True,
@@ -159,11 +161,12 @@ _PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES = {
     87: "token_appcontainer_match",
     88: "token_package_sid_match",
     89: "token_capability_sid_match",
-    90: "token_capability_enabled",
+    90: "token_capability_enabled_missing_zero_attributes",
     91: "ipv4_connect",
     92: "ipv4_send",
     93: "ipv6_connect",
     94: "ipv6_send",
+    95: "token_capability_enabled_missing_nonzero_attributes",
 }
 
 

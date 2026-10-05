@@ -2736,6 +2736,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIs(ipv6_notice["cap_control_executed"], True)
         self.assertEqual(ipv6_notice["cap_control_exit"], 0)
         self.assertEqual(ipv6_notice["cap_control_stage"], "probe_completed")
+        self.assertIn("requested_attributes=0x00000004", wfp_output.getvalue())
         self.assertIs(ipv6_notice["cap_control_cleanup"], True)
         self.assertIs(ipv6_notice["cap_control_ipv4_canary"], False)
         self.assertIs(ipv6_notice["cap_control_ipv6_canary"], False)
@@ -8163,6 +8164,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                     f"ipv4_canary={str(capability_ipv4_received).lower()} "
                     f"ipv6_canary={str(capability_ipv6_received).lower()} "
                     "requested_capability_count=1 capability_sid=privateNetworkClientServer "
+                    f"requested_attributes=0x{windows_job_module._SE_GROUP_ENABLED:08x} "
                     "readiness_credit=false zero_capability_candidate_unchanged=true",
                     flush=True,
                 )

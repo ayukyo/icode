@@ -85,11 +85,12 @@ class TestWindowsJob(unittest.TestCase):
             (87, "token_appcontainer_match"),
             (88, "token_package_sid_match"),
             (89, "token_capability_sid_match"),
-            (90, "token_capability_enabled"),
+            (90, "token_capability_enabled_missing_zero_attributes"),
             (91, "ipv4_connect"),
             (92, "ipv4_send"),
             (93, "ipv6_connect"),
             (94, "ipv6_send"),
+            (95, "token_capability_enabled_missing_nonzero_attributes"),
             (1, "unclassified"),
             (-1, "unclassified"),
             (True, "unclassified"),
@@ -117,6 +118,10 @@ class TestWindowsJob(unittest.TestCase):
         self.assertIn("_failure_exit_code = 88", argv[3])
         self.assertIn("_failure_exit_code = 89", argv[3])
         self.assertIn("_failure_exit_code = 90", argv[3])
+        self.assertIn(
+            "_failure_exit_code = 90 if capability_attributes == 0 else 95",
+            argv[3],
+        )
         self.assertIn("_read_single_token_capability(", argv[3])
         self.assertIn("len(capability_buffer), returned.value", argv[3])
         self.assertIn("if not appcontainer.value:", argv[3])
