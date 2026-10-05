@@ -18,7 +18,38 @@ from typing import Sequence
 _READ_HANDLE_PLACEHOLDER = "{ICODE_READ_HANDLE}"
 _PRIVATE_NETWORK_CAPABILITY_SID = "S-1-15-3-3"
 _SE_GROUP_ENABLED = 0x00000004
-_PRIVATE_NETWORK_CAPABILITY_PROBE_CODE = """\
+_TOKEN_GROUPS_CAPABILITY_PARSER_CODE = """\
+class SID_AND_ATTRIBUTES(ctypes.Structure):
+    _fields_ = [('Sid', ctypes.c_void_p), ('Attributes', wintypes.DWORD)]
+class TOKEN_GROUPS(ctypes.Structure):
+    _fields_ = [('GroupCount', wintypes.DWORD), ('Groups', SID_AND_ATTRIBUTES * 1)]
+def _read_single_token_capability(buffer_address, buffer_capacity, returned_length):
+    header_size = TOKEN_GROUPS.Groups.offset
+    entry_size = ctypes.sizeof(SID_AND_ATTRIBUTES)
+    if not buffer_address or buffer_capacity < header_size:
+        raise ValueError('invalid token group buffer capacity')
+    if returned_length < header_size:
+        raise ValueError('invalid token group return length')
+    if returned_length > buffer_capacity:
+        raise ValueError('token group return length exceeds buffer capacity')
+    group_count = ctypes.cast(
+        buffer_address, ctypes.POINTER(TOKEN_GROUPS),
+    ).contents.GroupCount
+    if group_count != 1:
+        raise ValueError('unexpected capability count')
+    required_length = header_size + group_count * entry_size
+    if returned_length < required_length:
+        raise ValueError('truncated token group return length')
+    capability = ctypes.cast(
+        buffer_address + header_size, ctypes.POINTER(SID_AND_ATTRIBUTES),
+    ).contents
+    if not capability.Sid:
+        raise ValueError('missing capability SID')
+    return capability.Sid, int(capability.Attributes)
+"""
+
+_PRIVATE_NETWORK_CAPABILITY_PROBE_CODE = (
+    """\
 import sys
 _failure_exit_code = 80
 def _stage_failure_hook(exc_type, _exc_value, _traceback):
@@ -28,6 +59,9 @@ def _stage_failure_hook(exc_type, _exc_value, _traceback):
 sys.excepthook = _stage_failure_hook
 import ctypes, json, socket
 from ctypes import wintypes
+"""
+    + _TOKEN_GROUPS_CAPABILITY_PARSER_CODE
+    + """\
 kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 advapi = ctypes.WinDLL('advapi32', use_last_error=True)
 SE_GROUP_ENABLED = 0x00000004
@@ -74,21 +108,13 @@ try:
     capability_buffer = ctypes.create_string_buffer(4096)
     if not advapi.GetTokenInformation(token, 30, capability_buffer, len(capability_buffer), ctypes.byref(returned)):
         raise ctypes.WinError(ctypes.get_last_error())
-    capability_count = ctypes.cast(capability_buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
-    class SID_AND_ATTRIBUTES(ctypes.Structure):
-        _fields_ = [('Sid', ctypes.c_void_p), ('Attributes', wintypes.DWORD)]
-    class TOKEN_CAPABILITIES(ctypes.Structure):
-        _fields_ = [('CapabilityCount', wintypes.DWORD), ('Capabilities', SID_AND_ATTRIBUTES * 1)]
-    if capability_count != 1:
-        raise RuntimeError('unexpected capability count')
-    capability = ctypes.cast(
-        ctypes.addressof(capability_buffer) + TOKEN_CAPABILITIES.Capabilities.offset,
-        ctypes.POINTER(SID_AND_ATTRIBUTES),
-    ).contents
+    capability_sid, capability_attributes = _read_single_token_capability(
+        ctypes.addressof(capability_buffer), len(capability_buffer), returned.value,
+    )
     _failure_exit_code = 85
     package_text = sid_text(package_sid)
     _failure_exit_code = 86
-    capability_text = sid_text(capability.Sid)
+    capability_text = sid_text(capability_sid)
     _failure_exit_code = 87
     if not appcontainer.value:
         raise RuntimeError('unexpected AppContainer token flag')
@@ -99,11 +125,11 @@ try:
     if capability_text != 'S-1-15-3-3':
         raise RuntimeError('unexpected AppContainer capability SID')
     _failure_exit_code = 90
-    if not (capability.Attributes & SE_GROUP_ENABLED):
+    if not (capability_attributes & SE_GROUP_ENABLED):
         raise RuntimeError('unexpected AppContainer token capability')
     payload = json.dumps({
         'nonce': sys.argv[3], 'appcontainer': True,
-        'package_sid': package_text, 'capability_count': capability_count,
+        'package_sid': package_text, 'capability_count': 1,
         'capability_sid': capability_text,
     }, sort_keys=True, separators=(',', ':')).encode('ascii')
 finally:
@@ -119,6 +145,7 @@ for family, address, port in (
         _failure_exit_code = 92 if family == socket.AF_INET else 94
         connection.sendall(payload)
 """
+)
 
 _PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES = {
     0: "probe_completed",

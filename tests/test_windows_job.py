@@ -29,6 +29,48 @@ from icode.windows_job import (
 
 
 class TestWindowsJob(unittest.TestCase):
+    def test_TokenCapabilities按TOKEN_GROUPS布局并校验返回长度(self) -> None:
+        helper_code = windows_job_module._TOKEN_GROUPS_CAPABILITY_PARSER_CODE
+        namespace: dict[str, object] = {
+            "ctypes": ctypes,
+            "wintypes": ctypes.wintypes,
+        }
+        exec(compile(helper_code, "<token-groups-parser>", "exec"), namespace)
+        group_type = namespace["TOKEN_GROUPS"]
+        parse = namespace["_read_single_token_capability"]
+        sid_storage = ctypes.create_string_buffer(16)
+        group = group_type()
+        group.GroupCount = 1
+        group.Groups[0].Sid = ctypes.addressof(sid_storage)
+        for attributes in (0x4, 0x5, 0):
+            with self.subTest(attributes=attributes):
+                group.Groups[0].Attributes = attributes
+                buffer = ctypes.create_string_buffer(ctypes.sizeof(group))
+                ctypes.memmove(buffer, ctypes.byref(group), ctypes.sizeof(group))
+                sid, observed_attributes = parse(
+                    ctypes.addressof(buffer), len(buffer), len(buffer),
+                )
+                self.assertEqual(sid, ctypes.addressof(sid_storage))
+                self.assertEqual(observed_attributes, attributes)
+                self.assertEqual(
+                    bool(observed_attributes & windows_job_module._SE_GROUP_ENABLED),
+                    attributes in (0x4, 0x5),
+                )
+
+        header_size = group_type.Groups.offset
+        entry_size = ctypes.sizeof(namespace["SID_AND_ATTRIBUTES"])
+        truncated = ctypes.create_string_buffer(ctypes.sizeof(group))
+        ctypes.memmove(truncated, ctypes.byref(group), ctypes.sizeof(group))
+        with self.assertRaisesRegex(ValueError, "return length"):
+            parse(
+                ctypes.addressof(truncated), len(truncated),
+                header_size + entry_size - 1,
+            )
+        with self.assertRaisesRegex(ValueError, "buffer capacity"):
+            parse(
+                ctypes.addressof(truncated), len(truncated), len(truncated) + 1,
+            )
+
     def test_private_network正控失败阶段使用有界exit码(self) -> None:
         expected_stages = [
             (None, "no_exit_code"),
@@ -63,6 +105,7 @@ class TestWindowsJob(unittest.TestCase):
             43123, 43124, "0123456789abcdef0123456789abcdef",
             "S-1-15-2-123456789-123456789-123456789-123456789",
         )
+        compile(argv[3], "<private-network-capability-probe>", "exec")
         self.assertIn("_failure_exit_code = 80", argv[3])
         self.assertIn("_failure_exit_code = 81", argv[3])
         self.assertIn("_failure_exit_code = 82", argv[3])
@@ -74,6 +117,8 @@ class TestWindowsJob(unittest.TestCase):
         self.assertIn("_failure_exit_code = 88", argv[3])
         self.assertIn("_failure_exit_code = 89", argv[3])
         self.assertIn("_failure_exit_code = 90", argv[3])
+        self.assertIn("_read_single_token_capability(", argv[3])
+        self.assertIn("len(capability_buffer), returned.value", argv[3])
         self.assertIn("if not appcontainer.value:", argv[3])
         self.assertNotIn("appcontainer.value != 1", argv[3])
         self.assertIn("'127.0.0.1', int(sys.argv[1]), 91, 92)", argv[3])
