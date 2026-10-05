@@ -95,6 +95,7 @@ class TestWindowsJob(unittest.TestCase):
             (97, "token_capability_sid_internet_client_server"),
             (98, "token_capability_sid_other_well_known"),
             (99, "token_capability_sid_unrecognized"),
+            (100, "token_capability_sid_classifier_error"),
             (1, "unclassified"),
             (-1, "unclassified"),
             (True, "unclassified"),
@@ -122,7 +123,12 @@ class TestWindowsJob(unittest.TestCase):
         self.assertIn("_failure_exit_code = 88", argv[3])
         self.assertIn("_failure_exit_code = 89", argv[3])
         self.assertIn(
-            "_failure_exit_code = _private_network_capability_sid_mismatch_exit_code(",
+            "mismatch_exit_code = _private_network_capability_sid_mismatch_exit_code(",
+            argv[3],
+        )
+        self.assertIn("_failure_exit_code = 100", argv[3])
+        self.assertIn(
+            "raise SystemExit(mismatch_exit_code)",
             argv[3],
         )
         self.assertIn("_failure_exit_code = 90", argv[3])

@@ -139,10 +139,16 @@ try:
         raise RuntimeError('unexpected AppContainer package SID')
     _failure_exit_code = 89
     if capability_text != 'S-1-15-3-3':
-        _failure_exit_code = _private_network_capability_sid_mismatch_exit_code(
+        # Reserve a distinct stage if the classifier itself fails. Use a direct
+        # SystemExit for a successfully classified mismatch so the global
+        # exception hook cannot collapse its result back to stage 89.
+        _failure_exit_code = 100
+        mismatch_exit_code = _private_network_capability_sid_mismatch_exit_code(
             capability_text,
         )
-        raise RuntimeError('unexpected AppContainer capability SID')
+        if mismatch_exit_code not in (96, 97, 98, 99):
+            raise RuntimeError('invalid AppContainer capability SID classification')
+        raise SystemExit(mismatch_exit_code)
     if not (capability_attributes & SE_GROUP_ENABLED):
         # Keep the failed bit check, but distinguish an empty attribute word
         # from nonzero flags in the native CI receipt without changing policy.
@@ -190,6 +196,7 @@ _PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES = {
     97: "token_capability_sid_internet_client_server",
     98: "token_capability_sid_other_well_known",
     99: "token_capability_sid_unrecognized",
+    100: "token_capability_sid_classifier_error",
 }
 
 
