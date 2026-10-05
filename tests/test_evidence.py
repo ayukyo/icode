@@ -782,6 +782,9 @@ class TestEvidencePack(unittest.TestCase):
             self.assertTrue(report.ok, report.render())
             contracts = json.loads((dest / "contracts.json").read_text(encoding="utf-8"))
             self.assertEqual(contracts["execution_model"]["schema_version"], 1)
+            self.assertEqual(
+                contracts["execution_model"].get("success_decision_version"), 1,
+            )
             self.assertIn("plan", contracts["execution_model"]["steps"])
             self.assertEqual(verify_pack(dest), [])
 
@@ -826,6 +829,54 @@ class TestEvidencePack(unittest.TestCase):
                  "name": "publish", "class": "managed_write", "outcome": "failure",
                  "duration_ms": 1, "evidence": "legacy failure receipt",
                  "after_check": "effect absent", "decision": {"action": "block"}},
+                {},
+            )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+            self._refresh_pack_member_hash(dest, "ticket/events.jsonl")
+
+            self.assertEqual(verify_pack(dest), [])
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+
+    def test_旧execution_model快照保留历史success决策兼容性(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+
+            contracts_path = dest / "contracts.json"
+            contracts = json.loads(contracts_path.read_text(encoding="utf-8"))
+            contracts["execution_model"].pop("success_decision_version")
+            contracts_path.write_text(
+                json.dumps(contracts, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self._refresh_pack_member_hash(dest, "contracts.json")
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            events_path = dest / "ticket" / "events.jsonl"
+            attempt = "legacy-success-decision"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": attempt,
+                 "name": "inspect dependency", "class": "read_only",
+                 "input_digest": "f" * 64, "idempotency_provided": False},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": attempt,
+                 "name": "inspect dependency", "class": "read_only",
+                 "outcome": "success", "duration_ms": 0,
+                 "evidence": "legacy read receipt", "after_check": "legacy check",
+                 "decision": {"action": "allow"}},
                 {},
             )
             self._refresh_pack_member_hash(dest, "ticket/metadata.json")
@@ -1095,7 +1146,12 @@ class TestEvidencePack(unittest.TestCase):
                  "name": "inspect dependency", "class": "read_only",
                  "outcome": "success", "duration_ms": 0,
                  "evidence": "read receipt", "after_check": "read completed",
-                 "decision": {"action": "allow"}},
+                 "decision": {
+                     "action": "complete",
+                     "reason": "operation_succeeded",
+                     "conclusion_ceiling": "verified",
+                     "auto_retry": False,
+                 }},
                 {},
             )
 
@@ -1105,6 +1161,97 @@ class TestEvidencePack(unittest.TestCase):
 
             self.assertTrue(report.ok, report.render())
             self.assertEqual(verify_pack(ws / "pack"), [])
+
+    def test_内置和独立校验器拒绝不符合固定success决策的回执(self) -> None:
+        with temp_workspace() as ws:
+            _out, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+
+            metadata_path = dest / "ticket" / "metadata.json"
+            events_path = dest / "ticket" / "events.jsonl"
+            expected = {
+                "action": "complete",
+                "reason": "operation_succeeded",
+                "conclusion_ceiling": "verified",
+                "auto_retry": False,
+            }
+            invalid_decisions = [
+                {**expected, "action": "allow"},
+                {**expected, "auto_retry": 0},
+                {**expected, "extra": "not emitted by the pinned CLI"},
+            ]
+            for index, decision in enumerate(invalid_decisions):
+                attempt = f"tampered-success-{index}"
+                self._append_rehashed_event(
+                    metadata_path, events_path, "operation_started",
+                    {"execution_model_version": 1, "attempt": attempt,
+                     "name": "inspect dependency", "class": "read_only",
+                     "input_digest": "f" * 64, "idempotency_provided": False},
+                    {},
+                )
+                self._append_rehashed_event(
+                    metadata_path, events_path, "operation_finished",
+                    {"execution_model_version": 1, "attempt": attempt,
+                     "name": "inspect dependency", "class": "read_only",
+                     "outcome": "success", "duration_ms": 0,
+                     "evidence": "read receipt", "after_check": "read completed",
+                     "decision": decision},
+                    {},
+                )
+            self._refresh_pack_member_hash(dest, "ticket/metadata.json")
+            self._refresh_pack_member_hash(dest, "ticket/events.jsonl")
+
+            problems = verify_pack(dest)
+            self.assertTrue(
+                any("operation_finished.decision" in item for item in problems),
+                problems,
+            )
+            environment = dict(os.environ)
+            environment.pop("PYTHONPATH", None)
+            independent = subprocess.run(
+                [sys.executable, str(dest / "verify.py"), str(dest)],
+                cwd=str(ws), env=environment, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, shell=False,
+            )
+            self.assertNotEqual(
+                independent.returncode, 0, independent.stdout + independent.stderr,
+            )
+            self.assertIn(
+                "operation_finished.decision",
+                independent.stdout + independent.stderr,
+            )
+
+    def test_导出器拒绝不符合固定success决策的operation(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            metadata_path = out_dir / ".ico_metadata.json"
+            events_path = out_dir / ".ico_events.jsonl"
+            attempt = "invalid-success-decision"
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_started",
+                {"execution_model_version": 1, "attempt": attempt,
+                 "name": "inspect dependency", "class": "read_only",
+                 "input_digest": "f" * 64, "idempotency_provided": False},
+                {},
+            )
+            self._append_rehashed_event(
+                metadata_path, events_path, "operation_finished",
+                {"execution_model_version": 1, "attempt": attempt,
+                 "name": "inspect dependency", "class": "read_only",
+                 "outcome": "success", "duration_ms": 0,
+                 "evidence": "read receipt", "after_check": "read completed",
+                 "decision": {"action": "allow"}},
+                {},
+            )
+
+            with self.assertRaisesRegex(
+                EvidenceError, "operation_finished.decision",
+            ):
+                build_evidence_pack(
+                    out_dir, dest=ws / "pack", gates_json=self.settings.gates_json,
+                )
 
     def test_导出器拒绝未终结副作用operation之后的状态迁移并保留旧包(self) -> None:
         from icode.evidence import EvidenceError

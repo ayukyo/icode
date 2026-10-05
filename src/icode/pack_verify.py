@@ -626,6 +626,9 @@ _EXECUTION_EVENT_TYPES = frozenset({
     "operation_started", "operation_finished",
 })
 _EXECUTION_DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_SUCCESS_OPERATION_DECISION_FIELDS = frozenset({
+    "action", "reason", "conclusion_ceiling", "auto_retry",
+})
 
 
 def _normalize_execution_model(value: object, *, snapshot: bool = False) -> dict:
@@ -713,6 +716,13 @@ def _normalize_execution_model(value: object, *, snapshot: bool = False) -> dict
     }
     if failure_classes is not None:
         normalized_model["failure_classes"] = sorted(failure_classes)
+    if snapshot and "success_decision_version" in value:
+        success_decision_version = value.get("success_decision_version")
+        if type(success_decision_version) is not int or success_decision_version != 1:
+            raise ValueError(
+                "execution_model.success_decision_version 必须为 1"
+            )
+        normalized_model["success_decision_version"] = success_decision_version
     return normalized_model
 
 
@@ -722,7 +732,11 @@ def _execution_model_snapshot_from_raw(raw_contracts: dict) -> dict | None:
         return None
     if value.get("schema_version") != 1:
         return None
-    return _normalize_execution_model(value)
+    snapshot = _normalize_execution_model(value)
+    # Bind new snapshots to the narrow, fixed success-decision check below. The
+    # marker keeps already-exported v1 packs on their historical acceptance rule.
+    snapshot["success_decision_version"] = 1
+    return snapshot
 
 
 class _TicketStateMirror:
@@ -912,6 +926,7 @@ class _ExecutionEventMirror:
         self.step_outcomes: set[str] = set()
         self.operation_classes: set[str] = set()
         self.failure_classes: set[str] | None = None
+        self.success_decision_version: int | None = None
         if not self.enabled:
             return
         try:
@@ -927,6 +942,9 @@ class _ExecutionEventMirror:
         raw_failure_classes = normalized.get("failure_classes")
         if isinstance(raw_failure_classes, list):
             self.failure_classes = set(raw_failure_classes)
+        raw_success_decision_version = normalized.get("success_decision_version")
+        if type(raw_success_decision_version) is int:
+            self.success_decision_version = raw_success_decision_version
 
     @staticmethod
     def _fingerprint(value: str) -> bytes:
@@ -939,6 +957,18 @@ class _ExecutionEventMirror:
         return (
             isinstance(value, str)
             and _EXECUTION_DIGEST_PATTERN.fullmatch(value) is not None
+        )
+
+    @staticmethod
+    def _has_pinned_success_decision(decision: dict) -> bool:
+        """Match the pinned producer's fixed success decision, not failure policy."""
+        return (
+            decision.keys() == _SUCCESS_OPERATION_DECISION_FIELDS
+            and decision.get("action") == "complete"
+            and decision.get("reason") == "operation_succeeded"
+            and decision.get("conclusion_ceiling") == "verified"
+            # JSON numbers compare equal to bools in Python, so require identity.
+            and decision.get("auto_retry") is False
         )
 
     def consume(self, event: dict, event_index: int) -> None:
@@ -1139,7 +1169,8 @@ class _ExecutionEventMirror:
                     self.problems.append(
                         f"第 {event_index} 条 operation_finished 缺 {field_name}"
                     )
-            if not isinstance(payload.get("decision"), dict):
+            decision = payload.get("decision")
+            if not isinstance(decision, dict):
                 self.problems.append(
                     f"第 {event_index} 条 operation_finished 缺 decision 对象"
                 )
@@ -1158,6 +1189,15 @@ class _ExecutionEventMirror:
                     self.problems.append(
                         f"第 {event_index} 条 operation_finished.failure 未登记"
                     )
+            if (
+                self.success_decision_version == 1
+                and outcome == "success"
+                and isinstance(decision, dict)
+                and not self._has_pinned_success_decision(decision)
+            ):
+                self.problems.append(
+                    f"第 {event_index} 条 operation_finished.decision 与 success policy 不一致"
+                )
             state["finished"] = True
             if state["class"] != "read_only":
                 self.open_side_effect_operations.discard(attempt_key)
