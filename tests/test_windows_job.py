@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import ctypes
 import inspect
 import os
@@ -332,6 +333,10 @@ class TestWindowsJob(unittest.TestCase):
             (98, "token_capability_sid_other_well_known"),
             (99, "token_capability_sid_unrecognized"),
             (100, "token_capability_sid_classifier_error"),
+            (101, "token_capability_enabled_check"),
+            (102, "token_capability_payload"),
+            (103, "token_handle_close"),
+            (104, "network_probe_setup"),
             (1, "unclassified"),
             (-1, "unclassified"),
             (True, "unclassified"),
@@ -348,6 +353,80 @@ class TestWindowsJob(unittest.TestCase):
             "S-1-15-2-123456789-123456789-123456789-123456789",
         )
         compile(argv[3], "<private-network-capability-probe>", "exec")
+        probe_tree = ast.parse(argv[3])
+        network_loops = [
+            node for node in ast.walk(probe_tree)
+            if isinstance(node, ast.For)
+            and isinstance(node.target, ast.Tuple)
+            and any(
+                isinstance(target, ast.Name) and target.id == "family"
+                for target in node.target.elts
+            )
+        ]
+        self.assertEqual(len(network_loops), 1)
+        network_loop = network_loops[0]
+        self.assertEqual(len(network_loop.target.elts), 5)
+        self.assertIsInstance(network_loop.iter, ast.Tuple)
+        self.assertTrue(all(
+            isinstance(entry, ast.Tuple) and len(entry.elts) == 5
+            for entry in network_loop.iter.elts
+        ))
+        self.assertEqual(
+            [target.id for target in network_loop.target.elts],
+            [
+                "family", "address", "port", "connect_failure_exit_code",
+                "send_failure_exit_code",
+            ],
+        )
+
+        connected: list[tuple[int, tuple[str, int]]] = []
+        sent: list[tuple[int, bytes]] = []
+
+        class FakeConnection:
+            def __init__(self, family: int) -> None:
+                self.family = family
+
+            def __enter__(self) -> FakeConnection:
+                return self
+
+            def __exit__(self, *_exc: object) -> bool:
+                return False
+
+            def settimeout(self, _timeout: float) -> None:
+                pass
+
+            def connect(self, address: tuple[str, int]) -> None:
+                connected.append((self.family, address))
+
+            def sendall(self, payload: bytes) -> None:
+                sent.append((self.family, payload))
+
+        fake_socket = SimpleNamespace(
+            AF_INET=2,
+            AF_INET6=23,
+            SOCK_STREAM=1,
+            socket=lambda family, _kind: FakeConnection(family),
+        )
+        loop_namespace = {
+            "socket": fake_socket,
+            "sys": SimpleNamespace(argv=["python", "43123", "43124"]),
+            "payload": b"fixed-probe-receipt",
+            "_failure_exit_code": 104,
+        }
+        loop_program = compile(
+            ast.Module(body=[network_loop], type_ignores=[]),
+            "<private-network-socket-loop>", "exec",
+        )
+        exec(loop_program, loop_namespace)
+        self.assertEqual(
+            connected,
+            [(2, ("127.0.0.1", 43123)), (23, ("::1", 43124))],
+        )
+        self.assertEqual(
+            sent, [(2, b"fixed-probe-receipt"), (23, b"fixed-probe-receipt")],
+        )
+        self.assertEqual(loop_namespace["_failure_exit_code"], 94)
+
         self.assertIn("_failure_exit_code = 80", argv[3])
         self.assertIn("_failure_exit_code = 81", argv[3])
         self.assertIn("_failure_exit_code = 82", argv[3])
@@ -372,14 +451,43 @@ class TestWindowsJob(unittest.TestCase):
             "_failure_exit_code = 90 if capability_attributes == 0 else 95",
             argv[3],
         )
+        self.assertLess(
+            argv[3].index("_failure_exit_code = 101"),
+            argv[3].index("if not (capability_attributes & SE_GROUP_ENABLED):"),
+        )
+        self.assertLess(
+            argv[3].index("_failure_exit_code = 102"),
+            argv[3].index("payload = json.dumps({"),
+        )
+        self.assertIn(
+            "token_closed = kernel.CloseHandle(token)",
+            argv[3],
+        )
+        self.assertIn("if not token_closed:", argv[3])
+        self.assertIn(
+            "raise RuntimeError('AppContainer token handle close failed')",
+            argv[3],
+        )
+        self.assertLess(
+            argv[3].index("token_closed = kernel.CloseHandle(token)"),
+            argv[3].index("_failure_exit_code = 103"),
+        )
+        self.assertLess(
+            argv[3].index("kernel.CloseHandle(token)"),
+            argv[3].index("_failure_exit_code = 104"),
+        )
+        self.assertLess(
+            argv[3].index("_failure_exit_code = 104"),
+            argv[3].index("for family, address, port, connect_failure_exit_code"),
+        )
         self.assertIn("_read_single_token_capability(", argv[3])
         self.assertIn("len(capability_buffer), returned.value", argv[3])
         self.assertIn("if not appcontainer.value:", argv[3])
         self.assertNotIn("appcontainer.value != 1", argv[3])
         self.assertIn("'127.0.0.1', int(sys.argv[1]), 91, 92)", argv[3])
         self.assertIn("'::1', int(sys.argv[2]), 93, 94)", argv[3])
-        self.assertIn("91 if family == socket.AF_INET else 93", argv[3])
-        self.assertIn("92 if family == socket.AF_INET else 94", argv[3])
+        self.assertIn("_failure_exit_code = connect_failure_exit_code", argv[3])
+        self.assertIn("_failure_exit_code = send_failure_exit_code", argv[3])
         self.assertIn("sys.exit(_failure_exit_code)", argv[3])
         self.assertIn("import sys\n_failure_exit_code = 80", argv[3])
         self.assertLess(
@@ -413,6 +521,59 @@ class TestWindowsJob(unittest.TestCase):
         for sid_text, expected in cases:
             with self.subTest(sid_text=sid_text):
                 self.assertEqual(classify(sid_text), expected)
+
+    def test_private_network正控仅在token句柄关闭失败时使用阶段103(self) -> None:
+        argv = _build_private_network_capability_probe_argv(
+            r"C:\actions\_temp\icode-runtime-staging-reviewer-fixed\python.exe",
+            43123, 43124, "0123456789abcdef0123456789abcdef",
+            "S-1-15-2-123456789-123456789-123456789-123456789",
+        )
+        probe_tree = ast.parse(argv[3])
+        close_finally = next(
+            node for node in ast.walk(probe_tree)
+            if isinstance(node, ast.Try)
+            and any(
+                isinstance(descendant, ast.Call)
+                and isinstance(descendant.func, ast.Attribute)
+                and isinstance(descendant.func.value, ast.Name)
+                and descendant.func.value.id == "kernel"
+                and descendant.func.attr == "CloseHandle"
+                for statement in node.finalbody
+                for descendant in ast.walk(statement)
+            )
+        )
+        close_program = compile(
+            ast.Module(body=close_finally.finalbody, type_ignores=[]),
+            "<private-network-token-close>", "exec",
+        )
+
+        for prior_stage in (88, 90, 95, 102):
+            with self.subTest(outcome="closed", prior_stage=prior_stage):
+                namespace = {
+                    "sys": sys,
+                    "_failure_exit_code": prior_stage,
+                    "kernel": SimpleNamespace(CloseHandle=lambda _token: True),
+                    "token": object(),
+                }
+                exec(close_program, namespace)
+                self.assertEqual(namespace["_failure_exit_code"], prior_stage)
+
+        for close_result, close_error in ((False, None), (None, OSError("close failed"))):
+            with self.subTest(close_result=close_result, close_error=close_error):
+                def close_handle(_token: object) -> bool:
+                    if close_error is not None:
+                        raise close_error
+                    return bool(close_result)
+
+                namespace = {
+                    "sys": sys,
+                    "_failure_exit_code": 90,
+                    "kernel": SimpleNamespace(CloseHandle=close_handle),
+                    "token": object(),
+                }
+                with self.assertRaises(RuntimeError if close_error is None else OSError):
+                    exec(close_program, namespace)
+                self.assertEqual(namespace["_failure_exit_code"], 103)
 
     def test_private_network能力正控只接受固定CI回环探针(self) -> None:
         environment = {

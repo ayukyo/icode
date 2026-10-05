@@ -154,27 +154,37 @@ try:
         if mismatch_exit_code not in (96, 97, 98, 99):
             raise RuntimeError('invalid AppContainer capability SID classification')
         raise SystemExit(mismatch_exit_code)
+    _failure_exit_code = 101
     if not (capability_attributes & SE_GROUP_ENABLED):
         # Keep the failed bit check, but distinguish an empty attribute word
         # from nonzero flags in the native CI receipt without changing policy.
         _failure_exit_code = 90 if capability_attributes == 0 else 95
         raise RuntimeError('unexpected AppContainer token capability')
+    _failure_exit_code = 102
     payload = json.dumps({
         'nonce': sys.argv[3], 'appcontainer': True,
         'package_sid': package_text, 'capability_count': 1,
         'capability_sid': capability_text,
     }, sort_keys=True, separators=(',', ':')).encode('ascii')
 finally:
-    kernel.CloseHandle(token)
-for family, address, port in (
+    try:
+        token_closed = kernel.CloseHandle(token)
+    except Exception:
+        _failure_exit_code = 103
+        raise
+    if not token_closed:
+        _failure_exit_code = 103
+        raise RuntimeError('AppContainer token handle close failed')
+_failure_exit_code = 104
+for family, address, port, connect_failure_exit_code, send_failure_exit_code in (
     (socket.AF_INET, '127.0.0.1', int(sys.argv[1]), 91, 92),
     (socket.AF_INET6, '::1', int(sys.argv[2]), 93, 94),
 ):
-    _failure_exit_code = 91 if family == socket.AF_INET else 93
+    _failure_exit_code = connect_failure_exit_code
     with socket.socket(family, socket.SOCK_STREAM) as connection:
         connection.settimeout(3)
         connection.connect((address, port))
-        _failure_exit_code = 92 if family == socket.AF_INET else 94
+        _failure_exit_code = send_failure_exit_code
         connection.sendall(payload)
 """
 )
@@ -202,6 +212,10 @@ _PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES = {
     98: "token_capability_sid_other_well_known",
     99: "token_capability_sid_unrecognized",
     100: "token_capability_sid_classifier_error",
+    101: "token_capability_enabled_check",
+    102: "token_capability_payload",
+    103: "token_handle_close",
+    104: "network_probe_setup",
 }
 
 
