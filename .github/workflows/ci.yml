@@ -58,8 +58,12 @@ jobs:
         run: python -m compileall -q src tests scripts
       - name: Run the full unit test suite
         run: python -m unittest
-      - name: Run the delivery guards
-        run: python scripts/preflight.py
+      # The full-suite step above is the tests gate. Do not run it a second
+      # time through the composite preflight; keep the other two gates explicit.
+      - name: Run the secret delivery guard
+        run: python scripts/preflight.py --only secrets
+      - name: Verify pinned submodule integrity
+        run: python scripts/preflight.py --only submodule
 
   verification-output-lifecycle:
     name: R3 verification output lifecycle (${{ matrix.os }})
