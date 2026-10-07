@@ -2,6 +2,11 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **Linux 当前运行时清理切片交付守护（2026-10-07）：**完整 preflight 3/3、44 项关联回归（1 跳过）、精确 runtime-root 断言后的 20 轮/100 方法、真实正/负清理及干净安装 wheel 全十阶段通过；编译 `-j6`、治理/官网/竞品/diff 通过。独立只读复审无阻断发现，建议的精确两根检查已补齐。新 SHA 原生矩阵仍待验；后续 Windows hook 时序回归的 RED 测试单独保留，不属于本提交。
+
+- **Linux 清理诊断非系统 Python 兼容（2026-10-07）：**移除 `/usr/bin/python3` 硬依赖，复用现有 runtime-root 封装；host/child/grandchild 保持当前 venv 路径和 `-I`，只在临时 host 中重绑定父 PID。完整六项清理断言及摘要校验未变，默认断网/紧 runtime roots 保持，无新增 doctor 探针、评分或自动模式授权。5 方法 clean RED→GREEN、20 轮/100 次、两项真实正/负例通过；本机非系统 uv base-prefix 的干净 wheel 构建/安装/全部十阶段通过。完整 preflight、独立复审及新 SHA 原生 CI 正在验收，来源/许可/取舍见[持续对照](./agent-landscape-live.md)。
+- **CI #648 最终计数与新增工作区失败（2026-10-07；`0355cd4`）：**[整轮](https://github.com/ayukyo/icode/actions/runs/37592176339) 31 success、3 failure、3 skipped，无未结束作业。除两个旧 Windows Reviewer candidate，还出现 Windows x64 workspace 失败；公开 annotation 指向 `test_git创建不执行post_checkout_hook且不等待sleep` 的 elapsed<1.5 秒断言，实际 2.141 秒。不能仅凭耗时判定 hook 被执行或确认为瞬态；独立只读核对后另记，不放宽安全断言，不误报整轮通过。Linux 四安装 job success 仍不能区分 lease 子探针 PASS/SKIP。
+
 - **doctor 展示切片交付守护（2026-10-07）：**完整 preflight 3/3、编译 `-j6`、治理/官网/竞品/diff 通过；独立只读复审无遗留发现。仅已有 executed/score 的计数展示变更，未改变平台能力或自动模式。后续非系统 Python 清理诊断的 RED 测试单独保留，不属于此提交。
 - **CI #648 Linux 安装作业复核（2026-10-07；`0355cd4`）：**[主 CI](https://github.com/ayukyo/icode/actions/runs/37592176339) completed/failure；Ubuntu 当前/22.04 的 x64 与 22.04/24.04 ARM64 四项 `Build and verify installed Linux wheel` 均 success。[官网](https://github.com/ayukyo/icode/actions/runs/37592176288) success。新 lease 子探针允许明确环境拒绝时 SKIP，公开原始日志 API 返回 403；因此作业 success 不能区分该子探针 PASS/SKIP，四架构 lease 行为仍不可确认，不更新能力分或 readiness。后续增加固定结果可观察性，不能以间接证据关闭网络租约门。
 

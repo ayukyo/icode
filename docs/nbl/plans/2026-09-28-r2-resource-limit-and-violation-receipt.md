@@ -1,5 +1,13 @@
 # R2 资源限制与统一违规回执实施门
 
+## 2026-10-07：已安装 Python 运行时的宿主清理诊断
+
+- **acceptance_contract：**安装 wheel 的调用解释器必须与 host/child/grandchild 一致，保留 venv 原路径与 `-I`；复用现有紧 runtime roots（含读取和执行），父 PID 仅在临时 host 中重绑定。原摘要校验、pidfd 身份、杀前活性、SIGKILL、退出和延迟哨兵六项不可削弱。
+- **verification_matrix：**static/unit 为 5 个接线方法（20 轮/100 次），包含系统路径缺失、精确两根、不解引用、仅重绑定、启动前拒绝；host 为既有真实清理正例及杀前已退出负例；build/deploy/consumption 为非系统 uv base-prefix 的干净 Linux wheel 全十阶段。本机这些层 pass；完整 preflight 正在收敛、新 SHA x64/ARM64 CI pending。
+- **negative_evidence/gaps：**CI #648 四 Linux 安装步骤 success 但无法取得 lease 子探针 PASS/SKIP，不能计租约分。新 runtime 切片不新增 doctor、自动选择或资源限制能力；不将本机实测替代跨平台验收。
+- **最终本机守护：**preflight 3/3、44 项关联回归（1 跳过）、精确根断言后的 20 轮/100 方法、编译 `-j6`、治理/官网/竞品/diff 通过；独立复审建议的精确两根检查已补齐，没有阻断发现。
+- **verdict：partially_verified。**可报告本机非系统 Python 的已安装清理链通过；不得关闭整体 R2/R3 或解除自动模式拒绝。
+
 ## 2026-10-07：安装 Linux wheel 租约验收分层记录
 
 ### acceptance_contract

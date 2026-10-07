@@ -420,12 +420,6 @@ def probe_linux_process_tree_cleanup(
         return LinuxProcessTreeCleanupProbeResult(
             False, False, checks, "Landlock helper 完整性校验失败",
         )
-    system_python = Path("/usr/bin/python3")
-    if not system_python.is_file():
-        return LinuxProcessTreeCleanupProbeResult(
-            False, False, checks, "系统 Python 3 不可用",
-        )
-
     stage = "setup"
     pidfd: int | None = None
     try:
@@ -446,23 +440,30 @@ def probe_linux_process_tree_cleanup(
             )
             child = (
                 "import subprocess, sys, time\n"
-                f"subprocess.Popen([sys.executable, '-c', {grandchild!r}], "
+                f"subprocess.Popen([sys.executable, '-I', '-c', {grandchild!r}], "
                 "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
                 "stderr=subprocess.DEVNULL)\n"
                 "time.sleep(3)\n"
             )
+            # Preserve the current venv interpreter and the existing narrow
+            # runtime grants; a system Python would test a different install.
+            wrapped = sandbox.wrap(
+                [sys.executable, "-I", "-c", child], workspace=workspace,
+            )
             host = (
                 "import os, subprocess, time\n"
-                f"subprocess.Popen([{str(helper)!r}, '--workspace', {str(workspace)!r}, "
-                f"'--parent-pid', str(os.getpid()), '--', {str(system_python)!r}, '-c', "
-                f"{child!r}], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+                f"wrapped = {wrapped!r}\n"
+                # The helper's PDEATHSIG must bind to this temporary host,
+                # not the diagnostic caller that prepared the command.
+                "wrapped[wrapped.index('--parent-pid') + 1] = str(os.getpid())\n"
+                "subprocess.Popen(wrapped, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
                 "stderr=subprocess.DEVNULL)\n"
                 "time.sleep(10)\n"
             )
             parent: subprocess.Popen[bytes] | None = None
             try:
                 parent = subprocess.Popen(
-                    [sys.executable, "-c", host],
+                    [sys.executable, "-I", "-c", host],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
