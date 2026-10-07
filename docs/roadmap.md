@@ -2,6 +2,12 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **安装 lease notice 切片交付守护（2026-10-07）：**完整 preflight 3/3、24 项关联回归、五方法 20 轮/100 次、编译 `-j6`、治理/官网/竞品/diff 通过；实际干净 wheel 全十阶段并输出固定 PASS notice。独立只读复审无阻断问题，建议的真实失败组合已补并通过。不增加权限、不改变 CLI 退出或能力评分；新 SHA annotation 的实际读取仍待验，历史 job success 不倒填 lease 通过。
+
+- **运行时修复与 hook 原生子门（2026-10-07）：**`04cbf40` 的 [CI #650](https://github.com/ayukyo/icode/actions/runs/37594002156) 四 Linux `Build and verify installed Linux wheel` 均 success；其中宿主清理为不可跳过必需子步骤，据执行合同可确认当前运行时清理没有失败，但仍无法区分 lease PASS/SKIP。`aeb3c44` 的 [CI #651](https://github.com/ayukyo/icode/actions/runs/37594881846) Ubuntu/macOS/Windows x64 workspace job success，包含真实 hook 正控及新语义回归；ARM64 当次观察仍运行中，整轮另记。均不代表 R2/R3 完整验收。
+
+- **安装 lease 的 PASS/SKIP 可观察性（2026-10-07）：**通用 runner 返回固定状态、main 仅为租约子探针发布固定 notice；不包含原始输出、参数或 stage。真实失败与未请求的 77 仍阻断，不改变 CLI 退出、能力分或权限。四缺口场景先 RED→GREEN，实际干净 wheel 构建/安装/十阶段与固定 PASS notice 本机通过；新 SHA 四 Linux job 的 annotation 待实际读取，不能先称线上可观察性完成。固定 runner step 计数与官方 API 取舍见[持续对照](./agent-landscape-live.md)。
+
 - **hook 真实正/负控切片交付守护（2026-10-07）：**完整 preflight 3/3、workspace matrix 199 项零 skip、三项核心连续 20 轮/60 次（含上下文关闭后的 marker 检查）、5 项 CI 选择合同、编译 `-j6`、治理/官网/竞品/diff 通过；独立只读复核无遗留发现。测试的正控失败仍阻断，慢时钟不再替代安全证据；未改生产安全策略或 timeout。新 SHA Windows x64/ARM64 的真实正控仍待验，R2/R3 整体不关闭。
 
 - **doctor SHA 的四平台工作区回归复核（2026-10-07；`da52def`）：**[CI #649](https://github.com/ayukyo/icode/actions/runs/37593259049) 的 Ubuntu、macOS、Windows x64/ARM64 workspace job 全部 success，两个旧 Windows Reviewer candidate 仍 failure。这个 SHA 未包含新 hook 正控或当前运行时修复，因此不能倒填它们的原生结果；#648 的 2.141 秒仍只是一项历史耗时失败，不据此臆断 hook 执行。

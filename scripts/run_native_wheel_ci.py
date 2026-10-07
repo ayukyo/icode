@@ -13,19 +13,20 @@ from pathlib import Path
 def _run(
     stage: str, argv: list[str], *, cwd: Path, env: dict[str, str] | None = None,
     allow_environment_skip: bool = False,
-) -> None:
+) -> str:
     result = subprocess.run(
         argv, cwd=cwd, env=env, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=180, check=False,
     )
     if allow_environment_skip and result.returncode == 77:
         print(f"{stage}: SKIP (namespace/loopback unavailable; conformance_credit=none)")
-        return
+        return "SKIP"
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()[-1800:]
         escaped = detail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
         raise RuntimeError(f"{stage} exit={result.returncode}: {escaped}")
     print(f"{stage}: PASS")
+    return "PASS"
 
 
 def main() -> int:
@@ -172,13 +173,16 @@ def main() -> int:
                 "probe installed wheel host-crash process-tree cleanup",
                 [str(python), "-c", cleanup_code], cwd=root, env=clean_env,
             )
-            _run(
+            lease_status = _run(
                 "probe installed wheel network lease expiry",
                 [str(python), "-I", str(repository / "scripts" / "probe_installed_linux_lease.py")],
                 cwd=root,
                 env=clean_env,
                 allow_environment_skip=True,
             )
+            # Only fixed subprocess outcomes are published, never raw probe
+            # output. A successful job may still contain an environment skip.
+            print(f"::notice::installed-linux-network-lease result={lease_status} conformance_credit=none")
             _run(
                 "probe installed Git status broker",
                 [str(python), str(repository / "scripts" / "probe_installed_git_broker.py")],
