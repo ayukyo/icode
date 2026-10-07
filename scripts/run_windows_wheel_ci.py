@@ -1,10 +1,17 @@
-"""Build and install a Windows architecture wheel using a synthetic, never-run PE."""
+"""Exercise synthetic packaging or an explicit, CI-built native bootstrap.
+
+Only the explicit native mode runs metadata/rejection checks. This is not a
+product launch authorization, signature check, setup, or isolation acceptance.
+"""
 
 from __future__ import annotations
 
+import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import sysconfig
@@ -14,12 +21,12 @@ import zipfile
 _REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPOSITORY / "src"))
 
-from icode.native_helper import windows_arch_from_platform  # noqa: E402
+from icode.native_helper import windows_arch_from_platform, windows_pe_architecture  # noqa: E402
 
 _HELPER_ENV = "ICODE_WINDOWS_SANDBOX_HELPER"
 
 
-def _run(stage: str, argv: list[str], *, cwd: Path, env: dict[str, str]) -> None:
+def _run(stage: str, argv: list[str], *, cwd: Path, env: dict[str, str]) -> str:
     result = subprocess.run(
         argv, cwd=cwd, env=env, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=240, check=False,
@@ -28,6 +35,7 @@ def _run(stage: str, argv: list[str], *, cwd: Path, env: dict[str, str]) -> None
         detail = (result.stderr or result.stdout).strip()[-1600:]
         raise RuntimeError(f"{stage} exit={result.returncode}: {detail}")
     print(f"{stage}: PASS")
+    return result.stdout
 
 
 def _synthetic_pe(machine: int) -> bytes:
@@ -39,7 +47,36 @@ def _synthetic_pe(machine: int) -> bytes:
     return bytes(image)
 
 
+def _read_native_image(helper: Path, arch: str) -> bytes:
+    """Accept an explicit CI artifact, not a trusted product executable."""
+    info = helper.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise RuntimeError("native CI artifact must be a regular, unlinked file")
+    with helper.open("rb") as stream:
+        image = stream.read(32 * 1024 * 1024 + 1)
+    if len(image) > 32 * 1024 * 1024 or windows_pe_architecture(image) != arch:
+        raise RuntimeError("native CI artifact size or PE architecture mismatch")
+    return image
+
+
+def _validate_bootstrap_output(output: str, arch: str) -> None:
+    expected = {
+        "helper": "icode-windows-bootstrap", "bootstrap_version": 1,
+        "runner_protocol_version": 1, "architecture": arch,
+        "setup_complete": False, "command_execution": False,
+        "isolation_ready": False,
+    }
+    # Fixed serialization also rejects duplicates, extra fields, bool/int aliases
+    # and trailing output without parsing arbitrary JSON from a candidate image.
+    if output != json.dumps(expected, separators=(",", ":")) + "\n":
+        raise RuntimeError("native bootstrap metadata contract mismatch")
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--native-helper", type=Path,
+                        help="explicit artifact built from this checkout; CI use only")
+    args = parser.parse_args()
     if sys.platform != "win32":
         print("::error::Windows wheel packaging probe was invoked on another platform")
         return 1
@@ -49,10 +86,11 @@ def main() -> int:
         machine = {"x64": 0x8664, "arm64": 0xAA64}[arch]
         with tempfile.TemporaryDirectory(prefix="icode-windows-wheel-") as raw:
             root = Path(raw)
-            helper_dir = root / "synthetic helper artifact"
+            helper_dir = root / "helper artifact"
             helper_dir.mkdir()
             helper = helper_dir / "sandbox-helper.exe"
-            image = _synthetic_pe(machine)
+            image = (_synthetic_pe(machine) if args.native_helper is None
+                     else _read_native_image(args.native_helper, arch))
             helper.write_bytes(image)
             Path(str(helper) + ".sha256").write_text(
                 hashlib.sha256(image).hexdigest() + "\n", encoding="ascii",
@@ -135,6 +173,35 @@ def main() -> int:
             )
             _run("resolve installed helper without source checkout", [str(python), "-c", code],
                  cwd=root, env=clean_env)
+
+            if args.native_helper is not None:
+                # CI executes only the artifact explicitly built from this job's
+                # checkout. Runtime helper discovery remains non-authorizing.
+                metadata_code = (
+                    "import subprocess,sys; "
+                    "from icode.native_helper import bundled_windows_helper; "
+                    "helper=bundled_windows_helper(); assert helper is not None; "
+                    "result=subprocess.run([str(helper),'--version-json'],"
+                    "capture_output=True,text=True,encoding='utf-8',timeout=5); "
+                    "assert result.returncode == 0 and not result.stderr; "
+                    "sys.stdout.write(result.stdout)"
+                )
+                output = _run("run installed native bootstrap metadata", [str(python), "-c", metadata_code],
+                              cwd=root, env=clean_env)
+                _validate_bootstrap_output(output, arch)
+                refusal_code = (
+                    "import subprocess; "
+                    "from icode.native_helper import bundled_windows_helper; "
+                    "helper=bundled_windows_helper(); assert helper is not None; "
+                    "args_list=[[],['setup'],['spawn','PRIVATE_COMMAND'],"
+                    "['--version-json','PRIVATE_ARGUMENT']]; "
+                    "results=[subprocess.run([str(helper),*args],capture_output=True,"
+                    "text=True,encoding='utf-8',timeout=5) for args in args_list]; "
+                    "assert all(r.returncode == 78 and not r.stdout and r.stderr == "
+                    "'icode_windows_bootstrap: unsupported_operation\\n' for r in results)"
+                )
+                _run("installed bootstrap refuses setup and commands", [str(python), "-c", refusal_code],
+                     cwd=root, env=clean_env)
 
             installed_code = (
                 "from pathlib import Path; import icode.native_helper as nh; "

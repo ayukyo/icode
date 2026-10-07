@@ -1,2 +1,3 @@
 include native/linux/icode_landlock.c
+recursive-include native/windows *.c CMakeLists.txt
 include scripts/windows_wheel.py

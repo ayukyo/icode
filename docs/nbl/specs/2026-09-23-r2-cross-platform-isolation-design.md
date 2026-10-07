@@ -272,6 +272,8 @@ class SandboxPolicy:
 
 **恢复原批准基线（2026-09-26，尚未实现/验收）：**Windows 产品后端回到本节上方的一次 UAC 初始化 + 专用 sandbox 身份 + 受限令牌 + 身份绑定 WFP + ACL + Job Object 方案。仅靠 Python 包安装指“发布匹配架构且内含原生 helper 的 wheel，不要求用户另装容器/运行时”；首次初始化仍需用户明确接受 Windows UAC。正式实现前必须验证 wheel/安装包中的 helper 完整性和来源、setup/command-runner IPC 边界、DPAPI/凭据保护、WFP 实际生效与卸载恢复；未通过前 Windows 自动模式继续关闭。不得把旧 Codex 代码复制进来；只借鉴机制，并注意 Codex 当前 Windows 后端选择已有演进，不把其 2026-05 文章描述等同当前默认实现。
 
+**交付基础切片（2026-10-07；原生结果待验）：**新增 C11 bootstrap target，沿用匹配架构 helper 文件名与已有 wheel 校验链。仅固定 `--version-json` 报告 bootstrap/runner 协议版本和实际编译架构；`setup_complete`、`command_execution`、`isolation_ready` 始终 false。所有其它参数 exit 78，不创建账户、修改 ACL/WFP、接收 IPC 或启动用户命令。真实 x64/ARM64 CI 各自由本次 checkout 编译，装入干净 venv 后运行该明确的构建产物；该测试权限不移交产品运行时，现有 resolver 和相邻 SHA-256 仍不构成可信执行授权。synthetic PE 作业独立保留，不计 bootstrap 运行或隔离验收；主机 C 编译只验证逻辑。后续必须补独立签名/来源信任根、镜像固定与启动身份核验，然后实现初始化事务和正式 runner，不能先开放自动模式。
+
 ## 7. 工作区与受保护目录
 
 ### 7.1 Git 工程

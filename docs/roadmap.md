@@ -2,6 +2,10 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **Windows bootstrap 本机验收（2026-10-07）：**相关 helper/包装 21 项通过，bootstrap 6 项连续 20 轮共 120 次通过；独立复核无发现，真实 sdist 归档包含 Windows CMake 及全部引用源码。最终全仓 preflight 3/3、compileall `-j6`、治理/官网/竞品检查与差异检查通过。真实 MSVC x64/ARM64 构建、wheel 安装后的 bootstrap 查询/拒绝仍待新 SHA CI；本机逻辑与源码包验收不代替它，也不赋予产品执行权限。
+
+- **R2 Windows 真实 bootstrap 交付切片（2026-10-07；原生验收待新 SHA）：**新增 `icode-sandbox-windows-{x64,arm64}.exe` CMake 目标，静态 MSVC runtime；只接受 `--version-json`，报告协议/架构及 `setup_complete=false`、`command_execution=false`、`isolation_ready=false`，其它操作固定 exit 78 且不回显参数。真实原生 CI 与 synthetic PE 包装作业分离，前者从本次源码构建后安装到干净 venv，查询包内二进制并验证 setup/spawn 拒绝；缺失或错架构不得回退 synthetic。本机 TDD 覆盖固定 schema、架构、拒绝和不泄露参数；这不是 Windows 实机执行或隔离证据。产品 helper 定位仍不赋予执行权，签名/来源、启动竞态、UAC/专用账户/DPAPI/WFP/ACL/Job 仍待闭合。研究已刷新 [持续对照](./agent-landscape-live.md)，批准基线见 [设计 §6.3](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md)。
+
 - **CI #641 完整结果（2026-10-07；`b0f8997`）：**[整轮](https://github.com/ayukyo/icode/actions/runs/37583697477) 最终 failure：30 个作业 success、2 个 Windows Reviewer candidate failure、3 个未请求的旧诊断作业 skipped。Python 3.11/3.12 全仓测试及 delivery guards、五 OS 和 Windows Python 3.12 的发布/恢复步骤均 success。x64/ARM64 网络候选都完整输出双栈 10 次 wait timeout、`connect=10035`，无终态 `10013`；正控 exit 91，cleanup=true，双栈 canary=false。macOS 数值 IPv4 predicate 仍 unsupported。官网 [#517](https://github.com/ayukyo/icode/actions/runs/37583697467) success；只能证明站点工作流。R3 本片发布恢复已获得跨平台步骤证据，R2/R3 总 readiness 仍未闭合。下一条 Windows 产品开发沿用批准的专用身份/UAC/WFP/ACL/Job 基线；旧 AppContainer 诊断结果不能替代正式后端。
 
 - **R3 导出 CLI 错误边界（2026-10-07；本机 CLI 11 项、独立审查、全仓 preflight 3/3 通过）：**`main` 已有全局 `OSError`→2 的处理，但会原样打印异常文本；直接调用 `cmd_evidence` 则会让该异常逃出。现将导出构建/发布的 `OSError` 在局部命令边界转换为固定提示和返回 2，保留异常类别并提示检查权限/空间/文件占用，不输出原始消息、双路径参数或 notes。既有 `EvidenceError` 恢复失败说明和备份位置保持可见，不捕获程序错误或中断。本片沿用已验证的发布事务，不改变格式、恢复或隔离门。
