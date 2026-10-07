@@ -282,7 +282,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if selected.get("not_enforced"):
         print(f"         未覆盖能力：{'、'.join(selected['not_enforced'])}")
     print(f"  [INFO] R2 策略合同：v{report['policy_schema_version']}")
-    print("         一致性测试：尚未执行（局部原生负向测试不计入 10 项评分）")
+    conformance = report["conformance_contract"]
+    if conformance["executed"]:
+        score = conformance["score"]
+        print(f"         本次诊断证据：{score['passed']}/{score['total']} 项已确认")
+        print("         未取得证据的能力仍为未验证；此结果不代表完整阶段验收")
+    else:
+        print("         一致性检查：尚未执行")
     if sys.platform.startswith("linux"):
         bundled = report["bundled_linux_helper"]
         state = "最小负向探测通过" if bundled["minimal_probe_passed"] else bundled["detail"]

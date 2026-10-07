@@ -75,7 +75,7 @@ class TestStaticOffline(unittest.TestCase):
 
 
 class TestRuntimeOffline(unittest.TestCase):
-    def test_doctor_如实报告_r2_合同尚未执行(self) -> None:
+    def test_doctor_如实报告_r2_本次证据不代表完整验收(self) -> None:
         settings = require_skill()
 
         with temp_workspace() as ws:
@@ -91,8 +91,10 @@ class TestRuntimeOffline(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("隔离后端：", output)
         self.assertIn("R2 策略合同：v1", output)
-        self.assertIn("一致性测试：尚未执行", output)
-        self.assertIn("局部原生负向测试不计入 10 项评分", output)
+        self.assertIn("本次诊断证据：", output)
+        self.assertIn("未取得证据的能力仍为未验证", output)
+        self.assertIn("不代表完整阶段验收", output)
+        self.assertIn("自动模式仍拒绝外部命令", output)
         self.assertIn("未覆盖能力：", output)
         if sys.platform.startswith("linux"):
             self.assertIn("随包 Linux 助手", output)

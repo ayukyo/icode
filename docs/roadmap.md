@@ -2,6 +2,11 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **doctor 展示切片交付守护（2026-10-07）：**完整 preflight 3/3、编译 `-j6`、治理/官网/竞品/diff 通过；独立只读复审无遗留发现。仅已有 executed/score 的计数展示变更，未改变平台能力或自动模式。后续非系统 Python 清理诊断的 RED 测试单独保留，不属于此提交。
+- **CI #648 Linux 安装作业复核（2026-10-07；`0355cd4`）：**[主 CI](https://github.com/ayukyo/icode/actions/runs/37592176339) completed/failure；Ubuntu 当前/22.04 的 x64 与 22.04/24.04 ARM64 四项 `Build and verify installed Linux wheel` 均 success。[官网](https://github.com/ayukyo/icode/actions/runs/37592176288) success。新 lease 子探针允许明确环境拒绝时 SKIP，公开原始日志 API 返回 403；因此作业 success 不能区分该子探针 PASS/SKIP，四架构 lease 行为仍不可确认，不更新能力分或 readiness。后续增加固定结果可观察性，不能以间接证据关闭网络租约门。
+
+- **doctor 本次诊断展示修正（2026-10-07）：**既有报告已有 executed/score，但 CLI 错称“尚未执行”。现只展示本次已确认计数；未取得证据仍未验证，不代表完整阶段验收。`executed=false` 不显示过期满分，满分/ready 也不解除自动模式拒绝。没有新增探针、评分、授权或回执字段；能力报告仅调用一次。四场景先 RED→GREEN，新增 3 方法连续 20 轮/60 次、关联 130 项（11 跳过）通过。完整 preflight 正在验收，独立复审与新 SHA 原生 CI 另记；开源机制取舍见[持续对照](./agent-landscape-live.md)。
+
 - **Linux 安装租约切片最终本机守护（2026-10-07）：**完整 preflight 3/3、28 项关联回归、关键 20 轮/200 方法、编译 `-j6`、治理/官网/竞品/diff 均通过。真实 wheel 从构建、干净 venv 安装到所有探针共三轮通过；最终轮含短读修正、新过期 scope 开放/期限前提，独立复审无遗留发现。下一 SHA 四 Linux 腿仍待原生验收；环境 SKIP 只反映不支持，不算行为通过或 readiness。分层合同/证据/缺口见[实施门](./nbl/plans/2026-09-28-r2-resource-limit-and-violation-receipt.md)。
 - **CI #647 完整结果（2026-10-07；`b3167b6`）：**[整轮](https://github.com/ayukyo/icode/actions/runs/37590897117) completed/failure，32 success、2 旧 Windows Reviewer candidate failure、3 未请求诊断 skipped，无未结束作业。POSIX 清理目标三平台、七条任务出口、Python 主测试作业通过，但这些子门不能替代正式 Windows backend。新增 Linux 安装租约切片尚不在该 SHA，不据此宣称它跨架构已过。
 
