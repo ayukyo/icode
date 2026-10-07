@@ -378,22 +378,22 @@ def _bounded_network_stage_notice(value: object) -> dict[str, object]:
         if observation[key] >= 0
     }
     return {
-        "connect_ex": observation["connect_ex_code"],
-        "event_create": observation["event_create_state"],
-        "event_select": observation["event_select_state"],
+        "connect": observation["connect_ex_code"],
+        "create": observation["event_create_state"],
+        "select": observation["event_select_state"],
         "wait": observation["connect_wait_state"],
-        "wait_t": observation["connect_wait_timeouts"],
-        "event_mask": observation["event_mask"],
-        "fd_connect": observation["fd_connect_event"],
-        "fd_connect_error": observation["fd_connect_error"],
-        "event_enum": observation["event_enum_state"],
-        "event_close": observation["event_close_state"],
-        "api_errors": api_errors,
-        "timeout_so_error": (
+        "wt": observation["connect_wait_timeouts"],
+        "mask": observation["event_mask"],
+        "fd": observation["fd_connect_event"],
+        "fd_error": observation["fd_connect_error"],
+        "enum": observation["event_enum_state"],
+        "close": observation["event_close_state"],
+        "api": api_errors,
+        "so_error": (
             observation["timeout_so_error_code"]
             if observation["timeout_so_error_read"] else -1
         ),
-        "tcp_state": observation["tcp_state"],
+        "tcp": observation["tcp_state"],
     }
 
 
@@ -2662,6 +2662,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                         parent_token_receipt,
                     )
                 script = argv[-1]
+                self.assertGreaterEqual(
+                    _kwargs["timeout_seconds"], 60,
+                    "runner gate + dual-stack connect + child-ready waits need startup/receipt margin",
+                )
                 compile(script, "<reviewer-snapshot-probe-captured>", "exec")
                 command_line = subprocess.list2cmdline([
                     r"C:\Python\python.exe", "-I", "-c", script,
@@ -2795,14 +2799,15 @@ class TestWindowsAppContainer(unittest.TestCase):
             for name, encoded in captured_notices
             if name == "Windows Reviewer IPv6 connect stages"
         ))
-        self.assertIs(ipv6_notice["cap_control_executed"], True)
-        self.assertEqual(ipv6_notice["cap_control_exit"], 0)
-        self.assertEqual(ipv6_notice["cap_control_stage"], "probe_completed")
+        capability_notice = ipv6_notice["cap"]
+        self.assertIs(capability_notice["ran"], True)
+        self.assertEqual(capability_notice["exit"], 0)
+        self.assertEqual(capability_notice["stage"], "probe_completed")
         self.assertIn("requested_attributes=0x00000004", wfp_output.getvalue())
-        self.assertIs(ipv6_notice["cap_control_cleanup"], True)
-        self.assertIs(ipv6_notice["cap_control_ipv4_canary"], False)
-        self.assertIs(ipv6_notice["cap_control_ipv6_canary"], False)
-        self.assertIs(ipv6_notice["cap_control_readiness_credit"], False)
+        self.assertIs(capability_notice["clean"], True)
+        self.assertIs(capability_notice["v4"], False)
+        self.assertIs(capability_notice["v6"], False)
+        self.assertIs(capability_notice["credit"], False)
         write_fingerprint_notice = json.loads(next(
             encoded
             for name, encoded in captured_notices
@@ -2855,12 +2860,12 @@ class TestWindowsAppContainer(unittest.TestCase):
             if name == "Windows Reviewer IPv4 connect stages"
         ))
         self.assertEqual(ipv4_stages.get("script_failure"), "not_observed")
-        self.assertEqual(ipv4_stages["connect_ex"], -1)
-        self.assertEqual(ipv4_stages["event_create"], "unavailable")
-        self.assertEqual(ipv4_stages["event_select"], "unavailable")
+        self.assertEqual(ipv4_stages["connect"], -1)
+        self.assertEqual(ipv4_stages["create"], "unavailable")
+        self.assertEqual(ipv4_stages["select"], "unavailable")
         self.assertEqual(ipv4_stages["wait"], "unavailable")
-        self.assertEqual(ipv4_stages["event_close"], "unavailable")
-        self.assertEqual(ipv4_stages["timeout_so_error"], -1)
+        self.assertEqual(ipv4_stages["close"], "unavailable")
+        self.assertEqual(ipv4_stages["so_error"], -1)
         self.assertNotIn("path", ipv4_stages)
         writes_notice = json.loads(next(
             encoded
@@ -3001,6 +3006,38 @@ class TestWindowsAppContainer(unittest.TestCase):
         )
         self.assertLessEqual(
             len(json.dumps(max_network_stage_notice, separators=(",", ":"))), 500,
+        )
+        # Bound the combined IPv6 + capability-control notice even for malformed
+        # input that projects to every longest enum and maximum numeric field.
+        longest_network_notice = _bounded_network_stage_notice({
+            "connect_ex_code": 0xFFFFFFFF,
+            "event_create_state": "not_attempted",
+            "event_select_state": "not_attempted",
+            "connect_wait_state": "event_signaled",
+            "connect_wait_timeouts": 10,
+            "event_enum_state": "not_attempted",
+            "event_close_state": "not_created",
+            "event_mask": 0xFFFFFFFF,
+            "fd_connect_event": False,
+            "fd_connect_error": 0xFFFFFFFF,
+            "timeout_so_error_read": True,
+            "timeout_so_error_code": 0xFFFFFFFF,
+            "tcp_state": "not_available",
+            **{key: 0xFFFFFFFF for key in (
+                "event_create_api_error", "event_select_api_error",
+                "connect_wait_api_error", "event_enum_api_error", "event_close_api_error",
+            )},
+        })
+        longest_network_notice["cap"] = {
+            "ran": False, "exit": 0xFFFFFFFF,
+            "stage": max(
+                (windows_job_module._private_network_capability_exit_stage(code)
+                 for code in range(105)), key=len,
+            ),
+            "clean": False, "v4": False, "v6": False, "credit": False,
+        }
+        self.assertLessEqual(
+            len(json.dumps(longest_network_notice, separators=(",", ":"))), 500,
         )
         self.assertEqual(len(captured_scripts), 1)
         self.assertEqual(
@@ -8855,7 +8892,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                 try:
                     candidate = run_windows_appcontainer(
                         [str(staged_executable), "-I", "-c", script],
-                        cwd=scratch, timeout_seconds=45, process_limit=8,
+                        # 20s observer gate + 2x10s connect + 5s child-ready,
+                        # with 15s for startup, file probes and receipt writing.
+                        cwd=scratch, timeout_seconds=60, process_limit=8,
                         _diagnostic_runtime_acl=True,
                         _diagnostic_runtime_roots=(staged_runtime,),
                         _diagnostic_reviewer_snapshot_roots=(snapshot,),
@@ -9270,16 +9309,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                 self._workflow_json_notice(
                     "Windows Reviewer IPv6 connect stages",
                     {
-                        **_bounded_network_stage_notice(
-                            summary["ipv6_network_stages"],
-                        ),
-                        "cap_control_executed": capability_control.executed,
-                        "cap_control_exit": capability_control.exit_code,
-                        "cap_control_stage": capability_control_stage,
-                        "cap_control_cleanup": capability_control.cleanup_ok,
-                        "cap_control_ipv4_canary": capability_ipv4_received,
-                        "cap_control_ipv6_canary": capability_ipv6_received,
-                        "cap_control_readiness_credit": False,
+                        **_bounded_network_stage_notice(summary["ipv6_network_stages"]),
+                        "cap": {
+                            "ran": capability_control.executed,
+                            "exit": capability_control.exit_code,
+                            "stage": capability_control_stage,
+                            "clean": capability_control.cleanup_ok,
+                            "v4": capability_ipv4_received,
+                            "v6": capability_ipv6_received,
+                            "credit": False,
+                        },
                     },
                 )
                 self._workflow_json_notice(

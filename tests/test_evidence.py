@@ -291,6 +291,243 @@ class TestEvidencePack(unittest.TestCase):
 
     # ---- 正常路径 ----
 
+    def _pack_file_bytes(self, dest: Path) -> dict[str, bytes]:
+        return {
+            path.relative_to(dest).as_posix(): path.read_bytes()
+            for path in dest.rglob("*") if path.is_file()
+        }
+
+    def test_clean_export_write_failure_preserves_old_pack(self) -> None:
+        from unittest.mock import patch
+
+        with temp_workspace() as ws:
+            ws = ws.resolve()
+            out_dir, dest, report = self._build(ws, workspace=ws / "work")
+            self.assertTrue(report.ok, report.render())
+            before = self._pack_file_bytes(dest)
+            with patch("icode.evidence.shutil.copyfile", side_effect=OSError("write failed")):
+                with self.assertRaises(OSError):
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    )
+            self.assertEqual(self._pack_file_bytes(dest), before)
+            self.assertEqual(verify_pack(dest), [])
+            self.assertEqual(sorted(p.name for p in ws.iterdir()), ["pack", "work"])
+
+    def test_clean_export_failed_selfcheck_preserves_old_pack(self) -> None:
+        from unittest.mock import patch
+
+        with temp_workspace() as ws:
+            ws = ws.resolve()
+            out_dir, dest, report = self._build(ws, workspace=ws / "work")
+            before = self._pack_file_bytes(dest)
+            with patch("icode.evidence.verify_pack", return_value=["selfcheck failed"]):
+                report = build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+            self.assertFalse(report.ok)
+            self.assertFalse(report.selfcheck_ok)
+            self.assertEqual(report.pack_dir, str(dest))
+            self.assertTrue(any("未发布" in warning for warning in report.warnings))
+            self.assertEqual(self._pack_file_bytes(dest), before)
+            self.assertEqual(verify_pack(dest), [])
+            self.assertEqual(sorted(p.name for p in ws.iterdir()), ["pack", "work"])
+
+    def test_clean_export_publish_failure_restores_old_pack(self) -> None:
+        from unittest.mock import patch
+
+        with temp_workspace() as ws:
+            ws = ws.resolve()
+            out_dir, dest, _report = self._build(ws, workspace=ws / "work")
+            before = self._pack_file_bytes(dest)
+            real_rename = Path.rename
+
+            def fail_publish(path: Path, target: Path) -> Path:
+                if path.name == "pack" and path.parent != ws and Path(target) == dest:
+                    raise OSError("publish failed")
+                return real_rename(path, target)
+
+            with patch.object(Path, "rename", fail_publish):
+                with self.assertRaises(OSError):
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    )
+            self.assertEqual(self._pack_file_bytes(dest), before)
+            self.assertEqual(verify_pack(dest), [])
+            self.assertEqual(sorted(p.name for p in ws.iterdir()), ["pack", "work"])
+
+    def test_clean_export_first_write_failure_leaves_no_partial_pack(self) -> None:
+        from unittest.mock import patch
+
+        with temp_workspace() as ws:
+            ws = ws.resolve()
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            with patch("icode.evidence.shutil.copyfile", side_effect=OSError("write failed")):
+                with self.assertRaises(OSError):
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    )
+            self.assertFalse(dest.exists())
+            self.assertEqual([p.name for p in ws.iterdir()], ["work"])
+
+    def test_clean_export_success_replaces_and_merge_export_preserves_members(self) -> None:
+        for clean in (True, False):
+            with self.subTest(clean=clean), temp_workspace() as ws:
+                ws = ws.resolve()
+                out_dir, dest, _report = self._build(ws, workspace=ws / "work")
+                stale = dest / "previous.txt"
+                stale.write_bytes(b"previous export")
+                report = build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json, clean=clean,
+                )
+                self.assertTrue(report.ok, report.render())
+                self.assertEqual(report.pack_dir, str(dest))
+                self.assertEqual(stale.exists(), not clean)
+                self.assertEqual(verify_pack(dest), [])
+                proc = subprocess.run(
+                    [sys.executable, str(dest / "verify.py"), str(dest)],
+                    cwd=str(ws), capture_output=True, text=True, timeout=30,
+                    env={**os.environ, "PYTHONPATH": ""},
+                )
+                self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                self.assertEqual(sorted(p.name for p in ws.iterdir()), ["pack", "work"])
+
+    def test_clean_export_backup_failure_preserves_old_pack(self) -> None:
+        from unittest.mock import patch
+
+        with temp_workspace() as ws:
+            ws = ws.resolve()
+            out_dir, dest, _report = self._build(ws, workspace=ws / "work")
+            before = self._pack_file_bytes(dest)
+            real_rename = Path.rename
+
+            def fail_backup(path: Path, target: Path) -> Path:
+                if path == dest:
+                    raise OSError("backup failed")
+                return real_rename(path, target)
+
+            with patch.object(Path, "rename", fail_backup):
+                with self.assertRaises(OSError):
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    )
+            self.assertEqual(self._pack_file_bytes(dest), before)
+            self.assertEqual(sorted(p.name for p in ws.iterdir()), ["pack", "work"])
+
+    def test_clean_export_restore_failure_keeps_recoverable_backup(self) -> None:
+        from unittest.mock import patch
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            ws = ws.resolve()
+            out_dir, dest, _report = self._build(ws, workspace=ws / "work")
+            before = self._pack_file_bytes(dest)
+            real_rename = Path.rename
+
+            def fail_publish_and_restore(path: Path, target: Path) -> Path:
+                if Path(target) == dest:
+                    raise OSError("destination unavailable")
+                return real_rename(path, target)
+
+            with patch.object(Path, "rename", fail_publish_and_restore):
+                with self.assertRaisesRegex(EvidenceError, "旧包恢复失败") as raised:
+                    build_evidence_pack(
+                        out_dir, dest=dest, gates_json=self.settings.gates_json,
+                    )
+            self.assertFalse(dest.exists())
+            backups = list(ws.glob(".icode-pack-*/previous"))
+            self.assertEqual(len(backups), 1)
+            self.assertIn(str(backups[0]), str(raised.exception))
+            self.assertEqual(self._pack_file_bytes(backups[0]), before)
+            self.assertEqual(verify_pack(backups[0]), [])
+
+    def test_clean_export_cleanup_failure_warns_after_valid_publication(self) -> None:
+        from unittest.mock import patch
+        import shutil
+
+        with temp_workspace() as ws:
+            ws = ws.resolve()
+            out_dir, dest, _report = self._build(ws, workspace=ws / "work")
+            stale = dest / "previous.txt"
+            stale.write_bytes(b"old generation")
+            real_rmtree = shutil.rmtree
+
+            def fail_transaction_cleanup(path, *args, **kwargs):
+                if Path(path).name.startswith(".icode-pack-"):
+                    raise OSError("cleanup failed")
+                return real_rmtree(path, *args, **kwargs)
+
+            with patch("icode.evidence.shutil.rmtree", side_effect=fail_transaction_cleanup):
+                report = build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+            self.assertTrue(report.ok, report.render())
+            self.assertTrue(report.selfcheck_ok)
+            self.assertFalse(stale.exists())
+            self.assertEqual(verify_pack(dest), [])
+            leftovers = list(ws.glob(".icode-pack-*"))
+            self.assertEqual(len(leftovers), 1)
+            self.assertTrue(any(str(leftovers[0]) in w for w in report.warnings))
+            self.assertEqual((leftovers[0] / "previous" / "previous.txt").read_bytes(), b"old generation")
+
+    def test_clean_export_unexpected_restore_errors_keep_backup(self) -> None:
+        from unittest.mock import patch
+
+        for error_type in (RuntimeError, KeyboardInterrupt, SystemExit):
+            with self.subTest(error=error_type.__name__), temp_workspace() as ws:
+                ws = ws.resolve()
+                out_dir, dest, _report = self._build(ws, workspace=ws / "work")
+                before = self._pack_file_bytes(dest)
+                real_rename = Path.rename
+
+                def fail_restore(path: Path, target: Path) -> Path:
+                    if Path(target) == dest:
+                        if path.name == "previous":
+                            raise error_type("restore interrupted")
+                        raise OSError("publish failed")
+                    return real_rename(path, target)
+
+                with patch.object(Path, "rename", fail_restore):
+                    with self.assertRaises(error_type) as raised:
+                        build_evidence_pack(
+                            out_dir, dest=dest, gates_json=self.settings.gates_json,
+                        )
+                backups = list(ws.glob(".icode-pack-*/previous"))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(self._pack_file_bytes(backups[0]), before)
+                self.assertIn(str(backups[0]), "\n".join(raised.exception.__notes__))
+                self.assertEqual(verify_pack(backups[0]), [])
+
+    def test_clean_export_rejects_file_destination_without_overwriting(self) -> None:
+        from icode.evidence import EvidenceError
+
+        with temp_workspace() as ws:
+            ws = ws.resolve()
+            out_dir = make_finished_plan_ticket(self.settings, ws / "work")
+            dest = ws / "pack"
+            dest.write_bytes(b"keep this file")
+            with self.assertRaisesRegex(EvidenceError, "目标必须是目录"):
+                build_evidence_pack(
+                    out_dir, dest=dest, gates_json=self.settings.gates_json,
+                )
+            self.assertEqual(dest.read_bytes(), b"keep this file")
+
+    def test_clean_export_snapshot_problem_preserves_old_pack(self) -> None:
+        with temp_workspace() as ws:
+            ws = ws.resolve()
+            out_dir, dest, _report = self._build(ws, workspace=ws / "work")
+            before = self._pack_file_bytes(dest)
+            (out_dir / "01_plan.md").unlink()
+            report = build_evidence_pack(
+                out_dir, dest=dest, gates_json=self.settings.gates_json,
+            )
+            self.assertFalse(report.ok)
+            self.assertTrue(any("无法取证" in p for p in report.problems))
+            self.assertEqual(self._pack_file_bytes(dest), before)
+            self.assertEqual(verify_pack(dest), [])
+            self.assertEqual(sorted(p.name for p in ws.iterdir()), ["pack", "work"])
+
     def test_导出证据包并通过包内校验(self) -> None:
         with temp_workspace() as ws:
             _out, dest, report = self._build(ws, workspace=ws / "work")

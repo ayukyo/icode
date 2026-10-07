@@ -996,6 +996,82 @@ def build_evidence_pack(
     if has_gates_file and _paths_overlap(dest, gates_path):
         raise EvidenceError("证据包输出目录不得覆盖契约输入")
 
+    if not clean:
+        return _write_evidence_pack(
+            out_dir, dest=dest, gates_path=gates_path, verifications=verifications,
+        )
+    if dest.exists() and not dest.is_dir():
+        raise EvidenceError("证据包输出目标必须是目录")
+
+    # Keep both generations on the same filesystem. Two renames permit rollback
+    # on ordinary exceptions; they are not a crash-safe atomic directory swap.
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    transaction = Path(tempfile.mkdtemp(prefix=".icode-pack-", dir=dest.parent))
+    staged = transaction / "pack"
+    previous = transaction / "previous"
+    report: PackReport | None = None
+    failure: BaseException | None = None
+    preserve_backup = False
+    try:
+        report = _write_evidence_pack(
+            out_dir, dest=staged, gates_path=gates_path, verifications=verifications,
+        )
+        report.pack_dir = str(dest)
+        if not report.ok or not report.selfcheck_ok:
+            report.warnings.append("证据包未发布：构建或自校验失败，旧目标保留")
+            return report
+        if dest.exists():
+            # Once the old generation can move, cleanup must default to keeping
+            # it, including interruptions between rename and rollback setup.
+            preserve_backup = True
+            dest.rename(previous)
+        try:
+            staged.rename(dest)
+        except BaseException:
+            if previous.exists():
+                try:
+                    previous.rename(dest)
+                    preserve_backup = False
+                except OSError as exc:
+                    # This is the sole old generation. Do not remove its
+                    # container in finally when restoration also fails.
+                    preserve_backup = True
+                    raise EvidenceError(
+                        f"证据包发布失败且旧包恢复失败（{type(exc).__name__}）；"
+                        f"旧包备份保留于：{previous}"
+                    ) from None
+            raise
+        preserve_backup = False
+        return report
+    except BaseException as exc:
+        failure = exc
+        if preserve_backup and previous.exists():
+            failure.add_note(f"旧包备份保留于：{previous}")
+        raise
+    finally:
+        if not (preserve_backup and previous.exists()):
+            try:
+                shutil.rmtree(transaction)
+            except OSError as exc:
+                message = (
+                    f"证据包临时目录清理失败（{type(exc).__name__}）：{transaction}"
+                )
+                if failure is not None:
+                    failure.add_note(message)
+                elif report is not None:
+                    report.warnings.append(message)
+
+
+def _write_evidence_pack(
+    out_dir: Path,
+    *,
+    dest: Path,
+    gates_path: Path | None,
+    verifications: list[dict] | None,
+) -> PackReport:
+    """Build in an empty staging directory, or merge for legacy clean=False."""
+    has_gates_file = gates_path is not None and gates_path.is_file()
+
     meta_path = out_dir / METADATA_NAME
     if not meta_path.is_file():
         raise EvidenceError(f"不是 v3 工单目录（缺 {METADATA_NAME}）：{out_dir}")
@@ -1103,8 +1179,6 @@ def build_evidence_pack(
     hash_budget = _HashReadBudget(_MAX_PACKAGE_HASH_READ_BYTES)
     artifact_budget = _HashReadBudget(_MAX_PACKAGE_ARTIFACT_BYTES)
 
-    if clean and dest.exists():
-        shutil.rmtree(dest)
     (dest / "ticket" / "bodies").mkdir(parents=True, exist_ok=True)
 
     # 1) 原样拷贝账本与元数据

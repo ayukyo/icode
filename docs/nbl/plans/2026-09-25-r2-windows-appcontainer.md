@@ -663,3 +663,7 @@ Microsoft 文档明确了 inheritable ACE 的传播与控制标志行为，但 `
 
 - **原生结果：**CI [#605](https://github.com/ayukyo/icode/actions/runs/37198729549) 的 Windows x64 [job](https://github.com/ayukyo/icode/actions/runs/37198729549/job/111425836819) 与 ARM64 [job](https://github.com/ayukyo/icode/actions/runs/37198729549/job/111425836769) 均通过标准用户/AppContainer SID、零网络 capability、文件拒读/拒写、子进程退出和 ACL 恢复检查，但候选以 exit 78 失败：IPv4/IPv6 `connect_ex=10035` 后等待超时，`FD_CONNECT` 与拒绝状态均无；runner observer 无精确 WFP event，archive 缺少 `wfpdiag.xml`。这只证明探测未完成/诊断不可用，不是网络拒绝证据。
 - **边界与结论：**不放宽要求、不把 pending socket、超时、空 CAB 或 `network_events_collected` 状态替代目标级拒绝证据；不改 capability、loopback exemption、WFP、防火墙、ACL 或产品执行器。Windows 网络 `network_temporary_allowlist` 仍未验收，R2/R3 readiness 与自动模式继续关闭。本次 CI 的五平台 verifier 生命周期、Windows x64/ARM64 Job cleanup 与 authenticated runner pipe jobs 通过，与该网络失败相互独立。
+# 2026-10-07 分段等待独立复审修正
+
+- 复审复现 compact IPv6 + 正控组合 501 字节，及外层 45 秒没有完整等待路径余量。现仅缩短 compact 字段，正控置于 `cap` 子对象；完整结构回执、公开错误码和硬门不变。最长枚举/数值/固定 capability stage 的合并投影 498 字节，保持每步 notice 数量预算。
+- 外层 timeout 60 秒：observer 20 + 双栈各 10 + child-ready 5 + 启动/文件/API/回执余量 15。预算回归 RED→GREEN，目标模块 99 项运行、86 pass/13 平台 skip；独立复审两项 Important 均已解决。新提交 x64/ARM64 native 待验。

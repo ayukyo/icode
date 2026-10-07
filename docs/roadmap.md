@@ -2,6 +2,9 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R3 证据包验证后发布（2026-10-07；全仓 preflight 3/3；独立复审问题已修正）：**默认 `clean=True` 在目标同级临时目录构建、自校验成功后迁移旧目标并发布新包；写入/验包失败保留旧包，发布失败恢复旧包，恢复失败保留备份并报告路径，发布后的清理失败记录警告。`clean=False` 保持合并语义；包格式和内置/独立校验不变。故障注入先 RED 复现旧包被删除和首次导出半包残留，再 GREEN；11 项新增回归包含逐字节旧包保全、零依赖独立 verifier，以及恢复遇到 RuntimeError/KeyboardInterrupt/SystemExit 时保留唯一备份。路径别名先 RED 后修正，11 项在符号链接临时目录下全过；生产代码最终版全仓 preflight 三道通过，编译 `-j6`、治理/官网/竞品检查通过。现有五 OS Python 3.11 和 Windows x64/ARM64 Python 3.12 CI 已接入发布回归，新 SHA 原生结果待验。两次改名不保证连续可见或崩溃自动恢复，未引入第三方源码/依赖。设计见 [R3 发布设计](./nbl/specs/2026-10-07-r3-evidence-pack-publication-design.md)。本片不抵扣 R2 隔离验收。
+- **R2 Windows 分段等待复审修正（2026-10-07；本机 99 项、86 pass/13 平台 skip；独立复审通过）：**发现旧 compact IPv6 正控合并注释有可达 501 字节组合，以及外层 45 秒预算正好耗尽全部等待时间。缩短 compact 字段并将正控置于 `cap` 子对象，完整结构回执保持不变，最坏投影 498 字节，notice 数量不增加；外层预算为 60 秒（20 秒 observer gate + 双栈各 10 秒 + 5 秒 child ready + 15 秒余量）。新预算先 RED 再 GREEN，双栈终态 `10013` 硬门、timeout inconclusive 和自动模式边界保持不变。旧 `eb05667` 尚未单独推送，将与本修正一同推送后获取原生回执。
+
 - **R2 Windows `FD_CONNECT` 分段等待诊断（2026-10-05；本机 RED→GREEN；全仓 preflight 3/3 通过）：**旧 test-only 探针单次等待 3 秒；新测试以模拟第二段才到达的事件复现旧探针漏记终态 `10013`。现保持同一 socket/event，在固定 10 秒总预算内最多 10 次、每次至多 1 秒等待；结构化回执记录尝试/timeout 次数，compact Actions notice 仍受 500 字节上限约束。无事件、wait/API 错误或 deadline 用尽均不是 DENY，正式零-cap双栈 `10013` 硬门不变。`tests.test_windows_appcontainer` 99 项运行、86 通过、13 项平台跳过；`compileall -j6`、治理/官网/竞品/`git diff --check` 均通过。当前只有本机模拟/源码验证，新 SHA Windows x64/ARM64 原生结果待 CI。R2/R3 readiness、自动模式继续关闭。
 - **范围边界：**该等待逻辑只用于 R3 Reviewer 的零-cap `WSAEventSelect` 候选；独立私网 capability 正控仍使用 blocking `socket.connect()`，CI #640 的 IPv4 connect stage 91 尚未解释，不能把本地新回归记成正控通过。
 
