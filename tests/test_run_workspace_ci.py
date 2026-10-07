@@ -14,6 +14,9 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_workspace_hook_evidence_contract_runs_on_every_platform(self) -> None:
+        self.assertIn("tests.test_workspace_hook_contract", DEFAULT_MODULES)
+
     def test_cross_platform_matrix_selects_os_neutral_R3_regressions(self) -> None:
         self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 50)
         self.assertTrue(set(CROSS_PLATFORM_R3_TESTS).issubset(DEFAULT_MODULES))

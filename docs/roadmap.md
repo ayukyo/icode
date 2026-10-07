@@ -2,6 +2,12 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **hook 真实正/负控切片交付守护（2026-10-07）：**完整 preflight 3/3、workspace matrix 199 项零 skip、三项核心连续 20 轮/60 次（含上下文关闭后的 marker 检查）、5 项 CI 选择合同、编译 `-j6`、治理/官网/竞品/diff 通过；独立只读复核无遗留发现。测试的正控失败仍阻断，慢时钟不再替代安全证据；未改生产安全策略或 timeout。新 SHA Windows x64/ARM64 的真实正控仍待验，R2/R3 整体不关闭。
+
+- **doctor SHA 的四平台工作区回归复核（2026-10-07；`da52def`）：**[CI #649](https://github.com/ayukyo/icode/actions/runs/37593259049) 的 Ubuntu、macOS、Windows x64/ARM64 workspace job 全部 success，两个旧 Windows Reviewer candidate 仍 failure。这个 SHA 未包含新 hook 正控或当前运行时修复，因此不能倒填它们的原生结果；#648 的 2.141 秒仍只是一项历史耗时失败，不据此臆断 hook 执行。
+
+- **CI hook 安全证据切片（2026-10-07）：**定位 #648 新 Windows workspace 失败为旧绝对耗时门，未验证 marker，因此不臆断 hook 执行或纯环境问题。新增同一可执行 hook 的真实 checkout 正控（明确 LF、空格/Windows slash 引用、有界 15 秒），清 marker 后实际工作区创建负控仍必须不执行。取消性能 SLO，不改生产逻辑/超时/安全门。假慢时钟与不可观察正控两项旧代码 RED→GREEN，跨平台 CI 选择合同同样 RED→GREEN；新模块进入四平台 workspace 矩阵。本机三项核心通过，20 轮、全矩阵、完整 preflight/独立复审正在收敛，新 SHA 原生 Windows 正控待验。取舍见[持续对照](./agent-landscape-live.md)。
+
 - **Linux 当前运行时清理切片交付守护（2026-10-07）：**完整 preflight 3/3、44 项关联回归（1 跳过）、精确 runtime-root 断言后的 20 轮/100 方法、真实正/负清理及干净安装 wheel 全十阶段通过；编译 `-j6`、治理/官网/竞品/diff 通过。独立只读复审无阻断发现，建议的精确两根检查已补齐。新 SHA 原生矩阵仍待验；后续 Windows hook 时序回归的 RED 测试单独保留，不属于本提交。
 
 - **Linux 清理诊断非系统 Python 兼容（2026-10-07）：**移除 `/usr/bin/python3` 硬依赖，复用现有 runtime-root 封装；host/child/grandchild 保持当前 venv 路径和 `-I`，只在临时 host 中重绑定父 PID。完整六项清理断言及摘要校验未变，默认断网/紧 runtime roots 保持，无新增 doctor 探针、评分或自动模式授权。5 方法 clean RED→GREEN、20 轮/100 次、两项真实正/负例通过；本机非系统 uv base-prefix 的干净 wheel 构建/安装/全部十阶段通过。完整 preflight、独立复审及新 SHA 原生 CI 正在验收，来源/许可/取舍见[持续对照](./agent-landscape-live.md)。

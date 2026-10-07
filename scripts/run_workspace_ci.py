@@ -70,6 +70,7 @@ POSIX_R3_TESTS = (
 
 DEFAULT_MODULES = (
     "tests.test_workspace",
+    "tests.test_workspace_hook_contract",
     "tests.test_autonomy",
     "tests.test_workbench",
     # Keep the integration matrix bounded while exercising task-tree capture,

@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -660,27 +661,34 @@ class TestWorkspaceManager(unittest.TestCase):
             _run_git(repository, "worktree", "remove", "--force", str(checkout))
             self.assertFalse(checkout.exists())
 
-    def test_git创建不执行post_checkout_hook且不等待sleep(self) -> None:
+    def test_git创建不执行post_checkout_hook_真实正控有效(self) -> None:
         repository = _create_git_repository(self.root)
-        hooks = repository / ".githooks"
+        hooks = repository / ".git hooks with spaces"
         hooks.mkdir()
-        marker = repository / "hook-ran"
+        marker = repository / "hook ran with spaces"
         hook = hooks / "post-checkout"
         hook.write_text(
-            f"#!/bin/sh\nprintf ran > {marker}\nsleep 2\n",
+            f"#!/bin/sh\nprintf ran > {shlex.quote(marker.as_posix())}\nsleep 2\n",
             encoding="utf-8",
+            newline="\n",
         )
         hook.chmod(0o755)
         _run_git(repository, "config", "core.hooksPath", str(hooks))
 
-        started = time.monotonic()
+        # A broken hook/path must not make the negative control look safe.
+        # Explicit checkout is the positive control; the hook marks before sleep.
+        subprocess.run(
+            ["git", "-C", str(repository), "checkout", "--detach", "HEAD"],
+            check=True, capture_output=True, text=True, timeout=15,
+        )
+        self.assertTrue(marker.is_file(), "post-checkout 正控必须可执行并写入 marker")
+        self.assertEqual(marker.read_text(encoding="ascii"), "ran")
+        marker.unlink()
         with WorkspaceManager(repository, self.data_root, "project-1").open(
             "hook-ticket", "run-1"
         ):
-            elapsed = time.monotonic() - started
-
-        self.assertLess(elapsed, 1.5)
-        self.assertFalse(marker.exists())
+            self.assertFalse(marker.exists(), "工作区创建不得执行 post-checkout hook")
+        self.assertFalse(marker.exists(), "工作区关闭不得执行 post-checkout hook")
 
     def test_git安全物化不执行smudge_filter(self) -> None:
         repository = _create_git_repository(self.root)
