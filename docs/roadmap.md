@@ -2,6 +2,12 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **Linux 安装租约切片最终本机守护（2026-10-07）：**完整 preflight 3/3、28 项关联回归、关键 20 轮/200 方法、编译 `-j6`、治理/官网/竞品/diff 均通过。真实 wheel 从构建、干净 venv 安装到所有探针共三轮通过；最终轮含短读修正、新过期 scope 开放/期限前提，独立复审无遗留发现。下一 SHA 四 Linux 腿仍待原生验收；环境 SKIP 只反映不支持，不算行为通过或 readiness。分层合同/证据/缺口见[实施门](./nbl/plans/2026-09-28-r2-resource-limit-and-violation-receipt.md)。
+- **CI #647 完整结果（2026-10-07；`b3167b6`）：**[整轮](https://github.com/ayukyo/icode/actions/runs/37590897117) completed/failure，32 success、2 旧 Windows Reviewer candidate failure、3 未请求诊断 skipped，无未结束作业。POSIX 清理目标三平台、七条任务出口、Python 主测试作业通过，但这些子门不能替代正式 Windows backend。新增 Linux 安装租约切片尚不在该 SHA，不据此宣称它跨架构已过。
+
+- **安装 Linux wheel 的租约到期验收（2026-10-07；本机实际安装链通过）：**新增独立 `-I` 验收脚本，只从干净 venv 的 site-packages 定位已校验 helper，载荷使用当前 venv 解释器；不导入仓库 tests、不现场编译。解析替身仅存在于独立验收进程、固定本机 canary，不进入产品 API/doctor。真实链路覆盖宿主正控、标准库 HTTPS 代理、worker 直连/新 AF_UNIX socket 拒绝、双向 tunnel marker、未半关闭隧道到期双端 EOF/时间核对，以及新开放但已过期的 scope 拒启（无 payload marker）。生命周期回收检查返回值、FD/线程；明确 namespace/loopback 不可用时 77/SKIP 不计分，其余失败不跳过。10 项单元、18 项 CI 合同及 20 轮/200 次通过，完整构建→安装→全部既有 probe＋新 lease probe 本机两轮实际通过（第二轮含短读修正）；独立复核补新 scope 开放/已过期前提后正在第三轮实测。完整 preflight 尚在跑，四 Linux 原生矩阵待新 SHA；不注册联网工具、不提高评分，不宣称 R2/R3 完成。研究见[持续对照](./agent-landscape-live.md)。
+- **POSIX broker 异常清理原生子门通过（2026-10-07；`b3167b6`）：**[CI #647](https://github.com/ayukyo/icode/actions/runs/37590897117) 的 Ubuntu、macOS Intel、Apple Silicon 三条新资源清理步骤均 success；Windows 两腿按 POSIX 范围明确 skipped，非 Windows 通过证据。Python 3.11/3.12 主测试作业也 success，整轮状态另记；[官网 #523](https://github.com/ayukyo/icode/actions/runs/37590897266) success。只关闭 broker 清理切片的目标平台回归门，不增加隔离/整树分数。
+
 - **POSIX broker 异常清理切片（2026-10-07；本机最终守护通过）：**修复启动成功后 selector 构造异常绕开清理的问题；复用已有进程组停止/回收，selector 关闭异常不再跳过进程清理，回收函数抛错仍关闭输出管道。构造 I/O 失败保留 `read_failed`；程序错误、中断和关闭异常继续传播。真实子进程 8 个故障场景先 RED→GREEN，最终 broker 18 项、关联 CI/原生回执 53 项、新 6 方法 20 轮共 120 次通过；独立审查补“先查缓存 returncode、再 poll”和清理未确认返回合同回归并通过。全仓 preflight 3/3、编译 `-j6`、治理/官网/竞品/diff 守护通过；新增返回合同测试在该全仓检查后单独联合复验，生产代码未再变化。Linux/macOS 两架构生命周期 CI 已接入，原生待新 SHA；不证明恶意脱组零残留，不改变隔离、权限、评分或自动模式。
 - **CI 主测试去重远端验证（2026-10-07；`95dd81a`）：**[新 CI](https://github.com/ayukyo/icode/actions/runs/37589762688) 的 Python 3.11/3.12 作业均 success，全量测试、显式密钥扫描与子模块检查三个步骤均 success，确认去重后仍实际执行所有守护。整轮其余状态另行回收，不据主测试两作业宣布 R2/R3 完成。[官网工作流](https://github.com/ayukyo/icode/actions/runs/37589762668) success。
 

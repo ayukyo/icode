@@ -1,5 +1,32 @@
 # R2 资源限制与统一违规回执实施门
 
+## 2026-10-07：安装 Linux wheel 租约验收分层记录
+
+### acceptance_contract
+
+| 预期行为 | 必需层 | 消费者/场景 | 环境/基线 | 通过标准 |
+|---|---|---|---|---|
+| 安装产物完成临时代理与到期收束 | static/unit/build/host/deploy/consumption | 包内 helper、candidate、authority、scope/session；活租约、直连负例、TTL、新过期 scope | Ubuntu 本机从 `b3167b6` 生产源码加本切片脚本构建的 Linux wheel；干净 venv | 实际 helper/解释器来自安装包，双向 canary/TTL 双 EOF、过期未启动、FD/线程/清理确认 |
+| 双架构同一安装链 | build/deploy/consumption | 上述同载荷；环境拒绝单独 SKIP | 四 Linux CI 腿；下一 SHA | 实际执行脚本，记录 PASS/SKIP/FAIL；SKIP 不计网络能力分 |
+
+### verification_matrix
+
+| 层 | 必需 | 消费者/场景 | 环境/基线 | 动作/证据 | 结果 |
+|---|---|---|---|---|---|
+| static/unit | 是 | 安装来源、固定错误、明确 skip、清理、短读/EOF/deadline | 当前脚本；10 方法＋18 CI 合同 | unittest 28 项，关键 20 轮 200 方法；独立只读复核 | pass；复核无遗留发现 |
+| build/deploy | 是 | 匹配架构 helper、当前 venv Python | Ubuntu；临时安装根与 `site-packages` 来源断言 | `scripts/run_native_wheel_ci.py` 构建、检查、pip `--no-deps` 安装 | pass（三轮，最终轮含所有前提断言） |
+| host/consumption | 是 | 标准库代理、OS 负例、活隧道 TTL、过期 scope | 同一已安装 wheel、固定离线 canary | nonce/FD 交接→真实 authority/session；双向 marker/双 EOF、无 marker、回收/FD/线程断言 | pass（三轮，最终轮含所有前提断言） |
+| CI build/deploy/consumption | 是 | x64/ARM64、22.04/当前 runner | 下一 SHA | 既有原生 wheel job 增加独立 lease 脚本；仅明确环境拒绝允许 77 | pending |
+| 工作台/doctor/自动模式 | 否（本片） | 生产注册、并发 DNS、跨平台一致性 | 仍失败关闭 | 不接线、不加分；不能复用本片全局解析替身 | not_required；整体 R2 仍缺这些门 |
+
+### negative_evidence / gaps / verdict
+
+- **最终本机守护：**完整 preflight 3/3、compileall `-j6`、治理/官网/竞品/diff 通过；28 项关联回归与关键 20 轮/200 方法通过。最终第三轮实际 wheel 验收包含所有独立复审补正，新 scope 前提和短读均已实际验证；无遗留审查发现。
+- 来源 CI 旧 TTL 例的主动 half-close 可解释上游 EOF、复用 closed scope 可解释拒绝；新脚本保持双向开放并新建已过期但开放的 scope，不复用这两种含混证据。
+- 独立复核的单次 TCP recv 短读问题已以 RED→GREEN `read_exact` 修正；提前 EOF/过期 deadline 均拒绝。只测试固定验收数据，不复制上游代码或新增运行依赖。
+- 新 SHA 原生矩阵仍待结束；主代理负责回收。namespace/loopback 明确不支持时只报 SKIP，不能证明网络门。许可/机制/不适配记录在[持续对照](../../agent-landscape-live.md)。
+- **verdict：partially_verified。**允许称“Ubuntu 已安装 wheel 的离线临时代理租约链通过”；禁止称“四平台/双架构均通过”、生产已支持临时联网、R2/R3 ready 或自动模式已开放。整体阶段不关闭。
+
 - **CI #625 原生复验：CAB 负控没有阻断，但 Reviewer 网络硬门仍未通过（2026-10-05；`ad3e364`）：**[主 CI](https://github.com/ayukyo/icode/actions/runs/37239603459) 为 30 success、2 failure、3 skipped；[官网工作流 #501](https://github.com/ayukyo/icode/actions/runs/37239603384) success。Windows x64 [candidate](https://github.com/ayukyo/icode/actions/runs/37239603459/job/111545459498) 与 ARM64 [candidate](https://github.com/ayukyo/icode/actions/runs/37239603459/job/111545459378) 均执行至临时标准用户候选步骤，因此 CAB 合成自测没有提前终止这两个 job；但公开原始 job log API 返回 403，不能声称逐行确认 `wfp_cab_prefix_only_negative_control=passed`。可见网络诊断仍是双栈 `connect_ex=10035` 后等待超时、无终态 `10013`；capture 为 `archive_member_missing`。失败步骤是 Reviewer 候选网络/隔离断言，不推断 capture 根因或 WFP 事件不存在。其余必需 Python、workspace、macOS 与 R3 生命周期 jobs 成功；三项退休/诊断作业 skipped。R2 双栈 `10013` 硬门、Windows 自动模式及 R2/R3 readiness 均维持关闭。
 
 - **2026-10-05 Windows CAB 精确成员名负控（定向回归通过，新 SHA 原生验证待验）：**CI #623 前序 Reviewer 回执为 `archive_member_missing`，但无法从公开页面取得 CAB 成员清单，不能推断 capture 根因或无 WFP drop。当前候选扩展既有合成 CAB 自测：保留精确 `wfpdiag.xml` MakeCab/SetupAPI/expand 正控，新增只含 `wfpdiag_extra.xml` 的 MakeCab/SetupAPI 负控；预期 `target_match_count=0`、XML/prefix 各 1，复用 production 精确成员 disposition 得到 `archive_member_missing`，且不创建提取目录、不调用 `expand`。前后均有界、只输出固定计数。49 项 WFP/CAB/CI 契约测试通过；workflow YAML 可解析，当前主机无 `pwsh`，所以 PowerShell/x64/ARM64 行为须由新 SHA 原生 CI 验收。Microsoft SetupAPI/FILEINCABINET 只作为枚举与跳过的官方机制参考；Codex 固定 `b741e480e203f037ca726bc2a76d99a8e8668e66`（Apache-2.0）的 smoke test 只借鉴负测与正控配对，不复制源码或放宽 ICODE 判据。`10035`、超时、无匹配事件仍不是 `10013`；Windows 自动模式、R2/R3 readiness 不变。

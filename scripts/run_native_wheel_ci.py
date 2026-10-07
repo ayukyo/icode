@@ -10,11 +10,17 @@ import textwrap
 from pathlib import Path
 
 
-def _run(stage: str, argv: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> None:
+def _run(
+    stage: str, argv: list[str], *, cwd: Path, env: dict[str, str] | None = None,
+    allow_environment_skip: bool = False,
+) -> None:
     result = subprocess.run(
         argv, cwd=cwd, env=env, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=180, check=False,
     )
+    if allow_environment_skip and result.returncode == 77:
+        print(f"{stage}: SKIP (namespace/loopback unavailable; conformance_credit=none)")
+        return
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()[-1800:]
         escaped = detail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
@@ -165,6 +171,13 @@ def main() -> int:
             _run(
                 "probe installed wheel host-crash process-tree cleanup",
                 [str(python), "-c", cleanup_code], cwd=root, env=clean_env,
+            )
+            _run(
+                "probe installed wheel network lease expiry",
+                [str(python), "-I", str(repository / "scripts" / "probe_installed_linux_lease.py")],
+                cwd=root,
+                env=clean_env,
+                allow_environment_skip=True,
             )
             _run(
                 "probe installed Git status broker",
