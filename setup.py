@@ -24,6 +24,7 @@ from windows_wheel import reject_stale_windows_helpers, stage_windows_helper  # 
 
 
 _WINDOWS_HELPER_ENV = "ICODE_WINDOWS_SANDBOX_HELPER"
+_WINDOWS_BUNDLE_ENV = "ICODE_WINDOWS_SANDBOX_BUNDLE"
 
 
 class NativeDistribution(Distribution):
@@ -56,6 +57,9 @@ class BuildWithNativeHelper(build_py):
     def run(self) -> None:
         super().run()
         windows_helper = os.environ.get(_WINDOWS_HELPER_ENV)
+        windows_bundle = os.environ.get(_WINDOWS_BUNDLE_ENV)
+        if windows_bundle and not windows_helper:
+            raise RuntimeError("Windows provenance bundle requires an explicit native helper")
         if windows_helper and sys.platform != "win32":
             raise RuntimeError("Windows helper wheels must be built on a native Windows runner")
         if sys.platform.startswith("linux"):
@@ -83,6 +87,7 @@ class BuildWithNativeHelper(build_py):
         if windows_helper:
             stage_windows_helper(
                 windows_helper, self.build_lib, platform_name=sysconfig.get_platform(),
+                provenance_bundle=windows_bundle,
             )
         elif sys.platform == "win32":
             reject_stale_windows_helpers(self.build_lib)

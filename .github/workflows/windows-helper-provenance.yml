@@ -1,0 +1,97 @@
+name: Windows helper provenance
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-helper-provenance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository == 'ayukyo/icode'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONPATH: src
+    steps:
+      - name: Check out pinned source and workflow contracts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Validate delivery and permission contracts before requesting OIDC
+        run: |
+          python scripts/preflight.py
+          python scripts/check_governance.py
+
+  sign:
+    needs: validate
+    if: github.repository == 'ayukyo/icode' && github.ref == 'refs/heads/main' && github.event_name == 'push'
+    name: Attest and install bootstrap (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            cmake-architecture: x64
+            helper-architecture: x64
+          - os: windows-11-arm
+            cmake-architecture: ARM64
+            helper-architecture: arm64
+    steps:
+      - name: Check out trusted main source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+      - name: Build final architecture-specific bootstrap bytes
+        shell: pwsh
+        run: |
+          $buildDirectory = Join-Path $env:RUNNER_TEMP 'icode-provenance-build'
+          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build $buildDirectory --config Release --target icode_windows_bootstrap --parallel 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Attest exactly one final helper before building the wheel
+        id: attest
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: ${{ runner.temp }}/icode-provenance-build/Release/icode-sandbox-windows-${{ matrix.helper-architecture }}.exe
+          push-to-registry: false
+          create-storage-record: false
+      - name: Verify proof transport and installed artifact cryptographically
+        shell: pwsh
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $helper = Join-Path $env:RUNNER_TEMP 'icode-provenance-build/Release/icode-sandbox-windows-${{ matrix.helper-architecture }}.exe'
+          $output = Join-Path $env:RUNNER_TEMP 'icode-signed-wheels'
+          python scripts/run_windows_wheel_ci.py --native-helper $helper --provenance-bundle $env:PROVENANCE_BUNDLE --wheel-output $output
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      # CI artifacts only: no release/PyPI publishing or product execution grant.
+      - name: Upload only the wheel whose installed proof verification passed
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-bootstrap-provenance-${{ matrix.helper-architecture }}
+          path: ${{ runner.temp }}/icode-signed-wheels/*.whl
+          if-no-files-found: error
+          retention-days: 14

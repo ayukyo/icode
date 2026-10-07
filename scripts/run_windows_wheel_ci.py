@@ -1,7 +1,8 @@
 """Exercise synthetic packaging or an explicit, CI-built native bootstrap.
 
-Only the explicit native mode runs metadata/rejection checks. This is not a
-product launch authorization, signature check, setup, or isolation acceptance.
+Only the explicit native mode runs metadata/rejection checks. Optional proof
+mode uses GitHub CLI to verify the installed artifact in CI. Neither mode
+authorizes product launch, setup, or isolation acceptance.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import stat
 import subprocess
@@ -19,11 +21,31 @@ import tempfile
 import zipfile
 
 _REPOSITORY = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPOSITORY))
 sys.path.insert(0, str(_REPOSITORY / "src"))
 
 from icode.native_helper import windows_arch_from_platform, windows_pe_architecture  # noqa: E402
+from scripts.check_windows_wheel import check as check_windows_wheel  # noqa: E402
+from scripts.windows_wheel import read_provenance_bundle  # noqa: E402
 
 _HELPER_ENV = "ICODE_WINDOWS_SANDBOX_HELPER"
+_BUNDLE_ENV = "ICODE_WINDOWS_SANDBOX_BUNDLE"
+
+
+def _provenance_verify_argv(helper: Path, bundle: Path, source_sha: str) -> list[str]:
+    """Fixed policy for CI only. This does not add a product verifier dependency."""
+    if re.fullmatch(r"[0-9a-f]{40}", source_sha) is None:
+        raise ValueError("provenance CI requires the exact source commit")
+    return [
+        "gh", "attestation", "verify", str(helper), "--bundle", str(bundle),
+        "--repo", "ayukyo/icode",
+        "--cert-identity", "https://github.com/ayukyo/icode/.github/workflows/"
+        "windows-helper-provenance.yml@refs/heads/main",
+        "--cert-oidc-issuer", "https://token.actions.githubusercontent.com",
+        "--source-ref", "refs/heads/main", "--source-digest", source_sha,
+        "--signer-digest", source_sha, "--deny-self-hosted-runners",
+        "--predicate-type", "https://slsa.dev/provenance/v1",
+    ]
 
 
 def _run(stage: str, argv: list[str], *, cwd: Path, env: dict[str, str]) -> str:
@@ -76,11 +98,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--native-helper", type=Path,
                         help="explicit artifact built from this checkout; CI use only")
+    parser.add_argument("--provenance-bundle", type=Path,
+                        help="CI proof to package exactly and verify using GitHub CLI")
+    parser.add_argument("--wheel-output", type=Path,
+                        help="CI directory for a wheel after all signed-mode checks pass")
     args = parser.parse_args()
     if sys.platform != "win32":
         print("::error::Windows wheel packaging probe was invoked on another platform")
         return 1
     try:
+        if args.provenance_bundle is not None and args.native_helper is None:
+            raise ValueError("provenance mode requires a real native CI artifact")
+        if args.wheel_output is not None and args.provenance_bundle is None:
+            raise ValueError("wheel publication requires provenance mode")
+        proof = (None if args.provenance_bundle is None
+                 else read_provenance_bundle(args.provenance_bundle))
+        if proof is not None:
+            _provenance_verify_argv(Path("unused"), Path("unused"),
+                                    os.environ.get("GITHUB_SHA", ""))
         platform_name = sysconfig.get_platform()
         arch = windows_arch_from_platform(platform_name)
         machine = {"x64": 0x8664, "arm64": 0xAA64}[arch]
@@ -99,6 +134,11 @@ def main() -> int:
             dist = root / "dist"
             env = os.environ.copy()
             env[_HELPER_ENV] = str(helper)
+            env.pop(_BUNDLE_ENV, None)
+            if proof is not None:
+                staged_bundle = helper_dir / "proof.json"
+                staged_bundle.write_bytes(proof)
+                env[_BUNDLE_ENV] = str(staged_bundle)
             _run(
                 "install build frontend",
                 [sys.executable, "-m", "pip", "install", "build"],
@@ -107,6 +147,7 @@ def main() -> int:
 
             pure_env = env.copy()
             pure_env.pop(_HELPER_ENV, None)
+            pure_env.pop(_BUNDLE_ENV, None)
             pure_dist = root / "dist-pure-python"
             _run(
                 "build pure Python wheel without native helper",
@@ -146,6 +187,8 @@ def main() -> int:
             wheels = list(dist.glob("*.whl"))
             if len(wheels) != 1:
                 raise RuntimeError(f"expected one wheel, found {len(wheels)}")
+            if check_windows_wheel(wheels[0], expected_bundle=proof):
+                raise RuntimeError("final wheel provenance transport contract failed")
             _run(
                 "inspect Windows wheel metadata and integrity",
                 [sys.executable, str(_REPOSITORY / "scripts" / "check_windows_wheel.py"),
@@ -160,6 +203,7 @@ def main() -> int:
             clean_env = env.copy()
             clean_env.pop("PYTHONPATH", None)
             clean_env.pop(_HELPER_ENV, None)
+            clean_env.pop(_BUNDLE_ENV, None)
             _run("install Windows wheel", [str(python), "-m", "pip", "install",
                  "--no-deps", str(wheels[0])], cwd=root, env=clean_env)
             code = (
@@ -169,10 +213,20 @@ def main() -> int:
                 "helper=bundled_windows_helper(); "
                 "assert helper is not None and helper.is_file(); "
                 "assert helper.name.endswith(windows_arch_from_platform(sysconfig.get_platform()) + '.exe'); "
-                "print('installed helper resolved from package')"
+                "assert helper.is_absolute(); "
+                "print(str(helper))"
             )
-            _run("resolve installed helper without source checkout", [str(python), "-c", code],
-                 cwd=root, env=clean_env)
+            installed_path = _run("resolve installed helper without source checkout",
+                                  [str(python), "-c", code], cwd=root, env=clean_env).strip()
+            if proof is not None:
+                installed_helper = Path(installed_path)
+                installed_bundle = Path(str(installed_helper) + ".sigstore.json")
+                if read_provenance_bundle(installed_bundle) != proof:
+                    raise RuntimeError("installed proof differs from the signing action output")
+                _run("cryptographically verify installed CI artifact provenance",
+                     _provenance_verify_argv(installed_helper, installed_bundle,
+                                             env.get("GITHUB_SHA", "")),
+                     cwd=root, env=clean_env)
 
             if args.native_helper is not None:
                 # CI executes only the artifact explicitly built from this job's
@@ -212,6 +266,13 @@ def main() -> int:
             )
             _run("fail closed when bundled helper is missing", [str(python), "-c", installed_code],
                  cwd=root, env=clean_env)
+            if args.wheel_output is not None:
+                args.wheel_output.mkdir(parents=True, exist_ok=True)
+                # Never replace an earlier artifact under a superficially equal
+                # name; publication only follows all installed-wheel checks.
+                with (args.wheel_output / wheels[0].name).open("xb") as target:
+                    target.write(wheels[0].read_bytes())
+                print("signed-mode CI wheel exported (not product launch authorization): PASS")
     except (OSError, subprocess.TimeoutExpired, RuntimeError, ValueError) as exc:
         print(f"::error::windows_wheel_probe_failed ({type(exc).__name__}: {exc})")
         return 1

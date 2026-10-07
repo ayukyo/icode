@@ -8,6 +8,21 @@ import shutil
 
 from icode.native_helper import verify_windows_helper, windows_arch_from_platform
 
+MAX_PROVENANCE_BYTES = 2 * 1024 * 1024
+
+
+def read_provenance_bundle(path: str | Path) -> bytes:
+    """Read opaque proof bytes for transport only, not as a trust decision."""
+    source = Path(path)
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise ValueError("provenance bundle must be a regular, unlinked file")
+    with source.open("rb") as stream:
+        content = stream.read(MAX_PROVENANCE_BYTES + 1)
+    if not content or len(content) > MAX_PROVENANCE_BYTES:
+        raise ValueError("provenance bundle is empty or exceeds transport limit")
+    return content
+
 
 def reject_stale_windows_helpers(build_lib: str | Path) -> None:
     """Do not let a helper left by an earlier build enter a pure wheel."""
@@ -27,6 +42,7 @@ def stage_windows_helper(
     build_lib: str | Path,
     *,
     platform_name: str,
+    provenance_bundle: str | Path | None = None,
 ) -> tuple[Path, Path]:
     """Stage a prebuilt helper after its PE architecture and adjacent hash match.
 
@@ -38,12 +54,21 @@ def stage_windows_helper(
     manifest_source = Path(str(source_path) + ".sha256")
     if not verify_windows_helper(source_path, manifest_source, expected_arch=arch):
         raise ValueError("Windows helper architecture or SHA-256 manifest is invalid")
+    # Validate the optional input before touching the build tree. No JSON field
+    # or self-reported signer here can make these bytes trustworthy.
+    proof = (None if provenance_bundle is None
+             else read_provenance_bundle(provenance_bundle))
 
     native_dir = Path(build_lib) / "icode" / "native"
+    if native_dir.is_symlink():
+        raise ValueError("build tree contains an unsafe native resource directory")
     native_dir.mkdir(parents=True, exist_ok=True)
     helper = native_dir / f"icode-sandbox-windows-{arch}.exe"
     manifest = Path(str(helper) + ".sha256")
+    bundle = Path(str(helper) + ".sigstore.json")
     expected_names = {helper.name, manifest.name}
+    if proof is not None:
+        expected_names.add(bundle.name)
 
     # Never silently carry an artifact from a previous architecture build into
     # this wheel. A reused build tree must be cleaned by the caller.
@@ -59,6 +84,8 @@ def stage_windows_helper(
 
     shutil.copyfile(source_path, helper)
     shutil.copyfile(manifest_source, manifest)
+    if proof is not None:
+        bundle.write_bytes(proof)
     if not verify_windows_helper(helper, manifest, expected_arch=arch):
         raise ValueError("staged Windows helper failed verification")
     return helper, manifest

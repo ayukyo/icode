@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import inspect
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,6 +17,64 @@ SOURCE = Path(__file__).resolve().parents[1] / "native/windows/icode_windows_boo
 
 
 class TestWindowsBootstrap(unittest.TestCase):
+    def test_provenance_ci_binds_exact_workflow_ref_commit_and_hosted_runner(self) -> None:
+        builder = getattr(wheel_ci, "_provenance_verify_argv", None)
+        self.assertIsNotNone(builder, "CI cryptographic verification policy is missing")
+        sha = "a" * 40
+        argv = builder(Path("helper.exe"), Path("proof.json"), sha)
+        self.assertEqual(argv[:3], ["gh", "attestation", "verify"])
+        expected = {
+            "--bundle": "proof.json", "--repo": "ayukyo/icode",
+            "--cert-identity": "https://github.com/ayukyo/icode/.github/workflows/windows-helper-provenance.yml@refs/heads/main",
+            "--cert-oidc-issuer": "https://token.actions.githubusercontent.com",
+            "--source-ref": "refs/heads/main", "--source-digest": sha,
+            "--signer-digest": sha, "--predicate-type": "https://slsa.dev/provenance/v1",
+        }
+        for option, value in expected.items():
+            self.assertEqual(argv[argv.index(option) + 1], value)
+        self.assertIn("--deny-self-hosted-runners", argv)
+        for invalid in ("", "main", "b" * 39, "B" * 40, "b" * 40 + "\n"):
+            with self.subTest(sha=invalid), self.assertRaises(ValueError):
+                builder(Path("helper.exe"), Path("proof.json"), invalid)
+
+    def test_provenance_workflow_privileges_and_artifact_publication_are_scoped(self) -> None:
+        path = SOURCE.parents[2] / ".github/workflows/windows-helper-provenance.yml"
+        self.assertTrue(path.is_file(), "dedicated provenance workflow is missing")
+        text = path.read_text(encoding="utf-8")
+        header, _, jobs = text.partition("\njobs:\n")
+        self.assertIn("branches: [main]", header)
+        self.assertNotIn("pull_request", header)
+        self.assertNotIn("workflow_dispatch", header)
+        self.assertNotIn("id-token: write", header)
+        self.assertNotIn("attestations: write", header)
+        guard, _, signing = jobs.partition("\n  sign:\n")
+        self.assertIn("python scripts/preflight.py", guard)
+        self.assertNotIn("id-token: write", guard)
+        self.assertIn("needs: validate", signing)
+        for token in ("github.repository == 'ayukyo/icode'", "github.ref == 'refs/heads/main'",
+                      "github.event_name == 'push'", "id-token: write", "attestations: write",
+                      "push-to-registry: false", "create-storage-record: false",
+                      "--provenance-bundle", "--wheel-output", "--parallel 1",
+                      "if-no-files-found: error"):
+            self.assertIn(token, signing)
+        self.assertNotIn("contents: write", text)
+        self.assertNotIn("artifact-metadata: write", text)
+        self.assertEqual(text.count("id-token: write"), 1)
+        self.assertEqual(text.count("attestations: write"), 1)
+        self.assertLess(signing.index("uses: actions/attest@"),
+                        signing.index("--provenance-bundle"))
+
+    def test_signed_runner_clears_bundle_from_pure_build_and_checks_before_execution(self) -> None:
+        source = inspect.getsource(wheel_ci.main)
+        self.assertIn("pure_env.pop(_BUNDLE_ENV, None)", source)
+        self.assertIn("expected_bundle=proof", source)
+        self.assertIn("--provenance-bundle", source)
+        self.assertIn("--wheel-output", source)
+        self.assertLess(source.index("cryptographically verify installed CI artifact provenance"),
+                        source.index("run installed native bootstrap metadata"))
+        setup_source = (SOURCE.parents[2] / "setup.py").read_text(encoding="utf-8")
+        self.assertIn("provenance_bundle=windows_bundle", setup_source)
+
     def test_source_distribution_declares_windows_build_sources(self) -> None:
         manifest = SOURCE.parents[2] / "MANIFEST.in"
         self.assertIn("recursive-include native/windows *.c CMakeLists.txt",

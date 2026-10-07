@@ -2,6 +2,13 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **Windows 构建证明切片本机交付守护（2026-10-07）：**固定源码完整 preflight 3/3 通过；21 项关联回归、新增七方法 20 轮/140 次、实际干净 Linux wheel 全十阶段、实际 sdist 构建及源码/辅助模块包含检查通过；compileall `-j6`、YAML 实际解析、治理/站点/竞品/diff 守护通过。独立只读复审无遗留阻断，修正了顺序测试误比较预校验而非实际 crypto stage，并补 native 资源目录静态 symlink 拒绝的 RED→GREEN 回归。首轮检查与源码编辑重叠导致的 inspect 行号冲突已通过冻结源码重跑消除，不以首轮失败交付。新 SHA Windows 双架构真实签名/安装后密码学验证仍待线上，用户端验签与可信启动未实现，R2/R3 不关闭。
+
+- **已安装 lease notice 线上验收（2026-10-07；`ed663fd`）：**[CI #652](https://github.com/ayukyo/icode/actions/runs/37595659107) 完成，32 success、2 Windows Reviewer candidate failure、3 skipped；[官网](https://github.com/ayukyo/icode/actions/runs/37595659061) success。实际读取四个 native job 的 Checks annotations：Ubuntu 22.04 [x64](https://github.com/ayukyo/icode/actions/runs/37595659107/job/112707849026)/[ARM64](https://github.com/ayukyo/icode/actions/runs/37595659107/job/112707848970) 均 `installed-linux-network-lease result=PASS conformance_credit=none`；[ubuntu-latest](https://github.com/ayukyo/icode/actions/runs/37595659107/job/112707848946)/[Ubuntu 24.04 ARM64](https://github.com/ayukyo/icode/actions/runs/37595659107/job/112707848918) 均 SKIP/none。只关闭结果可观察性的远端子门，不把 SKIP 或历史 job success 转为 lease 行为通过，不提高评分、不宣布整轮/R2/R3 完成。
+
+- **Windows 构建证明切片（2026-10-07；用户已授权权限及随包验签依赖，本机开发中）：**独立工作流仅受信仓库的 main push，先以只读权限运行完整 preflight，再由 x64/ARM64 签名 job 请求 `id-token: write`、`attestations: write`；不新增 contents/registry/storage-record 写权，不发布 Release/PyPI。最终 PE → 单一 subject attestation → 原样 bundle 入 wheel/RECORD → 干净 pip 安装 → CI GitHub CLI 按精确 issuer、workflow SAN、main ref、source/signer SHA 和 hosted runner 验证 → CI artifact。产品 locator、bootstrap 三项 false、自动模式与 R2/R3 readiness 不变。transport 测试明确使用无签名 fixture，只证明打包，不证明密码学。Windows 原生签名和安装后验签仍待新 SHA 线上实测。
+  - **安装兼容阻碍：**`sigstore==4.5.0` 的强制 `rfc3161-client>=1.0.3,<1.1` 无 Windows ARM64 wheel；真实 Python 3.11 ARM64 binary-only 下载失败，当前不能加入核心依赖让用户编译 Rust/MSVC。不降级存在已知时间验证漏洞的旧 SDK、不跳过依赖或密码学检查。用户端随包原生验签器方案正在独立只读研究并已询问选择；CI 的 gh 工具不成为产品安装要求。固定上游证据、许可及采纳/暂缓见[持续对照](./agent-landscape-live.md)。
+
 - **安装 lease notice 切片交付守护（2026-10-07）：**完整 preflight 3/3、24 项关联回归、五方法 20 轮/100 次、编译 `-j6`、治理/官网/竞品/diff 通过；实际干净 wheel 全十阶段并输出固定 PASS notice。独立只读复审无阻断问题，建议的真实失败组合已补并通过。不增加权限、不改变 CLI 退出或能力评分；新 SHA annotation 的实际读取仍待验，历史 job success 不倒填 lease 通过。
 
 - **运行时修复与 hook 原生子门（2026-10-07）：**`04cbf40` 的 [CI #650](https://github.com/ayukyo/icode/actions/runs/37594002156) 四 Linux `Build and verify installed Linux wheel` 均 success；其中宿主清理为不可跳过必需子步骤，据执行合同可确认当前运行时清理没有失败，但仍无法区分 lease PASS/SKIP。`aeb3c44` 的 [CI #651](https://github.com/ayukyo/icode/actions/runs/37594881846) Ubuntu/macOS/Windows x64 workspace job success，包含真实 hook 正控及新语义回归；ARM64 当次观察仍运行中，整轮另记。均不代表 R2/R3 完整验收。

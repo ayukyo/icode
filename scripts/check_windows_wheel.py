@@ -16,6 +16,7 @@ from icode.native_helper import windows_pe_architecture
 
 _ARCHES = {"win_amd64": ("x64", 0x8664), "win_arm64": ("arm64", 0xAA64)}
 _SHA256_LINE = re.compile(rb"[0-9a-f]{64}(?:\r?\n)?")
+_MAX_PROVENANCE_BYTES = 2 * 1024 * 1024  # Same opaque transport cap as staging.
 
 
 def _record_hash(content: bytes) -> str:
@@ -23,7 +24,7 @@ def _record_hash(content: bytes) -> str:
     return "sha256=" + encoded.rstrip(b"=").decode("ascii")
 
 
-def check(wheel: Path) -> list[str]:
+def check(wheel: Path, *, expected_bundle: bytes | None = None) -> list[str]:
     """Return path-free package contract violations; never executes the helper."""
     problems: list[str] = []
     name = Path(wheel).name
@@ -35,6 +36,7 @@ def check(wheel: Path) -> list[str]:
     arch, _machine = _ARCHES[platform_tag]
     helper_name = f"icode/native/icode-sandbox-windows-{arch}.exe"
     manifest_name = helper_name + ".sha256"
+    bundle_name = helper_name + ".sigstore.json"
 
     try:
         with zipfile.ZipFile(wheel) as archive:
@@ -59,6 +61,19 @@ def check(wheel: Path) -> list[str]:
             }
             if packaged_helpers != {helper_name, manifest_name}:
                 problems.append("wheel contains an unexpected Windows helper architecture")
+            bundles = {entry for entry in names
+                       if entry.startswith("icode/native/icode-sandbox-windows-")
+                       and entry.endswith(".exe.sigstore.json")}
+            if bundles - {bundle_name}:
+                problems.append("wheel contains an unexpected provenance architecture")
+            bundle = None
+            if bundle_name in names:
+                if not 0 < archive.getinfo(bundle_name).file_size <= _MAX_PROVENANCE_BYTES:
+                    problems.append("wheel provenance bundle size invalid")
+                    return problems
+                bundle = archive.read(bundle_name)
+            if expected_bundle is not None and bundle != expected_bundle:
+                problems.append("wheel provenance bundle missing or changed")
             if len(wheel_metadata_names) != 1:
                 problems.append("wheel must contain exactly one WHEEL metadata file")
                 return problems
@@ -91,6 +106,8 @@ def check(wheel: Path) -> list[str]:
                 len(record) != len(rows)
                 or record.get(helper_name) != [_record_hash(helper), str(len(helper))]
                 or record.get(manifest_name) != [_record_hash(manifest), str(len(manifest))]
+                or (bundle is not None and
+                    record.get(bundle_name) != [_record_hash(bundle), str(len(bundle))])
             ):
                 problems.append("wheel RECORD mismatch")
     except (OSError, UnicodeDecodeError, zipfile.BadZipFile, csv.Error):
