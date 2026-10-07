@@ -2,6 +2,11 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R3 I/O 切片本机最终守护（2026-10-07）：**最终生产代码 preflight 3/3 通过，联合回归 16 项通过，I/O 5 方法连续 20 轮共 100 次通过；编译 `-j6`、治理/官网/竞品/差异检查及独立复核通过。真实缺失解释器与程序错误/中断兼容已覆盖；原生七矩阵仍待本次新 SHA。前序 `693069e` 的 CI #644 中七条 task timeout 出口步骤均 success，整轮尚余全仓 Python 作业，不能由步骤成功宣布整轮通过。
+
+- **R3 独立验证 I/O 失败闭环（2026-10-07；新 SHA 原生待验）：**解释器缺失/权限不足或验证输出读取 I/O 失败，现仅在首轮/修复轮验证边界转换为固定脱敏的不完整任务报告，不签发证据、不继续修复/Reviewer、保留旧完整历史。CLI 沿 task 失败返回 1/请求回执返回 2，既有回执保全、缺失不创建；低层仍抛原 OSError，程序错误/中断不被吞掉，不改变子进程非零结果分类、不判 DENY/清理成功。15 场景 RED→GREEN，新增真实 Popen 解释器缺失和五类程序错误/中断兼容，5 方法及联合 timeout/有界修复 16 项通过，独立复核/路径别名变体通过；跨平台任务出口步骤同步覆盖两模块。
+- **CI #643 完整结果（2026-10-07；`0d6c9e2`）：**[整轮](https://github.com/ayukyo/icode/actions/runs/37586564015) 最终 failure：32 success、2 旧 Windows Reviewer candidate failure、3 未请求诊断 skipped；没有未结束作业。真实 bootstrap x64/ARM64 编译安装子门通过，Python 3.11/3.12 全仓作业通过，不等于 Windows 正式隔离后端或 R2/R3 readiness 完成。后续 timeout 修复 `693069e` 已推送，CI [#644](https://github.com/ayukyo/icode/actions/runs/37587561960) 仍运行；官网 [#520](https://github.com/ayukyo/icode/actions/runs/37587561965) success 只证明网站工作流。
+
 - **R3 timeout 切片最终本机守护（2026-10-07）：**生产代码最终版全仓 preflight 3/3 通过；compileall `-j6`、治理/官网/竞品/差异检查通过。独立审查无发现，关联低层真实 timeout 测试通过，符号链接临时根下 3 方法/5 场景全过。新版本跨平台 task timeout 步骤仍待本次推送后验收；不改变已记录的底层进程清理限制。
 
 - **CI #643 Windows 真实 bootstrap 双架构通过（2026-10-07；`0d6c9e2`；整轮尚未结束）：**[x64](https://github.com/ayukyo/icode/actions/runs/37586564015/job/112677937505) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/37586564015/job/112677937786) 均完成源码编译和真实 wheel 安装步骤，安装后的固定 metadata、setup/spawn 拒绝检查 success。这关闭的是 bootstrap 编译/安装/非执行入口子门，不是签名/来源认证、UAC 初始化、低权限身份隔离或自动模式；产品定位仍不授权执行。整轮此刻仍有未结束作业，两个旧 Windows Reviewer candidate 已失败，不能称整个 R2/R3 通过。
