@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **CI #641 完整结果（2026-10-07；`b0f8997`）：**[整轮](https://github.com/ayukyo/icode/actions/runs/37583697477) 最终 failure：30 个作业 success、2 个 Windows Reviewer candidate failure、3 个未请求的旧诊断作业 skipped。Python 3.11/3.12 全仓测试及 delivery guards、五 OS 和 Windows Python 3.12 的发布/恢复步骤均 success。x64/ARM64 网络候选都完整输出双栈 10 次 wait timeout、`connect=10035`，无终态 `10013`；正控 exit 91，cleanup=true，双栈 canary=false。macOS 数值 IPv4 predicate 仍 unsupported。官网 [#517](https://github.com/ayukyo/icode/actions/runs/37583697467) success；只能证明站点工作流。R3 本片发布恢复已获得跨平台步骤证据，R2/R3 总 readiness 仍未闭合。下一条 Windows 产品开发沿用批准的专用身份/UAC/WFP/ACL/Job 基线；旧 AppContainer 诊断结果不能替代正式后端。
+
 - **R3 导出 CLI 错误边界（2026-10-07；本机 CLI 11 项、独立审查、全仓 preflight 3/3 通过）：**`main` 已有全局 `OSError`→2 的处理，但会原样打印异常文本；直接调用 `cmd_evidence` 则会让该异常逃出。现将导出构建/发布的 `OSError` 在局部命令边界转换为固定提示和返回 2，保留异常类别并提示检查权限/空间/文件占用，不输出原始消息、双路径参数或 notes。既有 `EvidenceError` 恢复失败说明和备份位置保持可见，不捕获程序错误或中断。本片沿用已验证的发布事务，不改变格式、恢复或隔离门。
 - **CI #641 分项回收（2026-10-07；`b0f8997`；整轮尚在运行）：**[新 CI](https://github.com/ayukyo/icode/actions/runs/37583697477) 的证据包发布/恢复步骤已在五 OS Python 3.11 及 Windows x64/ARM64 Python 3.12 作业中 success。Windows x64 [Reviewer candidate](https://github.com/ayukyo/icode/actions/runs/37583697477/job/112668919027) 实际回执双栈 `wt=10`、`connect=10035`、无 `FD_CONNECT`、无终态 `10013`，外层成功写出 exit 78 / cleanup=true 回执；正控仍 stage `ipv4_connect` exit 91、cleanup=true、canary=false。本轮证明分段诊断可以完整输出，不证明 DENY；R2 Windows、macOS/Linux 未验收项和 R2/R3 readiness 继续 open。
 
