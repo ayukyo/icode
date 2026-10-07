@@ -2,6 +2,9 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R3 导出 CLI 错误边界（2026-10-07；本机 CLI 11 项、独立审查、全仓 preflight 3/3 通过）：**`main` 已有全局 `OSError`→2 的处理，但会原样打印异常文本；直接调用 `cmd_evidence` 则会让该异常逃出。现将导出构建/发布的 `OSError` 在局部命令边界转换为固定提示和返回 2，保留异常类别并提示检查权限/空间/文件占用，不输出原始消息、双路径参数或 notes。既有 `EvidenceError` 恢复失败说明和备份位置保持可见，不捕获程序错误或中断。本片沿用已验证的发布事务，不改变格式、恢复或隔离门。
+- **CI #641 分项回收（2026-10-07；`b0f8997`；整轮尚在运行）：**[新 CI](https://github.com/ayukyo/icode/actions/runs/37583697477) 的证据包发布/恢复步骤已在五 OS Python 3.11 及 Windows x64/ARM64 Python 3.12 作业中 success。Windows x64 [Reviewer candidate](https://github.com/ayukyo/icode/actions/runs/37583697477/job/112668919027) 实际回执双栈 `wt=10`、`connect=10035`、无 `FD_CONNECT`、无终态 `10013`，外层成功写出 exit 78 / cleanup=true 回执；正控仍 stage `ipv4_connect` exit 91、cleanup=true、canary=false。本轮证明分段诊断可以完整输出，不证明 DENY；R2 Windows、macOS/Linux 未验收项和 R2/R3 readiness 继续 open。
+
 - **R3 证据包验证后发布（2026-10-07；全仓 preflight 3/3；独立复审问题已修正）：**默认 `clean=True` 在目标同级临时目录构建、自校验成功后迁移旧目标并发布新包；写入/验包失败保留旧包，发布失败恢复旧包，恢复失败保留备份并报告路径，发布后的清理失败记录警告。`clean=False` 保持合并语义；包格式和内置/独立校验不变。故障注入先 RED 复现旧包被删除和首次导出半包残留，再 GREEN；11 项新增回归包含逐字节旧包保全、零依赖独立 verifier，以及恢复遇到 RuntimeError/KeyboardInterrupt/SystemExit 时保留唯一备份。路径别名先 RED 后修正，11 项在符号链接临时目录下全过；生产代码最终版全仓 preflight 三道通过，编译 `-j6`、治理/官网/竞品检查通过。现有五 OS Python 3.11 和 Windows x64/ARM64 Python 3.12 CI 已接入发布回归，新 SHA 原生结果待验。两次改名不保证连续可见或崩溃自动恢复，未引入第三方源码/依赖。设计见 [R3 发布设计](./nbl/specs/2026-10-07-r3-evidence-pack-publication-design.md)。本片不抵扣 R2 隔离验收。
 - **R2 Windows 分段等待复审修正（2026-10-07；本机 99 项、86 pass/13 平台 skip；独立复审通过）：**发现旧 compact IPv6 正控合并注释有可达 501 字节组合，以及外层 45 秒预算正好耗尽全部等待时间。缩短 compact 字段并将正控置于 `cap` 子对象，完整结构回执保持不变，最坏投影 498 字节，notice 数量不增加；外层预算为 60 秒（20 秒 observer gate + 双栈各 10 秒 + 5 秒 child ready + 15 秒余量）。新预算先 RED 再 GREEN，双栈终态 `10013` 硬门、timeout inconclusive 和自动模式边界保持不变。旧 `eb05667` 尚未单独推送，将与本修正一同推送后获取原生回执。
 

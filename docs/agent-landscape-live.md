@@ -1930,3 +1930,9 @@
 - **ICODE 现有实现与收益：**此前默认导出先删除旧目录，后续写入或自校验仍可失败。现复用有界构建器和 verifier，在同父目录暂存验包，成功后备份旧目录并发布；正常异常可回滚，失败恢复时保留备份。`clean=False` 继续合并，不改包格式。代价是保留两代包的磁盘空间和目录改名/清理失败处理。
 - **取舍：采纳**验证先于替换、同文件系统暂存、异常恢复与清理只处理本次临时对象；**暂缓**崩溃 journal、跨进程锁、恶意并发路径替换和断电持久化保证；**不适配**将上游单文件替换称为目录原子交换。只借机制，无第三方源码复制、依赖或许可证变化。
 - **可验证验收：**旧实现故障注入 RED；写失败、验包失败、备份失败保留逐字节旧包，发布失败恢复、恢复失败保留备份，清理失败警告、首次失败无半包、正常独立 verifier 和合并兼容。独立审查发现恢复异常丢唯一备份和测试路径别名问题，两项均补 RED→GREEN 回归；11 项发布测试在符号链接临时目录下全过，生产代码最终版完整 preflight 三道通过。五 OS Python 3.11、Windows x64/ARM64 Python 3.12 CI 已接入，待新 SHA 结果。此证据不证明 R2 原生隔离或自动模式 ready。
+
+## 同日：导出 CLI 的稳定错误边界
+
+- **固定官方源码：**CPython 3.11.14 [`cd1c3a6342869b7346c1b5c27b8de9c6ef9c4e69`](https://github.com/python/cpython/tree/cd1c3a6342869b7346c1b5c27b8de9c6ef9c4e69) 的 [`argparse.FileType`](https://github.com/python/cpython/blob/cd1c3a6342869b7346c1b5c27b8de9c6ef9c4e69/Lib/argparse.py#L1299-L1306) 将文件打开异常转换成命令行错误，[`ArgumentParser.error`](https://github.com/python/cpython/blob/cd1c3a6342869b7346c1b5c27b8de9c6ef9c4e69/Lib/argparse.py#L2624-L2640) 写 stderr、退出 2。上游会拼接文件名及原始异常，本身没有脱敏能力。[PSF 许可证](https://github.com/python/cpython/blob/cd1c3a6342869b7346c1b5c27b8de9c6ef9c4e69/LICENSE)。
+- **ICODE 现状与取舍：采纳**已知 I/O 失败转成稳定局部 CLI 返回码，**不适配**回显任意原始异常文字，**暂缓**统一所有其它 CLI 命令的错误输出（避免扩范围）。`main` 原本已经 catch OSError，本次并非新增全局异常防护；只补 `cmd_evidence` 的局部固定提示，不吞 `EvidenceError` 恢复位置，不新增依赖或复制源码。
+- **验收：**直接调用的三种 I/O 异常先 RED，固定提示/返回 2 后 GREEN；真实 main 的双路径异常和 notes 不外泄，恢复说明路径保留。CLI 11 项、独立审查、全仓 preflight 三道、编译 `-j6` 和文档检查均通过。对齐结果不证明沙箱 ready。

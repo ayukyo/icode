@@ -573,6 +573,13 @@ def cmd_evidence(args: argparse.Namespace) -> int:
     except EvidenceError as exc:
         print(f"证据包导出失败：{exc}", file=sys.stderr)
         return 2
+    except OSError as exc:
+        print(
+            f"证据包导出失败：文件操作未完成（{type(exc).__name__}）；"
+            "请检查输出目录权限、磁盘空间或文件占用。",
+            file=sys.stderr,
+        )
+        return 2
     print(report.render())
     if report.ok:
         print("\n独立校验（不依赖本工具）：")

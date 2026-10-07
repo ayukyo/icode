@@ -722,3 +722,6 @@ R3 核心能力（本切片）：
 - 按 [发布设计](../specs/2026-10-07-r3-evidence-pack-publication-design.md) 修复默认导出在后续写入失败时删除旧包的问题。复用现有构建器与校验器，保持路径重叠拒绝、预算、包格式和 `clean=False` 合并行为。
 - 默认导出同父目录暂存 → `ok && selfcheck_ok` → 旧目录备份 → 发布 → 清理；发布失败恢复旧目录，恢复失败保留唯一备份。清理失败不会误报已发布包为失败，报告最终目标路径及残留警告。
 - 本机 TDD 先复现四项失败，再 GREEN；独立审查进一步复现恢复中断会丢唯一备份，已修正且三种异常回归通过。11 项新回归覆盖构建、验包、备份、发布、恢复和清理故障及独立 verifier；全仓生产代码最终版 preflight 三道通过。测试临时路径别名问题同样 RED→GREEN，11 项在符号链接临时目录下通过；现有五 OS Python 3.11 和 Windows x64/ARM64 Python 3.12 CI 加入同一回归命令，新 SHA 待验。两次改名不是原子目录交换，崩溃恢复/跨进程锁暂缓，本片不改变 R2/R3 readiness。
+
+- 后续原生回收：commit `b0f8997` 的 [CI #641](https://github.com/ayukyo/icode/actions/runs/37583697477)，五 OS Python 3.11 和 Windows x64/ARM64 Python 3.12 的发布/恢复步骤均已 success；该结论来自 job/step 状态，未取得逐项测试日志，不额外宣称每个平台零跳过。Windows Reviewer 的网络门仍未满足。
+- CLI 配套错误边界：导出局部捕获 `OSError`，固定提示/返回 2，隐藏任意异常消息、filename/filename2 和 notes；`EvidenceError` 的必要恢复位置保持可见。测试直接命令和真实 main 均覆盖，CLI 11 项与独立审查通过；全仓最终生产代码 preflight 三道通过，编译 `-j6` 和文档检查通过。
