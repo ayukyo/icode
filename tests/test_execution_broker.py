@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
+import errno
 import json
 import os
+import selectors
+import subprocess
 import sys
 import time
 import unittest
@@ -13,6 +17,7 @@ from unittest import mock
 from tests._support import temp_workspace
 
 from icode.execution_broker import execute_policy_command
+from icode import execution_broker
 from icode.isolation import PreparedCommand
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from icode.tools import ToolContext, default_registry
@@ -321,6 +326,132 @@ class TestPolicyCommandBroker(unittest.TestCase):
             self.assertLess(time.monotonic() - start, 4.0)
             time.sleep(1.6)
             self.assertFalse(marker.exists(), "超时后子进程仍在写工作区")
+
+
+@unittest.skipUnless(os.name == "posix", "POSIX broker resource ownership")
+class TestPolicyCommandResourceCleanup(unittest.TestCase):
+    def _run_with_fault(self, stage: str, fault: BaseException, *, cleanup_errno: int | None = None):
+        """Inject only the failing API; launch, kill/reap and pipe are real."""
+        processes = []
+        real_popen = subprocess.Popen
+        real_stop = execution_broker._stop_group
+        selector = selectors.DefaultSelector() if stage != "constructor" else None
+
+        def launch(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            processes.append(process)
+            return process
+
+        def close_selector():
+            assert selector is not None
+            real_close()
+            raise fault
+
+        def stop_group(process):
+            real_stop(process)
+            if cleanup_errno is not None:
+                # Simulate an unconfirmed cleanup result only after physical
+                # reaping; never leave a real process behind for this contract.
+                return False, cleanup_errno
+            raise fault
+
+        if selector is not None:
+            real_close = selector.close
+        with temp_workspace() as raw_root:
+            root = raw_root.resolve()
+            policy = _context(root).policy
+            assert policy is not None
+            with ExitStack() as patches:
+                patches.enter_context(mock.patch.object(
+                    execution_broker.subprocess, "Popen", side_effect=launch,
+                ))
+                patches.enter_context(mock.patch.object(
+                    execution_broker.selectors, "DefaultSelector",
+                    **({"side_effect": fault} if stage == "constructor" else {"return_value": selector}),
+                ))
+                if stage == "stop" or cleanup_errno is not None:
+                    patches.enter_context(mock.patch.object(
+                        execution_broker, "_stop_group", side_effect=stop_group,
+                    ))
+                if stage not in {"constructor", "stop", "timeout"}:
+                    patches.enter_context(mock.patch.object(
+                        selector, stage,
+                        side_effect=close_selector if stage == "close" else fault,
+                    ))
+                try:
+                    outcome = None
+                    caught = None
+                    try:
+                        outcome = execute_policy_command(
+                            [sys.executable, "-c", "import time; time.sleep(5)"],
+                            cwd=root, policy=policy, timeout=0.1,
+                        )
+                    except BaseException as error:
+                        caught = error
+                    self.assertEqual(len(processes), 1)
+                    process = processes[0]
+                    # poll() itself can reap a zombie. Check the cached status
+                    # first so the test cannot finish the broker's job for it.
+                    self.assertIsNotNone(process.returncode, "broker did not reap its child")
+                    self.assertIsNotNone(process.poll(), "broker left its child running")
+                    self.assertTrue(process.stdout.closed, "broker left its output pipe open")
+                    return outcome, caught
+                finally:
+                    # RED failures must not leave the real short-lived child behind.
+                    for process in processes:
+                        real_stop(process)
+                        if process.stdout is not None:
+                            process.stdout.close()
+                    if selector is not None:
+                        real_close()
+
+    def test_selector_constructor_io_error_returns_failure_after_cleanup(self) -> None:
+        fault = OSError(errno.EMFILE, "private-selector-detail", "/private/selector")
+        result, caught = self._run_with_fault("constructor", fault)
+        self.assertIsNone(caught)
+        self.assertEqual(result.error, "read_failed")
+        self.assertTrue(result.cleanup_ok)
+        self.assertEqual(result.raw_output, b"")
+        self.assertNotIn("private-selector", str(result))
+
+    def test_selector_constructor_program_errors_and_interrupts_propagate_after_cleanup(self) -> None:
+        for fault in (ValueError("program error"), KeyboardInterrupt(), SystemExit(7)):
+            with self.subTest(exception=type(fault).__name__):
+                result, caught = self._run_with_fault("constructor", fault)
+                self.assertIsNone(result)
+                self.assertIs(caught, fault)
+
+    def test_selector_close_failures_propagate_after_process_and_pipe_cleanup(self) -> None:
+        for fault in (OSError(errno.EIO, "selector close"), RuntimeError("close"), KeyboardInterrupt()):
+            with self.subTest(exception=type(fault).__name__):
+                result, caught = self._run_with_fault("close", fault)
+                self.assertIsNone(result)
+                self.assertIs(caught, fault)
+
+    def test_stop_failure_still_closes_output_pipe(self) -> None:
+        fault = RuntimeError("cleanup failed after reaping")
+        result, caught = self._run_with_fault("stop", fault)
+        self.assertIsNone(result)
+        self.assertIs(caught, fault)
+
+    def test_register_and_select_io_errors_keep_existing_failure_contract(self) -> None:
+        for stage in ("register", "select"):
+            with self.subTest(stage=stage):
+                result, caught = self._run_with_fault(stage, OSError(errno.EIO, stage))
+                self.assertIsNone(caught)
+                self.assertEqual(result.error, "read_failed")
+                self.assertTrue(result.cleanup_ok)
+
+    def test_unconfirmed_cleanup_overrides_timeout_and_selector_failure(self) -> None:
+        for stage in ("timeout", "constructor"):
+            with self.subTest(stage=stage):
+                result, caught = self._run_with_fault(
+                    stage, OSError(errno.EMFILE, "constructor"), cleanup_errno=errno.EIO,
+                )
+                self.assertIsNone(caught)
+                self.assertEqual(result.error, "cleanup_failed")
+                self.assertFalse(result.cleanup_ok)
+                self.assertEqual(result.cleanup_errno, errno.EIO)
 
 
 if __name__ == "__main__":

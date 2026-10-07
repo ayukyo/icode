@@ -2,6 +2,9 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **POSIX broker 异常清理切片（2026-10-07；本机最终守护通过）：**修复启动成功后 selector 构造异常绕开清理的问题；复用已有进程组停止/回收，selector 关闭异常不再跳过进程清理，回收函数抛错仍关闭输出管道。构造 I/O 失败保留 `read_failed`；程序错误、中断和关闭异常继续传播。真实子进程 8 个故障场景先 RED→GREEN，最终 broker 18 项、关联 CI/原生回执 53 项、新 6 方法 20 轮共 120 次通过；独立审查补“先查缓存 returncode、再 poll”和清理未确认返回合同回归并通过。全仓 preflight 3/3、编译 `-j6`、治理/官网/竞品/diff 守护通过；新增返回合同测试在该全仓检查后单独联合复验，生产代码未再变化。Linux/macOS 两架构生命周期 CI 已接入，原生待新 SHA；不证明恶意脱组零残留，不改变隔离、权限、评分或自动模式。
+- **CI 主测试去重远端验证（2026-10-07；`95dd81a`）：**[新 CI](https://github.com/ayukyo/icode/actions/runs/37589762688) 的 Python 3.11/3.12 作业均 success，全量测试、显式密钥扫描与子模块检查三个步骤均 success，确认去重后仍实际执行所有守护。整轮其余状态另行回收，不据主测试两作业宣布 R2/R3 完成。[官网工作流](https://github.com/ayukyo/icode/actions/runs/37589762668) success。
+
 - **CI 主测试作业去重（2026-10-07；本机最终守护通过）：**原作业先跑完整 unittest，再由 composite preflight 重跑同一套。现保留 Python 3.11/3.12 的编译和完整测试步骤，将后续守护拆为显式密钥扫描、固定子模块检查；均无条件执行、失败仍阻断，不改变任何原生矩阵或 readiness 门。新契约测试先 RED→GREEN，相关 CI 合同 19 项、独立复核与完整 preflight 3/3 通过。只消除一次重复测试，不宣称整轮耗时减半；新 SHA 远端结果待验。
 - **R3 I/O 切片原生子门回收（2026-10-07；`89aab00`）：**[CI](https://github.com/ayukyo/icode/actions/runs/37588985924) 的五 OS Python 3.11 和 Windows x64/ARM64 Python 3.12 任务出口步骤全部 success，同时覆盖 timeout 与 I/O 两模块；真实 bootstrap 双架构作业也 success。整轮仍有未结束作业，已有旧 Windows Reviewer candidate failure，不能报告整轮通过。对应[官网工作流](https://github.com/ayukyo/icode/actions/runs/37588986053) success 只证明站点发布。
 

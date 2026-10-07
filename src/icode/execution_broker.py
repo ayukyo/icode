@@ -307,8 +307,11 @@ def _execute_policy_command(
     chunks: list[bytes] = []
     output_bytes = 0
     error: str | None = None
-    selector = selectors.DefaultSelector()
+    selector: selectors.BaseSelector | None = None
     try:
+        # Popen has transferred process/pipe ownership already. Selector
+        # creation can fail (for example EMFILE), so it belongs to cleanup too.
+        selector = selectors.DefaultSelector()
         assert process.stdout is not None
         if on_spawn is not None:
             try:
@@ -348,10 +351,17 @@ def _execute_policy_command(
     except OSError:
         error = "read_failed"
     finally:
-        selector.close()
-        cleanup_ok, cleanup_errno = _stop_group(process)
-        if process.stdout is not None:
-            process.stdout.close()
+        # Failure in one cleanup must not skip the remaining owned resources;
+        # programmer errors and interrupts still propagate after the attempts.
+        try:
+            if selector is not None:
+                selector.close()
+        finally:
+            try:
+                cleanup_ok, cleanup_errno = _stop_group(process)
+            finally:
+                if process.stdout is not None:
+                    process.stdout.close()
 
     raw_output = b"".join(chunks)
     return ExecutionResult(

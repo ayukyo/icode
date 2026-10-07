@@ -24,3 +24,18 @@ class TestCiDeliveryJob(unittest.TestCase):
         self.assertNotIn("if:", job)
         self.assertIn("submodules: recursive", job)
         self.assertIn('python-version: ["3.11", "3.12"]', job)
+
+    def test_posix_native_lifecycle_runs_broker_resource_cleanup(self) -> None:
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        job = workflow.split("  verification-output-lifecycle:\n", 1)[1].split(
+            "\n  windows-verification-lifecycle-python312:", 1,
+        )[0]
+        self.assertIn("os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest, windows-11-arm]", job)
+        self.assertIn(
+            "      - name: Verify POSIX command broker resource cleanup\n"
+            "        if: runner.os != 'Windows'\n"
+            "        run: python -m unittest tests.test_execution_broker.TestPolicyCommandResourceCleanup -v\n",
+            job,
+        )
