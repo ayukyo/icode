@@ -129,6 +129,8 @@ jobs:
         run: python -m unittest tests.test_runner.TestWindowsTestProcessHandle -v
       - name: Verify evidence pack publication and recovery
         run: python -m unittest tests.test_evidence.TestEvidencePack -k clean_export -v
+      - name: Verify task timeout reports and receipt protection
+        run: python -m unittest tests.test_task_timeout -v
 
   windows-verification-lifecycle-python312:
     name: R3 verification output lifecycle (Python 3.12, ${{ matrix.os }})
@@ -163,6 +165,8 @@ jobs:
         run: python -m unittest tests.test_runner.TestWindowsTestProcessHandle -v
       - name: Verify evidence pack publication and recovery on Python 3.12
         run: python -m unittest tests.test_evidence.TestEvidencePack -k clean_export -v
+      - name: Verify task timeout reports and receipt protection on Python 3.12
+        run: python -m unittest tests.test_task_timeout -v
 
   container-reviewer:
     name: R3 container Reviewer (${{ matrix.runtime }})

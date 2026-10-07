@@ -2050,7 +2050,7 @@ def run_task(
             sandbox=task_sandbox,
             output_limit_bytes=_MAX_VERIFICATION_OUTPUT_BYTES,
         )
-    except VerificationOutputError as exc:
+    except (VerificationOutputError, subprocess.TimeoutExpired) as exc:
         return _task_report_for_output_failure(
             task=task, workspace=workspace, loop=result, before=before, after=after,
             error=exc, repair_attempts=[], repair_decisions=[],
@@ -2118,7 +2118,7 @@ def run_task(
                 sandbox=task_sandbox,
                 output_limit_bytes=_MAX_VERIFICATION_OUTPUT_BYTES,
             )
-        except VerificationOutputError as exc:
+        except (VerificationOutputError, subprocess.TimeoutExpired) as exc:
             return _task_report_for_output_failure(
                 task=task, workspace=workspace, loop=result, before=before, after=after,
                 error=exc, repair_attempts=attempts, repair_decisions=decisions,
@@ -2188,19 +2188,27 @@ def run_task(
 
 def _task_report_for_output_failure(
     *, task: str, workspace: Path, loop: LoopResult, before: dict[str, str],
-    after: dict[str, str], error: VerificationOutputError,
+    after: dict[str, str], error: VerificationOutputError | subprocess.TimeoutExpired,
     repair_attempts: list[VerificationEvidence], repair_decisions: list[str],
 ) -> TaskReport:
-    """Stop task validation without hashing a truncated stream as full evidence."""
+    """Stop task validation without hashing incomplete output as full evidence."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        # TimeoutExpired embeds argv and partial stdout/stderr; do not format it
+        # or infer successful process-tree cleanup from the timeout alone.
+        failure_message = "独立验证超过时间上限"
+        return_code = 2
+    else:
+        failure_message = str(error)
+        return_code = error.return_code if type(error.return_code) is int else 2
     return TaskReport(
         task=task,
         workspace=str(workspace),
-        exit_code=(error.return_code if type(error.return_code) is int else 2),
-        test_output=str(error),
+        exit_code=return_code,
+        test_output=failure_message,
         loop=loop,
         changed_files=_changed(before, after),
         error=(
-            f"{error}；未形成完整验证证据，已停止后续修复与独立 Reviewer"
+            f"{failure_message}；未形成完整验证证据，已停止后续修复与独立 Reviewer"
         ),
         verification=None,
         repair_attempts=list(repair_attempts),

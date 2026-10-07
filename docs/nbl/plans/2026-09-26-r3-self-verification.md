@@ -1,5 +1,9 @@
 # R3 自验证与有界修复
 
+- **2026-10-07 timeout 最终本机验证：**完整 preflight 三门通过，编译 `-j6`、治理/官网/竞品检查通过；独立复核含低层真实 timeout 回归与符号链接临时根变体均通过。新 SHA 跨平台任务出口步骤仍待推送；R2/R3 readiness 不变。
+
+- **2026-10-07：任务边界独立测试超时失败报告（原生跨平台待新 SHA）：**首轮/修复轮的 `TimeoutExpired` 统一进入既有不完整验证报告，固定脱敏文案和失败 exit 2，`verification=None`、停止后续修复与 Reviewer，保留此前完整历史。CLI 普通失败返回 1；请求回执返回 2，不新建或覆盖已有完整回执。低层超时/清理语义原样保留；失败报告不证明整树清理。TDD 3 方法/5 场景 RED→GREEN，联合有界修复 11 项、20 轮/60 次新方法及独立审查通过；五 OS Python 3.11 和 Windows 双架构 Python 3.12 生命周期作业接入。R2/R3 总 readiness 不变。
+
 - **Windows Reviewer CI #637 刷新（2026-10-05；commit `da1084e`）：**x64/ARM64 文件拒绝、写操作拒绝、子进程退出与 ACL 恢复子门通过；candidate 仍因 IPv4/IPv6 `connect_ex=10035` 等待超时而没有终态 `10013` 失败。父端受控 capability 正控在 `token_capability_sid_match` exit 89，双栈 canary 未收到、readiness credit=false，故候选不能被表述为已验证的网络隔离。R3 应用层合同测试通过不抵消真实 OS 边界硬门。[CI #637](https://github.com/ayukyo/icode/actions/runs/37268473014)。
 - **Windows Reviewer CI #636 刷新（2026-10-05；commit `0b5cb3d`）：**x64/ARM64 临时标准用户 probe 均按预期完成文件范围负例（workspace/home/ledger/快照外拒绝、写/删除/重命名/创建拒绝）、子进程退出及 snapshot/runtime ACL 恢复；但正式零-cap网络候选仍只有 `connect_ex=10035` 和 wait timeout，没有终态 `10013`，于是固定候选脚本以 78 退出，标准用户步骤失败。该 78 是尚未满足 network-denial 事实的整体探针结果，不可解释为文件 sandbox 或清理失败。实际 `token_capability_sid_match` 正控也未通过；R3/R2 Windows acceptance 继续 open，自动模式不可开放。[CI #636](https://github.com/ayukyo/icode/actions/runs/37266718565)。
 - **2026-10-05：completed receipt source 必需性收紧（`tests.test_evidence` 173 项通过、两条新增回归各连续 20 轮、preflight 3/3、compileall `-j6` 与文档检查通过）：**发现无 `gates_json` 的显式 API 也会给版本化 completed 工单导出无 `completion_receipt` 的包；普通 CLI 虽总传 skill gates，但独立包门不应由可选参数决定。现要求所有版本化 completed 导出都必须携带可验证的 completed→audit receipt 契约，否则在目标清理前拒绝。无契约时不能应用 test-skip 例外，因为 required step 与是否启动 audit 均未绑定；有有效 pinned receipt snapshot 时保留“无 audit start + 精确 `gates_skipped_for_test`”兼容。未完成工单仍可无 gates 导出；旧 package verifier 继续兼容无 marker 快照。

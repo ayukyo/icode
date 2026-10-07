@@ -274,6 +274,8 @@ class SandboxPolicy:
 
 **交付基础切片（2026-10-07；原生结果待验）：**新增 C11 bootstrap target，沿用匹配架构 helper 文件名与已有 wheel 校验链。仅固定 `--version-json` 报告 bootstrap/runner 协议版本和实际编译架构；`setup_complete`、`command_execution`、`isolation_ready` 始终 false。所有其它参数 exit 78，不创建账户、修改 ACL/WFP、接收 IPC 或启动用户命令。真实 x64/ARM64 CI 各自由本次 checkout 编译，装入干净 venv 后运行该明确的构建产物；该测试权限不移交产品运行时，现有 resolver 和相邻 SHA-256 仍不构成可信执行授权。synthetic PE 作业独立保留，不计 bootstrap 运行或隔离验收；主机 C 编译只验证逻辑。后续必须补独立签名/来源信任根、镜像固定与启动身份核验，然后实现初始化事务和正式 runner，不能先开放自动模式。
 
+**bootstrap 原生验收更新（CI #643，2026-10-07；`0d6c9e2`）：**Windows [x64](https://github.com/ayukyo/icode/actions/runs/37586564015/job/112677937505) 和 [ARM64](https://github.com/ayukyo/icode/actions/runs/37586564015/job/112677937786) 的源码编译、安装到干净 venv、包内固定 metadata 与操作拒绝步骤均 success。仅闭合上述基础交付子门，不认证发布者、签名/来源或启用 setup/command runner；完整 Windows/R2/R3 readiness 仍未闭合。
+
 ## 7. 工作区与受保护目录
 
 ### 7.1 Git 工程

@@ -2,6 +2,12 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R3 timeout 切片最终本机守护（2026-10-07）：**生产代码最终版全仓 preflight 3/3 通过；compileall `-j6`、治理/官网/竞品/差异检查通过。独立审查无发现，关联低层真实 timeout 测试通过，符号链接临时根下 3 方法/5 场景全过。新版本跨平台 task timeout 步骤仍待本次推送后验收；不改变已记录的底层进程清理限制。
+
+- **CI #643 Windows 真实 bootstrap 双架构通过（2026-10-07；`0d6c9e2`；整轮尚未结束）：**[x64](https://github.com/ayukyo/icode/actions/runs/37586564015/job/112677937505) 与 [ARM64](https://github.com/ayukyo/icode/actions/runs/37586564015/job/112677937786) 均完成源码编译和真实 wheel 安装步骤，安装后的固定 metadata、setup/spawn 拒绝检查 success。这关闭的是 bootstrap 编译/安装/非执行入口子门，不是签名/来源认证、UAC 初始化、低权限身份隔离或自动模式；产品定位仍不授权执行。整轮此刻仍有未结束作业，两个旧 Windows Reviewer candidate 已失败，不能称整个 R2/R3 通过。
+
+- **R3 独立验证超时闭环（2026-10-07；新 SHA 原生待验）：**首轮或修复轮 unittest 超时现在返回失败 `TaskReport`，不让异常跳过 CLI 报告；固定提示、不输出异常命令/部分 stdout/stderr/notes、不签发完整证据，停止后续修复及 Reviewer，保留此前完整尝试。CLI 普通 task 返回 1，指定回执返回 2 且旧文件保留/缺失不创建。底层 `run_unittest` 超时 API 与进程清理合同不变。新增 3 方法/5 场景 RED→GREEN，相关有界修复联合 11 项通过；20 轮共 60 次方法通过，独立复核及既有低层真实 timeout 回归通过。跨平台生命周期 CI 已接入；本片只修任务错误出口，不证明清理/隔离 ready。
+
 - **Windows bootstrap 本机验收（2026-10-07）：**相关 helper/包装 21 项通过，bootstrap 6 项连续 20 轮共 120 次通过；独立复核无发现，真实 sdist 归档包含 Windows CMake 及全部引用源码。最终全仓 preflight 3/3、compileall `-j6`、治理/官网/竞品检查与差异检查通过。真实 MSVC x64/ARM64 构建、wheel 安装后的 bootstrap 查询/拒绝仍待新 SHA CI；本机逻辑与源码包验收不代替它，也不赋予产品执行权限。
 
 - **R2 Windows 真实 bootstrap 交付切片（2026-10-07；原生验收待新 SHA）：**新增 `icode-sandbox-windows-{x64,arm64}.exe` CMake 目标，静态 MSVC runtime；只接受 `--version-json`，报告协议/架构及 `setup_complete=false`、`command_execution=false`、`isolation_ready=false`，其它操作固定 exit 78 且不回显参数。真实原生 CI 与 synthetic PE 包装作业分离，前者从本次源码构建后安装到干净 venv，查询包内二进制并验证 setup/spawn 拒绝；缺失或错架构不得回退 synthetic。本机 TDD 覆盖固定 schema、架构、拒绝和不泄露参数；这不是 Windows 实机执行或隔离证据。产品 helper 定位仍不赋予执行权，签名/来源、启动竞态、UAC/专用账户/DPAPI/WFP/ACL/Job 仍待闭合。研究已刷新 [持续对照](./agent-landscape-live.md)，批准基线见 [设计 §6.3](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md)。
