@@ -2,6 +2,10 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **工程事实与离仓验证本机阶段门通过（2026-10-08；新提交原生结果另验）：**新版宿主plan/run经深冻结事实接既有Evidence/Ledger、保存/导入/直接导出及共享stdlib验包；完整audit与稳定repair分域，原输出摘要不删改，unknown仍human，旧None/golden/opaque路径保持。复审发现的DWORD、标签补重试、畸形run及巨整形边界先RED后修正，最终独立SPEC→不同QUALITY均批准；20轮680PASS零skip、226关联及326默认矩阵零skip、干净安装19PASS零skip、完整preflight3/3，全仓2099PASS/60skip。具体冻结及证据见[本片计划](./nbl/plans/2026-10-08-r3-engineering-evidence.md)。下一片继续真实合同工程执行/代码Reviewer/事件记录/CP终结接线；Windows生产runner、macOS单任务额度、实际模型1→6及90%SKILL整体矩阵仍未关闭。
+
+- **venv修正原生回收、工程证据片开发中（2026-10-08；`79e2b4377d27d80fa79867cb32712ae579ff0044`）：**精确新CI终态39success/2既有Windows Reviewer失败/3skip；Ubuntu和macOS ARM workspace各292PASS/0skip，Windows x64/ARM各271PASS/20skip；双Python全仓各2053PASS/71skip，七随包安装各18PASS/0skip，来源验证5/5、官网2/2成功，旧窗口全部STOP。目录身份测试兼容项已过，不外推Intel workspace或旧失败根因。新版工程事实/稳定修复键/严格离仓验包正按[证据计划](./nbl/plans/2026-10-08-r3-engineering-evidence.md)实施；[下一片合同接线设计](./nbl/plans/2026-10-08-r3-contract-engineering-bridge.md)优先真实policy合同，未实现不得写成已具备。Windows生产执行、macOS单任务额度、模型1→6及90%总门仍待闭合。
+
 - **macOS venv测试目录身份修正、本机提交门通过（2026-10-08；production仍为eead3ad）：**精确eead远端CI终态38success/3failure/3skip，新增macOS ARM workspace唯一venv fixture失败、两个既有Windows Reviewer失败；签名验证5/5和官网2/2通过，均停止旧窗口观察。新[目录身份片](./nbl/plans/2026-10-08-r3-venv-fixture-identity.md)仅修测试同目录别名比较，保留基础解释器拒绝和argv词法身份，不skip、不更改隔离或环境。49本机回归零skip、真实venv20轮40次零skip、DEFAULT292零skip、独立SPEC→不同QUALITY批准、新完整preflight3/3；新提交原生结果另验。工程证据/ledger/独立验包片继续开发，R2/R3不宣称整体通过。
 
 - **宿主工程检查执行器本机阶段门通过（2026-10-08；基线71a3d2c，提交推送中）：**[第一执行片](./nbl/plans/2026-10-08-r3-engineering-executor.md)实现不可变宿主计划、共享真实broker dispatch、完整有界输出与unittest/Go JSON观察。独立复审发现的缓存竞态、Go build漏接、局部FD回收和复合中断优先级已先RED后修正；最终48本机回归零skip、20轮960次零skip、256关联5既有skip、DEFAULT291零skip、完整preflight三道、编译-j1/治理/双语官网/竞品/diff通过，独立SPEC→不同QUALITY均批准且七文件摘要不变。Go三实际模式只证明观察，普通POSIX组不授权缓存整树清理；Windows无held-HANDLE路径拒启。新版证据/ledger/独立验包与真实code/deepcheck/Reviewer接线进入下一片，自动模式、隔离及R2/R3 readiness不提高。上个71a3远端三轮已终态停止观察，精确结果见[收尾证据](./nbl/plans/2026-10-08-r3-contract-finalization.md)，不倒填新SHA原生结果。

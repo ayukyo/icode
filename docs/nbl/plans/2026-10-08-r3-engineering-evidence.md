@@ -37,7 +37,7 @@
 **Dependencies:** None（已交付执行器基线）
 **Parallelizable:** No（五模块共享schema与序列化合同，串行修改）
 
-- [ ] **Step 1: 写RED**。新测试先以find_spec/assert检测新桥接入口缺失，避免ImportError冒充功能RED；随后 actual Python failing/nonzero/zero工程fixture→工程证据。新增旧golden、事实冻结/账本保全、elapsed/attempt/capture/通过输出变化不补修复信用、源码变化变键、未知清理human及check缺失/重复/额外/错序/伪passed测试。
+- [x] **Step 1: 写RED**。新测试先以find_spec/assert检测新桥接入口缺失，避免ImportError冒充功能RED；随后 actual Python failing/nonzero/zero工程fixture→工程证据。新增旧golden、事实冻结/账本保全、elapsed/attempt/capture/通过输出变化不补修复信用、源码变化变键、未知清理human及check缺失/重复/额外/错序/伪passed测试。
 
 ```python
 legacy = VerificationEvidence(step="code", attempt="1", kind="test",
@@ -52,9 +52,9 @@ assert hashlib.sha256(raw).hexdigest() == "6fa92e309d7819b3056508149ad51ea7585b6
 
 上述两摘要在修改前基线实际捕获；期望值不得调用当前实现生成。新桥接API为build_engineering_evidence(plan, run, *, binding: VerificationEvidence)，要求plan/run/step/attempt及结果身份一致，不从模型或文件重载宿主计划。完整往返采用现有make_finished_plan_ticket/CLI fixture；独立verify.py以-I、空PYTHONPATH、仓库外cwd运行。
 
-- [ ] **Step 2: 实跑RED并记录**：`env PYTHONPATH=/home/orbbec/git/icode/src /tmp/icode-packaged-skill-acceptance-fqxSO0bh/venv/bin/python -B -m unittest tests.test_engineering_evidence`。结构缺口与真实旧漏洞FAIL分开，fixture ERROR先修，不伪报。
-- [ ] **Step 3: 最小实现**：按冻结语义定义深不可变事实与build_engineering_evidence，新增stdlib语义校验器及canonical摘要；旧函数仅显式None/非None分支，ledger重建保字段。所有入口共用同一语义校验器和前置有界投影；包装专用解析只增加两层，再逐row原128校验。保留现有保存/发布事务，未校验不得写目标。
-- [ ] **Step 4: 实跑GREEN/兼容**：新类、tests.test_self_verify、tests.test_evidence、test_run_workspace_ci通过；新增包内wrapper重复键/坏UTF8/孤立代理项/非有限数值/版本类型负控、上限及上限+1、旧最大深度与其它128门不变。篡改新receipt再更新manifest文件SHA/pack_digest，内置与离仓verifier仍拒绝；自洽伪造仅自洽，不授予质量信用。
+- [x] **Step 2: 实跑RED并记录**：`env PYTHONPATH=/home/orbbec/git/icode/src /tmp/icode-packaged-skill-acceptance-fqxSO0bh/venv/bin/python -B -m unittest tests.test_engineering_evidence`。结构缺口与真实旧漏洞FAIL分开，fixture ERROR先修，不伪报。
+- [x] **Step 3: 最小实现**：按冻结语义定义深不可变事实与build_engineering_evidence，新增stdlib语义校验器及canonical摘要；旧函数仅显式None/非None分支，ledger重建保字段。所有入口共用同一语义校验器和前置有界投影；包装专用解析只增加两层，再逐row原128校验。保留现有保存/发布事务，未校验不得写目标。
+- [x] **Step 4: 实跑GREEN/兼容**：新类、tests.test_self_verify、tests.test_evidence、test_run_workspace_ci通过；新增包内wrapper重复键/坏UTF8/孤立代理项/非有限数值/版本类型负控、上限及上限+1、旧最大深度与其它128门不变。篡改新receipt再更新manifest文件SHA/pack_digest，内置与离仓verifier仍拒绝；自洽伪造仅自洽，不授予质量信用。
 - [ ] **Step 5: 冻结验收后提交**：新方法20轮、完整DEFAULT及关联、独立SPEC→不同QUALITY、七维报告、完整preflight、compileall-j1、治理/官网/竞品/diff与干净包运行；通过后精确文件提交推送main并核对远端。源码漂移须重跑，旧守护不倒填。阶段提交由根代理执行，不由实现子代理自行提交。
 
 ## 后续依赖（不在本片冒称具备）
@@ -65,3 +65,36 @@ assert hashlib.sha256(raw).hexdigest() == "6fa92e309d7819b3056508149ad51ea7585b6
 
 ---
 **Execution Mode:** serial
+
+## 第四版冻结与最终本机验收（2026-10-08）
+
+第四版仅共享timeout校验一行交换，沿用VerificationCheck的严格类型→范围→有限性顺序，不扩大catch或数值域。3方法/6FAIL/0ERROR→76PASS/0skip/12.272秒；合法整数/有限浮点正控，巨正负整数的validator/import/冻结facts/fingerprint/save/directexport/实际旧包保留，以及更新manifest后的内置/离仓拒绝均进入永久测试。NaN/Inf为非法JSON，bool为合法JSON但类型域非法，分开判定。源冻结后等待独立SPEC→不同QUALITY，再跑20轮、关联、DEFAULT、干净包和完整preflight；前三版成绩只作历史。
+
+独立SPEC最终76PASS/0skip/13.220秒及8类非法值×4入口RAM批准；不同QUALITY最终45PASS/0skip/12.542秒及12类非法timeout×5入口＝60控制批准，Critical/Important/Minor均0，七源码SHA前后均匹配冻结。根代理最终20轮×34＝680PASS/0skip/273.711秒；旧关联226PASS/0skip/140.215秒；DEFAULT326PASS/0skip/128.395秒；离开checkout的临时HOME/wheel/无依赖安装19PASS/0skip/15.952秒，包括安装版源SHA核对、真实测试观察、新工程回执保存导入、真实CP事件工单导出、内置及-I离仓验包和巨整形/版本负控。普通process-group观察仍human，没有改为OS完整scope。完整全仓preflight正在运行，本段不计其未取得终态，也未提交推送。
+
+后续实际取得最终完整preflight终态：3/3守护通过，全仓2159 total＝2099PASS/60skip，414.108秒；不是2159全通过或零跳过。compileall-j1、治理、双语官网、竞品排期、diff已通过；源码七SHA与第四冻结保持。最终文档后的密钥/子模块/格式再核对后执行main提交推送，精确新SHA和原生结果另记录，不倒填79e2或宣告R2/R3总门。
+
+【架构级自检报告】
+✅ 语法/编译：compileall-j1及全仓测试通过
+✅ 依赖/调用链：生产/保存/导入/导出/独立验证器一致
+✅ 逻辑/边界：闭合schema、域、预算与稳定修复键正负控通过
+✅ 异常处理：畸形事实/巨整形规范拒绝，目标保持不变
+✅ 关联模块：226关联与326默认矩阵均零跳过通过
+✅ 兼容安全：旧None/golden/opaque兼容，不提升隔离或readiness
+✅ 可运行性：本片本机及干净安装路径通过；原生平台与模型另验
+
+## 实施记录与首轮独立审查（2026-10-08；历史冻结版）
+
+新入口先find_spec断言：8方法/24预期结构FAIL/0ERROR；初始helper意外覆盖unittest.run的fixture ERROR已更名后重跑，不计产品RED。实现了scalar/tuple深冻结、公开plan/run与当前base投影、完整audit/稳定repair、共享stdlib校验及四入口消费，旧golden实际保持。实际Python通过/失败/零测试仅宿主普通组观察，顶层unknown/human；模拟完整资源链仅transport合同，不计原生。
+
+随后发现并先RED修正：自洽other-ticket回执在跨包导出未拒；实际超量结果的VerificationOutputLimitError不在闭合错误集合；旧foreign.to_receipt返回有限scalar/list被包内新校验误拒；超大host plan或手工facts集合仍能先计算digest。新增expected_ticket_id消费、有限已知错误类、旧opaque兼容（CLI仍dict-only）、同一共享规则的摘要前结构预检，不修改runner/平台helper/子模块。新版标签区分账本attempt与facts宿主execution_attempt，旧None预检投影省略新增字段。
+
+第一次冻结七文件后根代理20轮×25＝500PASS/0skip/195.607秒；旧self_verify/evidence/CI226PASS/0skip/136.836秒，DEFAULT317PASS/0skip/123.024秒。独立SPEC新模块+CI36PASS/0skip/10.364秒，但**不批准**：共享校验仅signed32，拒绝Windows合法DWORD失败码3221225477/4294967295。现windows_job直接DWORD.value→int、runner直接proc.wait、Windows协议本来uint32；[Microsoft官方GetExitCodeProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess)也以LPDWORD返回程序退出或未处理异常值。该发现是固定源码与本机transport负控，不称Windows原生实测。
+
+根代理另实测同一完整failed源窗口，仅改变旧kind标签、result_commit_sha或test_head_before_sha，has_new_evidence仍true；完整audit保留这些观察，但稳定repair应按实际source/env/tools/参数/失败事实的明确白名单，不以兼容命令标签、HEAD或结果提交元数据授重复尝试。两项正在TDD修正，下一冻结版全部重验；上述500/226/317仅历史结果，不能倒填最后SHA。不同QUALITY及完整preflight尚未开始，不把实现者自审当两次独立审查。本片未提交推送，下一合同设计也未实施。
+
+第二冻结：两缺口3方法/14FAIL/0ERROR→71PASS/0skip。Windows退出码域为严格int `[-2147483648,4294967295]`；稳定repair基础绑定白名单为environment/artifact/diff/base/initial/tested-source/git-format/tested-tree，公开plan真实工具/参数和运行失败事实仍参与。旧kind/command、HEAD、结果提交及状态标签只保留完整audit，不能补新尝试；清理未知即使环境变化也human。独立SPEC同一七SHA实际71PASS/0skip/12.107秒并批准。
+
+根代理第二版20轮×29＝580PASS/0skip/228.533秒；旧关联226PASS/0skip/137.985秒，DEFAULT321PASS/0skip/125.459秒；干净离仓wheel安装19PASS/0skip/15.266秒（原18项加临时实际installed bridge→save/import/export→内置及离仓-I验证，普通组结果仍human），语法-j1/治理/官网/对照排期/diff通过。不同QUALITY实际29PASS/0skip/11.835秒，但**不批准**：producer在共享schema校验前索引facts.run.attempt，缺字段泄漏KeyError、run非对象泄漏TypeError；根代理已复现fingerprint/save/direct-payload三入口KeyError且目标未写。应规范为ValueError/EvidenceError，预算仍先行，不宽捕获内部错误。第三版仅producer前置run/attempt检查及负控TDD，第二版全部结果仅历史，不倒填最终SHA；完整preflight仍未开始。
+
+第三冻结：8行producer前置检查先2方法/7FAIL/0ERROR后73PASS/0skip/11.770秒；独立SPEC73PASS/0skip/12.498秒及7类畸形输入跨入口负控批准。根代理20轮×31＝620PASS/0skip/239.337秒、旧关联226PASS/0skip/137.011秒、DEFAULT323PASS/0skip/125.171秒。不同QUALITY31PASS/0skip/11.965秒及27个run/attempt控制确认前缺口修正，但**不批准**新的数值边界：共享timeout先math.isfinite再范围，预算内合法JSON整数10**400造成OverflowError；根代理独立复现validator、实际文件import、fingerprint三入口。第四版仅交换为现有VerificationCheck的strict type→范围→有限性顺序，补巨正负整数跨入口及离仓负控；NaN/Inf另属非法JSON，不混同正常JSON整数。三版成绩保持历史，第四版先两层审查再跑耗时最终矩阵；完整preflight与本片提交仍未开始。

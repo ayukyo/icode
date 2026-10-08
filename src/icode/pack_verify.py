@@ -36,6 +36,8 @@ _MAX_JSON_STRUCTURAL_TOKENS = 500_000
 _MAX_MANIFEST_JSON_BYTES = 16 * 1024 * 1024
 _MAX_METADATA_JSON_BYTES = 8 * 1024 * 1024
 _MAX_ARTIFACT_INDEX_JSON_BYTES = 8 * 1024 * 1024
+_MAX_VERIFICATIONS_JSON_BYTES = 8 * 1024 * 1024
+_MAX_VERIFICATION_RECEIPTS = 10_000
 _MAX_MANIFEST_FILE_ENTRIES = 50_000
 _MAX_ARTIFACT_INDEX_ENTRIES = 50_000
 _MAX_PACKAGE_ENTRY_COUNT = 100_000
@@ -1517,6 +1519,262 @@ def loads_json_value(text: str) -> object:
     return value
 
 
+# Engineering observations have one closed, stdlib-only contract. This module
+# is also the exported verify.py; no host producer imports are needed here.
+_ENGINEERING_COVERAGE = {
+    "record_scope": "engineering_result_snapshot",
+    "session_replay": "not_included",
+    "unrecorded_side_effects": "not_proven",
+    "execution_source": "not_authenticated",
+    "test_quality": "not_authenticated",
+}
+_ENGINEERING_BINDING_TEXT_FIELDS = (
+    "step", "attempt", "execution_attempt", "verify_kind", "environment_fingerprint",
+    "diff_fingerprint", "base_commit_sha", "initial_worktree_fingerprint",
+    "tested_worktree_fingerprint", "git_object_format", "test_head_before_sha",
+    "test_head_after_sha", "test_head_status", "tested_git_tree_oid", "tested_git_tree_status",
+    "result_commit_sha", "result_commit_tree_oid", "result_commit_tree_status",
+    "result_commit_timing_status", "result_commit_checked_at", "captured_at",
+)
+# A repair key carries source/runtime facts, not arbitrary annotation changes.
+# Keep an explicit allowlist so new audit labels cannot silently grant retries.
+_ENGINEERING_REPAIR_BINDING_FIELDS = (
+    "environment_fingerprint", "artifact_hashes_sha256", "diff_fingerprint", "base_commit_sha",
+    "initial_worktree_fingerprint", "tested_worktree_fingerprint", "git_object_format", "tested_git_tree_oid",
+)
+# POSIX signals may be negative; Windows APIs preserve the unsigned DWORD.
+_ENGINEERING_MIN_EXIT_CODE = -(2 ** 31)
+_ENGINEERING_MAX_EXIT_CODE = 2 ** 32 - 1
+_ENGINEERING_CHECK_STATUSES = frozenset({
+    "passed", "failed", "not_run", "tool_changed", "missing_command",
+    "execution_unavailable", "output_incomplete",
+})
+_ENGINEERING_RUN_STATUSES = _ENGINEERING_CHECK_STATUSES - {"not_run"} | frozenset({
+    "source_changed", "source_unavailable", "binding_changed", "cache_cleanup_unconfirmed",
+})
+_ENGINEERING_FIXED_ERRORS = frozenset({
+    "", "invalid_cwd", "binding_changed", "isolation_unavailable", "execution_receipt_incomplete",
+    "VerificationOutputError", "VerificationOutputLimitError", "VerificationOutputCaptureError", "TimeoutExpired",
+    # The executor records only a fixed class name, never an exception message.
+    "OSError", "BlockingIOError", "ChildProcessError", "ConnectionError", "BrokenPipeError",
+    "ConnectionAbortedError", "ConnectionRefusedError", "ConnectionResetError", "FileExistsError",
+    "FileNotFoundError", "InterruptedError", "IsADirectoryError", "NotADirectoryError",
+    "PermissionError", "ProcessLookupError", "TimeoutError",
+})
+
+
+def _engineering_digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
+                                    separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def _engineering_shape(value: object, fields: set[str]) -> dict:
+    if type(value) is not dict or set(value) != fields:
+        raise ValueError("engineering_verification 字段集合无效")
+    return value
+
+
+def _engineering_text(value: object, *, required: bool = False, maximum: int = 8192) -> None:
+    if type(value) is not str or "\x00" in value or required and not value:
+        raise ValueError("engineering_verification 文本字段无效")
+    if len(value) > maximum or len(value.encode("utf-8")) > maximum:
+        raise ValueError("engineering_verification 文本超过安全上限")
+
+
+def _engineering_hash(value: object, *, empty: bool = False) -> None:
+    if type(value) is not str or not (empty and value == "" or re.fullmatch(r"[0-9a-f]{64}", value)):
+        raise ValueError("engineering_verification SHA256 无效")
+
+
+def engineering_receipt_values(receipt: object, *, compute_digests: bool = True) -> dict:
+    """Validate closed observations and derive digests, without trusting labels.
+
+    Hidden tool/argument/environment digests are host claims, not recoverable
+    values or authenticated execution. Reported test counts are observations.
+    """
+    row = _engineering_shape(receipt, {"kind", "schema_version", "coverage", "binding",
+        "public_plan", "public_projection_digest", "run", "category", "passed", "fingerprint", "repair_fingerprint"})
+    if row["kind"] != "engineering_verification" or type(row["schema_version"]) is not int or row["schema_version"] != 1:
+        raise ValueError("engineering_verification schema_version 必须为严格整数 1")
+    if row["coverage"] != _ENGINEERING_COVERAGE:
+        raise ValueError("engineering_verification coverage 无效")
+    binding = _engineering_shape(row["binding"], set(_ENGINEERING_BINDING_TEXT_FIELDS) | {
+        "exit_code", "command_sha256", "artifact_hashes_sha256", "output_sha256"})
+    for field in _ENGINEERING_BINDING_TEXT_FIELDS:
+        _engineering_text(binding[field], required=field in {"step", "attempt", "execution_attempt"})
+    for field in ("command_sha256", "artifact_hashes_sha256", "output_sha256"):
+        _engineering_hash(binding[field])
+    if binding["exit_code"] is not None and type(binding["exit_code"]) is not int:
+        raise ValueError("engineering_verification exit_code 无效")
+    plan = _engineering_shape(row["public_plan"], {"run_id", "ticket_id", "workspace_sha256",
+        "environment_sha256", "steps", "platforms", "checks"})
+    for field in ("run_id", "ticket_id"):
+        _engineering_text(plan[field], required=True, maximum=256)
+    for field in ("workspace_sha256", "environment_sha256"):
+        _engineering_hash(plan[field])
+    for field, allowed in (("steps", {"task", "code", "deepcheck"}),
+                           ("platforms", {"Linux", "Darwin", "Windows"})):
+        items = plan[field]
+        if type(items) is not list or not 1 <= len(items) <= 3 or any(type(v) is not str or v not in allowed for v in items) or len(set(items)) != len(items):
+            raise ValueError("engineering_verification 适用范围无效")
+    checks = plan["checks"]
+    if type(checks) is not list or not 1 <= len(checks) <= 16:
+        raise ValueError("engineering_verification 检查数量无效")
+    ids = set()
+    timeout_total = output_total = 0
+    for check in checks:
+        _engineering_shape(check, {"check_id", "kind", "adapter", "required", "tool_sha256",
+                                  "parameters_sha256", "timeout_seconds", "output_limit_bytes"})
+        identity = check["check_id"]
+        if type(identity) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", identity) or identity in ids:
+            raise ValueError("engineering_verification 检查身份重复或无效")
+        ids.add(identity)
+        if type(check["kind"]) is not str or check["kind"] not in {"test", "lint", "build"} or type(check["required"]) is not bool:
+            raise ValueError("engineering_verification 检查类型无效")
+        adapters = {"unittest_summary_v1", "go_test_json_v1"} if check["kind"] == "test" else {"exit_status_v1"}
+        if type(check["adapter"]) is not str or check["adapter"] not in adapters:
+            raise ValueError("engineering_verification adapter 无效")
+        for field in ("tool_sha256", "parameters_sha256"):
+            _engineering_hash(check[field])
+        timeout = check["timeout_seconds"]
+        limit = check["output_limit_bytes"]
+        if type(timeout) not in (int, float) or not 0 < timeout <= 1800 or not math.isfinite(timeout) or type(limit) is not int or not 1 <= limit <= 8 * 1024 * 1024:
+            raise ValueError("engineering_verification 检查限额无效")
+        timeout_total += timeout
+        output_total += limit
+    if timeout_total > 1800 or output_total > 8 * 1024 * 1024 or not any(c["required"] and c["kind"] == "test" for c in checks):
+        raise ValueError("engineering_verification 计划限额或必需测试无效")
+    run = _engineering_shape(row["run"], {"plan_digest", "step", "attempt", "status", "source_before",
+                                            "source_after", "os_enforced", "checks"})
+    _engineering_hash(run["plan_digest"])
+    for field in ("step", "attempt"):
+        _engineering_text(run[field], required=True, maximum=256)
+    if run["step"] != binding["step"] or run["step"] not in plan["steps"] or run["attempt"] != binding["execution_attempt"]:
+        raise ValueError("engineering_verification 执行身份不一致")
+    for field in ("source_before", "source_after"):
+        _engineering_hash(run[field], empty=True)
+    if binding["tested_worktree_fingerprint"] != run["source_after"]:
+        raise ValueError("engineering_verification 受测源码绑定不一致")
+    if type(run["status"]) is not str or run["status"] not in _ENGINEERING_RUN_STATUSES or type(run["os_enforced"]) is not bool:
+        raise ValueError("engineering_verification 执行状态无效")
+    if run["status"] == "passed" and run["source_before"] and run["source_after"] and run["source_before"] != run["source_after"]:
+        raise ValueError("engineering_verification passed 与源码变化矛盾")
+    results = run["checks"]
+    if type(results) is not list or len(results) != len(checks):
+        raise ValueError("engineering_verification 结果数量不一致")
+    unknown = not run["source_before"] or not run["source_after"] or run["source_before"] != run["source_after"]
+    failed = []
+    stopped = False
+    for check, result in zip(checks, results):
+        _engineering_shape(result, {"check_id", "status", "exit_code", "tests_passed", "output_sha256", "output_bytes",
+            "cleanup_ok", "cleanup_scope", "cache_owner_cleanup_confirmed", "scope_cleanup_ok",
+            "resource_channel_status", "violation_observer_status", "resource_receipt_sha256", "error"})
+        if result["check_id"] != check["check_id"] or type(result["status"]) is not str or result["status"] not in _ENGINEERING_CHECK_STATUSES:
+            raise ValueError("engineering_verification 结果身份或状态无效")
+        status, code, count = result["status"], result["exit_code"], result["tests_passed"]
+        if code is not None and (type(code) is not int or not _ENGINEERING_MIN_EXIT_CODE <= code <= _ENGINEERING_MAX_EXIT_CODE):
+            raise ValueError("engineering_verification 退出码无效")
+        if type(count) is not int or not 0 <= count <= 10_000_000 or check["kind"] != "test" and count != 0:
+            raise ValueError("engineering_verification 测试计数无效")
+        if type(result["output_bytes"]) is not int or not 0 <= result["output_bytes"] <= check["output_limit_bytes"]:
+            raise ValueError("engineering_verification 输出限额无效")
+        _engineering_hash(result["output_sha256"], empty=True)
+        _engineering_hash(result["resource_receipt_sha256"], empty=True)
+        for field in ("cleanup_ok", "scope_cleanup_ok", "cache_owner_cleanup_confirmed"):
+            if result[field] is not None and type(result[field]) is not bool:
+                raise ValueError("engineering_verification 清理状态无效")
+        if type(result["cleanup_scope"]) is not str or result["cleanup_scope"] not in {"unknown", "not_started", "process_group", "job_tree", "linux_task_scope"}:
+            raise ValueError("engineering_verification 清理范围无效")
+        for field in ("resource_channel_status", "violation_observer_status"):
+            if type(result[field]) is not str or result[field] not in {"not_required", "complete", "incomplete"}:
+                raise ValueError("engineering_verification 通道状态无效")
+        if type(result["error"]) is not str or result["error"] not in _ENGINEERING_FIXED_ERRORS:
+            raise ValueError("engineering_verification 固定错误无效")
+        if stopped and status != "not_run":
+            raise ValueError("engineering_verification 首败后仍执行检查")
+        if status == "not_run":
+            if code is not None or count or result["output_sha256"] or result["output_bytes"]:
+                raise ValueError("engineering_verification 未运行检查含结果信用")
+            stopped = True
+            continue
+        if status in {"passed", "failed"}:
+            if code is None or not result["output_sha256"]:
+                raise ValueError("engineering_verification 完整结果缺退出或输出")
+            expected_pass = code == 0 and (check["kind"] != "test" or count > 0)
+            if (status == "passed") != expected_pass or status == "failed" and count:
+                raise ValueError("engineering_verification passed/exit/count 矛盾")
+        elif count or result["output_sha256"] or result["output_bytes"]:
+            raise ValueError("engineering_verification 未知执行含完整结果信用")
+        closed = (result["cleanup_ok"] is True and result["cache_owner_cleanup_confirmed"] is True
+                  and (result["cleanup_scope"] == "job_tree"
+                       and result["scope_cleanup_ok"] is not False
+                       and result["resource_channel_status"] == "not_required"
+                       and result["violation_observer_status"] == "not_required"
+                       and not result["resource_receipt_sha256"]
+                       or result["cleanup_scope"] == "linux_task_scope"
+                       and result["scope_cleanup_ok"] is True and result["resource_channel_status"] == "complete"
+                       and result["violation_observer_status"] == "complete" and bool(result["resource_receipt_sha256"])))
+        unknown |= not closed or status not in {"passed", "failed"} or bool(result["error"])
+        if status != "passed":
+            stopped = True
+            failed.append({"check_id": check["check_id"], "kind": check["kind"], "status": status,
+                           "exit_code": code, "tests_passed": count, "error": result["error"]})
+    all_passed = all(r["status"] == "passed" for r in results)
+    if run["status"] == "passed" and not all_passed or run["status"] == "failed" and not failed:
+        raise ValueError("engineering_verification 聚合状态矛盾")
+    if run["status"] not in {"passed", "failed"}:
+        unknown = True
+    passed = run["status"] == "passed" and all_passed and not unknown
+    category = "side_effect_unknown" if unknown else "code" if failed else "test"
+    derived_exit = 0 if passed else next((f["exit_code"] for f in failed if f["exit_code"] is not None), None)
+    if not compute_digests:
+        return {"category": category, "passed": passed, "binding_exit_code": derived_exit}
+    audit_binding = {k: v for k, v in binding.items() if k not in {"attempt", "execution_attempt", "captured_at", "result_commit_checked_at"}}
+    audit_run = {k: v for k, v in run.items() if k != "attempt"}
+    projection = _engineering_digest(plan)
+    fingerprint = _engineering_digest({"domain": "icode.engineering.audit.v1", "schema_version": 1,
+        "coverage": row["coverage"], "binding": audit_binding, "public_plan": plan, "run": audit_run,
+        "category": category, "passed": passed})
+    repair = _engineering_digest({"domain": "icode.engineering.repair.v1", "schema_version": 1,
+        "step": run["step"], "public_plan": {k: v for k, v in plan.items() if k not in {"run_id", "ticket_id"}},
+        "source_before": run["source_before"], "source_after": run["source_after"],
+        "binding": {k: binding[k] for k in _ENGINEERING_REPAIR_BINDING_FIELDS},
+        "status": run["status"], "category": category, "failures": failed})
+    return {"public_projection_digest": projection, "fingerprint": fingerprint,
+            "repair_fingerprint": repair, "category": category, "passed": passed,
+            "binding_exit_code": derived_exit}
+
+
+def validate_engineering_receipt(receipt: object, *, expected_ticket_id: str | None = None) -> dict | None:
+    """Legacy/unknown kinds carry no engineering credit; new kinds cannot downgrade."""
+    if type(receipt) is not dict or receipt.get("kind") != "engineering_verification":
+        return None
+    values = engineering_receipt_values(receipt)
+    if expected_ticket_id is not None and receipt["public_plan"]["ticket_id"] != expected_ticket_id:
+        raise ValueError("engineering_verification ticket_id 与工单不一致")
+    if receipt["binding"]["exit_code"] != values["binding_exit_code"] or any(
+        type(receipt[field]) is not type(value) or receipt[field] != value
+        for field, value in values.items() if field != "binding_exit_code"
+    ):
+        raise ValueError("engineering_verification 语义或摘要不一致")
+    return values
+
+
+def load_verifications_json(path: Path, *, expected_ticket_id: str | None = None) -> dict:
+    """Only this wrapper admits two extra containers; each receipt stays at 128."""
+    text = read_bounded_bytes(path, max_bytes=_MAX_VERIFICATIONS_JSON_BYTES).decode("utf-8")
+    _check_json_structural_token_budget(text, max_depth=_MAX_JSON_CONTAINER_DEPTH + 2)
+    value = json.loads(text, object_pairs_hook=_json_object_without_duplicates,
+                       parse_constant=_reject_non_json_numeric_constant)
+    _engineering_shape(value, {"schema_version", "receipts"})
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1 or type(value["receipts"]) is not list or len(value["receipts"]) > _MAX_VERIFICATION_RECEIPTS:
+        raise ValueError("verifications.json 包装结构无效")
+    for receipt in value["receipts"]:
+        _reject_non_interoperable_values(receipt)
+        validate_engineering_receipt(receipt, expected_ticket_id=expected_ticket_id)
+    return value
+
+
 def read_bounded_bytes(path: Path, *, max_bytes: int) -> bytes:
     """Read at most max_bytes + 1 bytes using bounded chunks."""
     if max_bytes < 0:
@@ -1849,6 +2107,14 @@ def verify_pack(pack_dir: Path) -> list[str]:
         problems.append("清单与工单 metadata 的 ticket_id 不一致")
 
     # ③ 事件链完整性
+    verifications_path = _package_member_path(pack, "verifications.json")
+    if verifications_path is None:
+        problems.append("verifications.json 包内路径无效（必须是普通文件）")
+    elif verifications_path.is_file():
+        try:
+            load_verifications_json(verifications_path, expected_ticket_id=metadata_ticket_id)
+        except (OSError, TypeError, ValueError, UnicodeError, RecursionError, OverflowError):
+            problems.append("verifications.json 不可解析或工程回执语义无效")
     events_path = _package_member_path(pack, EVENTS_REL)
     if events_path is None:
         problems.append("事件链包内路径无效（必须是普通文件）")

@@ -44,3 +44,11 @@ fixture比较Path(sys.prefix).resolve(strict=True)与预期临时runtime的resol
 - ✅ 关联模块：DEFAULT292通过，完整提交守护3/3；仅修改测试与文档。
 - ✅ 兼容安全：不继承用户环境、不增加权限、不放宽产品隔离门。
 - ⏳ 可运行性：本机已验证；新SHA原生macOS待验，R2/R3整体验收未完成。
+
+## 精确79e2原生更新（2026-10-08；已停止观察）
+
+提交推送main `79e2b4377d27d80fa79867cb32712ae579ff0044`后，独立只读观察者逐job回收新窗口：[CI37775593596](https://github.com/ayukyo/icode/actions/runs/37775593596)终态39success/2failure/3skip；新增macOS失败不再出现，仅剩两个既有Windows Reviewer失败。[macOS ARM job113305508131](https://github.com/ayukyo/icode/actions/runs/37775593596/job/113305508131)为macos-26-arm64/CPython3.11.9，292PASS/0skip/201.671秒，包含原venv及新增parent alias方法；Ubuntu292PASS/0skip，Windows x64/ARM各291total＝271PASS/20skip。没有Intel workspace，不能外推。四workspace后项lease各75PASS/0skip、Windows junction各3PASS/0skip。
+
+Python3.11/3.12全仓各2124total＝2053实际PASS/71skip；七随包安装矩阵各18PASS/0skip。[来源验证37775593431](https://github.com/ayukyo/icode/actions/runs/37775593431)5jobs全部success，validate实际preflight3/3，四签名安装矩阵实际密码学正向/负控PASS，各9PASS/0skip；[官网37775593156](https://github.com/ayukyo/icode/actions/runs/37775593156)2jobs success。另三个同SHA重复run cancelled，不计通过，均已STOP。Windows x64补充通道此次target等待超时，ARM为observer ready但无匹配事件，不混合平台或倒用eead状态。
+
+本更新关闭此SHA/macOS ARM的测试兼容回归；没有恢复此前缺失的实际prefix，原失败原因仍限定为候选，不倒填历史事实。七维报告的可运行性项现为本机及该macOS ARM窗口已验，R2/R3总门、Windows Reviewer及macOS单任务额度仍未关闭；下一片工程证据开发继续，不重跑终态窗口。

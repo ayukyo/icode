@@ -34,6 +34,10 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
             self.assertEqual(DEFAULT_MODULES.count("tests.test_engineering_verification." + case), 1)
         self.assertNotIn("tests.test_engineering_verification.TestRealGoEngineeringVerification", DEFAULT_MODULES)
 
+    def test_engineering_evidence_contract_runs_once_on_every_platform(self) -> None:
+        for case in ("TestEngineeringEvidence", "TestEngineeringReceiptValidation", "TestEngineeringEvidencePack"):
+            self.assertEqual(DEFAULT_MODULES.count("tests.test_engineering_evidence." + case), 1)
+
     def test_cross_platform_matrix_selects_os_neutral_R3_regressions(self) -> None:
         self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 50)
         self.assertTrue(set(CROSS_PLATFORM_R3_TESTS).issubset(DEFAULT_MODULES))

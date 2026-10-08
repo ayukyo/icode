@@ -150,6 +150,7 @@ class VerificationEvidence:
     category: str = FAILURE_SIDE_EFFECT_UNKNOWN
     captured_at: str = ""
     raw_error: str = ""
+    engineering_facts: tuple | None = None
 
     @property
     def output_sha256(self) -> str:
@@ -162,6 +163,9 @@ class VerificationEvidence:
 
     @property
     def passed(self) -> bool:
+        if self.engineering_facts is not None:
+            from .engineering_evidence import engineering_receipt
+            return engineering_receipt(self)["passed"]
         return self.exit_code == 0 and self.category not in (
             FAILURE_CONTRACT, FAILURE_SIDE_EFFECT_UNKNOWN,
         )
@@ -173,6 +177,9 @@ class VerificationEvidence:
         敏感内容写进证据包。coverage 是格式声明：回执只代表验证结果快照，
         不等于完整会话回放或未记录副作用审计。
         """
+        if self.engineering_facts is not None:
+            from .engineering_evidence import engineering_receipt
+            return engineering_receipt(self)
         return {
             "kind": "verification",
             "coverage": dict(_VERIFICATION_RECEIPT_COVERAGE),
@@ -250,6 +257,9 @@ def evidence_fingerprint(evidence: VerificationEvidence) -> str:
     的账本标签，不进入指纹——同一失败被再次观测（不同 attempt）仍视为
     「无新证据」，避免重试因 attempt 递增而被误判为新证据。
     """
+    if evidence.engineering_facts is not None:
+        from .engineering_evidence import engineering_receipt
+        return engineering_receipt(evidence)["fingerprint"]
     artifacts = {
         str(key): str(value)
         for key, value in sorted(evidence.artifact_hashes.items())
@@ -379,8 +389,8 @@ class VerificationLedger:
             command=tuple(evidence.command),
             exit_code=evidence.exit_code,
             output=evidence.output,
-            environment_fingerprint=evidence.environment_fingerprint
-            or self.environment_fingerprint,
+            environment_fingerprint=(evidence.environment_fingerprint if evidence.engineering_facts is not None
+                                     else evidence.environment_fingerprint or self.environment_fingerprint),
             artifact_hashes=dict(evidence.artifact_hashes),
             diff_fingerprint=evidence.diff_fingerprint,
             base_commit_sha=evidence.base_commit_sha,
@@ -400,8 +410,9 @@ class VerificationLedger:
             category=evidence.category,
             captured_at=evidence.captured_at or _now(),
             raw_error=evidence.raw_error,
+            engineering_facts=evidence.engineering_facts,
         )
-        self._seen_fingerprints.add(evidence_fingerprint(bound))
+        self._seen_fingerprints.add(self._repair_key(bound))
         self._entries.append(bound)
         return bound
 
@@ -424,6 +435,10 @@ class VerificationLedger:
         - 环境 / 契约类失败默认也允许修复（环境类通常修复环境，契约类补产物），
           但每次都必须有新证据。
         """
+        # New engineering rows cannot let a caller-supplied True bypass the
+        # stable repair key. Preserve the historical caller contract for None.
+        if evidence.engineering_facts is not None:
+            has_new_evidence = has_new_evidence and self.has_new_evidence(evidence)
         current = self.record(evidence)
         attempt = len(self._entries)
 
@@ -442,7 +457,9 @@ class VerificationLedger:
         if not has_new_evidence:
             return RepairDecision(
                 "no_new_evidence", attempt,
-                "没有新的失败证据（指纹与上次相同），不允许重复相同尝试",
+                ("没有新的失败证据（稳定修复键未变化），不允许重复相同尝试"
+                 if current.engineering_facts is not None else
+                 "没有新的失败证据（指纹与上次相同），不允许重复相同尝试"),
                 current_fingerprint=evidence_fingerprint(current),
             )
         return RepairDecision(
@@ -463,5 +480,12 @@ class VerificationLedger:
         新证据 = 绑定事实（命令/退出码/输出摘要/环境/产物哈希）发生了变化，
         而不是输出长度或文本细节变化。
         """
-        fingerprint = evidence_fingerprint(evidence)
+        fingerprint = self._repair_key(evidence)
         return fingerprint not in self._seen_fingerprints
+
+    @staticmethod
+    def _repair_key(evidence: VerificationEvidence) -> str:
+        if evidence.engineering_facts is not None:
+            from .engineering_evidence import engineering_receipt
+            return engineering_receipt(evidence)["repair_fingerprint"]
+        return evidence_fingerprint(evidence)

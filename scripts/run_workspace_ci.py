@@ -82,6 +82,9 @@ DEFAULT_MODULES = (
     "tests.test_engineering_verification.TestEngineeringVerification",
     "tests.test_engineering_verification.TestEngineeringAdapters",
     "tests.test_engineering_verification.TestEngineeringResourceDispatch",
+    "tests.test_engineering_evidence.TestEngineeringEvidence",
+    "tests.test_engineering_evidence.TestEngineeringReceiptValidation",
+    "tests.test_engineering_evidence.TestEngineeringEvidencePack",
     # Keep the integration matrix bounded while exercising task-tree capture,
     # result-commit binding, and receipt export/import on each workspace platform.
     *CROSS_PLATFORM_R3_TESTS,
