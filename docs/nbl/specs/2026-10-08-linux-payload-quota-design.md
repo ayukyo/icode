@@ -44,3 +44,37 @@ Ubuntu kernel 6.8.0-138 / systemd 249，当前 app scope 为 Delegate=no；user 
 采纳 Linux v6.17 `e5f0a698b34ed76002dc5cff3804a61c80233a7a` 的系统原语：[pids 在 task 创建前收费](https://github.com/torvalds/linux/blob/e5f0a698b34ed76002dc5cff3804a61c80233a7a/kernel/cgroup/pids.c#L146-L184)、[clone3 原子入组与权限](https://github.com/torvalds/linux/blob/e5f0a698b34ed76002dc5cff3804a61c80233a7a/kernel/cgroup/cgroup.c#L6196-L6248)。源码 GPL-2.0-only，仅调用内核 ABI，不复制实现。
 
 采纳 systemd v257 `70bae7648f2c18010187c9cf20093155eaa26029` 的 [delegation/single-writer](https://github.com/systemd/systemd/blob/70bae7648f2c18010187c9cf20093155eaa26029/docs/CGROUP_DELEGATION.md#L169-L211)，文档 LGPL-2.1-or-later；不复制实现，不新增 Python dependency。暂缓任何需要新 root 部署的方案。Codex 的 session soft cap 与 UID 全局 rlimit 不适配 RL-0（已有固定快照记录见持续竞品对照）。
+
+### 同日：私有回执与 scope 启动接线研究
+
+采纳 Codex [`1fbe15c` 的 FD 生命周期](https://github.com/openai/codex/blob/1fbe15c962cc3d8eabec36d67987c83cfc4eeec9/codex-rs/linux-sandbox/src/proxy_lifecycle.rs#L51-L86)中 CLOEXEC、截断拒绝、精确 FD 数量与失败关闭机制（Apache-2.0）；复用本仓 namespace/PDEATHSIG/parent pipe，不复制上游代码。新增 resource endpoint 必须与既有 proxy/violation endpoint 成对白名单，不能把任意 FD 放行或将 cgroup 管理 FD 传给 payload。
+
+CPython [`v3.12.10 _posixsubprocess.c`](https://github.com/python/cpython/blob/v3.12.10/Modules/_posixsubprocess.c)的 exec-error pipe 可用于明确 pre-exec 错误；**不适配**把 CLOEXEC pipe EOF 当作成功 exec：成功 exec、pre-exec SIGKILL 或其它未写错误的退出均可能关闭 writer。READY/ACK 也只证明 exec 前状态。丢通道保留 unknown；若以后必须证明任意短命令的 exec=true，内核 exec 事件观察只是待验证候选，不能未经 LSM/信号/reap/兼容性验收直接引入。
+
+Linux [unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html)中 SO_PEERCRED 是连接/socketpair 建立时凭据，不能当作 fork 后每帧写入者身份。逐消息身份应使用 SO_PASSCRED/SCM_CREDENTIALS 并处理 PID namespace 可见性；nonce 仅关联与防重放，不替代身份及端点所有权。现 helper 的 namespace 前 host-parent 校验继续保留。
+
+systemd [`v249 / f6278558da0304ec6b646bb172ce4688c7f162a5`](https://github.com/systemd/systemd/blob/f6278558da0304ec6b646bb172ce4688c7f162a5/src/run/run.c)与 [`v254 / 994c7978608a0bd9b317f4f74ff266dd50a3e74e`](https://github.com/systemd/systemd/blob/994c7978608a0bd9b317f4f74ff266dd50a3e74e/src/run/run.c)均以 scope 注册自身 PID 后直接 exec，不经 shell；v254 新增环境展开选项。采纳受信固定路径、固定 description、随机 unit、--collect、--no-ask-password；v249 不传不支持的选项，v254+ 显式禁环境展开（LGPL-2.1-or-later，仅借机制）。broker 接线必须真实核对 `$X`、`${X}`、`$$`、空格、前导 dash 和 FD 通过，不能仅靠版本字符串或 argv mock；--collect 不是进程/目录回收证明。以上研究未改变产品入口、评分或自动模式。
+
+## helper 分片验证合同与调用链上限
+
+本片只把原生 CLI 的 unit/limit 交给已验收组件，并在 namespace PID1 原子创建 payload；不声称 policy→ToolContext→broker 已完成。验收环境为本机非 root 用户、既有 user manager、cgroup v2 与真实 Landlock/user/PID namespace；基线 main `02685069466cbe14fecb9f6acac310baef8c2e43` 上的 helper 补丁，安装验收必须绑定新构建 wheel 内的真实 helper。源码 probe 不替代安装产物或其它架构证据。
+
+| 边界/消费者 | 原始合同与观察 | 必需层 / 验收项 |
+|---|---|---|
+| CLI→prepare | 严格成对随机 unit、1..INT_MAX decimal；当前 scope 独占 | static＋host：缺失、重复、非法、错误 scope 在 payload 前拒绝 |
+| prepare→namespace→PID1 | host UID 下配置；namespace 后仅根 payload 原子入 charged leaf | host：映射与 mapless、cap=2 根＋后代成功、supervisor 两进程在额度外 |
+| pids controller→后代 | Linux task/TID，setsid 不改变继承；精确 readback | host：cap=1 fork/线程 EAGAIN、无超额 marker、事件增量及真实 membership |
+| payload→exec | 关闭管理 FD，不新增 /sys 读写；旧无 quota 原生诊断兼容 | host：FD/文件边界、既有 PID namespace/mapless/host-crash 回归 |
+| wait(init)→finish→manager | 只删除本次身份匹配、已空 payload；close≠finish | host：正常/exit13、namespace/map/clone 失败；精确 unit 与 scope 消失 |
+| sdist→wheel→干净 pip | 编译依赖 header 在 sdist，安装者无需 C 编译器 | build＋deploy＋host：归档包含 header，安装包内真实 helper 正负控 |
+| ToolContext→broker | process_limit 尚未接这条产品链 | unknown：私有通道、并发命令、取消/超时/host-crash 后目录收束另验 |
+
+上述边界属于单个原生接线分片，覆盖数按其实际正负场景记录，不用整个工程符号数量虚构已覆盖链路。Windows 新 SHA 的 license_tests failure 与 macOS 新身份授权缺口是独立问题；不能通过 Linux 本机成功抵消。阶段 verdict 仅可为 helper partially_verified/host_verified，R2 resource_limits、完整调用链及 R2/R3 readiness 保持未通过；主代理在填写结果前独立复核行为与产物。
+
+### 本机冻结验证记录
+
+helper 接线仅变更 `icode_landlock.c`、MANIFEST 与新测试。14 方法含显式 mapless cap1 fork/线程、cap2 setsid；实施者和主代理分别 20 轮 280/280、0 SKIP。额外默认 cap2 实测 UID=0、显式 mapless cap2 UID=65534；其余默认用例允许两模式，不外推全部 mapped 组合。独立 SPEC 在项目 Python 3.11.15 下 79/79 真实通过、0 SKIP；初次误用不符合项目要求的系统 Python 3.10 已定位为 hashlib.file_digest 缺失，不冒充回归或通过证据。独立 QUALITY 完整回读 helper/header/测试与分发声明，另跑 14 项真实 quota 与 7 项 resolver 回归通过、0 SKIP，无遗留问题；未增加 broker/资源私有通道。
+
+主代理构建 sdist＋wheel、核对 header 在归档、真实从 sdist 再构建 wheel，并在干净 venv pip 安装。两种构建的 helper 均 942336 bytes、SHA-256 `96abe96cc750f524388eaa864274be59db6340c2fb5fee0416466e4a404062ad`，逐字节相等；C 源冻结 SHA-256 `c7e207018dbde21e32d16d4a34a08bd09ddceefb895d075ad7d6873e8b6c7913`。安装包内 helper 的 cap1 fork/线程、cap2 根＋setsid 后代及第三 task 拒绝、exit13 精确保留均实际通过，检查 pids.max/current/events、两 supervisor 在额度外、管理 FD 关闭、/sys 拒绝和本次 unit/scope 消失。无 scope/unpaired/zero-cap 三项安装负控没有 payload marker。
+
+原有安装包十阶段（含 USER_NOTIF 回执、host-crash namespace 清理、lease expiry、Git broker）通过，冻结生产源码完整 preflight 密钥/子模块/全仓 unittest 三道通过。安装回归中旧 host-crash 未启用新 quota，不能写成新配额生命周期通过。当前允许结论为 native helper/安装产物 host_verified；其它架构、真实工单 broker、并发、超时/取消/host-crash 的新 scope 收束仍待验，`conformance_credit=none`。

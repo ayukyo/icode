@@ -3,6 +3,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -12,7 +13,8 @@ from license_notices import collect_notices, validate_review
 
 
 class LicenseClosureTests(unittest.TestCase):
-    def _generate_with_cp1252_locale(self, package_output, *, unicode_goroot=True):
+    def _generate_with_cp1252_locale(self, package_output, *, unicode_goroot=True,
+                                    windows_reader=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             project = root / "project"
@@ -33,10 +35,34 @@ class LicenseClosureTests(unittest.TestCase):
                 # explicit protocol encoding must override it, not ignore bytes.
                 data = package_output if argv[1] == "list" else str(goroot).encode("utf-8") + b"\n"
                 options = dict(kwargs)
-                options.setdefault("encoding", "cp1252")
-                return real_run([sys.executable, "-c",
-                                 f"import sys; sys.stdout.buffer.write(bytes.fromhex('{data.hex()}'))"],
-                                **options)
+                text_mode = bool(options.get("text") or options.get("encoding"))
+                if text_mode:
+                    options.setdefault("encoding", "cp1252")
+                child = [sys.executable, "-c",
+                         f"import sys; sys.stdout.buffer.write(bytes.fromhex('{data.hex()}'))"]
+                if not windows_reader or not text_mode:
+                    return real_run(child, **options)
+                # Windows communicate reads text pipes on background threads.
+                # If decoding fails there, its empty buffer yields None, not a
+                # UnicodeDecodeError in the caller. Model that reader boundary,
+                # retaining actual child-pipe bytes and the requested encoding.
+                binary_options = {key: value for key, value in options.items()
+                                  if key not in ("text", "encoding", "errors")}
+                result = real_run(child, **binary_options)
+                decoded = []
+
+                def read_text():
+                    try:
+                        decoded.append(result.stdout.decode(options["encoding"]))
+                    except UnicodeDecodeError:
+                        pass  # The Windows caller receives an empty buffer.
+
+                reader = threading.Thread(target=read_text)
+                reader.start()
+                reader.join(timeout=2)
+                self.assertFalse(reader.is_alive())
+                return subprocess.CompletedProcess(result.args, result.returncode,
+                                                   decoded[0] if decoded else None, "")
 
             with mock.patch.object(license_notices, "__file__", str(project / "tools/license_notices.py")), \
                     mock.patch.object(sys, "argv", ["license_notices.py", "--output", str(output)]), \
@@ -56,6 +82,16 @@ class LicenseClosureTests(unittest.TestCase):
         with self.assertRaises(UnicodeDecodeError) as rejected:
             self._generate_with_cp1252_locale(invalid_json,
                                              unicode_goroot=False)
+        self.assertEqual(rejected.exception.encoding, "utf-8")
+        self.assertEqual(rejected.exception.object, invalid_json)
+
+    def test_bad_go_utf8_reaches_caller_with_windows_pipe_reader_semantics(self):
+        invalid_json = b'{"Doc":"\xff","Module":{"Main":true}}'
+        with self.assertRaises(Exception) as rejected:
+            self._generate_with_cp1252_locale(invalid_json,
+                                             unicode_goroot=False,
+                                             windows_reader=True)
+        self.assertIsInstance(rejected.exception, UnicodeDecodeError)
         self.assertEqual(rejected.exception.encoding, "utf-8")
         self.assertEqual(rejected.exception.object, invalid_json)
 

@@ -84,3 +84,13 @@ Go 1.27.1 的 [list JSON 输出](https://github.com/golang/go/blob/go1.27.1/src/
 | 严格 UTF-8 不改变 notice 原文/摘要 | 两架构生成器与完整许可审核通过，本机证据 |
 
 新增正常 UTF-8 JSON/Unicode GOROOT 与坏 UTF-8 两例先 RED 后 GREEN；8 项许可测试、最终 20 轮 160 次通过。独立 SPEC/QUALITY 通过；QUALITY 发现 Unicode 临时父路径可能让 GOROOT 的无关解码异常冒充坏 JSON 拒绝，现负例绑定异常编码及原始坏 JSON bytes。独立旧版变体明确 RED、新版 Unicode 父路径变体 GREEN，Minor 关闭。生产文件冻结后的完整 preflight 3/3、补强测试后的许可回归与密钥/子模块守护、编译/治理/官网/竞品/diff 均通过。整体 R2/R3 与自动模式门不变，待新 SHA 原生复验。
+
+## 0268506 原生测试失败与 Windows reader 边界修正
+
+[run 37722539792](https://github.com/ayukyo/icode/actions/runs/37722539792) 的 validate 成功；四组原生 job `113134743567`、`113134743611`、`113134743674`、`113134743652` 的公开注解分别确认 `stage=license_tests exit=1`。这是新的失败阶段，不能继续沿用上一 SHA 的 license_closure 结论，也不能宣称许可生成或安装验签通过。公开注解没有具体测试名/异常类型，当前未确认远端断言。
+
+独立核对固定 CPython [v3.11.15](https://github.com/python/cpython/blob/v3.11.15/Lib/subprocess.py)与 [v3.12.10](https://github.com/python/cpython/blob/v3.12.10/Lib/subprocess.py) 的 Windows `_readerthread/_communicate`：text pipe 在后台线程 read；坏 UTF-8 引发线程异常，空 buffer 在 caller 变为 None，继而 Go package stream 解析 TypeError。独立代理仅在内存运行抽取的官方 reader 方法、真实 TextIOWrapper，两个版本均复现；这确认平台机制，但没有证明它是以上四格的实际失败测试。
+
+新增 Windows reader 语义回归保留实际 child-pipe bytes，旧 generator 明确 RED（caller 为 TypeError 而非绑定原坏 JSON bytes 的 UnicodeDecodeError）。现在 Go subprocess 收取 binary bytes，在主调用方立即严格 UTF-8 解码后才进入下一输入；check/timeouts、原文许可、哈希与模块审核不变，不接受 ignore/replace 或任意异常冒充拒绝。9 方法 20 轮 180 次、0 SKIP；两架构真实 Go linked metadata 生成 notice 仍为 625239 bytes、SHA-256 `f6c4772fb032b893dc74e99df4bec4e9a0926f1fbd80219c8b5007e09fb3b6e4`。独立复审和新 SHA 原生四矩阵另记，不把机制模拟当 Windows 实际安装验收。
+
+四组后续步骤 6–9 最终均 skipped，license_closure、签名、gh oracle、实际安装正例与六类负例、上传的已确认执行数均为 0/4，停止旧 SHA 轮询。本修正独立 SPEC 后 QUALITY 均通过；QUALITY 分别以旧代码 RAM 变体在 ASCII/Unicode 临时父目录复现 RED，新版 GREEN，并检查真实 child-pipe CRLF 协议、Unicode＋空格 GOROOT、许可混合换行原字节/hash及拒绝输出覆盖。主代理也直接运行本机 CPython 3.11.15 的 Windows reader AST 方法重核 empty buffer→None。生产文件冻结后完整 preflight 3/3 通过，仍为本机修正，下一 SHA 四矩阵另验。

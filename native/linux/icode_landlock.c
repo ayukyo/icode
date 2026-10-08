@@ -35,6 +35,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "icode_task_quota.h"
+
 #ifndef LANDLOCK_ACCESS_FS_REFER
 #define LANDLOCK_ACCESS_FS_REFER (1ULL << 13)
 #endif
@@ -1131,7 +1133,8 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
                               char **command,
                               int workspace_read_only, int mapless,
                               int network_loopback_only,
-                              int violation_control_descriptor) {
+                              int violation_control_descriptor,
+                              struct icode_task_quota *quota) {
     /* Namespace PID 1 sees its parent as PID 0, so getppid cannot validate it. */
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
         prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0) {
@@ -1143,9 +1146,14 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
         fprintf(stderr, "sandbox parent exited before namespace setup\n");
         return 1;
     }
-    pid_t payload = fork();
+    /* Only the root payload enters the charged leaf. PID 1 and the launcher
+     * remain in supervisor; quota activation never falls back to plain fork.
+     */
+    pid_t payload = quota ? icode_task_quota_fork(quota) : fork();
+    if (quota) icode_task_quota_close(quota);
     if (payload < 0) {
-        perror("fork sandbox payload");
+        if (quota) fprintf(stderr, "task quota payload setup failed\n");
+        else perror("fork sandbox payload");
         return 1;
     }
     if (payload == 0) {
@@ -1198,7 +1206,8 @@ static int supervise_task(pid_t host_parent, const char *workspace,
                           int proxy_control_descriptor,
                           int violation_control_descriptor,
                           const char *setgroups_path,
-                          const char *uid_map_path) {
+                          const char *uid_map_path,
+                          struct icode_task_quota *quota) {
     int mapless = enter_task_namespaces(
         host_parent, setgroups_path, uid_map_path, network_loopback_only);
     if (mapless < 0) return 1;
@@ -1225,7 +1234,7 @@ static int supervise_task(pid_t host_parent, const char *workspace,
             metadata_roots, metadata_root_count, execute_only,
             execute_only_count, command,
             workspace_read_only, mapless, network_loopback_only,
-            violation_control_descriptor);
+            violation_control_descriptor, quota);
         close(control[0]);
         _exit(result);
     }
@@ -1257,6 +1266,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                 "[--runtime-read PATH]... "
                 "[--metadata-read PATH DEVICE INODE]... "
                 "[--execute-only PATH DEVICE INODE] "
+                "[--task-quota-unit UNIT --task-quota-limit N] "
                 "-- COMMAND [ARG...]\n");
         return 2;
     }
@@ -1287,9 +1297,21 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     int network_loopback_only = 0;
     int proxy_control_descriptor = -1;
     int violation_control_descriptor = -1;
+    const char *quota_unit = NULL;
+    uint64_t quota_limit = 0;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
-        if (strcmp(argv[command_index], "--workspace-read-only") == 0) {
+        if (strcmp(argv[command_index], "--task-quota-unit") == 0) {
+            if (quota_unit || command_index + 1 >= argc ||
+                !icode_quota_unit_valid(argv[command_index + 1])) goto invalid_task_quota;
+            quota_unit = argv[command_index + 1];
+            command_index += 2;
+        } else if (strcmp(argv[command_index], "--task-quota-limit") == 0) {
+            if (quota_limit || command_index + 1 >= argc ||
+                parse_u64_decimal(argv[command_index + 1], &quota_limit) != 0 ||
+                !quota_limit || quota_limit > INT_MAX) goto invalid_task_quota;
+            command_index += 2;
+        } else if (strcmp(argv[command_index], "--workspace-read-only") == 0) {
             if (workspace_read_only) {
                 fprintf(stderr, "duplicate workspace read-only option\n");
                 free(runtime_roots);
@@ -1417,6 +1439,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
             return 2;
         }
     }
+    if ((quota_unit != NULL) != (quota_limit != 0)) goto invalid_task_quota;
     if (command_index + 1 >= argc) {
         fprintf(stderr, "missing command\n");
         free(runtime_roots);
@@ -1491,19 +1514,45 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         free(execute_only);
         return 1;
     }
-    int result = supervise_task(
-        (pid_t)parent_value, workspace, runtime_roots, runtime_root_count,
-        metadata_roots, metadata_root_count,
-        execute_only_count > 0 ? execute_only : NULL, execute_only_count,
-        argv + command_index,
-        workspace_read_only, network_loopback_only,
-        proxy_control_descriptor, violation_control_descriptor,
-        setgroups_path, uid_map_path);
+    /* Prepare while host credentials and /proc membership are still intact,
+     * after inherited FDs and parent identity have been checked. This launcher
+     * alone owns cleanup; PID 1 borrows a forked copy of the management state.
+     */
+    struct icode_task_quota quota = ICODE_TASK_QUOTA_STATE_INIT;
+    int result;
+    if (quota_unit && icode_task_quota_prepare(quota_unit, quota_limit, &quota) != 0) {
+        fprintf(stderr, "task quota setup failed\n");
+        result = 1;
+    } else {
+        result = supervise_task(
+            (pid_t)parent_value, workspace, runtime_roots, runtime_root_count,
+            metadata_roots, metadata_root_count,
+            execute_only_count > 0 ? execute_only : NULL, execute_only_count,
+            argv + command_index,
+            workspace_read_only, network_loopback_only,
+            proxy_control_descriptor, violation_control_descriptor,
+            setgroups_path, uid_map_path, quota_unit ? &quota : NULL);
+        /* supervise_task waits PID 1; its exit synchronously kills namespace
+         * descendants. Setup failures before PID 1 also leave payload empty.
+         * A failed finish is a failure, never equivalent to closing its FDs.
+         */
+        if (quota_unit && icode_task_quota_finish(&quota) != 0) {
+            fprintf(stderr, "task quota cleanup failed\n");
+            result = 1;
+        }
+    }
+    icode_task_quota_close(&quota);
     free(workspace);
     free(runtime_roots);
     free(metadata_roots);
     free(execute_only);
     return result;
+invalid_task_quota:
+    fprintf(stderr, "invalid task quota options\n");
+    free(runtime_roots);
+    free(metadata_roots);
+    free(execute_only);
+    return 2;
 }
 
 int main(int argc, char **argv) {

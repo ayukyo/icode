@@ -121,14 +121,16 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     project = Path(__file__).resolve().parents[1]
-    # Go emits UTF-8; Windows locale decoding can reject valid JSON/docs/paths.
-    # Decode strictly: do not silently replace bytes or relax notice hashes.
-    listed = subprocess.run([args.go, "list", "-mod=readonly", "-deps", "-json", "."], cwd=project, check=True, capture_output=True, text=True, encoding="utf-8", timeout=60)
-    goroot = subprocess.run([args.go, "env", "GOROOT"], cwd=project, check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
+    # Go emits UTF-8. Capture bytes so Windows pipe-reader threads cannot lose
+    # a decoding exception; decode strictly in this caller, never lossily.
+    listed = subprocess.run([args.go, "list", "-mod=readonly", "-deps", "-json", "."], cwd=project, check=True, capture_output=True, timeout=60)
+    package_text = listed.stdout.decode("utf-8")
+    goroot = subprocess.run([args.go, "env", "GOROOT"], cwd=project, check=True, capture_output=True, timeout=30)
+    go_root = Path(goroot.stdout.decode("utf-8").strip())
     review = json.loads((project / "license-review.json").read_text(encoding="utf-8"))
     if review.get("schema_version") != 1:
         raise ValueError("unsupported license review schema")
-    notice = collect_notices(decode_package_stream(listed.stdout), Path(goroot.stdout.strip()), project, review)
+    notice = collect_notices(decode_package_stream(package_text), go_root, project, review)
     # Build outputs are generated artifacts. Refuse an accidental overwrite.
     with args.output.open("x", encoding="utf-8", newline="\n") as stream:
         stream.write(notice)
