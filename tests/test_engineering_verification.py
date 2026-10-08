@@ -432,11 +432,41 @@ class TestEngineeringVerification(_EngineeringHelpers, unittest.TestCase):
         with temp_workspace() as root, temp_workspace() as runtime:
             venv.EnvBuilder(with_pip=False, symlinks=os.name == "posix").create(runtime)
             python = runtime / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-            self.fixture(root, "self.assertEqual(__import__('sys').prefix, " + repr(str(runtime)) + ")")
+            # macOS's launcher canonicalizes parent directories, while the
+            # selected executable spelling must still remain unchanged.
+            self.fixture(root,
+                "self.assertEqual(__import__('pathlib').Path(__import__('sys').prefix).resolve(strict=True), "
+                "__import__('pathlib').Path(" + repr(str(runtime)) + ").resolve(strict=True)); "
+                "self.assertNotEqual(__import__('pathlib').Path(__import__('sys').prefix).resolve(strict=True), "
+                "__import__('pathlib').Path(__import__('sys').base_prefix).resolve(strict=True))")
             check = self.check(api, argv=(str(python), "-B", "-m", "unittest"))
             self.assertEqual(check.argv[0], str(python))
             run = self.execute(api, self.plan(api, root, (check,)))
-            self.assertTrue(run.passed)
+            self.assertTrue(run.passed, {"status": run.status,
+                "checks": [(item.status, item.exit_code, item.error, item.cleanup_scope,
+                            item.cleanup_ok) for item in run.checks]})
+
+    @unittest.skipUnless(os.name == "posix", "actual parent-directory alias fixture")
+    def test_selected_venv_parent_alias_still_binds_the_same_runtime(self):
+        api = self.api()
+        import venv
+        with temp_workspace() as root, temp_workspace() as parent:
+            runtime = parent / "runtime"
+            runtime.mkdir()
+            alias = parent / "runtime-alias"
+            alias.symlink_to(runtime, target_is_directory=True)
+            venv.EnvBuilder(with_pip=False, symlinks=True).create(runtime)
+            python = alias / "bin/python"
+            self.fixture(root,
+                "self.assertEqual(__import__('pathlib').Path(__import__('sys').prefix).resolve(strict=True), "
+                "__import__('pathlib').Path(" + repr(str(runtime)) + ").resolve(strict=True)); "
+                "self.assertNotEqual(__import__('pathlib').Path(__import__('sys').prefix).resolve(strict=True), "
+                "__import__('pathlib').Path(__import__('sys').base_prefix).resolve(strict=True))")
+            check = self.check(api, argv=(str(python), "-B", "-m", "unittest"))
+            self.assertEqual(check.argv[0], str(python))
+            run = self.execute(api, self.plan(api, root, (check,)))
+            self.assertTrue(run.passed, {"status": run.status,
+                "checks": [(item.status, item.exit_code, item.error) for item in run.checks]})
 
     def test_known_parallel_frontends_require_explicit_bounded_build_jobs(self):
         api = self.api()

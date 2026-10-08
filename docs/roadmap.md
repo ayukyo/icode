@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **macOS venv测试目录身份修正、本机提交门通过（2026-10-08；production仍为eead3ad）：**精确eead远端CI终态38success/3failure/3skip，新增macOS ARM workspace唯一venv fixture失败、两个既有Windows Reviewer失败；签名验证5/5和官网2/2通过，均停止旧窗口观察。新[目录身份片](./nbl/plans/2026-10-08-r3-venv-fixture-identity.md)仅修测试同目录别名比较，保留基础解释器拒绝和argv词法身份，不skip、不更改隔离或环境。49本机回归零skip、真实venv20轮40次零skip、DEFAULT292零skip、独立SPEC→不同QUALITY批准、新完整preflight3/3；新提交原生结果另验。工程证据/ledger/独立验包片继续开发，R2/R3不宣称整体通过。
+
 - **宿主工程检查执行器本机阶段门通过（2026-10-08；基线71a3d2c，提交推送中）：**[第一执行片](./nbl/plans/2026-10-08-r3-engineering-executor.md)实现不可变宿主计划、共享真实broker dispatch、完整有界输出与unittest/Go JSON观察。独立复审发现的缓存竞态、Go build漏接、局部FD回收和复合中断优先级已先RED后修正；最终48本机回归零skip、20轮960次零skip、256关联5既有skip、DEFAULT291零skip、完整preflight三道、编译-j1/治理/双语官网/竞品/diff通过，独立SPEC→不同QUALITY均批准且七文件摘要不变。Go三实际模式只证明观察，普通POSIX组不授权缓存整树清理；Windows无held-HANDLE路径拒启。新版证据/ledger/独立验包与真实code/deepcheck/Reviewer接线进入下一片，自动模式、隔离及R2/R3 readiness不提高。上个71a3远端三轮已终态停止观察，精确结果见[收尾证据](./nbl/plans/2026-10-08-r3-contract-finalization.md)，不倒填新SHA原生结果。
 
 - **固定SKILL最小修复已接入、安装入口继续开发（2026-10-08；`757b05d0f33b3cef6bf13f8ba48e73a671bad6af`）：**上游main `1693651c1bd7daad3272eb054f0f81d6f254d08d` 的三Python校验器当前解释器/UTF8修复已独立验收、提交推送，Agent固定gitlink已同步并核对远端。此时仍是显式外部Skill兼容，不是pip-only闭合；随包资源/离仓wheel与sdist真实安装正在按[计划](./nbl/plans/2026-10-08-r2-packaged-skill-runtime.md)开发。相同SHA [主CI](https://github.com/ayukyo/icode/actions/runs/37751929100)已终态32success/2旧WindowsReviewer失败/3skip，两个Python各2030项、71skip；四平台工作台均PASS。前次x64的10053本次未复现，不推定根因已消失。[签名工作流](https://github.com/ayukyo/icode/actions/runs/37751929147)5/5success，四矩阵均有实际安装验签/离线验证/密码学负控及setup拒绝日志；[官网](https://github.com/ayukyo/icode/actions/runs/37751929004)2/2success。签名不授予启动；Windows生产runner/macOS单任务quota/R3工程验证及真实模型仍未整体闭合。
