@@ -2022,3 +2022,8 @@
 - **固定一手来源：**独立只读研究及主代理回读Codex `1fbe15c962cc3d8eabec36d67987c83cfc4eeec9`、Apache-2.0的[取消入口](https://github.com/openai/codex/blob/1fbe15c962cc3d8eabec36d67987c83cfc4eeec9/codex-rs/core/src/tasks/mod.rs)：`abort_turn_if_active`匹配当前turn，`finish_turn_abort`只为Interrupted启动pending work，不为BudgetLimited续跑。采纳预算硬终态与普通中断分离，不移植中断后的自动续跑；固定PydanticAI上述MIT源码中共享state.usage、包装链外限额检查提供owner参考。观察日期2026-10-08、网页符号核对，不声称原始行号或字节摘要。
 - **ICODE设计及审查收益：**[共享预算计划](./nbl/plans/2026-10-08-r3-shared-runtime-budget.md)复用已有tracker并把推演移至成功finish前。独立审查发现真实NativeChainExecutor逐步调用run_chain，故owner必须属于每次execute并跨单步调用，不仅在chain自建；不能存executor实例而串不同工单，也不因新增参数TypeError重放副作用。收益是堵住真实自主链重置及推演未计费，成本为显式可选参数、顺序调整和真实CP负控，无源码复制、SDK或新增许可依赖。
 - **暂缓与验收：**checkpoint尚无累计usage，跨进程持久账本单独设计；300/301、observe_only、缺失usage、一次响应一次计费、初次+repair、推演三步后超限和真实自主分次chain均需动态验收。研究及设计不计能力分、不提前关闭R2/R3门。
+
+## 同日：pip-only入口与上游资源分发边界（只读核验）
+
+- **实际安装问题：**主代理从本次源码构建并干净pip安装wheel，在临时cwd/-I/无显式ICODE_SKILL_ROOT下，实际find_skill_root返回ConfigError；config仅查外部显式/env/local/vendor/sibling/home，没有包内SKILL运行资源，doctor/workbench先load_settings因而同样受阻。独立只读审查确认README仍是clone子模块+editable路线，Skill自己的install.sh不是Agent pip fallback；已安装API测试显式消费开发仓SKILL，不是新机独立安装证明。
+- **许可复核与取舍：**固定ICODE-SKILL gitlink `b74c4c40f2246a6c4eea77e494dd57c642f3a9a3` 根LICENSE为MIT，但tools/ppt/NOTICE明确第三方template.pptx/preview.png仅个人学习研究及非商业使用；主代理读完整NOTICE，并实际核对[原素材上游NOTICE](https://github.com/lmori1301/Agent-PPTSkill/blob/main/NOTICE.md)仍区分代码/元数据MIT与模板限制（当前网页观察2026-10-08，不冒称固定原始提交）。**不适配**整个vendor无筛选打包且宣称全部MIT；**采纳**固定gitlink的必要运行资源闭包及独立许可清单，**暂缓**未核完的模板和额外安装器分发。不能删除作者声明或把无水印当无限许可；本调查无源码复制、运行时下载或新增权限，不关闭pip-only门。

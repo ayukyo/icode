@@ -34,7 +34,7 @@
 
 expected=0观察、严格300允许/301拒绝、max_turns产物齐备的旧软行为、普通非预算stop及已有产物真实性测试保持。原failure finish拒绝/异常、真实chain停止不启动下一步骤。新矩阵冻结20轮；关联loop、reasoning_budget、runner、recovery、chain、evidence；独立SPEC→QUALITY及7维自检。
 
-- [ ] Step 4: 交付后自动继续
+- [x] Step 4: 交付后自动继续
 
 完整preflight三门、compileall≤j6及治理/官网/竞品/diff后提交推送main，核对远端并独立观察新CI。独立审查另确认真实CLI恢复传sandbox但resume不收的TypeError，先按[窄修复计划](./2026-10-08-r3-cli-resume-sandbox.md)修通既有入口；随后按[共享预算计划](./2026-10-08-r3-shared-runtime-budget.md)给初次/repair/final推演同一个BudgetTracker，推演计费检查在成功finish之前，chain及原生自主execute多步骤同一owner；不能把同一Budget配置当共享账本。跨进程恢复尚无累计usage持久化，要单独定边界，不在本片虚称恢复预算连续。
 
@@ -57,3 +57,9 @@ expected=0观察、严格300允许/301拒绝、max_turns产物齐备的旧软行
 主代理隔离构建、native wheel检查、干净pip --no-deps安装通过；临时cwd/-I/no checkout import下已安装runner摘要精确一致，真实CP四控制全部通过：已有产物301拒绝保旧写回执、缺产物301不repair/autopersist、300旧成功、observe_only旧成功。显式只读消费仓内SKILL真源，不声称已经证明无SKILL来源的新机安装体验；此离线矩阵不验证真实模型质量或R2/R3整体。
 
 主代理完整preflight于2026-10-08 07:28:40 UTC退出0，密钥/子模块/全测试三门通过；完整load为2000方法，preflight不打印通过SKIP数，不编造零SKIP或全部原生执行。compileall -j6、治理/官网/竞品/diff通过，冻结两摘要不变，最终文档后重新执行只读守护。已具备本机分片交付条件，精确main提交推送与新SHA线上终态待实际记录。
+
+### 精确提交及下一片
+
+已提交推送main `bd49060b8c79cfe9911bf5a6643f368981cd4398`，主代理git push成功并新鲜ls-remote一致；8文件受测树同时含下一CLI修复与共享预算设计、上一SHA线上证据收口。新SHA线上仍待终态，不冒称整体绿。CLI恢复sandbox窄修复已按授权自动开工，不需新用户命令；预算共享及真实工程验证随后继续。没有跨进程账本或真实模型质量的新通过证据。
+
+独立新SHA观察全部终态：主[37743783091](https://github.com/ayukyo/icode/actions/runs/37743783091)完整37为32success/2既有Windowscandidatefailure/3skip，Python3.11 `113200376135`实际2000方法/459.628秒、3.12 `113200376110`实际2000/458.875秒，均OK/71既有平台SKIP；quiet日志不逐名列新17方法，不伪称每个新case有独立线上日志。四Linux安装、七输出生命周期、四workspace各子门通过，24.04lease仍SKIP。provenance[37743783014](https://github.com/ayukyo/icode/actions/runs/37743783014)于07:45:04 UTC success，validate及四真实验签/安装/密码学负控通过，但bootstrap仍拒绝setup/commands。官网[37743783016](https://github.com/ayukyo/icode/actions/runs/37743783016)success，artifact `11534324470`精确该SHA部署。三run均停止重复查询；不称Windows正式执行或R2/R3整体通过。

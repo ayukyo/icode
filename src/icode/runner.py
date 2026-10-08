@@ -1958,6 +1958,7 @@ def resume_contract_step(
     loop_config: LoopConfig | None = None,
     budget: Budget | None = None,
     on_event=None,
+    sandbox: Sandbox | None = None,
 ) -> StepReport:
     """恢复一个被中断的步骤。
 
@@ -2017,6 +2018,8 @@ def resume_contract_step(
             requirement=requirement, approver=approver, loop_config=loop_config,
             budget=budget, on_event=on_event, checkpointer=checkpointer,
             resume_context=decision.resume_brief(),
+            sandbox=sandbox,
+            operations=OperationRecorder(cp, out_dir, ticket_id),
         )
         report.loop = loop
         if loop.stop_reason == "budget_exceeded":
