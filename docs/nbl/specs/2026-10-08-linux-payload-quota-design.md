@@ -109,6 +109,31 @@ SOCK_SEQPACKET 的零长 packet 不能当 EOF：本机真实 recvmsg 在 SO_PASS
 
 后续环境/标准流边界按 [独立小步计划](../plans/2026-10-08-linux-payload-management-boundary.md) 实施；以下产品接线项仍未完成。
 
+### e2bd25d 云端测试夹具失败（2026-10-08，尚未复验通过）
+
+| 基线 | 已确认对象 / 缺口 |
+|---|---|
+| identity / time | GitHub hosted Linux job `113153153744`，04:47 UTC；物理机器身份不可得，按固定 run/job 绑定 |
+| runtime / analysis / verification | 远端为已推送 `e2bd25dac31d9f192bf18da210bc7ace6e5ec329`；分析与本机验证为其上未提交的管理边界 C `0700aa0a9fb8f18d60d1fe2f8320d8a1a03d4c0be9e189d10922fc2ada0a1ea3`；子模块未变，测试夹具正在修正 |
+| artifact / evidence | main [37728854887](https://github.com/ayukyo/icode/actions/runs/37728854887)，通过已授权 GitHub connector 取得该 job 真实解码日志；远端 helper hash 未取得，不称安装验证 |
+| direct facts | 1892 tests / 238.284s，4 failures / 1 error / 71 skips；四项 default ready=false，cleanup 优先级搬外 scope PID 时 cgroup.procs PermissionError13 |
+| completed matrix | main 最终 37 jobs：30 success / 4 failure / 3 skipped；Python3.12 job `113153153855` 独立日志为 1892 tests / 372.758s，相同4失败/1错误/71跳过。另外两失败为旧 Windows Reviewer；site [37728854808](https://github.com/ayukyo/icode/actions/runs/37728854808) success。旧 run 已结束，不重复轮询 |
+| related gate | provenance [37728854732](https://github.com/ayukyo/icode/actions/runs/37728854732) validate `113153152528` 的签名 fixture 9/9 成功，但全仓 preflight 为相同4失败/1错误，1892 tests / 238.831s；四原生矩阵均未执行，不能借6fda570通过结论认证新SHA |
+| unresolved / owner | 远端 default 任务的实际 UID/原生 stderr 未保留，ready=false 单独不能定根因；主代理与实施者修夹具、独立复审后以新 SHA 复验 |
+| ceiling | `candidate_path` 对远端四项；本机实体空 uid_map 复现默认硬断言缺陷，不是远端实际 UID 证明；不抬 R2/R3 readiness |
+
+本机主代理以本次实体空 uid_map，保持 default 标签而非 forced mapless 参数，实际观察 UID65534→AssertionError65534、exit1、configured/finished/unknown 及本次 GC。此机制证明测试硬要求 UID0 不符合既有自动 mapless 合同；远端四项具体 UID 仍未知。default 夹具改为 UID0/65534 都可，forced mapless 仍严格65534，名称与文档区分 default/mapped。cleanup 负控改为原 prepare 成功后，仅在测试 driver 中调用真实 quota_fork 创建本 scope 有限寿命 charged 子进程，所有管理副本关闭，最后 waitpid 自有孩子；真实非空 leaf 导致 preexec 失败及 cleanup_failed 优先，不声称到达 clone3/EAGAIN。无 sudo、全局配置、生产 quota 行为或失败条件放宽；新冻结测试与远端结果另记。
+
+### 管理环境／标准流分片冻结（2026-10-08，本机证据）
+
+C 冻结 SHA-256 `0700aa0a9fb8f18d60d1fe2f8320d8a1a03d4c0be9e189d10922fc2ada0a1ea3`，测试冻结 `87db9cfa01a7934cf3d219c4267b28fa78ed9af84dee4ec8707ccf61d2b9fd33`；两个 header 和 Python receiver 均未改。resource 模式在 payload exec 前移除三个管理变量并把 stderr 接到 stdout；无 resource 的旧路径保留环境与独立标准流。实际 exec 失败只写已有专用 F，不输出 perror。
+
+新增7方法先取得8项真实失败断言，随后正常/forced mapless/双FD、dup2(1,2)→EPERM、三个 unsetenv→ENOMEM、missing exec 与 legacy 均 GREEN。最终全部43方法×20轮 860/860；实施者关联124/124、独立 SPEC123/123，全部0 SKIP。此前中间版本的140/430轮不计入最终冻结验收。独立QUALITY实际43资源＋14旧quota＝57/57、0 SKIP，无遗留缺陷，前后五个文件摘要一致。C严格编译／静态分析、compileall、diff-check通过；最终全仓门禁结果另记，不借旧源码门禁。
+
+主代理实际 sdist→wheel、从 sdist 重建 wheel、干净venv pip安装。两种 wheel 与安装包 helper 逐字节相同，946784 bytes，SHA-256 `dae215a648760d5f56a06a9ed496b9273011bd7c72f87f0c3b46aeec0ccde388`；sdist C 与上述冻结摘要匹配。安装包内真实 helper 六项通过：默认管理变量／两种载荷marker、resource+USER_NOTIF双FD、missing exec、cap1 fork、cap1 thread、legacy环境／流兼容；逐项 exact unit/scope GC。安装轮未用生产测试hook强制mapless，也未注入unset/dup故障，不冒称覆盖这些安装场景。旧安装十阶段回归也全部PASS，host-crash仍是无新quota的旧回归。以上不认证产品broker接线、远端新SHA、其它平台或R2/R3 readiness。
+
+最终冻结后重新运行完整 preflight，密钥／子模块完整性／全仓 unittest 三道通过；governance／site／landscape、严格 C 静态分析、compileall、diff-check亦通过。早先在测试夹具修正期间运行的门禁不用于此最终源码认证。提交推送仅将此本机分片纳入 main，云端新 SHA 的 suite／provenance／安装验证仍独立核实。
+
 复用 `execution_broker._execute_policy_command` 的 monotonic deadline、输出 byte cap、selector 和最终进程组清理，不另建执行循环。新增可信 scope 层只接受内部产生的 nonce unit、policy 原整数 cap 和最多两私有端点；先核对 cap 在 native 可表达范围，超过 INT_MAX 在启动前拒绝，不改 schema 或截断。USER_NOTIF receiver 之前先启动 resource receiver，以免两条 ACK 互相等待。
 
 管理环境仅在原 policy environment 上增加固定当前 UID 的 user bus 参数；先核对 `/run/user/<uid>` 与 bus 的身份/类型/非链接边界，不继承任意 DBUS 地址或宿主环境。systemd scope 源码还注入 INVOCATION_ID，native 在 payload exec 前移除这三项管理环境变量。固定受信 systemd-run/systemctl 路径、literal argv 及实际版本能力需在支持主机验收；不增加全局配置、管理员服务或共享 scope。

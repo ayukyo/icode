@@ -24,12 +24,12 @@
 ### Task 1: resource 模式下的 payload 环境与标准流
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成（本机分片；新提交远端复验单独跟踪）
 
 **Dependencies:** None（须先完成当前私有回执分片独立复审、安装验证和提交）
 **Parallelizable:** No（修改冻结 native 文件，研究与复审可只读并行）
 
-- [ ] **Step 1: 写真实边界测试**
+- [x] **Step 1: 写真实边界测试**
 
 给现有 `run_resource` 增加内部测试参数 `management_boundary: bool = False`。启用时仅给本次 scope 的测试环境设置两条 bus 变量，使用 `_user_manager()` 提供的真实地址；其余代码不动。payload code 在现有 FD/argv/UID 断言后追加：
 
@@ -41,14 +41,14 @@ print('payload-stdout', flush=True)
 print('payload-stderr', file=sys.stderr, flush=True)
 ```
 
-本次 `communicate()` 的 `output` 必须含两个固定 marker；`error` 必须不含它们。测试原 scope 仍精确 GC，resource finished/complete、payload_started unknown。分别真实 mapped、forced mapless、与 USER_NOTIF 双端点运行，不用 argv mock 代替任务执行。新增测试方法调用上述参数并断言回执，不改旧方法含义。
+本次 `communicate()` 的 `output` 必须含两个固定 marker；`error` 必须不含它们。测试原 scope 仍精确 GC，resource finished/complete、payload_started unknown。分别真实 default、forced mapless、与 USER_NOTIF 双端点运行，不用 argv mock 代替任务执行。default 允许既有 native 的 mapped UID0 或自动 mapless UID65534，不能把 default 标签当保证 mapped；forced mapless 仍严格要求65534。支持主机实际默认 mapped 的证据另行记录。新增测试方法调用上述参数并断言回执，不改旧方法含义。
 
-- [ ] **Step 2: 观察 RED**
+- [x] **Step 2: 观察 RED**
 
 Run: `PYTHONPATH=src .venv/bin/python -m unittest tests.test_linux_task_resource -v`。
 Expected: 新方法在任务环境/标准流断言上失败（管理变量仍存在或 stderr marker 留在宿主 error），旧方法仍通过；保留准确 RED 原因。若只有 import/编译失败，先修测试而不是写实现。
 
-- [ ] **Step 3: 最小 native 实现**
+- [x] **Step 3: 最小 native 实现**
 
 在 `run_namespace_init` 的 `payload == 0` 分支、隔离及 violation FD 关闭完成后、`execvp` 前，增加：
 
@@ -79,13 +79,13 @@ if (error_writer < 0) perror("execvp");
 
 加清楚注释：只改私有资源模式的载荷，管理进程标准流与旧无 resource 调用不变。重定向后的原生失败只写专用 F；不根据 stderr 文本判断启动状态。新增 missing_exec 回归断言 stdout 不含原生 execvp 错误，保留原退出码与可信 phase2。
 
-- [ ] **Step 4: GREEN 与故障负控**
+- [x] **Step 4: GREEN 与故障负控**
 
 Run: `PYTHONPATH=src .venv/bin/python -m unittest tests.test_linux_task_resource -v`；Expected: 全部通过、0 SKIP（当前支持主机）。单次本进程注入 `dup2(1,2) → EPERM`，先对旧路径观察 payload marker RED，再对新路径验证无 marker、preexec_failed/false、scope GC；不改变宿主 seccomp。只对无法安全真实触发的 unsetenv 分配失败使用局部 API 故障注入，验证同样失败关闭，不制造机器内存耗尽。
 
 额外无 resource 真实旧 native 调用传入三个非敏感固定测试值；核对环境仍保留、stdout/stderr 分离，明确该兼容检查不计产品安全分。
 
-- [ ] **Step 5: 冻结验证与提交**
+- [x] **Step 5: 冻结验证与提交**
 
 冻结后新组件全部方法重复 20 轮、0失败/跳过，原 quota/helper/mapless/PID namespace/USER_NOTIF 关联回归；C11 `-Wall -Wextra -Werror -fanalyzer`，独立 SPEC→QUALITY。实际 sdist→wheel→干净 pip 安装，使用安装包内 helper 复验两种 payload marker 和管理环境；不能只测 source driver。
 
@@ -93,6 +93,10 @@ Run: `PYTHONPATH=src .venv/bin/python scripts/preflight.py`、三个 governance/
 
 ## 验收上限与自检
 
+当前前置提交 e2bd25d 的远端全仓测试暴露夹具兼容错误，须先闭合：default 硬断言 UID0 与既有合法 mapless fallback 不一致；cleanup 优先级负控从本次 scope 外搬进程受 common-ancestor 权限拒绝。仅修测试，使用实际空 uid_map 的 default 回归及本 scope 内、真实 quota_fork 创建的有限寿命 charged 子进程；后者证明非空导致启动前失败＋cleanup_failed 优先，不宣称触发 clone3/EAGAIN。所有 management FD 副本关闭，最终 waitpid 自有子进程和 exact GC。不得 sudo、改全局 controller 或新增 SKIP 掩盖支持场景。最终冻结 hash 的重复轮数与关联测试必须重跑，不借旧轮数。
+
 语法、依赖/调用链、逻辑/边界、异常、关联、兼容安全、可运行性逐项登记真实证据。管理 stderr 的宿主有界读取、完整 `_policy_environment`、ToolContext/run_command、并发、取消/timeout/output/host-crash 尚不在本片已验证范围，不报告 R2/R3 完成。
+
+2026-10-08 最终冻结 C0700aa／tests87db9：43×20＝860，关联124，独立SPEC123、QUALITY57，均0 SKIP；sdist重建与干净安装 helper 六项通过，旧安装十阶段全通过。最终冻结后完整 preflight 密钥／子模块／全仓测试3/3、governance／site／landscape、严格C静态分析、compileall和diff-check通过。较早运行期间夹具曾改版的preflight不用于此最终验收。精确摘要／产物及远端e2bd25d失败证据见规范，本片不增加产品资源评分。
 
 **Execution Mode:** serial

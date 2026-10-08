@@ -1180,9 +1180,22 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
             icode_resource_preexec_failure(error_writer);
             _exit(1);
         }
+        if (error_writer >= 0) {
+            /* Resource-mode stderr belongs to the trusted launcher. Strip
+             * manager discovery before exec and merge only payload streams;
+             * legacy native diagnostics keep their original environment/FDs.
+             */
+            if (unsetenv("DBUS_SESSION_BUS_ADDRESS") != 0 ||
+                unsetenv("XDG_RUNTIME_DIR") != 0 ||
+                unsetenv("INVOCATION_ID") != 0 ||
+                dup2(STDOUT_FILENO, STDERR_FILENO) < 0) {
+                icode_resource_preexec_failure(error_writer);
+                _exit(1);
+            }
+        }
         execvp(command[0], command);
         icode_resource_preexec_failure(error_writer);
-        perror("execvp");
+        if (error_writer < 0) perror("execvp");
         _exit(127);
     }
     if (violation_control_descriptor >= 0) {

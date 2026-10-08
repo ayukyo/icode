@@ -350,7 +350,32 @@ class TestNativeTaskResource(unittest.TestCase):
         cls._root = Path(cls._temporary.name)
         source = cls._root / "driver.c"
         source.write_text(
-            '#define _GNU_SOURCE\n#define main icode_original_main\n'
+            '#define _GNU_SOURCE\n#include <stdlib.h>\n#include <string.h>\n#include <errno.h>\n'
+            'static int fault_unsetenv(const char *name){\n'
+            'const char *failure=getenv("ICODE_TEST_UNSETENV_FAILURE");\n'
+            'if(failure && !strcmp(failure,name)){errno=ENOMEM;return -1;}\n'
+            'return unsetenv(name);}\n#define unsetenv fault_unsetenv\n'
+            f'#include "{ROOT / "native/linux/icode_task_quota.h"}"\n'
+            '#include <sys/prctl.h>\n#include <sys/wait.h>\n'
+            'static int close_inherited_descriptors(int first,int second);\n'
+            'static pid_t owned_cleanup_child=-1;\n'
+            'static int occupied_quota_prepare(const char *unit,uint64_t limit,struct icode_task_quota *state){\n'
+            'int result=icode_task_quota_prepare(unit,limit,state);\n'
+            'if(result || !getenv("ICODE_TEST_OCCUPY_OWN_PAYLOAD"))return result;\n'
+            'int readiness[2];if(pipe2(readiness,O_CLOEXEC)){\n'
+            'icode_task_quota_finish(state);icode_task_quota_close(state);return -1;}\n'
+            'pid_t creator=getpid(); owned_cleanup_child=icode_task_quota_fork(state);\n'
+            'if(owned_cleanup_child==0){\n'
+            'alarm(5);\n'
+            'if(prctl(PR_SET_PDEATHSIG,SIGKILL,0,0,0) || getppid()!=creator ||\n'
+            'close_inherited_descriptors(-1,-1))_exit(4);\n'
+            'for(;;)pause();}\n'
+            'close(readiness[1]);\n'
+            'if(owned_cleanup_child<0){close(readiness[0]);icode_task_quota_finish(state);icode_task_quota_close(state);return -1;}\n'
+            'char marker;ssize_t count;do{count=read(readiness[0],&marker,1);}while(count<0 && errno==EINTR);\n'
+            'close(readiness[0]);if(count!=0)return -1;\n'
+            'return 0;}\n#define icode_task_quota_prepare occupied_quota_prepare\n'
+            '#define main icode_original_main\n'
             f'#include "{ROOT / "native/linux/icode_landlock.c"}"\n#undef main\n'
             'int main(int argc, char **argv) {\n'
             'alarm(10);\n'
@@ -359,6 +384,20 @@ class TestNativeTaskResource(unittest.TestCase):
             f'int result=icode_resource_init(&resource,fd,"{UNIT}",2);\n'
             'printf("probe:init_ok=%d cloexec=%d\\n",result==0,(fcntl(fd,F_GETFD)&FD_CLOEXEC)!=0);\n'
             'return 0;}\n'
+            'if(getenv("ICODE_TEST_DENY_PAYLOAD_DUP")){\n'
+            '#ifdef SYS_dup2\nint denied_dup=SYS_dup2;\n'
+            '#else\nint denied_dup=SYS_dup3;\n#endif\n'
+            'struct sock_filter filter[]={\n'
+            'BPF_STMT(BPF_LD | BPF_W | BPF_ABS,offsetof(struct seccomp_data,nr)),\n'
+            'BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,(unsigned int)denied_dup,0,5),\n'
+            'BPF_STMT(BPF_LD | BPF_W | BPF_ABS,offsetof(struct seccomp_data,args[0])),\n'
+            'BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,1,0,3),\n'
+            'BPF_STMT(BPF_LD | BPF_W | BPF_ABS,offsetof(struct seccomp_data,args[1])),\n'
+            'BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,2,0,1),\n'
+            'BPF_STMT(BPF_RET | BPF_K,SECCOMP_RET_ERRNO | EPERM),\n'
+            'BPF_STMT(BPF_RET | BPF_K,SECCOMP_RET_ALLOW)};\n'
+            'struct sock_fprog program={.len=8,.filter=filter};\n'
+            'if(prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)||prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&program))return 4;}\n'
             'if(getenv("ICODE_TEST_DENY_RESOURCE_CLOSE")){\n'
             'int target=-1; for(int i=1;i+1<argc;i++)\n'
             'if(!strcmp(argv[i],"--resource-control-fd"))target=atoi(argv[i+1]);\n'
@@ -400,7 +439,13 @@ class TestNativeTaskResource(unittest.TestCase):
             'if(prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0)||prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&program))return 1;\n'
             '}\n'
             'const char *uid=getenv("ICODE_TEST_UID_MAP_PATH");\n'
-            'return run_helper(argc,argv,"/proc/self/setgroups",uid?uid:"/proc/self/uid_map");}\n',
+            'int result=run_helper(argc,argv,"/proc/self/setgroups",uid?uid:"/proc/self/uid_map");\n'
+            'if(owned_cleanup_child>0){\n'
+            'if(kill(owned_cleanup_child,SIGKILL) && errno!=ESRCH)return 4;\n'
+            'int status;pid_t waited;do{waited=waitpid(owned_cleanup_child,&status,0);}while(waited<0 && errno==EINTR);\n'
+            'if(waited!=owned_cleanup_child)return 4;\n'
+            'puts("probe:owned_cleanup_child_reaped");}\n'
+            'return result;}\n',
             encoding="ascii",
         )
         cls._driver = cls._root / "driver"
@@ -411,18 +456,26 @@ class TestNativeTaskResource(unittest.TestCase):
             raise AssertionError(build.stderr)
 
     def run_resource(self, *, limit: int = 2, mapless: bool = False,
+                     default_fallback: bool = False,
                      missing_exec: bool = False, kill_exec: bool = False,
                      violation: bool = False, thread_probe: bool = False,
+                     management_boundary: bool = False,
+                     unset_failure: str | None = None,
                      setup_failure: str | None = None) -> tuple[dict[str, object], str]:
         from icode.linux_task_resource import (
             LinuxTaskResourceReceiver, create_task_resource_channel,
         )
         self._harness._namespace_available()
         environment, parent = self._harness._user_manager()
+        if management_boundary:
+            # Keep the real manager bus/runtime values, not simulated values.
+            self.assertTrue(environment["DBUS_SESSION_BUS_ADDRESS"])
+            self.assertTrue(environment["XDG_RUNTIME_DIR"])
+            environment["INVOCATION_ID"] = "icode-test-management-invocation"
         with tempfile.TemporaryDirectory(prefix="icode-resource-payload-") as temporary:
             workspace = Path(temporary) / "code"
             workspace.mkdir()
-            if mapless:
+            if mapless or default_fallback:
                 uid_map = Path(temporary) / "uid_map"
                 uid_map.write_text("", encoding="ascii")
                 uid_map.chmod(0o444)
@@ -437,6 +490,10 @@ class TestNativeTaskResource(unittest.TestCase):
                 environment["ICODE_TEST_UID_MAP_PATH"] = str(Path(temporary) / "missing_uid_map")
             elif setup_failure == "resource_close":
                 environment["ICODE_TEST_DENY_RESOURCE_CLOSE"] = "1"
+            elif setup_failure == "dup":
+                environment["ICODE_TEST_DENY_PAYLOAD_DUP"] = "1"
+            elif setup_failure == "unset":
+                environment["ICODE_TEST_UNSETENV_FAILURE"] = unset_failure
             unit = f"icode-task-{uuid.uuid4().hex}.scope"
             host, sender = create_task_resource_channel()
             monitor = observer_host = observer_sender = None
@@ -457,7 +514,9 @@ class TestNativeTaskResource(unittest.TestCase):
                 code = self._harness._payload_prefix() + (
                     "import sys\n"
                     "assert sys.argv[1:] == ['$X', '${X}', '$$', 'space value', '-leading']\n"
-                    "assert os.getuid() == " + ("65534" if mapless else "0") + "\n"
+                    # Default may use the helper's verified mapless fallback;
+                    # only an explicitly forced mapless run proves that mode.
+                    "assert os.getuid() " + ("== 65534" if mapless else "in (0, 65534)") + "\n"
                 )
                 if thread_probe:
                     code += (
@@ -490,7 +549,15 @@ class TestNativeTaskResource(unittest.TestCase):
                         "else: raise AssertionError('network allowed')\n"
                     )
                 code += "Path('ready').write_text('ok')\nwhile not Path('release').exists(): time.sleep(.01)\nprint('ICQR1 forged phase2')\n"
-                if setup_failure == "resource_close":
+                if management_boundary:
+                    code += (
+                        "print('ICODE_PAYLOAD_STDOUT',flush=True)\n"
+                        "print('ICODE_PAYLOAD_STDERR',file=sys.stderr,flush=True)\n"
+                        "assert all(name not in os.environ for name in "
+                        "('DBUS_SESSION_BUS_ADDRESS','XDG_RUNTIME_DIR','INVOCATION_ID')), "
+                        "'management environment reached payload'\n"
+                    )
+                if setup_failure in ("resource_close", "dup", "unset"):
                     # The old implementation actually executes this marker;
                     # do not let the normal FD assertion hide that violation.
                     code = "from pathlib import Path; Path('forbidden').write_text('payload executed')"
@@ -531,6 +598,14 @@ class TestNativeTaskResource(unittest.TestCase):
                 self.assertTrue(receiver.wait(timeout_seconds=2))
                 self._harness._assert_collected(unit, scope, environment)
                 self.assertFalse((workspace / "forbidden").exists())
+                if management_boundary:
+                    self.assertNotIn("ICODE_PAYLOAD_STDERR", error)
+                    if not missing_exec and not setup_failure:
+                        self.assertIn("ICODE_PAYLOAD_STDOUT", output)
+                        self.assertIn("ICODE_PAYLOAD_STDERR", output)
+                if missing_exec:
+                    self.assertNotIn("execvp:", output)
+                    self.assertNotIn("execvp:", error)
                 self.assertEqual(process.returncode, 1 if setup_failure else 127 if missing_exec else 159 if kill_exec else 0, error)
                 if monitor:
                     self.assertTrue(monitor.close())
@@ -555,10 +630,11 @@ class TestNativeTaskResource(unittest.TestCase):
         self.assertIsNone(receipt["payload_started"])
         self.assertIn("forged phase2", output)
 
-    def test_mapped_and_mapless_cap_one_and_two(self) -> None:
-        for mapless, limit in ((False, 1), (True, 1), (True, 2)):
-            with self.subTest(mapless=mapless, limit=limit):
-                receipt, _output = self.run_resource(mapless=mapless, limit=limit)
+    def test_default_fallback_and_mapless_cap_one_and_two(self) -> None:
+        for mapless, fallback, limit in ((False, False, 1), (False, True, 1),
+                                        (False, True, 2), (True, False, 1), (True, False, 2)):
+            with self.subTest(mapless=mapless, default_fallback=fallback, limit=limit):
+                receipt, _output = self.run_resource(mapless=mapless, default_fallback=fallback, limit=limit)
                 self.assertEqual(receipt["terminal"], "finished")
                 self.assertIsNone(receipt["payload_started"])
 
@@ -566,6 +642,59 @@ class TestNativeTaskResource(unittest.TestCase):
         receipt, _output = self.run_resource(missing_exec=True)
         self.assertEqual(receipt["terminal"], "preexec_failed")
         self.assertIs(receipt["payload_started"], False)
+
+    def test_management_boundary_default_payload(self) -> None:
+        receipt, _output = self.run_resource(management_boundary=True)
+        self.assertEqual(receipt["terminal"], "finished")
+        self.assertIsNone(receipt["payload_started"])
+
+    def test_management_boundary_mapless_payload(self) -> None:
+        receipt, _output = self.run_resource(management_boundary=True, mapless=True)
+        self.assertEqual(receipt["terminal"], "finished")
+        self.assertIsNone(receipt["payload_started"])
+
+    def test_management_boundary_dual_user_notif(self) -> None:
+        receipt, _output = self.run_resource(management_boundary=True, violation=True)
+        self.assertEqual(receipt["terminal"], "finished")
+        self.assertIsNone(receipt["payload_started"])
+
+    def test_management_missing_exec_does_not_emit_native_diagnostic(self) -> None:
+        receipt, output = self.run_resource(management_boundary=True, missing_exec=True)
+        self.assertEqual(output, "")
+        self.assertEqual(receipt["terminal"], "preexec_failed")
+        self.assertIs(receipt["payload_started"], False)
+
+    def test_management_dup_failure_never_executes_payload(self) -> None:
+        receipt, _output = self.run_resource(management_boundary=True, setup_failure="dup")
+        self.assertEqual(receipt["terminal"], "preexec_failed")
+        self.assertIs(receipt["payload_started"], False)
+
+    def test_management_unset_failure_never_executes_payload(self) -> None:
+        # Only the individual libc API failure is injected. Real native setup,
+        # execution marker, private receipt and own-scope GC remain observable.
+        for variable in ("DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR", "INVOCATION_ID"):
+            with self.subTest(variable=variable):
+                receipt, _output = self.run_resource(management_boundary=True,
+                                                    setup_failure="unset", unset_failure=variable)
+                self.assertEqual(receipt["terminal"], "preexec_failed")
+                self.assertIs(receipt["payload_started"], False)
+
+    def test_legacy_without_resource_preserves_environment_and_streams(self) -> None:
+        self._harness._namespace_available()
+        environment = {"PATH": "/usr/bin:/bin", "DBUS_SESSION_BUS_ADDRESS": "test-bus",
+                       "XDG_RUNTIME_DIR": "test-runtime", "INVOCATION_ID": "test-invocation"}
+        code = ("import os,sys; assert [os.environ[name] for name in "
+                "('DBUS_SESSION_BUS_ADDRESS','XDG_RUNTIME_DIR','INVOCATION_ID')] == "
+                "['test-bus','test-runtime','test-invocation']; "
+                "print('ICODE_LEGACY_STDOUT'); print('ICODE_LEGACY_STDERR',file=sys.stderr)")
+        with tempfile.TemporaryDirectory(prefix="icode-resource-legacy-") as workspace:
+            result = subprocess.run([str(self._driver), "--workspace", workspace,
+                                     "--parent-pid", str(os.getpid()), "--runtime-read", "/usr",
+                                     "--runtime-read", "/lib", "--", "/usr/bin/python3", "-I", "-c", code],
+                                    env=environment, capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "ICODE_LEGACY_STDOUT\n")
+            self.assertEqual(result.stderr, "ICODE_LEGACY_STDERR\n")
 
     def test_preexec_death_without_error_pipe_frame_is_unknown(self) -> None:
         receipt, _output = self.run_resource(kill_exec=True)
@@ -629,16 +758,20 @@ class TestNativeTaskResource(unittest.TestCase):
                     sender.close()
                     host.close()
 
-    def raw_handshake(self, mode: str) -> None:
+    def raw_handshake(self, mode: str, *, interrupt_before_ack: bool = False) -> None:
         from icode.linux_task_resource import create_task_resource_channel
         self._harness._namespace_available()
         environment, parent = self._harness._user_manager()
+        if mode == "cleanup":
+            environment["ICODE_TEST_OCCUPY_OWN_PAYLOAD"] = "1"
         with tempfile.TemporaryDirectory(prefix="icode-resource-ack-") as temporary:
             workspace = Path(temporary)
             unit = f"icode-task-{uuid.uuid4().hex}.scope"
             nonce = bytes.fromhex(unit[11:43])
             host, sender = create_task_resource_channel()
-            process = foreign = None
+            scope = parent / unit
+            process = None
+            interrupted_child_reaped = False
             try:
                 command = ["/usr/bin/systemd-run", "--user", "--scope", "--quiet", "--collect",
                            "--no-ask-password", "--description=ICODE resource ACK test",
@@ -657,14 +790,22 @@ class TestNativeTaskResource(unittest.TestCase):
                 self.assertEqual(flags, 0)
                 self.assertEqual(ancillary, [(socket.SOL_SOCKET, socket.SCM_CREDENTIALS,
                                              struct.pack("3i", process.pid, os.getuid(), os.getgid()))])
-                scope = parent / unit
                 if mode == "close":
                     host.close()  # Cannot receive a failure fact; start remains unknown.
                 elif mode == "cleanup":
-                    foreign = subprocess.Popen(["/usr/bin/python3", "-I", "-c",
-                                                "import signal,time; signal.alarm(2); time.sleep(3)"],
-                                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    (scope / "payload/cgroup.procs").write_text(str(foreign.pid), encoding="ascii")
+                    # The test driver creates its own charged child atomically
+                    # inside this scope. Its pre-notification pipe EOF only
+                    # synchronizes closed management FDs, not payload exec.
+                    # No external cgroup member is moved.
+                    self.assertEqual((scope / "payload/pids.current").read_text().strip(), "1")
+                    child_members = (scope / "payload/cgroup.procs").read_text().split()
+                    self.assertEqual(len(child_members), 1)
+                    self.assertNotIn(str(process.pid), child_members)
+                    self.assertNotIn(str(os.getpid()), child_members)
+                    for descriptor in (Path("/proc") / child_members[0] / "fd").iterdir():
+                        self.assertLess(int(descriptor.name), 3)
+                    if interrupt_before_ack:
+                        raise KeyboardInterrupt
                     host.send(b"ICQA1" + nonce + struct.pack("!I", 2))
                 elif mode == "timeout":
                     pass
@@ -683,19 +824,37 @@ class TestNativeTaskResource(unittest.TestCase):
                     self.assertEqual(host.recv(27), frame(4 if mode == "cleanup" else 2, nonce=nonce))
                 output, _error = process.communicate(timeout=15)
                 self.assertEqual(process.returncode, 1)
-                self.assertEqual(output, "")
+                self.assertEqual(output, "probe:owned_cleanup_child_reaped\n" if mode == "cleanup" else "")
                 self.assertFalse((workspace / "forbidden").exists())
-                if foreign:
-                    foreign.wait(timeout=5)
+                if mode == "cleanup":
+                    self.assertFalse((Path("/proc") / child_members[0]).exists())
                 self._harness._assert_collected(unit, scope, environment)
             finally:
-                for child in (foreign, process):
+                for child in (process,):
                     if child is not None:
+                        if mode == "cleanup" and child.poll() is None:
+                            # Even an assertion/interrupt before ACK lets the
+                            # driver reap its own child through a denied ACK.
+                            # A bounded failure fallback is PDEATHSIG + alarm.
+                            try:
+                                host.send(b"invalid cleanup-test ACK")
+                            except OSError:
+                                pass
+                            try:
+                                child.communicate(timeout=4)
+                            except subprocess.TimeoutExpired:
+                                pass
                         if child.poll() is None:
                             child.kill()
-                        child.communicate(timeout=15)
+                        cleanup_output, _cleanup_error = child.communicate(timeout=15)
+                        if interrupt_before_ack:
+                            interrupted_child_reaped = cleanup_output == "probe:owned_cleanup_child_reaped\n"
                 host.close()
                 sender.close()
+                if mode == "cleanup" and process is not None:
+                    self._harness._assert_collected(unit, scope, environment)
+                    if interrupt_before_ack:
+                        self.assertTrue(interrupted_child_reaped, "owned cleanup child was not reaped")
 
     def test_wrong_ack_denies_before_payload_and_finishes_own_leaf(self) -> None:
         self.raw_handshake("wrong")
@@ -708,6 +867,8 @@ class TestNativeTaskResource(unittest.TestCase):
 
     def test_cleanup_failure_takes_precedence_over_preexec_failure(self) -> None:
         self.raw_handshake("cleanup")
+        with self.assertRaises(KeyboardInterrupt):
+            self.raw_handshake("cleanup", interrupt_before_ack=True)
 
     def test_inherited_ack_endpoint_cannot_impersonate_host_parent(self) -> None:
         self.raw_handshake("sibling")
