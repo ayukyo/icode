@@ -1,5 +1,26 @@
 # Windows 固定卷路径兼容性探针 Implementation Plan
 
+## 2026-10-09后续原生窗口与路径夹具修正
+
+一行夹具修正最终软件门：独立双审各51PASS/0skip/0问题，根20轮1020PASS/0skip（3.370秒），DEFAULT418PASS/0skip（165.288秒）；新完整preflight三道通过，2261 total/2202PASS/59既有skip/0FAIL/0ERROR，测试477.499秒、守护478.797秒。compileall-j1及治理/站点/竞品/diff通过；目标SHA前后未变。此窗口准备精确main提交推送，下一新SHA原生夹具结果仍待验；下面“进行中”是收尾前历史记录。
+
+本窗口最新收尾：来源run37820895762已终态success，validate及四signed全部成功；最后ARM64 Py3.11 job113464942576证明54045309。根代理已经独立读取四格完整decoded日志及run SHA/终态，不只依赖观察者结论。四格各19PASS，均完成已安装gh→C binding→Go真实正负控→固定卷路径→v1/拒绝→导出；两Py3.12最终bytes构建本轮实际通过。固定卷路径只关闭此CI兼容性子门，原marker未公开仍如实记录，不授锁/UAC/生产权限。CI及Pages也已终态，独立观察者全部STOP，无取消/重跑。
+
+| 架构/实际Python | job | proof | 实际OS/image | 此窄原生链 |
+|---|---|---|---|---|
+| x64/3.11.9 | 113464942515 | 54044125 | Server2025/windows-2025-vs2026 20260925.250.1 | 19PASS |
+| x64/3.12.10 | 113464942560 | 54044235 | 同x64 image | 19PASS |
+| ARM64/3.11.9 | 113464942576 | 54045309 | Windows11/windows-11-vs2026-arm64 20261004.176.1 | 19PASS |
+| ARM64/3.12.10 | 113464942575 | 54044287 | 同ARM64 image | 19PASS |
+
+夹具修正现已独立SPEC与不同QUALITY均批准0/0/0；各51PASS/0skip（0.219/0.177秒），两个审查者都实际用自有目录别名复现旧断言失败和新方法通过。根20轮1020PASS/0skip，DEFAULT418PASS/0skip（165.288秒）；新完整preflight进行中。此一行修正尚未发布或取得新SHA原生结果。以下三格已成功的文字是收尾前观察，不覆盖上表最新四格。
+
+main `58c93518117c117f0e37c8af33ef2a049ddfdbe6` 已提交推送并由远端 refs/官方接口核实。主 [CI37820895924](https://github.com/ayukyo/icode/actions/runs/37820895924) 终态 failure：44 jobs 为36success/5failure/3整jobskip；双Python全仓各2261 total/71skip成功。新资源夹具在Windows短名 `RUNNER~1` 与规范长名比较、macOS `/var` 与 `/private/var` 比较失败：根代理分别回读 [x64日志113461355989](https://github.com/ayukyo/icode/actions/runs/37820895924/job/113461355989) 和 [macOS日志113461355841](https://github.com/ayukyo/icode/actions/runs/37820895924/job/113461355841)。两Windows workspace各412 total/2FAIL/1ERROR/20skip；macOS418 total/1FAIL/0skip。既有SKILL Git匿名管道和Reviewer无匹配WFP拒绝事件仍独立失败，不归因于此夹具。
+
+生产者本来就规范化包路径及purelib；修正只把测试期望根改成 `Path(raw).resolve()`，保持全部tuple和拒绝断言，生产源码/权限/vendor/workflow无修改。根真实临时目录别名先1assertion FAIL/0ERROR后GREEN；独立SPEC自有别名同样RED→GREEN，51PASS/0skip（0.219秒）、0/0/0。当前测试SHA256 `1b97ca3d0e280ce2c5583f9eb96af92753efc60ea24f1fdff9508cbf190b7cd6`；不同QUALITY、DEFAULT/全仓守护另验。根20轮实际1020PASS/0skip（3.370秒）。此WIP还未提交，新SHA Windows/macOS夹具复验不可用58的结果代替。
+
+同一58 [来源run37820895762](https://github.com/ayukyo/icode/actions/runs/37820895762) 已有x64 Py3.11 [113464942515](https://github.com/ayukyo/icode/actions/runs/37820895762/job/113464942515)、x64 Py3.12 [113464942560](https://github.com/ayukyo/icode/actions/runs/37820895762/job/113464942560)、ARM64 Py3.12 [113464942575](https://github.com/ayukyo/icode/actions/runs/37820895762/job/113464942575) success，各安装摘要19PASS，含fixed-volume接受；证明54044125/54044235/54044287。根已独立回读x64 Py3.11完整日志；两Py3.12为独立观察者回读，完整四格还差ARM64 Py3.11。原探针成功标记被既有摘要捕获，日志没有该原字符串，不声称取得原marker。两Py3.12原先生成头失败本轮未复现，但不是生产锁/UAC/标准用户/Win10/配额或R2/R3总门证明；本片仍 `partially_verified`。下面矩阵是此前软件冻结时的历史记录，不倒填原生层。
+
 ## 2026-10-09实施窗口（软件审查中，非原生结论）
 
 Tasks1–3源码完成：作者初始夹具错误修正后，旧main/缺接口真实4FAIL/0ERROR；扩展接口与DEFAULT真实18FAIL/0ERROR，再19PASS/0skip。根完整回读后补调用顺序/无NUL与receipt缺字段/错值负控；同期9ed两Py3.12生成头失败促成最小ctime修复，新增回归先3assertion FAIL/0ERROR，再GREEN。当前7文件组合50PASS/0skip（0.188秒），编译-j1通过；Task4独立SPEC→不同QUALITY、20轮、DEFAULT和全仓守护尚未完成，未提交。下面未打勾参考步骤保留原设计状态，不代表这些结果已在Windows运行。

@@ -251,7 +251,7 @@ class TestWindowsDirectVolume(unittest.TestCase):
         import icode
         api = self._api()
         with tempfile.TemporaryDirectory() as raw:
-            purelib = Path(raw); package = purelib / "icode"
+            purelib = Path(raw).resolve(); package = purelib / "icode"
             for platform, arch in (("win-amd64", "x64"), ("win-arm64", "arm64")):
                 with self.subTest(platform=platform), patch.object(icode, "__file__", str(package / "__init__.py")), patch.object(api.sysconfig, "get_paths", return_value={"purelib": str(purelib)}), patch.object(api.sysconfig, "get_platform", return_value=platform):
                     found = api._installed_resources()

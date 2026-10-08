@@ -2,6 +2,12 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **路径夹具一行修正软件门通过（2026-10-09）：**目标SHA `1b97ca3d0e280ce2c5583f9eb96af92753efc60ea24f1fdff9508cbf190b7cd6` 冻结，独立双审各51PASS/0skip/0问题，20轮1020PASS/0skip、DEFAULT418PASS/0skip；完整preflight2261 total/2202PASS/59既有skip/0FAIL/0ERROR、3道全部通过（测试477.499秒/守护478.797秒），compileall-j1与其它守护通过。只改测试预期canonical根，生产者/接口/权限/vendor不变，准备main提交推送；新SHA Windows/macOS夹具原生验收另跑。下一WP0b工具选择诊断设计静态SPEC→不同QUALITY已批准，不把设计算实现；R2/R3整体仍未达标。[窗口](./nbl/plans/2026-10-09-windows-direct-volume-canary.md)。
+
+- **58四signed终态通过、夹具修正守护中（2026-10-09）：**来源37820895762 success，四架构/解释器格均19PASS，proof54044125/54044235/54045309/54044287，根另读四日志。实际x64 Server2025/ARM Windows11，Python3.11.9/3.12.10；两312旧构建失败本轮未复现，固定卷路径CI兼容子门通过，原probe marker未转发不冒称已取得。主CI仍36success/5failure/3整jobskip，Pages精确58部署成功，三run全部STOP。测试路径根一行修正独立双审各51PASS/0skip/0问题、20轮1020PASS和DEFAULT418PASS/0skip，全仓进行中；新SHA原生尚无，R2/R3整体未通过。下一WP0b工具选择诊断仅静态设计中，不加用户依赖/权限。[证据](./nbl/plans/2026-10-09-windows-direct-volume-canary.md)。
+
+- **58已发布、原生链回收及路径夹具修正（2026-10-09）：**main `58c93518117c117f0e37c8af33ef2a049ddfdbe6` 已精确推送。主CI37820895924终态36success/5failure/3整jobskip；新资源期望未规范化导致Windows短名、macOS路径别名失败，仅一行测试根resolve修正，真实别名RED→GREEN/独立SPEC51PASS/根20轮1020PASS零skip，另一QUALITY及DEFAULT/全仓进行中。三条signed安装已success，各19PASS含fixed-volume摘要，ARM64 Py3.11仍待终态；两Py3.12旧生成头失败本轮未复现。现有Git匿名管道/Reviewer证据缺口不隐藏，夹具新SHA原生复验另跑；R2/R3、生产UAC/held-HANDLE仍未验收。[精确窗口](./nbl/plans/2026-10-09-windows-direct-volume-canary.md)。
+
 - **ctime修复及固定卷canary本机门通过（2026-10-09）：**最终冻结独立SPEC51PASS、不同QUALITY87PASS、20轮1740PASS及DEFAULT418PASS均0skip；完整preflight2261 total/2202PASS/59既有skip/0FAIL/0ERROR，三道全部通过（测试479.282秒、守护480.571秒）。编译1，治理/站点/竞品/diff通过。仅软件门完成，按授权准备main提交推送；新SHA Windows四signed安装、实际修复和GLOBALROOT正负例另验，未关闭R2/R3或首次UAC/held-HANDLE门。[分层矩阵](./nbl/plans/2026-10-09-windows-direct-volume-canary.md)。
 
 - **ctime修复及固定卷canary进入最终守护（2026-10-09）：**最终7文件独立SPEC51PASS、不同QUALITY87PASS均0skip/0问题；根20轮1740PASS/0skip（137.184秒），编译1，聚合 `ca04e90ce1e208cb0df4e0fe2d91ae7c04706672b1e9350ea62ff2ec02b2be14`。3.11旧crossctime保持，3.12有birthtime才替换跨接口比较；两侧前后检查不放松。DEFAULT进行中，全仓preflight尚未完成，不提交前置完成声明；新SHA签名/固定卷路径原生四格仍待验。[详细证据](./nbl/plans/2026-10-09-windows-direct-volume-canary.md)。
