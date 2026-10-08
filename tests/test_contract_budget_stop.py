@@ -84,10 +84,10 @@ class TestContractBudgetStop(unittest.TestCase):
         checkpoint.save(turn_index=1, tool_calls=0, history=[])
         return checkpoint
 
-    def _assert_stopped(self, report, backend, calls):
+    def _assert_stopped(self, report, backend, calls, *, total_tokens=301):
         self.assertEqual(report.loop.stop_reason, "budget_exceeded")
         self.assertFalse(report.loop.ok)
-        self.assertEqual(report.loop.usage.total_tokens, 301)
+        self.assertEqual(report.loop.usage.total_tokens, total_tokens)
         self.assertFalse(report.ok)
         self.assertIn("budget_exceeded", report.error)
         self.assertEqual(report.advance_status, "")
@@ -145,7 +145,7 @@ class TestContractBudgetStop(unittest.TestCase):
              mock.patch.object(runner, "_persist_missing_from_response",
                                wraps=runner._persist_missing_from_response) as persist:
             report = self._run(backend, post=post)
-        self._assert_stopped(report, backend, 2)
+        self._assert_stopped(report, backend, 2, total_tokens=302)
         self._assert_failure_receipt(report)
         self.assertEqual(post.call_count, 1, "only the pre-budget initial callback happened")
         self.assertEqual(register.call_count, 1)
@@ -178,7 +178,7 @@ class TestContractBudgetStop(unittest.TestCase):
                 post_write=post, sandbox=NoIsolation(), budget=Budget(expected_tokens=100))
         self.assertFalse(report.ok)
         self.assertEqual(report.loop.stop_reason, "budget_exceeded")
-        self.assertEqual(report.loop.usage.total_tokens, 301)
+        self.assertEqual(report.loop.usage.total_tokens, 402)  # Initial 100+1, repair 301.
         self.assertEqual(report.finish_outcome, "failure")
         self.assertEqual(len(backend.calls), 3)
         self.assertEqual(post.call_count, 1)
@@ -355,12 +355,17 @@ class TestContractBudgetStop(unittest.TestCase):
                 out_dir = next_out_dir(workspace)
                 ControlPlane(self.settings).create(
                     out_dir, ticket_id="BUDGET-COMPAT-1", requirement="actual compatible plan", birth="plan")
-                backend = _MeteredBackend([(_write(out_dir), 100), ("done", charge)])
+                # Reasoning now shares the owner: explicitly zero-cost responses
+                # keep this exact-boundary control from replaying the last charge.
+                reasoning = json.dumps({"step": "Check the exact budget boundary", "next_thought_needed": False})
+                backend = _MeteredBackend([(_write(out_dir), 100), ("done", charge)] + [(reasoning, 0)] * 3)
                 report = runner.run_contract_step(
                     self.settings, backend=backend, workspace=workspace,
                     ticket_id="BUDGET-COMPAT-1", sandbox=NoIsolation(),
                     budget=Budget(expected_tokens=expected), out_dir=out_dir)
                 self.assertEqual(report.loop.stop_reason, "no_tool_calls")
+                self.assertEqual(report.loop.usage.total_tokens, 100 + charge)
+                self.assertEqual(len(backend.calls), 5)
                 self.assertEqual(report.finish_outcome, "success")
                 self.assertEqual(report.error, "")
                 self.assertEqual(report.artifacts, ["01_plan.md"])

@@ -19,7 +19,7 @@ from typing import Any, Callable, Protocol
 
 from .approvals import Approver
 from .backends import Backend
-from .budget import Budget
+from .budget import Budget, BudgetTracker
 from .chain import ChainReport, chain_steps, run_chain
 from .config import Settings
 from .contracts import ContractSet
@@ -144,6 +144,8 @@ class NativeChainExecutor:
 
     def execute(self, context: ExecutionContext, control: "RunControl") -> ExecutionResult:
         out_dir = context.out_dir.resolve()
+        # Invocation-local, not an executor field: separate tickets never share usage.
+        budget_tracker = BudgetTracker(self.budget or Budget())
         try:
             contracts = ContractSet.load(self.settings.gates_json)
         except Exception:  # noqa: BLE001 - 公开结果只保留稳定码。
@@ -234,6 +236,10 @@ class NativeChainExecutor:
                 }
                 if workspace_session is not None:
                     step_kwargs["workspace_session"] = workspace_session
+                if self._step_runner is run_chain:
+                    # Custom adapters keep their existing signature. Never retry a
+                    # side-effectful call after TypeError to discover capabilities.
+                    step_kwargs["budget_tracker"] = budget_tracker
                 report = self._step_runner(self.settings, **step_kwargs)
             except Exception:  # noqa: BLE001 - 只返回稳定码，不泄露异常正文。
                 return ExecutionResult(

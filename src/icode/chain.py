@@ -21,12 +21,12 @@ from typing import Iterable
 
 from .approvals import Approver, DenyAllApprover
 from .backends import Backend
-from .budget import Budget
+from .budget import Budget, BudgetTracker
 from .config import Settings
 from .contracts import ContractSet
 from .control import ControlPlane
 from .loop import LoopConfig
-from .runner import StepReport, _snapshot, run_contract_step
+from .runner import StepReport, _runtime_budget, _snapshot, run_contract_step
 from .sandbox_policy import SandboxPolicy
 from .workspace import GitWorkspaceIdentity, WorkspaceSession
 
@@ -280,6 +280,7 @@ def run_chain(
     approver: Approver | None = None,
     loop_config: LoopConfig | None = None,
     budget: Budget | None = None,
+    budget_tracker: BudgetTracker | None = None,
     on_event=None,
     sandbox=None,
     policy: SandboxPolicy | None = None,
@@ -288,6 +289,7 @@ def run_chain(
     out_dir: Path | None = None,
 ) -> ChainReport:
     """串起完整链路。**任一步骤被门禁拒绝即停步**，并如实报告。"""
+    budget_tracker = _runtime_budget(budget, budget_tracker)
     workspace = Path(workspace).resolve()
     cp = ControlPlane(settings)
     contracts = ContractSet.load(settings.gates_json)
@@ -354,6 +356,7 @@ def run_chain(
             settings, backend=backend, workspace=workspace, step=name,
             ticket_id=ticket_id, requirement=requirement, approver=approver,
             loop_config=loop_config, budget=budget, on_event=on_event,
+            budget_tracker=budget_tracker,
             sandbox=sandbox, policy=policy, out_dir=out_dir,
             workspace_session=git_status_session,
             change_baseline=before if policy is not None else None,

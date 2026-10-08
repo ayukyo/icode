@@ -24,6 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Iterable
 
+from .budget import BudgetTracker
+
 TRACE_FILENAME = ".thinking_gate_trace.jsonl"
 
 VALID_TIERS = ("L0", "L1", "L2", "L3")
@@ -170,6 +172,15 @@ class ReasoningGate:
         min_steps = 3 if info.default_tier in ("L2", "L3") else 0
         if capable:
             steps = int(getattr(deliberation, "step_count", 0) or 0)
+            if getattr(deliberation, "budget_exceeded", False):
+                return TraceRow(
+                    ticket_id=ticket_id, step=step, tier=info.default_tier,
+                    default_tier=info.default_tier, mechanism=mechanism,
+                    attempted=bool(steps), result="blocked",
+                    degraded_reason="预算硬停止（budget_exceeded）",
+                    provider=provider, provider_kind="in_repo",
+                    deliberation_steps=steps,
+                )
             if deliberation is not None and steps >= min_steps:
                 return TraceRow(
                     ticket_id=ticket_id, step=step, tier=info.default_tier,
@@ -200,7 +211,8 @@ class ReasoningGate:
         )
 
 
-def run_deliberation(gate: ReasoningGate, backend, *, step: str, question: str):
+def run_deliberation(gate: ReasoningGate, backend, *, step: str, question: str,
+                     budget_tracker: BudgetTracker | None = None):
     """按该步骤的等级要求，真跑一次推演；不需要 trace 的步骤返回 None。"""
     info = gate.for_step(step)
     if info is None or not info.requires_trace:
@@ -209,7 +221,8 @@ def run_deliberation(gate: ReasoningGate, backend, *, step: str, question: str):
         return None
     from .sequential import SequentialThinking
 
-    return SequentialThinking(backend).run(question, tier=info.default_tier)
+    return SequentialThinking(backend).run(question, tier=info.default_tier,
+                                          budget_tracker=budget_tracker)
 
 
 def append_trace(path: Path, rows: Iterable[TraceRow]) -> int:

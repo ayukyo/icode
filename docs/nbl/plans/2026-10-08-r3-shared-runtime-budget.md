@@ -44,4 +44,42 @@ PydanticAI固定`f55bb8a6fd6cdb34405e5f523d67cf8f366df4aa`、MIT：[实际agent 
 
 Codex固定`1fbe15c962cc3d8eabec36d67987c83cfc4eeec9`、Apache-2.0：[任务取消入口](https://github.com/openai/codex/blob/1fbe15c962cc3d8eabec36d67987c83cfc4eeec9/codex-rs/core/src/tasks/mod.rs)区分BudgetLimited与Interrupted，后者的pending-work续跑不移植到预算硬停止。采纳硬终态与普通中断分离；暂缓持久owner及跨进程自动恢复。成本为少量显式参数和真实控制面负控，无源码复制、SDK或新许可依赖，研究不能替代ICODE动态验收。
 
+## 2026-10-08 实施与独立验收记录
+
+本片以 `edc91cb3301936a1d1501437391f3d878576964b` 为基线；以下是实测记录，不代表 R2/R3 整体验收、内核隔离或真实模型能力通过。
+
+Task 1、Task 2 已实现：五模块显式转交同次 owner，NativeChainExecutor 仅在本次 execute 内持有，不给自定义旧签名盲传新参数或重试副作用。成功推演在控制面 finish/清 checkpoint 前执行；预算失败走原硬停止。原 LoopResult usage 保留当时快照。没有增加持久账本或跨重启预算承诺。
+
+有效初始行为 RED 为六个真实控制面方法；另外五个方法为新参数结构性 RED。完整旧源码 RAM 对照中，19 方法有 17 方法包含失败、25 个 failure entries、0 ERROR/SKIP，不能称 19 个全部功能 RED。最终新矩阵 19×20=380 PASS、0 SKIP，282.989 秒。
+
+第一次关联 352 项出现三个旧 fixture 失败，不能计为通过：repair 应累计 302，review 应累计 402；原精确 300 的正控重复回放 done 响应作为未计费推演。主代理仅调整旧测试期望和三个零增量合法推演响应，保留产物、拒绝、checkpoint 和控制面断言。旧 17 项通过；最终关联重跑 352 项，346 PASS、6 个既有平台 SKIP，124.985 秒。
+
+独立 SPEC 实际重跑：新 19/19；关联 174/174；runner/R3 159 项、153 PASS、6 个既有平台 SKIP。额外真实控制证明全部推演发生在 finish/清 checkpoint 前、只写一次 trace/finish、第四步累计 301 阻断、KeyboardInterrupt/SystemExit 原对象透传且不完成控制面。不同代理 QUALITY 独立实跑新19+旧17共36/36、29.323秒，九模块关联316项、310 PASS/6既有SKIP、94.184秒，以及CI覆盖7/7、0.058秒；无阻断，九文件AST/diff及冻结摘要一致。跳过为四Windows、一macOS、一未启用bwrap Reviewer原生链，均不计通过。
+
+主代理离线构建 wheel，在 `/tmp/icode-shared-budget-acceptance-t99umC0g/venv` 干净安装，用 `-I`、仓库外工作目录、移除 ICODE_SKILL_ROOT/PYTHONPATH 实跑六项：repair 301、reasoning 301、精确 300、首调用前超限、真实 chain 累计 301、reasoning_tokens 不重复计费，全部 PASS。五模块安装后摘要与冻结源一致。此处显式使用外部固定 SKILL，只证明安装后 Agent 代码；不冒充免配置纯 pip 安装或内核沙箱。
+
+全仓 preflight 在 CI 补充前 3/3 PASS（实际加载 2029 项）。主代理随后补充跨平台选择合同：新增覆盖方法先真实 RED，再在现有 DEFAULT_MODULES 加入 `tests.test_shared_runtime_budget`，覆盖合同 7/7 PASS；无 workflow 权限变化。独立SPEC补充7/7、0.049秒，确认四workspace平台采用同一默认清单、新19项无平台skip分支、原CROSS50项不变。主代理实际DEFAULT 227项全通过、96.749秒；这是本机而非四远端平台的结果。补充后最终全仓守护于08:34 UTC实际3/3 PASS，发现2030项，不沿用前一次门禁。compileall-j6、治理、官网、竞品排期、diff与子模块无改动检查均通过。
+
+【架构级自检报告】
+
+- ✅ 语法/编译：九文件AST、compileall-j6及diff通过。
+- ✅ 依赖/调用链：契约两入口、repair、推演、chain、NativeExecutor及CI注册成对。
+- ✅ 逻辑/边界：300/301、调用前超限、预算冲突、快照、两工单隔离通过。
+- ✅ 异常处理：普通失败、中断原对象、custom runner不重跑及checkpoint保留通过。
+- ✅ 关联模块：上述352项、独立359项和227项实际回归，既有skip不计通过。
+- ✅ 兼容安全：observe_only/缺usage/旧可选API保持，无KEY或权限扩张。
+- ✅ 可运行性：本机源码、干净安装六项、全仓守护通过；远端平台及整体验收仍独立核验。
+
+冻结 SHA256：
+
+| 文件 | SHA256 |
+| --- | --- |
+| runner.py | `28897b310b8bb924a07eb59efccd8c66150add2c748e0dfe57c9ad3373b42966` |
+| chain.py | `4df82f6172e483dfe4c9ba3ad637eb42a45d64846e4483050f76a4018cd6cada` |
+| autonomy.py | `009d96e5c72b1a6da639dc2bf58cb7b5b22a93c125b1380fcfba4758c3857c69` |
+| reasoning.py | `322fd1f3842b9ec13891d07893239259b64c0e72d3a54dca41eff37e483756cc` |
+| sequential.py | `a7dcba85f1bc917e32aee384e3031c95282478bf966cc7958941decd2e1761d4` |
+| test_shared_runtime_budget.py | `4d862a5e23303db3642441f13e45c2344be4352a5b48c8907db374a2d70dcd43` |
+| test_contract_budget_stop.py | `51b9d0a6fe00c48ad27e4ec56ff54f35762b74398210edf0c2dcda301b6e21fd` |
+
 **Execution Mode:** serial implementation, independent read-only research/reviews

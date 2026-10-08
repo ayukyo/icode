@@ -22,6 +22,8 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 
+from .budget import BudgetTracker
+
 # 上游 constants：l2_min_steps=3 / l2_max_steps=5 / l3_min_steps=4
 PROVIDER_NAME = "icode-in-repo-sequential-thinking"
 PROVIDER_KIND = "in_repo"
@@ -50,6 +52,7 @@ class Deliberation:
     truncated: bool = False
     empty_responses: int = 0
     error: str = ""
+    budget_exceeded: bool = False
 
     @property
     def step_count(self) -> int:
@@ -83,13 +86,18 @@ class SequentialThinking:
         self.backend = backend
         self.max_tokens = max_tokens
 
-    def run(self, question: str, *, tier: str = "L2") -> Deliberation:
+    def run(self, question: str, *, tier: str = "L2",
+            budget_tracker: BudgetTracker | None = None) -> Deliberation:
         lo = MIN_STEPS.get(tier, 3)
         hi = MAX_STEPS.get(tier, 5)
         result = Deliberation(tier=tier)
         history: list[str] = []
 
         for index in range(1, hi + 1):
+            if budget_tracker is not None and budget_tracker.verdict == "over_budget":
+                result.budget_exceeded = True
+                result.error = "budget_exceeded"
+                break
             user = self._prompt(question, history, index, lo, hi)
             try:
                 message = self.backend.complete(
@@ -102,6 +110,16 @@ class SequentialThinking:
                 result.error = f"{type(exc).__name__}: {exc}"
                 break
 
+            # Charge only the successful response delta, before interpreting it.
+            # total_tokens already includes reasoning tokens; never add them twice.
+            if budget_tracker is not None:
+                last = getattr(self.backend, "last_usage", None)
+                if last is not None:
+                    budget_tracker.record(last)
+                if budget_tracker.verdict == "over_budget":
+                    result.budget_exceeded = True
+                    result.error = "budget_exceeded"
+                    break
             step_text, more = self._parse(message.content)
             if not step_text:
                 # 空响应（思考吃满 token / 模型没按格式回）——记下来并停下，

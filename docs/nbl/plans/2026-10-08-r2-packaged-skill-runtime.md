@@ -47,3 +47,15 @@
 独立审查复算72候选的组成为2根文件、3catalog、28references、7schemas、27steps、5tools，数量/字节/普通文件性一致；动态inspection与三lint源在内，但steps仍引用未含Office/TB/study工具，因此不得称整个SKILL能力闭包。无写实体负控：绝对Python启动CP、仅该子进程PATH为空，三gate均fail_closed且实际尝试python3；无现成解释器参数/环境接口。进程局部C locale且关闭UTF8模式时，action-policy缺路径失败产生UnicodeEncodeError/stdout空；-X utf8同命令返回合法ok:false JSON。
 
 主代理已核对本机上游最新 `74473e5`（工作树干净）仍同一python3执行机制，不能假设新版本已修复。2026-10-08用户已明确授权最小ICODE-SKILL三lint当前解释器/UTF8及对应测试修改，验收后上游main提交推送，再更新本工程固定gitlink。上游在独立目录实施、独立审查；当前CLI冻结验收仍使用原gitlink，不并发改vendor。其它已授权CLI/shared预算工作继续，不能用PATH shim/运行时monkeypatch绕过这个前置。
+
+### 上游最小修复验收及发布
+
+ICODE-SKILL main已提交推送 `1693651c1bd7daad3272eb054f0f81d6f254d08d`，主代理git push成功及新鲜ls-remote一致，工作树干净。严格仅两个文件：tools/icode_control.py与新增tests/test_control_linter_runtime.py。仅三个固定gate id及原argv前两项精确匹配才用sys.executable/-Xutf8；二进制捕获在主线程严格UTF8解码两输出，损坏编码失败关闭并继续收集。自定义命令保持原text/locale、旧str测试替身兼容，catalog/strict/step/audit-verified/cwd/180秒timeout/OSerror及原对象中断合同未变。
+
+TDD新12方法中5断言FAIL/0 ERROR，GREEN后20轮240 PASS/0 SKIP（没有记录汇总耗时，不追填）；实施者Python3.11.15关联pytest七模块184 PASS+17子场景，43.88秒/0 SKIP；下游显式消费本次新CP关联46 PASS。宿主3.10.12原shell metadata9/transition13/close23/thinking48/cheap54全部PASS，含真实本地stdio。未运行会make clean/写仓内demo的workflow shell，不将其记为通过。
+
+主代理独立SPEC全读本片运行函数/上下文/两测试文件及完整regression322行，实际311新12+index4共16/0 SKIP/0.715秒，nice10原regression shell宿主3.10实际26 PASS；其20项索引writer不是编译，未更改脚本并发或-j6构建要求。不同代理QUALITY独立16/0 SKIP，加三项真实子进程坏UTF8 stdout/坏UTF8 stderr/坏JSON负控皆失败关闭，后续真实gates仍收集通过。两文件AST/compileall-j6/diff与限定凭据扫描PASS，只有两授权文件入上游commit。
+
+生产SHA256 `0b7e2577844f135269bdcc78bee195ad974a350f20792af7de46b2bdae76564c`，新测试 `aeb7473b3c8a0d2586f362fdbd349b4824458bc4aaa746370512e81e90e42b83`；两独立审查前后完全一致，7维自检本机通过。采用CPython v3.11.15官方sys.executable/启动UTF8/binary capture机制，PSF2及本仓MIT，无复制或新运行依赖。未声称Windows原生或整个上游全仓测试通过。
+
+本工程gitlink仍保持旧固定版本，待共享预算片完成冻结交付再独立bump/完整兼容回归，不混入其受测树。相对旧gitlink到上游修复前74473e54，CP/gates/schemas无额外变化；steps/docx/install有已存在文档变化，仍需新固定资源清单重核。outer CP UTF8、包内资源和真正pip-only安装尚未实现，不以此提交关闭它们或R2/R3。

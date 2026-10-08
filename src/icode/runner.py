@@ -1120,6 +1120,15 @@ def run_unittest(
 # ---------------------------------------------------------------------------
 
 
+def _runtime_budget(budget: Budget | None, tracker: BudgetTracker | None) -> BudgetTracker:
+    """Keep one invocation's owner; reject conflicting configuration before CP writes."""
+    if tracker is not None:
+        if budget is not None and budget != tracker.budget:
+            raise ValueError("预算配置与共享预算所有者不匹配")
+        return tracker
+    return BudgetTracker(budget or Budget())
+
+
 def run_contract_step(
     settings: Settings,
     *,
@@ -1131,6 +1140,7 @@ def run_contract_step(
     approver: Approver | None = None,
     loop_config: LoopConfig | None = None,
     budget: Budget | None = None,
+    budget_tracker: BudgetTracker | None = None,
     on_event=None,
     sandbox: Sandbox | None = None,
     policy: SandboxPolicy | None = None,
@@ -1147,6 +1157,7 @@ def run_contract_step(
     `post_write(out_dir, step, attempt)` 在模型工作完成后、产物登记前调用
     （用于装配机器可读索引、跑控制面原生自查清单等**非模型**动作）。
     """
+    budget_tracker = _runtime_budget(budget, budget_tracker)
     workspace = Path(workspace).resolve()
     if policy is not None and (
         policy.workspace_root != workspace
@@ -1246,6 +1257,7 @@ def run_contract_step(
                     ticket_id=ticket_id, step=step, brief=brief, contract=contract,
                     requirement=requirement or DEFAULT_TASK, approver=approver,
                     loop_config=loop_config, budget=budget, on_event=on_event,
+                    budget_tracker=budget_tracker,
                     checkpointer=ckpt, extra_instructions=extra_instructions,
                     operations=step_ops, sandbox=sandbox, policy=policy,
                     workspace_session=workspace_session,
@@ -1324,6 +1336,7 @@ def run_contract_step(
                         ticket_id=ticket_id, step=step, brief=brief, contract=contract,
                         requirement=requirement or DEFAULT_TASK, approver=approver,
                         loop_config=loop_config, budget=budget, on_event=on_event,
+                        budget_tracker=budget_tracker,
                         checkpointer=ckpt,
                         sandbox=sandbox,
                         policy=policy,
@@ -1359,12 +1372,16 @@ def run_contract_step(
                 _reset_artifact_checkpoints(report)
                 missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
 
+        deliberation = _prepare_deliberation(settings, backend, step, report,
+                                             requirement or DEFAULT_TASK, budget_tracker)
+        if getattr(deliberation, "budget_exceeded", False):
+            return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
         _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
         if report.finish_outcome == "success":
             ckpt.clear()  # 步骤已干净终结，检查点不再需要
 
         _finalize(settings, cp, out_dir, step, ticket_id, contracts, report,
-                  backend=backend, requirement=requirement or DEFAULT_TASK)
+                  deliberation=deliberation)
         return report
 
     except Exception as exc:  # noqa: BLE001
@@ -1682,6 +1699,7 @@ def _run_agent(
     policy: SandboxPolicy | None = None,
     change_baseline: dict[str, str] | None = None,
     operations: OperationRecorder | None = None,
+    budget_tracker: BudgetTracker | None = None,
     workspace_session: WorkspaceSession | None = None,
 ) -> LoopResult:
     read_only_workspace = step == "review"
@@ -1741,7 +1759,7 @@ def _run_agent(
         approver=approver or DenyAllApprover(),
         operations=operations or OperationRecorder(
             ControlPlane(load_settings_for(workspace)), out_dir, ticket_id),
-        budget=BudgetTracker(budget or Budget()),
+        budget=_runtime_budget(budget, budget_tracker),
         config=loop_config or LoopConfig(),
         on_event=on_event,
         on_turn=on_turn,
@@ -1884,24 +1902,29 @@ def _ensure_gate_metadata(
                "、".join(missing) + ("" if ok else f"｜{str(res.data)[:120]}"))
 
 
+def _prepare_deliberation(settings, backend, step, report, requirement, budget_tracker):
+    """Measure reasoning before a success receipt or checkpoint deletion can occur."""
+    gate = ReasoningGate.load(settings.skill_root / "mcp" / "reasoning-gate" / "gates.json")
+    info = gate.for_step(step)
+    if info is None or not info.requires_trace:
+        return None
+    question = (
+        f"完成 ICODE 工作流的 {step} 步骤（等级 {info.default_tier}）："
+        f"{requirement or '按契约产出该步骤的交付物'}。"
+        f"已登记产物：{'、'.join(report.artifacts) or '无'}。"
+        "请分步推演出关键判断与依据。"
+    )
+    return run_deliberation(gate, backend, step=step, question=question,
+                            budget_tracker=budget_tracker)
+
+
 def _finalize(
     settings: Settings, cp: ControlPlane, out_dir: Path, step: str, ticket_id: str,
-    contracts, report: StepReport, *, backend: Backend | None = None,
-    requirement: str = "", delivery_verdict: str = "verification_pending",
+    contracts, report: StepReport, *, deliberation=None,
+    delivery_verdict: str = "verification_pending",
 ) -> None:
-    """收尾：**真跑推演**（若该步骤要求）、如实写推理 trace、尝试状态前移、校验事件链。"""
+    """Consume measured reasoning once, then transition and read the event chain."""
     gate = ReasoningGate.load(settings.skill_root / "mcp" / "reasoning-gate" / "gates.json")
-
-    deliberation = None
-    info = gate.for_step(step)
-    if backend is not None and info is not None and info.requires_trace:
-        question = (
-            f"完成 ICODE 工作流的 {step} 步骤（等级 {info.default_tier}）："
-            f"{requirement or '按契约产出该步骤的交付物'}。"
-            f"已登记产物：{'、'.join(report.artifacts) or '无'}。"
-            "请分步推演出关键判断与依据。"
-        )
-        deliberation = run_deliberation(gate, backend, step=step, question=question)
 
     row = gate.build_row(ticket_id, step, deliberation=deliberation)
     if row is not None:
@@ -1957,6 +1980,7 @@ def resume_contract_step(
     approver: Approver | None = None,
     loop_config: LoopConfig | None = None,
     budget: Budget | None = None,
+    budget_tracker: BudgetTracker | None = None,
     on_event=None,
     sandbox: Sandbox | None = None,
 ) -> StepReport:
@@ -1965,6 +1989,7 @@ def resume_contract_step(
     **不重放已完成动作**：决策来自事件链（`recover` 分析），上下文由事件链水合，
     而不是回放模型聊天记录。存在未终结副作用时必须先人工核对真实状态 → fail-closed。
     """
+    budget_tracker = _runtime_budget(budget, budget_tracker)
     out_dir = Path(out_dir).resolve()
     cp = ControlPlane(settings)
     report = StepReport(step=step, ok=False, out_dir=str(out_dir))
@@ -2020,6 +2045,7 @@ def resume_contract_step(
             resume_context=decision.resume_brief(),
             sandbox=sandbox,
             operations=OperationRecorder(cp, out_dir, ticket_id),
+            budget_tracker=budget_tracker,
         )
         report.loop = loop
         if loop.stop_reason == "budget_exceeded":
@@ -2028,12 +2054,16 @@ def resume_contract_step(
             report.warn(f"恢复后的回合循环未自然结束（stop_reason={loop.stop_reason}）")
 
         missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
+        deliberation = _prepare_deliberation(settings, backend, step, report,
+                                             requirement or DEFAULT_TASK, budget_tracker)
+        if getattr(deliberation, "budget_exceeded", False):
+            return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
         _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
         if report.finish_outcome == "success":
             checkpointer.clear()
 
         _finalize(settings, cp, out_dir, step, ticket_id, contracts, report,
-                  backend=backend, requirement=requirement or DEFAULT_TASK)
+                  deliberation=deliberation)
         return report
 
     except Exception as exc:  # noqa: BLE001

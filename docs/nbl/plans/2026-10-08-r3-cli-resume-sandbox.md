@@ -12,10 +12,10 @@
 
 ## 实施及验收
 
-- [ ] RED：临时真实CP工单、未闭合plan attempt、实际main recover --resume及离线backend，不mock resume函数。确认旧版因sandbox参数拒绝；不读KEY、不调用真实模型或生产命令。
-- [ ] 最小修复：resume_contract_step新增可选关键字sandbox默认None，并原样传_run_agent，默认直接调用兼容；按后段实体安装追加，显式复用当前cp的OperationRecorder，原scope保持。合计3行生产变化，不调整事件/恢复/预算/沙箱策略。
-- [ ] 测试显式sandbox同一对象传递至实际上下文；CLI0/1退出按真实StepReport，不能伪造成功恢复。None旧调用、budget301硬停止、未决副作用入口拒绝及KI/SystemExit透传保持。显式NoIsolation只测参数链，不算隔离能力证据。
-- [ ] 冻结矩阵20轮、关联CLI/recovery/hard-stop/runner；独立SPEC→QUALITY、7维自检、完整preflight三门及compileall≤j6、治理/官网/竞品/diff。干净pip安装实际CLI恢复接口；main提交推送、核对远端并观察新SHA。
+- [x] RED：临时真实CP工单、未闭合plan attempt、实际main recover --resume及离线backend，不mock resume函数。确认旧版因sandbox参数拒绝；不读KEY、不调用真实模型或生产命令。
+- [x] 最小修复：resume_contract_step新增可选关键字sandbox默认None，并原样传_run_agent，默认直接调用兼容；按后段实体安装追加，显式复用当前cp的OperationRecorder，原scope保持。合计3行生产变化，不调整事件/恢复/预算/沙箱策略。
+- [x] 测试显式sandbox同一对象传递至实际上下文；CLI0/1退出按真实StepReport，不能伪造成功恢复。None旧调用、budget301硬停止、未决副作用入口拒绝及KI/SystemExit透传保持。显式NoIsolation只测参数链，不算隔离能力证据。
+- [x] 冻结矩阵20轮、关联CLI/recovery/hard-stop/runner；独立SPEC→QUALITY、7维自检、完整preflight三门及compileall≤j6、治理/官网/竞品/diff。干净pip安装实际CLI恢复接口；main提交推送、核对远端并观察新SHA。
 
 本片不接新增policy/workspace_session，不放宽恢复门、R2/R3评分或自动模式，不宣称跨进程budget连续。复用持续对照固定Codex的执行事实与终态分层机制，不复制源码、增加依赖或权限。调用链诊断与本片动态回归才是验收依据。
 
@@ -48,3 +48,11 @@
 - 关联模块：独立关联回归、操作回执与CI选择合同通过。
 - 兼容安全：默认None、原scope和CROSS50保持；未读KEY或修改子模块。
 - 可运行性：本机已安装离线执行通过，Windows/mac原生及新SHA线上待实测；不称R2/R3整体通过。
+
+## 提交及连续实施
+
+本片已main提交 `edc91cb3301936a1d1501437391f3d878576964b`（8文件），git push通过SSH443成功，新鲜ls-remote确认main同一完整SHA；首次22推送和首次443查询连接关闭，不篡改SSH信任/全局设置，后续普通查询真实成功。仅推送已验收受测树；独立监控精确新SHA。共享预算片已自动开始TDD，下一[工程验证计划](./2026-10-08-r3-engineering-verification-plan.md)另行独立审查及实施，不需等待新命令。
+
+新SHA线上全部终态：[主CI 37746901903](https://github.com/ayukyo/icode/actions/runs/37746901903) attempt1完整37为32success/2既有Windows候选failure/3skip。Python3.11 `113210428235`实际2010项/444.661秒、3.12 `113210428472`实际2010/481.401秒，均OK/71旧平台SKIP；四workspace实际Ubuntu208/114.975秒、mac208/170.205秒，Windows x64 207/206.542秒、ARM64 207/218.807秒且9既有SKIP，另原生/合同子集通过。冻结默认选择已包含新9恢复方法，quiet日志不逐名列它们，不虚称九条独立verbose日志。四Linux实际安装和七生命周期子门通过；旧Windows78/网络10035仍未过，不解释为本片新增回归或DENY证据。
+
+[provenance 37746901924](https://github.com/ayukyo/icode/actions/runs/37746901924) attempt1于08:11:53 UTC success、完整5/5：只读validate全preflight3/3、Go及license9通过；四原生矩阵真实crypto/干净安装离线验证/篡改负控通过，bootstrap setup/commands仍拒绝（最后ARM311 `113212546539`于08:11:40 UTC通过）。[官网 37746902005](https://github.com/ayukyo/icode/actions/runs/37746902005)success，artifact `11535883824`与pages版本精确该SHA。独立监控停止此SHA所有重复查询；只关闭此窄修复，R2/R3整体验收及正式Windows执行未关闭。
