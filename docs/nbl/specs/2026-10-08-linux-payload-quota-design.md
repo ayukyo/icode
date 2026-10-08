@@ -78,3 +78,41 @@ helper 接线仅变更 `icode_landlock.c`、MANIFEST 与新测试。14 方法含
 主代理构建 sdist＋wheel、核对 header 在归档、真实从 sdist 再构建 wheel，并在干净 venv pip 安装。两种构建的 helper 均 942336 bytes、SHA-256 `96abe96cc750f524388eaa864274be59db6340c2fb5fee0416466e4a404062ad`，逐字节相等；C 源冻结 SHA-256 `c7e207018dbde21e32d16d4a34a08bd09ddceefb895d075ad7d6873e8b6c7913`。安装包内 helper 的 cap1 fork/线程、cap2 根＋setsid 后代及第三 task 拒绝、exit13 精确保留均实际通过，检查 pids.max/current/events、两 supervisor 在额度外、管理 FD 关闭、/sys 拒绝和本次 unit/scope 消失。无 scope/unpaired/zero-cap 三项安装负控没有 payload marker。
 
 原有安装包十阶段（含 USER_NOTIF 回执、host-crash namespace 清理、lease expiry、Git broker）通过，冻结生产源码完整 preflight 密钥/子模块/全仓 unittest 三道通过。安装回归中旧 host-crash 未启用新 quota，不能写成新配额生命周期通过。当前允许结论为 native helper/安装产物 host_verified；其它架构、真实工单 broker、并发、超时/取消/host-crash 的新 scope 收束仍待验，`conformance_credit=none`。
+
+## 下一分片：私有资源事实回执（不接产品入口）
+
+增加只供可信 launcher 的 resource endpoint，与既有 violation/proxy FD 严格不同；继承白名单最多两端点，所有其余 FD 关闭。模型 schema 不增加 unit/FD/nonce 参数。外 launcher 是唯一 host-facing writer，PID1/payload 关闭此副本；host socket 启用 SO_PASSCRED，逐帧匹配实际 Popen PID 及 host UID/GID，不能用 SO_PEERCRED 的 creator 凭据冒充逐帧身份。
+
+resource 初始化必须显式设置并核对 FD_CLOEXEC（Popen.pass_fds 会清除此标志）；PID1 的关闭失败必须写专用 pre-exec 错误并退出，不能继续创建 payload。独立规范审查在只对 `close(resourceFD)` 返回 EPERM、其它 syscall 允许的本次进程继承 seccomp 负控中，真实复现旧路径把 flags=0 的 socket FD 留进 payload exec，虽最终 scope GC 成功仍违反合同。因此普通正例与 GC 不能抵消 FD 生命周期失败；该负控必须在修复后证明无 payload marker、明确 phase2 与本次 scope 收束。不修改宿主策略或旧 proxy 后端。
+
+固定 wire 为 `ICQR1`（5 bytes）＋phase（1）＋本次 unit 的 nonce（16）＋big-endian cap（4），共 26 bytes；ACK 为 `ICQA1`＋nonce＋cap，共 25 bytes。只允许 configured=1、明确 preexec_failed=2、finished=3、cleanup_failed=4。configured 在 prepare 精确 readback 后发出，正确 ACK 前不进入 namespace/payload；ACK 在 host credential/namespace 变化前校验。最多 configured＋一个 terminal，或初始 setup 失败的一帧 terminal。wait/finish 后 cleanup_failed 优先，其次可信 pre-exec 失败，否则 finished；任何 terminal 后额外帧拒绝。phase2 只证明未启动，不泛称 scope/目录清理成功；phase3 只证明本次 payload leaf 的 finish，不证明 manager GC。
+
+PID1/payload 使用专用 CLOEXEC error pipe 向 launcher 报告实际 namespace/clone/隔离/exec 前失败，不能污染 parent-death pipe。EOF、exit0/127/13、用户输出、READY/ACK 都不证明成功 exec；未获独立 exec 证据的结果保持 unknown。协议截断、额外 FD、错 nonce/cap/PID/UID/GID、重复/乱序或缺 terminal 一律 channel failure/unknown，不把失去通道写成 false。接收后即拥有 ancillary FD 并在所有失败路径关闭。host 接收可先起窄线程，再让既有 USER_NOTIF 完成 ACK，避免串行等待死锁；不引入 ptrace、新权限、服务或 quota fallback。是否要求全部短命令确证 exec 已另询用户，组件开发不假定获准额外观察方案。
+
+SOCK_SEQPACKET 的零长 packet 不能当 EOF：本机真实 recvmsg 在 SO_PASSCRED 下为零长 packet 附加凭据，端点真实关闭才返回零长 body 且无 ancillary。有 ancillary 的空 body 一律为非法帧，包括 terminal 后或错误 writer 发送；否则会过早接受 terminal 并漏检后续坏帧。逐消息解析异常也必须依据原始 ancillary 扫描并关闭全部已交付 rights，不能依赖尚未完整登记的 FD 列表。
+
+主代理在已安装的 `6fda570` helper 上额外实际核对 systemd 249：scope exec 后 launcher PID 是 Popen.pid、原 host-parent 校验通过、既有 USER_NOTIF FD 经 scope 可达且真实 socket 被拒绝，`$X`/`${X}`/`$$`/空格/前导 dash/空字符串 argv 保持原样，scope 最后消失。此实验只有旧单 endpoint，没有证明新增双 FD、v254+、私有终态或产品调用链；下一 TDD 必须另测。原生组件先独立规范/质量审查，再接真实 broker 与管理/载荷环境分离；进程上限和 readiness 不因回执源码存在而加分。
+
+### 独立只读研究补充：逐消息身份与 ancillary 所有权
+
+2026-10-08 在 kernel 6.8.0-138 上，独立研究使用无 scope 的有界 fork/namespace 实验并等待全部子进程退出。host 收到 mapped/mapless 外 launcher 的原 host PID 与 UID/GID；PID1 的消息带另一 host PID，不能冒充 launcher。外 launcher 的 `unshare(CLONE_NEWPID)` 不迁移其自身，只有后创建的孩子进入新 PID namespace；凭据 UID/GID 按**接收线程**当前 user namespace 翻译（[固定 Linux v6.17 SCM 实现](https://github.com/torvalds/linux/blob/e5f0a698b34ed76002dc5cff3804a61c80233a7a/net/core/scm.c)、[PID namespace 文档](https://man7.org/linux/man-pages/man7/pid_namespaces.7.html)）。因此采纳 host 绑定实际 Popen PID＋host 身份，native ACK 在 namespace 变化前验证；不比较跨 namespace 的缓存 UID 数值。
+
+采纳内核自动附加 SCM_CREDENTIALS，接收端在发送前启用 SO_PASSCRED；不手填 mapless 的 `getuid()==65534`，空 uid_map 下该值不能反向映射，可导致 EINVAL。ACK 不接受任何 SCM_RIGHTS；`recvmsg(MSG_CMSG_CLOEXEC)` 后即拥有所有已交付 FD，必须先逐个关闭，再报告任何截断/协议错误。独立发送 1/7/40 个 FD 时实际交付 1/4/4 个，后两次 MSG_CTRUNC；关闭后 FD 基线恢复，证明不能在 CTRUNC 分支提前返回。以上仅为本机 API 机制实验，不代替新 native/Python 组件正负验收，无源码复制、依赖或权限变化。
+
+## 后续真实命令链的接线前置项（尚未实现）
+
+### 私有回执冻结 v3 本机验证（2026-10-08）
+
+原生源码 SHA-256 `ca21ceca2d59c9be2c83e59b6a906ac386a38fe0a5611a6d078a7d5151343bb5`；资源头 `341b36cb2db869cc12c128396cb051d436813ab75d9d48c14a68076f082ac4bf`；Python receiver `af131cda3517de5be8b3f51b64b3d52e6d446dbd77644c7d6a88c3bb7a6d1ca5`。最终新增 36 方法 ×20 轮为 720/720，实施者冻结关联 117/117；独立 SPEC 116/116，另真实单 scope 的 close(resourceFD)→EPERM 精确负控确认 exit1、无 payload marker、stdout 空、preexec_failed/false 与本次 GC；独立 QUALITY 36+7 项实际通过。以上全部 0 SKIP，C11 严格编译/静态分析通过，原 quota header 未变。v1/v2 的重复轮数不是 v3 最终验收，不合并虚增计数。
+
+主代理实际构建 sdist 与 wheel、从该 sdist 重建 wheel，逐字节核对新 header/receiver 在归档中。两种 wheel 的 helper 与干净 pip 安装的 helper 完全相同，946728 bytes，SHA-256 `4152b76056205104d3b965f5b1bca2b9e61d074d80935024c0256e35b8ebbc0a`。真实 installed helper 的 cap2、cap1 fork、cap1 thread、resource+USER_NOTIF 双 FD、missing exec 共 5/5，逐项核实本次 unit/scope GC；前三种成功任务仍 unknown，missing exec 为 false，不伪造 exec=true。旧安装十阶段回归全部 PASS，其中旧 host-crash 未启用新 quota，不外推新 quota 生命周期。独立 SPEC/QUALITY 与安装产物闭环只认证此组件，不认证真实工单链或 R2/R3 readiness；`conformance_credit=none`。
+
+后续环境/标准流边界按 [独立小步计划](../plans/2026-10-08-linux-payload-management-boundary.md) 实施；以下产品接线项仍未完成。
+
+复用 `execution_broker._execute_policy_command` 的 monotonic deadline、输出 byte cap、selector 和最终进程组清理，不另建执行循环。新增可信 scope 层只接受内部产生的 nonce unit、policy 原整数 cap 和最多两私有端点；先核对 cap 在 native 可表达范围，超过 INT_MAX 在启动前拒绝，不改 schema 或截断。USER_NOTIF receiver 之前先启动 resource receiver，以免两条 ACK 互相等待。
+
+管理环境仅在原 policy environment 上增加固定当前 UID 的 user bus 参数；先核对 `/run/user/<uid>` 与 bus 的身份/类型/非链接边界，不继承任意 DBUS 地址或宿主环境。systemd scope 源码还注入 INVOCATION_ID，native 在 payload exec 前移除这三项管理环境变量。固定受信 systemd-run/systemctl 路径、literal argv 及实际版本能力需在支持主机验收；不增加全局配置、管理员服务或共享 scope。
+
+当前管理程序/native stderr 与 payload stderr 合流，直接沿用会让失败的管理错误进入模型结果。接线片应在私有 resource 模式下，由 native 在 exec 前将 payload stderr 接到 payload stdout；重定向之后原生 exec 错误只写 F，不再 perror，避免通道同时失效时仍泄露诊断。host 另用有界读取丢弃管理 stderr。旧无 resource 调用保持既有行为。明确 phase2 或配置失败只返回固定脱敏结果，丢弃收集输出；没有可信启动失败事实时保留 unknown。不能以 quiet flag、输出关键字或退出码替代这个分流边界。
+
+进程组 kill 成功、native leaf finish 与 manager scope/unit GC 分别记事实。每次只核对本次随机 unit 和 scope，不扫描删除其它 cgroup。StartTransientUnit mode=fail 防覆盖，不证明失败时同名 scope 归本次所有；未得到可信 configured 或其它本次 scope/Popen 身份凭据时，不能仅凭随机名称 systemctl stop/kill。创建碰撞负控必须保留旧成员及目录，只 kill/reap 本次 Popen，身份不符返回固定 cleanup 失败。真实 `run_command` 后还需并发 cap 独立、普通非零退出、timeout、超量、取消、异常和 host SIGKILL（含 setsid 后代）的新 quota 生命周期；源码正控、旧无 quota host-crash 和空目录 GC 均不替代这些验收。不因此设计或组件通过开放自动模式。

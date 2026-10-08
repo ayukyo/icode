@@ -38,7 +38,7 @@
 - [x] 在 `.github/workflows/windows-helper-provenance.yml` 使用固定 setup-go action SHA，原生构建纯 Go verifier，编译并发不超过 6。
 - [x] `scripts/run_windows_wheel_ci.py` 在干净 pip 安装后调用包内 verifier 验证实际 action bundle，并运行实际负例；保留 gh 独立验证。
 - [x] 聚焦回归连续 20 轮、冻结源码完整 `.venv/bin/python scripts/preflight.py`、`compileall -j 6`、governance/site/landscape/diff 守护通过。
-- [ ] 独立规范/质量复审通过，提交推送 main；记录具体 SHA 与 x64/ARM64 真实 job/步骤结论，失败不调整判据。
+- [x] 独立规范/质量复审通过，提交推送 main；记录具体 SHA 与 x64/ARM64 真实 job/步骤结论，失败不调整判据。
 - [ ] 回收真实结果后继续 R2 生产 runner、资源/lease 接线与 R3 工作流绑定，不把本子门当整体验收。
 
 ---
@@ -94,3 +94,20 @@ Go 1.27.1 的 [list JSON 输出](https://github.com/golang/go/blob/go1.27.1/src/
 新增 Windows reader 语义回归保留实际 child-pipe bytes，旧 generator 明确 RED（caller 为 TypeError 而非绑定原坏 JSON bytes 的 UnicodeDecodeError）。现在 Go subprocess 收取 binary bytes，在主调用方立即严格 UTF-8 解码后才进入下一输入；check/timeouts、原文许可、哈希与模块审核不变，不接受 ignore/replace 或任意异常冒充拒绝。9 方法 20 轮 180 次、0 SKIP；两架构真实 Go linked metadata 生成 notice 仍为 625239 bytes、SHA-256 `f6c4772fb032b893dc74e99df4bec4e9a0926f1fbd80219c8b5007e09fb3b6e4`。独立复审和新 SHA 原生四矩阵另记，不把机制模拟当 Windows 实际安装验收。
 
 四组后续步骤 6–9 最终均 skipped，license_closure、签名、gh oracle、实际安装正例与六类负例、上传的已确认执行数均为 0/4，停止旧 SHA 轮询。本修正独立 SPEC 后 QUALITY 均通过；QUALITY 分别以旧代码 RAM 变体在 ASCII/Unicode 临时父目录复现 RED，新版 GREEN，并检查真实 child-pipe CRLF 协议、Unicode＋空格 GOROOT、许可混合换行原字节/hash及拒绝输出覆盖。主代理也直接运行本机 CPython 3.11.15 的 Windows reader AST 方法重核 empty buffer→None。生产文件冻结后完整 preflight 3/3 通过，仍为本机修正，下一 SHA 四矩阵另验。
+
+## 6fda570 原生四矩阵通过：离线验签子门闭合
+
+2026-10-08 04:07 UTC，已推送并核对远端 main 的 `6fda57075e4eee0dc1fed399c6f317d0bc43e3e1` 对应 [provenance run 37724953112](https://github.com/ayukyo/icode/actions/runs/37724953112) 全部成功。独立观察后，主代理再次直接读取公开 jobs API：validate `113140899613` 成功，四组原生 job 的步骤 5–9 均 success。
+
+| 矩阵 | job | 原生许可闭包 / helper / 签名 / 安装验签 / 上传 |
+|---|---|---|
+| x64 Python 3.11 | `113142724257` | 全部通过 |
+| x64 Python 3.12 | `113142724231` | 全部通过 |
+| ARM64 Python 3.11 | `113142724303` | 全部通过 |
+| ARM64 Python 3.12 | `113142724330` | 全部通过 |
+
+安装步骤的结论来自该 SHA 固定脚本的强制执行顺序与整个步骤成功：gh 独立 oracle、干净安装的包内离线正例、六类实际篡改负例、bootstrap setup/spawn 拒绝及 TemporaryDirectory 清理均未被跳过或吞掉错误。因此支持正例 4/4、六类负例各 4/4；没有获取逐项原始 stdout，不把推导证据写成逐行日志证明。此前旧 SHA 的具体失败测试仍未知，本次成功不追溯伪造其根因。
+
+本子门 verdict 为 `verified_native_matrix`。验签结果仍是只读回执，`launch_authorized=false`；bootstrap 的 setup、execution、ready 三项仍 false。下一步继续受保护启动对象、Windows sandbox identity/WFP/ACL/Job 与真实工作流接线；签名通过不授予启动权限，不关闭 R2/R3，不改变自动模式。[官网 run 37724952996](https://github.com/ayukyo/icode/actions/runs/37724952996) 已成功；主 CI 与隔离子门另行记录。
+
+同 SHA 的 [主 CI 37724953038](https://github.com/ayukyo/icode/actions/runs/37724953038) 最终 32 success、2 failure、3 skipped。独立观察分别读取 x64 `113140899976`、ARM64 `113140899987` 的公开注解：两个 Windows Reviewer snapshot candidate 在 temporary standard user 步骤失败，snapshot 执行 exit78、cleanup=true；双栈均 connect_denied=false、10035 后 wait_expired=true，runner observer ready 但 no_matching_event，capture archive_member_missing。这些是本轮未过硬门的直接公开证据，不推断 WFP/系统根因，不把等待超时算拒绝，也不继续扩展已被生产方案替代的诊断后端。provenance 子门与整体主 CI verdict 独立；后续仍按已选专用身份＋WFP＋Job 生产方案开发和验收。

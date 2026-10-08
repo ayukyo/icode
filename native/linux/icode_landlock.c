@@ -36,6 +36,7 @@
 #include <unistd.h>
 
 #include "icode_task_quota.h"
+#include "icode_task_resource.h"
 
 #ifndef LANDLOCK_ACCESS_FS_REFER
 #define LANDLOCK_ACCESS_FS_REFER (1ULL << 13)
@@ -165,24 +166,25 @@ static int parse_u64_decimal(const char *value, uint64_t *result) {
     return 0;
 }
 
-static int close_inherited_descriptors(int preserved_descriptor) {
-    if (preserved_descriptor < 0) {
+static int close_inherited_descriptors(int first, int second) {
+    if (first < 0) { first = second; second = -1; }
+    if (second >= 0 && second < first) { int swap = first; first = second; second = swap; }
+    if (first < 0) {
         return (int)syscall(SYS_close_range, 3U, UINT_MAX, 0U);
     }
-    if (preserved_descriptor < 3) {
+    if (first < 3 || (second >= 0 && (second < 3 || second == first))) {
         errno = EINVAL;
         return -1;
     }
-    if (preserved_descriptor > 3 &&
-        syscall(SYS_close_range, 3U,
-                (unsigned int)preserved_descriptor - 1U, 0U) != 0) {
+    if (first > 3 && syscall(SYS_close_range, 3U, (unsigned int)first - 1U, 0U) != 0) {
         return -1;
     }
-    if (syscall(SYS_close_range,
-                (unsigned int)preserved_descriptor + 1U, UINT_MAX, 0U) != 0) {
-        return -1;
+    if (second >= 0) {
+        if (second > first + 1 && syscall(SYS_close_range,
+                (unsigned int)first + 1U, (unsigned int)second - 1U, 0U) != 0) return -1;
+        first = second;
     }
-    return 0;
+    return (int)syscall(SYS_close_range, (unsigned int)first + 1U, UINT_MAX, 0U);
 }
 
 static int validate_proxy_control_descriptor(int descriptor) {
@@ -1134,16 +1136,18 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
                               int workspace_read_only, int mapless,
                               int network_loopback_only,
                               int violation_control_descriptor,
-                              struct icode_task_quota *quota) {
+                              struct icode_task_quota *quota, int error_writer) {
     /* Namespace PID 1 sees its parent as PID 0, so getppid cannot validate it. */
     if (prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 ||
         prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) != 0) {
         perror("namespace supervisor setup");
+        icode_resource_preexec_failure(error_writer);
         return 1;
     }
     struct pollfd parent = {.fd = parent_pipe, .events = POLLIN | POLLHUP};
     if (poll(&parent, 1, 0) < 0 || parent.revents != 0) {
         fprintf(stderr, "sandbox parent exited before namespace setup\n");
+        icode_resource_preexec_failure(error_writer);
         return 1;
     }
     /* Only the root payload enters the charged leaf. PID 1 and the launcher
@@ -1154,6 +1158,7 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
     if (payload < 0) {
         if (quota) fprintf(stderr, "task quota payload setup failed\n");
         else perror("fork sandbox payload");
+        icode_resource_preexec_failure(error_writer);
         return 1;
     }
     if (payload == 0) {
@@ -1166,16 +1171,24 @@ static int run_namespace_init(int parent_pipe, const char *workspace,
                 execute_only, execute_only_count) != 0) ||
             (network_loopback_only
                 ? install_network_loopback_only()
-                : install_network_deny(violation_control_descriptor)) != 0) _exit(1);
+                : install_network_deny(violation_control_descriptor)) != 0) {
+            icode_resource_preexec_failure(error_writer);
+            _exit(1);
+        }
         if (violation_control_descriptor >= 0 &&
-            close(violation_control_descriptor) != 0) _exit(1);
+            close(violation_control_descriptor) != 0) {
+            icode_resource_preexec_failure(error_writer);
+            _exit(1);
+        }
         execvp(command[0], command);
+        icode_resource_preexec_failure(error_writer);
         perror("execvp");
         _exit(127);
     }
     if (violation_control_descriptor >= 0) {
         close(violation_control_descriptor);
     }
+    if (error_writer >= 0) close(error_writer);
     for (;;) {
         int status;
         pid_t waited = waitpid(payload, &status, WNOHANG);
@@ -1207,17 +1220,29 @@ static int supervise_task(pid_t host_parent, const char *workspace,
                           int violation_control_descriptor,
                           const char *setgroups_path,
                           const char *uid_map_path,
-                          struct icode_task_quota *quota) {
+                          struct icode_task_quota *quota,
+                          int resource_descriptor, int *preexec_failed) {
     int mapless = enter_task_namespaces(
         host_parent, setgroups_path, uid_map_path, network_loopback_only);
-    if (mapless < 0) return 1;
+    if (mapless < 0) { if (preexec_failed) *preexec_failed = 1; return 1; }
     if (proxy_control_descriptor >= 0 &&
         handoff_loopback_listener(proxy_control_descriptor) != 0) {
+        if (preexec_failed) *preexec_failed = 1;
         return 1;
     }
     int control[2];
     if (pipe2(control, O_CLOEXEC) != 0) {
         perror("pipe2 sandbox parent");
+        if (preexec_failed) *preexec_failed = 1;
+        return 1;
+    }
+    /* Separate from the parent-death pipe. Only actual native pre-exec
+     * failures write a marker; CLOEXEC EOF does not prove successful exec.
+     */
+    int errors[2] = {-1, -1};
+    if (resource_descriptor >= 0 && pipe2(errors, O_CLOEXEC | O_NONBLOCK) != 0) {
+        close(control[0]); close(control[1]);
+        *preexec_failed = 1;
         return 1;
     }
     pid_t init = fork();
@@ -1225,20 +1250,33 @@ static int supervise_task(pid_t host_parent, const char *workspace,
         perror("fork namespace supervisor");
         close(control[0]);
         close(control[1]);
+        if (errors[0] >= 0) close(errors[0]);
+        if (errors[1] >= 0) close(errors[1]);
+        if (preexec_failed) *preexec_failed = 1;
         return 1;
     }
     if (init == 0) {
         close(control[1]);
+        if (resource_descriptor >= 0 && close(resource_descriptor) != 0) {
+            /* A retained endpoint must never reach payload setup or exec.
+             * Exit closes the borrowed copy; the launcher owns the transcript.
+             */
+            icode_resource_preexec_failure(errors[1]);
+            _exit(1);
+        }
+        if (errors[0] >= 0) close(errors[0]);
         int result = run_namespace_init(
             control[0], workspace, runtime_roots, runtime_root_count,
             metadata_roots, metadata_root_count, execute_only,
             execute_only_count, command,
             workspace_read_only, mapless, network_loopback_only,
-            violation_control_descriptor, quota);
+            violation_control_descriptor, quota, errors[1]);
+        if (errors[1] >= 0) close(errors[1]);
         close(control[0]);
         _exit(result);
     }
     close(control[0]);
+    if (errors[1] >= 0) close(errors[1]);
     if (violation_control_descriptor >= 0) {
         close(violation_control_descriptor);
     }
@@ -1248,6 +1286,13 @@ static int supervise_task(pid_t host_parent, const char *workspace,
         waited = waitpid(init, &status, 0);
     } while (waited < 0 && errno == EINTR);
     close(control[1]);
+    if (errors[0] >= 0) {
+        unsigned char marker[2];
+        ssize_t count;
+        do { count = read(errors[0], marker, sizeof(marker)); } while (count < 0 && errno == EINTR);
+        if (count == 1 && marker[0] == 'F') *preexec_failed = 1;
+        close(errors[0]);
+    }
     if (waited != init) {
         perror("waitpid namespace supervisor");
         return 1;
@@ -1267,6 +1312,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                 "[--metadata-read PATH DEVICE INODE]... "
                 "[--execute-only PATH DEVICE INODE] "
                 "[--task-quota-unit UNIT --task-quota-limit N] "
+                "[--resource-control-fd FD] "
                 "-- COMMAND [ARG...]\n");
         return 2;
     }
@@ -1297,11 +1343,19 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     int network_loopback_only = 0;
     int proxy_control_descriptor = -1;
     int violation_control_descriptor = -1;
+    int resource_control_descriptor = -1;
     const char *quota_unit = NULL;
     uint64_t quota_limit = 0;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
-        if (strcmp(argv[command_index], "--task-quota-unit") == 0) {
+        if (strcmp(argv[command_index], "--resource-control-fd") == 0) {
+            uint64_t descriptor;
+            if (resource_control_descriptor >= 0 || command_index + 1 >= argc ||
+                parse_u64_decimal(argv[command_index + 1], &descriptor) != 0 ||
+                descriptor < 3 || descriptor > INT_MAX) goto invalid_task_quota;
+            resource_control_descriptor = (int)descriptor;
+            command_index += 2;
+        } else if (strcmp(argv[command_index], "--task-quota-unit") == 0) {
             if (quota_unit || command_index + 1 >= argc ||
                 !icode_quota_unit_valid(argv[command_index + 1])) goto invalid_task_quota;
             quota_unit = argv[command_index + 1];
@@ -1440,6 +1494,9 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         }
     }
     if ((quota_unit != NULL) != (quota_limit != 0)) goto invalid_task_quota;
+    if (resource_control_descriptor >= 0 && (!quota_unit ||
+        resource_control_descriptor == proxy_control_descriptor ||
+        resource_control_descriptor == violation_control_descriptor)) goto invalid_task_quota;
     if (command_index + 1 >= argc) {
         fprintf(stderr, "missing command\n");
         free(runtime_roots);
@@ -1479,13 +1536,20 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         free(execute_only);
         return 1;
     }
-    /* Preserve only the one authenticated bootstrap endpoint, if requested. */
+    if (resource_control_descriptor >= 0 &&
+        validate_violation_control_descriptor(resource_control_descriptor) != 0) {
+        fprintf(stderr, "resource control descriptor is not a trusted channel\n");
+        free(runtime_roots); free(metadata_roots); free(execute_only);
+        return 1;
+    }
+    /* Keep only the authenticated resource plus proxy/violation endpoints. */
     int preserved_descriptor = proxy_control_descriptor >= 0
         ? proxy_control_descriptor : violation_control_descriptor;
-    if (close_inherited_descriptors(preserved_descriptor) != 0) {
+    if (close_inherited_descriptors(preserved_descriptor, resource_control_descriptor) != 0) {
         perror("close_range inherited descriptors");
         if (proxy_control_descriptor >= 0) close(proxy_control_descriptor);
         if (violation_control_descriptor >= 0) close(violation_control_descriptor);
+        if (resource_control_descriptor >= 0) close(resource_control_descriptor);
         free(runtime_roots);
         free(metadata_roots);
         free(execute_only);
@@ -1519,19 +1583,36 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
      * alone owns cleanup; PID 1 borrows a forked copy of the management state.
      */
     struct icode_task_quota quota = ICODE_TASK_QUOTA_STATE_INIT;
+    struct icode_task_resource resource;
+    if (resource_control_descriptor >= 0 &&
+        icode_resource_init(&resource, resource_control_descriptor, quota_unit, (uint32_t)quota_limit) != 0) {
+        fprintf(stderr, "resource control setup failed\n");
+        close(resource_control_descriptor);
+        free(workspace); free(runtime_roots); free(metadata_roots); free(execute_only);
+        return 1;
+    }
+    int preexec_failed = 0;
+    int cleanup_failed = 0;
     int result;
     if (quota_unit && icode_task_quota_prepare(quota_unit, quota_limit, &quota) != 0) {
         fprintf(stderr, "task quota setup failed\n");
         result = 1;
+        preexec_failed = 1;
     } else {
-        result = supervise_task(
+        if (resource_control_descriptor >= 0 &&
+            (icode_resource_send(&resource, ICODE_RESOURCE_CONFIGURED) != 0 ||
+             icode_resource_ack(&resource) != 0)) {
+            result = 1;
+            preexec_failed = 1;
+        } else result = supervise_task(
             (pid_t)parent_value, workspace, runtime_roots, runtime_root_count,
             metadata_roots, metadata_root_count,
             execute_only_count > 0 ? execute_only : NULL, execute_only_count,
             argv + command_index,
             workspace_read_only, network_loopback_only,
             proxy_control_descriptor, violation_control_descriptor,
-            setgroups_path, uid_map_path, quota_unit ? &quota : NULL);
+            setgroups_path, uid_map_path, quota_unit ? &quota : NULL,
+            resource_control_descriptor, resource_control_descriptor >= 0 ? &preexec_failed : NULL);
         /* supervise_task waits PID 1; its exit synchronously kills namespace
          * descendants. Setup failures before PID 1 also leave payload empty.
          * A failed finish is a failure, never equivalent to closing its FDs.
@@ -1539,7 +1620,14 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         if (quota_unit && icode_task_quota_finish(&quota) != 0) {
             fprintf(stderr, "task quota cleanup failed\n");
             result = 1;
+            cleanup_failed = 1;
         }
+    }
+    if (resource_control_descriptor >= 0) {
+        unsigned char terminal = cleanup_failed ? ICODE_RESOURCE_CLEANUP_FAILED :
+            preexec_failed ? ICODE_RESOURCE_PREEXEC_FAILED : ICODE_RESOURCE_FINISHED;
+        if (icode_resource_send(&resource, terminal) != 0) result = 1;
+        close(resource_control_descriptor);
     }
     icode_task_quota_close(&quota);
     free(workspace);

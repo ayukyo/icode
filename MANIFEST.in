@@ -1,5 +1,6 @@
 include native/linux/icode_landlock.c
 include native/linux/icode_task_quota.h
+include native/linux/icode_task_resource.h
 recursive-include native/windows *.c CMakeLists.txt
 include scripts/windows_wheel.py
 recursive-include native/provenance *.go *.py go.mod go.sum *.json *.base64 *.md LICENSE* NOTICE*
