@@ -14,6 +14,18 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_build_context_portable_contract_is_selected_once(self):
+        from tests.test_windows_build_context import TestWindowsBuildContext
+        name = "tests.test_windows_build_context.TestWindowsBuildContext"
+        self.assertEqual(DEFAULT_MODULES.count(name), 1)
+        self.assertNotIn("tests.test_windows_build_context", DEFAULT_MODULES)
+        self.assertNotIn(name + "HostCMake", DEFAULT_MODULES)
+        methods = unittest.defaultTestLoader.getTestCaseNames(TestWindowsBuildContext)
+        self.assertTrue(methods)
+        self.assertFalse(getattr(TestWindowsBuildContext, "__unittest_skip__", False))
+        for method in methods:
+            self.assertFalse(getattr(getattr(TestWindowsBuildContext, method), "__unittest_skip__", False))
+
     def test_direct_volume_canary_portable_contract_is_selected_once(self):
         name = "tests.test_windows_direct_volume.TestWindowsDirectVolume"
         self.assertEqual(DEFAULT_MODULES.count(name), 1)

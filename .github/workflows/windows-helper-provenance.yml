@@ -171,9 +171,11 @@ jobs:
           $buildDirectory = Join-Path $env:RUNNER_TEMP 'icode-provenance-build'
           $verifier = Join-Path $env:RUNNER_TEMP 'icode-offline-verifier.exe'
           $python = (Get-Command python).Source
-          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}' -DICODE_WINDOWS_PROVENANCE_VERIFIER="$verifier" -DPython3_EXECUTABLE="$python"
+          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}' -DICODE_WINDOWS_PROVENANCE_VERIFIER="$verifier" -DPython3_EXECUTABLE="$python" -DICODE_WINDOWS_BUILD_CONTEXT_DIAGNOSTIC=ON
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build $buildDirectory --config Release --target icode_windows_bootstrap --parallel 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/probe_windows_build_context.py --build-directory $buildDirectory --architecture '${{ matrix.helper-architecture }}'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Attest exactly one final helper before building the wheel
         id: attest

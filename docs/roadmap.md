@@ -2,6 +2,12 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **CI构建context软件门完成（2026-10-09）：**七源码冻结441788，独立SPEC→不同QUALITY各89PASS/0skip/0问题，根20轮1780PASS/0skip、DEFAULT438PASS/0skip；完整preflight2287 total/2228PASS/59既有skip/0FAIL/ERROR，三道通过（测试475.079秒/守护476.450秒），编译1及其它检查通过。复用实际选定MSBuild、有界七属性评估及生成项目交叉校验，默认OFF，仅sign构建后/签名前启用，无新用户依赖或权限。准备精确main提交推送，新SHA四格真实context必须另验；生产WP0b/资源与R3模型总门仍未过。[分层验收](./nbl/plans/2026-10-09-windows-build-context.md)。
+
+- **0f来源四格归档、下一夹具复核（2026-10-09）：**来源37823992396/head SHA0f终态success；根另读四格完整日志，各19PASS，proof54052974/54052995/54055031/54053287。三个run均终态STOP，原探针marker未转发，且Windows workspace旧Git/WFP门仍未过。构建context作者18软件/3合成CMake通过后，根独立取得Windows目录尾slash模拟1FAIL/0ERROR；另发现非法文件名及symlink权限假设，测试层修复中，尚不接CI或宣称阶段验收。[实施记录](./nbl/plans/2026-10-09-windows-build-context.md)；无新增产品权限、用户工具链或R2/R3信用。
+
+- **0f路径夹具原生回收，构建context实施继续（2026-10-09）：**一行修正已精确推送 `0f557b10c9df759de4d7550dc73f5d99c3b95f2a`；主CI37823992667终态37success/4failure/3整jobskip，根另读macOS整套418/75零skip成功、双Windows各412/20skip且路径断言不再失败。非verbose无method单独PASS标记，不虚构。剩Windows Git合同/WFP Reviewer仍失败，来源四signed新SHA进行中，Pages精确部署成功。下一默认OFF/CI-only构建context先实际14软件/3CMake RED，作者首轮17GREEN零skip，仍自审/补负控中，未接CI、未独立验收。[下一计划](./nbl/plans/2026-10-09-windows-build-context.md)。
+
 - **路径夹具一行修正软件门通过（2026-10-09）：**目标SHA `1b97ca3d0e280ce2c5583f9eb96af92753efc60ea24f1fdff9508cbf190b7cd6` 冻结，独立双审各51PASS/0skip/0问题，20轮1020PASS/0skip、DEFAULT418PASS/0skip；完整preflight2261 total/2202PASS/59既有skip/0FAIL/0ERROR、3道全部通过（测试477.499秒/守护478.797秒），compileall-j1与其它守护通过。只改测试预期canonical根，生产者/接口/权限/vendor不变，准备main提交推送；新SHA Windows/macOS夹具原生验收另跑。下一WP0b工具选择诊断设计静态SPEC→不同QUALITY已批准，不把设计算实现；R2/R3整体仍未达标。[窗口](./nbl/plans/2026-10-09-windows-direct-volume-canary.md)。
 
 - **58四signed终态通过、夹具修正守护中（2026-10-09）：**来源37820895762 success，四架构/解释器格均19PASS，proof54044125/54044235/54045309/54044287，根另读四日志。实际x64 Server2025/ARM Windows11，Python3.11.9/3.12.10；两312旧构建失败本轮未复现，固定卷路径CI兼容子门通过，原probe marker未转发不冒称已取得。主CI仍36success/5failure/3整jobskip，Pages精确58部署成功，三run全部STOP。测试路径根一行修正独立双审各51PASS/0skip/0问题、20轮1020PASS和DEFAULT418PASS/0skip，全仓进行中；新SHA原生尚无，R2/R3整体未通过。下一WP0b工具选择诊断仅静态设计中，不加用户依赖/权限。[证据](./nbl/plans/2026-10-09-windows-direct-volume-canary.md)。

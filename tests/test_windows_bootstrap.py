@@ -17,6 +17,29 @@ SOURCE = Path(__file__).resolve().parents[1] / "native/windows/icode_windows_boo
 
 
 class TestWindowsBootstrap(unittest.TestCase):
+    def test_build_context_diagnostic_runs_after_final_build_before_attestation(self) -> None:
+        workflow = (SOURCE.parents[2] / ".github/workflows/windows-helper-provenance.yml").read_text(encoding="utf-8")
+        validate, separator, signing = workflow.partition("\n  sign:\n")
+        self.assertTrue(separator)
+        option = "-DICODE_WINDOWS_BUILD_CONTEXT_DIAGNOSTIC=ON"
+        probe = "python scripts/probe_windows_build_context.py --build-directory $buildDirectory --architecture '${{ matrix.helper-architecture }}'"
+        for token in (option, probe):
+            self.assertEqual(workflow.count(token), 1)
+            self.assertNotIn(token, validate)
+        build_command = "cmake --build $buildDirectory --config Release --target icode_windows_bootstrap --parallel 1"
+        stop_command = "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+        build = signing.index(build_command)
+        stop = signing.index(stop_command, build + len(build_command))
+        diagnostic = signing.index(probe)
+        attest = signing.index("- name: Attest exactly one final helper")
+        self.assertLess(build, stop)
+        self.assertLess(stop, diagnostic)
+        self.assertLess(diagnostic, attest)
+        self.assertIn(probe + "\n          " + stop_command, signing)
+        self.assertEqual(workflow.count("id-token: write"), 1)
+        self.assertEqual(workflow.count("attestations: write"), 1)
+        self.assertNotIn("contents: write", workflow)
+
     def test_native_verifier_build_failures_identify_the_exact_fixed_stage(self) -> None:
         workflow = (SOURCE.parents[2] / ".github/workflows/windows-helper-provenance.yml").read_text(encoding="utf-8")
         for stage in ("go_test", "go_vet", "go_build", "license_tests", "license_closure"):

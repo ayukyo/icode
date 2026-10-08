@@ -2,6 +2,10 @@
 
 ## 2026-10-09后续原生窗口与路径夹具修正
 
+0f来源窗口最终收尾：run37823992396/head SHA0f终态success，validate及四signed全部成功；根独立回读四格完整decoded日志与元数据，各19PASS，proof依次为x64/3.11.9 `54052974`、x64/3.12.10 `54052995`、ARM64/3.11.9 `54055031`、ARM64/3.12.10 `54053287`，jobs分别 `113477187317/113477187183/113477187282/113477187287`。实际x64 Server2025 image20260925.250.1，ARM Windows11 image20261004.176.1；均Go1.27.1及9项offline测试通过。原始direct-volume/ctime探针输出未转发，只取得实际安装链19项摘要，不冒称原marker或标准用户/UAC/held-HANDLE证据。主CI、来源、Pages均终态STOP；当前构建context诊断尚未发布，不能沿用0f信用。下面“来源进行中”属于收尾前历史观察。
+
+夹具修正已main提交推送为 `0f557b10c9df759de4d7550dc73f5d99c3b95f2a`，父58；push/远端refs/官方main分别核实。[主CI37823992667](https://github.com/ayukyo/icode/actions/runs/37823992667)终态37success/4failure/3整jobskip。根独立读macOS job113471953291：418tests/0skip及75lease/0skip成功；独立读两个Windows workspace113471953110/113471953430：各412tests/20既有skip，旧路径断言不再在失败集合。x64仅两ERROR（Git10093、observed[0] IndexError），ARM仅一FAIL一ERROR（Git10038的dispatch0!=1、Git10093）；不把x64 IndexError倒填成10038。非verbose日志不含该method单独PASS行，证据来自精确SHA选择合同与实际整套/失败清单，不冒称独立取得单测试标记。两Reviewer仍exit78/WFP无匹配drop，R2/R3不变；0f来源四signed仍进行中，Pages精确SHA已success并STOP。
+
 一行夹具修正最终软件门：独立双审各51PASS/0skip/0问题，根20轮1020PASS/0skip（3.370秒），DEFAULT418PASS/0skip（165.288秒）；新完整preflight三道通过，2261 total/2202PASS/59既有skip/0FAIL/0ERROR，测试477.499秒、守护478.797秒。compileall-j1及治理/站点/竞品/diff通过；目标SHA前后未变。此窗口准备精确main提交推送，下一新SHA原生夹具结果仍待验；下面“进行中”是收尾前历史记录。
 
 本窗口最新收尾：来源run37820895762已终态success，validate及四signed全部成功；最后ARM64 Py3.11 job113464942576证明54045309。根代理已经独立读取四格完整decoded日志及run SHA/终态，不只依赖观察者结论。四格各19PASS，均完成已安装gh→C binding→Go真实正负控→固定卷路径→v1/拒绝→导出；两Py3.12最终bytes构建本轮实际通过。固定卷路径只关闭此CI兼容性子门，原marker未公开仍如实记录，不授锁/UAC/生产权限。CI及Pages也已终态，独立观察者全部STOP，无取消/重跑。
