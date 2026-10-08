@@ -29,6 +29,11 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
     def test_contract_finalization_runs_once_on_every_platform(self) -> None:
         self.assertEqual(DEFAULT_MODULES.count("tests.test_contract_finalization"), 1)
 
+    def test_host_engineering_contract_runs_once_without_optional_toolchain(self) -> None:
+        for case in ("TestEngineeringVerification", "TestEngineeringAdapters", "TestEngineeringResourceDispatch"):
+            self.assertEqual(DEFAULT_MODULES.count("tests.test_engineering_verification." + case), 1)
+        self.assertNotIn("tests.test_engineering_verification.TestRealGoEngineeringVerification", DEFAULT_MODULES)
+
     def test_cross_platform_matrix_selects_os_neutral_R3_regressions(self) -> None:
         self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 50)
         self.assertTrue(set(CROSS_PLATFORM_R3_TESTS).issubset(DEFAULT_MODULES))

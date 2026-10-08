@@ -55,3 +55,9 @@
 - ✅ 关联模块：本机244项无失败/5既有skip，独立SPEC及不同QUALITY无回归。
 - ✅ 兼容安全：max-turn软提示、300/301共享预算、无trace步骤、幂等phase可选与Recoverer保持。
 - ✅ 可运行性：本片Ubuntu离线真实CP及DEFAULT253/全仓3守护通过；新SHA异平台/模型/总门另验，不宣称100%整体验收。
+
+## 精确提交的远端终态
+
+实际提交推送main `71a3d2c726903fb701d10bb8380952c7bc741fd0`，远端ls-remote及GitHub分支API核对一致。独立只读观察已结束：相同SHA [主CI37763592180](https://github.com/ayukyo/icode/actions/runs/37763592180)44 jobs、39成功/2旧Windows Reviewer失败/3skip；Python3.11与3.12各2083项、71skip、324.346/528.923秒。DEFAULT Linux253/0skip/101.059秒，macOS253/0skip/215.107秒，Windows x64与ARM64各252/9skip/154.074与260.098秒。新15方法由DEFAULT和全量发现链纳入，但聚合日志不是逐方法日志，亦未单独运行本机24项命令，不倒填。
+
+两个旧Reviewer job为113265696118/113265696228，step7仍78!=0；Job已执行且cleanup_ok=true，固定诊断connect=10035/wait=timeout/fd=false/enum_not_attempted，不能称根因修复或生产Windows可用。相同SHA [provenance37763592173](https://github.com/ayukyo/icode/actions/runs/37763592173)validate加四原生矩阵5/5成功，四组license各9项零skip，实际attestation/gh oracle/安装后offline API/六类严格串行密码学负控/setup拒绝/wheel上传通过；聚合负控日志不说成六条独立日志，launch仍false。[Pages37763592207](https://github.com/ayukyo/icode/actions/runs/37763592207)validate/deploy成功。三轮均已终态STOP，不rerun或反复查询，不以39/5/2个子门替代R2/R3总体完成。

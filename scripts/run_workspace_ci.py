@@ -77,6 +77,11 @@ DEFAULT_MODULES = (
     "tests.test_cli_resume_sandbox",
     "tests.test_shared_runtime_budget",
     "tests.test_contract_finalization",
+    # Host/framework contracts are bounded; optional Go SDK diagnostics are
+    # separate and do not stand in for native resource-scope acceptance.
+    "tests.test_engineering_verification.TestEngineeringVerification",
+    "tests.test_engineering_verification.TestEngineeringAdapters",
+    "tests.test_engineering_verification.TestEngineeringResourceDispatch",
     # Keep the integration matrix bounded while exercising task-tree capture,
     # result-commit binding, and receipt export/import on each workspace platform.
     *CROSS_PLATFORM_R3_TESTS,

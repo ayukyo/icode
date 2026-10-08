@@ -34,6 +34,7 @@ from ..sandbox_policy import NetworkMode, SandboxPolicy
 from ..workspace import GitWorkspaceIdentity, WorkspaceSession
 from ..workspace_snapshot import changed_files, snapshot_workspace
 from .base import (
+    IsolationUnavailable,
     OPCLASS_MANAGED_WRITE,
     OPCLASS_READ_ONLY,
     POLICY_DENIED_USER_MESSAGE,
@@ -615,6 +616,67 @@ def workspace_changes(ctx: ToolContext) -> ToolResult:
 # ---------------------------------------------------------------------------
 
 
+def _uses_resource_dispatch(ctx: ToolContext) -> bool:
+    return (
+        ctx.policy is not None
+        and sys.platform.startswith("linux")
+        and isinstance(ctx.sandbox, LandlockSandbox)
+        and ctx.policy.network_mode is NetworkMode.DENY
+        and not ctx.policy.allowed_domains
+    )
+
+
+def _controlled_dispatch(
+    ctx: ToolContext, argv: list[str], *, cwd: Path, timeout: int | float,
+    output_limit_bytes: int | None = None, require_resource: bool = False,
+    verification_cache_root: Path | None = None,
+):
+    """Host/tool shared policy dispatch, returning complete broker facts.
+
+    Host engineering checks require the independently collected resource
+    scope. An unsupported platform is rejected before launching, never wrapped
+    into an ordinary host subprocess. Model-facing tools retain their existing
+    policy dispatch; this helper is not registered as a model tool.
+    """
+    try:
+        root = ctx.root.resolve(strict=True)
+        workdir = cwd.resolve(strict=True)
+        workdir.relative_to(root)
+        if not workdir.is_dir() or ctx.policy is None or ctx.policy.workspace_root != root:
+            raise ValueError("invalid policy context")
+    except (OSError, RuntimeError, TypeError, ValueError):
+        raise IsolationUnavailable("工单执行目录与策略绑定不一致") from None
+    resource_dispatch = _uses_resource_dispatch(ctx)
+    if require_resource and (ctx.read_only_workspace or not resource_dispatch):
+        raise IsolationUnavailable("当前边界未提供宿主工程检查所需的单任务资源回执")
+    if verification_cache_root is not None and not resource_dispatch:
+        raise IsolationUnavailable("当前边界不支持宿主工程检查临时目录")
+    options = {}
+    if output_limit_bytes is not None:
+        options["output_limit_bytes"] = output_limit_bytes
+    if resource_dispatch:
+        # Bind before fixed manager queries and again in the handoff wrapper.
+        try:
+            ctx._policy_command_wrapper()
+        except Exception:
+            raise IsolationUnavailable("工单隔离策略绑定失败，命令已拒绝") from None
+        if verification_cache_root is not None:
+            options["verification_cache_root"] = verification_cache_root
+        return execute_linux_resource_observed_command(
+            argv, cwd=workdir, sandbox=ctx.sandbox, policy=ctx.policy,
+            timeout=timeout, command_wrapper=ctx.wrap_command_with_resource_receipt,
+            **options,
+        )
+    try:
+        prepared = ctx.wrap_command(argv)
+    except Exception:
+        raise IsolationUnavailable("工单隔离策略绑定失败，命令已拒绝") from None
+    return execute_policy_command(
+        prepared, cwd=workdir, policy=ctx.policy, timeout=timeout,
+        **options,
+    )
+
+
 def run_command(
     ctx: ToolContext,
     argv: list[str] | str,
@@ -677,22 +739,17 @@ def run_command(
             {"error": "git_broker_unavailable"},
             opclass=OPCLASS_READ_ONLY if _looks_read_only(args) else OPCLASS_MANAGED_WRITE,
         )
-    use_linux_violation_receipts = (
-        ctx.policy is not None
-        and sys.platform.startswith("linux")
-        and isinstance(ctx.sandbox, LandlockSandbox)
-        and ctx.policy.network_mode is NetworkMode.DENY
-        and not ctx.policy.allowed_domains
-    )
+    use_linux_violation_receipts = _uses_resource_dispatch(ctx)
     try:
-        if use_linux_violation_receipts:
-            # Pure context binding precedes even the manager's fixed queries;
-            # the actual dual-channel wrapper rechecks immediately pre-launch.
-            ctx._policy_command_wrapper()
-        exec_argv = (
-            args if use_linux_violation_receipts else ctx.wrap_command(args)
-        )
+        if ctx.policy is not None:
+            outcome = _controlled_dispatch(ctx, args, cwd=workdir, timeout=timeout)
+        else:
+            exec_argv = ctx.wrap_command(args)
     except Exception as exc:  # noqa: BLE001 - 隔离不可用时拒绝执行，不降级
+        if ctx.policy is not None and not isinstance(exc, IsolationUnavailable):
+            # Only confirmed pre-launch binding failures may report false.
+            # Broker/program errors keep the original registry error path.
+            raise
         return ToolResult(
             False,
             f"隔离不可用，已拒绝执行：{exc}",
@@ -707,19 +764,6 @@ def run_command(
         )
 
     if ctx.policy is not None:
-        if use_linux_violation_receipts:
-            outcome = execute_linux_resource_observed_command(
-                args,
-                cwd=workdir,
-                sandbox=ctx.sandbox,
-                policy=ctx.policy,
-                timeout=timeout,
-                command_wrapper=ctx.wrap_command_with_resource_receipt,
-            )
-        else:
-            outcome = execute_policy_command(
-                exec_argv, cwd=workdir, policy=ctx.policy, timeout=timeout,
-            )
         # 命令参数可能含密钥：事件与回执只保留摘要，不回显原文。
         argv_sha256 = hashlib.sha256(
             json.dumps(args, ensure_ascii=False, separators=(",", ":")).encode("utf-8")

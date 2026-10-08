@@ -8,6 +8,7 @@ import os
 import selectors
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
@@ -43,7 +44,9 @@ class ExecutionResult:
     payload_started: bool | None = None
 
 
-def _policy_environment(root: Path, *, git_status: bool = False) -> dict[str, str]:
+def _policy_environment(
+    root: Path, *, git_status: bool = False, verification_cache_root: Path | None = None,
+) -> dict[str, str]:
     """只传运行必需的显式变量，避免模型命令继承宿主密钥与凭据。"""
     paths = [str(Path(sys.executable).parent)]
     paths.extend(
@@ -60,6 +63,11 @@ def _policy_environment(root: Path, *, git_status: bool = False) -> dict[str, st
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_SYSTEM": os.devnull,
     }
+    if os.name == "nt":
+        for name in ("SystemRoot", "WINDIR"):
+            value = os.environ.get(name)
+            if value:
+                environment[name] = value
     # src 布局是本地 Python 工程常见形态；只从当前工作区派生，不继承宿主 PYTHONPATH。
     source_dir = root / "src"
     if source_dir.is_dir() and source_dir.resolve().is_relative_to(root):
@@ -78,6 +86,27 @@ def _policy_environment(root: Path, *, git_status: bool = False) -> dict[str, st
             }
         )
         environment.pop("PYTHONPATH", None)
+    if verification_cache_root is not None:
+        if git_status:
+            raise ValueError("Git queries do not accept verification caches")
+        cache = verification_cache_root
+        status = cache.lstat()
+        if (
+            cache.parent != root
+            or not cache.name.startswith(".icode-verification-")
+            or cache.resolve(strict=True) != cache
+            or not stat.S_ISDIR(status.st_mode)
+        ):
+            raise ValueError("invalid host verification cache")
+        environment.update(
+            HOME=str(cache / "home"), USERPROFILE=str(cache / "home"),
+            XDG_CONFIG_HOME=str(cache / "config"), APPDATA=str(cache / "config"),
+            LOCALAPPDATA=str(cache / "local"),
+            TMPDIR=str(cache / "tmp"), TEMP=str(cache / "tmp"), TMP=str(cache / "tmp"),
+            GOCACHE=str(cache / "cache"), GOMODCACHE=str(cache / "mod"),
+            GOPATH=str(cache / "gopath"), GOENV="off", GOTOOLCHAIN="local",
+            GOPROXY="off", GOFLAGS="", GOMAXPROCS="1",
+        )
     return environment
 
 
@@ -138,12 +167,14 @@ def execute_linux_resource_observed_command(
     argv: list[str], *, cwd: Path, sandbox: object, policy: SandboxPolicy,
     timeout: int | float, output_limit_bytes: int | None = None,
     command_wrapper: Callable[[list[str], socket.socket, socket.socket, str], list[str]],
+    verification_cache_root: Path | None = None,
 ) -> ExecutionResult:
     """Actual policy-command quota chain; not an automatic-mode support grant."""
     return _execute_linux_observed_command(
         argv, cwd=cwd, sandbox=sandbox, policy=policy, timeout=timeout,
         output_limit_bytes=output_limit_bytes, command_wrapper=command_wrapper,
         resource_mode=True,
+        verification_cache_root=verification_cache_root,
     )
 
 
@@ -151,6 +182,7 @@ def _execute_linux_observed_command(
     argv: list[str], *, cwd: Path, sandbox: object, policy: SandboxPolicy,
     timeout: int | float, output_limit_bytes: int | None,
     command_wrapper: Callable[..., list[str]], resource_mode: bool,
+    verification_cache_root: Path | None = None,
 ) -> ExecutionResult:
     """Run a Linux deny-only command with a pre-exec USER_NOTIF observer.
 
@@ -176,6 +208,21 @@ def _execute_linux_observed_command(
         or policy.allowed_domains
     ):
         return ExecutionResult(None, "", 0, "invalid_violation_scope", False, True, None)
+
+    if verification_cache_root is not None:
+        try:
+            if not resource_mode:
+                raise ValueError("verification requires resource scope")
+            _policy_environment(policy.workspace_root, verification_cache_root=verification_cache_root)
+            if (
+                not any(verification_cache_root.is_relative_to(root) for root in policy.write_roots)
+                or any(verification_cache_root.is_relative_to(root) or root.is_relative_to(verification_cache_root)
+                       for root in (*policy.deny_read_roots, *policy.deny_write_roots, *policy.protected_paths))
+            ):
+                raise ValueError("verification cache is not within the approved scope")
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return ExecutionResult(None, "", 0, "invalid_verification_cache", False, True, None,
+                                   payload_started=False)
 
     host_control: socket.socket | None = None
     sender_control: socket.socket | None = None
@@ -296,7 +343,7 @@ def _execute_linux_observed_command(
         launch_start = time.monotonic()
         launch_env = None
         if task_scope is not None:
-            launch_env = _policy_environment(policy.workspace_root)
+            launch_env = _policy_environment(policy.workspace_root, verification_cache_root=verification_cache_root)
             for key in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
                 launch_env[key] = task_scope.environment[key]
         result = _execute_policy_command(

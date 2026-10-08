@@ -328,6 +328,7 @@ def prepare_workspace(fixture: str, target: Path, *, repo_root: Path) -> Path:
 
 def _run_unittest_with_bounded_output(
     argv: list[str], *, workspace: Path, timeout: int, output_limit_bytes: int,
+    environment: dict[str, str] | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Drain both child pipes while retaining at most the combined byte budget.
 
@@ -338,14 +339,17 @@ def _run_unittest_with_bounded_output(
     if type(output_limit_bytes) is not int or output_limit_bytes < 1:
         raise ValueError("output_limit_bytes must be a positive integer")
 
+    launch_options = {"environment": environment} if environment is not None else {}
     if os.name == "posix":
         return _run_posix_bounded_output(
             argv, workspace=workspace, timeout=timeout,
             output_limit_bytes=output_limit_bytes,
+            **launch_options,
         )
     return _run_threaded_bounded_output(
         argv, workspace=workspace, timeout=timeout,
         output_limit_bytes=output_limit_bytes,
+        **launch_options,
     )
 
 
@@ -609,11 +613,13 @@ def _reap_posix_verification_process(proc: subprocess.Popen[bytes]) -> int:
 
 def _run_posix_bounded_output(
     argv: list[str], *, workspace: Path, timeout: int, output_limit_bytes: int,
+    environment: dict[str, str] | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Use nonblocking selectors so even setsid descendants cannot hang a reader."""
-    proc = subprocess.Popen(  # noqa: S603 - fixed unittest argv, shell=False
+    proc = subprocess.Popen(  # noqa: S603 - host-selected argv, shell=False
         argv, cwd=str(workspace), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         text=False, bufsize=0, shell=False, start_new_session=True,
+        **({"env": environment, "stdin": subprocess.DEVNULL} if environment is not None else {}),
     )
     process_deadline = time.monotonic() + timeout
     stdout_chunks = bytearray()
@@ -823,6 +829,7 @@ def _cancel_windows_pipe_readers(
 
 def _run_threaded_bounded_output(
     argv: list[str], *, workspace: Path, timeout: int, output_limit_bytes: int,
+    environment: dict[str, str] | None = None,
 ) -> tuple[int, bytes, bytes]:
     job = None
     if sys.platform == "win32":
@@ -833,6 +840,7 @@ def _run_threaded_bounded_output(
         return _run_threaded_bounded_output_impl(
             argv, workspace=workspace, timeout=timeout,
             output_limit_bytes=output_limit_bytes, job=job,
+            **({"environment": environment} if environment is not None else {}),
         )
     finally:
         if job is not None:
@@ -879,7 +887,7 @@ def _join_or_cancel_threaded_readers(
 
 def _run_threaded_bounded_output_impl(
     argv: list[str], *, workspace: Path, timeout: int, output_limit_bytes: int,
-    job=None,
+    job=None, environment: dict[str, str] | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Windows pipe reader threads with a bounded drain and explicit cancellation."""
 
@@ -891,6 +899,8 @@ def _run_threaded_bounded_output_impl(
         "bufsize": 0,
         "shell": False,
     }
+    if environment is not None:
+        popen_options.update(env=environment, stdin=subprocess.DEVNULL)
     if job is not None:
         from .windows_process_tree import CREATE_SUSPENDED
 
