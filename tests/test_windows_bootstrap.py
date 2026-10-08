@@ -17,6 +17,22 @@ SOURCE = Path(__file__).resolve().parents[1] / "native/windows/icode_windows_boo
 
 
 class TestWindowsBootstrap(unittest.TestCase):
+    def test_native_verifier_build_failures_identify_the_exact_fixed_stage(self) -> None:
+        workflow = (SOURCE.parents[2] / ".github/workflows/windows-helper-provenance.yml").read_text(encoding="utf-8")
+        for stage in ("go_test", "go_vet", "go_build", "license_tests", "license_closure"):
+            self.assertIn(f"::error::offline-verifier-build stage={stage} exit=", workflow)
+        self.assertIn("go test -json -mod=readonly -p 6", workflow)
+        self.assertIn("failed_tests=", workflow)
+        self.assertIn("^Test[A-Za-z0-9_]{1,76}$", workflow)
+        self.assertIn("Sort-Object -Unique | Select-Object -First 16", workflow)
+        for reason in ("runtime_or_anchor_hash", "missing_reviewed_notice", "module_notice_hash",
+                       "unknown_module", "missing_original_license", "module_replacement", "package_list"):
+            self.assertIn(f"= '{reason}'", workflow)
+        self.assertIn("$reason = 'unclassified'", workflow)
+        for raw in ("$testOutput", "$noticeOutput"):
+            self.assertNotIn(f'Write-Output "{raw}', workflow)
+            self.assertNotIn(f"Write-Output {raw}", workflow)
+
     def test_signed_ci_builds_and_installs_offline_verifier_without_product_toolchain(self) -> None:
         workflow = (SOURCE.parents[2] / ".github/workflows/windows-helper-provenance.yml").read_text(encoding="utf-8")
         for token in ("uses: actions/setup-go@", 'go-version: "1.27.1"',

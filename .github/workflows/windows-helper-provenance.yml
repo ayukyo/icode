@@ -102,17 +102,58 @@ jobs:
           $verifier = Join-Path $env:RUNNER_TEMP 'icode-offline-verifier.exe'
           $notices = Join-Path $env:RUNNER_TEMP 'icode-provenance-NOTICES.txt'
           Push-Location native/provenance
-          go test -mod=readonly -p 6 ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $testOutput = go test -json -mod=readonly -p 6 ./...
+          $testExit = $LASTEXITCODE
+          if ($testExit -ne 0) {
+            # Publish only bounded top-level test identifiers, never raw output.
+            $failed = @($testOutput | ForEach-Object {
+              try {
+                $event = $_ | ConvertFrom-Json -ErrorAction Stop
+                if ($event.Action -eq 'fail' -and $event.Test -is [string]) {
+                  $name = $event.Test.Split('/')[0]
+                  if ($name -cmatch '^Test[A-Za-z0-9_]{1,76}$') { $name }
+                }
+              } catch { }
+            } | Sort-Object -Unique | Select-Object -First 16)
+            $names = if ($failed.Count -eq 0) { 'unavailable' } else { $failed -join ',' }
+            Write-Output "::error::offline-verifier-build stage=go_test exit=$testExit failed_tests=$names"
+            exit $testExit
+          }
           go vet -mod=readonly -p 6 ./...
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::offline-verifier-build stage=go_vet exit=$LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
           go build -mod=readonly -p 6 -trimpath -ldflags='-s -w' -o $verifier .
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::offline-verifier-build stage=go_build exit=$LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
           Pop-Location
           python -m unittest discover -s native/provenance/tools -p 'test_*.py'
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          python native/provenance/tools/license_notices.py --output $notices
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::offline-verifier-build stage=license_tests exit=$LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+          $noticeOutput = python native/provenance/tools/license_notices.py --output $notices 2>&1
+          $noticeExit = $LASTEXITCODE
+          if ($noticeExit -ne 0) {
+            $reason = 'unclassified'
+            $categories = @{
+              'unreviewed runtime or trust anchor license' = 'runtime_or_anchor_hash'
+              'missing reviewed linked module notice' = 'missing_reviewed_notice'
+              'unreviewed linked module notice' = 'module_notice_hash'
+              'unreviewed linked module:' = 'unknown_module'
+              'missing original license' = 'missing_original_license'
+              'replaced modules require' = 'module_replacement'
+              'invalid or incomplete Go package list' = 'package_list'
+            }
+            foreach ($prefix in $categories.Keys) {
+              if ($noticeOutput -match [regex]::Escape($prefix)) { $reason = $categories[$prefix]; break }
+            }
+            Write-Output "::error::offline-verifier-build stage=license_closure exit=$noticeExit reason=$reason"
+            exit $noticeExit
+          }
       - name: Build final architecture-specific bootstrap bytes
         shell: pwsh
         run: |

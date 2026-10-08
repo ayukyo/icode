@@ -51,3 +51,12 @@ Python 33 个关联方法连续 20 轮（660 次），Go 16 个函数连续 20 �
 重新生成的 x64/ARM64 notice 各 625239 bytes，SHA-256 均为 `f6c4772fb032b893dc74e99df4bec4e9a0926f1fbd80219c8b5007e09fb3b6e4`。sdist 构建并核对原生源码、根、fixture、许可证和 staging 源文件均在归档中；Linux wheel 的十阶段干净安装、真实 namespace/cleanup/receipt/lease/Git broker 回归全通过。Go 是构建依赖，不加入 Python core dependency，以上不是 Windows 原生安装正例。
 
 待 main 新 SHA 的四个原生矩阵（x64/ARM64 × Python 3.11/3.12）验证同次 action attestation、包内验签正例及六类实际负例后再关闭本子门；不改变 helper 三个 false、只读回执或 R2/R3 readiness。
+
+## ae18bbf 原生复验：构建步骤失败，本子门仍未通过
+
+提交 `ae18bbf62739094abdbb6e643125ff97ca8800fe` 已推送并核对远端 main。
+[provenance run 37717792299](https://github.com/ayukyo/icode/actions/runs/37717792299) 的 validate 成功；四组原生 job 均在合并的 build/test/notices step 失败：x64 Python 3.11 `113120005052`、x64 Python 3.12 `113120005033`、ARM64 Python 3.11 `113120004956`、ARM64 Python 3.12 `113120004975`。attest、安装验签和上传全部跳过，真实包内正例及六类负例确认数均为零。
+
+公开 x64/ARM64 check annotations 只给 `Process completed with exit code 1`，没有 raw details；不能断言是 go test、vet、build、license tests 或 closure 中的某一项，也不能因为四格同一步失败就认定内部根因相同。下一次只加入各原生命令固定 stage/exit，Go JSON fail 只投影严格白名单形状、数量有界的顶层测试名，许可输出只匹配固定错误类别，不输出证明、路径或异常正文；失败仍返回原退出码且不进入签名/上传。实际原因待下一 SHA，严禁猜测修改密码学或规范化许可证字节来放宽判据。
+
+同 SHA 的 [主 CI](https://github.com/ayukyo/icode/actions/runs/37717792363) 为 32 success、2 Windows Reviewer snapshot candidate failure、3 skipped；两个 Python 全仓、Windows 旧 bootstrap wheel、workspace 和 R3 lifecycle 子门通过，不替代本 provenance 或 R2/R3 总门。[官网](https://github.com/ayukyo/icode/actions/runs/37717792362) success。
