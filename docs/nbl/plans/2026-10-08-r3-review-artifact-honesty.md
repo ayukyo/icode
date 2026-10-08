@@ -21,7 +21,7 @@
 ## Task 1: 审查产物与补落盘顺序
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成
 
 **Dependencies:** 上游契约与现有产物修复机制已读确认。
 **Parallelizable:** Yes（仅与Linux片源码不交叠；最终门禁串行冻结）
@@ -43,14 +43,14 @@
 Run: `PYTHONPATH=src .venv/bin/python -m unittest tests.test_chain tests.test_chain_offline tests.test_runner -v`。
 新真实性矩阵冻结后20轮、0SKIP；记录测试方法数与真实失败/通过，不把FakeBackend离线语义称为真实模型质量验收。核对plan/merge/code/deepcheck/audit默认无post与有post行为，重放不覆盖既有正文、上游子模块不变。
 
-- [ ] **Step 4: 独立SPEC→QUALITY与提交**
+- [x] **Step 4: 独立SPEC→QUALITY与提交**
 
 两次独立只读复审，无遗留发现后，主代理冻结所有并行源码再运行完整preflight、governance/site/landscape及diff-check。单片精确文件commit/push main、核对remote；不依赖此前门禁或另一片的20轮。阶段报告保留R2/R3整体未验收。
 
 ## Task 2: 真实初入步骤的状态/attempt顺序
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成
 
 **Dependencies:** Task1取得独立RED/GREEN；不把预进入review夹具的成功当初入生产链通过。
 **Parallelizable:** No（同runner文件与实施者）
@@ -67,7 +67,7 @@ Run: `PYTHONPATH=src .venv/bin/python -m unittest tests.test_chain tests.test_ch
 
 关联实际105方法首跑发现新建/复用plan已处于init_in_progress，真实同状态transition被state_machine拒绝，导致1FAIL/1ERROR（另5项原有平台SKIP）。最小兼容处理：新工单取成功create返回status，复用工单经控制面trace取得status；当前等于派生in_prog时记录已处于并直接start，否则必须先成功transition。trace失败/缺状态不能借假定绕过；不硬编码plan、不恢复忽略false。真实初入review依旧必须留下entry先于start事件。
 
-- [ ] **Step 3: 首入/拒绝/兼容验证**
+- [x] **Step 3: 首入/拒绝/兼容验证**
 
 真实初入review完整提交及round＋真实正文补落盘均成功，检查state_changed先于本次step_started与manifest origin/hash/回执。失败transition（抛异常及返回ok=false）均无step_start/模型调用；plan/init_in_progress、code/deepcheck及无中间状态merge/audit的关联调用顺序不退化；可另用明确None合同夹具检查通用边界，但不能称当前plan没有中间状态。两Task的新矩阵最终冻结统一20轮0SKIP、独立SPEC→QUALITY，最后整库门禁与推送。
 
@@ -88,5 +88,7 @@ Task1 旧行为真实 RED：12 方法中 10 失败、2 正控通过；Task2 初�
 本记录绑定 `chain.py` SHA-256 `7e2f9dbb785e1318961e0e1060b09f0e9bb3bc8bdaa119d8ac4cc3e2a1217cc8`、`runner.py` `d673aadb7e8ba242edd94c940c33920261cf7e0e1a8e1f0f4df75040ad9d75e8`、`test_chain.py` `3531687c9ae96b69bb95841324e5c56682ea4db58b866ec1a079ee4ebd8d9289`、`test_chain_offline.py` `db72152ad1a8dbd07776d06d83a11acf1c4a657be4527709db84a8ff0ada4f12`。源码变化须重新验证，不能套用上述轮次。
 
 真实 review 步骤 finish 成功不等于完整链 delivered；后续 `mcp_coverage` 门仍未闭合。这些离线测试不证明真实模型质量、完整1→6链或 R3 整体验收，也未更改 R2 隔离与自动模式 readiness。
+
+两个无文件交叠分片共同冻结受测树后精确提交／推送main `be31b9895681e651737714f667d8ceb8e3a56f7d`，远端一致；不是两次独立单片提交。[主CI](https://github.com/ayukyo/icode/actions/runs/37736905277)Python3.11/3.12全仓各1959方法、OK/71 SKIP，主代理实读日志确认；整轮仍有两Windows Reviewer failure，不称整轮全绿。[provenance](https://github.com/ayukyo/icode/actions/runs/37736905233)四矩阵与[官网](https://github.com/ayukyo/icode/actions/runs/37736905248)成功仅关闭各自子门，不证明本片完整模型工作流。Task1/2仅在上述真实性与入口顺序范围关闭；下一片单循环预算门正在独立验收，共享验证核与全流程治理继续实施。
 
 **Execution Mode:** parallel isolated files; acceptance serial

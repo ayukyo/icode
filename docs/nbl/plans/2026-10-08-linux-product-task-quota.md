@@ -28,7 +28,7 @@
 ## Task 1: 真实 registry 命令链与生命周期
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成
 
 **Dependencies:** 管理环境／标准流分片提交并确认remote SHA。
 **Parallelizable:** No（修改共同broker和ToolContext；研究／复审只读）
@@ -122,7 +122,7 @@ ACK前错CG／重复字段／查询超时／callback异常不exec marker；限�
 Run: `PYTHONPATH=src .venv/bin/python -m unittest tests.test_linux_product_task_quota tests.test_linux_violation_receipt tests.test_execution_broker tests.test_tools tests.test_linux_task_resource -v`。
 Expected: 支持主机全部实证通过；新矩阵冻结20轮，轮数绑定最终源码，0SKIP才记录本机host_verified。
 
-- [ ] **Step 5: 独立审查、安装与提交**
+- [x] **Step 5: 独立审查、安装与提交**
 
 独立SPEC→QUALITY；主代理sdist→wheel→干净pip安装，已安装registry复验配额／receipt／清理；`scripts/run_native_wheel_ci.py`原产品receipt阶段继续新链，不将环境缺失改成通过。全部preflight三道、governance／site／landscape和diff-check，精确ownedfiles提交／推送main、确认remote SHA；新CI不足不报告整体完成。
 
@@ -145,5 +145,13 @@ Expected: 支持主机全部实证通过；新矩阵冻结20轮，轮数绑定�
 native wheel完整十阶段实际PASS；其中host-crash和network lease沿既有独立探针验收，不把它们冒充新的产品quota全合同。实施者最终关联扩大至185/185、26.642秒、0 SKIP，PID namespace/mapless关联25/25、0 SKIP；九摘要保持冻结。独立 QUALITY 实际42/42、9.862秒及关联156/156、25.096秒，均0 SKIP；九文件AST/差异/前后摘要通过，无遗留阻断。
 
 主代理完整preflight三道门、compileall `-j6`及治理/官网/竞品/diff守护通过，最后文档修改后密钥/子模块守护再次通过。本机分片已具备提交条件；精确提交推送及新SHA原生矩阵仍另行记录，不提前关闭线上门。上述配置与回收证据不签发 exec=true，也不开放自动模式或关闭 R2/R3。
+
+### be31b98 精确提交及原生安装门
+
+与无源码交叠的R3真实性分片共同冻结为18文件受测树，已提交推送main `be31b9895681e651737714f667d8ceb8e3a56f7d`，主代理提交后ls-remote核对一致。[主CI37736905277](https://github.com/ayukyo/icode/actions/runs/37736905277)最终32 success、2 Windows Reviewer candidate failure、3 skipped；完整37计数由独立观察者保存全页取得，主代理connector首页30只有28 success/2 failure，未将首页冒充全量。
+
+主代理实际读取Python3.11/3.12日志，各1959方法、412.253/463.095秒，OK、71平台SKIP。另实际读取四个Linux安装job：22.04 x64 `113178408620`、ARM64 `113178408650`、24.04/latest x64 `113178408683`、24.04 ARM64 `113178408559`，四个新registry USER_NOTIF/根payload cap1 fork配额安装子门均PASS；对应当前随包探针强制limit1、配置、scope GC及未知exec状态，不是诊断API。22.04两架构lease PASS、24.04两架构SKIP，全部conformance_credit=none；不能将安装job成功推成lease全平台行为通过。
+
+本Task关闭的是实际产品配额接线、限定本机矩阵与四架构安装子门；完整R2隔离/统一文件拒绝/lease产品门、Windows/macOS资源机制及R3真实模型链仍未关闭。上述两个旧Windows失败不被抹掉或解释为资源门通过。
 
 **Execution Mode:** serial

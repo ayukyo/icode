@@ -565,5 +565,199 @@ class TestLoopBounds(unittest.TestCase):
         self.assertIn("模型挂了", r.error)
 
 
+class _MeteredBackend(FakeBackend):
+    """Report one explicit charge for each real FakeBackend response."""
+
+    def __init__(self, responses: list[tuple[Any, int]]) -> None:
+        super().__init__([response for response, _ in responses])
+        self.charges = [charge for _, charge in responses]
+
+    def complete(self, *args, **kwargs):
+        from icode.backends import Usage
+
+        charge = self.charges[min(self._index, len(self.charges) - 1)]
+        response = super().complete(*args, **kwargs)
+        self.last_usage = Usage(total_tokens=charge, calls=1)
+        return response
+
+
+class TestPostResponseBudgetGate(unittest.TestCase):
+    def setUp(self) -> None:
+        self._ws = temp_workspace()
+        self.root = self._ws.__enter__()
+
+    def tearDown(self) -> None:
+        self._ws.__exit__(None, None, None)
+
+    def _metered_loop(self, responses, *, expected=100, hard_ratio=3.0, **kwargs):
+        tracker = BudgetTracker(Budget(expected_tokens=expected, hard_ratio=hard_ratio))
+        loop = _loop([response for response, _ in responses], self.root,
+                     budget=tracker, **kwargs)
+        loop.backend = _MeteredBackend(responses)
+        return loop, tracker
+
+    def test_last_text_response_over_budget_cannot_succeed(self) -> None:
+        loop, tracker = self._metered_loop([("actual final reply", 301)],
+                                          config=LoopConfig(max_turns=1))
+        hooks = []
+        loop.on_turn = lambda index, calls, history: hooks.append((index, calls, list(history)))
+        report = loop.run([{"role": "user", "content": "finish"}])
+        self.assertFalse(report.ok)
+        self.assertEqual(report.stop_reason, "budget_exceeded")
+        self.assertEqual(report.usage.total_tokens, 301)
+        self.assertEqual(report.usage.calls, 1)
+        self.assertEqual(tracker.verdict, "over_budget")
+        self.assertEqual(len(report.turns), 1)
+        self.assertEqual(report.messages[-1]["content"], "actual final reply")
+        self.assertEqual(hooks, [(1, 0, report.messages)])
+
+    def test_over_budget_tool_response_never_starts_side_effects(self) -> None:
+        from unittest.mock import patch
+
+        operations = _StubOps()
+        loop, tracker = self._metered_loop([(_write_call("budget-marker"), 301)],
+                                          ops=operations, config=LoopConfig(max_turns=1))
+        with patch.object(loop, "_invoke", wraps=loop._invoke) as invoke, patch.object(
+            loop.registry, "invoke", wraps=loop.registry.invoke,
+        ) as registry, patch.object(loop.approver, "ask", wraps=loop.approver.ask) as ask:
+            report = loop.run([{"role": "user", "content": "write"}])
+        self.assertFalse(report.ok)
+        self.assertEqual(report.stop_reason, "budget_exceeded")
+        self.assertFalse((self.root / "budget-marker").exists())
+        invoke.assert_not_called()
+        registry.assert_not_called()
+        ask.assert_not_called()
+        self.assertEqual(operations.started, [])
+        self.assertEqual(operations.finished, [])
+        self.assertIs(report.usage, tracker.usage)
+        self.assertEqual(report.usage.total_tokens, 301)
+
+    def test_every_skipped_call_has_truthful_paired_result_and_checkpoint(self) -> None:
+        calls = {"content": "requested writes", "tool_calls": [
+            {"id": f"b{i}", "name": "write_file",
+             "arguments": {"path": f"budget-{i}", "content": "not written"}}
+            for i in range(3)
+        ]}
+        loop, _ = self._metered_loop([(calls, 301)],
+                                    config=LoopConfig(max_turns=1, max_tool_calls_per_turn=1))
+        events, hooks = [], []
+        loop.on_event = lambda kind, payload: events.append((kind, payload))
+        loop.on_turn = lambda index, count, history: hooks.append((index, count, list(history)))
+        report = loop.run([{"role": "user", "content": "batch"}])
+        self.assertEqual(report.stop_reason, "budget_exceeded")
+        self.assertFalse(report.ok)
+        declared = {call["id"] for call in report.messages[1]["tool_calls"]}
+        replies = [message for message in report.messages if message["role"] == "tool"]
+        self.assertEqual({message["tool_call_id"] for message in replies}, declared)
+        self.assertEqual(len(replies), 3)
+        self.assertEqual(len(report.turns[0].invocations), 3)
+        for invocation in report.turns[0].invocations:
+            self.assertFalse(invocation.approved)
+            self.assertFalse(invocation.result.ok)
+            self.assertEqual(invocation.result.meta["error"], "budget_exceeded")
+            self.assertIn("未执行", invocation.result.content)
+        self.assertFalse(any((self.root / f"budget-{i}").exists() for i in range(3)))
+        self.assertEqual(hooks, [(1, 3, report.messages)])
+        self.assertEqual([kind for kind, _ in events],
+                         ["assistant"] + ["tool_skipped_budget"] * 3)
+
+    def test_exact_threshold_and_custom_ratio_keep_strict_greater_than(self) -> None:
+        for expected, ratio, charge, allowed in ((100, 3.0, 300, True), (100, 3.0, 301, False),
+                                                (100, 1.0, 100, True), (100, 1.0, 101, False)):
+            with self.subTest(expected=expected, ratio=ratio, charge=charge):
+                loop, _ = self._metered_loop([("complete", charge)], expected=expected,
+                                            hard_ratio=ratio, config=LoopConfig(max_turns=1))
+                report = loop.run([{"role": "user", "content": "threshold"}])
+                self.assertIs(report.ok, allowed)
+                self.assertEqual(report.stop_reason, "no_tool_calls" if allowed else "budget_exceeded")
+                self.assertEqual(report.usage.total_tokens, charge)
+
+    def test_rejected_nonobject_json_arguments_keep_budget_failure_and_pairing(self) -> None:
+        import json
+
+        for raw, expected in ((7, 7), ('"scalar"', "scalar"), ([1], [1])):
+            with self.subTest(raw=raw):
+                response = {"content": "invalid arguments", "tool_calls": [
+                    {"id": "invalid-json-args", "name": "write_file", "arguments": raw},
+                ]}
+                operations, hooks = _StubOps(), []
+                loop, tracker = self._metered_loop([(response, 301)], ops=operations)
+                loop.on_turn = lambda index, count, history: hooks.append((index, count))
+                report = loop.run([{"role": "user", "content": "reject without parsing"}])
+                self.assertFalse(report.ok)
+                self.assertEqual(report.stop_reason, "budget_exceeded")
+                self.assertEqual(report.usage.total_tokens, 301)
+                self.assertIs(report.usage, tracker.usage)
+                self.assertEqual(operations.started, [])
+                self.assertEqual(hooks, [(1, 1)])
+                invocation = report.turns[0].invocations[0]
+                self.assertFalse(invocation.approved)
+                self.assertEqual(invocation.arguments, {})
+                self.assertEqual(invocation.result.meta["error"], "budget_exceeded")
+                assistant = report.messages[1]["tool_calls"][0]
+                self.assertEqual(json.loads(assistant["function"]["arguments"]), expected)
+                self.assertEqual(report.messages[-1]["tool_call_id"], "invalid-json-args")
+                self.assertIn("未执行", report.messages[-1]["content"])
+
+    def test_observe_only_and_missing_usage_keep_existing_behavior(self) -> None:
+        for expected in (0, -1):
+            with self.subTest(expected=expected):
+                loop, tracker = self._metered_loop([("complete", 301)], expected=expected)
+                report = loop.run([{"role": "user", "content": "observe"}])
+                self.assertTrue(report.ok)
+                self.assertEqual(tracker.verdict, "observe_only")
+                self.assertEqual(report.usage.total_tokens, 301)
+        loop = _loop(["unmetered complete"], self.root,
+                     budget=BudgetTracker(Budget(expected_tokens=100)))
+        report = loop.run([{"role": "user", "content": "missing usage"}])
+        self.assertTrue(report.ok)
+        self.assertEqual(report.usage.total_tokens, 0)
+
+    def test_cumulative_charge_preserves_first_write_but_blocks_second(self) -> None:
+        operations = _StubOps()
+        loop, tracker = self._metered_loop(
+            [(_write_call("first-marker", call_id="first"), 100),
+             (_write_call("second-marker", call_id="second"), 201)],
+            ops=operations, config=LoopConfig(max_turns=2),
+        )
+        report = loop.run([{"role": "user", "content": "two turns"}])
+        self.assertFalse(report.ok)
+        self.assertEqual(report.stop_reason, "budget_exceeded")
+        self.assertTrue((self.root / "first-marker").is_file())
+        self.assertFalse((self.root / "second-marker").exists())
+        self.assertEqual(len(operations.started), 1)
+        self.assertEqual(len(operations.finished), 1)
+        self.assertEqual(len(loop.backend.calls), 2)
+        self.assertIs(report.usage, tracker.usage)
+        self.assertEqual(report.usage.total_tokens, 301)
+        self.assertEqual(report.usage.calls, 2)
+        self.assertEqual(len(report.turns), 2)
+
+    def test_required_tool_mode_never_retries_after_charge_exceeds_budget(self) -> None:
+        loop, _ = self._metered_loop([("no tool", 301)],
+                                    config=LoopConfig(max_turns=3, tool_choice="required"))
+        report = loop.run([{"role": "user", "content": "required"}])
+        self.assertFalse(report.ok)
+        self.assertEqual(report.stop_reason, "budget_exceeded")
+        self.assertEqual(len(loop.backend.calls), 1)
+        self.assertEqual(report.usage.calls, 1)
+        self.assertEqual(len(report.messages), 2)
+
+    def test_failed_checkpoint_hook_cannot_turn_budget_failure_into_success(self) -> None:
+        loop, _ = self._metered_loop([("actual reply", 301)])
+        hooks = []
+
+        def broken_hook(index, count, history):
+            hooks.append((index, count))
+            raise RuntimeError("test-only checkpoint failure")
+
+        loop.on_turn = broken_hook
+        report = loop.run([{"role": "user", "content": "checkpoint"}])
+        self.assertFalse(report.ok)
+        self.assertEqual(report.stop_reason, "budget_exceeded")
+        self.assertEqual(hooks, [(1, 0)])
+        self.assertEqual(report.usage.total_tokens, 301)
+
+
 if __name__ == "__main__":
     unittest.main()

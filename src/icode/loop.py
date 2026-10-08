@@ -316,6 +316,28 @@ class AgentLoop:
             self.on_event("assistant", {"index": index, "content": assistant.content,
                                         "tool_calls": [c.name for c in assistant.tool_calls]})
 
+            # 本次回复才带回实际用量；不能等下轮才拒绝工具或末轮成功。
+            # 配对结果只记录未执行事实，供检查点恢复，不创建副作用回执。
+            if self.budget.verdict == "over_budget":
+                for call in assistant.tool_calls:
+                    inv = ToolInvocation(
+                        name=call.name,
+                        # 已拒绝的调用不解析非对象参数；原JSON仍在assistant历史中。
+                        arguments=dict(call.arguments) if isinstance(call.arguments, dict) else {},
+                        decision=Decision.DENY.value, approved=False,
+                        result=ToolResult(
+                            False, "未执行：运行预算超限，已停止本次调用。",
+                            {"error": "budget_exceeded"},
+                        ),
+                        note="运行预算超限，未执行",
+                    )
+                    turn.invocations.append(inv)
+                    history.append(_tool_message(call.id, inv))
+                    self.on_event("tool_skipped_budget", {"tool": call.name})
+                turns.append(turn)
+                _notify_turn(self.on_turn, index, total_tool_calls + len(turn.invocations), history)
+                return LoopResult(False, "budget_exceeded", turns, history, self.budget.usage)
+
             if not assistant.has_tool_calls:
                 turns.append(turn)
                 if tool_choice != "auto":
