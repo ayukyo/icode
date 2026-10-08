@@ -163,3 +163,7 @@ native wheel完整十阶段实际PASS；其中host-crash和network lease沿既�
 只修测试：取消proc exists预检查，单次读取仅接受FileNotFoundError/ProcessLookupError；活S与未知状态仍断言失败，EIO/permission/KI/SystemExit仍原实例抛出。原精确scope inode、cap2、SIGKILL返回、GC、迟到marker及managerunit不存在断言全部保留，生产文件不变。初始helper缺失NameError仅结构RED；RAM原exists/read逻辑结合存在正控，3方法中的ENOENT/ESRCH两个实际错误RED，其它正负控通过。
 
 最终测试SHA256 `b04d5996799c66bcc86709cc1e201fc0718d214a1af01ce34d758e70b1db9418`；3helper方法与实际host崩溃一项连续20轮=80/80、0SKIP，轮前后摘要一致；完整该模块45/45、10.235秒、0SKIP。独立SPEC4/4（2.611秒）及QUALITY4/4（2.605秒）均0SKIP、无遗留发现，QUALITY另独立实际活自身PID拒绝/已wait回收子进程接受正反控制通过。此测试修复与R3测量片联合完整守护、提交后才能认作新SHA结果，旧42×20对应be31冻结仍保留其历史范围。
+
+### 3c5 联合提交回归
+
+联合提交已推送main `3c5b587d1de0b0e0ca60aef70fd7f31c7a1c54c1`并实际核对远端。[主CI37741452467](https://github.com/ayukyo/icode/actions/runs/37741452467)终态32success/2既有Windows候选failure/3skip；Python3.11与3.12实际各1983方法、71平台SKIP、均OK，后一run不再见ESRCH。独立观察者从已保存job名称及实际日志复核四Linux安装/native receipt/host-crash/Git门PASS：x64 22.04 `113192860806`、ARM64 22.04 `113192860990`、x64 latest（24.04）`113192860751`、ARM64 24.04 `113192860866`；22.04 lease PASS、24.04 lease SKIP，conformance_credit=none。此线上证据不改quota生产逻辑，不把SKIP算通过、不可外推所有竞态消除；Windows网络、macOS资源及R2/R3总体门仍未通过。该SHA主CI/签名/官网均终态后已停止重复查询。

@@ -1252,6 +1252,8 @@ def run_contract_step(
                     change_baseline=change_baseline,
                 )
                 report.loop = loop
+                if loop.stop_reason == "budget_exceeded":
+                    return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
                 if not loop.ok:
                     # 由**证据**判定成败，而不是由循环的停止原因判定：
                     # 触到回合上限时若必需产物齐备，属软性提示而非失败。
@@ -1331,6 +1333,8 @@ def run_contract_step(
                         operations=step_ops,
                     )
                     report.loop = repair
+                    if repair.stop_reason == "budget_exceeded":
+                        return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
                     if post_write is not None:
                         post_write(out_dir, step, attempt)
                     _reset_artifact_checkpoints(report)
@@ -1366,6 +1370,48 @@ def run_contract_step(
     except Exception as exc:  # noqa: BLE001
         report.error = f"{type(exc).__name__}: {exc}"
         return report
+
+
+def _stop_contract_for_budget(
+    cp: ControlPlane, out_dir: Path, step: str, attempt: str, ticket_id: str,
+    report: StepReport,
+) -> StepReport:
+    """Reject observed budget exhaustion without further work or checkpoint loss.
+
+    Finish and trace are independent best-effort calls. Neither ordinary error
+    may replace the hard-stop reason, and a closed trace is not step success.
+    Interruptions propagate; later recovery still follows the existing CP truth.
+    """
+    report.ok = False
+    report.error = "预算硬停止（budget_exceeded）：已观测用量超限，拒绝继续契约步骤"
+    report.add("预算硬停止", False, "不再装配、登记、补救、推演或状态前移")
+    try:
+        finish = cp.step_finish(
+            out_dir, step, attempt, "failure", ticket_id=ticket_id,
+            evidence=["runtime:budget_exceeded"], check=False,
+        )
+        accepted = (
+            finish.returncode == 0 and finish.data.get("ok") is True
+            and finish.data.get("outcome") == "failure"
+        )
+        if accepted:
+            report.finish_outcome = "failure"
+        report.add("预算失败终结确认", accepted,
+                   "控制面已确认 failure" if accepted else "控制面未确认 failure")
+    except Exception:  # noqa: BLE001 - preserve the observed hard-stop reason
+        report.add("预算失败终结确认", False, "控制面 failure 收尾调用异常")
+
+    try:
+        trace = cp.trace(out_dir)
+        report.trace = trace.data
+        readable = trace.returncode == 0 and trace.data.get("ok") is True
+        report.add("事件链可读", readable)
+        report.add("无未闭合步骤/动作", readable and not any([
+            trace.data.get("open_steps"), trace.data.get("open_operations"),
+        ]))
+    except Exception:  # noqa: BLE001 - finish failure must not prevent observation
+        report.add("事件链可读", False, "预算停止后的只读观察失败")
+    return report
 
 
 def _record_verification_evidence(
@@ -1973,6 +2019,8 @@ def resume_contract_step(
             resume_context=decision.resume_brief(),
         )
         report.loop = loop
+        if loop.stop_reason == "budget_exceeded":
+            return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
         if not loop.ok:
             report.warn(f"恢复后的回合循环未自然结束（stop_reason={loop.stop_reason}）")
 

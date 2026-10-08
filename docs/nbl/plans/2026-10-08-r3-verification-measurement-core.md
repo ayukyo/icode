@@ -16,7 +16,7 @@
 
 ## Task 1: 提取并锁住原观察语义
 
-- [ ] 完成
+- [x] 完成（本机分片及精确提交；线上各门另记）
 
 允许编辑 src/icode/runner.py 和新 tests/test_verification_measurement.py；必要的现有相关测试只能补兼容断言，不重写旧断言降低门槛。不改 vendor、平台实现、CI权限、预算规则或模型配置。
 
@@ -36,7 +36,7 @@ VerificationOutputError、TimeoutExpired、OSError仍由原调用方转换私密
 
 新测试最终摘要连续20轮，记录方法数与SKIP；关联 runner/self_verify/task_timeout/task_verification_io/reviewer/workspace tree测试，旧错误隐私、输出上限和真实子进程清理断言保留。实现者7维自检，独立SPEC→QUALITY，完整preflight三门及compileall≤j6、治理/官网/竞品/diff。
 
-- [ ] Step 4: 交付
+- [x] Step 4: 交付
 
 精确提交推送main并核对远端。下一片先解决契约循环预算硬拒绝被产物齐备软化、共享预算所有权，再设计实际政策绑定的契约验证接入；不据纯抽取宣称全链闭合。
 
@@ -59,3 +59,9 @@ runner SHA256 `f64c5cec05f1b637bb59ae950f35d7431c3f1cb56d8c5d0fa7ead3f8087cc33a`
 独立SPEC新增12/12、1.198秒、0SKIP；关联选择249方法，238通过/11既有SKIP、12.590秒；另实际9步测量顺序通过。独立QUALITY新增12/12、1.087秒、0SKIP；其六模块选择175方法，164通过/11既有SKIP、7.387秒；另实际9步顺序及修复回合binder OSError、测试KI/SystemExit原对象透传三负控通过，Reviewer不调用。各审查者模块选择不同，不混合方法总数；两者均无遗留发现。
 
 主代理最终完整preflight于2026-10-08 07:01:23 UTC退出0、三门PASS；本树load的完整测试集为1983方法（preflight不单列SKIP数，不能补造全项实测）。compileall -j6、治理/官网/竞品/diff通过。冻结生产/测试三摘要未变，联合当前Linux procstatus测试竞态修复交付，不能称作两个各自独立提交；提交推送及新SHA线上结果待实际记录。
+
+### 精确交付
+
+已实际提交推送 main `3c5b587d1de0b0e0ca60aef70fd7f31c7a1c54c1`，主代理新鲜 ls-remote 一致；该8文件联合提交同时包含测试窄竞态修复及下一片硬停止正式设计。新SHA官网[37741452314](https://github.com/ayukyo/icode/actions/runs/37741452314)已success，deploy artifact `11533664264`的pages_build_version为该SHA。主CI及随包签名尚在观察，不把官网上线认作整体验收。下一硬停止片已按TDD开工。
+
+线上全部终态后补录：主CI[37741452467](https://github.com/ayukyo/icode/actions/runs/37741452467)完整37jobs为32success、2既有Windows Reviewer candidate failure、3skip；不能称整体绿。独立观察者实际核对Python3.11 `113192860699`为1983方法/408.251秒、Python3.12 `113192860304`为1983方法/435.406秒，均OK/71平台SKIP；该run不再出现a21的ESRCH错误，不宣称竞态永不再发生。四Linux安装、七验证输出生命周期及workspace子门各自通过，旧Windows网络硬门仍未通过。随包provenance[37741452269](https://github.com/ayukyo/icode/actions/runs/37741452269)success，四双架构/双Python真实验签、安装和密码学负控通过；setup/命令授权仍关闭。至2026-10-08 07:21:07 UTC三run均终态，停止查询旧SHA；上述证据关闭本片回归范围，不关闭R2/R3整体验收。
