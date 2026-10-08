@@ -26,6 +26,7 @@ from .contracts import ContractSet
 from .control import ControlPlane
 from .loop import LoopConfig
 from .sandbox_policy import SandboxPolicy
+from .engineering_verification import VerificationPlan
 from .tickets import TicketError, TicketService
 from .workspace import (
     GitWorkspaceIdentity,
@@ -132,6 +133,7 @@ class NativeChainExecutor:
         budget: Budget | None = None,
         on_event: Callable[[str, dict], None] | None = None,
         sandbox: Any = None,
+        verification_plan_provider: Callable[[ExecutionContext, SandboxPolicy], VerificationPlan] | None = None,
     ) -> None:
         self.settings = settings
         self.backend = backend
@@ -141,6 +143,7 @@ class NativeChainExecutor:
         self.budget = budget
         self.on_event = on_event
         self.sandbox = sandbox
+        self.verification_plan_provider = verification_plan_provider
 
     def execute(self, context: ExecutionContext, control: "RunControl") -> ExecutionResult:
         out_dir = context.out_dir.resolve()
@@ -207,6 +210,21 @@ class NativeChainExecutor:
                         state="blocked", last_step=step,
                         error_code="isolation_unavailable",
                     )
+            verification_plan = None
+            if self._step_runner is run_chain and step in ("code", "deepcheck"):
+                if self.verification_plan_provider is None:
+                    return ExecutionResult("blocked", step, "verification_plan_required")
+                try:
+                    verification_plan = self.verification_plan_provider(context, policy)
+                except Exception:  # noqa: BLE001 - provider exceptions never disclose trusted inputs.
+                    return ExecutionResult("blocked", step, "verification_plan_provider_failed")
+                if type(verification_plan) is not VerificationPlan:
+                    return ExecutionResult("blocked", step, "verification_plan_invalid")
+                if (verification_plan.run_id != policy.run_id
+                        or verification_plan.ticket_id != context.ticket_id
+                        or verification_plan.workspace_root != context.workspace.resolve()
+                        or step not in verification_plan.steps):
+                    return ExecutionResult("blocked", step, "verification_plan_identity_mismatch")
             try:
                 workspace_session = None
                 if (
@@ -240,6 +258,11 @@ class NativeChainExecutor:
                     # Custom adapters keep their existing signature. Never retry a
                     # side-effectful call after TypeError to discover capabilities.
                     step_kwargs["budget_tracker"] = budget_tracker
+                    step_kwargs["verification_plan"] = verification_plan
+                    if step in ("code", "deepcheck") and isinstance(session, WorkspaceSession):
+                        # The complete session binds the host gate even for a
+                        # non-Git snapshot. Git tool authorization remains separate.
+                        step_kwargs["workspace_session"] = session
                 report = self._step_runner(self.settings, **step_kwargs)
             except Exception:  # noqa: BLE001 - 只返回稳定码，不泄露异常正文。
                 return ExecutionResult(

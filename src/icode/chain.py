@@ -27,6 +27,7 @@ from .contracts import ContractSet
 from .control import ControlPlane
 from .loop import LoopConfig
 from .runner import StepReport, _runtime_budget, _snapshot, run_contract_step
+from .engineering_verification import VerificationPlan
 from .sandbox_policy import SandboxPolicy
 from .workspace import GitWorkspaceIdentity, WorkspaceSession
 
@@ -284,6 +285,7 @@ def run_chain(
     on_event=None,
     sandbox=None,
     policy: SandboxPolicy | None = None,
+    verification_plan: VerificationPlan | None = None,
     workspace_session: WorkspaceSession | None = None,
     on_step=None,
     out_dir: Path | None = None,
@@ -358,7 +360,9 @@ def run_chain(
             loop_config=loop_config, budget=budget, on_event=on_event,
             budget_tracker=budget_tracker,
             sandbox=sandbox, policy=policy, out_dir=out_dir,
-            workspace_session=git_status_session,
+            verification_plan=verification_plan,
+            workspace_session=(workspace_session if policy is not None and name in ("code", "deepcheck")
+                               else git_status_session),
             change_baseline=before if policy is not None else None,
             extra_instructions=instructions, post_write=post,
         )

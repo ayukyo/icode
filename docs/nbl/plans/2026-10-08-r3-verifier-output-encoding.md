@@ -32,7 +32,8 @@
 - [x] RED/GREEN与定点兼容回归
 - [x] 独立SPEC及不同QUALITY
 - [x] 根代理冻结守护与七维自检
-- [ ] 提交推送及新SHA原生观察
+- [x] 提交推送；官方main接口核对精确SHA
+- [ ] 新SHA原生观察（独立回收，不由本机或推送代替）
 
 ## 第一冻结（2026-10-08）
 
@@ -56,6 +57,33 @@ tests/test_engineering_evidence.py 838c3c7057f94389264ab2a8b3ae9fa82d8be9cc11831
 ## 最终本机门（2026-10-08）
 
 完整preflight实际3/3通过：2162 total＝2103PASS/59skip，440.172秒，不是2162全过或零跳过。根代理只为完整unittest回包打印最后统计，未改守护/测试行为；Go仅进程PATH，GOMAXPROCS=1、GOFLAGS=-p=1。相比先前60skip未取得逐项差异，不推定某原生门变为通过。两源码冻结仍匹配；最终文档之后密钥/子模块/diff再核对，通过后按授权提交推送main，精确新SHA与原生结果后记。本机CLI漏洞修复验收关闭；旧Windows远端根因、新SHA原生兼容、R2/R3总门仍各自独立。
+
+## 发布与新原生窗口（2026-10-08，终态已回收）
+
+本片已提交推送`aaaa448c3cfd7d859e894e87c627be156c77a65d`，官方GitHub commits/main接口独立确认同SHA；固定vendor169未变。精确新[CI37788328985](https://github.com/ayukyo/icode/actions/runs/37788328985)、[来源验证37788329060](https://github.com/ayukyo/icode/actions/runs/37788329060)、[官网37788329189](https://github.com/ayukyo/icode/actions/runs/37788329189)各自取当次日志，不借旧窗口填通过。
+
+14:04:50 UTC只读观察：Linux workspace113348767925与macOS workspace113348768198各实际329tests/OK及75lease tests/OK；七随包安装日志各实际18tests/OK。Python3.11 full113348768130实际2162tests/OK、71skip；Python3.12及两个Windows workspace尚未终态，不计期望328项或Windows兼容关闭。来源验证validate113348767411实际9tests/OK，四签名安装job仍在运行；官网两job已success，部署状态观察停止，详细构建日志另回收。
+
+新Reviewer候选ARM113348767879/x64113348767897均终态failure：实际1test/1failure，exit78、cleanup=true；private-network正控exit91/ipv4_connect、WFP订阅return5、双栈10035后等待超时且无canary。ARM观察门ready，x64观察门unavailable/wait_timeout；均缺补充capture精确成员。两job终态后停止轮询，以上不是网络DENY，不能由安装、签名或本次编码修复抵消。Windows新workspace结果将另记；不倒填b508 child stderr或根因。
+
+### 新Windows测试夹具换行回归（本机门通过，随合同片提交推送中）
+
+随后实际取得两个Windows workspace终态：ARM113348768466/x64113348768560各328total、6failure、20skip。新success/tamper两个方法三编码均已通过退出0/1前置断言，但文本期望`\n  工单`与真实`\r\n  工单`不匹配；旧四方法六returncode断言未再出现在新FAIL汇总。不倒填旧child异常栈，也不能把整job failure误称校验器仍返回错误退出。junction3与lease75后续步骤未执行，仍不计覆盖。
+
+按TDD与独立复审流程，根代理先暂停合同唯一写者，再用真实离仓子进程强制CRLF复现2methods/6FAIL/0ERROR/0skip、1.310秒；仅两文本断言在比较时规范精确CRLF、保留原stdout/stderr、编码/0/1/2/篡改/Traceback门。测试helper新增可选newline（默认None为平台原行为），新方法实际执行退出0/1×三编码的CRLF控制，并断言原stdout确有CRLF；生产pack_verify.py没有修改。根代理4methods/0skip/2.834秒及整个工程证据38tests/0skip/15.522秒通过；独立SPEC4methods（18真实子进程场景）/0skip/2.733秒批准。不同QUALITY、20轮及下一合同冻结完整守护尚在进行，不把本机修正写成已推送或Windows原生再验通过。完成小修后恢复同一合同唯一写者。
+
+```text
+tests/test_engineering_evidence.py e1974a1e663de068ee250f54df7a808c6f1e6f5d6bf572c2e354193dea4e8ac6
+src/icode/pack_verify.py 30dcdc6dcaf1fc49f0b8081997b1424c2d060c1f76b378357035446bc956fde3
+```
+
+根代理同一冻结4methods20轮实际80PASS/0skip、56.341秒，包含默认平台流与强制CRLF且退出0/1/2控制没有降门。之后CI37788328985已终态failure，44jobs＝37success/4failure/3整jobskip，停止该run状态轮询；Python3.11/3.12各实际2162tests、71skip、无failure，即各2091PASS。四失败精确为两个CRLF fixture与两个Reviewer候选；不用失败job掩盖已观测退出控制，也不把未执行后续junction/lease填通过。来源验证唯一尚运行ARM Python3.11与已成功官网各另取证。
+
+不同QUALITY最终批准，Critical/Important/Minor均无：4methods/18真实child场景、0skip、3.330秒；RAM负控确认孤CR保留及非法newline真实ValueError/exit1/stderr Traceback不吞、repr参数不执行插入内容。辅助runner误发现其全局导入的既有测试类，实际另跑14tests（2负控加12原方法）/0skip/8.549秒，如实计范围偏差，不称新14项、全模块或CI。两SHA前后仍相符。根代理语法-j1、diff、密钥及子模块分别通过；第三全仓测试门须等合同唯一写者冻结后一起验，两个only守护的通用“可以commit”提示不授权跳过完整门或提交WIP。
+
+精确aaaa448来源验证37788329060最终5/5success；四签名job实际每个9tests/0skip及17PASS（安装后密码学、离线与负控、setup拒绝），分别x64/3.12 job113352154954 attestation53961786、ARM/3.12 job113352154976 attestation53962014、x64/3.11 job113352155111 attestation53962036、ARM/3.11 job113352155043 attestation53963370。官网37788329189最终2/2success。三个run全部STOP，不重跑、不给启动或Reviewer网络信用；前述在运行条目保留其历史时点而非伪装最终状态。签名写权仍仅现有main签名job，本片未新增权限/依赖/vendor修改。
+
+合同唯一写者冻结后，本CRLF夹具同SHA纳入根代理关联、DEFAULT367PASS/0skip与完整preflight2201 total/2142PASS/59skip/0FAIL（466.044秒、3/3）通过；干净安装20外层及新合同37子测0skip通过。生产verifier SHA仍30dcdc6...，夹具仍e1974a1...；全部新SHA真实Windows结果另验，不能用本机或推送抵消两个Reviewer原生失败。此前“完整门待验”保留其历史窗口。
 
 【架构级自检报告】
 ✅ 语法/编译：compileall-j1、2162全仓执行无失败

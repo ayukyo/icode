@@ -549,7 +549,7 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
     def setUpClass(cls):
         cls.settings = require_skill()
 
-    def independent(self, pack, outside, *, encoding=None, args=None):
+    def independent(self, pack, outside, *, encoding=None, args=None, newline=None):
         script = str(pack / "verify.py")
         arguments = [str(pack)] if args is None else args
         command = [sys.executable, "-I", "-B", script, *arguments]
@@ -557,8 +557,8 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
             # Test fixture only: exercise the exported script with both actual
             # output streams strict, independent of the host console defaults.
             launcher = ("import runpy, sys; encoding, script, *args = sys.argv[1:]; "
-                        "sys.stdout.reconfigure(encoding=encoding, errors='strict'); "
-                        "sys.stderr.reconfigure(encoding=encoding, errors='strict'); "
+                        f"sys.stdout.reconfigure(encoding=encoding, errors='strict', newline={newline!r}); "
+                        f"sys.stderr.reconfigure(encoding=encoding, errors='strict', newline={newline!r}); "
                         "sys.argv = [script, *args]; runpy.run_path(script, run_name='__main__')")
             command = [sys.executable, "-I", "-B", "-c", launcher, encoding, script, *arguments]
         result = subprocess.run(command, cwd=outside, env=dict(os.environ, PYTHONPATH=""),
@@ -596,7 +596,7 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
                     result = self.assert_independent_exit(pack, root, 0, encoding=encoding)
                     expected = f"证据包校验通过：{pack}\n  工单：EV-1"
                     expected = expected.encode(encoding, errors="backslashreplace").decode(encoding)
-                    self.assertIn(expected, result.stdout)
+                    self.assertIn(expected, result.stdout.replace("\r\n", "\n"))
                     self.assertEqual(result.stderr, "")
                     self.assertNotIn("Traceback", result.stdout + result.stderr)
 
@@ -609,10 +609,27 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
                     result = self.assert_independent_exit(pack, root, 1, encoding=encoding)
                     expected = f"证据包校验失败：{pack}\n  工单：EV-1"
                     expected = expected.encode(encoding, errors="backslashreplace").decode(encoding)
-                    self.assertIn(expected, result.stdout)
+                    self.assertIn(expected, result.stdout.replace("\r\n", "\n"))
                     self.assertIn("verifications.json", result.stdout)
                     self.assertEqual(result.stderr, "")
                     self.assertNotIn("Traceback", result.stdout + result.stderr)
+
+    def test_independent_crlf_diagnostics_preserve_strict_encoding_and_exits(self):
+        with temp_workspace() as root:
+            pack = self.unicode_pack(root)
+            for expected_exit, message in ((0, "证据包校验通过"), (1, "证据包校验失败")):
+                if expected_exit:
+                    (pack / "verifications.json").write_bytes(b"tampered")
+                for encoding in ("utf-8", "cp1252", "ascii"):
+                    with self.subTest(exit=expected_exit, encoding=encoding):
+                        result = self.assert_independent_exit(
+                            pack, root, expected_exit, encoding=encoding, newline="\r\n")
+                        expected = f"{message}：{pack}\n  工单：EV-1"
+                        expected = expected.encode(encoding, errors="backslashreplace").decode(encoding)
+                        self.assertIn("\r\n", result.stdout)
+                        self.assertIn(expected, result.stdout.replace("\r\n", "\n"))
+                        self.assertEqual(result.stderr, "")
+                        self.assertNotIn("Traceback", result.stdout + result.stderr)
 
     def test_independent_usage_keeps_exit_two_with_strict_output_encodings(self):
         with temp_workspace() as root:

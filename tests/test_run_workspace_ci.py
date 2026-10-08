@@ -38,6 +38,18 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
         for case in ("TestEngineeringEvidence", "TestEngineeringReceiptValidation", "TestEngineeringEvidencePack"):
             self.assertEqual(DEFAULT_MODULES.count("tests.test_engineering_evidence." + case), 1)
 
+    def test_contract_engineering_selection_exists_once_without_native_readiness_claim(self) -> None:
+        from scripts.run_workspace_ci import CONTRACT_ENGINEERING_TESTS, POSIX_CONTRACT_ENGINEERING_TESTS
+        from tests.test_contract_engineering import TestContractEngineering
+        cases = unittest.defaultTestLoader.getTestCaseNames(TestContractEngineering)
+        expected = {"tests.test_contract_engineering.TestContractEngineering." + name for name in cases}
+        self.assertEqual(set(CONTRACT_ENGINEERING_TESTS) | set(POSIX_CONTRACT_ENGINEERING_TESTS), expected)
+        self.assertFalse(set(CONTRACT_ENGINEERING_TESTS) & set(POSIX_CONTRACT_ENGINEERING_TESTS))
+        for test_id in CONTRACT_ENGINEERING_TESTS:
+            self.assertEqual(DEFAULT_MODULES.count(test_id), 1)
+        for test_id in POSIX_CONTRACT_ENGINEERING_TESTS:
+            self.assertEqual(DEFAULT_MODULES.count(test_id), 1 if os.name == "posix" else 0)
+
     def test_cross_platform_matrix_selects_os_neutral_R3_regressions(self) -> None:
         self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 50)
         self.assertTrue(set(CROSS_PLATFORM_R3_TESTS).issubset(DEFAULT_MODULES))

@@ -64,8 +64,54 @@ CROSS_PLATFORM_R3_TESTS = (
     "tests.test_r3_regression.TestResultCommitTreeBinding.test_same_tree的后测commit仅标记内容匹配不倒推测试时序",
 )
 
+_CONTRACT_ENGINEERING_PREFIX = "tests.test_contract_engineering.TestContractEngineering."
+# Select portable orchestration methods explicitly. POSIX captured-input FD
+# proofs are not Windows/native credit and are never hidden DEFAULT skips.
+CONTRACT_ENGINEERING_TESTS = tuple(_CONTRACT_ENGINEERING_PREFIX + name for name in (
+    "test_policy_code_missing_plan_refuses_before_control_write_and_model",
+    "test_wrong_plan_binding_and_unavailable_resource_refuse_before_cp",
+    "test_plan_environment_platform_directory_and_tool_drift_refuse_before_cp",
+    "test_session_identity_mismatch_refuses_before_cp",
+    "test_strict_record_accepts_actual_first_and_replay_responses",
+    "test_strict_record_rejects_transport_payload_and_replay_mismatch",
+    "test_native_provider_required_and_exception_are_stable_before_adapter",
+    "test_host_gate_failure_saves_full_actual_attempt_and_records_failed_cp_run",
+    "test_contract_consumes_gate_after_last_artifact_registration",
+    "test_reviewer_accepts_policy_and_session_as_explicit_optional_inputs",
+    "test_unknown_engineering_evidence_is_blocking_even_without_nonzero_exit",
+    "test_resume_engineering_requires_trusted_workspace_policy_plan_and_session",
+    "test_engineering_checkpoint_without_identity_cannot_fall_back_to_diagnostic",
+    "test_engineering_gate_is_selected_once_in_bounded_ci",
+    "test_passed_gate_consumes_real_reviewer_read_submit_and_shared_policy",
+    "test_completed_operation_request_replay_cannot_rerun_engineering_payload",
+    "test_zero_skipped_nonzero_and_unknown_scope_never_receive_quality_credit",
+    "test_exception_after_confirmed_start_retains_unknown_action",
+    "test_finalizer_context_keeps_policy_session_and_same_shared_budget",
+    "test_reviewer_blocking_incomplete_read_nosubmit_budget_and_source_change_block",
+    "test_saved_complete_binding_is_rechecked_before_final_step_finish",
+    "test_fixed_review_scope_is_only_available_to_policy_engineering_deepcheck",
+    "test_resume_checks_actual_attempt_unknown_and_completed_actions_before_model",
+    "test_resume_original_baseline_missing_invalid_or_alone_refuses_before_cp",
+    "test_resume_original_attempt_reviews_pre_interrupt_and_resumed_changes",
+    "test_each_turn_negative_marker_survives_restart_without_granting_authority",
+    "test_final_boundary_rechecks_actual_cp_protected_input_after_reviewer",
+    "test_incremental_cp_worklist_history_without_old_bodies_blocks_export",
+    "test_save_record_and_operation_ack_failures_retain_checkpoint_without_quality",
+    "test_contract_and_resume_reject_same_bytes_other_cp_root_before_write_or_model",
+    "test_build_only_and_required_not_run_plan_never_gain_quality_credit",
+    "test_native_legacy_code_actual_cp_to_independent_pack",
+))
+POSIX_CONTRACT_ENGINEERING_TESTS = tuple(_CONTRACT_ENGINEERING_PREFIX + name for name in (
+    "test_protected_deepcheck_scope_requires_unique_captured_current_cp_facts",
+    "test_deepcheck_scope_rejects_missing_gate_changed_list_other_root_and_link",
+    "test_scope_source_reads_enforce_existing_host_budget_before_materialization",
+    "test_workspace_control_receipts_are_real_git_tree_drift_not_source_credit",
+    "test_native_legacy_deepcheck_actual_cp_to_independent_pack",
+))
+
 POSIX_R3_TESTS = (
     "tests.test_r3_regression.TestWorktreeGitTreeOID.test_tree_oid与Git写树一致并覆盖忽略项链接和模式",
+    *POSIX_CONTRACT_ENGINEERING_TESTS,
 )
 
 DEFAULT_MODULES = (
@@ -77,6 +123,7 @@ DEFAULT_MODULES = (
     "tests.test_cli_resume_sandbox",
     "tests.test_shared_runtime_budget",
     "tests.test_contract_finalization",
+    *CONTRACT_ENGINEERING_TESTS,
     # Host/framework contracts are bounded; optional Go SDK diagnostics are
     # separate and do not stand in for native resource-scope acceptance.
     "tests.test_engineering_verification.TestEngineeringVerification",

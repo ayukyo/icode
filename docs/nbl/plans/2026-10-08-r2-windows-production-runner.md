@@ -22,6 +22,17 @@
 
 TDD及原生门：精确proof/digest/架构、文件与祖先junction、镜像/父路径替换、已存碰撞、部分写/异常/UAC拒绝/宿主退出、二次安装及本次对象回滚；同一实际对象核验→启动绑定。只允许固定metadata/拒绝正负控，WP0未关闭前不新增模型命令执行。
 
+### WP0a 构建绑定与 WP0b 受保护晋升分片（2026-10-08，设计未实现）
+
+在R3合同接线独立开发期间，只读研究按aaaa448及主代理再次读取C/CMake/workflow/安装验收调用链，确认Go先构建、最终C后构建并获attestation的顺序已存在，但C没有内嵌Go摘要。下一Windows子片先做WP0a，不把一次大改的设计当生产执行：
+
+1. 本次匹配架构的真实Go文件成为生产CMake必需输入，复用有界PE/架构检查、原字节SHA256；生成仅在build目录的绑定常量。缺输入、错架构/摘要或旧生成物复用拒绝，不接受邻接sha或默认零摘要。构建算法和metadata接口须独立TDD后冻结，不预报当前存在。
+2. 保留现`--version-json`精确v1内容；新增独立固定参数的binding查询及封闭schema，声明本架构expected Go SHA和所有执行/初始化授权false。无任意path/shell/model argv；setup/spawn仍78。现v1 runner framing不升格正式spawn权限。
+3. 计算Go原字节摘要→内嵌→编译最终C→attest最终C，签后不再改C。可信CI先独立gh核对安装C的实际bytes/proof/身份，再执行该明确构建并验签的C metadata，核对安装Go真实bytes与内嵌摘要；失败不导出wheel。不能执行任意发现的候选C来认证其真实性，也不能让产品locator因metadata而自动授权。
+4. 两份同尺寸不同Go、同步改邻接sha/RECORD、缺件/错架构、签后C变化、新schema duplicate/extra/type alias/trailing output、重配生成物、原v1/拒绝入口均做正负控。Windows x64/ARM64及Python3.11/3.12实际安装签名矩阵只给C→Go bytes关系信用；synthetic PE/host编译只给逻辑/传输信用。
+
+WP0b另做真实protected promotion/HANDLE/祖先/ACL/事务/DLL与同对象核验→启动，仍只固定操作，不提前接用户命令。首个UAC C真实性不由内嵌Go hash认证，既有安装/发布TCB、精确对象锁与启动绑定上限保持；不形成可改Go验C再由C担保Go的循环。原host用另一管理员凭据接受UAC时DPAPI身份、Windows10 22H2/Windows11、pre-main DLL/SxS、owned-only回滚全部需实际原生证明；不新增SYSTEM/MSIX/token特权或用户安装Go/MSVC。
+
 ## WP1：专用身份、凭据及网络边界
 
 - 仅创建并记录本次拥有的低权限本地SID；固定账户名碰撞不能凭名字当旧安装。密码在内存生成，按明确host用户DPAPI及受保护窄ACL存储，不走argv/env/日志/工单或共享明文文件。
@@ -46,6 +57,8 @@ TDD及原生门：ownedSID/DPAPI错误用户、损坏状态/账户碰撞、WFP�
 独立只读刷新Codex [`14c8b7771ab2b617a131f5d8e55e98d18e56ed09`](https://github.com/openai/codex/tree/14c8b7771ab2b617a131f5d8e55e98d18e56ed09) 与SRT [`3f0bad7345238f47736435e3f2b064399c1cad74`](https://github.com/anthropics/sandbox-runtime/tree/3f0bad7345238f47736435e3f2b064399c1cad74)，实际LICENSE均Apache2.0。采纳镜像/父路径锁、protected-root、PID/token认证及owned-object纪律，不直接复制源码或引入其runtime。原始代码及取舍见[持续对照](../../agent-landscape-live.md)。Microsoft [CreateProcessAsUser](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw)、[restricted token](https://learn.microsoft.com/en-us/windows/win32/api/securitybaseapi/nf-securitybaseapi-createrestrictedtoken)与[nested Job](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs)用于API约束，文档不能替代实际标准用户行为。
 
 同日WP0补充只读源码核对：[SRT锁](https://github.com/anthropics/sandbox-runtime/blob/3f0bad7345238f47736435e3f2b064399c1cad74/vendor/srt-win-src/src/self_protect.rs)失败warn-and-continue不适配ICODE fail-closed；[Codex copy](https://github.com/openai/codex/blob/14c8b7771ab2b617a131f5d8e55e98d18e56ed09/codex-rs/windows-sandbox-rs/src/helper_materialization/copy.rs)的len/mtime fresh判据及可删旧目的地不适配原字节/owned-only事务。主代理实际回读本仓CMake、36行metadata-only C及workflow Go先于C构建顺序；未执行Windows原生实验。[Microsoft DLL搜索](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order)、[SetDefaultDllDirectories](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-setdefaultdlldirectories)、[CreateFile共享规则](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)和[CMake CRT属性](https://cmake.org/cmake/help/latest/prop_tgt/MSVC_RUNTIME_LIBRARY.html)为上述约束的一手依据。成本为构建绑定、受保护copy/hash、加载与事务双架构负控，不新增用户Go/MSVC安装或SYSTEM权限；WP1/WP2暂缓至WP0闭合，不以静态设计开readiness。
+
+同日后续独立研究实际git ls-remote（官方API403后只读fallback）刷新Codex main为[`9b738582b13c2cdbeff54af0afd04c50c3e7ba09`](https://github.com/openai/codex/tree/9b738582b13c2cdbeff54af0afd04c50c3e7ba09)，package为0.0.0-dev；SRT仍固定3f0bad7/package0.0.79，两实际LICENSE均Apache2.0。新Codex[copy](https://github.com/openai/codex/blob/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/windows-sandbox-rs/src/helper_materialization/copy.rs)仍len/mtime及删除旧destination；[runner client](https://github.com/openai/codex/blob/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/windows-sandbox-rs/src/elevated/runner_client.rs#L449)原process HANDLE及认证两pipe后发送机制采纳，registered alias/MSIX分支不适配。SRT[cli](https://github.com/anthropics/sandbox-runtime/blob/3f0bad7345238f47736435e3f2b064399c1cad74/vendor/srt-win-src/src/cli.rs#L1428)锁失败继续仍不适配。上述只定点刷新，保留旧commit历史、不称全上游复核或原生已运行；WP0a明确采纳构建绑定、暂缓promotion至WP0b，独立源码/TDD/native验收不由研究代替。
 
 ## 共用交付门
 

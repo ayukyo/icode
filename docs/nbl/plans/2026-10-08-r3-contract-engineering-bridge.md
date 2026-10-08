@@ -1,5 +1,58 @@
 # R3 真实合同工程验证接线（依赖证据片）
 
+## 2026-10-08 实施冻结窗口（本机阶段门通过，提交推送中）
+
+实现者已停止源码写入，提交前production HEAD 为 `aaaa448c3cfd7d859e894e87c627be156c77a65d`。冻结候选的定点矩阵为37个合同方法（32可移植、5 POSIX）及12个CI选择方法，共49 PASS/0skip；最后关联窗口119 total/118 PASS/1既有opt-in skip/0FAIL，76.446秒。跳过项为 `test_bwrap策略化reviewer由runner派生策略并隐藏宿主账本`，不是新增合同正控。随后独立SPEC49/37.762秒与不同QUALITY49/37.796秒均0FAIL/0ERROR/0skip并批准；根代理同49项20轮980PASS/0skip/747.797秒，七源码摘要及CRLF夹具摘要未变。根代理扩大关联330 total/325PASS/5既有skip/0FAIL（162.396秒）、DEFAULT367PASS/0skip（159.765秒）、干净安装20外层PASS/0skip（52.240秒，含安装版37新合同子测0skip）通过；最终完整守护见下文，新SHA线上原生结果另验，不允许仅据部分单门提交。
+
+扩大关联的5个跳过明确为macOS zombie/ps、Windows Job分配及两同步pipe取消原生语义、Linux策略Reviewer opt-in；不计通过。干净安装子进程先导入安装版四生产模块并核SHA、随后仅载入源测试夹具，37方法后再次核生产模块路径/SHA及包内SKILL来源，避免helpers加入src后误测checkout。工程证据/pack生产摘要保持原样；旧安装回归及三编码0/1/2控制也保留。它验证安装输运，不验证Windows/macOS原生通道。
+
+最终完整preflight实际3/3通过：2201 total＝2142PASS/59skip，466.044秒，0FAIL/0ERROR；仅透明打印原unittest返回的末尾统计，不改守护行为。Go1.27.1仅本次进程PATH、GOMAXPROCS=1、GOFLAGS=-p=1、CMake并发1；未读KEY。compileall-j1、治理、双语官网、竞品排期、密钥、子模块及diff分别通过；结果文档补录后再核非测试守护与全部冻结摘要，源码无变化。59skip不计原生通过，也不消除默认历史正文债务。阶段按授权main提交推送，线上只观察精确新SHA；此处没有宣称R2/R3总门通过。
+
+| Frozen file | SHA-256 |
+|---|---|
+| autonomy.py | `0d47c0541c22482f6baaddda76785e15fb24a6dcb68c1bc3aea2be8a89b475b3` |
+| chain.py | `ba914983114dbd2cbed11d730e6d3cb6a0bd8564bf8e1c6737ce8303a9619125` |
+| runner.py | `2b145db41b3ebbd0f90f3e9d8b19e73b9ca6a08c97e1ba5fbe59d6d777ea671b` |
+| reviewer.py | `5066760c6dec8ef9f63c805329b990febfd675778e6c8d3bdb9d25498b49942b` |
+| run_workspace_ci.py | `e159867925ef5c1b8234aef8b307356c3d8b06cb067e978114e708402c82c8b0` |
+| test_contract_engineering.py | `1ebc2287d5209a3858f9fa6f0f7b25bdd0ac22e25357b52657939ab490e48eba` |
+| test_run_workspace_ci.py | `83cf05a70098e7ed3431f7365e0e4bd966abdb961d64e5c7a5b986908ce7e32e` |
+
+本候选已覆盖缺计划/身份与资源拒绝、全部写入后的检查、真实attempt/动作、严格首次及replay确认、双Reviewer只读上下文/共享预算、源码与CP保护重核、checkpoint失败保留及原始baseline恢复。A+B恢复夹具实际经过Reviewer读两文件与CP工程记录，但普通合同产物故意缺失，checkpoint仍保留，不是完整恢复success。原baseline复用现snapshot的250000项/128深度/256MiB预算，缩放边界夹具没有进行巨量分配；冻结副本防调用者后续修改，不证明宿主原始采集时刻或自动持久化。
+
+Native code/deepcheck软件正控实际经过真实CP→保存/导出→内置/离仓验包，但其命令输运与模型是测试适配，不授原生隔离/模型质量信用；清单由宿主真实读后一次登记最终正文。默认增量inspection旧正文缺失的独立负控仍失败关闭，历史正文债务没有消除。初始设计与unknown表保留其原观察窗口，下面新增SPEC的15链路/6生命周期表只记录明确软件观察，不能将静态表或方法数量当90%总覆盖。
+
+### 独立SPEC的实际软件连接表
+
+不同审查者已完整核对本片需求、diff及执行/Reviewer/恢复/finish上下文，实际49定点37.762秒，0FAIL/0ERROR/0skip；7 SHA测试前后相同，SPEC APPROVED、Critical/Important/Minor均0。以下仅固定候选的软件连接观察；不同QUALITY、根代理重测与平台门另验。测试方法均位于 `tests/test_contract_engineering.py`，不是仅凭静态声明标proven。
+
+| 链路 | 实际正负观察 | 判定上限 |
+|---|---|---|
+| N1 provider缺失 | `test_policy_code_missing_plan_refuses_before_control_write_and_model` | CP/模型前阻断 |
+| N2 provider异常/一次 | `test_native_provider_required_and_exception_are_stable_before_adapter`、两个Native验包正控 | 宿主单次调用/稳定失败，不是自动配置 |
+| N3 session策略 | `test_session_identity_mismatch_refuses_before_cp`、Native正控 | policy准备与session核对；transport不授原生信用 |
+| C1 plan/root身份 | `test_wrong_plan_binding_and_unavailable_resource_refuse_before_cp`、同bytes不同CP根负控 | 实际root/devino/CP绑定 |
+| C2 step/platform/env/tools | `test_plan_environment_platform_directory_and_tool_drift_refuse_before_cp` | 写入前拒绝错身份/漂移 |
+| C3资源拒裸退 | 缺通道负控与 `test_build_only_and_required_not_run_plan_never_gain_quality_credit` | 无合格通道不成功 |
+| R1全部写后执行 | `test_contract_consumes_gate_after_last_artifact_registration` | 一次宿主验收位于末次登记后 |
+| R2 attempt/窗口 | `test_host_gate_failure_saves_full_actual_attempt_and_records_failed_cp_run`、工作区控制区漂移负控 | 真实CP attempt及检查窗口，不忽略账本变化 |
+| R3未知/重复动作 | `test_exception_after_confirmed_start_retains_unknown_action`、两个action replay负控 | 已完成不重复；未知不假闭合 |
+| R4保存/记录 | `test_save_record_and_operation_ack_failures_retain_checkpoint_without_quality`、Native验包正控 | 完整audit保存与确认，失败不授质量信用 |
+| R5审查后漂移 | `test_saved_complete_binding_is_rechecked_before_final_step_finish`、真实protected输入终态重核 | 源/Git/plan/tool/CP新鲜窗口 |
+| V1整体结果 | zero/skipped/nonzero/unknown与build-only/not_run负控 | 不能按最后exit0成功 |
+| V2双ctx/预算 | `test_finalizer_context_keeps_policy_session_and_same_shared_budget`、Reviewer各失败负控 | 精确只读与共享预算；非OS Reviewer实测 |
+| P1首写/replay | strict record两个方法实际首写/replay及畸形回包负控 | canonical UUID/完整payload/确定request |
+| P2 finish/checkpoint | 两个Native精确finish正控、save/record/ack失败保留 | 成功确认后才清；后续MCP/transition仍独立 |
+
+| 生命周期维度 | 实际观察 | 仍未观测/不外推 |
+|---|---|---|
+| immediate | 准入/同bytes不同CP根在模型与CP写前拒绝 | 不代表所有平台准入 |
+| converged | legacy code/deepcheck→精确CP success→软件验包 | 默认增量历史正文仍失败，新birth 1→6未跑 |
+| restart | checkpoint新进程/逐turn marker；显式原baseline的A+B Reviewer与CP记录 | 无自动持久原baseline；A+B普通产物缺，非resume success |
+| replay | 同request工程动作及完成动作恢复拒绝再次执行；strict记录幂等确认 | 没有自动复用已完成工程结果 |
+| rollback | 实现者既有5项cancel/stale/late回归通过 | 新工程完整rollback仍unobserved，不填已通过 |
+| failure | 结果/预算/源/保存/记录/动作/finish各负控阻断并保留事实 | 非穷尽故障认证 |
+
 > REQUIRED SUB-SKILL: nbl.test-driven-development、nbl.subagent-driven-development。本文件是下一片设计，不是实现或验收；先完成工程证据片的冻结、独立SPEC→不同QUALITY、完整守护及main提交推送，再串行修改runner/chain/autonomy/reviewer。用户已授权自动继续，主分支开发，不另建分支。
 
 ## 真实问题与复用
@@ -35,7 +88,26 @@
 
 同日宿主配置专项只读核对：现Settings和cmd_workbench均无provider来源，仓内TOML静默加载不可直接升为执行授权。独立研究与根代理均实际证明工程unittest.py可遮蔽-B -m unittest；根代理正式Python3.11.15/实际broker环境RAM为rc1/partially initialized module，隔离-I前缀加discover实际1测试rc0，但当前VerificationCheck明确拒绝-I。随后独立片应先stdlib可信启动与shadow负控，再干净pip的CLI配置→工作台→provider往返；高级宿主模板只从明确仓外配置冻结checks，身份由session派生，坏配置不fallback、不自动安装工具或依赖。当前执行器只观察可执行对象与框架输出，未认证整套stdlib/依赖；本片不重写适配器，也不能称默认工作台已自动可用。
 
+深化研究已记为下一[Python隔离模板独立设计](./2026-10-08-r3-python-isolated-template.md)：精确-I discover形式及root绑定先TDD，-I非-S与可伪造框架摘要的上限明确保留；旧分支和本片合同WIP不因只读研究给信用。非Git合同沿既有空Git字段语义，采用实际source snapshot稳定窗口；Git可用时继续核对真实HEAD/tree。不得新增强制Git要求或把空Git当稳定证据。
+
 身份补充：policy/plan.run_id为宿主session身份，EngineeringVerificationRun.attempt为CP step_start真实值，operation attempt为CP动作身份，record_verification返回run.run_id为控制面新生成UUID；不能把后者与宿主run_id做相等判断。首次核对回包UUID/at和期望payload，replay核对其既有run/event身份与确定性request。保存路径必须同时区分实际step attempt和完整audit（用有界安全摘要，不把argv/env或不可信路径拼入），保留已有原执行标签；同audit的不同attempt不能互相覆盖，冲突或不可确认既存回执要阻断，不另造静默覆盖恢复规则。
+
+### 实施中发现的两个边界（设计补充，尚未冻结验收）
+
+- 工程checkpoint新进程resume若没有plan/policy/session，不能转入旧裸模型诊断分支。仅复用既有stop_reason保存负向常量`engineering_verification_pending`，初始及每turn保留；它只要求显式可信输入，不保存或恢复argv/env/权限。实际事件/未决动作与真实attempt仍由Recoverer核对，marker不授权；旧非工程恢复语义不变。此方案的新进程/迟到结果/标记与错误收尾仍须动态验证。
+- deepcheck的已登记code_files是固定vendor保护的metadata_files输入（含真实文件hash），无改动深检合法且必须审查现有实现；旧task Reviewer把审查范围等同本轮非空diff。不能以dummy源码改动、假baseline或覆盖code_files绕漂移门。推荐内部显式scope：仅策略化合同deepcheck消费CP本轮已捕获且检查通过的protected code_files实际file facts；本轮changed_files和baseline仍为真实diff（可空）。两Reviewer上下文按精确固定范围完整read/submit、只读/路径/链接/控制区/64文件上限不变，终态仍重核本轮diff/snapshot/Git/plan/tool。旧task/code保持非空diff默认；提示区分现有源码审查与本轮新增，不虚称新引入。范围/内容漂移、缺/空/额外范围或保护门拒绝均阻断，metadata任意list不是权限。该行为已发用户可选确认，未收到回答，不称已确认；在已授权合同范围按可逆推荐TDD继续，独立SPEC/QUALITY及完整门另验。
+
+定点复核补充：新record工程确认须核对固定CP真实canonical UUID event_id及run_id，而不是任意安全字符串；旧warning helper不变。固定源码事实读取在打开正文前复用宿主2MiB单项及累计预算，事件链继续既有1MiB行/64MiB总量/100000事件流式预算，不以声明size授权无限读。当前helper是POSIX no-follow/dir_fd实现，CI明确分开可移植编排和POSIX捕获/深检方法；Windows不选这些POSIX正控，不能用skip、模拟FD或软件输运补原生信用。新SHA各平台实际执行结果另验。
+
+恢复原始差异补充（实施中）：Checkpointer v1没有原source baseline，CP start仅保护HEAD及合同输入；恢复时新采样会漏掉同attempt中断前的A改动。新工程resume沿已有名称显式要求可信宿主`change_baseline`原始快照映射，验证格式/限额后复制冻结；缺/坏快照在模型/CP写前拒绝，不能从可写JSON、聊天摘要或恢复时新snapshot补造。Reviewer仍消费原baseline→当前的完整A+B差异；原CP root/HEAD/attempt及未决动作仍独立核验。合法最初空工程可用空映射，旧非工程诊断兼容不变。该宿主TCB输入不证明自动持久化或独立认证原始采集时刻，默认工作台缺原baseline仍须阻断；已发用户可选确认，未收到回答，不称已确认。真实A+B覆盖/缺坏快照负控及冻结复核另验。
+
+这不是放宽深检源码保护或新增工程自动修复：如确实修复导致保护输入漂移，沿既有route失败/新轮语义处理。真实CP还要求inspection_worklist、逐阶段实际Read、coverage及源码artifact；测试须满足它们，不造MCP trace。nonGit自查可能保留真实“无受影响Git仓库/差异覆盖不可用”债务，正控用实际临时Git库并如实界定；生产nonGit窗口语义不变，不因夹具新增强制Git要求。
+
+### 真实导出链暴露的历史正文缺口（实施中，未关闭）
+
+同日真实code正控在仓外宿主控制区已走到工程检查、独立Reviewer及精确CP success；尚不能据此宣称完整导出链通过。固定vendor的`inspection prepare/read`每次覆盖同一路径并登记各版本sha；现`evidence._snapshot_artifacts`对每条历史事件只复制当前路径正文，`ArtifactBroker.submit`也仅原子替换而不留历史。旧版本正文因此缺失，实际pack自验拒绝。这是默认增量生产链的兼容缺口，不只是断言或夹具问题；不得忽略历史sha、删除旧事件或降低验证门。
+
+本片可另设有明确上限的软件正控：宿主用既有`inspection_worklist.build_worklist`派生真实范围，逐required phase实际读取每个文件并核对sha，一次提交完整最终清单，再让真实CP `prepare(resumed)`及check验证身份/范围/来源并登记正文。这是既有支持的最终正文生产路径，不能冒充默认逐次CP read、模型语义审查或历史版本归档已修复。保留原增量路径失败回归及未关闭债务；后续独立历史正文片须完成增量producer→保存→export→内置/离仓verify真实往返后，才关闭该缺边。本片不修改evidence、pack verifier或vendor。
 
 ### 合同、链路与生命周期审计范围
 

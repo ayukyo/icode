@@ -34,6 +34,7 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
+from types import MappingProxyType
 from typing import BinaryIO, Callable
 
 from .approvals import Approver, DenyAllApprover
@@ -43,7 +44,7 @@ from .budget import Budget, BudgetTracker
 from .checkpoint import Checkpointer
 from .config import Settings
 from .contracts import ContractSet
-from .control import ControlPlane, make_request
+from .control import ControlError, ControlPlane, make_request
 from .disclosure import load_guide
 from .guard import Guard, Scope
 from .isolation import NoIsolation, Sandbox, select_sandbox
@@ -51,7 +52,11 @@ from .loop import AgentLoop, LoopConfig, LoopResult, Turn
 from .operations import OperationRecorder
 from .reasoning import ReasoningGate, TraceRow, append_trace, run_deliberation
 from .recovery import Recoverer
-from .sandbox_policy import SandboxPolicy, derive_read_only_reviewer_policy
+from .sandbox_policy import NetworkMode, SandboxPolicy, derive_read_only_reviewer_policy, tighten_policy
+from .engineering_verification import (
+    VerificationPlan, _context_matches, _executable_identity, execute_verification_plan,
+)
+from .engineering_evidence import build_engineering_evidence
 from .self_verify import (
     AUTO_REPAIRABLE_CATEGORIES,
     VerificationEvidence,
@@ -67,6 +72,7 @@ from .workspace_snapshot import WorktreeTreeUnavailable
 from .workspace_snapshot import snapshot_fingerprint as _snapshot_fingerprint
 from .workspace_snapshot import snapshot_workspace as _snapshot
 from .workspace_snapshot import worktree_git_tree_oid as _worktree_git_tree_oid
+from .workspace_snapshot import _MAX_GIT_TREE_BYTES, _MAX_GIT_TREE_DEPTH, _MAX_GIT_TREE_ENTRIES
 
 # Share one retained-output budget across task verification and receipt import;
 # overflow is drained but never turned into partial verification evidence.
@@ -76,6 +82,8 @@ _VERIFICATION_OUTPUT_DRAIN_TIMEOUT_SECONDS = 2.0
 _VERIFICATION_PROCESS_CLEANUP_TIMEOUT_SECONDS = 2.0
 _DARWIN_PROCESS_GROUP_AUDIT_LIMIT_BYTES = 64 * 1024
 _DARWIN_PROCESS_GROUP_AUDIT_TIMEOUT_SECONDS = 1.0
+# Negative marker only; a new process must receive trusted inputs again.
+_CONTRACT_ENGINEERING_PENDING = "engineering_verification_pending"
 
 
 class VerificationOutputError(RuntimeError):
@@ -143,6 +151,9 @@ class StepReport:
     checkpoint_path: str = ""
     recovery_action: str = ""
     error: str = ""
+    verification_receipt_path: str = ""
+    verification_evidence: VerificationEvidence | None = field(default=None, repr=False)
+    verification_review_files: tuple[str, ...] = field(default=(), repr=False)
 
     def add(self, name: str, ok: bool, detail: str = "") -> None:
         self.checkpoints.append((name, ok, detail))
@@ -1154,6 +1165,7 @@ def run_contract_step(
     on_event=None,
     sandbox: Sandbox | None = None,
     policy: SandboxPolicy | None = None,
+    verification_plan: VerificationPlan | None = None,
     workspace_session: WorkspaceSession | None = None,
     change_baseline: dict[str, str] | None = None,
     out_dir: Path | None = None,
@@ -1174,6 +1186,12 @@ def run_contract_step(
         or policy.step != step or policy.ticket_id != ticket_id
     ):
         raise ValueError("隔离策略与当前步骤身份不匹配")
+    if policy is not None and step in ("code", "deepcheck"):
+        error = _contract_plan_error(verification_plan, workspace, step, ticket_id,
+                                     policy, sandbox, workspace_session)
+        if error:
+            return StepReport(step=step, ok=False, out_dir=str(out_dir or ""), error=error)
+    engineering = policy is not None and step in ("code", "deepcheck")
     cp = ControlPlane(settings)
     report = StepReport(step=step, ok=False, out_dir="")
 
@@ -1186,12 +1204,19 @@ def run_contract_step(
         report.add(f"契约载入（{step}）", True, f"复检点={list(contract.required_checks)}")
         if policy is not None and change_baseline is None:
             change_baseline = _snapshot(workspace)
+        engineering_baseline = _snapshot(workspace) if engineering else None
+        engineering_git_baseline = _read_task_git_state(workspace) if engineering else None
 
         # 渐进披露：只取门禁强制层，不整篇注入
         reuse = out_dir is not None
         if reuse:
             out_dir = Path(out_dir).resolve()
             report.out_dir = str(out_dir)
+            if engineering:
+                error = _contract_control_workspace_error(cp, out_dir, ticket_id, workspace)
+                if error:
+                    report.error = error
+                    return report
         else:
             from .handshake import next_out_dir
 
@@ -1238,6 +1263,8 @@ def run_contract_step(
         # 检查点：让中断后可恢复（不保存模型正文）
         ckpt = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt=attempt)
         report.checkpoint_path = str(ckpt.path)
+        if engineering:
+            ckpt.save(turn_index=0, tool_calls=0, history=[], stop_reason=_CONTRACT_ENGINEERING_PENDING)
         # 副作用回执器：**整步共用一个**。
         # 若每个 loop 各建一个，occurrence 计数会从 1 重来，
         # 于是同一 request 键重复出现 → 控制面判定 ambiguous_side_effect → 命令被拒。
@@ -1313,7 +1340,7 @@ def run_contract_step(
                         missing_artifacts=tuple(p.value for p in still_missing),
                     )
                     evidence = VerificationEvidence(
-                        step=step, attempt=str(repair_round), kind="gate",
+                        step=step, attempt=attempt, kind="gate",
                         command=("missing_artifacts",),
                         exit_code=None,
                         output="、".join(p.value for p in still_missing),
@@ -1382,11 +1409,31 @@ def run_contract_step(
                 _reset_artifact_checkpoints(report)
                 missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
 
+        if engineering:
+            if not _contract_engineering_gate(cp=cp, out_dir=out_dir, ticket_id=ticket_id,
+                    step=step, attempt=attempt, report=report, plan=verification_plan,
+                    policy=policy, sandbox=sandbox, workspace_session=workspace_session,
+                    workspace=workspace, baseline=engineering_baseline,
+                    git_baseline=engineering_git_baseline, operations=step_ops,
+                    backend=backend, requirement=requirement or DEFAULT_TASK,
+                    loop_config=loop_config, budget_tracker=budget_tracker):
+                if report.error == "budget_exceeded":
+                    return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
+                _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
+                return report
+
         deliberation = _prepare_deliberation(settings, backend, step, report,
                                              requirement or DEFAULT_TASK, budget_tracker)
         if getattr(deliberation, "budget_exceeded", False):
             return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
         _record_deliberation(settings, out_dir, step, ticket_id, report, deliberation)
+        if engineering:
+            error = _contract_engineering_binding_error(report, verification_plan, workspace,
+                step, ticket_id, policy, sandbox, workspace_session,
+                cp=cp, out_dir=out_dir, attempt=attempt)
+            if error:
+                report.error = error
+                report.add("终结前工程绑定重核", False, error)
         _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
         if report.finish_outcome == "success":
             ckpt.clear()  # 步骤已干净终结，检查点不再需要
@@ -1395,8 +1442,486 @@ def run_contract_step(
         return report
 
     except Exception as exc:  # noqa: BLE001
-        report.error = f"{type(exc).__name__}: {exc}"
+        report.error = "engineering_execution_unconfirmed" if engineering else f"{type(exc).__name__}: {exc}"
         return report
+
+
+def _contract_plan_error(plan, workspace, step, ticket_id, policy, sandbox, session) -> str:
+    """Admission only: do not launch a payload or manufacture resource evidence."""
+    from .tools.builtin import _uses_resource_dispatch
+    from .tools.base import IsolationUnavailable
+
+    if plan is None:
+        return "verification_plan_required"
+    if type(plan) is not VerificationPlan:
+        return "verification_plan_invalid"
+    if session is not None and (
+        not isinstance(session, WorkspaceSession) or session.run_id != policy.run_id
+        or session.ticket_id != ticket_id or session.workspace_root != workspace
+    ):
+        return "verification_session_identity_mismatch"
+    ctx = _make_ctx(workspace, sandbox, policy, workspace_session=session)
+    if plan.ticket_id != ticket_id or not _context_matches(plan, ctx, step):
+        return "verification_plan_identity_mismatch"
+    try:
+        if any(_executable_identity(Path(check.argv[0])) != check.executable_identity
+               for check in plan.checks):
+            return "verification_tool_changed"
+        if not _uses_resource_dispatch(ctx):
+            return "verification_resource_unavailable"
+        ctx._policy_command_wrapper()
+    except (OSError, ValueError, IsolationUnavailable):
+        return "verification_resource_unavailable"
+    return ""
+
+
+def _contract_control_workspace_error(cp, out_dir, ticket_id, workspace) -> str:
+    """The existing ticket must name the same trusted host execution object."""
+    try:
+        projection = cp.run("action-policy", "--dir", str(out_dir), check=False)
+        if (projection.returncode == 0 and projection.data.get("ok") is True
+                and projection.data.get("ticket_id") == ticket_id
+                and projection.data.get("execution_root") == str(workspace)):
+            return ""
+    except (ControlError, OSError, ValueError, TypeError, AttributeError):
+        pass
+    return "engineering_control_workspace_mismatch"
+
+
+def _contract_deepcheck_review_files(cp, out_dir, workspace, ticket_id, attempt) -> list[str] | None:
+    """Read only the CP-captured protected scope, with the pinned pack bounds.
+
+    trace intentionally omits protected input payloads. Validate its authoritative
+    chain first, then stream that same stable no-follow file; metadata alone is
+    never a source of Reviewer read authority.
+    """
+    import hashlib
+    from .pack_verify import (
+        GENESIS_HASH, _MAX_EVENT_CHAIN_LINE_BYTES, _MAX_EVENT_CHAIN_TOTAL_BYTES,
+        _MAX_EVENT_CHAIN_EVENT_COUNT, _MAX_METADATA_JSON_BYTES, loads_json_value, event_schema_issues,
+        canonical_event_hash,
+    )
+
+    def observed(trace):
+        return (trace.returncode == 0 and trace.data.get("ok") is True
+            and trace.data.get("ticket_id") == ticket_id
+            and (trace.data.get("open_steps") or {}).get(attempt, {}).get("step") == "deepcheck")
+
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    directory_fd = None
+    try:
+        trace = cp.trace(out_dir)
+        if not observed(trace):
+            return None
+        projection = cp.run("action-policy", "--dir", str(out_dir), check=False)
+        if (projection.returncode != 0 or projection.data.get("ok") is not True
+                or projection.data.get("ticket_id") != ticket_id
+                or projection.data.get("execution_root") != str(workspace)):
+            return None
+        # A real fresh CP check also rejects a changed metadata scope after an
+        # earlier passing boundary; event_count supplies a non-reused request.
+        count = trace.data.get("event_count")
+        if type(count) is not int or not 0 < count <= _MAX_EVENT_CHAIN_EVENT_COUNT:
+            return None
+        checked = cp.step_check(out_dir, "deepcheck", attempt, "before_transition",
+            ticket_id=ticket_id, occurrence=count + 1)
+        if (checked.returncode != 0 or checked.data.get("ok") is not True
+                or checked.data.get("step") != "deepcheck" or checked.data.get("attempt") != attempt
+                or checked.data.get("boundary") != "before_transition" or checked.data.get("result") != "pass"):
+            return None
+        trace = cp.trace(out_dir)
+        if not observed(trace):
+            return None
+        directory = Path(out_dir)
+        for path in (directory, *directory.parents):
+            if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+                return None
+        directory_before = directory.stat(follow_symlinks=False)
+        directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        if identity(directory_before) != identity(os.fstat(directory_fd)):
+            return None
+        metadata_fd = os.open(".ico_metadata.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd)
+        with os.fdopen(metadata_fd, "rb") as metadata_stream:
+            metadata_before = os.fstat(metadata_stream.fileno())
+            if not stat.S_ISREG(metadata_before.st_mode) or metadata_before.st_size > _MAX_METADATA_JSON_BYTES:
+                return None
+            metadata = loads_json_value(metadata_stream.read(_MAX_METADATA_JSON_BYTES + 1).decode("utf-8"))
+            if (type(metadata) is not dict or metadata.get("ticket_id") != ticket_id
+                    or identity(metadata_before) != identity(os.fstat(metadata_stream.fileno()))):
+                return None
+        descriptor = os.open(".ico_events.jsonl", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=directory_fd)
+        with os.fdopen(descriptor, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > _MAX_EVENT_CHAIN_TOTAL_BYTES:
+                return None
+            previous = GENESIS_HASH
+            total = event_count = starts = 0
+            ids = set()
+            captured = None
+            gates = {}
+            while True:
+                line = stream.readline(_MAX_EVENT_CHAIN_LINE_BYTES + 1)
+                if not line:
+                    break
+                total += len(line)
+                if len(line) > _MAX_EVENT_CHAIN_LINE_BYTES or total > _MAX_EVENT_CHAIN_TOTAL_BYTES:
+                    return None
+                if not line.strip():
+                    continue
+                event_count += 1
+                if event_count > _MAX_EVENT_CHAIN_EVENT_COUNT:
+                    return None
+                event = loads_json_value(line.decode("utf-8"))
+                if (type(event) is not dict or event_schema_issues(event, expected_ticket_id=ticket_id)
+                        or event["event_id"] in ids or event["previous_event_hash"] != previous
+                        or event["event_hash"] != canonical_event_hash(event)):
+                    return None
+                ids.add(event["event_id"])
+                previous = event["event_hash"]
+                payload = event["payload"]
+                if payload.get("attempt") != attempt:
+                    continue
+                if payload.get("step") != "deepcheck":
+                    return None
+                if event["event_type"] == "step_started":
+                    starts += 1
+                    captured = {key: payload.get(key) for key in ("protected", "input_digest")}
+                elif event["event_type"] == "gate_checked":
+                    gates[payload.get("boundary")] = {key: payload.get(key) for key in
+                        ("result", "captured_digest", "current_digest", "changed_inputs", "missing_inputs")}
+                elif event["event_type"] == "step_finished":
+                    return None
+            after = os.fstat(stream.fileno())
+            if (identity(before) != identity(after) or total != before.st_size
+                    or identity(after) != identity(os.stat(".ico_events.jsonl", dir_fd=directory_fd,
+                                                        follow_symlinks=False))
+                    or identity(directory_before) != identity(os.fstat(directory_fd))
+                    or identity(directory_before) != identity(directory.stat(follow_symlinks=False))):
+                return None
+            final_trace = cp.trace(out_dir)
+            if (not observed(final_trace) or final_trace.data.get("event_count") != event_count
+                    or trace.data.get("event_count") != event_count
+                    or identity(after) != identity(os.fstat(stream.fileno()))):
+                return None
+        if starts != 1 or type(captured) is not dict:
+            return None
+        protected = captured.get("protected")
+        if type(protected) is not dict:
+            return None
+        digest = _sha256_text(json.dumps(protected, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
+        if captured.get("input_digest") != digest:
+            return None
+        for boundary in ("before_write", "after_wait", "before_transition"):
+            gate = gates.get(boundary, {})
+            if (gate.get("result") != "pass" or gate.get("captured_digest") != digest
+                    or gate.get("current_digest") != digest or gate.get("changed_inputs") != []
+                    or gate.get("missing_inputs") != []):
+                return None
+        port = protected.get("code_files", {})
+        items = port.get("items")
+        if (port.get("kind") != "metadata_files" or port.get("base") != "workspace"
+                or port.get("exists") is not True or type(items) is not list or not 0 < len(items) <= 64
+                or port.get("digest") != _sha256_text(json.dumps(items, ensure_ascii=False,
+                    sort_keys=True, separators=(",", ":")))):
+            return None
+        # Scope acquisition materializes host-mediated source facts. Reuse the
+        # existing 2 MiB host Reviewer artifact budget, per file and in aggregate;
+        # the much smaller finalizer packet limit is a separate later boundary.
+        sizes = [fact.get("size") if type(fact) is dict else None for fact in items]
+        if (any(type(size) is not int or not 0 <= size <= DEFAULT_REVIEW_ARTIFACT_LIMIT_BYTES
+                for size in sizes) or sum(sizes) > DEFAULT_REVIEW_ARTIFACT_LIMIT_BYTES):
+            return None
+        names = []
+        for fact in items:
+            if type(fact) is not dict or fact.get("exists") is not True:
+                return None
+            name = fact.get("path")
+            if not isinstance(name, str):
+                return None
+            relative = PurePosixPath(name)
+            if (not name or "\\" in name or relative.is_absolute() or relative.as_posix() != name
+                    or ".." in relative.parts or not relative.parts
+                    or relative.parts[0] in (".icode_output", ".git") or name in names):
+                return None
+            source = workspace.joinpath(*relative.parts)
+            for part in (source, *source.parents):
+                if part == workspace:
+                    break
+                if part.is_symlink() or getattr(part, "is_junction", lambda: False)():
+                    return None
+            file_directory_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                for component in relative.parts[:-1]:
+                    next_fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=file_directory_fd)
+                    os.close(file_directory_fd)
+                    file_directory_fd = next_fd
+                source_fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=file_directory_fd)
+                with os.fdopen(source_fd, "rb") as source_stream:
+                    source_before = os.fstat(source_stream.fileno())
+                    if (not stat.S_ISREG(source_before.st_mode) or source_before.st_nlink != 1
+                            or type(fact.get("size")) is not int or source_before.st_size != fact["size"]):
+                        return None
+                    source_hash = hashlib.sha256()
+                    remaining = source_before.st_size
+                    while remaining:
+                        content = source_stream.read(min(remaining, _VERIFICATION_OUTPUT_READ_CHUNK_BYTES))
+                        if not content:
+                            return None
+                        remaining -= len(content)
+                        source_hash.update(content)
+                    if (source_stream.read(1) or source_hash.hexdigest() != fact.get("sha256")
+                            or identity(source_before) != identity(os.fstat(source_stream.fileno()))
+                            or identity(source_before) != identity(os.stat(relative.name,
+                                dir_fd=file_directory_fd, follow_symlinks=False))):
+                        return None
+            finally:
+                os.close(file_directory_fd)
+            names.append(name)
+        # CP resolves metadata_files through realpath. The raw declaration is
+        # only an additional equality restriction, never a read-permission source;
+        # it rejects link aliases that would otherwise disappear from file facts.
+        if metadata.get("code_files") != names:
+            return None
+        final_trace = cp.trace(out_dir)
+        final_projection = cp.run("action-policy", "--dir", str(out_dir), check=False)
+        if (not observed(final_trace) or final_trace.data.get("event_count") != event_count
+                or final_projection.returncode != 0 or final_projection.data.get("ok") is not True
+                or final_projection.data.get("ticket_id") != ticket_id
+                or final_projection.data.get("execution_root") != str(workspace)
+                or identity(after) != identity(os.stat(".ico_events.jsonl", dir_fd=directory_fd,
+                                                      follow_symlinks=False))
+                or identity(directory_before) != identity(directory.stat(follow_symlinks=False))
+                or identity(metadata_before) != identity(os.stat(".ico_metadata.json", dir_fd=directory_fd,
+                                                                follow_symlinks=False))
+                or any(path.is_symlink() or getattr(path, "is_junction", lambda: False)()
+                       for path in (directory, *directory.parents))):
+            return None
+        return names
+    except (ControlError, OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        return None
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def _contract_engineering_gate(
+    *, cp, out_dir, ticket_id, step, attempt, report, plan, policy, sandbox,
+    workspace_session, workspace, baseline, git_baseline, operations, backend,
+    requirement, loop_config, budget_tracker,
+) -> bool:
+    """One final host window after all writes, followed by a separate code Reviewer."""
+    from .evidence import save_verification_receipt
+    from .self_verify import evidence_fingerprint
+
+    error = _contract_plan_error(plan, workspace, step, ticket_id, policy, sandbox, workspace_session)
+    if error:
+        report.error = error
+        report.add("工程计划重核", False, error)
+        return False
+    if budget_tracker.verdict == "over_budget":
+        report.error = "budget_exceeded"
+        return False
+    plan_digest = plan.digest
+    ctx = _make_ctx(workspace, sandbox, policy, workspace_session=workspace_session)
+    # An operation attempt is distinct from the CP step attempt. Its name binds
+    # the latter so a later CP attempt cannot replay an earlier managed action.
+    operation_name = "engineering-" + _sha256_text(step + "|" + attempt)
+    started = operations.start(name=operation_name, opclass="managed_write",
+        input_desc=f"step={step} attempt={attempt} plan={plan_digest} checks={len(plan.checks)}")
+    if not started.can_execute:
+        report.error = "engineering_operation_start_unconfirmed"
+        report.add("工程动作开始确认", False)
+        return False
+    action_trace = cp.trace(out_dir)
+    open_action = (action_trace.data.get("open_operations") or {}).get(started.attempt)
+    if (action_trace.returncode != 0 or action_trace.data.get("ok") is not True
+            or action_trace.data.get("ticket_id") != ticket_id
+            or type(open_action) is not dict or open_action.get("name") != operation_name
+            or open_action.get("class") != "managed_write"):
+        report.error = "engineering_operation_replay_refused"
+        report.add("工程动作未决身份确认", False)
+        return False
+    # Exceptions after start deliberately leave the action open; there is no
+    # invented payload_not_started observation or automatic replay.
+    # CP action admission appends the actual .ico_events.jsonl control event.
+    # The tested window starts after admission, immediately around the host plan;
+    # a later in-workspace control write is still genuine source/tree drift.
+    before = _snapshot(workspace)
+    before_format, before_head = _read_task_git_state(workspace)
+    before_oid, before_status = _capture_task_git_tree_oid(workspace, before_head, object_format=before_format)
+    run = execute_verification_plan(plan, ctx=ctx, step=step, attempt=attempt)
+    after = _snapshot(workspace)
+    after_format, after_head = _read_task_git_state(workspace)
+    after_oid, after_status = _capture_task_git_tree_oid(workspace, before_head, object_format=after_format)
+    tree_oid, tree_status = _resolve_tested_git_tree(before, after, before_oid, before_status,
+        after_oid, after_status, before_format, after_format)
+    changed, binding = _bind_task_evidence(baseline, after, 0, "", workspace, attempt=attempt,
+        base_commit_sha=git_baseline[1], git_object_format=git_baseline[0],
+        initial_worktree_fingerprint=_snapshot_fingerprint(baseline),
+        test_head_before_sha=before_head, test_head_after_sha=after_head,
+        test_head_status=_resolve_test_head_status(before_format, before_head, after_format, after_head),
+        tested_git_tree_oid=tree_oid, tested_git_tree_status=tree_status)
+    binding = replace(binding, step=step, kind="engineering_verification",
+        command=("host-engineering-plan", plan_digest), tested_worktree_fingerprint=run.source_after)
+    evidence = build_engineering_evidence(plan, run, binding=binding)
+    report.verification_evidence = evidence
+    fingerprint = evidence_fingerprint(evidence)
+    # Failed tests with proven collection can close the action. Unknown output,
+    # process scope, channel or cache cleanup must stay unresolved in CP.
+    complete = any(c.status in ("passed", "failed") for c in run.checks) and all(
+        c.status == "not_run" or (
+            c.status in ("passed", "failed") and c.cleanup_ok is True
+            and c.scope_cleanup_ok is True and c.cache_owner_cleanup_confirmed is True
+            and c.cleanup_scope == "linux_task_scope" and c.resource_channel_status == "complete"
+            and c.violation_observer_status == "complete" and bool(c.resource_receipt_sha256)
+        ) for c in run.checks)
+    if complete:
+        complete = operations.finish(started.attempt, outcome="success" if evidence.passed else "failure",
+            evidence=fingerprint, check_ref=f"step={step} attempt={attempt}",
+            failure=None if evidence.passed else "deterministic_failure")
+        if complete:
+            closed_trace = cp.trace(out_dir)
+            complete = (closed_trace.returncode == 0 and closed_trace.data.get("ok") is True
+                and closed_trace.data.get("ticket_id") == ticket_id
+                and not closed_trace.data.get("open_operations"))
+    report.add("工程动作终结确认", complete)
+    target = out_dir / (f".engineering-{step}-" + _sha256_text(attempt) + "-" + fingerprint + ".json")
+    report.verification_receipt_path = str(save_verification_receipt(evidence, target))
+    recorded = _record_contract_engineering(cp, out_dir, ticket_id, evidence)
+    report.add("工程完整证据记录确认", recorded)
+    source_stable = (
+        bool(run.source_before) and run.source_before == run.source_after
+        and _snapshot_fingerprint(before) == run.source_before
+        and _snapshot_fingerprint(after) == run.source_after
+        and before_format == after_format == git_baseline[0]
+        and before_head == after_head
+        and (not before_format or (tree_status == "stable" and before_status == "captured"
+                                   and before_head == git_baseline[1]))
+    )
+    report.add("宿主工程验收", evidence.passed and complete and recorded and source_stable,
+               evidence.category or "passed")
+    if not (evidence.passed and complete and recorded and source_stable):
+        report.error = "engineering_verification_failed"
+        return False
+    review_files = None
+    if step == "deepcheck":
+        review_files = _contract_deepcheck_review_files(cp, out_dir, workspace, ticket_id, attempt)
+        if review_files is None:
+            report.error = "engineering_review_scope_unconfirmed"
+            report.add("CP 保护的固定源码审查范围", False)
+            return False
+        report.verification_review_files = tuple(review_files)
+    reviewer_policy = tighten_policy(policy, replace(policy, write_roots=(),
+        network_mode=NetworkMode.DENY, allowed_domains=(),
+        deny_read_roots=tuple(set(policy.deny_read_roots) | {workspace / ".icode_output", out_dir}),
+        deny_write_roots=tuple(set(policy.deny_write_roots) | {workspace / ".icode_output", out_dir})))
+    review, review_loop = _run_task_reviewer(backend=backend, workspace=workspace,
+        task=requirement, changed_files=changed, evidence=evidence, baseline=baseline,
+        sandbox=sandbox, loop_config=loop_config or LoopConfig(), budget_tracker=budget_tracker,
+        policy=reviewer_policy, workspace_session=workspace_session,
+        **({"review_files": review_files} if review_files is not None else {}))
+    if budget_tracker.verdict == "over_budget" or getattr(review_loop, "stop_reason", "") == "budget_exceeded":
+        report.error = "budget_exceeded"
+        return False
+    quality_ok = review.ok and review.model_reviewed and review.read_only_verified
+    report.add("独立代码质量审查", quality_ok, review.error[:160])
+    error = _contract_plan_error(plan, workspace, step, ticket_id, policy, sandbox, workspace_session)
+    current_format, current_head = _read_task_git_state(workspace)
+    current_oid, current_status = _capture_task_git_tree_oid(workspace, before_head, object_format=current_format)
+    stable_after_review = (
+        plan.digest == plan_digest and not error and current_format == after_format
+        and current_head == after_head and current_oid == after_oid and current_status == after_status
+        and _snapshot_fingerprint(_snapshot(workspace)) == run.source_after
+    )
+    report.add("审查后工程身份与源码重核", stable_after_review)
+    if not quality_ok or not stable_after_review:
+        report.error = "engineering_reviewer_failed"
+        return False
+    return True
+
+
+def _contract_engineering_binding_error(report, plan, workspace, step, ticket_id, policy, sandbox, session,
+                                      *, cp=None, out_dir=None, attempt="") -> str:
+    """Recheck immutable facts at the last CP boundary without replaying commands."""
+    if cp is not None:
+        if step == "deepcheck":
+            if (not report.verification_review_files
+                    or tuple(_contract_deepcheck_review_files(cp, out_dir, workspace, ticket_id, attempt) or ())
+                    != report.verification_review_files):
+                return "engineering_final_control_binding_changed"
+        else:
+            try:
+                trace = cp.trace(out_dir)
+                if (trace.returncode != 0 or trace.data.get("ok") is not True
+                        or trace.data.get("ticket_id") != ticket_id or trace.data.get("open_operations")
+                        or (trace.data.get("open_steps") or {}).get(attempt, {}).get("step") != step
+                        or type(trace.data.get("event_count")) is not int):
+                    return "engineering_final_control_binding_changed"
+                checked = cp.step_check(out_dir, step, attempt, "before_transition",
+                    ticket_id=ticket_id, occurrence=trace.data["event_count"] + 1)
+                if (checked.returncode != 0 or checked.data.get("ok") is not True
+                        or checked.data.get("result") != "pass" or checked.data.get("step") != step
+                        or checked.data.get("attempt") != attempt or checked.data.get("boundary") != "before_transition"):
+                    return "engineering_final_control_binding_changed"
+            except (ControlError, OSError, ValueError, TypeError, AttributeError):
+                return "engineering_final_control_binding_changed"
+    error = _contract_plan_error(plan, workspace, step, ticket_id, policy, sandbox, session)
+    evidence = report.verification_evidence
+    if error or evidence is None or not evidence.passed:
+        return error or "engineering_final_binding_changed"
+    row = evidence.to_receipt()
+    object_format, head = _read_task_git_state(workspace)
+    if (row["run"]["plan_digest"] != plan.digest
+            or _snapshot_fingerprint(_snapshot(workspace)) != evidence.tested_worktree_fingerprint
+            or object_format != evidence.git_object_format or head != evidence.test_head_after_sha):
+        return "engineering_final_binding_changed"
+    if object_format:
+        oid, status = _capture_task_git_tree_oid(workspace, evidence.base_commit_sha, object_format=object_format)
+        if status != "captured" or oid != evidence.tested_git_tree_oid:
+            return "engineering_final_binding_changed"
+    return ""
+
+
+def _record_contract_engineering(cp, out_dir, ticket_id, evidence) -> bool:
+    """Strictly confirm the two actual CP response forms, never infer from trace."""
+    import uuid
+    from .self_verify import evidence_fingerprint
+
+    payload = dict(kind="device_test", outcome="pass" if evidence.passed else "fail",
+        evidence=evidence_fingerprint(evidence), baseline=evidence.diff_fingerprint,
+        layer="unit", scenario="engineering_verification",
+        note=f"step={evidence.step} category={evidence.category or ''}")
+    try:
+        result = cp.record_verification(out_dir, ticket_id=ticket_id, **payload)
+        data = result.data
+        if result.returncode != 0 or data.get("ok") is not True:
+            return False
+        event_id = data.get("event_id")
+        if type(event_id) is not str or str(uuid.UUID(event_id)) != event_id:
+            return False
+        if "run" in data:
+            if "already_applied" in data:
+                return False
+            run = data["run"]
+            if (type(run) is not dict or any(run.get(k) != v for k, v in payload.items())
+                    or not isinstance(run.get("at"), str) or not run["at"]):
+                return False
+            run_id = run.get("run_id")
+        else:
+            request = make_request(ticket_id, "record-verification", attempt="verify",
+                boundary="|".join((payload["kind"], payload["outcome"], payload["evidence"], payload["baseline"])))
+            if data.get("already_applied") is not True or data.get("request_id") != request:
+                return False
+            run_id = data.get("run_id")
+        return type(run_id) is str and str(uuid.UUID(run_id)) == run_id
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
 
 
 def _stop_contract_for_budget(
@@ -1535,10 +2060,14 @@ def _finish_step(
         not missing and not report.error and all(ok for _, ok, _ in report.checkpoints)
     ) else "failure"
     report.finish_outcome = ""
+    evidence_refs = ["e2e:model-run"]
+    if report.verification_evidence is not None:
+        from .self_verify import evidence_fingerprint
+        evidence_refs.append(evidence_fingerprint(report.verification_evidence))
     try:
         finish = cp.step_finish(
             out_dir, step, attempt, outcome,
-            ticket_id=ticket_id, evidence=["e2e:model-run"], check=False,
+            ticket_id=ticket_id, evidence=evidence_refs, check=False,
         )
     except Exception as exc:  # noqa: BLE001 - still observe the CP; never discard recovery
         report.add("step finish（调用未确认）", False, type(exc).__name__)
@@ -1771,7 +2300,9 @@ def _run_agent(
     on_turn = None
     if checkpointer is not None:
         def on_turn(turn_index: int, total_tool_calls: int, history: list[dict]) -> None:
-            checkpointer.save(turn_index=turn_index, tool_calls=total_tool_calls, history=history)
+            checkpointer.save(turn_index=turn_index, tool_calls=total_tool_calls, history=history,
+                stop_reason=(_CONTRACT_ENGINEERING_PENDING
+                             if policy is not None and step in ("code", "deepcheck") else ""))
 
     loop = AgentLoop(
         backend=backend,
@@ -2002,6 +2533,37 @@ def _open_attempt(decision) -> str | None:
     return None
 
 
+def _freeze_contract_change_baseline(baseline: dict[str, str]) -> MappingProxyType | None:
+    """Validate a caller-owned original snapshot without inventing its history.
+
+    Reuse the host snapshot family's entry/depth/byte bounds. This map contains
+    hashes, not hidden commands or permissions; copying and freezing prevents a
+    caller's later mutation from changing the same-attempt review baseline.
+    """
+    if type(baseline) is not dict or len(baseline) > _MAX_GIT_TREE_ENTRIES:
+        return None
+    frozen = {}
+    retained_bytes = 0
+    try:
+        for name, digest in baseline.items():
+            if (type(name) is not str or type(digest) is not str or not name
+                    or len(name) > _MAX_GIT_TREE_BYTES or "\x00" in name
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+                return None
+            relative = PurePosixPath(name)
+            if (not relative.parts or relative.is_absolute() or relative.as_posix() != name or ".." in relative.parts
+                    or len(relative.parts) > _MAX_GIT_TREE_DEPTH
+                    or any(part in (".icode_output", "__pycache__") for part in relative.parts)):
+                return None
+            retained_bytes += len(name.encode("utf-8")) + len(digest)
+            if retained_bytes > _MAX_GIT_TREE_BYTES:
+                return None
+            frozen[name] = digest
+    except (UnicodeError, RuntimeError):
+        return None
+    return MappingProxyType(frozen)
+
+
 def resume_contract_step(
     settings: Settings,
     *,
@@ -2015,6 +2577,11 @@ def resume_contract_step(
     budget_tracker: BudgetTracker | None = None,
     on_event=None,
     sandbox: Sandbox | None = None,
+    workspace: Path | None = None,
+    policy: SandboxPolicy | None = None,
+    workspace_session: WorkspaceSession | None = None,
+    verification_plan: VerificationPlan | None = None,
+    change_baseline: dict[str, str] | None = None,
 ) -> StepReport:
     """恢复一个被中断的步骤。
 
@@ -2023,8 +2590,36 @@ def resume_contract_step(
     """
     budget_tracker = _runtime_budget(budget, budget_tracker)
     out_dir = Path(out_dir).resolve()
-    cp = ControlPlane(settings)
     report = StepReport(step=step, ok=False, out_dir=str(out_dir))
+    checkpoint_engineering = False
+    if step in ("code", "deepcheck"):
+        probe = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt="")
+        if probe.exists():
+            try:
+                saved = probe.load()
+            except (OSError, ValueError, RuntimeError):
+                report.error = "engineering_recovery_checkpoint_unconfirmed"
+                return report
+            checkpoint_engineering = saved is not None and saved.stop_reason == _CONTRACT_ENGINEERING_PENDING
+    engineering = step in ("code", "deepcheck") and (
+        checkpoint_engineering or policy is not None or verification_plan is not None
+        or workspace_session is not None or change_baseline is not None
+    )
+    if engineering and (workspace is None or policy is None or verification_plan is None
+                        or not isinstance(workspace_session, WorkspaceSession)):
+        report.error = "engineering_recovery_identity_required"
+        return report
+    engineering_baseline = None
+    if engineering:
+        if change_baseline is None:
+            report.error = "engineering_recovery_baseline_required"
+            return report
+        engineering_baseline = _freeze_contract_change_baseline(change_baseline)
+        if engineering_baseline is None:
+            report.error = "engineering_recovery_baseline_invalid"
+            return report
+    workspace = Path(workspace).resolve() if workspace is not None else out_dir.parent.parent
+    cp = ControlPlane(settings)
 
     try:
         meta_path = out_dir / ".ico_metadata.json"
@@ -2032,7 +2627,21 @@ def resume_contract_step(
             report.error = f"不是 v3 工单目录：{out_dir}"
             return report
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if engineering and (meta.get("ticket_id") != policy.ticket_id
+                            or ticket_id and ticket_id != policy.ticket_id):
+            report.error = "engineering_recovery_identity_mismatch"
+            return report
         ticket_id = str(meta.get("ticket_id") or ticket_id)
+        if engineering:
+            error = _contract_plan_error(verification_plan, workspace, step, ticket_id,
+                                         policy, sandbox, workspace_session)
+            if error:
+                report.error = error
+                return report
+            error = _contract_control_workspace_error(cp, out_dir, ticket_id, workspace)
+            if error:
+                report.error = error
+                return report
 
         contracts = ContractSet.load(settings.gates_json)
         if not contracts.has(step):
@@ -2041,6 +2650,31 @@ def resume_contract_step(
         contract = contracts.step(step)
 
         probe_ck = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt="")
+        if engineering:
+            from .pack_verify import _MAX_EVENT_CHAIN_EVENT_COUNT
+            trace = cp.trace(out_dir, limit=_MAX_EVENT_CHAIN_EVENT_COUNT)
+            checkpoint = probe_ck.load() if probe_ck.exists() else None
+            open_steps = trace.data.get("open_steps") or {}
+            if (trace.returncode != 0 or trace.data.get("ok") is not True
+                    or trace.data.get("ticket_id") != ticket_id or trace.data.get("open_operations")
+                    or type(trace.data.get("event_count")) is not int
+                    or trace.data["event_count"] > _MAX_EVENT_CHAIN_EVENT_COUNT
+                    or checkpoint is not None and (
+                        checkpoint.ticket_id != ticket_id or checkpoint.step != step
+                        or checkpoint.attempt not in open_steps
+                        or open_steps[checkpoint.attempt].get("step") != step)):
+                report.error = "engineering_recovery_attempt_unconfirmed"
+                return report
+            for prior_attempt, opened in open_steps.items():
+                if opened.get("step") == step and any(
+                    event.get("type") == "operation_started"
+                    and event.get("name") == "engineering-" + _sha256_text(step + "|" + prior_attempt)
+                    for event in trace.data.get("events", ())
+                ):
+                    # No saved full audit/receipt/reviewer reuse contract exists
+                    # here. Closed actions do not authorize another model turn.
+                    report.error = "engineering_recovery_action_replay_refused"
+                    return report
         decision = Recoverer(cp, out_dir, ticket_id).analyze(step, checkpointer=probe_ck)
         report.recovery_action = decision.action
         report.add(f"恢复分析（{decision.action}）", not decision.needs_human, decision.reason[:200])
@@ -2059,9 +2693,15 @@ def resume_contract_step(
         if not attempt:
             report.error = "无法确定未闭合步骤的 attempt，拒绝盲目恢复"
             return report
+        if engineering and (decision.step != step or attempt not in decision.open_steps
+                or decision.open_steps[attempt].get("step") != step or decision.open_operations):
+            report.error = "engineering_recovery_attempt_unconfirmed"
+            return report
 
         checkpointer = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt=attempt)
         report.checkpoint_path = str(checkpointer.path)
+        engineering_git_baseline = _read_task_git_state(workspace) if engineering else None
+        step_ops = OperationRecorder(cp, out_dir, ticket_id, scope=step if engineering else "")
 
         guide = load_guide(settings.steps_dir, step)
         brief = ""
@@ -2070,13 +2710,14 @@ def resume_contract_step(
 
         requirement = str(meta.get("requirement") or DEFAULT_TASK)
         loop = _run_agent(
-            backend=backend, workspace=out_dir.parent.parent, out_dir=out_dir,
+            backend=backend, workspace=workspace, out_dir=out_dir,
             ticket_id=ticket_id, step=step, brief=brief, contract=contract,
             requirement=requirement, approver=approver, loop_config=loop_config,
             budget=budget, on_event=on_event, checkpointer=checkpointer,
             resume_context=decision.resume_brief(),
-            sandbox=sandbox,
-            operations=OperationRecorder(cp, out_dir, ticket_id),
+            sandbox=sandbox, policy=policy, workspace_session=workspace_session,
+            change_baseline=engineering_baseline,
+            operations=step_ops,
             budget_tracker=budget_tracker,
         )
         report.loop = loop
@@ -2086,11 +2727,30 @@ def resume_contract_step(
             report.warn(f"恢复后的回合循环未自然结束（stop_reason={loop.stop_reason}）")
 
         missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
+        if engineering:
+            if not _contract_engineering_gate(cp=cp, out_dir=out_dir, ticket_id=ticket_id,
+                    step=step, attempt=attempt, report=report, plan=verification_plan,
+                    policy=policy, sandbox=sandbox, workspace_session=workspace_session,
+                    workspace=workspace, baseline=engineering_baseline,
+                    git_baseline=engineering_git_baseline, operations=step_ops,
+                    backend=backend, requirement=requirement, loop_config=loop_config,
+                    budget_tracker=budget_tracker):
+                if report.error == "budget_exceeded":
+                    return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
+                _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
+                return report
         deliberation = _prepare_deliberation(settings, backend, step, report,
                                              requirement or DEFAULT_TASK, budget_tracker)
         if getattr(deliberation, "budget_exceeded", False):
             return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
         _record_deliberation(settings, out_dir, step, ticket_id, report, deliberation)
+        if engineering:
+            error = _contract_engineering_binding_error(report, verification_plan, workspace,
+                step, ticket_id, policy, sandbox, workspace_session,
+                cp=cp, out_dir=out_dir, attempt=attempt)
+            if error:
+                report.error = error
+                report.add("终结前工程绑定重核", False, error)
         _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
         if report.finish_outcome == "success":
             checkpointer.clear()
@@ -2099,7 +2759,7 @@ def resume_contract_step(
         return report
 
     except Exception as exc:  # noqa: BLE001
-        report.error = f"{type(exc).__name__}: {exc}"
+        report.error = "engineering_recovery_unconfirmed" if engineering else f"{type(exc).__name__}: {exc}"
         return report
 
 
@@ -2358,6 +3018,9 @@ def _run_task_reviewer(
     *, backend: Backend, workspace: Path, task: str, changed_files: list[str],
     evidence: VerificationEvidence, baseline: dict[str, str], sandbox: Sandbox,
     loop_config: LoopConfig, budget_tracker: BudgetTracker,
+    policy: SandboxPolicy | None = None,
+    workspace_session: WorkspaceSession | None = None,
+    review_files: list[str] | None = None,
 ):
     """Run a separate semantic review with read tools only; all uncertainty fails closed."""
     from .reviewer import (
@@ -2366,6 +3029,10 @@ def _run_task_reviewer(
     )
 
     workspace = Path(workspace).resolve()
+    # Fixed deepcheck scope is independent from this attempt's genuine diff.
+    # Keep that diff unchanged for the final snapshot/evidence comparison.
+    actual_changed_files = changed_files
+    fixed_scope = review_files is not None
 
     def failed(
         reason: str, base_report: ReviewReport | None = None,
@@ -2380,6 +3047,16 @@ def _run_task_reviewer(
             model_reviewed=False,
         ), None
 
+    if fixed_scope:
+        if (policy is None or policy.step != "deepcheck" or policy.workspace_root != workspace
+                or policy.write_roots or policy.network_mode != NetworkMode.DENY or policy.allowed_domains
+                or evidence.step != "deepcheck" or evidence.engineering_facts is None or not evidence.passed
+                or type(review_files) is not list or not review_files
+                or any(type(name) is not str for name in review_files)
+                or len(set(review_files)) != len(review_files)
+                or not set(actual_changed_files).issubset(review_files)):
+            return failed("固定源码审查范围缺少可信 deepcheck 工程身份")
+        changed_files = list(review_files)
     if not changed_files:
         read_only_probe = IndependentReviewer(workspace=workspace).review(
             changed_files, evidence,
@@ -2485,7 +3162,8 @@ def _run_task_reviewer(
     registry.register(Tool(
         name="submit_review",
         description=(
-            "提交一次结构化审查结论。必须先完整读取所有改动文件；"
+            ("提交一次结构化审查结论。必须先完整读取 CP 固定范围中的所有源码文件；"
+             if fixed_scope else "提交一次结构化审查结论。必须先完整读取所有改动文件；") +
             "本工具只校验输出合同，不代表结果通过。"
         ),
         parameters={
@@ -2526,6 +3204,8 @@ def _run_task_reviewer(
     ctx = _make_ctx(
         workspace,
         sandbox,
+        policy,
+        workspace_session=workspace_session,
         change_baseline=baseline,
         read_only_workspace=True,
         review_submission_enabled=True,
@@ -2551,6 +3231,7 @@ def _run_task_reviewer(
 
     evidence_fingerprint_value = evidence_fingerprint(evidence)
     artifact_hashes = dict(evidence.artifact_hashes)
+    engineering_receipt = evidence.to_receipt() if evidence.engineering_facts is not None else None
     system = (
         "你是独立代码审查代理。此会话与执行代理完全分离，只能审查、不得修改。\n"
         "read_file 只允许读取本次改动文件；submit_review 是唯一结构化输出工具；"
@@ -2564,9 +3245,16 @@ def _run_task_reviewer(
         "若本地校验返回合同错误，仅允许按错误修正并重试一次；超出次数、达到回合或预算上限均失败关闭。\n"
         "blocking 发现必须原样作为阻断项报告；没有发现时 findings 为空数组。提交通过后自然结束，不再调用工具。"
     )
+    if fixed_scope:
+        system = system.replace("本次改动文件", "CP 已捕获并保护的固定源码文件").replace(
+            "本次所有改动文件", "固定范围中的所有源码文件").replace(
+            "仅报告能证明由本次改动引入、可操作且定位到改动文件的问题；不确定时不凑数。",
+            "审查固定源码中的可操作问题，不要求缺陷由本轮引入；不得把已有源码描述为本轮新增。"
+        ).replace("完整读取改动后", "完整读取固定范围源码后")
     user = json.dumps({
         "task": task,
-        "changed_files": changed_files,
+        "changed_files": actual_changed_files,
+        **({"review_files": changed_files} if fixed_scope else {}),
         "verification": {
             "exit_code": evidence.exit_code,
             "category": evidence.category,
@@ -2579,9 +3267,11 @@ def _run_task_reviewer(
             "tested_git_tree_status": evidence.tested_git_tree_status,
             "artifact_hashes": artifact_hashes,
             "test_output_included": False,
+            **({"engineering_verification": engineering_receipt} if engineering_receipt is not None else {}),
         },
         "instructions": (
-        "只读取 changed_files 中的文件；不提供其它文件或目录读取权限。"
+        ("只读取 review_files 中 CP 已保护的固定源码；changed_files 只表示本轮真实差异。"
+         if fixed_scope else "只读取 changed_files 中的文件；不提供其它文件或目录读取权限。") +
         "不要尝试访问 .icode_output 或任何未列出的路径。"
         "不要将 tested_git_tree_oid 描述为已通过的结果 commit 比对。"
         "最终必须调用 submit_review；不要用自由文本代替结构化输出。"
@@ -2628,6 +3318,8 @@ def _run_task_reviewer(
         finalizer_ctx = _make_ctx(
             workspace,
             sandbox,
+            policy,
+            workspace_session=workspace_session,
             change_baseline=baseline,
             read_only_workspace=True,
             review_submission_enabled=True,
@@ -2659,9 +3351,14 @@ def _run_task_reviewer(
             "必须调用唯一工具 submit_review，严格按 schema 提交；"
             "本地校验错误时最多纠正一次。不得用自由文本代替工具提交。"
         )
+        if fixed_scope:
+            finalizer_system = finalizer_system.replace("精确改动文件读取", "CP 固定范围源码读取").replace(
+                "只报告能证明由本次改动引入、可操作且定位到改动文件的问题；不确定时不凑数。",
+                "审查固定范围源码的可操作问题；不要求本轮引入，不得虚称已有代码为本轮新增。")
         finalizer_user = json.dumps({
             "task": task,
-            "changed_files": changed_files,
+            "changed_files": actual_changed_files,
+            **({"review_files": changed_files} if fixed_scope else {}),
             "verification": {
                 "exit_code": evidence.exit_code,
                 "category": evidence.category,
@@ -2674,10 +3371,12 @@ def _run_task_reviewer(
                 "tested_git_tree_status": evidence.tested_git_tree_status,
                 "artifact_hashes": artifact_hashes,
                 "test_output_included": False,
+                **({"engineering_verification": engineering_receipt} if engineering_receipt is not None else {}),
             },
             "reviewed_source": reviewed_sources,
             "instructions": (
-                "只对 changed_files 中的内容作结论；每条 finding 的 file 必须是其中一个文件，"
+                ("只对 review_files 固定源码作结论；每条 finding 的 file 必须是其中一个文件，"
+                 if fixed_scope else "只对 changed_files 中的内容作结论；每条 finding 的 file 必须是其中一个文件，") +
                 "line 使用 1 起始行号。不得宣称结果 commit 已由 tested_git_tree_oid 验证。"
             ),
         }, ensure_ascii=False, sort_keys=True)
@@ -2740,7 +3439,7 @@ def _run_task_reviewer(
             error="Reviewer 结束后无法重核工作区快照",
             model_reviewed=False,
         ), review_loop
-    if (_changed(baseline, after_review) != changed_files
+    if (_changed(baseline, after_review) != actual_changed_files
             or _diff_fingerprint(baseline, after_review) != evidence.diff_fingerprint
             or _snapshot_fingerprint(after_review)
             != evidence.tested_worktree_fingerprint):

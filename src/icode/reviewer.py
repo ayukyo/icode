@@ -192,7 +192,11 @@ class IndependentReviewer:
             exit_code = getattr(evidence, "exit_code", None)
 
         findings: list[ReviewFinding] = []
-        if exit_code is not None and exit_code != 0:
+        engineering_failed = (
+            evidence is not None and getattr(evidence, "engineering_facts", None) is not None
+            and not evidence.passed
+        )
+        if engineering_failed or exit_code is not None and exit_code != 0:
             findings.append(ReviewFinding(
                 severity=SEVERITY_BLOCKING,
                 category=category or "side_effect_unknown",
