@@ -1189,17 +1189,30 @@ def run_contract_step(
             report.add("工单创建", ok_create.data.get("ok") is True,
                        f"status={ok_create.data.get('status')}")
 
-        attempt = cp.step_start(out_dir, step, ticket_id=ticket_id)
-        report.add("step start", bool(attempt), f"attempt={attempt}")
-
         # 中间状态流转：review/code/deepcheck 有 in_progress 状态，
-        # 必须先流转到 in_progress 才能做工作（否则后续的 done 流转会被状态机拒绝）。
-        # plan / merge / audit 没有独立的 in_progress 状态（create 时的状态即为起点）。
+        # 必须先成功进入，再创建 attempt，使回执属于本次状态入口。
+        # 没有 in_progress 映射的步骤直接 start，不在本地硬编码状态。
         in_prog = contracts.in_progress_status_for(step)
         if in_prog:
-            tr = cp.transition(out_dir, in_prog, ticket_id=ticket_id)
-            report.add(f"中间状态流转 → {in_prog}", tr.data.get("ok") is True,
-                       f"status={tr.data.get('status')}")
+            # create 已建立初态；复用目录只从控制面可信 trace 读取状态。
+            # 已处于入口时不做非法自流转，也不伪造新的 entry 事件。
+            state = cp.trace(out_dir) if reuse else ok_create
+            if state.data.get("ok") is not True:
+                report.error = "步骤当前状态未确认，未启动步骤"
+                return report
+            if state.data.get("status") == in_prog:
+                report.add(f"已处于中间状态 → {in_prog}", True)
+            else:
+                tr = cp.transition(out_dir, in_prog, ticket_id=ticket_id)
+                entered = tr.data.get("ok") is True
+                report.add(f"中间状态流转 → {in_prog}", entered,
+                           f"status={tr.data.get('status')}")
+                if not entered:
+                    report.error = "中间状态流转未通过，未启动步骤"
+                    return report
+
+        attempt = cp.step_start(out_dir, step, ticket_id=ticket_id)
+        report.add("step start", bool(attempt), f"attempt={attempt}")
 
         # 检查点：让中断后可恢复（不保存模型正文）
         ckpt = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt=attempt)
@@ -1337,6 +1350,8 @@ def run_contract_step(
                 out_dir, contract, report, last_text, artifact_broker=broker,
             )
             if persisted:
+                if post_write is not None:
+                    post_write(out_dir, step, attempt)
                 _reset_artifact_checkpoints(report)
                 missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
 

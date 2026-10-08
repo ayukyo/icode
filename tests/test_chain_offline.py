@@ -14,14 +14,14 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 
-from tests._support import REPO_ROOT, require_skill, temp_workspace
+from tests._support import REPO_ROOT, make_finished_plan_ticket, require_skill, temp_workspace
 
 from icode.backends import FakeBackend
-from icode.chain import chain_steps, run_chain
+from icode.chain import assemble_review_manifest, chain_steps, run_chain
 from icode.config import load_settings
 from icode.contracts import ContractSet
 from icode.control import ControlPlane
-from icode.runner import run_contract_step, run_unittest
+from icode.runner import AUTOPERSIST_HEADER, run_contract_step, run_unittest
 from icode.runner import StepReport
 from icode.isolation import NoIsolation
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
@@ -415,6 +415,368 @@ class TestChainOffline(unittest.TestCase):
             started = [e for e in events if e["event_type"] == "step_started"]
             finished = [e for e in events if e["event_type"] == "step_finished"]
             self.assertEqual(len(started), len(finished), "step start/finish 不配对")
+
+
+class TestReviewArtifactHonestyOffline(unittest.TestCase):
+    """Real controller, model tool loop and artifact broker; no gate mocks."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.settings = require_skill()
+
+    def _ticket(self, workspace: Path) -> Path:
+        from icode.reasoning import ReasoningGate, append_trace
+        from icode.sequential import Deliberation
+
+        out_dir = make_finished_plan_ticket(self.settings, workspace, ticket_id="REVIEW-HONESTY")
+        cp = ControlPlane(self.settings)
+        gate = ReasoningGate.load(self.settings.skill_root / "mcp/reasoning-gate/gates.json")
+        row = gate.build_row("REVIEW-HONESTY", "plan", deliberation=Deliberation(
+            tier="L2", steps=["Read plan", "Check scope", "Check test contract"], converged=True,
+        ))
+        if row is not None:
+            append_trace(out_dir / ".thinking_gate_trace.jsonl", [row])
+        _ensure_gate_meta(cp, out_dir, "REVIEW-HONESTY")
+        transition = cp.transition(out_dir, "plan_done", ticket_id="REVIEW-HONESTY")
+        self.assertTrue(transition.data.get("ok"), transition.data)
+        # Start in a genuine review entry: the upstream review_run receipt must
+        # follow that entry. Initial-entry ordering is a separate runner issue.
+        transition = cp.transition(out_dir, "review_in_progress", ticket_id="REVIEW-HONESTY")
+        self.assertTrue(transition.data.get("ok"), transition.data)
+        return out_dir
+
+    def _backend(self, submissions: dict[str, str], reply: str) -> FakeBackend:
+        script = []
+        if submissions:
+            script.append({"content": "", "tool_calls": [
+                {"id": f"submit-{index}", "name": "submit_artifact",
+                 "arguments": {"name": name, "content": body}}
+                for index, (name, body) in enumerate(submissions.items())
+            ]})
+        # The existing bounded repair may ask once; it receives no new artifacts.
+        return FakeBackend([*script, reply, "完成", *["完成"] * 5])
+
+    def _chain(self, workspace: Path, submissions: dict[str, str], reply: str):
+        out_dir = self._ticket(workspace)
+        backend = self._backend(submissions, reply)
+        report = run_chain(
+            self.settings, backend=backend, workspace=workspace,
+            requirement="Independent plan review", ticket_id="REVIEW-HONESTY",
+            steps=("review",), out_dir=out_dir, sandbox=NoIsolation(),
+        )
+        return out_dir, backend, report
+
+    def _assert_failure(self, out_dir: Path, report) -> None:
+        self.assertFalse(report.ok)
+        self.assertEqual(report.stopped_at, "review")
+        self.assertNotEqual(report.steps[0].finish_outcome, "success")
+        trace = ControlPlane(self.settings).trace(out_dir)
+        self.assertNotEqual(trace.data.get("status"), "review_done")
+
+    def test_all_missing_keeps_review_and_round_missing(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir, _backend, report = self._chain(workspace, {}, "完成")
+            self.assertFalse((out_dir / "02_review.md").exists())
+            self.assertEqual(list(out_dir.glob("review_round_*.json")), [])
+            self._assert_failure(out_dir, report)
+
+    def test_body_only_fails_without_clean_round(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir, _backend, report = self._chain(workspace, {"02_review.md": REVIEW_TEXT}, "完成")
+            self.assertEqual((out_dir / "02_review.md").read_text(encoding="utf-8"), REVIEW_TEXT)
+            self.assertEqual(list(out_dir.glob("review_round_*.json")), [])
+            self._assert_failure(out_dir, report)
+
+    def test_round_only_short_reply_does_not_invent_body(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir, _backend, report = self._chain(
+                workspace, {"review_round_1.json": json.dumps(REVIEW_JSON)}, "完成",
+            )
+            self.assertFalse((out_dir / "02_review.md").exists())
+            self.assertTrue((out_dir / "review_manifest.json").is_file())
+            self._assert_failure(out_dir, report)
+
+    def test_real_round_and_reply_persist_traceable_body(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir, _backend, report = self._chain(
+                workspace, {"review_round_1.json": json.dumps(REVIEW_JSON)}, REVIEW_TEXT,
+            )
+            self.assertEqual((out_dir / "02_review.md").read_text(encoding="utf-8"),
+                             AUTOPERSIST_HEADER + REVIEW_TEXT.strip())
+            self.assertEqual(report.steps[0].finish_outcome, "success", report.render())
+            self.assertIn("review_round_1.json", report.steps[0].artifacts)
+            events = (out_dir / ".ico_events.jsonl").read_text(encoding="utf-8")
+            self.assertIn(hashlib.sha256((out_dir / "02_review.md").read_bytes()).hexdigest(), events)
+
+    def test_free_json_reply_never_becomes_submitted_round(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir, _backend, report = self._chain(
+                workspace, {}, REVIEW_TEXT + "\n```json\n" + json.dumps(REVIEW_JSON) + "\n```",
+            )
+            self.assertEqual(list(out_dir.glob("review_round_*.json")), [])
+            self.assertFalse((out_dir / "review_manifest.json").exists())
+            self._assert_failure(out_dir, report)
+
+    def test_complete_submission_preserves_real_body(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir, _backend, report = self._chain(workspace, {
+                "02_review.md": REVIEW_TEXT, "review_round_1.json": json.dumps(REVIEW_JSON),
+            }, "完成")
+            self.assertEqual((out_dir / "02_review.md").read_text(encoding="utf-8"), REVIEW_TEXT)
+            self.assertEqual(report.steps[0].finish_outcome, "success", report.render())
+            self.assertTrue(report.steps[0].ok, report.steps[0].render())
+            self.assertEqual(report.steps[0].trace.get("open_steps"), {})
+
+    def test_existing_body_is_not_overwritten_by_long_reply(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir, _backend, report = self._chain(workspace, {
+                "02_review.md": REVIEW_TEXT, "review_round_1.json": json.dumps(REVIEW_JSON),
+            }, "# A different substantive reply\n\nMust not replace submitted text.")
+            self.assertEqual((out_dir / "02_review.md").read_text(encoding="utf-8"), REVIEW_TEXT)
+            self.assertEqual(report.steps[0].finish_outcome, "success", report.render())
+
+    def test_contract_step_reposts_after_real_body_persistence(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir = self._ticket(workspace)
+            backend = self._backend({"review_round_1.json": json.dumps(REVIEW_JSON)}, REVIEW_TEXT)
+            posts: list[tuple[str, str, bool]] = []
+
+            def post(directory: Path, step: str, attempt: str) -> None:
+                posts.append((step, attempt, (directory / "02_review.md").is_file()))
+                assemble_review_manifest(directory, "REVIEW-HONESTY", attempt)
+
+            report = run_contract_step(
+                self.settings, backend=backend, workspace=workspace, step="review",
+                ticket_id="REVIEW-HONESTY", out_dir=out_dir, sandbox=NoIsolation(), post_write=post,
+            )
+            self.assertEqual(len(posts), 3, posts)
+            self.assertEqual([exists for _step, _attempt, exists in posts], [False, False, True])
+            self.assertEqual(len({attempt for _step, attempt, _exists in posts}), 1)
+            self.assertEqual(report.finish_outcome, "success", report.render())
+
+    def test_contract_step_post_persistence_exception_fails_before_finish(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir = self._ticket(workspace)
+            backend = self._backend({"review_round_1.json": json.dumps(REVIEW_JSON)}, REVIEW_TEXT)
+
+            def post(directory: Path, step: str, attempt: str) -> None:
+                if (directory / "02_review.md").is_file():
+                    raise RuntimeError("post-persistence-failed")
+                assemble_review_manifest(directory, "REVIEW-HONESTY", attempt)
+
+            report = run_contract_step(
+                self.settings, backend=backend, workspace=workspace, step="review",
+                ticket_id="REVIEW-HONESTY", out_dir=out_dir, sandbox=NoIsolation(), post_write=post,
+            )
+            self.assertIn("post-persistence-failed", report.error)
+            self.assertFalse(report.ok)
+            self.assertEqual(report.finish_outcome, "")
+            self.assertTrue(Path(report.checkpoint_path).is_file())
+
+
+class TestReviewInitialEntryOffline(unittest.TestCase):
+    """First review entry must precede its genuine attempt/origin receipt."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.settings = require_skill()
+
+    _backend = TestReviewArtifactHonestyOffline._backend
+
+    def _initial_ticket(self, workspace: Path) -> Path:
+        from icode.reasoning import ReasoningGate, append_trace
+        from icode.sequential import Deliberation
+
+        out_dir = make_finished_plan_ticket(self.settings, workspace, ticket_id="REVIEW-HONESTY")
+        cp = ControlPlane(self.settings)
+        gate = ReasoningGate.load(self.settings.skill_root / "mcp/reasoning-gate/gates.json")
+        row = gate.build_row("REVIEW-HONESTY", "plan", deliberation=Deliberation(
+            tier="L2", steps=["Read plan", "Check scope", "Check test contract"], converged=True,
+        ))
+        if row is not None:
+            append_trace(out_dir / ".thinking_gate_trace.jsonl", [row])
+        _ensure_gate_meta(cp, out_dir, "REVIEW-HONESTY")
+        result = cp.transition(out_dir, "plan_done", ticket_id="REVIEW-HONESTY")
+        self.assertTrue(result.data.get("ok"), result.data)
+        self.assertEqual(cp.trace(out_dir).data.get("status"), "plan_done")
+        return out_dir
+
+    def _assert_initial_receipts(self, out_dir: Path, report) -> None:
+        events = [json.loads(row) for row in (out_dir / ".ico_events.jsonl").read_text(
+            encoding="utf-8").splitlines() if row.strip()]
+        entries = [index for index, event in enumerate(events)
+                   if event["event_type"] == "state_changed"
+                   and event["payload"].get("to") == "review_in_progress"]
+        starts = [index for index, event in enumerate(events)
+                  if event["event_type"] == "step_started"
+                  and event["payload"].get("step") == "review"]
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(len(starts), 1)
+        self.assertLess(entries[0], starts[0], "review entry must precede its attempt")
+        self.assertEqual(report.steps[0].finish_outcome, "success", report.steps[0].render())
+        manifest = json.loads((out_dir / "review_manifest.json").read_text(encoding="utf-8"))
+        attempt = events[starts[0]]["payload"]["attempt"]
+        self.assertEqual(manifest["review_run"], attempt)
+        self.assertEqual(manifest["rounds"][0]["origin_attempt"], attempt)
+        digest = hashlib.sha256((out_dir / "review_round_1.json").read_bytes()).hexdigest()
+        self.assertEqual(manifest["rounds"][0]["detail_sha256"], digest)
+        self.assertTrue(any(event["event_type"] == "artifact_written"
+                            and event["payload"].get("attempt") == attempt
+                            and event["payload"].get("sha256") == digest
+                            for event in events[starts[0] + 1:]))
+        self.assertEqual(report.steps[0].trace.get("open_steps"), {})
+
+    def test_initial_review_full_submission_has_entry_before_start(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir = self._initial_ticket(workspace)
+            report = run_chain(
+                self.settings, backend=self._backend({
+                    "02_review.md": REVIEW_TEXT, "review_round_1.json": json.dumps(REVIEW_JSON),
+                }, "完成"), workspace=workspace, requirement="First review",
+                ticket_id="REVIEW-HONESTY", steps=("review",),
+                out_dir=out_dir, sandbox=NoIsolation(),
+            )
+            self._assert_initial_receipts(out_dir, report)
+
+    def test_initial_review_real_round_and_reply_have_original_receipts(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir = self._initial_ticket(workspace)
+            backend = self._backend({"review_round_1.json": json.dumps(REVIEW_JSON)}, REVIEW_TEXT)
+            report = run_chain(
+                self.settings, backend=backend, workspace=workspace, requirement="First review",
+                ticket_id="REVIEW-HONESTY", steps=("review",),
+                out_dir=out_dir, sandbox=NoIsolation(),
+            )
+            self._assert_initial_receipts(out_dir, report)
+            self.assertEqual((out_dir / "02_review.md").read_text(encoding="utf-8"),
+                             AUTOPERSIST_HEADER + REVIEW_TEXT.strip())
+            self.assertEqual(sum(call["tools"] is not None for call in backend.calls), 3)
+
+    def test_plan_birth_and_reuse_do_not_repeat_existing_entry(self) -> None:
+        original_transition = ControlPlane.transition
+        for reuse in (False, True):
+            with self.subTest(reuse=reuse), temp_workspace() as workspace:
+                out_dir = None
+                if reuse:
+                    from icode.handshake import next_out_dir
+
+                    out_dir = next_out_dir(workspace)
+                    created = ControlPlane(self.settings).create(
+                        out_dir, ticket_id="PLAN-ENTRY", requirement="Plan entry", birth="plan",
+                    )
+                    self.assertIs(created.data.get("ok"), True)
+                backend = self._backend({}, PLAN_TEXT)
+                with patch.object(ControlPlane, "transition", autospec=True,
+                                  side_effect=original_transition) as transitions:
+                    report = run_contract_step(
+                        self.settings, backend=backend, workspace=workspace,
+                        step="plan", ticket_id="PLAN-ENTRY", requirement="Plan entry",
+                        out_dir=out_dir, sandbox=NoIsolation(),
+                    )
+                self.assertEqual(report.finish_outcome, "success", report.render())
+                self.assertFalse(any(call.args[2] == "init_in_progress"
+                                     for call in transitions.call_args_list))
+                self.assertEqual((Path(report.out_dir) / "01_plan.md").read_text(encoding="utf-8"),
+                                 AUTOPERSIST_HEADER + PLAN_TEXT.strip())
+
+    def test_rejected_entry_never_starts_attempt_checkpoint_or_model(self) -> None:
+        original_start = ControlPlane.step_start
+        for failure in (SimpleNamespace(data={"ok": False}, returncode=1),
+                        RuntimeError("transition-failed")):
+            with self.subTest(failure=type(failure).__name__), temp_workspace() as workspace:
+                out_dir = self._initial_ticket(workspace)
+                backend = FakeBackend([REVIEW_TEXT])
+                with patch.object(ControlPlane, "step_start", autospec=True,
+                                  side_effect=original_start) as start, patch.object(
+                    ControlPlane, "transition",
+                    **({"side_effect": failure} if isinstance(failure, Exception)
+                       else {"return_value": failure}),
+                ), patch("icode.runner.Checkpointer") as checkpoint, patch(
+                    "icode.runner.OperationRecorder",
+                ) as operations:
+                    report = run_contract_step(
+                        self.settings, backend=backend, workspace=workspace, step="review",
+                        ticket_id="REVIEW-HONESTY", out_dir=out_dir, sandbox=NoIsolation(),
+                    )
+                start.assert_not_called()
+                checkpoint.assert_not_called()
+                operations.assert_not_called()
+                self.assertEqual(backend.calls, [])
+                self.assertFalse(report.ok)
+                self.assertTrue(report.error)
+                self.assertEqual(report.checkpoint_path, "")
+                self.assertFalse((out_dir / ".agent_checkpoint.json").exists())
+                events = [json.loads(row) for row in (out_dir / ".ico_events.jsonl").read_text(
+                    encoding="utf-8").splitlines() if row.strip()]
+                self.assertFalse(any(event["event_type"] == "step_started"
+                                     and event["payload"].get("step") == "review" for event in events))
+
+    def test_untrusted_reuse_trace_never_starts_step(self) -> None:
+        for failure in (SimpleNamespace(data={"ok": False, "status": "review_in_progress"}),
+                        RuntimeError("trace-failed")):
+            with self.subTest(failure=type(failure).__name__), temp_workspace() as workspace:
+                out_dir = self._initial_ticket(workspace)
+                backend = FakeBackend([REVIEW_TEXT])
+                with patch.object(ControlPlane, "trace",
+                                  **({"side_effect": failure} if isinstance(failure, Exception)
+                                     else {"return_value": failure})), patch.object(
+                    ControlPlane, "step_start",
+                ) as start, patch.object(ControlPlane, "transition") as transition, patch(
+                    "icode.runner.Checkpointer",
+                ) as checkpoint, patch("icode.runner.OperationRecorder") as operations:
+                    report = run_contract_step(
+                        self.settings, backend=backend, workspace=workspace, step="review",
+                        ticket_id="REVIEW-HONESTY", out_dir=out_dir, sandbox=NoIsolation(),
+                    )
+                start.assert_not_called()
+                transition.assert_not_called()
+                checkpoint.assert_not_called()
+                operations.assert_not_called()
+                self.assertEqual(backend.calls, [])
+                self.assertFalse(report.ok)
+                self.assertTrue(report.error)
+                self.assertEqual(report.checkpoint_path, "")
+
+    def test_contract_entry_order_preserves_nonprogress_and_other_steps(self) -> None:
+        for step, target in (("plan", "init_in_progress"), ("merge", None), ("audit", None),
+                             ("code", "code_in_progress"), ("deepcheck", "deepcheck_in_progress")):
+            with self.subTest(step=step), temp_workspace() as workspace:
+                calls: list[str] = []
+
+                def transition(*args, **kwargs):
+                    calls.append(args[1])
+                    return SimpleNamespace(data={"ok": True}, returncode=0)
+
+                def start(*args, **kwargs):
+                    calls.append("start")
+                    raise RuntimeError("stop-after-start")
+
+                with patch.object(ControlPlane, "transition", side_effect=transition), patch.object(
+                    ControlPlane, "step_start", side_effect=start,
+                ), patch.object(ControlPlane, "trace", return_value=SimpleNamespace(
+                    data={"ok": True, "status": "previous"}, returncode=0,
+                )):
+                    report = run_contract_step(
+                        self.settings, backend=FakeBackend(["完成"]), workspace=workspace,
+                        step=step, ticket_id="ENTRY-ORDER", out_dir=workspace, sandbox=NoIsolation(),
+                    )
+                self.assertEqual(calls, [target, "start"] if target else ["start"])
+                self.assertIn("stop-after-start", report.error)
+
+        # 没有中间状态映射时直接 start；不为步骤名硬编码额外流转。
+        for step in ("plan", "merge", "audit"):
+            with self.subTest(no_progress=step), temp_workspace() as workspace:
+                with patch.object(ContractSet, "in_progress_status_for", return_value=None), patch.object(
+                    ControlPlane, "transition",
+                ) as transition, patch.object(ControlPlane, "step_start",
+                                               side_effect=RuntimeError("stop-after-start")) as start:
+                    report = run_contract_step(
+                        self.settings, backend=FakeBackend(["完成"]), workspace=workspace,
+                        step=step, ticket_id="ENTRY-ORDER", out_dir=workspace, sandbox=NoIsolation(),
+                    )
+                transition.assert_not_called()
+                start.assert_called_once()
+                self.assertIn("stop-after-start", report.error)
 
 
 def _ensure_gate_meta(cp, out_dir: Path, ticket_id: str) -> None:

@@ -285,6 +285,20 @@ class ToolContext:
         except Exception:  # noqa: BLE001 - handoff 包装失败时拒绝执行
             raise IsolationUnavailable("工单隔离策略绑定失败，命令已拒绝") from None
 
+    def wrap_command_with_resource_receipt(
+        self, argv: list[str], control_socket: object, resource_socket: object, unit: str,
+    ) -> list[str]:
+        """Preserve the complete ToolContext policy binding before dual handoff."""
+        self._policy_command_wrapper()
+        wrap_receipt = getattr(self.sandbox, "wrap_policy_with_resource_receipt", None)
+        if not callable(wrap_receipt):
+            raise IsolationUnavailable("原生资源回执通道不可用，命令已拒绝")
+        try:
+            return list(wrap_receipt(argv, policy=self.policy, control_socket=control_socket,
+                                     resource_socket=resource_socket, unit=unit))
+        except Exception:
+            raise IsolationUnavailable("工单隔离策略绑定失败，命令已拒绝") from None
+
 
 class IsolationUnavailable(RuntimeError):
     """隔离后端不可用/包装失败。**此时拒绝执行，而不是降级执行。**"""

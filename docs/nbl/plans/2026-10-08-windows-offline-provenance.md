@@ -111,3 +111,18 @@ Go 1.27.1 的 [list JSON 输出](https://github.com/golang/go/blob/go1.27.1/src/
 本子门 verdict 为 `verified_native_matrix`。验签结果仍是只读回执，`launch_authorized=false`；bootstrap 的 setup、execution、ready 三项仍 false。下一步继续受保护启动对象、Windows sandbox identity/WFP/ACL/Job 与真实工作流接线；签名通过不授予启动权限，不关闭 R2/R3，不改变自动模式。[官网 run 37724952996](https://github.com/ayukyo/icode/actions/runs/37724952996) 已成功；主 CI 与隔离子门另行记录。
 
 同 SHA 的 [主 CI 37724953038](https://github.com/ayukyo/icode/actions/runs/37724953038) 最终 32 success、2 failure、3 skipped。独立观察分别读取 x64 `113140899976`、ARM64 `113140899987` 的公开注解：两个 Windows Reviewer snapshot candidate 在 temporary standard user 步骤失败，snapshot 执行 exit78、cleanup=true；双栈均 connect_denied=false、10035 后 wait_expired=true，runner observer ready 但 no_matching_event，capture archive_member_missing。这些是本轮未过硬门的直接公开证据，不推断 WFP/系统根因，不把等待超时算拒绝，也不继续扩展已被生产方案替代的诊断后端。provenance 子门与整体主 CI verdict 独立；后续仍按已选专用身份＋WFP＋Job 生产方案开发和验收。
+
+## d65ecf8 原生四矩阵复验（2026-10-08）
+
+main `d65ecf8e210d273984f2b0bf12fe163eb695e2ad` 的 [provenance run 37731144892](https://github.com/ayukyo/icode/actions/runs/37731144892) 最终 success。独立只读观察者取得四组真实解码日志；主代理通过授权 jobs API 再核对 validate 与四组步骤5–9全部 success。
+
+| 矩阵 | job | 许可证9项耗时 | 已上传 artifact |
+|---|---:|---:|---:|
+| x64 / Python3.11 | 113162160040 | .102s | 11530631100 |
+| x64 / Python3.12 | 113162159971 | .172s | 11529901887 |
+| ARM64 / Python3.11 | 113162159963 | .159s | 11529882082 |
+| ARM64 / Python3.12 | 113162160032 | .188s | 11530501584 |
+
+各组真实日志确认 gh oracle、包内离线 API、实际密码学负控集合、metadata、拒绝 setup/commands 均 PASS；六类负控来自该 SHA 脚本强制集合验收，不伪装六条独立输出。临时目录清理依据正常退出包含清理推导，不声称额外显式 GC 日志。主代理实读 validate 日志另确认签名fixture9/9、完整preflight3/3与governance通过。
+
+同 SHA [主 CI 37731144778](https://github.com/ayukyo/icode/actions/runs/37731144778) 32 success／2 failure／3 skipped；Python3.11/3.12各1899项，OK、71 skips。两失败仍是旧Windows Reviewer硬门，不能由此开放自动模式。该复验仅闭合离线签名验证：`launch_authorized=false`、bootstrap setup/execution/ready=false及R2/R3未整体验收均保持。

@@ -16,6 +16,7 @@ import struct
 import sys
 import threading
 import time
+from collections.abc import Callable
 
 _FRAME = struct.Struct("!5sB16sI")
 _ACK = struct.Struct("!5s16sI")
@@ -29,6 +30,13 @@ class LinuxTaskResourceError(ConnectionError):
     """A fixed, input-free error for an invalid private resource channel."""
 
 
+def _select_cleanup_error(first: BaseException | None, following: BaseException) -> BaseException:
+    """Keep the first peer-priority error, but never suppress interruption."""
+    if first is None or (isinstance(first, Exception) and not isinstance(following, Exception)):
+        return following
+    return first
+
+
 def create_task_resource_channel() -> tuple[socket.socket, socket.socket]:
     if not sys.platform.startswith("linux"):
         raise LinuxTaskResourceError(_ERROR)
@@ -40,9 +48,15 @@ def create_task_resource_channel() -> tuple[socket.socket, socket.socket]:
         sender.set_inheritable(False)
         return host, sender
     except BaseException as error:
+        selected = error
         for endpoint in (sender, host):
             if endpoint is not None:
-                endpoint.close()
+                try:
+                    endpoint.close()
+                except BaseException as cleanup_error:
+                    selected = _select_cleanup_error(selected, cleanup_error)
+        if selected is not error:
+            raise selected
         if isinstance(error, OSError):
             raise LinuxTaskResourceError(_ERROR) from None
         raise
@@ -58,7 +72,8 @@ class LinuxTaskResourceReceiver:
     socket and not a cgroup/scope.
     """
 
-    def __init__(self, control: socket.socket, *, unit: str, limit: int) -> None:
+    def __init__(self, control: socket.socket, *, unit: str, limit: int,
+                 on_configured: Callable[[float], None] | None = None) -> None:
         match = _UNIT.fullmatch(unit) if type(unit) is str else None
         if (
             not sys.platform.startswith("linux") or not match
@@ -67,6 +82,7 @@ class LinuxTaskResourceReceiver:
             or control.getsockopt(socket.SOL_SOCKET, socket.SO_DOMAIN) != socket.AF_UNIX
             or control.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET
             or control.getsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED) != 1
+            or (on_configured is not None and not callable(on_configured))
         ):
             raise LinuxTaskResourceError(_ERROR)
         self._control = control
@@ -81,6 +97,7 @@ class LinuxTaskResourceReceiver:
         self._configured = False
         self._terminal: int | None = None
         self._complete = False
+        self._on_configured = on_configured
 
     def bind(self, *, expected_pid: int, expected_uid: int, expected_gid: int) -> None:
         values = (expected_pid, expected_uid, expected_gid)
@@ -100,16 +117,23 @@ class LinuxTaskResourceReceiver:
                   expected_uid=expected_uid, expected_gid=expected_gid)
         self._process = process
 
-    def start(self, *, deadline_monotonic: float) -> None:
+    def start(self, *, deadline_monotonic: float,
+              configured_deadline_monotonic: float | None = None) -> None:
         if (
             self._expected is None or self._thread is not None or self._stop.is_set()
             or isinstance(deadline_monotonic, bool)
             or not isinstance(deadline_monotonic, (int, float))
             or not math.isfinite(deadline_monotonic)
             or deadline_monotonic <= time.monotonic()
+            or (configured_deadline_monotonic is not None and (
+                isinstance(configured_deadline_monotonic, bool)
+                or not isinstance(configured_deadline_monotonic, (int, float))
+                or not math.isfinite(configured_deadline_monotonic)
+                or configured_deadline_monotonic <= time.monotonic()))
         ):
             raise LinuxTaskResourceError(_ERROR)
-        worker = threading.Thread(target=self._receive, args=(deadline_monotonic,),
+        configured_deadline = min(deadline_monotonic, configured_deadline_monotonic) if configured_deadline_monotonic is not None else deadline_monotonic
+        worker = threading.Thread(target=self._receive, args=(deadline_monotonic, configured_deadline),
                                   name="icode-task-resource", daemon=True)
         self._thread = worker
         try:
@@ -172,7 +196,7 @@ class LinuxTaskResourceReceiver:
                         except OSError:
                             pass
 
-    def _receive(self, deadline: float) -> None:
+    def _receive(self, deadline: float, configured_deadline: float) -> None:
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(self._control, selectors.EVENT_READ)
@@ -201,6 +225,10 @@ class LinuxTaskResourceReceiver:
                     if count >= 2 or self._terminal is not None:
                         raise LinuxTaskResourceError(_ERROR)
                     if phase == 1 and count == 0:
+                        if self._on_configured is not None:
+                            self._on_configured(configured_deadline)
+                        if self._stop.is_set() or time.monotonic() >= configured_deadline:
+                            raise LinuxTaskResourceError(_ERROR)
                         ack = _ACK.pack(b"ICQA1", self._nonce, self._limit)
                         if self._control.send(ack, socket.MSG_NOSIGNAL | socket.MSG_DONTWAIT) != len(ack):
                             raise LinuxTaskResourceError(_ERROR)

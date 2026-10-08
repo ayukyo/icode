@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 import tempfile
 from pathlib import Path
 
@@ -112,6 +113,25 @@ def _probe() -> None:
             "positive_control_observer_incomplete",
         )
         _require("violation_receipt" not in allowed.meta, "positive_control_misclassified")
+        _require(allowed.meta.get("resource_receipt", {}).get("configured") is True,
+                 "positive_control_quota_unconfigured")
+        _require(allowed.meta.get("scope_cleanup_ok") is True, "positive_control_scope_not_collected")
+        _require(allowed.meta.get("payload_started") is None, "positive_control_invented_exec_evidence")
+
+        quota_context = ToolContext(root=workspace, sandbox=sandbox,
+                                    policy=replace(policy, process_limit=1))
+        quota = _run_command(quota_context,
+            "import errno,os\n"
+            "try: child=os.fork()\n"
+            "except OSError as error: assert error.errno==errno.EAGAIN\n"
+            "else:\n"
+            " if child==0: os._exit(0)\n"
+            " os.waitpid(child,0);raise AssertionError('quota absent')\n")
+        _require(quota.ok, "installed_root_payload_quota_not_enforced")
+        _require(quota.meta.get("resource_receipt", {}).get("limit") == 1,
+                 "installed_quota_limit_mismatch")
+        _require(quota.meta.get("scope_cleanup_ok") is True, "installed_quota_scope_not_collected")
+        _require(quota.meta.get("payload_started") is None, "installed_quota_invented_exec_evidence")
 
         ordinary_failure = _run_command(context, "raise SystemExit(13)")
         _require(not ordinary_failure.ok, "ordinary_exit_13_succeeded")
@@ -136,7 +156,7 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001 - CI output must not leak command/path details.
         print(f"::error::unexpected_{type(exc).__name__}")
         return 1
-    print("installed wheel USER_NOTIF receipt: PASS")
+    print("installed wheel USER_NOTIF receipt and registry task quota: PASS")
     return 0
 
 

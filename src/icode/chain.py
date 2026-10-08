@@ -338,23 +338,8 @@ def run_chain(
         post = None
         if name == "review":
             def post(o: Path, st: str, at: str) -> None:  # noqa: ANN001
-                # 1) 确保模型审查内容落盘（如果模型只回答了文本没写文件）
-                review_md = o / "02_review.md"
-                if not review_md.is_file():
-                    # 从 checkpoint 的模型回复中提取（最后一条 assistant 内容）
-                    # 这里用可靠方式：如果模型确实没写文件，我们写一个占位并标注
-                    review_md.write_text(
-                        "# 审查报告\n\n（模型完成审查但未调用 write_file，内容由运行时记录）\n",
-                        encoding="utf-8",
-                    )
-                # 2) 确保单轮 JSON 存在（模型可能没写——用空数组如实声明"本轮无结构化发现"）
-                round_file = o / "review_round_1.json"
-                if not round_file.is_file():
-                    round_file.write_text(
-                        json.dumps({"round": 1, "new_issues": [], "refuted_issues": [],
-                                    "pending_verification": []}, ensure_ascii=False) + "\n",
-                        encoding="utf-8")
-                # 3) 装配 review_manifest.json（数据来自 round 文件 + 真实 attempt）
+                # 仅装配真实提交的 round；缺失不是“无发现”。正文可由运行器
+                # 从真实回复补落盘，故此处记录缺件而不抢先抛出。
                 ok, detail = assemble_review_manifest(o, ticket_id, at)
                 report.notes.append(f"review_manifest 装配：{'成功' if ok else '失败'}（{detail}）")
         if name in ("code", "deepcheck", "audit"):

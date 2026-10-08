@@ -10,6 +10,7 @@ from dataclasses import replace
 import os
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -111,11 +112,18 @@ class TestLinuxViolationReceipt(unittest.TestCase):
     def _run_with_context(
         self, context: ToolContext, code: str, *, timeout: float = 8,
     ):
+        if not context.read_only_workspace and context.policy.workspace_root == context.root.resolve():
+            self._require_user_manager()
         return default_registry().invoke(
             "run_command",
             context,
             {"argv": [sys.executable, "-c", code], "timeout": timeout},
         )
+
+    def _require_user_manager(self) -> None:
+        bus = Path(f"/run/user/{os.getuid()}/bus")
+        if os.getuid() == 0 or not bus.exists() or not stat.S_ISSOCK(bus.lstat().st_mode):
+            self.skipTest("non-root user manager bus required; conformance_credit=none")
 
     def test_caught_network_socket_denial_returns_os_enforced_receipt(self) -> None:
         with temp_workspace() as root:
@@ -263,6 +271,7 @@ class TestLinuxViolationReceipt(unittest.TestCase):
         self.assertNotIn("violation_receipt", timeout_result.meta)
 
     def test_AgentLoop事件保留真实原生回执和统一用户提示(self) -> None:
+        self._require_user_manager()
         with temp_workspace() as root:
             context = self._context(root)
             probe_script = root / "network_denial_probe.py"
@@ -322,6 +331,7 @@ class TestLinuxViolationReceipt(unittest.TestCase):
         self.assertEqual(event["user_message"], POLICY_DENIED_USER_MESSAGE)
 
     def test_真实多类别回执贯穿AgentLoop到CLI摘要(self) -> None:
+        self._require_user_manager()
         cli_args = SimpleNamespace(
             backend="fake", key_file="", model="", base_url="", proxy="",
             no_proxy=None, approve=False, budget_tokens=1000, quiet=False,

@@ -25,7 +25,7 @@ from typing import Iterator
 
 from ..artifact_broker import ArtifactAccessError
 from ..execution_broker import (
-    execute_linux_violation_observed_command,
+    execute_linux_resource_observed_command,
     execute_policy_command,
 )
 from ..git_broker import GitStatusUnavailable, execute_git_status
@@ -685,6 +685,10 @@ def run_command(
         and not ctx.policy.allowed_domains
     )
     try:
+        if use_linux_violation_receipts:
+            # Pure context binding precedes even the manager's fixed queries;
+            # the actual dual-channel wrapper rechecks immediately pre-launch.
+            ctx._policy_command_wrapper()
         exec_argv = (
             args if use_linux_violation_receipts else ctx.wrap_command(args)
         )
@@ -696,19 +700,21 @@ def run_command(
                 "error": "isolation_unavailable",
                 "sandbox": ctx.isolation_label(),
                 "payload_started": False,
+                **({"resource_receipt": None, "scope_cleanup_ok": None}
+                   if use_linux_violation_receipts else {}),
             },
             opclass=OPCLASS_MANAGED_WRITE,
         )
 
     if ctx.policy is not None:
         if use_linux_violation_receipts:
-            outcome = execute_linux_violation_observed_command(
+            outcome = execute_linux_resource_observed_command(
                 args,
                 cwd=workdir,
                 sandbox=ctx.sandbox,
                 policy=ctx.policy,
                 timeout=timeout,
-                command_wrapper=ctx.wrap_command_with_violation_receipt,
+                command_wrapper=ctx.wrap_command_with_resource_receipt,
             )
         else:
             outcome = execute_policy_command(
@@ -722,7 +728,10 @@ def run_command(
             return ToolResult(
                 False,
                 "隔离不可用，已拒绝执行：工单隔离策略绑定失败，命令已拒绝",
-                {"error": "isolation_unavailable", "sandbox": ctx.isolation_label()},
+                {"error": "isolation_unavailable", "sandbox": ctx.isolation_label(),
+                 "payload_started": outcome.payload_started,
+                 **({"resource_receipt": outcome.resource_receipt,
+                     "scope_cleanup_ok": outcome.scope_cleanup_ok} if use_linux_violation_receipts else {})},
                 opclass=OPCLASS_MANAGED_WRITE,
             )
         result_meta = {
@@ -744,6 +753,10 @@ def run_command(
         }
         if outcome.violation_observer_status is not None:
             result_meta["violation_observer_status"] = outcome.violation_observer_status
+        if use_linux_violation_receipts:
+            result_meta["resource_receipt"] = outcome.resource_receipt
+            result_meta["scope_cleanup_ok"] = outcome.scope_cleanup_ok
+            result_meta["payload_started"] = outcome.payload_started
         if outcome.violation_receipt is not None:
             result_meta.update({
                 "error": "policy_denied",

@@ -1194,6 +1194,28 @@ class LandlockSandbox:
             violation_control_descriptor=control_socket.fileno(),
         )
 
+    def wrap_policy_with_resource_receipt(
+        self, argv: Sequence[str], *, policy: SandboxPolicy,
+        control_socket: socket.socket, resource_socket: socket.socket, unit: str,
+    ) -> list[str]:
+        """Private dual-endpoint policy wrapper; no model-selected resource flags."""
+        if (not sys.platform.startswith("linux") or not isinstance(policy, SandboxPolicy)
+                or type(control_socket) is not socket.socket or control_socket.fileno() < 3):
+            raise ValueError("native resource receipt channel is unavailable")
+        from .linux_task_scope import _UNIT, _INT_MAX
+        if (type(unit) is not str or not _UNIT.fullmatch(unit)
+                or type(policy.process_limit) is not int or not 1 <= policy.process_limit <= _INT_MAX
+                or type(resource_socket) is not socket.socket or resource_socket.fileno() < 3
+                or resource_socket.getsockopt(socket.SOL_SOCKET, socket.SO_DOMAIN) != socket.AF_UNIX
+                or resource_socket.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET
+                or resource_socket.fileno() == control_socket.fileno()):
+            raise ValueError("native resource receipt channel is unavailable")
+        wrapped = self.wrap_policy_with_violation_receipt(argv, policy=policy, control_socket=control_socket)
+        index = wrapped.index("--")
+        return [*wrapped[:index], "--task-quota-unit", unit,
+                "--task-quota-limit", str(policy.process_limit),
+                "--resource-control-fd", str(resource_socket.fileno()), *wrapped[index:]]
+
     def _wrap_policy_with_metadata_roots(
         self, argv: Sequence[str], *, policy: SandboxPolicy,
         metadata_roots: Sequence[MetadataReadRoot], network: bool = False,

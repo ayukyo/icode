@@ -134,6 +134,12 @@ C 冻结 SHA-256 `0700aa0a9fb8f18d60d1fe2f8320d8a1a03d4c0be9e189d10922fc2ada0a1e
 
 最终冻结后重新运行完整 preflight，密钥／子模块完整性／全仓 unittest 三道通过；governance／site／landscape、严格 C 静态分析、compileall、diff-check亦通过。早先在测试夹具修正期间运行的门禁不用于此最终源码认证。提交推送仅将此本机分片纳入 main，云端新 SHA 的 suite／provenance／安装验证仍独立核实。
 
+### d65ecf8 云端复验进展（2026-10-08）
+
+该分片已提交／推送 main `d65ecf8e210d273984f2b0bf12fe163eb695e2ad`，ls-remote一致。main [37731144778](https://github.com/ayukyo/icode/actions/runs/37731144778) 最终32 success／2 failure／3 skipped；主代理通过授权connector独立读取Python3.11 job `113160292854`、3.12 job `113160292951`真实日志，各1899 tests，366.826s／383.467s，OK、71 skips。前次resource夹具4失败／1错误未复现；不由此反推前次远端UID。两失败仍为旧Windows Reviewer：真实日志为exit78、cleanup=true、双栈10035／wait_expired、WFP no_matching_event／archive_member_missing，不能归因新Linux分片或称Windows隔离完成。
+
+provenance [37731144892](https://github.com/ayukyo/icode/actions/runs/37731144892) validate `113160292504` 的签名fixture9/9（.055s）、完整preflight3/3与governance通过，主代理实读日志确认。05:25 UTC 四原生矩阵全部成功，主代理再次读取授权 jobs API，确认该 run 的四组步骤5–9均 success；具体安装日志与产物记录见[离线验签计划](../plans/2026-10-08-windows-offline-provenance.md)。这是本 SHA 的离线验签子门，不借6fda570旧结果，也不授予启动权限。site [37731144809](https://github.com/ayukyo/icode/actions/runs/37731144809) success。当前真实产品接线仍在新[计划](../plans/2026-10-08-linux-product-task-quota.md)开发，不增加score／auto／R2/R3 readiness。
+
 复用 `execution_broker._execute_policy_command` 的 monotonic deadline、输出 byte cap、selector 和最终进程组清理，不另建执行循环。新增可信 scope 层只接受内部产生的 nonce unit、policy 原整数 cap 和最多两私有端点；先核对 cap 在 native 可表达范围，超过 INT_MAX 在启动前拒绝，不改 schema 或截断。USER_NOTIF receiver 之前先启动 resource receiver，以免两条 ACK 互相等待。
 
 管理环境仅在原 policy environment 上增加固定当前 UID 的 user bus 参数；先核对 `/run/user/<uid>` 与 bus 的身份/类型/非链接边界，不继承任意 DBUS 地址或宿主环境。systemd scope 源码还注入 INVOCATION_ID，native 在 payload exec 前移除这三项管理环境变量。固定受信 systemd-run/systemctl 路径、literal argv 及实际版本能力需在支持主机验收；不增加全局配置、管理员服务或共享 scope。

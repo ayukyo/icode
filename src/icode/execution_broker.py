@@ -12,13 +12,18 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .sandbox_policy import SandboxPolicy
 
 _READ_CHUNK_BYTES = 64 * 1024
 _CLEANUP_TIMEOUT_SECONDS = 1
+# Separate manager transport limits never consume the payload output budget.
+_MANAGER_STDERR_LIMIT_BYTES = 64 * 1024
+_MANAGER_STDOUT_LIMIT_BYTES = 8192
+_MANAGER_QUERY_TIMEOUT_SECONDS = 0.4
+_RESOURCE_CONFIGURE_TIMEOUT_SECONDS = 2
 
 
 @dataclass(frozen=True)
@@ -33,6 +38,9 @@ class ExecutionResult:
     raw_output: bytes = b""
     violation_receipt: dict[str, object] | None = None
     violation_observer_status: str | None = None
+    resource_receipt: dict[str, object] | None = None
+    scope_cleanup_ok: bool | None = None
+    payload_started: bool | None = None
 
 
 def _policy_environment(root: Path, *, git_status: bool = False) -> dict[str, str]:
@@ -119,6 +127,31 @@ def execute_linux_violation_observed_command(
     timeout: int | float, output_limit_bytes: int | None = None,
     command_wrapper: Callable[[list[str], socket.socket], list[str]],
 ) -> ExecutionResult:
+    return _execute_linux_observed_command(
+        argv, cwd=cwd, sandbox=sandbox, policy=policy, timeout=timeout,
+        output_limit_bytes=output_limit_bytes, command_wrapper=command_wrapper,
+        resource_mode=False,
+    )
+
+
+def execute_linux_resource_observed_command(
+    argv: list[str], *, cwd: Path, sandbox: object, policy: SandboxPolicy,
+    timeout: int | float, output_limit_bytes: int | None = None,
+    command_wrapper: Callable[[list[str], socket.socket, socket.socket, str], list[str]],
+) -> ExecutionResult:
+    """Actual policy-command quota chain; not an automatic-mode support grant."""
+    return _execute_linux_observed_command(
+        argv, cwd=cwd, sandbox=sandbox, policy=policy, timeout=timeout,
+        output_limit_bytes=output_limit_bytes, command_wrapper=command_wrapper,
+        resource_mode=True,
+    )
+
+
+def _execute_linux_observed_command(
+    argv: list[str], *, cwd: Path, sandbox: object, policy: SandboxPolicy,
+    timeout: int | float, output_limit_bytes: int | None,
+    command_wrapper: Callable[..., list[str]], resource_mode: bool,
+) -> ExecutionResult:
     """Run a Linux deny-only command with a pre-exec USER_NOTIF observer.
 
     This is used only when the real Landlock helper is explicitly selected.
@@ -134,6 +167,7 @@ def execute_linux_violation_observed_command(
         create_seccomp_listener_handoff_channel,
     )
     from .sandbox_policy import NetworkMode
+    from .linux_task_resource import _select_cleanup_error
 
     if (
         not isinstance(sandbox, LandlockSandbox)
@@ -146,6 +180,43 @@ def execute_linux_violation_observed_command(
     host_control: socket.socket | None = None
     sender_control: socket.socket | None = None
     monitor: LinuxSeccompViolationMonitor | None = None
+    resource_host: socket.socket | None = None
+    resource_sender: socket.socket | None = None
+    resource = task_scope = None
+    scope_cleanup_ok: bool | None = None
+    launch_start = 0.0
+
+    def manager_query(command: list[str], environment: dict[str, str], deadline: float) -> bytes:
+        from .linux_task_scope import LinuxTaskScopeError
+        remaining = min(_MANAGER_QUERY_TIMEOUT_SECONDS, deadline - time.monotonic())
+        if remaining <= 0:
+            raise LinuxTaskScopeError()
+        query_policy = replace(policy, output_limit_bytes=_MANAGER_STDOUT_LIMIT_BYTES, wall_timeout_seconds=1)
+        answer = _execute_policy_command(command, cwd=working_directory, policy=query_policy,
+                                         timeout=remaining, output_limit_bytes=_MANAGER_STDOUT_LIMIT_BYTES,
+                                         launch_env=environment, manager_stderr=True)
+        if answer.error is not None or answer.exit_code != 0:
+            raise LinuxTaskScopeError()
+        return answer.raw_output
+
+    def close_endpoints() -> None:
+        active_exception = sys.exc_info()[1]
+        cleanup_error = active_exception
+        for endpoint in (resource_sender, resource_host, sender_control, host_control):
+            if endpoint is not None:
+                try:
+                    endpoint.close()
+                except OSError:
+                    pass
+                except BaseException as error:
+                    cleanup_error = _select_cleanup_error(cleanup_error, error)
+        if task_scope is not None:
+            try:
+                task_scope.close()
+            except BaseException as error:
+                cleanup_error = _select_cleanup_error(cleanup_error, error)
+        if cleanup_error is not None and cleanup_error is not active_exception:
+            raise cleanup_error
     try:
         workspace = policy.workspace_root.resolve(strict=True)
         working_directory = Path(cwd).resolve(strict=True)
@@ -159,63 +230,119 @@ def execute_linux_violation_observed_command(
             or not argv[0]
         ):
             raise ValueError("invalid argv")
+        if resource_mode:
+            from .linux_task_scope import LinuxTaskScope
+            from .linux_task_resource import create_task_resource_channel
+            task_scope = LinuxTaskScope(limit=policy.process_limit, query=manager_query)
+            resource_host, resource_sender = create_task_resource_channel()
         host_control, sender_control = create_seccomp_listener_handoff_channel()
     except (OSError, RuntimeError, TypeError, ValueError):
-        for endpoint in (sender_control, host_control):
-            if endpoint is not None:
-                try:
-                    endpoint.close()
-                except OSError:
-                    pass
+        close_endpoints()
         return ExecutionResult(
-            None, "", 0, "violation_observer_setup_failed", False, True, None,
+            None, "", 0, "resource_setup_failed" if resource_mode else "violation_observer_setup_failed", False, True, None,
             violation_observer_status="incomplete",
+            payload_started=False if resource_mode else None,
         )
+    except BaseException:
+        close_endpoints()
+        raise
 
     try:
-        wrapped = command_wrapper(argv, sender_control)
+        if resource_mode:
+            assert task_scope is not None and resource_sender is not None and resource_host is not None
+            from .linux_task_resource import LinuxTaskResourceReceiver
+            wrapped = task_scope.wrap(command_wrapper(argv, sender_control, resource_sender, task_scope.unit))
+
+            def configured(deadline: float) -> None:
+                task_scope.configured(min(deadline, launch_start + _RESOURCE_CONFIGURE_TIMEOUT_SECONDS))
+
+            resource = LinuxTaskResourceReceiver(resource_host, unit=task_scope.unit,
+                                                 limit=policy.process_limit, on_configured=configured)
+        else:
+            wrapped = command_wrapper(argv, sender_control)
+        monitor = LinuxSeccompViolationMonitor(host_control)
     except (OSError, RuntimeError, TypeError, ValueError):
-        sender_control.close()
-        host_control.close()
+        close_endpoints()
         return ExecutionResult(
             None, "", 0, "isolation_unavailable", False, True, None,
             violation_observer_status="incomplete",
+            payload_started=False if resource_mode else None,
         )
-    monitor = LinuxSeccompViolationMonitor(host_control)
+    except BaseException:
+        close_endpoints()
+        raise
 
     def start_observer(process: subprocess.Popen[bytes], deadline: float) -> None:
         assert monitor is not None and sender_control is not None
         try:
             sender_control.close()
+            if resource is not None:
+                assert resource_sender is not None and task_scope is not None
+                resource_sender.close()
+                task_scope.bind_process(process.pid)
+                resource.bind_process(process, expected_uid=os.getuid(), expected_gid=os.getgid())
+                resource.start(deadline_monotonic=deadline,
+                               configured_deadline_monotonic=min(deadline, launch_start + _RESOURCE_CONFIGURE_TIMEOUT_SECONDS))
             monitor.bind_process(process)
             monitor.start(deadline_monotonic=deadline)
         except Exception:  # noqa: BLE001 - observer setup failure kills payload.
             monitor.abort()
+            if resource_mode:
+                raise
 
     result: ExecutionResult
     try:
         assert sender_control is not None and monitor is not None
+        launch_start = time.monotonic()
+        launch_env = None
+        if task_scope is not None:
+            launch_env = _policy_environment(policy.workspace_root)
+            for key in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+                launch_env[key] = task_scope.environment[key]
         result = _execute_policy_command(
             wrapped,
             cwd=working_directory,
             policy=policy,
             timeout=timeout,
             output_limit_bytes=output_limit_bytes,
-            pass_fds=(sender_control.fileno(),),
+            pass_fds=(sender_control.fileno(), resource_sender.fileno()) if resource_sender is not None else (sender_control.fileno(),),
             on_spawn=start_observer,
+            launch_env=launch_env,
+            manager_stderr=resource_mode,
         )
     finally:
-        if sender_control is not None:
+        cleanup_error: BaseException | None = None
+        monitor_closed = False
+        resource_closed = False
+        try:
+            if resource is not None:
+                resource.wait(timeout_seconds=0.2)
+        except BaseException as exception:
+            cleanup_error = exception
+        try:
+            if resource is not None:
+                resource_closed = resource.close()
+        except BaseException as exception:
+            cleanup_error = _select_cleanup_error(cleanup_error, exception)
+        try:
+            monitor_closed = monitor.close() if monitor is not None else False
+        except BaseException as exception:
+            cleanup_error = _select_cleanup_error(cleanup_error, exception)
+        try:
+            if task_scope is not None:
+                scope_cleanup_ok = task_scope.collected(time.monotonic() + 1)
+        except BaseException as exception:
+            cleanup_error = _select_cleanup_error(cleanup_error, exception)
+        finally:
             try:
-                sender_control.close()
-            except OSError:
-                pass
-        if host_control is not None:
-            try:
-                host_control.close()
-            except OSError:
-                pass
-        monitor_closed = monitor.close() if monitor is not None else False
+                close_endpoints()
+            except BaseException as exception:
+                cleanup_error = _select_cleanup_error(cleanup_error, exception)
+        if cleanup_error is not None:
+            active_exception = sys.exc_info()[1]
+            selected = _select_cleanup_error(active_exception, cleanup_error)
+            if selected is not active_exception:
+                raise selected
 
     assert monitor is not None
     observer_ok = monitor_closed and monitor._started and not monitor.failed
@@ -226,18 +353,28 @@ def execute_linux_violation_observed_command(
         "invalid_output_limit", "launch_failed",
     ):
         error = "violation_observer_failed"
-    return ExecutionResult(
-        result.exit_code,
-        result.output,
-        result.output_bytes,
-        error,
-        result.output_truncated,
-        result.cleanup_ok,
-        result.cleanup_errno,
-        result.raw_output,
-        receipt,
-        "complete" if observer_ok else "incomplete",
-    )
+    outcome = replace(result, error=error, violation_receipt=receipt,
+                      violation_observer_status="complete" if observer_ok else "incomplete")
+    if resource_mode:
+        resource_receipt = resource.receipt() if resource is not None else None
+        if resource_receipt is not None and not resource_closed:
+            resource_receipt = dict(resource_receipt, channel_status="incomplete", terminal=None,
+                                    payload_started=None)
+        complete = resource_receipt is not None and resource_receipt["channel_status"] == "complete"
+        started = resource_receipt["payload_started"] if complete else result.payload_started
+        if outcome.error is None and not complete:
+            outcome = replace(outcome, error="resource_channel_failed")
+        if outcome.error is None and scope_cleanup_ok is not True:
+            outcome = replace(outcome, error="scope_cleanup_failed")
+        outcome = replace(outcome, resource_receipt=resource_receipt,
+                          scope_cleanup_ok=scope_cleanup_ok, payload_started=started)
+        terminal = resource_receipt["terminal"] if complete else None
+        if terminal in ("preexec_failed", "cleanup_failed"):
+            outcome = replace(outcome, error="resource_setup_failed" if terminal == "preexec_failed"
+                              else "resource_cleanup_failed")
+        if started is False or terminal == "cleanup_failed":
+            outcome = replace(outcome, output="", raw_output=b"", output_bytes=0)
+    return outcome
 
 
 def _execute_policy_command(
@@ -246,6 +383,8 @@ def _execute_policy_command(
     pass_fds: tuple[int, ...] = (),
     launch_cwd: str | Path | None = None,
     on_spawn: Callable[[subprocess.Popen[bytes], float], None] | None = None,
+    launch_env: dict[str, str] | None = None,
+    manager_stderr: bool = False,
 ) -> ExecutionResult:
     """Private process core with a narrowly scoped trusted-launch hook."""
     if os.name != "posix":
@@ -297,16 +436,18 @@ def _execute_policy_command(
         launch_options = {"pass_fds": pass_fds} if pass_fds else {}
         process = subprocess.Popen(  # noqa: S603 - argv 经原生策略包装且 shell=False
             argv, cwd=str(launch_directory),
-            env=_policy_environment(policy.workspace_root, git_status=git_status),
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=launch_env if launch_env is not None else _policy_environment(policy.workspace_root, git_status=git_status),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE if manager_stderr else subprocess.STDOUT,
             shell=False, start_new_session=True, **launch_options,
         )
     except (OSError, ValueError):
-        return ExecutionResult(None, "", 0, "launch_failed", False, True, None)
+        return ExecutionResult(None, "", 0, "launch_failed", False, True, None, payload_started=False)
 
     chunks: list[bytes] = []
     output_bytes = 0
     error: str | None = None
+    manager_bytes = 0
     selector: selectors.BaseSelector | None = None
     try:
         # Popen has transferred process/pipe ownership already. Selector
@@ -319,7 +460,10 @@ def _execute_policy_command(
             except Exception:  # noqa: BLE001 - trusted handoff failure denies execution.
                 error = "proxy_setup_failed"
         if error is None:
-            selector.register(process.stdout, selectors.EVENT_READ)
+            selector.register(process.stdout, selectors.EVENT_READ, "payload")
+            if manager_stderr:
+                assert process.stderr is not None
+                selector.register(process.stderr, selectors.EVENT_READ, "manager")
         while error is None and (selector.get_map() or process.poll() is None):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -335,10 +479,17 @@ def _execute_policy_command(
             for key, _ in selector.select(remaining):
                 chunk = os.read(
                     key.fd,
-                    min(_READ_CHUNK_BYTES, output_limit - output_bytes + 1),
+                    min(_READ_CHUNK_BYTES, (_MANAGER_STDERR_LIMIT_BYTES - manager_bytes + 1)
+                        if key.data == "manager" else (output_limit - output_bytes + 1)),
                 )
                 if not chunk:
                     selector.unregister(key.fileobj)
+                    continue
+                if key.data == "manager":
+                    manager_bytes += len(chunk)
+                    if manager_bytes > _MANAGER_STDERR_LIMIT_BYTES:
+                        error = "manager_output_limit"
+                        break
                     continue
                 remaining_bytes = output_limit - output_bytes
                 chunks.append(chunk[:remaining_bytes])
@@ -353,15 +504,26 @@ def _execute_policy_command(
     finally:
         # Failure in one cleanup must not skip the remaining owned resources;
         # programmer errors and interrupts still propagate after the attempts.
+        from .linux_task_resource import _select_cleanup_error
+        active_exception = sys.exc_info()[1]
+        cleanup_error = active_exception
         try:
             if selector is not None:
                 selector.close()
-        finally:
+        except BaseException as exception:
+            cleanup_error = _select_cleanup_error(cleanup_error, exception)
+        try:
+            cleanup_ok, cleanup_errno = _stop_group(process)
+        except BaseException as exception:
+            cleanup_error = _select_cleanup_error(cleanup_error, exception)
+        for stream in (process.stdout, process.stderr):
             try:
-                cleanup_ok, cleanup_errno = _stop_group(process)
-            finally:
-                if process.stdout is not None:
-                    process.stdout.close()
+                if stream is not None:
+                    stream.close()
+            except BaseException as exception:
+                cleanup_error = _select_cleanup_error(cleanup_error, exception)
+        if cleanup_error is not None and cleanup_error is not active_exception:
+            raise cleanup_error
 
     raw_output = b"".join(chunks)
     return ExecutionResult(
