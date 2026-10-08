@@ -76,6 +76,7 @@ DEFAULT_MODULES = (
     "tests.test_workbench_rejected_body",
     "tests.test_cli_resume_sandbox",
     "tests.test_shared_runtime_budget",
+    "tests.test_contract_finalization",
     # Keep the integration matrix bounded while exercising task-tree capture,
     # result-commit binding, and receipt export/import on each workspace platform.
     *CROSS_PLATFORM_R3_TESTS,

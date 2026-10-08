@@ -372,7 +372,10 @@ class TestContractBudgetStop(unittest.TestCase):
                 self.assertFalse((out_dir / CHECKPOINT_NAME).exists())
 
     def test_max_turns_with_actual_artifact_remains_existing_soft_stop(self):
-        backend = _MeteredBackend([(_write(self.out_dir), 100)])
+        # A max-turn warning is soft; a separately failed reasoning gate is not.
+        reasoning = json.dumps({"step": "Check the actual soft-stop artifact",
+                                "next_thought_needed": False})
+        backend = _MeteredBackend([(_write(self.out_dir), 100)] + [(reasoning, 0)] * 3)
         post = mock.Mock()
         report = self._run(backend, post=post, config=LoopConfig(max_turns=1))
         self.assertEqual(report.loop.stop_reason, "max_turns")
@@ -382,6 +385,8 @@ class TestContractBudgetStop(unittest.TestCase):
         self.assertEqual(report.artifacts, ["01_plan.md"])
         self.assertEqual(post.call_count, 1)
         self.assertFalse((self.out_dir / CHECKPOINT_NAME).exists())
+        self.assertEqual(len(backend.calls), 4)
+        self.assertEqual(report.reasoning_rows[0].result, "success")
 
     def test_non_budget_backend_error_keeps_existing_artifact_driven_behavior(self):
         class FailSecondResponse(_MeteredBackend):

@@ -1,6 +1,6 @@
 # R2 pip安装的固定SKILL运行资源闭包
 
-> REQUIRED SUB-SKILL: nbl.test-driven-development、nbl.subagent-driven-development。当前为正式调查/实施前设计；候选资源清单不算已证明完整闭包。先完成正在实施的CLI恢复及共享预算片，再执行包内资源接线；不得并发改同一调用链。
+> REQUIRED SUB-SKILL: nbl.test-driven-development、nbl.subagent-driven-development。实施前设计与清单保留历史；包内核心资源已在fd68完成七项真实原生安装验收，详见末尾。不能把它等同整个SKILL、90%一致性或R2/R3总门通过。
 
 **Goal:** 干净Python包安装后，无源码checkout、外部SKILL配置、用户Skill或运行时下载也能进入doctor及工单工作台，并消费同一固定ICODE-SKILL控制面。
 
@@ -113,3 +113,25 @@ CI本机冻结：ci `843b137bb4da8a29347e17e191e18c88f85e2725928c4b2868f574cfd84
 - ✅ 可运行性：Ubuntu真实wheel/sdist安装闭合；新SHA七项原生安装CI待验，不外推Windows正式运行器或R2/R3整体验收。
 
 整体冻结后最终preflight于2026-10-08 09:52 UTC三道全部PASS，发现2067项；守护成功时不输出unittest skip明细，不声称2067项零skip。最终DEFAULT238 PASS、0SKIP、97.310秒。compileall-j6/治理/官网/严格竞品/diff通过，包内八文件、CI三文件及最终UI四文件冻结摘要未变。新SHA远端矩阵待推送后核验，当前版本未发布PyPI或Release。
+
+### 精确main发布与原生安装门收口（2026-10-08）
+
+root已commit/push `fd68b1f77d9050776e3e2fd263d19b4931affa66`，git push及新鲜ls-remote/独立GitHub main读取一致；24文件1781+/29-，当时工作树干净。先前“新SHA待验”为历史。本轮未发布PyPI/Release，不新增分支。
+
+[主CI37759817771](https://github.com/ayukyo/icode/actions/runs/37759817771) attempt1完整44项=39success/2既有Reviewerfailure/3skip。独立只读观察实际逐项安装日志，并由主代理完整44项job页面核对七success；不是只看运行名称或Action completed。
+
+| 包内安装原生门 | Job | 实际18方法结果 |
+| --- | --- | --- |
+| Ubuntu / 3.11 | 113253227047 | 18PASS / 0SKIP / 19.951秒 |
+| macOS Apple / 3.11 | 113253227005 | 18PASS / 0SKIP / 91.044秒 |
+| macOS Intel / 3.11 | 113253227157 | 18PASS / 0SKIP / 97.863秒 |
+| Windows x64 / 3.11 | 113253227307 | 18PASS / 0SKIP / 47.238秒 |
+| Windows x64 / 3.12 | 113253227190 | 18PASS / 0SKIP / 48.344秒 |
+| Windows ARM64 / 3.11 | 113253227145 | 18PASS / 0SKIP / 48.575秒 |
+| Windows ARM64 / 3.12 | 113253227360 | 18PASS / 0SKIP / 48.477秒 |
+
+总126实际PASS、0SKIP，含directwheel、detachedsdist、默认来源、CP/inspection原字节无pyc写入、双语工单与损坏/链接负控；链接拒绝均实际执行。全Python311 job113253226953为2067/451.633秒、312 job113253227078为2067/533.109秒，均OK及71既有skip，不能称全2067实际跨平台通过。workspace Ubuntu238/139.758秒、mac238/189.140秒均0skip，WinARM237/224.120秒、Winx64237/229.466秒各9既有skip。
+
+[来源证明37759817844](https://github.com/ayukyo/icode/actions/runs/37759817844)实际5/5success：validate113253226485真实Go/license9/preflight3道；签名x64311 job113255868266/artifact11541719102，x64312 job113255868232/artifact11541773777，ARM311 job113255868275/artifact11542920310，ARM312 job113255868388/artifact11541803931，四者实际crypto/离线/原生正负控及metadata/setup命令拒绝PASS，仍launch_authorized=false。[Pages37759817724](https://github.com/ayukyo/icode/actions/runs/37759817724)2/2success，deploy113253285612的pages_build_version为精确fd68，artifact11540874675。
+
+旧Reviewer ARM113253227001/x64113253227297仍exit78/双栈10035/等待过期，不是DENY或新增安装失败；四Linux installed探针通过但22lease无完整conformance信用、24lease两skip，不外推完整隔离。本次10053未复现不证明根因永久消除。三run已终态停止观察；后续只观察新SHA。包内核心安装本片收口，Windows正式执行、macOS每任务quota、宿主工程验证/Reviewer/模型1→6与90%矩阵仍独立待验。

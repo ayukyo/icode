@@ -51,4 +51,6 @@ TDD及原生门：ownedSID/DPAPI错误用户、损坏状态/账户碰撞、WFP�
 
 每片真实RED→GREEN/20轮、旧消费者兼容、独立SPEC→不同QUALITY、七维自检、全量preflight、compile≤j6/治理/站点/竞品/diff后才main commit/push及精确SHA原生矩阵。WP0组件、签名、旧Reviewer诊断与完整产品门分别记录，不删除历史失败或把CI job绿等同skip/全R2通过。macOS清理豁免不豁免单任务quota，本计划也不授权其新增管理员初始化。
 
+同日独立文档审查无阻断，下一片TDD明确补：普通host用户通过另一管理员凭据接受UAC时，凭据/DPAPI归属仍是原host，不误绑elevated管理员；批准的Windows10 22H2与Windows11基线不能由windows-latest双架构CI代替。此处只设计核对，没有执行提权或安装。
+
 **Execution Mode:** serial implementation, independent read-only research/reviews

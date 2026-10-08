@@ -1376,12 +1376,12 @@ def run_contract_step(
                                              requirement or DEFAULT_TASK, budget_tracker)
         if getattr(deliberation, "budget_exceeded", False):
             return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
+        _record_deliberation(settings, out_dir, step, ticket_id, report, deliberation)
         _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
         if report.finish_outcome == "success":
             ckpt.clear()  # 步骤已干净终结，检查点不再需要
 
-        _finalize(settings, cp, out_dir, step, ticket_id, contracts, report,
-                  deliberation=deliberation)
+        _finalize(settings, cp, out_dir, step, ticket_id, contracts, report)
         return report
 
     except Exception as exc:  # noqa: BLE001
@@ -1521,16 +1521,28 @@ def _finish_step(
     report: StepReport, missing: list[str],
 ) -> None:
     """终结回执。**由证据判定 outcome**，门禁拒绝则如实上报。"""
-    finish = cp.step_finish(
-        out_dir, step, attempt,
-        "success" if not missing else "failure",
-        ticket_id=ticket_id, evidence=["e2e:model-run"], check=False,
+    outcome = "success" if (
+        not missing and not report.error and all(ok for _, ok, _ in report.checkpoints)
+    ) else "failure"
+    report.finish_outcome = ""
+    try:
+        finish = cp.step_finish(
+            out_dir, step, attempt, outcome,
+            ticket_id=ticket_id, evidence=["e2e:model-run"], check=False,
+        )
+    except Exception as exc:  # noqa: BLE001 - still observe the CP; never discard recovery
+        report.add("step finish（调用未确认）", False, type(exc).__name__)
+        return
+    accepted = (
+        finish.returncode == 0 and finish.data.get("ok") is True
+        and finish.data.get("outcome") == outcome
+        and finish.data.get("step") == step and finish.data.get("attempt") == attempt
     )
-    report.finish_outcome = str(finish.data.get("outcome") or "")
-    if finish.data.get("ok") is True:
+    if accepted:
+        report.finish_outcome = outcome
         report.add(f"step finish（outcome={report.finish_outcome}）", True, "回执被控制面接受")
     else:
-        detail = str(finish.data.get("error") or "未知原因")
+        detail = str(finish.data.get("error") or "返回码、身份或终结结果未确认")
         report.add("step finish（被门禁拒绝，如实上报）", False, detail[:160])
 
 
@@ -1918,12 +1930,11 @@ def _prepare_deliberation(settings, backend, step, report, requirement, budget_t
                             budget_tracker=budget_tracker)
 
 
-def _finalize(
-    settings: Settings, cp: ControlPlane, out_dir: Path, step: str, ticket_id: str,
-    contracts, report: StepReport, *, deliberation=None,
-    delivery_verdict: str = "verification_pending",
+def _record_deliberation(
+    settings: Settings, out_dir: Path, step: str, ticket_id: str,
+    report: StepReport, deliberation,
 ) -> None:
-    """Consume measured reasoning once, then transition and read the event chain."""
+    """Record measured reasoning once, before any success receipt or checkpoint removal."""
     gate = ReasoningGate.load(settings.skill_root / "mcp" / "reasoning-gate" / "gates.json")
 
     row = gate.build_row(ticket_id, step, deliberation=deliberation)
@@ -1938,26 +1949,37 @@ def _finalize(
                        f"{deliberation.summary()} provider={row.provider}")
         report.add("推理 trace 写入", row.result == "success", detail)
 
+
+def _finalize(
+    settings: Settings, cp: ControlPlane, out_dir: Path, step: str, ticket_id: str,
+    contracts, report: StepReport, *, delivery_verdict: str = "verification_pending",
+) -> None:
+    """Advance only a confirmed success; independently observe failures and refusals."""
     target_status = contracts.status_for_step(step)
-    if target_status:
+    ready = report.finish_outcome == "success" and not report.error and all(
+        ok for _, ok, _ in report.checkpoints)
+    if target_status and ready:
         _ensure_gate_metadata(cp, out_dir, ticket_id, report)
-        # completed 必须显式回填交付结论；默认取最保守的 verification_pending
-        verdict = delivery_verdict if target_status == "completed" else None
-        tr = cp.transition(out_dir, target_status, ticket_id=ticket_id,
-                           delivery_verdict=verdict)
-        if tr.data.get("ok") is True:
-            report.advance_status = "已前移"
-        else:
-            report.advance_status = "被门禁拦截（如实上报，未造假）"
-            report.advance_gates = [str(g.get("gate_id")) for g in (tr.data.get("failed_gates") or [])]
+        if not report.error and all(ok for _, ok, _ in report.checkpoints):
+            # completed 必须显式回填交付结论；默认取最保守的 verification_pending
+            verdict = delivery_verdict if target_status == "completed" else None
+            tr = cp.transition(out_dir, target_status, ticket_id=ticket_id,
+                               delivery_verdict=verdict)
+            if tr.data.get("ok") is True:
+                report.advance_status = "已前移"
+            else:
+                report.advance_status = "被门禁拦截（如实上报，未造假）"
+                report.advance_gates = [str(g.get("gate_id")) for g in (tr.data.get("failed_gates") or [])]
 
     trace = cp.trace(out_dir)
     report.trace = trace.data
-    report.add("事件链可读", bool(trace.data.get("ok")),
+    readable = trace.returncode == 0 and trace.data.get("ok") is True
+    report.add("事件链可读", readable,
                f"event_count={trace.data.get('event_count')}")
     report.add("无未闭合步骤/动作",
-               not any([trace.data.get("open_steps"), trace.data.get("open_operations")]))
-    report.ok = all(ok for _, ok, _ in report.checkpoints) and not report.error
+               readable and not any([trace.data.get("open_steps"), trace.data.get("open_operations")]))
+    report.ok = report.finish_outcome == "success" and all(
+        ok for _, ok, _ in report.checkpoints) and not report.error
 
 
 def _open_attempt(decision) -> str | None:
@@ -2058,12 +2080,12 @@ def resume_contract_step(
                                              requirement or DEFAULT_TASK, budget_tracker)
         if getattr(deliberation, "budget_exceeded", False):
             return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
+        _record_deliberation(settings, out_dir, step, ticket_id, report, deliberation)
         _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
         if report.finish_outcome == "success":
             checkpointer.clear()
 
-        _finalize(settings, cp, out_dir, step, ticket_id, contracts, report,
-                  deliberation=deliberation)
+        _finalize(settings, cp, out_dir, step, ticket_id, contracts, report)
         return report
 
     except Exception as exc:  # noqa: BLE001
