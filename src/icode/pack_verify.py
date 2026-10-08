@@ -2551,16 +2551,27 @@ def _verify_artifact_binding(
     return problems.render()
 
 
+def _print_diagnostic(message: str, *, file=None) -> None:
+    """Escape only characters the current diagnostic stream cannot encode."""
+    stream = sys.stdout if file is None else file
+    encoding = getattr(stream, "encoding", None)
+    if encoding:
+        # Preserve the caller's stream configuration and verifier exit status;
+        # narrow consoles can still show every diagnostic as readable escapes.
+        message = message.encode(encoding, errors="backslashreplace").decode(encoding)
+    print(message, file=stream)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if len(args) != 1:
-        print(__doc__.strip())
-        print("\n用法：python verify.py <证据包目录>", file=sys.stderr)
+        _print_diagnostic(__doc__.strip())
+        _print_diagnostic("\n用法：python verify.py <证据包目录>", file=sys.stderr)
         return 2
 
     pack = Path(args[0])
     if not pack.is_dir():
-        print(f"不是目录：{pack}", file=sys.stderr)
+        _print_diagnostic(f"不是目录：{pack}", file=sys.stderr)
         return 2
 
     problems = verify_pack(pack)
@@ -2577,18 +2588,18 @@ def main(argv: list[str] | None = None) -> int:
             ticket = "?"
 
     if problems:
-        print(f"证据包校验失败：{pack}")
-        print(f"  工单：{ticket or '?'}")
+        _print_diagnostic(f"证据包校验失败：{pack}")
+        _print_diagnostic(f"  工单：{ticket or '?'}")
         total_count = getattr(problems, "total_count", len(problems))
         sample_count = getattr(problems, "sample_count", len(problems))
-        print(f"  问题 {total_count} 处（诊断样本 {sample_count} 条）：")
+        _print_diagnostic(f"  问题 {total_count} 处（诊断样本 {sample_count} 条）：")
         for p in problems:
-            print(f"    - {p}")
+            _print_diagnostic(f"    - {p}")
         return 1
 
-    print(f"证据包校验通过：{pack}")
-    print(f"  工单：{ticket or '?'}")
-    print("  已核验：清单完整性 · 事件链哈希链 · 正文与链上哈希对应 · 包摘要")
+    _print_diagnostic(f"证据包校验通过：{pack}")
+    _print_diagnostic(f"  工单：{ticket or '?'}")
+    _print_diagnostic("  已核验：清单完整性 · 事件链哈希链 · 正文与链上哈希对应 · 包摘要")
     return 0
 
 

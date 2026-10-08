@@ -2,6 +2,10 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **独立验包编码修复本机门通过（2026-10-08；提交推送中）：**仅main诊断按当前流编码转义不可编码字符，不改校验/格式/0/1/2或全局环境。真实3方法8FAIL/0ERROR先RED；独立SPEC与不同QUALITY批准，20轮60PASS零skip、226关联/329DEFAULT/19干净安装零skip，安装版三编码12控制通过；完整preflight3/3、2103PASS/59skip/440.172秒、编译-j1/治理/官网/竞品/diff通过。见[编码回归片](./nbl/plans/2026-10-08-r3-verifier-output-encoding.md)。新SHA Windows原生另验，不能倒填b508根因或R2/R3总门；下一[合同接线](./nbl/plans/2026-10-08-r3-contract-engineering-bridge.md)已冻结接口/身份/恢复设计，尚未实现。安全默认Python工厂和工作台宿主模板另片，不能只有provider API就称可自动完成。
+
+- **工程证据已推送、Windows新离仓回归修复中（2026-10-08；b5082d8）：**精确新CI37783423412终态37success/4failure/3整jobskip；两个新增Windows workspace各325 total/6failure/20skip，内置验包通过但离仓子进程失败；另两个既有Reviewer候选仍未证明网络DENY。双Python全仓各2088PASS/71skip，不能倒填本机2099PASS/60skip。本机已复现独立CLI中文提示在cp1252/ASCII严格管道抛UnicodeEncodeError，远端缺child stderr仍为候选原因。按[编码回归片](./nbl/plans/2026-10-08-r3-verifier-output-encoding.md)先TDD修复并补错误正文，再串行实施合同接线；签名/官网成功不替代Windows运行或R2/R3总验收。
+
 - **工程事实与离仓验证本机阶段门通过（2026-10-08；新提交原生结果另验）：**新版宿主plan/run经深冻结事实接既有Evidence/Ledger、保存/导入/直接导出及共享stdlib验包；完整audit与稳定repair分域，原输出摘要不删改，unknown仍human，旧None/golden/opaque路径保持。复审发现的DWORD、标签补重试、畸形run及巨整形边界先RED后修正，最终独立SPEC→不同QUALITY均批准；20轮680PASS零skip、226关联及326默认矩阵零skip、干净安装19PASS零skip、完整preflight3/3，全仓2099PASS/60skip。具体冻结及证据见[本片计划](./nbl/plans/2026-10-08-r3-engineering-evidence.md)。下一片继续真实合同工程执行/代码Reviewer/事件记录/CP终结接线；Windows生产runner、macOS单任务额度、实际模型1→6及90%SKILL整体矩阵仍未关闭。
 
 - **venv修正原生回收、工程证据片开发中（2026-10-08；`79e2b4377d27d80fa79867cb32712ae579ff0044`）：**精确新CI终态39success/2既有Windows Reviewer失败/3skip；Ubuntu和macOS ARM workspace各292PASS/0skip，Windows x64/ARM各271PASS/20skip；双Python全仓各2053PASS/71skip，七随包安装各18PASS/0skip，来源验证5/5、官网2/2成功，旧窗口全部STOP。目录身份测试兼容项已过，不外推Intel workspace或旧失败根因。新版工程事实/稳定修复键/严格离仓验包正按[证据计划](./nbl/plans/2026-10-08-r3-engineering-evidence.md)实施；[下一片合同接线设计](./nbl/plans/2026-10-08-r3-contract-engineering-bridge.md)优先真实policy合同，未实现不得写成已具备。Windows生产执行、macOS单任务额度、模型1→6及90%总门仍待闭合。

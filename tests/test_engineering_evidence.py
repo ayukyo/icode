@@ -549,9 +549,85 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
     def setUpClass(cls):
         cls.settings = require_skill()
 
-    def independent(self, pack, outside):
-        return subprocess.run([sys.executable, "-I", "-B", str(pack / "verify.py"), str(pack)],
-                              cwd=outside, env=dict(os.environ, PYTHONPATH=""), capture_output=True, text=True, timeout=30)
+    def independent(self, pack, outside, *, encoding=None, args=None):
+        script = str(pack / "verify.py")
+        arguments = [str(pack)] if args is None else args
+        command = [sys.executable, "-I", "-B", script, *arguments]
+        if encoding is not None:
+            # Test fixture only: exercise the exported script with both actual
+            # output streams strict, independent of the host console defaults.
+            launcher = ("import runpy, sys; encoding, script, *args = sys.argv[1:]; "
+                        "sys.stdout.reconfigure(encoding=encoding, errors='strict'); "
+                        "sys.stderr.reconfigure(encoding=encoding, errors='strict'); "
+                        "sys.argv = [script, *args]; runpy.run_path(script, run_name='__main__')")
+            command = [sys.executable, "-I", "-B", "-c", launcher, encoding, script, *arguments]
+        result = subprocess.run(command, cwd=outside, env=dict(os.environ, PYTHONPATH=""),
+                                capture_output=True, timeout=30)
+        # Decode captured bytes for host assertion diagnostics only. This does
+        # not configure the child streams or hide a nonzero child exit status.
+        result.stdout = result.stdout.decode(encoding or "utf-8", errors="replace")
+        result.stderr = result.stderr.decode(encoding or "utf-8", errors="replace")
+        return result
+
+    def assert_independent_exit(self, pack, outside, expected=None, **kwargs):
+        result = self.independent(pack, outside, **kwargs)
+        diagnostics = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        if expected is None:
+            self.assertNotEqual(result.returncode, 0, diagnostics)
+        else:
+            self.assertEqual(result.returncode, expected, diagnostics)
+        return result
+
+    def unicode_pack(self, root):
+        from icode.evidence import build_evidence_pack
+        from icode.pack_verify import verify_pack
+        ticket = make_finished_plan_ticket(self.settings, root / "work")
+        pack = root / "证据包-é-🚀"
+        report = build_evidence_pack(ticket, dest=pack, gates_json=self.settings.gates_json)
+        self.assertTrue(report.ok, report.render())
+        self.assertEqual(verify_pack(pack), [])
+        return pack
+
+    def test_independent_success_keeps_exit_zero_with_strict_output_encodings(self):
+        with temp_workspace() as root:
+            pack = self.unicode_pack(root)
+            for encoding in ("utf-8", "cp1252", "ascii"):
+                with self.subTest(encoding=encoding):
+                    result = self.assert_independent_exit(pack, root, 0, encoding=encoding)
+                    expected = f"证据包校验通过：{pack}\n  工单：EV-1"
+                    expected = expected.encode(encoding, errors="backslashreplace").decode(encoding)
+                    self.assertIn(expected, result.stdout)
+                    self.assertEqual(result.stderr, "")
+                    self.assertNotIn("Traceback", result.stdout + result.stderr)
+
+    def test_independent_tampering_keeps_exit_one_with_strict_output_encodings(self):
+        with temp_workspace() as root:
+            pack = self.unicode_pack(root)
+            (pack / "verifications.json").write_bytes(b"tampered")
+            for encoding in ("utf-8", "cp1252", "ascii"):
+                with self.subTest(encoding=encoding):
+                    result = self.assert_independent_exit(pack, root, 1, encoding=encoding)
+                    expected = f"证据包校验失败：{pack}\n  工单：EV-1"
+                    expected = expected.encode(encoding, errors="backslashreplace").decode(encoding)
+                    self.assertIn(expected, result.stdout)
+                    self.assertIn("verifications.json", result.stdout)
+                    self.assertEqual(result.stderr, "")
+                    self.assertNotIn("Traceback", result.stdout + result.stderr)
+
+    def test_independent_usage_keeps_exit_two_with_strict_output_encodings(self):
+        with temp_workspace() as root:
+            pack = self.unicode_pack(root)
+            for encoding in ("utf-8", "cp1252", "ascii"):
+                for args in ([], [str(root / "不存在-é-🚀")]):
+                    with self.subTest(encoding=encoding, args=args):
+                        result = self.assert_independent_exit(pack, root, 2, encoding=encoding, args=args)
+                        expected = f"不是目录：{args[0]}" if args else "用法：python verify.py <证据包目录>"
+                        expected = expected.encode(encoding, errors="backslashreplace").decode(encoding)
+                        self.assertIn(expected, result.stderr)
+                        if not args:
+                            doc = "证据包独立校验器".encode(encoding, errors="backslashreplace").decode(encoding)
+                            self.assertIn(doc, result.stdout)
+                        self.assertNotIn("Traceback", result.stdout + result.stderr)
 
     def rehash(self, pack):
         from icode.pack_verify import pack_digest
@@ -582,7 +658,7 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
                 code = main(["evidence", "--ticket", str(ticket), "--dest", str(pack), "--receipt", str(receipt)])
             self.assertEqual(code, 0)
             self.assertEqual(verify_pack(pack), [])
-            self.assertEqual(self.independent(pack, root).returncode, 0)
+            self.assert_independent_exit(pack, root, 0)
             body = json.loads((pack / "verifications.json").read_bytes())
             self.assertEqual(body["receipts"][0]["run"]["attempt"], "host-window-a")
             self.assertEqual(body["receipts"][0]["category"], evidence.category)
@@ -590,7 +666,7 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
             (pack / "verifications.json").write_bytes(canonical(body))
             self.rehash(pack)
             self.assertTrue(verify_pack(pack))
-            self.assertNotEqual(self.independent(pack, root).returncode, 0)
+            self.assert_independent_exit(pack, root)
 
     def test_illegal_cli_receipt_preserves_old_pack(self):
         from icode.cli import main
@@ -624,7 +700,7 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
             (pack / "verifications.json").write_bytes(canonical({"schema_version": 1, "receipts": [row]}))
             self.rehash(pack)
             self.assertTrue(verify_pack(pack))
-            self.assertNotEqual(self.independent(pack, root).returncode, 0)
+            self.assert_independent_exit(pack, root)
 
     def test_wrapper_negative_controls_remain_rejected_after_manifest_rehash(self):
         from icode.evidence import build_evidence_pack
@@ -649,13 +725,13 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
                     (pack / "verifications.json").write_bytes(payload)
                     self.rehash(pack)
                     self.assertTrue(verify_pack(pack))
-                    self.assertNotEqual(self.independent(pack, root).returncode, 0)
+                    self.assert_independent_exit(pack, root)
             # A fully rewritten legacy row has no engineering credit, but a
             # self-consistent unanchored pack cannot detect every downgrade.
             (pack / "verifications.json").write_bytes(canonical({"schema_version": 1, "receipts": [{"ratio": 1.25}]}))
             self.rehash(pack)
             self.assertEqual(verify_pack(pack), [])
-            self.assertEqual(self.independent(pack, root).returncode, 0)
+            self.assert_independent_exit(pack, root, 0)
 
     def test_legacy_foreign_scalar_and_list_receipts_keep_export_semantics(self):
         from icode.evidence import EvidenceError, build_evidence_pack, load_verification_receipts
@@ -674,7 +750,7 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
                                                  verifications=[Foreign(value)])
                     self.assertTrue(report.ok, report.render())
                     self.assertEqual(verify_pack(pack), [])
-                    self.assertEqual(self.independent(pack, root).returncode, 0)
+                    self.assert_independent_exit(pack, root, 0)
                     path = root / "import.json"
                     path.write_bytes(canonical(value))
                     with self.assertRaises(EvidenceError):
@@ -701,7 +777,7 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
                 report = build_evidence_pack(ticket, dest=pack, gates_json=self.settings.gates_json, verifications=rows)
                 self.assertTrue(report.ok, report.render())
                 self.assertEqual(verify_pack(pack), [])
-                self.assertEqual(self.independent(pack, root).returncode, 0)
+                self.assert_independent_exit(pack, root, 0)
                 for invalid in (-(2 ** 31) - 1, 2 ** 32, True, 1.0):
                     with self.subTest(invalid=invalid):
                         invalid_rows = json.loads(canonical(rows))
@@ -710,7 +786,7 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
                         (pack / "verifications.json").write_bytes(canonical({"schema_version": 1, "receipts": invalid_rows}))
                         self.rehash(pack)
                         self.assertTrue(verify_pack(pack))
-                        self.assertNotEqual(self.independent(pack, root).returncode, 0)
+                        self.assert_independent_exit(pack, root)
 
     def test_malformed_frozen_run_preserves_actual_existing_pack(self):
         from icode.evidence import EvidenceError, build_evidence_pack
@@ -770,4 +846,4 @@ class TestEngineeringEvidencePack(_Helpers, unittest.TestCase):
                     (pack / "verifications.json").write_bytes(canonical({"schema_version": 1, "receipts": [row]}))
                     self.rehash(pack)
                     self.assertTrue(verify_pack(pack))
-                    self.assertNotEqual(self.independent(pack, root).returncode, 0)
+                    self.assert_independent_exit(pack, root)

@@ -32,7 +32,7 @@
 ## Task 1：工程事实、账本及所有证据入口闭环
 
 **状态**
-- [ ] 任务完成
+- [x] 本机实现、独立审查及提交推送完成（Windows新回归另片修复，不计跨平台整体验收）
 
 **Dependencies:** None（已交付执行器基线）
 **Parallelizable:** No（五模块共享schema与序列化合同，串行修改）
@@ -55,7 +55,7 @@ assert hashlib.sha256(raw).hexdigest() == "6fa92e309d7819b3056508149ad51ea7585b6
 - [x] **Step 2: 实跑RED并记录**：`env PYTHONPATH=/home/orbbec/git/icode/src /tmp/icode-packaged-skill-acceptance-fqxSO0bh/venv/bin/python -B -m unittest tests.test_engineering_evidence`。结构缺口与真实旧漏洞FAIL分开，fixture ERROR先修，不伪报。
 - [x] **Step 3: 最小实现**：按冻结语义定义深不可变事实与build_engineering_evidence，新增stdlib语义校验器及canonical摘要；旧函数仅显式None/非None分支，ledger重建保字段。所有入口共用同一语义校验器和前置有界投影；包装专用解析只增加两层，再逐row原128校验。保留现有保存/发布事务，未校验不得写目标。
 - [x] **Step 4: 实跑GREEN/兼容**：新类、tests.test_self_verify、tests.test_evidence、test_run_workspace_ci通过；新增包内wrapper重复键/坏UTF8/孤立代理项/非有限数值/版本类型负控、上限及上限+1、旧最大深度与其它128门不变。篡改新receipt再更新manifest文件SHA/pack_digest，内置与离仓verifier仍拒绝；自洽伪造仅自洽，不授予质量信用。
-- [ ] **Step 5: 冻结验收后提交**：新方法20轮、完整DEFAULT及关联、独立SPEC→不同QUALITY、七维报告、完整preflight、compileall-j1、治理/官网/竞品/diff与干净包运行；通过后精确文件提交推送main并核对远端。源码漂移须重跑，旧守护不倒填。阶段提交由根代理执行，不由实现子代理自行提交。
+- [x] **Step 5: 冻结验收后提交**：新方法20轮、完整DEFAULT及关联、独立SPEC→不同QUALITY、七维报告、完整preflight、compileall-j1、治理/官网/竞品/diff与干净包运行；通过后精确文件提交推送main并核对远端。源码漂移须重跑，旧守护不倒填。阶段提交由根代理执行，不由实现子代理自行提交。
 
 ## 后续依赖（不在本片冒称具备）
 
@@ -67,6 +67,8 @@ assert hashlib.sha256(raw).hexdigest() == "6fa92e309d7819b3056508149ad51ea7585b6
 **Execution Mode:** serial
 
 ## 第四版冻结与最终本机验收（2026-10-08）
+
+本片已提交推送 `b5082d85b7bac881a4ff8086a52747c0862e9fc8`，官方GitHub commits/main接口独立核对精确SHA；SSH二次核对失败不通过修改host-key或降级验证绕过。随后精确新CI `37783423412` 的两个Windows workspace出现新增独立verify.py子进程回归：各325 total、6failure、20skip（ARM266.916秒、x64325.423秒），4方法/6断言，内置verify_pack均已通过，旧测试未输出child stderr。根代理同SHA离仓实际包在UTF8输出exit0、cp1252/ASCII严格管道均因main中文提示UnicodeEncodeError退出1；这是本机已证实的CLI漏洞，但尚不能据此把远端未观察的stderr填成已证实根因。新[编码回归片](./2026-10-08-r3-verifier-output-encoding.md)先修复再取新SHA原生结果；工程事实本机成绩保留，不称Windows全过或R2/R3完成。两个既有Windows Reviewer失败仍未证明双栈DENY，官网同SHA成功不替代运行验收。
 
 第四版仅共享timeout校验一行交换，沿用VerificationCheck的严格类型→范围→有限性顺序，不扩大catch或数值域。3方法/6FAIL/0ERROR→76PASS/0skip/12.272秒；合法整数/有限浮点正控，巨正负整数的validator/import/冻结facts/fingerprint/save/directexport/实际旧包保留，以及更新manifest后的内置/离仓拒绝均进入永久测试。NaN/Inf为非法JSON，bool为合法JSON但类型域非法，分开判定。源冻结后等待独立SPEC→不同QUALITY，再跑20轮、关联、DEFAULT、干净包和完整preflight；前三版成绩只作历史。
 

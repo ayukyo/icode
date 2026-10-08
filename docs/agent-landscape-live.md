@@ -2081,3 +2081,15 @@ ICODE当前旧`evidence_fingerprint`包含原输出SHA；主代理RAM对象实�
 后续实际79e2新SHA的macOS ARM292PASS/0skip关闭本次fixture兼容回归，未补获旧窗口实际prefix，仍不将候选原因写成已证明根因。下一片独立研究按固定eead调用链核对真实合同注入/恢复身份/Reviewer：**采纳**session准备后宿主冻结计划、CP写前身份预检、全部写入结束后测试且成功终结前消费结果、unknown整体门及恢复显式重建；**不适配**把普通task的无policy观察等同Native合同/RL0或将计划review冒充代码质量Reviewer。收益是补产品闭环而非仅增加API，成本为显式参数/复用Git窗口/拒绝路径测试；既有Aider/PydanticAI机制仅参考，不复制代码、不加许可不明依赖，具体下一片边界见[合同接线设计](./nbl/plans/2026-10-08-r3-contract-engineering-bridge.md)，源码尚未接线，研究不是动态验收。
 
 同日阶段结束刷新：上述工程事实/稳定repair/共享离仓验包片最终680方法执行、226关联、326DEFAULT、19干净安装均零skip通过，完整全仓2159项中2099PASS/60skip，独立SPEC→不同QUALITY批准；仅本机软件/transport闭环，不提高原生或总门信用。独立下一片研究及主代理实际官方API回收再次确认Aider HEAD为5dc9490（提交2026-05-22），PydanticAI HEAD为f55bb8a（提交2026-10-08 03:59:54Z），既有固定MIT/Apache2源码观察继续有效；未运行上游、复制代码或引入依赖。**采纳**沿现有Native构造器可信注入并逐步传递计划、CP真实attempt、独立Reviewer两个上下文均携带policy身份、新工程记录失败阻断；**暂缓**项目脚本自动发现/新框架依赖，**不适配**从可写metadata恢复执行权限、post_write内多次执行测试或把policy准入当RL0运行时已配置。当前79e2固定源码中provider与合同工程消费仍缺失，下一片动态TDD和实际资源通道/模型验收不能由这些静态取舍代替。
+
+### 同日后续：合同确认与窄编码离仓回归（2026-10-08）
+
+独立只读研究再次通过git ls-remote核对Aider5dc9490/PydanticAIf55bb8a仍为当前HEAD，固定raw源码与Apache2/MIT许可保持；主代理定点回读ICODE固定vendor169的record-verification和trace。**采纳**首次完整run回包与幂等ID回包分开确认，CP真实attempt、完整结果集合、稳定repair键及失败记录硬阻断；**不适配**假设trace包含verification_recorded（实际tracked集合没有），或从回放回包索引不存在的run。成本为显式参数与少量闭合确认，不改SKILL、不加依赖/权限、不复制上游；测试须包含首次/replay真实CP和错误身份/返回码，不用静态研究填动态链路。
+
+精确b508新Windows两workspace新增独立verify.py失败，内置通过，旧child stderr未显示；本机实际离仓同包UTF8 exit0，cp1252/ASCII严格流main中文提示UnicodeEncodeError exit1。主代理查[CPython-I规则](https://docs.python.org/3.11/using/cmdline.html#cmdoption-I)、[stdio](https://docs.python.org/3.11/library/sys.html#sys.stdout)及[转义错误策略](https://docs.python.org/3.11/library/codecs.html#error-handlers)：**采纳**当前流编码下backslashreplace诊断，UTF8/无编码文本流保持中文；**暂缓**全CLI输出协议/双语重构；**不适配**环境UTF8或-Xutf8绕独立测试、删除中文、吞真正IO错误。实际新3方法先8FAIL/0ERROR后48PASS/0skip，独立SPEC48PASS/0skip批准；不同QUALITY/完整冻结守护/新SHA Windows待验，不能把本机候选写成旧原生已证实根因。收益是验证结果不被提示编码覆盖，成本仅stdlib私有打印助手和永久离仓0/1/2正负控，无新许可、运行依赖、环境或提权变化。
+
+### 同日后续：宿主默认计划与Python模块遮蔽（2026-10-08，只读）
+
+独立研究及主代理实际回读Settings/CLI/Native：现Settings只有skill_root/python/timeout，workbench构造无provider，仓内TOML静默容错不能升为命令授权；浏览器仍仅intent/request_id，不增加argv/env上传。**采纳**先可信provider API接线并缺计划拒绝；**暂缓至独立TDD片**安全Python默认模板及显式仓外宿主模板；**不适配**metadata/模型自填run/ticket/root/env、自动安装工具/依赖或只有API就宣称工作台可完成。解释器保留venv词法路径而非resolve后的基础解释器；Go已有local/offline/单并发和私有缓存，实际支持仅unittest/Go JSON测试及build/lint退出码，不宣传任意框架兼容。
+
+研究者RAM观察后，主代理另用正式Python3.11.15与实际_policy_environment、现有temp_workspace/fixture重测：工程unittest.py使当前-B -m unittest实际rc1/partially initialized module，stdout无测试信用；-I -B -m unittest discover -s/root -t/root对照rc0/Ran1/OK。现VerificationCheck对-I前缀实际ValueError，因此不能直接改默认argv或用测试环境绕行；需新增可信stdlib先载入/再发现工程路径的明确适配与shadow负控，不全局删工程import路径。两个实验只证明模块选择边界，没有伪造passed、原生sandbox或认证整个依赖链；临时夹具正常回收，仓库未修改。收益为安全默认模块来源与小白pip体验同时可验证，成本为独立模板/适配/host配置入口及干净安装往返；不新增运行依赖、许可复制或权限。合同接线/API、CLI默认入口、真实模型1→6与R2平台总门分别验收。
