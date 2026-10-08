@@ -59,3 +59,31 @@ TDD新12方法中5断言FAIL/0 ERROR，GREEN后20轮240 PASS/0 SKIP（没有记�
 生产SHA256 `0b7e2577844f135269bdcc78bee195ad974a350f20792af7de46b2bdae76564c`，新测试 `aeb7473b3c8a0d2586f362fdbd349b4824458bc4aaa746370512e81e90e42b83`；两独立审查前后完全一致，7维自检本机通过。采用CPython v3.11.15官方sys.executable/启动UTF8/binary capture机制，PSF2及本仓MIT，无复制或新运行依赖。未声称Windows原生或整个上游全仓测试通过。
 
 本工程gitlink仍保持旧固定版本，待共享预算片完成冻结交付再独立bump/完整兼容回归，不混入其受测树。相对旧gitlink到上游修复前74473e54，CP/gates/schemas无额外变化；steps/docx/install有已存在文档变化，仍需新固定资源清单重核。outer CP UTF8、包内资源和真正pip-only安装尚未实现，不以此提交关闭它们或R2/R3。
+
+### 固定版本接入（2026-10-08，单独验收）
+
+共享预算片已独立提交并推送 `edbfbe83a97e1fc2a72beb6b024aa57632696708`，fresh ls-remote一致。随后本工程vendor仅detach到已授权的 `1693651c1bd7daad3272eb054f0f81d6f254d08d`，暂存精确gitlink，子模块工作树干净且现有guard通过；上段“仍保持旧版本”是升级前历史，不代表当前状态。
+
+独立读取b74→169完整50文件差异并区分：CP唯一本轮变化是最小三lint修复；workflow/reasoning gates、schema、三lint、inspection_worklist和LICENSE/NOTICE均未变。crosscheck有真实scope/范围债务语义变化，但Agent核心不调用该入口；核心既有chain inspection prepare的allow-incomplete是另一合同，不混称。WorkBuddy安装/MCP和DOCX默认自动获取/用户runtime写入确有其它既有变化，未运行这些安装器/渲染器，不用核心通过外推它们。
+
+主代理新vendor实际固定lint12/12、0SKIP、0.546秒，并连续20轮240 PASS、0SKIP、10.714秒，CP摘要每轮一致；含真实空PATH、C locale关闭UTF8/中文路径及strict拒绝。安装后的既有Agent wheel在仓库外/-I/无环境Skill下显式消费新vendor，六预算+五CLI恢复实际11项全部PASS；更新临时CLI验收fixture的runner预期摘要到共享预算最终版本，不改产品或放宽断言。这仍是外部Skill兼容，不是包内免配置。
+
+独立SPEC：项目3.11.15上游12/12、0SKIP、0.534秒；下游13模块183/183、0SKIP、82.882秒，合195 PASS，涵盖control/contracts/handshake/chain/chain_offline/CLI/恢复/sharedbudget/hardstop/workbench/disclosure/reasoningbudget/recovery；真实失败finish/checkpoint、未知副作用不重放、审查产物不伪造与自动模式关闭保持。CP/新lint测试/workflowgate/reasoninggate前后摘要一致。不同QUALITY及最终全仓门禁另行验收后才提交本工程gitlink。
+
+不同作者QUALITY实跑上游12/0SKIP/0.498秒，下游八模块81/0SKIP/31.738秒，外加真实坏stdout UTF8/坏stderr UTF8/坏JSON三负控均失败关闭且剩余gates仍收集；无阻断。限定CP与测试摘要前后保持，无进入Office/MCP/install分支。非阻断文档问题：上游steps/install.md:42合并了两行表格，后续另行修文，不扩本片最小源码授权。主代理最终preflight于08:42 UTC三道全部PASS，发现2030项；compileall-j6/治理/官网/竞品/diff及新固定子模块完整性通过。
+
+【架构级自检报告】
+
+- ✅ 语法/编译：固定差异AST/Shell及本工程compileall-j6通过。
+- ✅ 依赖/调用链：新vendor真实进入现有控制面及契约链。
+- ✅ 逻辑/边界：空PATH/中文/strict、共享计费300/301及治理拒绝通过。
+- ✅ 异常处理：UTF8/JSON/超时/启动失败/中断与checkpoint保持通过。
+- ✅ 关联模块：195独立SPEC、93独立QUALITY及11安装包实际场景通过。
+- ✅ 兼容安全：自定义lint/旧状态门/未知副作用/自动模式关闭保持，无KEY。
+- ✅ 可运行性：Ubuntu新固定版本与全仓守护通过；异平台和pip-only另验。
+
+### 包内资源下一片的独立复核
+
+独立研究固定SWE-agent `3ea751c087f32b16e039a2233dd6eefecef325d5`（MIT），实际源码仍依赖clone/父目录config/tools，不能用作pip-only成功例；记录及原始链接见[持续竞品对照](../../agent-landscape-live.md)。采纳PyPA包内数据与wheel/sdist分别验证，不复制上游或加依赖。
+
+新169候选仍72tracked普通文件，1,928,781 bytes，较旧版本五成员变化，必须重新固定全部hash。机器CP直接源/动态inspection/三lint闭包未发现候选外必读项，但指南另有43个真实候选外字面引用，不承诺整个SKILL或90%能力闭包。资源共同staging必须先于setup.py Linux提前return；sdist release tree也生成同一原字节闭包，脱离Git验证构建，不能只build_py成功。最低Python3.11不返回as_file的已清理临时目录。默认包内损坏/缺件明确拒绝，显式外部高级Settings独立兼容；只读消费不冒充OS级不可修改或manifest等于签名。
