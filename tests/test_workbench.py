@@ -544,6 +544,20 @@ class TestWorkbenchHTTP(unittest.TestCase):
 
 
 class TestWorkbenchAssets(unittest.TestCase):
+    def test_自动模式中英文配置提示不授执行就绪(self) -> None:
+        js = (ASSETS_DIR / "app.js").read_text(encoding="utf-8", errors="strict")
+        self.assertIn(
+            'capabilityEnabled: "已配置；任务仍需通过执行检查"', js,
+        )
+        self.assertIn(
+            'capabilityEnabled: "Configured; execution checks are still required for each task"',
+            js,
+        )
+        self.assertNotIn('capabilityEnabled: "已启用（仅服务端配置）"', js)
+        self.assertNotIn(
+            'capabilityEnabled: "Enabled (server-side configuration only)"', js,
+        )
+
     def test_无外链与内联脚本(self) -> None:
         for name in ("index.html", "app.js", "style.css"):
             text = (ASSETS_DIR / name).read_text(encoding="utf-8")
@@ -654,6 +668,60 @@ class TestWorkbenchAssets(unittest.TestCase):
 
 
 class TestWorkbenchCLI(unittest.TestCase):
+    def test_自动模式配置提示不代表任务执行检查已通过(self) -> None:
+        cases = (
+            (False, False, "not_configured", "未启用"),
+            (True, False, "policy_unavailable", "已配置，执行前阻断（策略级隔离未就绪）"),
+            (True, True, "enforced", "已配置；任务仍需通过执行检查"),
+        )
+        for enabled, ready, isolation, expected in cases:
+            with self.subTest(enabled=enabled, ready=ready):
+                argv = ["workbench", "--workspace", "/srv/project", "--no-browser"]
+                if enabled:
+                    argv.append("--enable-autonomous")
+                args = _build_parser().parse_args(argv)
+                sandbox = SimpleNamespace(
+                    is_real_isolation=True,
+                    policy_contract_ready=ready,
+                    wrap_policy=lambda *a, **k: None,
+                )
+                output = StringIO()
+                with (
+                    patch("icode.cli.load_settings", return_value=object()),
+                    patch(
+                        "icode.cli._build_runner",
+                        return_value=(None, None, None, None, sandbox),
+                    ) as build_runner,
+                    patch("icode.autonomy.NativeChainExecutor") as executor_class,
+                    patch("icode.workbench.WorkbenchServer") as server_class,
+                    patch("threading.Event") as event_class,
+                    redirect_stdout(output),
+                ):
+                    server_class.return_value.start.return_value = "http://127.0.0.1:1234/"
+                    event_class.return_value.wait.side_effect = KeyboardInterrupt
+                    self.assertEqual(cmd_workbench(args), 0)
+
+                server_kwargs = server_class.call_args.kwargs
+                self.assertEqual(server_kwargs["enable_autonomous"], enabled)
+                self.assertEqual(server_kwargs["autonomy_limits"], {
+                    "max_turns": args.max_turns,
+                    "budget_tokens": args.budget_tokens,
+                    "isolation_level": isolation,
+                })
+                if enabled:
+                    build_runner.assert_called_once_with(args)
+                    executor_class.assert_called_once()
+                    self.assertIs(
+                        server_kwargs["autonomy_executor"], executor_class.return_value,
+                    )
+                else:
+                    build_runner.assert_not_called()
+                    executor_class.assert_not_called()
+                    self.assertIsNone(server_kwargs["autonomy_executor"])
+                server_class.return_value.stop.assert_called_once_with()
+                self.assertIn("自主执行：" + expected, output.getvalue())
+                self.assertNotIn("自主执行：已启用", output.getvalue())
+
     def test_自动模式未就绪时启动文案不得声称已启用(self) -> None:
         args = _build_parser().parse_args([
             "workbench", "--workspace", "/srv/project", "--enable-autonomous",

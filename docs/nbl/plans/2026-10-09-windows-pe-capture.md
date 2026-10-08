@@ -240,7 +240,7 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 ## Task 4：冻结、全局双审、交付与四格原生采样
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成（仅可信CI样本采集子门）
 
 **Dependencies:** Task 3
 **Parallelizable:** No（冻结后测试串行；只读研究/观察独立）
@@ -255,6 +255,36 @@ DEFAULT也已完成并退出：461 PASS / 0 FAIL / 0 ERROR / 0 SKIP，164.259秒
 
 完整preflight已实际退出0，三道全部通过：2313 total / 2254 PASS / 59既有平台环境SKIP / 0 FAIL / 0 ERROR，unittest475.779秒，子进程wall475.995秒；没有新增skip。随后compileall-j1全src/scripts/tests、治理、站点、对照排期、diffcheck均退出0；源码aggregate仍923e226，固定vendor1693651c无改动。软件门已关闭，下一步仅按已授权main提交推送，再另验真实四格。
 
+发布记录（2026-10-09，覆盖上一段待提交状态）：main 已提交并推送 `ccbe67bb65d5246a61fb3078b85c83fba5aa7c42`。root 核对精确12个暂存路径、六个 Git index blob 摘要与冻结值、父提交3ef及cached diff；普通add的忽略docs提示退出1未被忽略，随后仅对六个必要文档逐个force-add并重新核对。推送后独立remote refs与GitHub官方main均为ccbe67，工作树干净；没有release/PyPI发布或vendor改动。
+
+新SHA CI `37840482757`、Windows helper provenance `37840482713` 已启动，四格原生采样仍待决定性日志，不沿用3ef信用。官网 `37840482735` 已终态success：独立观察者核validate checkout、artifact `11577352344`，root另读deploy job `113528355740`，实际payload的artifact_id与pages_build_version精确绑定ccbe67，日志`Reported success!`。该部署证明网站发布，不证明Windows采样或生产安全。
+
+原生收尾（覆盖上段待验状态）：来源[run37840482713](https://github.com/ayukyo/icode/actions/runs/37840482713)现completed/success，validate及四签名格全部success。独立只读观察者逐组回读decoded日志，root另逐组取同日志，核闭集11字段/完整九context/三个false，旧context→CAPTURED→实际attestation时间顺序、目标SHA与attestation行相等，以及每格后续19项安装PASS。正式artifact API共4个，都精确绑定ccbe67且未过期；未下载二进制或把zip大小当PE长度。三个新run均终态并STOP，不再轮询。
+
+| 原生格 | Job | 实际OS/image/Python | CAPTURED UTC→attestation UTC | Proof | Artifact | 安装 |
+|---|---|---|---|---|---|---|
+| x64/3.11 | 113532978872 | Server2025/10.0.26100/windows-2025-vs2026 20260925.250.1/3.11.9 | 20:48:42→20:48:44 | 54094233 | 11577484265 | 19PASS |
+| x64/3.12 | 113532978926 | 同Server2025/image/3.12.10 | 20:49:19→20:49:21 | 54094459 | 11577544108 | 19PASS |
+| ARM64/3.11 | 113532978949 | Win11/10.0.26200/windows-11-vs2026-arm64 20261004.176.1/3.11.9 | 20:51:55→20:51:57 | 54095206 | 11577813392 | 19PASS |
+| ARM64/3.12 | 113532978910 | 同Win11ARM/image/3.12.10 | 20:49:37→20:49:39 | 54094547 | 11578581430 | 19PASS |
+
+四格context共同VS18 2026/v145、SDK10.0.26100.0、VCTools14.51.36231；实际VC根`C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\`，SDK根`C:\Program Files (x86)\Windows Kits\10\`，MSBuild及其ToolsPath分别amd64/arm64。所选dumpbin后缀`bin\Hostx64\x64\dumpbin.exe`或`bin\Hostarm64\arm64\dumpbin.exe`，mt后缀`bin\10.0.26100.0\x64\mt.exe`或arm64；这次四键最小env实际可运行，无回退/扩env，不外推其它版本与Win10。
+
+| 对象 | 本窗口实际SHA256 |
+|---|---|
+| x64 dumpbin | 357c989e1c926841df4e6e97c25a60b205b30110cd6db39bde8d81a627e48ebb |
+| ARM64 dumpbin | c31a8583ff860b2a0d6eada1cd037c5b7003ed122301a5ad0594265ad088a862 |
+| x64 mt | fb1ab75294b78619bd6ac8cadf30cb95befbc7324703cbe2654ef800ddd2bf4d |
+| ARM64 mt | c3b01462a70c83fc9a1fedb8acebbbf1949540a8b9f02e099bbbcc4f8b80eb21 |
+| x64 3.11目标C | 5247bf9f6dfccba1e6fd8a552e76214844aae4a4a03a4f3a269e3f18406dd3d7 |
+| x64 3.12目标C | 8f4a98b64b4cfd910ae59d30878e4c18e4c7a1dc66dada7f136fdae83f44a3e3 |
+| ARM64 3.11目标C | 118c27d64ccd33c3875a7b3928ebf57a7b7d37d87ba4e5955c31f1eb2373c091 |
+| ARM64 3.12目标C | 6dfd7f0320a2cfba50e78ce9aff8d95afc9d67109f221a598a47e8de4979b961 |
+
+root另以strict base64解码/重编码及hashlib核原样字节：x64两格imports各3924B，SHA `2a0ed9d19149eadad7d572e417fcb381141a539b391cb7e32da7c5c3ce0c403e`；ARM两格各3771B，SHA `8fd9cd2aadfa72cd1dd6ecf21418ee4563e98bdf9d202257dbc4153ec7116bf4`。manifest四格相同406B、SHA `be8918559280a2e74748bf8f6238b568ed7cbf75183b2180a6a8a979a1ebf243`；实际前缀UTF8 BOM，strict utf-8-sig解码观察为asInvoker/uiAccess=false XML。三格逐bytes解码，最后ARM3.11完整base64与已解码ARM3.12逐字相等；无截断。receipt x646946B/ARM6752B。imports本窗口实际ASCII/英文、Version14.51.36260.0，报告见KERNEL32.dll及LoadLibraryExW/GetProcAddress；这只是观察，不是语言/whole-output/动态依赖完整性合同。源工具及目标前后bytes预算检查通过的receipt不提供各PE精确长度，不能编造长度。
+
+同SHA[主CI37840482757](https://github.com/ayukyo/icode/actions/runs/37840482757)终态failure：44jobs=36success/4failure/3skip/1cancelled。两Linux全量2313 total/71skip/0F/E，3.11 617.326秒、3.12 439.276秒。Windows两workspace各455 total/F1/E1/20skip：x64新ERROR为baseline windows_directory_changed，ARM对应ERROR为inspection Git10093；两格legacy code FAIL为Git10038。两Reviewer gate/observer ready但IPv6 evidence_unavailable、no_matching_event/archive_member_missing；独立cap正控exit91 ipv4_connect且canary=false，不能给网络拒绝信用。Ubuntu22原生job在apt阶段cancelled，后续未运行，日志不说明取消主体或原因。新快照研究[另记](../specs/2026-10-09-windows-directory-change-research.md)，不将新ERROR叫旧Git或flaky。主CI失败不反驳本片四格样本已取得，但明确阻断R2/R3整体。
+
 | 源码 | SHA256 |
 |---|---|
 | scripts/probe_windows_pe_capture.py | 6bca66405942b036e39713c43d020171301b7a5d6ed63c74d359c0f436f980f5 |
@@ -267,9 +297,9 @@ DEFAULT也已完成并退出：461 PASS / 0 FAIL / 0 ERROR / 0 SKIP，164.259秒
 - [x] root冻结六源码各SHA与aggregate，源码不再写；独立新鲜GLOBAL SPEC→不同GLOBAL QUALITY全读源码与设计/当前依赖，任何整改先RED/GREEN再冻结、重新两审。Task自审不替全局审。
 - [x] root定点组合新portable/paired/旧context/binding/direct-volume实际通过后，20轮同组合、零FAIL/ERROR/新增SKIP。全部退出再跑DEFAULT，DEFAULT退出再完整preflight，禁止重叠以免资源抖动。过程PATH仅明确Python/Go，GOMAXPROCS1、GOFLAGS=-p=1、GOTOOLCHAIN=local、CMAKE_BUILD_PARALLEL_LEVEL1；不猜计数。
 - [x] `python -B -m compileall -q -j 1 src scripts tests`、`python -B scripts/check_governance.py`、`python -B scripts/check_site.py`、`python -B scripts/check_agent_landscape.py`、`git diff --check`、preflight密钥/子模块门均通过。CODEX附带KEY仍仓外、禁止打印/提交；模型API检查不混入本片样本。
-- [ ] root更新五字段分层证据及研究采纳记录、七维自检；只stage六源文件及必要精确docs（忽略docs逐个force-add），核cached父SHA/列表/diff/hash。完整守护前不得commit。按现用户授权main commit/push，独立查remote refs及官方main；不发布release/PyPI、不取消未终态旧run。当前3ef三个run已STOP。
-- [ ] 新SHA四格只读独立观察，实际报告platform/image/Python/context、dumpbin/mt存在及执行返回、完整base64样本/摘要、CAPTURED与三个false、attest前顺序、四proof和19项安装PASS。root另读决定性日志/解码完整bytes；缺工具/报错/超限/不完整必须保持失败，不回退另一架构或预填。确认public fixed C报告只含所需PE introspection，无环境/KEY/工程输入。
-- [ ] 本片只可关闭“可信CI样本已采集”；下一完整解析及真实加载负控按实际样本另设计。R2/R3/Win10/标准用户/UAC/DPAPI/配额/工作台provider/真实六步都不关闭。
+- [x] root更新五字段分层证据及研究采纳记录、七维自检；只stage六源文件及必要精确docs（忽略docs逐个force-add），核cached父SHA/列表/diff/hash。完整守护后main commit/push ccbe67，独立查remote refs及官方main一致；无release/PyPI，无旧run取消。3ef三个run已STOP。
+- [x] 新SHA四格只读独立观察，实际报告platform/image/Python/context、dumpbin/mt存在及执行返回、完整base64样本/摘要、CAPTURED与三个false、attest前顺序、四proof和19项安装PASS。root另读决定性日志/解码完整bytes；没有回退或扩环境。public fixed C报告限定PE introspection，无KEY/模型或用户工程输入；报告本身可逆，不称脱敏。
+- [x] 本片只关闭“可信CI样本已采集”；下一完整解析及真实加载负控按实际样本另设计。R2/R3/Win10/标准用户/UAC/DPAPI/配额/工作台provider/真实六步都不关闭。
 
 ## acceptance_contract
 
@@ -283,19 +313,19 @@ DEFAULT也已完成并退出：461 PASS / 0 FAIL / 0 ERROR / 0 SKIP，164.259秒
 |---|---|---|---|---|---|---|---|---|
 | static | yes | 六文件调用链 | 设计/权限/旧兼容 | 当前源码 | 设计b994521/main3ef/源码923e226 | 独立设计与源码SPEC→不同QUALITY | 两源码审各0问题/121PASS0skip，根六文件全读 | verified（仅冻结软件合同） |
 | unit/host | yes | 采集器/DEFAULT | 合成正负/CLI/预算 | 本机与portable | 源码923e226 | RED/GREEN，根新旧+paired复验、20/default/full、其它守护 | 定点121、20轮2420、DEFAULT461均PASS/0skip；full2313/59既有skip/0失败、三道通过，软件模拟不授原生 | verified（仅软件层） |
-| native consumption | yes | sign | 真实工具→samples→attest→安装 | 新SHA四格 | 未提交 | 独立decoded回读 | 无；3ef仅context不是本片 | not_run |
+| native consumption | yes | sign | 真实工具→samples→attest→安装 | Server2025 x64/Win11ARM，两Python实际版本 | main ccbe67/run37840482713 | 独立decoded、root逐组回读/原bytes复核 | 四CAPTURED/3false/完整samples/绑定摘要/attest前/各19安装PASS | verified（仅可信CI样本子门） |
 
 ## negative_evidence
 
-官方未保证工具人读文本编码或稳定标题；现有PE API没有导入/资源解析，当前context没有dumpbin/mt文件存在性证据。它们阻断完整解析与原生采集已成功结论，不反驳CI-only候选设计。CAPTURED即便成功也不反驳 pre-main 搜索风险。
+官方未保证工具人读文本编码或稳定标题；现有PE API仍没有导入/资源解析。新ccbe四格已提供候选及完整样本证据，覆盖旧无存在性/运行证据状态；实际ASCII/BOM观察不构成所有语言/PE/资源解析合同。CAPTURED不反驳 pre-main 搜索风险或证明动态/传递依赖来源。
 
 ## gaps
 
-root/独立观察者：软件门已过，main提交/推送尚未记录，新SHA真实候选与样本未取得，四格日志另验。这些阻断本片verified；生产安全及R2/R3的独立门保留。
+root/独立观察者：本片软件门、main提交推送与新SHA四格样本/签名安装均已核实。本片没有剩余采集缺口；完整解析、其它resource/language、真实加载/首UAC/Win10/标准用户/生产与R2/R3各独立门保留。主CI失败另列，不可抹去。
 
 ## verdict
 
-`partially_verified`（软件门已过）：冻结设计/实现、独立全局双审、根定点121、20轮、DEFAULT及全仓守护已过；main发布与新SHA四格原生采样尚未结束，不报告本片验收完成或R2/R3完成。
+`verified`（仅可信CI样本采集）：冻结设计/实现、独立全局双审、根定点121、20轮、DEFAULT/全仓守护、main提交推送、新SHA四格原生采集/签名及各19安装均通过。本片已完成，不报告生产安全、Windows普通用户或R2/R3完成；新主CI仍有失败与取消。
 
 ## 架构级自检报告（仅本片软件范围）
 
@@ -305,7 +335,7 @@ root/独立观察者：软件门已过，main提交/推送尚未记录，新SHA�
 - ✅ 异常处理：列举expected错误固定输出，cleanup失败拒绝，控制流/编程错误透传；不宣称覆盖未知原生工具故障。
 - ✅ 关联模块：六文件成对修改，旧CMake/C/Go/vendor/MANIFEST及权限/action/matrix没有额外修改。
 - ✅ 兼容安全：正确旧回归及全仓通过；HostCLI宿主假设经真实RED整改，0新增skip；未授产品执行或隔离权限。
-- ✅ 可运行性：软件门实际通过；原生Windows四格仍未运行，不能写“整体100%”或生产可用。
+- ✅ 可运行性：软件门及限定hosted Windows四格实际通过；不能写“R2/R3整体100%”或生产可用。
 
 根自审：设计每节都有Task2/3/4接点；无未定义API或省略的依赖；样本限额/公开范围/前后bytes非锁与原生不预填一致，参考代码必须测试后才落实现。
 
