@@ -86,7 +86,7 @@ def test_自动模式中英文配置提示不授执行就绪(self) -> None:
 ## Task 2：全局审查、串行守护与发布
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成
 
 **Dependencies:** Task 1
 **Parallelizable:** No（冻结源码后软件门串行；只读研究/原生观察并行）
@@ -105,7 +105,21 @@ root独立定点已完成：86PASS/0FAIL/ERROR/SKIP、27.414秒，实际HTTP/cus
 - [x] root独立定点 `tests.test_workbench tests.test_autonomy`；通过后20轮 `tests.test_workbench.TestWorkbenchCLI tests.test_workbench.TestWorkbenchAssets`。每轮16、总320PASS，0SKIP；真实HTTP兼容在定点/full另测，20轮不冒充重复真实HTTP。
 - [x] 20轮退出后运行 `PYTHONPATH=src:. python -B scripts/run_workspace_ci.py`，退出后才完整preflight；指定已有Python/Go路径、GOMAXPROCS1、GOFLAGS=-p=1、GOTOOLCHAIN=local、CMAKE_BUILD_PARALLEL_LEVEL1。完整 preflight 可用只读wrapper打印 guard_tests 实际子进程摘要，保持解释器/argv/cwd/返回码与测试选择。禁止改守护、加skip或并行两套全量。
 - [x] `python -B -m compileall -q -j 1 src scripts tests`，governance/site/landscape/diff/密钥/子模块门通过；root记录7维及分层验收，吸收独立研究机制与未通过原生结果，不授R2/R3总门。
-- [ ] 精确stage三源码和必要文档，忽略docs仅精确force-add；核父ccbe、cached路径/hash/diff。完整守护通过后按用户授权main commit/push，独立查remote refs及官方main；不开新分支/release/PyPI，不改vendor/权限或取消原生run。新SHA网站/CI与本片软件门分别观察。
+- [x] 精确stage三源码和必要文档，忽略docs仅精确force-add；核父ccbe、cached路径/hash/diff。完整守护通过后按用户授权main commit/push，独立查remote refs及官方main；不开新分支/release/PyPI，不改vendor/权限或取消原生run。新SHA网站/CI与本片软件门分别观察。
+
+发布记录：main提交并推送`b3897f57cb8f258834486e1fb31c8b85e9ecae5d`，父ccbe67。root精确核9个index路径、三源码index bytes SHA/父及cached diff；普通add的ignored docs提示退出1已处理，仅对六个必要docs精确force-add并重新核清单，不扩大到下一片设计。push退出0，独立remote heads仅main且SHA相同，GitHub官方main与父亦精确一致，推后tracked工作树干净；没有vendor/分支/release/PyPI变更。
+
+新SHA CI37845034256、provenance37845034221、Pages37845034262启动。root读取Pages元数据completed/success，仅此不能替actualdeploypayload；独立只读观察者继续逐run核新证据，旧ccbe三run已终态STOP。本片软件门和main发布已关闭，异平台原生/官网消费继续分层记录。
+
+Pages原生消费已补核：独立观察者读validate113543670522精确checkout b389与artifact11579421645，root另回读deploy113543742515，actual payload artifact_id相同、pages_build_version完整b389，21:12:40UTC实际Reported success。Pages终态STOP；这证明新SHA网站发布，不给Windows或模型执行信用。新CI的x64Reviewer仍是10035等待过期与capture缺件，原生整体没有因此通过。
+
+新主CI终态：run37845034256 completed/failure、完整44jobs=37success/4failure/3skip/0cancel，独立观察者与root各回读metadata及决定性日志。Linux3.11 full2315 total/2244PASS/71既有skip/0F/E、438.986秒；3.12同计数470.164秒。macworkspace463PASS266.623秒、lease75PASS3.752秒为该job非verbose摘要，不冒充逐method或资源门。Windowsx64/ARM workspace各457total/F1E1/20skip、331.690/325.984秒，incremental ERROR均为inspection Git10093、legacy code FAIL均Git10038；root分别全文检索两新log均未见windows_directory_changed，不能称旧错误已修。两个Reviewer仍双栈10035 wait_expired、IPv6 evidence_unavailable、no_matching_event/archive_member_missing及cap正控exit91；不授网络门。主CI已STOP，不取消或继续轮询。新provenancevalidate已通过，四签名格尚在构建，不能沿用ccbe的采集信用。
+
+root另独立补取本轮两个Reviewer完整decoded日志：x64 job113543670976与ARM job113543670904均实际runner gate ready，但child订阅返回0x00000005、双栈10035/wait_expired/connect_denied=false，host observer no_matching_event、capture archive_member_missing。privateNetworkClientServer正控两格exit91/ipv4_connect、无canary、readiness_credit=false；原候选仍exit78。这是尚未证明网络拒绝，不把没有连接当已拒绝，也不据正控inconclusive提高权限或修改产品SID。回读后STOP。
+
+来源工作流后续终态（覆盖上一段尚在构建状态）：run37845034221 completed/success，validate及x64/ARM64×Python3.11/3.12四格全部成功，四artifact均绑定b389、未过期。root独立读取四个新签名job的完整decoded日志和闭集receipt：x64 3.11 job113547877722/proof54105185/artifact11579777788；x64 3.12 job113547877830/proof54105350/artifact11579484002；ARM 3.11 job113547877707/proof54105708/artifact11579494081；ARM 3.12 job113547877704/proof54105417/artifact11579124494。每格实际采集先于attestation，helper SHA逐字匹配实际attestation digest；四格各19条带时间戳的安装脚本PASS阶段（不是19个unittest methods），包括最后signed-mode CI wheel exported阶段。root核新receipt的完整imports/manifest base64与先前独立严格解码回编码的ccbe字节完全相同；独立观察者另对本轮四格严格解码回编码。receipt三个标志parse_complete/runtime_load_verified/source_launch_verified仍全部false，actual CAPTURED production_authority=none。四来源格及工作流全部STOP，既有终态不再轮询。
+
+本轮helper SHA：x64 3.11 `260b4e0c1e1ee0828968f2487dc43105bec71fa7330f3469e6110a883156bc69`；x64 3.12 `bfd61c0d2b8f2f5ff9f60a9d994e2b2a15b6082ee928aefc313a86d4df8a35da`；ARM 3.11 `afab46a560b2062fb8df93e841094912d74ace37b6719f5a2c2a0348469665d1`；ARM 3.12 `ce4f8ea766f501d74858c69d5557674216ceb8927bfa00f9f978a8835be5a4d2`。原生OS实际为Server2025 x64 image20260925.250.1与Win11 ARM image20261004.176.1，Python3.11.9/3.12.10；不冒充Win10、标准用户、首次UAC、完整PE解析、生产加载、配额或模型1→6证据。root未下载新二进制或授R2/R3整体通过。
 
 ## acceptance_contract / verification_matrix
 
@@ -117,7 +131,7 @@ root独立定点已完成：86PASS/0FAIL/ERROR/SKIP、27.414秒，实际HTTP/cus
 
 ## gaps / verdict
 
-本片冻结实现、独立双审与root完整软件门已通过，main提交推送仍待下述发布记录。没有新增配置/执行权限，也未关闭工作台provider、资源门、模型六步、Windows/macOS隔离与配额缺口。`verified`仅限本片软件层，不报告R2/R3完成。
+本片冻结实现、独立双审、root完整软件门与main提交推送已通过，发布记录见Task2。没有新增配置/执行权限，也未关闭工作台provider、资源门、模型六步、Windows/macOS隔离与配额缺口。`verified`仅限本片软件层及发布，不报告R2/R3完成。
 
 ## 架构级自检报告（限定三文字软件切片）
 

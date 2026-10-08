@@ -14,6 +14,87 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_snapshot_rejection_diagnostic_selected_once_portably(self):
+        name = "tests.test_windows_snapshot_rejection_diagnostic"
+        self.assertEqual(DEFAULT_MODULES.count(name), 1)
+        module = importlib.import_module(name)
+        test_class = getattr(module, "TestWindowsSnapshotRejectionDiagnostic", None)
+        self.assertTrue(isinstance(test_class, type))
+        methods = unittest.defaultTestLoader.getTestCaseNames(test_class)
+        self.assertTrue(methods)
+        self.assertFalse(getattr(test_class, "__unittest_skip__", False))
+        for method in methods:
+            self.assertFalse(getattr(getattr(test_class, method), "__unittest_skip__", False))
+        def cases(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from cases(test)
+                else:
+                    yield test
+        expected = {name + ".TestWindowsSnapshotRejectionDiagnostic." + method for method in methods}
+        actual = [test.id() for selection in DEFAULT_MODULES
+                  if selection == name or selection.startswith(name + ".")
+                  for test in cases(unittest.defaultTestLoader.loadTestsFromName(selection))]
+        self.assertEqual(set(actual), expected)
+        self.assertEqual(len(actual), len(expected))
+
+    def test_contract_git_baseline_only_uses_platform_gated_context_once(self):
+        import ast
+        import inspect
+        import importlib.util
+        import textwrap
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+        from icode import workspace_snapshot as ws, windows_worktree as ww
+        from tests.test_contract_engineering import TestContractEngineering
+        name = "tests.windows_snapshot_rejection_diagnostic"
+        self.assertIsNotNone(importlib.util.find_spec(name), "diagnostic helper is not implemented")
+        helper = importlib.import_module(name)
+        context = getattr(helper, "windows_snapshot_rejection_diagnostic", None)
+        self.assertTrue(callable(context), "diagnostic context is not implemented")
+        source = textwrap.dedent(inspect.getsource(TestContractEngineering.gate_fixture))
+        parsed = ast.parse(source)
+        contexts = [node for node in ast.walk(parsed) if isinstance(node, ast.With)
+                    and any(isinstance(child, ast.Assign)
+                            and any(isinstance(target, ast.Name) and target.id == "baseline" for target in child.targets)
+                            for child in node.body)]
+        self.assertEqual(len(contexts), 1, "only the initial fixture baseline must be wrapped")
+        statement = contexts[0]
+        self.assertEqual(len(statement.body), 1)
+        self.assertEqual(len(statement.items), 1)
+        self.assertIsInstance(statement.items[0].context_expr.func, ast.Name)
+        self.assertEqual(statement.items[0].context_expr.func.id, "windows_snapshot_rejection_diagnostic")
+        code = compile(ast.fix_missing_locations(ast.Module(body=[statement], type_ignores=[])),
+                       "fixture-baseline-contract", "exec")
+        originals = (ws._windows_directory_listing_signature, ws._windows_handle_signature,
+                     ws._walk_windows_directory, ww._walk_windows_directory)
+        for platform, git_workspace, expected in (("nt", True, True), ("nt", False, False),
+                                                   ("posix", True, False), ("posix", False, False)):
+            calls = []
+            enabled_values = []
+            root = object()
+            result = {"private-name": "private-value"}
+            def snapshot(received):
+                calls.append(received)
+                current = (ws._windows_directory_listing_signature, ws._windows_handle_signature,
+                           ws._walk_windows_directory, ww._walk_windows_directory)
+                self.assertEqual(current != originals, expected)
+                return result
+            @contextmanager
+            def recording_context(*, enabled):
+                enabled_values.append(enabled)
+                with context(enabled=enabled, sink=lambda line: self.fail("stable fixture must not emit")):
+                    yield
+            namespace = dict(os=SimpleNamespace(name=platform), git_workspace=git_workspace,
+                             root=root, runner=SimpleNamespace(_snapshot=snapshot),
+                             windows_snapshot_rejection_diagnostic=recording_context)
+            exec(code, namespace)
+            self.assertIs(namespace["baseline"], result)
+            self.assertEqual(calls, [root])
+            self.assertEqual(enabled_values, [expected])
+            self.assertEqual((ws._windows_directory_listing_signature, ws._windows_handle_signature,
+                              ws._walk_windows_directory, ww._walk_windows_directory), originals)
+
     def test_pe_capture_portable_contract_is_selected_once(self) -> None:
         from tests.test_windows_pe_capture import TestWindowsPeCapture
         module = "tests.test_windows_pe_capture"

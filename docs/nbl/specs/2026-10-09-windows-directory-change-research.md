@@ -12,6 +12,10 @@
 
 fixture顺序已核：创建临时目录，写`changed.py=value 0`，同步Git init/add/commit返回，然后立即读取baseline。后续`value 1`、`next_out_dir`、CP create及inspection尚未发生，所以不能归因于本测试后续控制面写入。Git已经存在不证明它的后台活动导致变化。
 
+后续独立窗口（不改上面历史证据）：main`b3897f57cb8f258834486e1fb31c8b85e9ecae5d`的[CI37845034256 x64 job113543671048](https://github.com/ayukyo/icode/actions/runs/37845034256/job/113543671048)，独立观察者与root分别回读完整decoded日志。实际457 total/1FAIL/1ERROR/20SKIP、331.690秒；incremental ERROR已越过fixture baseline，到第777行inspection调用的Git10093，legacy code仍Git10038。root完整字符串检索未见windows_directory_changed，只有本新窗口未重现的有限证据，不宣称稳定性或根因修复；ARM该新格仍待独立结果，不沿用旧格或据x64代填。
+
+该窗口ARM现已补核：job113543670969实际457 total/1FAIL/1ERROR/20SKIP、325.984秒，同样inspection Git10093与legacy Git10038；root另取其完整decoded日志，未见windows_directory_changed。主CI终态37success/4failure/3skip/0cancel。两格在此窗口都越过fixture baseline，并不能代替复现、字段诊断或多窗口稳定性；后续helper只取得更细拒绝观察，不是预先归因或放宽检查。
+
 ## 两个同名拒绝点
 
 | 实际代码位置 | 比较对象 | 目前缺的证据 |
@@ -27,10 +31,12 @@ listing拒绝时final-handle查询尚未执行，不能把后者标为相同。s
 
 root另读[Microsoft FILE_BASIC_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_basic_info)：ChangeTime指metadata变化，LastWriteTime涉及数据流；所以ChangeTime差异不等于源码正文变动。[FILE_ID_EXTD_DIR_INFO](https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-file_id_extd_dir_info)列出listing各字段。这些说明没有为本事件确认缓存、非原子观察、Git或Defender根因。
 
-**采纳候选：**仅测试专用观察wrapper，用原调用已经取得的records分辨两拒绝点，固定attempt1/2、最深scope分类root/git_metadata/ignored_control/other_descendant/unavailable、固定字段差异位图。listing先失败时handle结果明确not_observed。原函数调用一次、原异常/返回/retry/cleanup顺序完全保留，不能新enumerate/query或输出真实path/name/ID/volume/timestamp/正文/raw异常；深层失败冒泡不能覆盖初始scope。
+**采纳候选（以正式设计收窄后的字段为准）：**仅测试专用观察wrapper，用原调用已经取得的records分辨两拒绝点，固定attempt1/2、最深scope分类root/git_metadata/other_descendant/unavailable、固定字段差异位图。ignored_control仅属于实际变化entry分类，忽略目录不进入walker，不能列为最深scope。listing先失败时handle结果明确not_observed。原函数调用一次、原异常/返回/retry/cleanup顺序完全保留，不能新enumerate/query或输出真实path/name/ID/volume/timestamp/正文/raw异常；深层失败冒泡不能覆盖初始scope。
 
 收益是可区分现有同reason，成本为测试诊断与mock正负控、后续同SHA双架构原生重验；不新增运行依赖、产品接口、系统权限或上游源码复制。**暂缓：**任何稳定性修复，必须先取得对应证据；**不适配：**称flaky、凭同格其它路径定位、宽松字段过滤或第三次重试。开源借鉴机制沿本阶段独立Aider/Codex配置与执行证据分离，不声称上游有同款Windows目录诊断。
 
 ## 验收边界
 
 此研究未改源码、未运行测试/native/model或变更CI。root已独立核日志和上述两个抛点，不能定位最终拒绝的具体scope；当前`unverified`。后续独立诊断设计/TDD/双审/完整软件门与Windows真实receipt是前置，不以本机软件或文字片通过关闭Windows/R2/R3门。
+
+后续实施状态（不倒填上述只读研究信用）：[正式设计](2026-10-09-windows-snapshot-rejection-diagnostic-design.md)与[实施计划](../plans/2026-10-09-windows-snapshot-rejection-diagnostic.md)已完成独立设计两审，测试源码冻结484ae70b，实施GLOBAL SPEC→不同QUALITY各0问题/62PASS/0skip；root定点62、20轮440、DEFAULT485均通过/0skip，full2339 total/2280PASS/59既有skip/0F/E、原三道守护通过。main发布及新SHA原生另取实际结果。只增加五个测试/选择接点，不改生产判据/重试/权限；具体目录变化根因仍未证明。

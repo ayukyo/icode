@@ -24,6 +24,7 @@ from icode.loop import LoopConfig
 from icode.loop import LoopResult
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
 from tests._support import require_skill, temp_workspace
+from tests.windows_snapshot_rejection_diagnostic import windows_snapshot_rejection_diagnostic
 
 
 def policy_for(root, step="code"):
@@ -54,7 +55,8 @@ class TestContractEngineering(unittest.TestCase):
                 initialized = subprocess.run(["git", "-C", str(root), *command],
                     capture_output=True, text=True, timeout=10)
                 self.assertEqual(initialized.returncode, 0, initialized.stderr)
-        baseline = runner._snapshot(root)
+        with windows_snapshot_rejection_diagnostic(enabled=os.name == "nt" and git_workspace):
+            baseline = runner._snapshot(root)
         if not interrupted_change:
             (root / "changed.py").write_text("value = 1\n", encoding="utf-8")
         directory = next_out_dir(root).resolve()
