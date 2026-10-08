@@ -38,6 +38,47 @@ def require_user_manager(test):
     return run
 
 
+def _assert_process_gone_or_zombie(testcase, pid):
+    # A proc entry can be reaped after open(), not just before an exists() check.
+    # Only disappearance is acceptable; unknown read failures must remain errors.
+    try:
+        status = Path(f"/proc/{pid}/status").read_text()
+    except (FileNotFoundError, ProcessLookupError):
+        return
+    testcase.assertIn("\nState:\tZ", status, "host death left a live charged process")
+
+
+class TestOwnedProcessStatus(unittest.TestCase):
+    def test_only_disappeared_process_errors_are_accepted(self):
+        import errno
+        for error in (FileNotFoundError(errno.ENOENT, "gone"),
+                      ProcessLookupError(errno.ESRCH, "reaped")):
+            with self.subTest(error=type(error).__name__), \
+                 mock.patch.object(Path, "read_text", side_effect=error) as read:
+                _assert_process_gone_or_zombie(self, 123)
+                read.assert_called_once_with()
+
+    def test_unknown_errors_and_interrupts_propagate(self):
+        import errno
+        for error in (OSError(errno.EIO, "read failed"),
+                      PermissionError(errno.EACCES, "denied"),
+                      KeyboardInterrupt(), SystemExit(17)):
+            with self.subTest(error=type(error).__name__), \
+                 mock.patch.object(Path, "read_text", side_effect=error):
+                with self.assertRaises(type(error)) as caught:
+                    _assert_process_gone_or_zombie(self, 123)
+                self.assertIs(caught.exception, error)
+
+    def test_live_or_unknown_state_still_fails(self):
+        for status in ("Name:\towned\nState:\tS (sleeping)\n", "unrecognized status"):
+            with self.subTest(status=status), \
+                 mock.patch.object(Path, "read_text", return_value=status):
+                with self.assertRaises(AssertionError):
+                    _assert_process_gone_or_zombie(self, 123)
+        with mock.patch.object(Path, "read_text", return_value="Name:\towned\nState:\tZ (zombie)\n"):
+            _assert_process_gone_or_zombie(self, 123)
+
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux-only seqpacket")
 class TestConfiguredCallback(unittest.TestCase):
     def check_callback(self, callback, *, seconds: float = 1, cancelled: bool = False,
@@ -805,9 +846,7 @@ class TestLinuxProductTaskQuota(unittest.TestCase):
                 while group.exists() and time.monotonic() < deadline: time.sleep(.01)
                 self.assertFalse(group.exists(), "host death left its exact cgroup")
                 for pid in [facts["pid"], *pids]:
-                    status = Path(f"/proc/{pid}/status")
-                    if status.exists():
-                        self.assertIn("\nState:\tZ", status.read_text(), "host death left a live charged process")
+                    _assert_process_gone_or_zombie(self, pid)
                 time.sleep(2.1)
                 self.assertFalse((root / "late-marker").exists())
                 answer = subprocess.run(["/usr/bin/systemctl", "--user", "show", facts["unit"], "--property=LoadState,ControlGroup"],

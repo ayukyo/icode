@@ -2002,6 +2002,63 @@ def load_settings_for(_workspace: Path) -> Settings:
 # ---------------------------------------------------------------------------
 
 
+class _TaskVerificationOutputFailure(Exception):
+    """Keep verifier-output failures separate from observation/binding errors."""
+
+    def __init__(self, error: VerificationOutputError | subprocess.TimeoutExpired | OSError):
+        super().__init__("Independent verification output is incomplete")
+        self.error = error
+
+
+def _measure_task_verification(
+    *, workspace: Path, before: dict[str, str], after: dict[str, str],
+    base_commit_sha: str, initial_worktree_fingerprint: str,
+    git_object_format: str, attempt: str, sandbox: Sandbox,
+) -> tuple[list[str], VerificationEvidence]:
+    """Measure one test window; callers own loops, reports and repair decisions.
+
+    ``after`` is the caller's post-model snapshot, also needed for incomplete
+    output reports. Only test execution failures cross the private wrapper;
+    Git, snapshot and evidence-binding errors retain their original behavior.
+    """
+    test_object_format_before, test_head_before_sha = _read_task_git_state(workspace)
+    before_test_tree_oid, before_test_tree_status = _capture_task_git_tree_oid(
+        workspace, base_commit_sha, object_format=test_object_format_before,
+    )
+    try:
+        exit_code, output = run_unittest(
+            workspace, sandbox=sandbox,
+            output_limit_bytes=_MAX_VERIFICATION_OUTPUT_BYTES,
+        )
+    except (VerificationOutputError, subprocess.TimeoutExpired, OSError) as error:
+        raise _TaskVerificationOutputFailure(error) from None
+    test_object_format_after, test_head_after_sha = _read_task_git_state(workspace)
+    after_test_tree_oid, after_test_tree_status = _capture_task_git_tree_oid(
+        workspace, base_commit_sha, object_format=test_object_format_after,
+    )
+    after_test = _snapshot(workspace)
+    tested_git_tree_oid, tested_git_tree_status = _resolve_tested_git_tree(
+        after, after_test, before_test_tree_oid, before_test_tree_status,
+        after_test_tree_oid, after_test_tree_status,
+        test_object_format_before, test_object_format_after,
+    )
+    test_head_status = _resolve_test_head_status(
+        test_object_format_before, test_head_before_sha,
+        test_object_format_after, test_head_after_sha,
+    )
+    return _bind_task_evidence(
+        before, after, exit_code, output, workspace, attempt=attempt,
+        base_commit_sha=base_commit_sha,
+        initial_worktree_fingerprint=initial_worktree_fingerprint,
+        git_object_format=git_object_format,
+        test_head_before_sha=test_head_before_sha,
+        test_head_after_sha=test_head_after_sha,
+        test_head_status=test_head_status,
+        tested_git_tree_oid=tested_git_tree_oid,
+        tested_git_tree_status=tested_git_tree_status,
+    )
+
+
 def run_task(
     settings: Settings,
     *,
@@ -2055,47 +2112,21 @@ def run_task(
     ])
 
     after = _snapshot(workspace)
-    test_object_format_before, test_head_before_sha = _read_task_git_state(workspace)
-    before_test_tree_oid, before_test_tree_status = _capture_task_git_tree_oid(
-        workspace, base_commit_sha, object_format=test_object_format_before,
-    )
+    attempt_no = 1
     try:
-        exit_code, output = run_unittest(
-            workspace,
+        changed, evidence = _measure_task_verification(
+            workspace=workspace, before=before, after=after,
+            base_commit_sha=base_commit_sha,
+            initial_worktree_fingerprint=initial_worktree_fingerprint,
+            git_object_format=git_object_format, attempt=str(attempt_no),
             sandbox=task_sandbox,
-            output_limit_bytes=_MAX_VERIFICATION_OUTPUT_BYTES,
         )
-    except (VerificationOutputError, subprocess.TimeoutExpired, OSError) as exc:
+    except _TaskVerificationOutputFailure as failure:
         return _task_report_for_output_failure(
             task=task, workspace=workspace, loop=result, before=before, after=after,
-            error=exc, repair_attempts=[], repair_decisions=[],
+            error=failure.error, repair_attempts=[], repair_decisions=[],
         )
-    test_object_format_after, test_head_after_sha = _read_task_git_state(workspace)
-    after_test_tree_oid, after_test_tree_status = _capture_task_git_tree_oid(
-        workspace, base_commit_sha, object_format=test_object_format_after,
-    )
-    after_test = _snapshot(workspace)
-    tested_git_tree_oid, tested_git_tree_status = _resolve_tested_git_tree(
-        after, after_test, before_test_tree_oid, before_test_tree_status,
-        after_test_tree_oid, after_test_tree_status,
-        test_object_format_before, test_object_format_after,
-    )
-    test_head_status = _resolve_test_head_status(
-        test_object_format_before, test_head_before_sha,
-        test_object_format_after, test_head_after_sha,
-    )
-    attempt_no = 1
-    changed, evidence = _bind_task_evidence(
-        before, after, exit_code, output, workspace, attempt=str(attempt_no),
-        base_commit_sha=base_commit_sha,
-        initial_worktree_fingerprint=initial_worktree_fingerprint,
-        git_object_format=git_object_format,
-        test_head_before_sha=test_head_before_sha,
-        test_head_after_sha=test_head_after_sha,
-        test_head_status=test_head_status,
-        tested_git_tree_oid=tested_git_tree_oid,
-        tested_git_tree_status=tested_git_tree_status,
-    )
+    exit_code, output = evidence.exit_code, evidence.output
     attempts: list[VerificationEvidence] = [evidence]
     decisions: list[str] = []
 
@@ -2123,46 +2154,20 @@ def run_task(
             {"role": "user", "content": repair_prompt},
         ])
         after = _snapshot(workspace)
-        test_object_format_before, test_head_before_sha = _read_task_git_state(workspace)
-        before_test_tree_oid, before_test_tree_status = _capture_task_git_tree_oid(
-            workspace, base_commit_sha, object_format=test_object_format_before,
-        )
         try:
-            exit_code, output = run_unittest(
-                workspace,
+            changed, evidence = _measure_task_verification(
+                workspace=workspace, before=before, after=after,
+                base_commit_sha=base_commit_sha,
+                initial_worktree_fingerprint=initial_worktree_fingerprint,
+                git_object_format=git_object_format, attempt=str(attempt_no),
                 sandbox=task_sandbox,
-                output_limit_bytes=_MAX_VERIFICATION_OUTPUT_BYTES,
             )
-        except (VerificationOutputError, subprocess.TimeoutExpired, OSError) as exc:
+        except _TaskVerificationOutputFailure as failure:
             return _task_report_for_output_failure(
                 task=task, workspace=workspace, loop=result, before=before, after=after,
-                error=exc, repair_attempts=attempts, repair_decisions=decisions,
+                error=failure.error, repair_attempts=attempts, repair_decisions=decisions,
             )
-        test_object_format_after, test_head_after_sha = _read_task_git_state(workspace)
-        after_test_tree_oid, after_test_tree_status = _capture_task_git_tree_oid(
-            workspace, base_commit_sha, object_format=test_object_format_after,
-        )
-        after_test = _snapshot(workspace)
-        tested_git_tree_oid, tested_git_tree_status = _resolve_tested_git_tree(
-            after, after_test, before_test_tree_oid, before_test_tree_status,
-            after_test_tree_oid, after_test_tree_status,
-            test_object_format_before, test_object_format_after,
-        )
-        test_head_status = _resolve_test_head_status(
-            test_object_format_before, test_head_before_sha,
-            test_object_format_after, test_head_after_sha,
-        )
-        changed, evidence = _bind_task_evidence(
-            before, after, exit_code, output, workspace, attempt=str(attempt_no),
-            base_commit_sha=base_commit_sha,
-            initial_worktree_fingerprint=initial_worktree_fingerprint,
-            git_object_format=git_object_format,
-            test_head_before_sha=test_head_before_sha,
-            test_head_after_sha=test_head_after_sha,
-            test_head_status=test_head_status,
-            tested_git_tree_oid=tested_git_tree_oid,
-            tested_git_tree_status=tested_git_tree_status,
-        )
+        exit_code, output = evidence.exit_code, evidence.output
         attempts.append(evidence)
 
     # R3：独立 Reviewer 使用全新模型上下文，只暴露只读工具；测试证据仍由宿主单独产生。

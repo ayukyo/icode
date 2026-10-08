@@ -155,3 +155,11 @@ native wheel完整十阶段实际PASS；其中host-crash和network lease沿既�
 本Task关闭的是实际产品配额接线、限定本机矩阵与四架构安装子门；完整R2隔离/统一文件拒绝/lease产品门、Windows/macOS资源机制及R3真实模型链仍未关闭。上述两个旧Windows失败不被抹掉或解释为资源门通过。
 
 **Execution Mode:** serial
+
+## a21 线上新增测试竞态及窄修复（2026-10-08；待新SHA）
+
+预算提交 `a21dbb5fcaef79a35266a0f80387faf4e3bde002` 的main实际37jobs为31success、3failure、3skip；两既有Windows候选失败不变，新增Python3.12 [job113185110661](https://github.com/ayukyo/icode/actions/runs/37739007207/job/113185110661)在1968方法/431.950秒/71SKIP中出现1error：实际host SIGKILL测试在status.exists与read_text之间被reap，f.read抛ProcessLookupError/ESRCH。主代理实际抓取该日志；不是观察到quota逃逸，也不能把这轮全量说成通过。3.11同轮1968方法/409.828秒、71SKIP通过；签名及官网各自success不替代失败套件。
+
+只修测试：取消proc exists预检查，单次读取仅接受FileNotFoundError/ProcessLookupError；活S与未知状态仍断言失败，EIO/permission/KI/SystemExit仍原实例抛出。原精确scope inode、cap2、SIGKILL返回、GC、迟到marker及managerunit不存在断言全部保留，生产文件不变。初始helper缺失NameError仅结构RED；RAM原exists/read逻辑结合存在正控，3方法中的ENOENT/ESRCH两个实际错误RED，其它正负控通过。
+
+最终测试SHA256 `b04d5996799c66bcc86709cc1e201fc0718d214a1af01ce34d758e70b1db9418`；3helper方法与实际host崩溃一项连续20轮=80/80、0SKIP，轮前后摘要一致；完整该模块45/45、10.235秒、0SKIP。独立SPEC4/4（2.611秒）及QUALITY4/4（2.605秒）均0SKIP、无遗留发现，QUALITY另独立实际活自身PID拒绝/已wait回收子进程接受正反控制通过。此测试修复与R3测量片联合完整守护、提交后才能认作新SHA结果，旧42×20对应be31冻结仍保留其历史范围。

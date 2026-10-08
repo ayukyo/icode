@@ -20,7 +20,7 @@
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（仅本片）
 
 **Dependencies:** 当前冻结分片已精确提交推送；独立研究记录采纳/暂缓/不适配。
 **Parallelizable:** No（单实施者，仅 loop 与关联测试；研究/审查只读）
@@ -43,19 +43,19 @@
 
 新矩阵最终摘要冻结后连续20轮、0SKIP，测试次数按方法实数记录。完整 `tests.test_loop`、预算/后端/runner/Reviewer关联；真实副作用 marker 和 operation/approval调用数量必须实证，不以 mock 包装命令代替实际 AgentLoop 调用。
 
-- [ ] **Step 4: 独立审查与交付**
+- [x] **Step 4: 独立审查与交付**
 
 实施者不得自审代替独立 SPEC→QUALITY。无遗留发现后完整 preflight三门、compileall≤j6、治理/官网/竞品/diff检查。精确 commit/push main并核对远端；新SHA线上结果独立记录，不借上一SHA门禁。阶段后继续共享验证/预算核及 R2 未闭合项。
 
 ## 验收上限与研究
 
-2026-10-08独立只读研究及主代理实际回读固定一手源码：PydanticAI `f55bb8a6fd6cdb34405e5f523d67cf8f366df4aa`（MIT）[计费后检查](https://github.com/pydantic/pydantic-ai/blob/f55bb8a6fd6cdb34405e5f523d67cf8f366df4aa/pydantic_ai_slim/pydantic_ai/_agent_graph.py#L1667-L1715)与[处理结果/工具入口](https://github.com/pydantic/pydantic-ai/blob/f55bb8a6fd6cdb34405e5f523d67cf8f366df4aa/pydantic_ai_slim/pydantic_ai/_agent_graph.py#L2041-L2117)，先记录实际usage、再限制检查、随后才形成工具节点；[token阈值](https://github.com/pydantic/pydantic-ai/blob/f55bb8a6fd6cdb34405e5f523d67cf8f366df4aa/pydantic_ai_slim/pydantic_ai/usage.py#L591-L605)使用严格`>`。采纳检查顺序、复用本仓tracker；代价仅额外一次verdict及未执行回执，不依赖SDK、不复制代码。
+2026-10-08独立只读研究及主代理回读固定一手源码：PydanticAI `f55bb8a6fd6cdb34405e5f523d67cf8f366df4aa`（MIT）[计费后检查与工具入口](https://github.com/pydantic/pydantic-ai/blob/f55bb8a6fd6cdb34405e5f523d67cf8f366df4aa/pydantic_ai_slim/pydantic_ai/_agent_graph.py)的 `_record_response_usage`、`_enforce_usage_limits` 与 `CallToolsNode` 先记录实际usage、再限制检查、随后才形成工具节点；[token阈值](https://github.com/pydantic/pydantic-ai/blob/f55bb8a6fd6cdb34405e5f523d67cf8f366df4aa/pydantic_ai_slim/pydantic_ai/usage.py)的 `check_tokens` 使用严格`>`。采纳检查顺序、复用本仓tracker；代价仅额外一次verdict及未执行回执，不依赖SDK、不复制代码。后续复核发现旧行锚点未经原始字节确认；本次原始抓取TLS EOF，主代理改用网页文本逐符号回读，移除不可靠行号，不把网页归一化编号当GitHub源码编号。
 
 OpenHands SDK `69e26889401fe69157fff536e6a69049e6644cb3`（MIT）的[预算实现](https://github.com/OpenHands/software-agent-sdk/blob/69e26889401fe69157fff536e6a69049e6644cb3/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L720-L734)聚合多个LLM美元成本，但[step后检查](https://github.com/OpenHands/software-agent-sdk/blob/69e26889401fe69157fff536e6a69049e6644cb3/openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py#L1993-L2022)对FINISHED有豁免。暂缓多LLM聚合机制至共享预算阶段，不适配照搬>=阈值或完成状态豁免。源码观察不是上游SDK动态测试，不构成ICODE验证证据。
 
 此片不证明 contract step/repair/reasoning/Reviewer 的全流程共用账本，不证明模型质量或真实1→6链，不消除已经发生的费用。已有 contract step 对 loop失败的软提示可能仍让产物齐备的步骤前移；下一片必须明确区分可软化的回合上限与不可软化的预算硬拒绝，不在本片偷换完整工作流承诺。R2/R3 readiness维持未通过。
 
-## 最终冻结证据（2026-10-08；待提交）
+## 最终冻结证据（2026-10-08）
 
 原8方法真实旧行为RED为7方法失败、8条断言失败及1兼容正控通过；最小修改后8/8转GREEN。独立SPEC又复现实际JSON非对象参数7、字符串及数组在预算拒绝分支转换时抛异常，破坏固定失败与配对历史。补新方法，在有效夹具上RAM恢复旧转换语句时三实际TypeError/ValueError仍RED；仅拒绝分支对dict保留副本、其它保留空参数，原JSON仍留真实assistant历史。正常执行路径与backend解析未改。
 
@@ -63,6 +63,8 @@ OpenHands SDK `69e26889401fe69157fff536e6a69049e6644cb3`（MIT）的[预算实�
 
 正确关联为loop/reasoning_budget/runner/reviewer四模块：143方法，138通过、5既有平台SKIP，主代理7.143秒；独立SPEC9/9（.048秒）、关联143（7.091秒）与独立QUALITY9/9（.014秒）、关联143（7.051秒）均通过且摘要固定，无遗留发现。两审查者另独立接真实Checkpointer保存/加载非对象参数负控，摘要、计数及未执行配对正确，正文不落checkpoint；不借此证明跨进程budget恢复。
 
-最终wheel干净venv仅pip安装，已安装loop字节匹配上述摘要；真实安装API完成末轮301拒绝、300边界正控、超限写工具无marker、非对象JSON固定失败及配对回执四类验收，不导入checkout模块。compileall `-j6`、治理/官网/竞品/diff守护通过；最终完整preflight于2026-10-08 06:36:49 UTC退出0，三门全部通过。提交/推送及远端核对仍待实际完成后记录，不提前关闭Step4。
+最终wheel干净venv仅pip安装，已安装loop字节匹配上述摘要；真实安装API完成末轮301拒绝、300边界正控、超限写工具无marker、非对象JSON固定失败及配对回执四类验收，不导入checkout模块。compileall `-j6`、治理/官网/竞品/diff守护通过；最终完整preflight于2026-10-08 06:36:49 UTC退出0，三门全部通过。此门禁对应下面已实际提交推送的a21分片，不借给后续未冻结代码。
 
 **Execution Mode:** serial
+
+提交 `a21dbb5fcaef79a35266a0f80387faf4e3bde002` 已推送 main，主代理实际 git ls-remote 精确匹配。新SHA [main CI](https://github.com/ayukyo/icode/actions/runs/37739007207)已终态failure，37jobs为31success/3failure/3skip：两既有Windows候选与Python3.12 procstatus消失竞态（主代理实际日志复核），未出现新增预算方法失败条目；不能称完整CI全绿。签名安装四矩阵及官网各自success，竞态另片修复，完整R2/R3及contract全链预算仍未验收。
