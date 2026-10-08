@@ -115,6 +115,100 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
                 with self.subTest(field=field, value=value), self.assertRaises(RuntimeError):
                     validator(json.dumps(changed).encode() + b"\n", "x64")
 
+    def test_generator_windows_distinct_path_and_fd_ctime_is_not_a_mutation(self):
+        generator = self.generator()
+        image = wheel_ci._synthetic_pe(0x8664)
+        with tempfile.TemporaryDirectory() as raw:
+            verifier = Path(raw) / "verifier.exe"
+            verifier.write_bytes(image)
+            actual = verifier.stat()
+            values = {name: getattr(actual, name) for name in (
+                "st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")}
+            path_info = SimpleNamespace(**values, st_ctime_ns=100, st_birthtime_ns=100)
+            fd_info = SimpleNamespace(**values, st_ctime_ns=200, st_birthtime_ns=100)
+            # CPython 3.12 Windows path stat projects creation time; fstat
+            # projects ChangeTime. This fixture is not native Windows evidence.
+            with patch.object(generator.sys, "platform", "win32"), \
+                 patch.object(Path, "lstat", side_effect=[path_info, path_info]), \
+                 patch.object(generator.os, "fstat", side_effect=[fd_info, fd_info]):
+                try:
+                    observed = generator.read_verifier_image(verifier, "x64")
+                except ValueError as exc:
+                    self.fail(f"stable Windows path/FD timestamps were misclassified: {exc}")
+                self.assertEqual(observed, image)
+
+    def test_generator_keeps_same_channel_ctime_and_cross_object_checks(self):
+        generator = self.generator()
+        image = wheel_ci._synthetic_pe(0x8664)
+        with tempfile.TemporaryDirectory() as raw:
+            verifier = Path(raw) / "verifier.exe"
+            verifier.write_bytes(image)
+            actual = verifier.stat()
+            values = {name: getattr(actual, name) for name in (
+                "st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")}
+            path_info = SimpleNamespace(**values, st_ctime_ns=100, st_birthtime_ns=100)
+            fd_info = SimpleNamespace(**values, st_ctime_ns=200, st_birthtime_ns=100)
+            for label, opened, fd_after, path_after, read_count in (
+                ("fd_ctime", fd_info, SimpleNamespace(**values, st_ctime_ns=201, st_birthtime_ns=100), path_info, 1),
+                ("path_ctime", fd_info, fd_info, SimpleNamespace(**values, st_ctime_ns=101, st_birthtime_ns=100), 1),
+                ("replacement", SimpleNamespace(**dict(values, st_ino=actual.st_ino + 1),
+                                                 st_ctime_ns=200, st_birthtime_ns=100), fd_info, path_info, 0),
+            ):
+                with self.subTest(case=label), \
+                     patch.object(generator.sys, "platform", "win32"), \
+                     patch.object(Path, "lstat", side_effect=[path_info, path_after]), \
+                     patch.object(generator.os, "fstat", side_effect=[opened, fd_after]), \
+                     patch.object(generator, "windows_pe_architecture", wraps=generator.windows_pe_architecture) as pe:
+                    with self.assertRaises(ValueError):
+                        generator.read_verifier_image(verifier, "x64")
+                    pe.assert_not_called()
+                    # Distinguish before-read replacement from after-read drift.
+                    self.assertEqual(generator.os.fstat.call_count, read_count + 1)
+
+    def test_generator_posix_cross_ctime_difference_still_refuses_before_read(self):
+        generator = self.generator()
+        image = wheel_ci._synthetic_pe(0x8664)
+        with tempfile.TemporaryDirectory() as raw:
+            verifier = Path(raw) / "verifier.exe"
+            verifier.write_bytes(image)
+            actual = verifier.stat()
+            values = {name: getattr(actual, name) for name in (
+                "st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns")}
+            with patch.object(generator.sys, "platform", "linux"), \
+                 patch.object(Path, "lstat", return_value=SimpleNamespace(**values, st_ctime_ns=100)), \
+                 patch.object(generator.os, "fstat", return_value=SimpleNamespace(**values, st_ctime_ns=200)) as fs:
+                with self.assertRaisesRegex(ValueError, "before read"):
+                    generator.read_verifier_image(verifier, "x64")
+                self.assertEqual(fs.call_count, 1)
+
+    def test_windows_cross_identity_keeps_birthtime_and_all_other_fields(self):
+        generator = self.generator()
+        values = dict(st_dev=1, st_ino=2, st_mode=stat.S_IFREG | 0o666,
+                      st_nlink=1, st_size=134, st_mtime_ns=5, st_ctime_ns=6,
+                      st_birthtime_ns=7)
+        with patch.object(generator.sys, "platform", "win32"):
+            original = generator._path_fd_identity(SimpleNamespace(**values))
+            different_ctime = SimpleNamespace(**dict(values, st_ctime_ns=99))
+            self.assertEqual(original, generator._path_fd_identity(different_ctime))
+            for field, value in (("st_dev", 9), ("st_ino", 9),
+                                 ("st_mode", stat.S_IFLNK | 0o666), ("st_nlink", 2),
+                                 ("st_size", 9), ("st_mtime_ns", 9), ("st_birthtime_ns", 9)):
+                with self.subTest(field=field):
+                    changed = SimpleNamespace(**dict(values, **{field: value}))
+                    self.assertNotEqual(original, generator._path_fd_identity(changed))
+            absent_birthtime = dict(values)
+            del absent_birthtime["st_birthtime_ns"]
+            self.assertNotEqual(original, generator._path_fd_identity(SimpleNamespace(**absent_birthtime)))
+
+    def test_windows_without_birthtime_keeps_legacy_cross_ctime(self):
+        generator = self.generator()
+        values = dict(st_dev=1, st_ino=2, st_mode=stat.S_IFREG,
+                      st_nlink=1, st_size=134, st_mtime_ns=5, st_ctime_ns=6)
+        with patch.object(generator.sys, "platform", "win32"):
+            original = generator._path_fd_identity(SimpleNamespace(**values))
+            changed = SimpleNamespace(**dict(values, st_ctime_ns=99))
+            self.assertNotEqual(original, generator._path_fd_identity(changed))
+
     def test_generator_reads_actual_bytes_not_adjacent_digest_or_mtime(self):
         generator = self.generator()
         with tempfile.TemporaryDirectory() as raw:
@@ -286,7 +380,7 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
     def test_signed_install_order_and_failure_gates_preserve_no_go_proof_only(self):
         # Mock only external build/install/gh/Go commands; retain real main,
         # query validation, installed raw byte hashing and export filesystem.
-        for mode in ("valid", "gh_failure", "c_drift", "binding_failure", "go_failure", "proof_only", "unsigned"):
+        for mode in ("valid", "gh_failure", "c_drift", "binding_failure", "go_failure", "direct_volume_failure", "proof_only", "unsigned"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as raw:
                 root = Path(raw)
                 helper = root / "icode-sandbox-windows-x64.exe"
@@ -322,6 +416,11 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
                     if stage == "resolve installed helper without source checkout": return str(helper) + "\n"
                     if stage == "verify installed wheel using its offline verifier" and mode == "go_failure":
                         raise RuntimeError("Go rejected proof fixture")
+                    if stage == "installed verifier accepts direct-volume paths":
+                        self.assertEqual(args[1:2], ["-I"])
+                        self.assertEqual(args[2:], [str(ROOT / "scripts/probe_windows_direct_volume.py"),
+                                                  "--source-sha", "a" * 40])
+                        if mode == "direct_volume_failure": raise RuntimeError("direct volume rejected")
                     if stage == "run installed native bootstrap metadata":
                         return json.dumps({"helper": "icode-windows-bootstrap", "bootstrap_version": 1,
                             "runner_protocol_version": 1, "architecture": "x64", "setup_complete": False,
@@ -342,7 +441,7 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
                      patch.object(wheel_ci, "check_windows_wheel", return_value=[]), \
                      patch.object(wheel_ci, "_run_unittest_with_bounded_output", side_effect=raw_query), redirect_stdout(io.StringIO()):
                     result = wheel_ci.main()
-                if mode in ("gh_failure", "c_drift", "binding_failure", "go_failure"):
+                if mode in ("gh_failure", "c_drift", "binding_failure", "go_failure", "direct_volume_failure"):
                     self.assertEqual(result, 1)
                     self.assertFalse(output.exists(), "failure exported a signed wheel")
                 else: self.assertEqual(result, 0)
@@ -350,9 +449,15 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
                     self.assertNotIn("binding query", stages)
                 if mode in ("gh_failure", "c_drift", "binding_failure", "proof_only", "unsigned"):
                     self.assertNotIn("verify installed wheel using its offline verifier", stages)
+                if mode in ("gh_failure", "c_drift", "binding_failure", "go_failure", "proof_only", "unsigned"):
+                    self.assertNotIn("installed verifier accepts direct-volume paths", stages)
                 if mode == "valid":
                     ordered = ["cryptographically verify installed CI artifact provenance", "binding query",
-                               "verify installed wheel using its offline verifier", "run installed native bootstrap metadata"]
+                               "verify installed wheel using its offline verifier",
+                               "installed verifier rejects actual cryptographic negative controls",
+                               "installed verifier accepts direct-volume paths", "run installed native bootstrap metadata"]
+                    for stage in ordered:
+                        self.assertIn(stage, stages)
                     self.assertEqual([stages.index(x) for x in ordered], sorted(stages.index(x) for x in ordered))
                     self.assertEqual(len(list(output.glob("*.whl"))), 1)
 

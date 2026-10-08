@@ -28,6 +28,18 @@ def _file_identity(info: os.stat_result) -> tuple[int, ...]:
             info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
+def _path_fd_identity(info: os.stat_result) -> tuple[int, ...]:
+    identity = _file_identity(info)
+    if sys.platform != "win32" or not hasattr(info, "st_birthtime_ns"):
+        return identity
+    # CPython 3.12 Windows lstat retains creation time as ctime, while
+    # fstat exposes ChangeTime. Only this cross-interface comparison excludes
+    # ctime; each interface still checks its own complete before/after tuple.
+    # Compare creation time explicitly on 3.12+, retaining the legacy complete
+    # tuple on 3.11 where both interfaces' ctime means creation time.
+    return identity[:-1] + (info.st_birthtime_ns,)
+
+
 def read_verifier_image(verifier: Path, expected_arch: str) -> bytes:
     """Hash consumers use these same bounded bytes, not an adjacent manifest."""
     if expected_arch not in _MACHINES:
@@ -38,11 +50,12 @@ def read_verifier_image(verifier: Path, expected_arch: str) -> bytes:
             or not 0 < before.st_size <= MAX_VERIFIER_BYTES):
         raise ValueError("verifier must be a bounded nonempty single-link regular file")
     with verifier.open("rb") as stream:
-        if _file_identity(os.fstat(stream.fileno())) != _file_identity(before):
+        opened_fd = os.fstat(stream.fileno())
+        if _path_fd_identity(opened_fd) != _path_fd_identity(before):
             raise ValueError("verifier changed before read")
         image = stream.read(MAX_VERIFIER_BYTES + 1)
         after_fd = os.fstat(stream.fileno())
-    if (_file_identity(after_fd) != _file_identity(before)
+    if (_file_identity(after_fd) != _file_identity(opened_fd)
             or _file_identity(verifier.lstat()) != _file_identity(before)
             or len(image) != before.st_size):
         raise ValueError("verifier changed during read")

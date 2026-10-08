@@ -14,6 +14,11 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_direct_volume_canary_portable_contract_is_selected_once(self):
+        name = "tests.test_windows_direct_volume.TestWindowsDirectVolume"
+        self.assertEqual(DEFAULT_MODULES.count(name), 1)
+        self.assertNotIn("tests.test_windows_direct_volume", DEFAULT_MODULES)
+
     def test_windows_build_binding_runs_portable_contract_once_without_host_compiler(self):
         from tests.test_windows_bootstrap_binding import TestWindowsBootstrapBinding
         name = "tests.test_windows_bootstrap_binding.TestWindowsBootstrapBinding"

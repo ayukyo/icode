@@ -2,6 +2,14 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **ctime修复及固定卷canary本机门通过（2026-10-09）：**最终冻结独立SPEC51PASS、不同QUALITY87PASS、20轮1740PASS及DEFAULT418PASS均0skip；完整preflight2261 total/2202PASS/59既有skip/0FAIL/0ERROR，三道全部通过（测试479.282秒、守护480.571秒）。编译1，治理/站点/竞品/diff通过。仅软件门完成，按授权准备main提交推送；新SHA Windows四signed安装、实际修复和GLOBALROOT正负例另验，未关闭R2/R3或首次UAC/held-HANDLE门。[分层矩阵](./nbl/plans/2026-10-09-windows-direct-volume-canary.md)。
+
+- **ctime修复及固定卷canary进入最终守护（2026-10-09）：**最终7文件独立SPEC51PASS、不同QUALITY87PASS均0skip/0问题；根20轮1740PASS/0skip（137.184秒），编译1，聚合 `ca04e90ce1e208cb0df4e0fe2d91ae7c04706672b1e9350ea62ff2ec02b2be14`。3.11旧crossctime保持，3.12有birthtime才替换跨接口比较；两侧前后检查不放松。DEFAULT进行中，全仓preflight尚未完成，不提交前置完成声明；新SHA签名/固定卷路径原生四格仍待验。[详细证据](./nbl/plans/2026-10-09-windows-direct-volume-canary.md)。
+
+- **9ed原生窗口结束，修复Py3.12绑定差异（2026-10-09）：**三个精确SHA run已终态并STOP：主CI37815279765为37success/4failure/3整jobskip；来源37815279662为3success/2failure；Pages37815279770为2success。四signed中x64/ARM64 Py3.11各9testsOK及18PASS，实际新增installed binding通过，证明54031492/54032350；两Py3.12在生成头阶段失败，后续签名/安装验绑定/导出均未执行。根回读x64日志确认实际3.12.10，独立源码研究发现路径ctime为creation、FD为ChangeTime；最小修复仅Windows跨接口排除ctime，保留两接口各自前后完整检查及POSIX跨ctime。新增回归先3assertion FAIL/0ERROR，再GREEN；固定卷canary六文件保留并进入组合软件审查。新SHA四格仍须实际复验；SKILL/Reviewer、macOS quota、模型1→6及R2/R3总门不因软件结果关闭。
+
+- **WP0a已推送，继续WP0b路径前置（2026-10-09）：**main `9ed070010f934fb6fee69d8b8b000e63cfdc2b47`由push、远端refs与官方connector核实。该SHA的[主CI37815279765](https://github.com/ayukyo/icode/actions/runs/37815279765)、[来源37815279662](https://github.com/ayukyo/icode/actions/runs/37815279662)独立观察中，四signed尚未终态；[Pages37815279770](https://github.com/ayukyo/icode/actions/runs/37815279770)已success2/2。Windows仍有SKILL Git/snapshot与Reviewer失败，软件通过不抵消它们。独立研究揭示held文件HANDLE不锁盘符DOS alias，故下一片先做[CI-only直达卷兼容性canary](./nbl/specs/2026-10-09-windows-direct-volume-canary-design.md)，设计双审各0/0/0批准，串行TDD开始；不直接包裹旧盘符执行声称同对象，不新增产品API/vendor/UAC/系统权限。
+
 - **WP0a本机软件门完成（2026-10-09）：**最终冻结版完整preflight三道通过，2237 total/2178PASS/59既有skip/0FAIL/0ERROR，测试477.476秒、守护478.812秒。独立双审各48PASS、20轮900PASS、DEFAULT395PASS均无skip；编译并发1。仅关闭本机构建/查询/安装消费者逻辑门，Windows x64/ARM64×Python3.11/3.12新SHA签名安装矩阵仍待验；不授权UAC、模型命令或R2/R3 readiness。下一片先研究与设计来源对象持句柄/no-reparse预检，不以镜像锁替代ACL或同对象启动；macOS单任务任意进程数/内存硬配额本轮仍无合格无特权机制，payload前拒绝保持。
 
 - **WP0a双审与重复/DEFAULT通过，完整守护进行中（2026-10-09）：**独立SPEC与不同QUALITY各48PASS/0skip（17.319/17.347秒），冻结13文件不变；根代理20轮900PASS/0skip（136.977秒）、DEFAULT395PASS/0skip（162.487秒），实际host重建/超时负控均运行，编译1。compileall-j1/治理/官网/竞品/diff通过；完整preflight尚未返回，未提交或授新Windows原生信用，详见[分层矩阵](./nbl/plans/2026-10-08-r2-windows-production-runner.md)。

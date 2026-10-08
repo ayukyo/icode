@@ -1,5 +1,15 @@
 # R2 Windows 正式安装与命令运行器
 
+## 2026-10-09最新原生窗口：9ed双Py3.11通过，双Py3.12失败
+
+精确main `9ed070010f934fb6fee69d8b8b000e63cfdc2b47`：[签名run37815279662](https://github.com/ayukyo/icode/actions/runs/37815279662)终态3success/2failure。x64 Py3.11 job113447129562与ARM64 Py3.11 job113447129712各9testsOK/18PASS，实际gh→C绑定→Go正负例→v1/78→导出通过，证明54031492/54032350。x64 Py3.12 job113447129610和ARM64 Py3.12 job113447129541均在Build final architecture-specific bootstrap bytes失败：固定invalid_verifier_input_or_header_output/MSB8066；后续attest/query/hash/Go/export全部skipped。根独立回读x64日志实际Python3.12.10，不以软件门或两格成功补齐四格。
+
+静态充分解释为CPython3.12 Windows路径ctime=creation、FDctime=ChangeTime；原日志未披露全部字段，不宣称唯一原生根因已验证。修复只在Windows跨接口比较排除ctime，保留dev/ino/type/nlink/size/mtime及可用birthtime；同接口前后完整ctime及POSIX跨ctime不变。新增回归实际3FAIL/0ERROR后GREEN；新SHA原生复验待跑。同期固定卷兼容性canary是CI-only前置，未授held-HANDLE、UAC或production启动信用。此窗口verdict为 `partially_verified`；下面旧“原生待验”与软件记录保留原观察日期。
+
+最终收窄为仅win32且有st_birthtime_ns才跨接口使用birthtime；Python3.11无该字段时仍用原完整crossctime。新增legacy回归实际1FAIL/0ERROR→GREEN；51项定点通过，最终独立审查/阶段守护尚未完成。两Python版本实际签名安装复验仍不可缺。
+
+后续最终冻结7文件软件门完成：独立SPEC51PASS、不同QUALITY87PASS、20轮1740PASS、DEFAULT418PASS均0skip；完整preflight2261 total/2202PASS/59既有skip/0FAIL/0ERROR、三道通过（测试479.282秒、守护480.571秒）。编译1，准备main提交。具体[固定卷canary分层矩阵](./2026-10-09-windows-direct-volume-canary.md)仍将new-SHA deploy/consumption记inconclusive，旧9ed失败不抹除。
+
 ## 2026-10-09最新实施窗口：WP0a本机软件门通过，原生安装待验
 
 后续本机守护窗口：独立SPEC与不同QUALITY各48PASS/0skip（17.319/17.347秒），0/0/0批准、前后13文件聚合不变。根代理20轮每轮45方法（新19/旧bootstrap12/CI14）合计900PASS/0skip（136.977秒），包含真实host重建和5秒超时负控；DEFAULT395PASS/0skip（162.487秒）完成。完整preflight实际2237 total/2178PASS/59既有skip/0FAIL/0ERROR（测试477.476秒、守护478.812秒），三道全部通过。compileall-j1、治理/官网/竞品/diff通过；此记录写入时尚未提交，文档更新后再核非测试守护。该窗口的软件证据仍不代替新SHA四格Windows安装矩阵。

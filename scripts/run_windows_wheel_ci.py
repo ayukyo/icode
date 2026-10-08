@@ -346,6 +346,10 @@ def main() -> int:
                          [str(python), "-I", str(_REPOSITORY / "scripts" /
                           "probe_installed_windows_provenance.py"),
                           "--source-sha", env["GITHUB_SHA"]], cwd=root, env=clean_env)
+                    _run("installed verifier accepts direct-volume paths",
+                         [str(python), "-I", str(_REPOSITORY / "scripts" /
+                          "probe_windows_direct_volume.py"),
+                          "--source-sha", env["GITHUB_SHA"]], cwd=root, env=clean_env)
 
             if args.native_helper is not None:
                 # CI executes only the artifact explicitly built from this job's
