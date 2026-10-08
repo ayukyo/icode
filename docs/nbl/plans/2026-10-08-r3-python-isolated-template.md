@@ -1,6 +1,14 @@
 # R3 Python 安全默认工程模板（合同接线后的独立片）
 
+2026-10-09最新收尾：Windows Job快照夹具的软件修复已完成冻结守护。完整preflight三道通过，2217 total/2158PASS/59既有skip/0FAIL/0ERROR（测试474.466秒、守护墙钟475.768秒）；此前独立SPEC与不同QUALITY各29PASS、20轮580PASS、关联66PASS、安装21外层含安装版15新子测及37合同子测、DEFAULT382PASS均保留上述实际口径。构建并发1，未读取模型KEY，未修改生产执行器、vendor或原生评分。下方“进行中”是较早观察窗口，不覆盖本条最新状态；本次提交后仍须实际新SHA的Windows双架构CI验证，软件守护不代替R2/R3总体验收。
+
 > REQUIRED SUB-SKILL: nbl.test-driven-development、nbl.subagent-driven-development。本文件按窗口保存设计与实施记录；最新状态见下段，原设计中的“未实现/unobserved”不倒填运行信用。先完成合同接线冻结、独立SPEC→不同QUALITY、完整守护及main提交推送；不与合同唯一源码写者同时修改执行器。
+
+2026-10-09后续Windows夹具回归窗口：已推送3d2f0d2的新CI37807314031终态37success/4failure/3整jobskip；两个Windows workspace均375 total/2failure/1error/20skip。除两项已知vendor匿名pipe基线失败，新往返方法无条件assertFalse(evidence.passed)失败；不是新template grammar或UTF8错误。固定v1 plain Windows路径是完整job_tree/cache-owner确认、not_required资源/违规通道及os_enforced=false，既有`test_engineering_evidence`已允许其工程结果快照通过；POSIX process_group仍未知不通过。正式CP工程收尾另要求完整linux_task_scope/资源/违规回执，plain Job不能通过此门。独立只读研究与根代理核对相同结论，不修改producer/schema/gate或隔离评分。
+
+仅测试最小修复已冻结`test_engineering_verification.py` SHA`e7bb0eea12f2766f771f5204f2a4f9cc7972f490dcf88d6b5d0b3f8f55d398e8`：往返按实际scope精确断言，验证os_enforced=false/未认证coverage/not_required通道/空资源摘要；新增一个方法10个explicit transport vectors涵盖Job/组/unknown及cleanup/cache缺确认/False、scope拒绝和通道不完整。真实子进程后仅投影Job事实的本机单位对照先复现旧assertFalse，1assertionFAIL/0ERROR/0skip（.092秒），修后同例PASS（.651秒）；这是Linux单位对照，不是Windows原生实验。新15方法+CI13+旧evidence38实际66PASS/0skip（17.953秒）；独立SPEC→不同QUALITY/20轮/安装/DEFAULT/全仓守护继续。WP0a静态设计虽已批准，源码先暂停此兼容收尾；新SHA实际Windows结果仍须验，不能因修测试就称整体通过。
+
+后续冻结守护：独立SPEC与不同QUALITY各29PASS/0skip（2.718/2.561秒）、0/0/0批准，包含15新方法/13CI/1旧golden，前后测试及三生产SHA一致。根代理20轮580PASS/0skip（62.5秒；每轮28定点+1Job事实投影，不给Windows原生信用）、安装21外层PASS/0skip（56.224秒，安装版15新子测及37合同子测）、DEFAULT382PASS/0skip（160.949秒）均完成；compileall-j1/治理/官网/竞品/diff通过。完整preflight仍进行，未预报或提交修复。3d2f0d2来源验证37807314114实际5/5success、四signed各9testsOK/0skip+17PASS；Pages37807314173实际2/2success，三个旧窗口全STOP，不用签名/部署补回Windows失败信用。
 
 2026-10-09 Asia/Shanghai阶段中间记录（UTC 10-08）：四文件实现已冻结，生产`0d98080f9ad5aec567b23073048eca8bd584924f26ee927f17a49e582c901027`、测试`590fdfbee5461c5ea8230eb871c96b39028ff6d09b2f4ccf4ce4885b40b8345e`、CI`32e8e76173cb820037cec976e6538691ec69e07e4ab58d794f2beda41c3bd990`、CI测试`423245467dec8d1d477146dee1c2620487670cc50cb0fc5065457a310d6a9a89`。第二组真实RED为Plan根3FAIL及runtime篡改4FAIL，CI选择另有0!=1的RED；最小实现后新14方法+CI13方法最终27PASS/0skip，旧工程/evidence/golden/broker/taskNone/合同关联163PASS/0skip。根代理冻结20轮540PASS/0skip（47.612秒）；独立SPEC→不同QUALITY、安装版/DEFAULT/完整守护尚在进行，未提交新源码，不提高原生或R2/R3总门信用。
 

@@ -2,6 +2,12 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **Windows Job快照夹具本机软件门通过（2026-10-09）：**独立SPEC→不同QUALITY各29PASS、20轮580PASS/0skip、关联66PASS、干净安装21外层及安装版15新/37合同子测、DEFAULT382PASS均完成。完整preflight三道通过，2217 total/2158PASS/59既有skip/0FAIL/0ERROR（474.466秒）；构建并发1。仅修正测试的既有v1平台口径，不改producer/schema/正式合同或隔离门；新SHA实际Windows结果另验。WP0a设计静态双审批准，提交此兼容片后继续构建绑定实施；进一步SKILL授权与R2/R3整体硬门仍待关闭。
+
+- **新Windows Job快照夹具口径修正中（2026-10-09）：**3d2f0d2 CI37807314031终态37success/4failure/3整jobskip；双Windows375 total/2failure/1error/20skip，其中新增往返断言误将POSIX组未知口径套给已完整收集的Windows Job。固定v1允许Job工程结果snapshot通过但os_enforced仍false/coverage不认证；正式合同仍另需完整资源通道，不改producer/schema/原生门。根代理仅修测试并加入10个transport正负向量，真实RAM先1assertionFAIL/0ERROR再GREEN，66关联PASS/0skip；冻结独立审查与守护中，见[最新窗口](./nbl/plans/2026-10-08-r3-python-isolated-template.md)。WP0a具体设计已SPEC→不同QUALITY批准，源码等待此兼容片提交后继续；SKILL两处Git基线失败另待最小源码授权。
+
+- **十二项模板已推送，继续WP0a设计冻结（2026-10-09 Asia/Shanghai）：**main`3d2f0d23d3c5c104102489c2510865dda8ba0ec2`由Git push/远端refs及官方GitHub connector commits/main独立确认；仅新SHA的CI37807314031/来源37807314114/Pages37807314173只读回收，不预报结果。独立研究与主代理核对现有C/CMake/installed链及三个configure消费者，补齐[WP0a最小接口与消费者合同](./nbl/plans/2026-10-08-r2-windows-production-runner.md)：生产每次hash强制绑定、probe-only关闭bootstrap、unsigned真实Go仅原metadata信用、signed先gh再binding再Go；源码尚未实施，补充设计须SPEC→不同QUALITY。SKILL进一步授权和R2/R3总门不变。
+
 - **严格Python十二项模板本机软件门通过（2026-10-09 Asia/Shanghai）：**新14方法及CI13独立SPEC→不同QUALITY各27PASS/0skip批准；冻结20轮540PASS，关联163PASS，DEFAULT381PASS，干净安装21外层含新增安装版14子测及原37合同子测均零skip。完整preflight2216 total/2157PASS/59既有skip/0FAIL、3/3（474.199秒），compileall-j1/治理/官网/竞品/diff通过；仅新增精确-I/-X utf8启动、规范根/shared准入和逐次重核，保留旧-B/golden，无vendor/native/权限变化。按授权main提交推送，精确新SHA原生结果另验；[实施与信用上限](./nbl/plans/2026-10-08-r3-python-isolated-template.md)。Windows[Git管道最小候选](./nbl/plans/2026-10-09-skill-windows-bounded-git.md)及历史正文进一步SKILL授权待答；新工单受管根/默认宿主工厂、模型1→6/90%与R2/R3总门仍独立待关闭。
 
 - **0a精确远端窗口已收尾（2026-10-09 Asia/Shanghai，UTC 10-08）：**CI37803936713终态failure，44jobs为36success/4failure/1cancelled/3整jobskip；取消的macOS lifecycle113403140827无runner、无steps，未执行，不能记通过或测试skip。来源验证37803936763实际5/5success，四架构/解释器签名job各9testsOK/0skip及17PASS；Pages37803937002实际2/2success，部署SHA为0a。三个run全部STOP，无rerun或系统权限修改；签名/部署成功不抵消Windows Git/Reviewer失败或R2/R3总门。

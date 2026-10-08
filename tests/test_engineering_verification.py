@@ -1260,9 +1260,18 @@ class TestPythonIsolatedTemplate(_EngineeringHelpers, unittest.TestCase):
                 initial_worktree_fingerprint=run.source_before, tested_worktree_fingerprint=run.source_after)
             evidence = build_engineering_evidence(plan, run, binding=binding)
             row = evidence.to_receipt()
-            # Process-group observations are recorded, not silently promoted
-            # into the formal native resource/cleanup evidence required to pass.
-            self.assertFalse(evidence.passed)
+            # POSIX only confirms a process group; the existing Windows plain
+            # runner confirms Job collection. A closed engineering snapshot is
+            # not an OS isolation/quota grant (the v1 coverage says so too).
+            scope = run.checks[0].cleanup_scope
+            self.assertIn(scope, ("process_group", "job_tree"))
+            self.assertEqual(evidence.passed, scope == "job_tree")
+            self.assertFalse(row["run"]["os_enforced"])
+            self.assertEqual(row["coverage"]["execution_source"], "not_authenticated")
+            self.assertEqual(row["coverage"]["test_quality"], "not_authenticated")
+            self.assertEqual(run.checks[0].resource_channel_status, "not_required")
+            self.assertEqual(run.checks[0].violation_observer_status, "not_required")
+            self.assertEqual(run.checks[0].resource_receipt_sha256, "")
             expected = hashlib.sha256(json.dumps({"argv": list(check.argv), "cwd": "."},
                 ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             self.assertEqual(row["public_plan"]["checks"][0]["parameters_sha256"], expected)
@@ -1288,6 +1297,51 @@ class TestPythonIsolatedTemplate(_EngineeringHelpers, unittest.TestCase):
             exported = json.loads((pack / "verifications.json").read_bytes())["receipts"][0]
             self.assertEqual(exported["fingerprint"], row["fingerprint"])
             self.assertEqual(exported["public_plan"]["checks"][0]["parameters_sha256"], expected)
+
+    def test_plain_cleanup_scope_vectors_preserve_snapshot_not_isolation_credit(self):
+        from icode.engineering_evidence import build_engineering_evidence
+        from icode.pack_verify import validate_engineering_receipt
+        from icode.self_verify import VerificationEvidence
+        api = self.api()
+        with temp_workspace() as root:
+            self.fixture(root)
+            plan = self.plan(api, root, (self.isolated_check(api, root),))
+            actual = api.execute_verification_plan(plan, ctx=ToolContext(root=root, sandbox=NoIsolation()),
+                                                   step="code", attempt="scope-vectors")
+            self.assertTrue(actual.passed)
+            self.assertFalse(actual.os_enforced)
+            binding = VerificationEvidence(step=actual.step, attempt=actual.attempt, kind="test",
+                initial_worktree_fingerprint=actual.source_before, tested_worktree_fingerprint=actual.source_after)
+            # Only cleanup facts are projected; these are explicit transport
+            # vectors, not a Windows Job experiment or a new native grant.
+            complete_job = dict(cleanup_scope="job_tree", cleanup_ok=True,
+                cache_owner_cleanup_confirmed=True, scope_cleanup_ok=None,
+                resource_channel_status="not_required", violation_observer_status="not_required",
+                resource_receipt_sha256="")
+            for changes, expected in (
+                ({"cleanup_scope": "process_group", "cache_owner_cleanup_confirmed": None}, False),
+                ({}, True),
+                ({"cleanup_scope": "unknown"}, False),
+                ({"cleanup_ok": None}, False),
+                ({"cleanup_ok": False}, False),
+                ({"cache_owner_cleanup_confirmed": None}, False),
+                ({"cache_owner_cleanup_confirmed": False}, False),
+                ({"scope_cleanup_ok": False}, False),
+                ({"resource_channel_status": "incomplete"}, False),
+                ({"violation_observer_status": "incomplete"}, False),
+            ):
+                with self.subTest(changes=changes):
+                    check = dataclasses.replace(actual.checks[0], **dict(complete_job, **changes))
+                    observed = dataclasses.replace(actual, checks=(check,))
+                    evidence = build_engineering_evidence(plan, observed, binding=binding)
+                    row = evidence.to_receipt()
+                    self.assertEqual(evidence.passed, expected)
+                    self.assertEqual(row["passed"], expected)
+                    self.assertEqual(evidence.category, "test" if expected else "side_effect_unknown")
+                    self.assertFalse(row["run"]["os_enforced"])
+                    self.assertEqual(row["coverage"]["execution_source"], "not_authenticated")
+                    self.assertEqual(row["coverage"]["test_quality"], "not_authenticated")
+                    validate_engineering_receipt(row)
 
     def test_isolation_flags_do_not_authenticate_forgeable_framework_output(self):
         api = self.api()

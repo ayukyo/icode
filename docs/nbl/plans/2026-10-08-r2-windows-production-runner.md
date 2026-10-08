@@ -24,6 +24,17 @@ TDD及原生门：精确proof/digest/架构、文件与祖先junction、镜像/�
 
 ### WP0a 构建绑定与 WP0b 受保护晋升分片（2026-10-08，设计未实现）
 
+2026-10-09 Asia/Shanghai开工前补充（基线已推送main`3d2f0d23d3c5c104102489c2510865dda8ba0ec2`，未实施WP0a）：独立只读研究固定0a后，根代理再次核对未变C/CMake与三个CI消费者。以下实施合同需新独立SPEC→不同QUALITY；旧静态设计批准不代替新增具体接口或TDD。
+
+- 最小生产范围：`native/windows/icode_windows_bootstrap.c`、CMake、两workflow、`scripts/run_windows_wheel_ci.py`、构建专用新`windows_bootstrap_binding.py`及`MANIFEST.in`，配对bootstrap/构建/安装/选择合同测试。产品provenance API、runner协议、vendor、权限和自动模式不扩；新测试如进入DEFAULT仅选明确软件class，不包含Go SDK整体或平台skip冒充覆盖。
+- 唯一新查询为`--verifier-binding-json`，argc须2。封闭8字段：helper=`icode-windows-bootstrap`、binding_schema_version严格int1、architecture本架构、verifier_sha256严格小写64hex，setup_complete/command_execution/isolation_ready/launch_authorized均严格false。原`--version-json`输出字节不变；其它入口/额外参数均78。metadata不是出版者认证或启动授权。
+- 生产CMake默认构建bootstrap且必须显式传入真实匹配架构Go文件；生成器对同一受限原bytes（最多64MiB、普通单链接、非空、有效PE及machine）hash并生成build目录头，不读邻接sha作为可信输入。每次bootstrap build强制生成器成功并消费当前头，不靠configure/mtime；同尺寸/同mtime改Go必须重算。缺/错输入、生成失败即build失败并止签，不能复用旧头/旧EXE报告成功；重配必须重新绑定。可信builder状态不是并发敌对宿主隔离，运行时held HANDLE/祖先/DACL留WP0b。
+- 两个probe-only消费者明确bootstrap OFF，分别只构建WFP或AppContainer+WFP原目标，不新增Go要求、不误称生产构建。unsigned bootstrap job同job编译真实架构Go作为CMake输入，仍仅原v1/refusal信用，不新增unsigned binding查询。synthetic packaging仍只传输层，不代替生产Go。
+- signed安装顺序必须为gh独立核验安装C bytes/proof/固定身份→该已验证C新query→安装Go原bytes架构/hash匹配→运行Go离线验签及负控→原v1/refusal→导出wheel。gh失败零query/Go执行；绑定失败零Go执行/零wheel导出。新查询使用受限原始bytes、严格UTF-8/JSON、stdout≤512、stderr为空及固定timeout，不能沿普通_run的replace decode/无界捕获后宣称严格有界；优先复用已有受限子进程机制，不另造未验收生命周期。
+- Windows C文本stdout正常可能以CRLF终止；新query明确只允许单个LF或CRLF终止符，保留实际原bytes，不用任意strip/replace吞额外行、空白或非法bytes。原v1现有text/universal-newline消费者不变。此处只约定输出兼容，不把CI核验后按路径查询当成WP0b的held-HANDLE同对象启动保证；可信私有builder窗口假设保持。
+- host C逻辑测试须显式生成fixture头，仅逻辑信用；生产生成器进入sdist，生成头不入源码包，缺件/同步改Go+sha+RECORD/签后C漂移/重复与extra字段/bool数字别名/非法bytes/trailing输出等负控配对。保留现Go早于旧v1的顺序断言，新增binding早于Go执行的断言。
+- 固定Codex9b738/SRT3f0bad的Apache2机制沿2026-10-08历史观察复用，本次未重新查HEAD；采纳原对象/认证纪律，不适配len/mtime或锁失败继续。新查询和hash不认证首UAC C、不解决protected promotion/DLL/DPAPI/Windows10支持或quota；必须实际x64/ARM×Python3.11/3.12签名安装矩阵后，仅记C→Go关系信用。
+
 在R3合同接线独立开发期间，只读研究按aaaa448及主代理再次读取C/CMake/workflow/安装验收调用链，确认Go先构建、最终C后构建并获attestation的顺序已存在，但C没有内嵌Go摘要。下一Windows子片先做WP0a，不把一次大改的设计当生产执行：
 
 1. 本次匹配架构的真实Go文件成为生产CMake必需输入，复用有界PE/架构检查、原字节SHA256；生成仅在build目录的绑定常量。缺输入、错架构/摘要或旧生成物复用拒绝，不接受邻接sha或默认零摘要。构建算法和metadata接口须独立TDD后冻结，不预报当前存在。
