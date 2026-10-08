@@ -169,7 +169,9 @@ jobs:
         shell: pwsh
         run: |
           $buildDirectory = Join-Path $env:RUNNER_TEMP 'icode-provenance-build'
-          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}'
+          $verifier = Join-Path $env:RUNNER_TEMP 'icode-offline-verifier.exe'
+          $python = (Get-Command python).Source
+          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}' -DICODE_WINDOWS_PROVENANCE_VERIFIER="$verifier" -DPython3_EXECUTABLE="$python"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build $buildDirectory --config Release --target icode_windows_bootstrap --parallel 1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

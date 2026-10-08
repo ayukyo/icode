@@ -2,6 +2,18 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **WP0a本机软件门完成（2026-10-09）：**最终冻结版完整preflight三道通过，2237 total/2178PASS/59既有skip/0FAIL/0ERROR，测试477.476秒、守护478.812秒。独立双审各48PASS、20轮900PASS、DEFAULT395PASS均无skip；编译并发1。仅关闭本机构建/查询/安装消费者逻辑门，Windows x64/ARM64×Python3.11/3.12新SHA签名安装矩阵仍待验；不授权UAC、模型命令或R2/R3 readiness。下一片先研究与设计来源对象持句柄/no-reparse预检，不以镜像锁替代ACL或同对象启动；macOS单任务任意进程数/内存硬配额本轮仍无合格无特权机制，payload前拒绝保持。
+
+- **WP0a双审与重复/DEFAULT通过，完整守护进行中（2026-10-09）：**独立SPEC与不同QUALITY各48PASS/0skip（17.319/17.347秒），冻结13文件不变；根代理20轮900PASS/0skip（136.977秒）、DEFAULT395PASS/0skip（162.487秒），实际host重建/超时负控均运行，编译1。compileall-j1/治理/官网/竞品/diff通过；完整preflight尚未返回，未提交或授新Windows原生信用，详见[分层矩阵](./nbl/plans/2026-10-08-r2-windows-production-runner.md)。
+
+- **WP0a已冻结并进入独立验收（2026-10-09）：**13个实现/配对文件与作者SHA实核一致；新增19方法、作者最终关联72PASS/0skip，独立SPEC→不同QUALITY及根代理守护仍在进行，未提交。当前只具备私有builder窗口内C→Go原bytes接线，验证层及缺口见[最新矩阵](./nbl/plans/2026-10-08-r2-windows-production-runner.md)。source-adjacent旧头与Windowsstat执行位差异已真实RED/软件修复，不倒填Windows原生成功。
+
+- **ac43e5f线上窗口全部收尾（2026-10-09）：**根代理官方API再次核实[CI37810453814](https://github.com/ayukyo/icode/actions/runs/37810453814)为failure，[来源37810453650](https://github.com/ayukyo/icode/actions/runs/37810453650)success5/5及[Pages37810453790](https://github.com/ayukyo/icode/actions/runs/37810453790)success2/2均精确绑定ac。主CI44jobs=36success/4failure/1cancelled/3整jobskip；macOS lifecycle113425647408无runner/steps、未执行。双Windows各376 total/20skip，原Job快照断言已不在失败清单，仍有两项SKILL合同失败：x64为10093、dispatch0!=1/10038；ARM为10093、observed[0].render的IndexError，不能倒填相同stack。双Reviewer仍无匹配WFP拒绝事件。双Python各2217OK/71skip，Linux/macOS各382OK+75leaseOK，七bundled各18OK；四signed各9OK/0skip+17PASS。这些只关闭相应旧SHA观察，不代新WP0a或R2/R3总验；三个run全STOP。
+
+- **兼容片已推送并继续WP0a（2026-10-09）：**main`ac43e5f3eadf42aff76d2487ec35adb54369ccc8`由push/远端refs/官方connector分别核实；精确新SHA的CI37810453814、来源37810453650及Pages37810453790独立只读观察，未预报终态。WP0a按已静态双审的构建绑定设计开始TDD，首次旧C query返回78的真实RED已复现；实现仍进行，不授安装绑定或原生执行信用。独立只读开源研究并行，编译保持1。
+
+- **默认宿主接线的复用穷尽（2026-10-09，独立只读）：**固定父ac43e5f/子1693651中已有metadata-update适配，但active_checkout消费门仍要求实际Git顶层；reopen又只接受已closed工单，create-next没有独立执行根。因此POSIX代码/Git元数据分离、Git子工程与nonGit snapshot不能仅用这些API完成session→CP绑定，不能修改project_path、扩大policy根或把可写workspace.json当授权来规避。默认Python provider可独立用宿主context/policy/current词法解释器及已实现十二项模板，CLI尚未接入；仅补provider也不关闭跨层根门。需要独立设计受控session映射、唯一活动根及inspection/artifact/step-port一致消费；新增SKILL合同不在此前三个校验器的最小源码授权内，未修改。该条是固定源码的静态结论，不是工作台动态验收。
+
 - **Windows Job快照夹具本机软件门通过（2026-10-09）：**独立SPEC→不同QUALITY各29PASS、20轮580PASS/0skip、关联66PASS、干净安装21外层及安装版15新/37合同子测、DEFAULT382PASS均完成。完整preflight三道通过，2217 total/2158PASS/59既有skip/0FAIL/0ERROR（474.466秒）；构建并发1。仅修正测试的既有v1平台口径，不改producer/schema/正式合同或隔离门；新SHA实际Windows结果另验。WP0a设计静态双审批准，提交此兼容片后继续构建绑定实施；进一步SKILL授权与R2/R3整体硬门仍待关闭。
 
 - **新Windows Job快照夹具口径修正中（2026-10-09）：**3d2f0d2 CI37807314031终态37success/4failure/3整jobskip；双Windows375 total/2failure/1error/20skip，其中新增往返断言误将POSIX组未知口径套给已完整收集的Windows Job。固定v1允许Job工程结果snapshot通过但os_enforced仍false/coverage不认证；正式合同仍另需完整资源通道，不改producer/schema/原生门。根代理仅修测试并加入10个transport正负向量，真实RAM先1assertionFAIL/0ERROR再GREEN，66关联PASS/0skip；冻结独立审查与守护中，见[最新窗口](./nbl/plans/2026-10-08-r3-python-isolated-template.md)。WP0a具体设计已SPEC→不同QUALITY批准，源码等待此兼容片提交后继续；SKILL两处Git基线失败另待最小源码授权。

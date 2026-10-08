@@ -576,9 +576,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $buildDirectory = Join-Path $env:RUNNER_TEMP 'icode-reviewer-wfp-probe'
-          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}'
+          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}' -DICODE_BUILD_WINDOWS_BOOTSTRAP=OFF
           if ($LASTEXITCODE -ne 0) { throw "WFP observer configure failed: $LASTEXITCODE" }
-          cmake --build $buildDirectory --config Release --parallel 1
+          cmake --build $buildDirectory --config Release --target icode_wfp_event_probe --parallel 1
           if ($LASTEXITCODE -ne 0) { throw "WFP observer build failed: $LASTEXITCODE" }
           $wfpProbe = Join-Path $buildDirectory 'Release/icode-wfp-event-probe.exe'
           & $wfpProbe --self-test
@@ -2124,9 +2124,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $buildDirectory = Join-Path $env:RUNNER_TEMP 'icode-appcontainer-read-probe'
-          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}'
+          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}' -DICODE_BUILD_WINDOWS_BOOTSTRAP=OFF
           if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $LASTEXITCODE" }
-          cmake --build $buildDirectory --config Release --parallel 1
+          cmake --build $buildDirectory --config Release --target icode_appcontainer_read_probe icode_wfp_event_probe --parallel 1
           if ($LASTEXITCODE -ne 0) { throw "Native probe build failed: $LASTEXITCODE" }
           $probe = Join-Path $buildDirectory 'Release/icode-appcontainer-read-probe.exe'
           $wfpProbe = Join-Path $buildDirectory 'Release/icode-wfp-event-probe.exe'
@@ -2286,9 +2286,11 @@ jobs:
           - os: windows-latest
             cmake-architecture: x64
             helper-architecture: x64
+            go-architecture: amd64
           - os: windows-11-arm
             cmake-architecture: ARM64
             helper-architecture: arm64
+            go-architecture: arm64
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2303,11 +2305,33 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
+      - name: Set up build-only Go toolchain for bootstrap binding
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.1"
+          cache: false
+      - name: Build actual matching Go input without executing unsigned binding query
+        shell: pwsh
+        env:
+          GOMAXPROCS: "6"
+          CGO_ENABLED: "0"
+          GOTOOLCHAIN: local
+          GOOS: windows
+          GOARCH: ${{ matrix.go-architecture }}
+        run: |
+          $verifier = Join-Path $env:RUNNER_TEMP 'icode-unsigned-build-verifier.exe'
+          Push-Location native/provenance
+          try {
+            go build -mod=readonly -p 6 -trimpath -o $verifier .
+            if ($LASTEXITCODE -ne 0) { throw "Unsigned build verifier failed: $LASTEXITCODE" }
+          } finally { Pop-Location }
       - name: Build real native bootstrap from source
         shell: pwsh
         run: |
           $buildDirectory = Join-Path $env:RUNNER_TEMP 'icode-windows-bootstrap-build'
-          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}'
+          $verifier = Join-Path $env:RUNNER_TEMP 'icode-unsigned-build-verifier.exe'
+          $python = (Get-Command python).Source
+          cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}' -DICODE_WINDOWS_PROVENANCE_VERIFIER="$verifier" -DPython3_EXECUTABLE="$python"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build $buildDirectory --config Release --target icode_windows_bootstrap --parallel 1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

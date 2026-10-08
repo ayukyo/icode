@@ -19,8 +19,33 @@ elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "")
     set(ICODE_WINDOWS_ARCH x64)
   endif()
 endif()
-if(DEFINED ICODE_WINDOWS_ARCH)
+option(ICODE_BUILD_WINDOWS_BOOTSTRAP "Build the verifier-bound bootstrap" ON)
+set(ICODE_WINDOWS_PROVENANCE_VERIFIER "" CACHE FILEPATH "Actual architecture-matched Go verifier bytes")
+if(ICODE_BUILD_WINDOWS_BOOTSTRAP)
+  if(NOT DEFINED ICODE_WINDOWS_ARCH)
+    message(FATAL_ERROR "Unsupported bootstrap architecture")
+  endif()
+  if(NOT IS_ABSOLUTE "${ICODE_WINDOWS_PROVENANCE_VERIFIER}" OR
+     NOT EXISTS "${ICODE_WINDOWS_PROVENANCE_VERIFIER}")
+    message(FATAL_ERROR "Bootstrap requires an explicit existing Go verifier")
+  endif()
+  find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
+  set(ICODE_BINDING_HEADER "${CMAKE_CURRENT_BINARY_DIR}/icode_windows_verifier_binding.h")
+  # A phony target runs on every build, including unchanged size/mtime inputs.
+  # Nonzero generation blocks compilation and signing even with an old EXE.
+  add_custom_target(icode_windows_bootstrap_binding
+    COMMAND "${Python3_EXECUTABLE}" -B
+      "${CMAKE_CURRENT_SOURCE_DIR}/../../scripts/windows_bootstrap_binding.py"
+      --verifier "${ICODE_WINDOWS_PROVENANCE_VERIFIER}"
+      --architecture "${ICODE_WINDOWS_ARCH}" --output "${ICODE_BINDING_HEADER}"
+    BYPRODUCTS "${ICODE_BINDING_HEADER}"
+    VERBATIM
+  )
   add_executable(icode_windows_bootstrap icode_windows_bootstrap.c)
+  add_dependencies(icode_windows_bootstrap icode_windows_bootstrap_binding)
+  target_include_directories(icode_windows_bootstrap PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  set_property(SOURCE icode_windows_bootstrap.c APPEND PROPERTY
+    OBJECT_DEPENDS "${ICODE_BINDING_HEADER}")
   set_target_properties(icode_windows_bootstrap PROPERTIES
     OUTPUT_NAME "icode-sandbox-windows-${ICODE_WINDOWS_ARCH}"
     C_STANDARD 11

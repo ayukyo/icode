@@ -207,8 +207,8 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         )
         self.assertIn(native_observer_contract, candidate_job)
         for native_requirement in (
-            "cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}'",
-            "cmake --build $buildDirectory --config Release --parallel 1",
+            "cmake -S native/windows -B $buildDirectory -A '${{ matrix.cmake-architecture }}' -DICODE_BUILD_WINDOWS_BOOTSTRAP=OFF",
+            "cmake --build $buildDirectory --config Release --target icode_wfp_event_probe --parallel 1",
             "icode-wfp-event-probe.exe",
             "--self-test",
             "$env:ICODE_DIAGNOSTIC_WFP_PROBE_PATH = $wfpProbeForUser",

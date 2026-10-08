@@ -27,12 +27,16 @@ sys.path.insert(0, str(_REPOSITORY / "src"))
 from icode.native_helper import windows_arch_from_platform, windows_pe_architecture  # noqa: E402
 from scripts.check_windows_wheel import check as check_windows_wheel  # noqa: E402
 from scripts.windows_wheel import read_provenance_bundle  # noqa: E402
+from scripts.windows_bootstrap_binding import read_verifier_image  # noqa: E402
+from icode.runner import _run_unittest_with_bounded_output  # noqa: E402
 
 _HELPER_ENV = "ICODE_WINDOWS_SANDBOX_HELPER"
 _BUNDLE_ENV = "ICODE_WINDOWS_SANDBOX_BUNDLE"
 _VERIFIER_ENV = "ICODE_WINDOWS_PROVENANCE_VERIFIER"
 _SOURCE_ENV = "ICODE_WINDOWS_PROVENANCE_SOURCE_SHA"
 _NOTICES_ENV = "ICODE_WINDOWS_PROVENANCE_NOTICES"
+_BINDING_OUTPUT_LIMIT_BYTES = 512
+_BINDING_TIMEOUT_SECONDS = 5
 
 
 def _provenance_verify_argv(helper: Path, bundle: Path, source_sha: str) -> list[str]:
@@ -95,6 +99,71 @@ def _validate_bootstrap_output(output: str, arch: str) -> None:
     # and trailing output without parsing arbitrary JSON from a candidate image.
     if output != json.dumps(expected, separators=(",", ":")) + "\n":
         raise RuntimeError("native bootstrap metadata contract mismatch")
+
+
+def _validate_verifier_binding_output(output: bytes, arch: str) -> dict:
+    """Parse only bounded raw metadata, without replacement or strip decoding."""
+    if (arch not in ("x64", "arm64") or type(output) is not bytes
+            or not output or len(output) > _BINDING_OUTPUT_LIMIT_BYTES):
+        raise RuntimeError("bootstrap binding output size or type mismatch")
+    if output.endswith(b"\r\n"):
+        body = output[:-2]
+    elif output.endswith(b"\n"):
+        body = output[:-1]
+    else:
+        raise RuntimeError("bootstrap binding requires one terminal newline")
+    if (not body.startswith(b"{") or not body.endswith(b"}")
+            or b"\r" in body or b"\n" in body):
+        raise RuntimeError("bootstrap binding contains extra lines")
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate binding field")
+            result[key] = value
+        return result
+
+    try:
+        data = json.loads(body.decode("utf-8", errors="strict"), object_pairs_hook=unique_object)
+    except (UnicodeError, ValueError) as exc:
+        raise RuntimeError("bootstrap binding is not strict UTF-8 JSON") from exc
+    expected = {
+        "helper": "icode-windows-bootstrap", "binding_schema_version": 1,
+        "architecture": arch, "verifier_sha256": "",
+        "setup_complete": False, "command_execution": False,
+        "isolation_ready": False, "launch_authorized": False,
+    }
+    if type(data) is not dict or set(data) != set(expected):
+        raise RuntimeError("bootstrap binding field set mismatch")
+    for field, value in expected.items():
+        if field != "verifier_sha256" and (type(data[field]) is not type(value) or data[field] != value):
+            raise RuntimeError("bootstrap binding field value mismatch")
+    if (type(data["verifier_sha256"]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", data["verifier_sha256"]) is None):
+        raise RuntimeError("bootstrap binding digest mismatch")
+    return data
+
+
+def _query_verifier_binding(helper: Path, arch: str, *, cwd: Path, env: dict[str, str]) -> dict:
+    # Reuse the raw-byte capture/timeout/cleanup contract; _run uses replacement
+    # decoding and cannot establish this 512-byte stdout+stderr boundary.
+    code, stdout, stderr = _run_unittest_with_bounded_output(
+        [str(helper), "--verifier-binding-json"], workspace=cwd, timeout=_BINDING_TIMEOUT_SECONDS,
+        output_limit_bytes=_BINDING_OUTPUT_LIMIT_BYTES, environment=env,
+    )
+    if type(code) is not int or code != 0 or type(stderr) is not bytes or stderr:
+        raise RuntimeError("installed bootstrap binding query failed")
+    return _validate_verifier_binding_output(stdout, arch)
+
+
+def _verify_installed_verifier_binding(helper: Path, arch: str, *, cwd: Path, env: dict[str, str]) -> None:
+    binding = _query_verifier_binding(helper, arch, cwd=cwd, env=env)
+    verifier = helper.parent / f"icode-provenance-windows-{arch}.exe"
+    image = read_verifier_image(verifier, arch)
+    if hashlib.sha256(image).hexdigest() != binding["verifier_sha256"]:
+        raise RuntimeError("installed verifier bytes do not match verified bootstrap binding")
+    print("verify installed bootstrap verifier byte binding: PASS")
 
 
 def main() -> int:
@@ -262,6 +331,10 @@ def main() -> int:
                                              env.get("GITHUB_SHA", "")),
                      cwd=root, env=clean_env)
                 if args.provenance_verifier is not None:
+                    # This private CI builder window starts only after gh has
+                    # verified the installed C. It is not held-HANDLE launch.
+                    _verify_installed_verifier_binding(installed_helper, arch,
+                                                       cwd=root, env=clean_env)
                     verification_code = (
                         "from icode.windows_provenance import verify_bundled_windows_provenance; "
                         "receipt=verify_bundled_windows_provenance(); "

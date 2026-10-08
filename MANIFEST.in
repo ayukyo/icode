@@ -3,5 +3,6 @@ include native/linux/icode_task_quota.h
 include native/linux/icode_task_resource.h
 recursive-include native/windows *.c CMakeLists.txt
 include scripts/windows_wheel.py
+include scripts/windows_bootstrap_binding.py
 recursive-include native/provenance *.go *.py go.mod go.sum *.json *.base64 *.md LICENSE* NOTICE*
 include src/icode/skill_runtime_manifest.json

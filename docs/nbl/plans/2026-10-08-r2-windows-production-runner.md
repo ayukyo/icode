@@ -1,5 +1,41 @@
 # R2 Windows 正式安装与命令运行器
 
+## 2026-10-09最新实施窗口：WP0a本机软件门通过，原生安装待验
+
+后续本机守护窗口：独立SPEC与不同QUALITY各48PASS/0skip（17.319/17.347秒），0/0/0批准、前后13文件聚合不变。根代理20轮每轮45方法（新19/旧bootstrap12/CI14）合计900PASS/0skip（136.977秒），包含真实host重建和5秒超时负控；DEFAULT395PASS/0skip（162.487秒）完成。完整preflight实际2237 total/2178PASS/59既有skip/0FAIL/0ERROR（测试477.476秒、守护478.812秒），三道全部通过。compileall-j1、治理/官网/竞品/diff通过；此记录写入时尚未提交，文档更新后再核非测试守护。该窗口的软件证据仍不代替新SHA四格Windows安装矩阵。
+
+基线main为`ac43e5f3eadf42aff76d2487ec35adb54369ccc8`；下面“未实现”属于原设计窗口，不覆盖本条状态。唯一写者已停止，根代理实核13个实现/配对文件SHA与报告一致，有序`sha256sum`输出的摘要为`d7ebabe69f37543808d0d707327f7da60890441922492c8f53f4aabab2a50b8b`。新增19方法（13 portable、6 POSIX synthetic host），作者最终关联72PASS/0skip（17.331秒），不是独立验收结果。根代理已完整回读新增生成器、查询/消费者diff及505行新测试；独立SPEC→不同QUALITY和本机阶段守护完成，未授Windows原生安装或执行信用。
+
+### acceptance_contract
+
+匹配Go原bytes每次构建生成头并进入最终C；已安装C先获固定身份gh验签，查询严格闭集8字段/512原bytes/5秒/LF或CRLF，匹配安装Go原bytes后才能执行Go和导出wheel。原v1/78、unsigned与无Go proof-only兼容；生成/验签/绑定/捕获失败均拒绝后续成功。
+
+| Expected behavior | Required layers | Consumers | Scenarios | Environment/device | Baseline | Pass criteria |
+|---|---|---|---|---|---|---|
+| C→安装Go实际bytes绑定，无启动升权 | static/unit/build/host/deploy/consumption | C/CMake/两workflow/安装校验器/sdist | 正负控、同mtime、失败重建、旧接口、四格安装 | 本机POSIX逻辑；CI Windows x64/ARM64×Py3.11/3.12 | ac43e5f＋上述冻结13文件 | 各必需层实际通过；本片不要求UAC或物理设备 |
+
+### verification_matrix
+
+| Layer | Required | Consumer | Scenario | Environment/device | Baseline/artifact | Action | Evidence | Result |
+|---|---|---|---|---|---|---|---|---|
+| static | yes | 七接点/配对消费者 | 字段/顺序/旧接口 | 本机只读 | 冻结13 | 完整回读/独立双审 | 根代理回读；SPEC与不同QUALITY各48PASS批准 | pass |
+| unit | yes | generator/安装校验器 | 原bytes/类型/失败/无Go | 本机软件 | 冻结13 | 定点/守护 | 独立双审各48；20轮900；DEFAULT395；全仓2237含59skip，无失败 | pass（本片定点无skip） |
+| build/host | yes | CMake→最终C query | 同mtime/reconfigure/旧头/失败旧产物 | POSIX synthetic PE/host ELF | 冻结13 | 实际构建/运行 | 作者及独立SPEC实际host定点通过，编译1 | pass（仅宿主逻辑） |
+| deploy | yes | MSVC/签名/安装wheel | 四架构解释器格 | Windows CI | 待提交新SHA | 构建/验C/安装 | 未运行；旧ac四signed不覆盖WIP | inconclusive |
+| consumption | yes | 已安装C→Go | 实际query/bytes匹配/Go正负控 | 同四格 | 同新SHA | gh→query→hash→Go→export | 未运行 | inconclusive |
+
+### negative_evidence
+
+自审实际复现源码旁旧头遮蔽build头，反驳修正前build消费正确的假设；改角括号include后最终C消费当前摘要。固定CPython3.11.15证明Windows`.exe`路径stat补执行位而FD不补，反驳完整mode相等的兼容假设；新增软件对照后identity比较类型，不冒充ACL授权。作者最终回归、独立双审和根代理守护通过；下一判别为新SHA四格原生矩阵。
+
+### gaps
+
+根代理负责提交及精确新SHA的deploy/consumption矩阵；任何必需层未通过都会阻断本片verified。WP0b权限/镜像事务等不在本片达标声明内，不能用本片逻辑成功替代。
+
+### verdict
+
+当前结论`partially_verified`：允许称“构建绑定已接线并通过本机软件门”，不允许称Windows安装绑定已验收、首UAC C已认证或Windows隔离/配额/自动模式/R2/R3已通过。WP0b的held HANDLE/祖先/DACL/DLL/DPAPI、WP1与WP2仍是后续独立硬门；未修改任何工单完成状态。
+
 > 本计划是下一产品片的实现顺序，不是已具备能力。先交付固定SKILL包内入口及其真实安装验收，再按WP0→WP1→WP2闭合；原生失败不改为应用层替代或自动模式通过。
 
 ## 真实缺口、已有实现及授权

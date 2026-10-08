@@ -14,6 +14,15 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_windows_build_binding_runs_portable_contract_once_without_host_compiler(self):
+        from tests.test_windows_bootstrap_binding import TestWindowsBootstrapBinding
+        name = "tests.test_windows_bootstrap_binding.TestWindowsBootstrapBinding"
+        self.assertEqual(DEFAULT_MODULES.count(name), 1)
+        self.assertNotIn("tests.test_windows_bootstrap_binding", DEFAULT_MODULES)
+        self.assertNotIn(name + "HostCompiler", DEFAULT_MODULES)
+        for method in unittest.defaultTestLoader.getTestCaseNames(TestWindowsBootstrapBinding):
+            self.assertFalse(getattr(getattr(TestWindowsBootstrapBinding, method), "__unittest_skip__", False))
+
     def test_workspace_hook_evidence_contract_runs_on_every_platform(self) -> None:
         self.assertIn("tests.test_workspace_hook_contract", DEFAULT_MODULES)
 

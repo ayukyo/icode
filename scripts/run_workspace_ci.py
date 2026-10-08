@@ -123,6 +123,9 @@ DEFAULT_MODULES = (
     "tests.test_cli_resume_sandbox",
     "tests.test_shared_runtime_budget",
     "tests.test_contract_finalization",
+    # Portable build/transport contracts only; host C fixtures are not native
+    # Windows proof and are intentionally not selected as required coverage.
+    "tests.test_windows_bootstrap_binding.TestWindowsBootstrapBinding",
     *CONTRACT_ENGINEERING_TESTS,
     # Host/framework contracts are bounded; optional Go SDK diagnostics are
     # separate and do not stand in for native resource-scope acceptance.

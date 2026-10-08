@@ -176,9 +176,11 @@ class TestWindowsBootstrap(unittest.TestCase):
         for arch, define in (("x64", "_M_X64"), ("arm64", "_M_ARM64")):
             with self.subTest(arch=arch), tempfile.TemporaryDirectory() as raw:
                 binary = Path(raw) / "bootstrap-logic-test"
+                from tests.test_windows_bootstrap_binding import fixture_header
+                fixture_header(Path(raw), arch)
                 compiled = subprocess.run(
                     [shutil.which("cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
-                     "-D_WIN32", f"-D{define}", str(SOURCE), "-o", str(binary)],
+                     "-D_WIN32", f"-D{define}", "-I", raw, str(SOURCE), "-o", str(binary)],
                     capture_output=True, timeout=30, check=False,
                 )
                 self.assertEqual(compiled.returncode, 0, compiled.stderr)
@@ -187,6 +189,10 @@ class TestWindowsBootstrap(unittest.TestCase):
                 self.assertEqual(result.returncode, 0)
                 self.assertEqual(result.stderr, b"")
                 self.assertLess(len(result.stdout), 512)
+                self.assertEqual(result.stdout, (
+                    b'{"helper":"icode-windows-bootstrap","bootstrap_version":1,'
+                    b'"runner_protocol_version":1,"architecture":"' + arch.encode("ascii") +
+                    b'","setup_complete":false,"command_execution":false,"isolation_ready":false}\n'))
                 self.assertEqual(json.loads(result.stdout), {
                     "helper": "icode-windows-bootstrap", "bootstrap_version": 1,
                     "runner_protocol_version": 1, "architecture": arch,

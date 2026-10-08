@@ -65,9 +65,15 @@ class TestPackagedSkillInstallation(unittest.TestCase):
         for name in ("src", "native"):
             shutil.copytree(REPO_ROOT / name, cls.source / name,
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        # A stale generated fixture header must not become source distribution
+        # input. Production generation belongs only in the CMake build tree.
+        (cls.source / "native/windows/icode_windows_verifier_binding.h").write_bytes(
+            b"synthetic stale binding header, never package this\n")
         (cls.source / "scripts").mkdir()
         shutil.copyfile(REPO_ROOT / "scripts/windows_wheel.py",
                         cls.source / "scripts/windows_wheel.py")
+        shutil.copyfile(REPO_ROOT / "scripts/windows_bootstrap_binding.py",
+                        cls.source / "scripts/windows_bootstrap_binding.py")
         for path in candidate_paths():
             target = cls.source / "vendor/icode-skill" / path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -135,6 +141,9 @@ class TestPackagedSkillInstallation(unittest.TestCase):
         archive = next(self.dist.glob("*.tar.gz"))
         detached = self.root / "sdist rebuild"; detached.mkdir()
         with tarfile.open(archive) as package:
+            names = package.getnames()
+            self.assertEqual(sum(name.endswith("/scripts/windows_bootstrap_binding.py") for name in names), 1)
+            self.assertFalse(any(name.endswith("/icode_windows_verifier_binding.h") for name in names))
             for member in package.getmembers():
                 self.assertFalse(member.name.startswith("/") or ".." in Path(member.name).parts)
                 self.assertTrue(member.isfile() or member.isdir())
@@ -147,6 +156,15 @@ class TestPackagedSkillInstallation(unittest.TestCase):
         source = next(detached.iterdir())
         self.assertFalse((source / ".git").exists())
         self.assertFalse((source / "vendor").exists())
+        from scripts.run_windows_wheel_ci import _synthetic_pe
+        verifier = self.root / "detached synthetic verifier.exe"
+        verifier.write_bytes(_synthetic_pe(0x8664))
+        generated = self.root / "detached generated binding.h"
+        generator = run([sys.executable, "-I", "-B",
+            str(source / "scripts/windows_bootstrap_binding.py"), "--verifier", str(verifier),
+            "--architecture", "x64", "--output", str(generated)], cwd=source, env=self.env)
+        self.assertEqual(generator.returncode, 0, generator.stderr[-1200:])
+        self.assertIn(hashlib.sha256(verifier.read_bytes()).hexdigest(), generated.read_text(encoding="ascii"))
         rebuilt_dist = self.root / "rebuilt dist"; rebuilt_dist.mkdir()
         rebuilt = run([sys.executable, "-B", "-c",
             "from setuptools.build_meta import build_wheel;import sys;build_wheel(sys.argv[1])",
