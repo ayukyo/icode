@@ -1,3 +1,4 @@
 include native/linux/icode_landlock.c
 recursive-include native/windows *.c CMakeLists.txt
 include scripts/windows_wheel.py
+recursive-include native/provenance *.go *.py go.mod go.sum *.json *.base64 *.md LICENSE* NOTICE*

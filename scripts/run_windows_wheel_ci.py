@@ -30,6 +30,9 @@ from scripts.windows_wheel import read_provenance_bundle  # noqa: E402
 
 _HELPER_ENV = "ICODE_WINDOWS_SANDBOX_HELPER"
 _BUNDLE_ENV = "ICODE_WINDOWS_SANDBOX_BUNDLE"
+_VERIFIER_ENV = "ICODE_WINDOWS_PROVENANCE_VERIFIER"
+_SOURCE_ENV = "ICODE_WINDOWS_PROVENANCE_SOURCE_SHA"
+_NOTICES_ENV = "ICODE_WINDOWS_PROVENANCE_NOTICES"
 
 
 def _provenance_verify_argv(helper: Path, bundle: Path, source_sha: str) -> list[str]:
@@ -75,8 +78,8 @@ def _read_native_image(helper: Path, arch: str) -> bytes:
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
         raise RuntimeError("native CI artifact must be a regular, unlinked file")
     with helper.open("rb") as stream:
-        image = stream.read(32 * 1024 * 1024 + 1)
-    if len(image) > 32 * 1024 * 1024 or windows_pe_architecture(image) != arch:
+        image = stream.read(64 * 1024 * 1024 + 1)
+    if len(image) > 64 * 1024 * 1024 or windows_pe_architecture(image) != arch:
         raise RuntimeError("native CI artifact size or PE architecture mismatch")
     return image
 
@@ -102,6 +105,10 @@ def main() -> int:
                         help="CI proof to package exactly and verify using GitHub CLI")
     parser.add_argument("--wheel-output", type=Path,
                         help="CI directory for a wheel after all signed-mode checks pass")
+    parser.add_argument("--provenance-verifier", type=Path,
+                        help="explicit CGO-disabled verifier built from this checkout")
+    parser.add_argument("--provenance-notices", type=Path,
+                        help="original license/notice texts for linked verifier dependencies")
     args = parser.parse_args()
     if sys.platform != "win32":
         print("::error::Windows wheel packaging probe was invoked on another platform")
@@ -111,6 +118,10 @@ def main() -> int:
             raise ValueError("provenance mode requires a real native CI artifact")
         if args.wheel_output is not None and args.provenance_bundle is None:
             raise ValueError("wheel publication requires provenance mode")
+        if (args.provenance_verifier is None) != (args.provenance_notices is None):
+            raise ValueError("offline verifier requires matching notices")
+        if args.provenance_verifier is not None and args.provenance_bundle is None:
+            raise ValueError("offline verifier requires a proof-carrying native artifact")
         proof = (None if args.provenance_bundle is None
                  else read_provenance_bundle(args.provenance_bundle))
         if proof is not None:
@@ -135,10 +146,24 @@ def main() -> int:
             env = os.environ.copy()
             env[_HELPER_ENV] = str(helper)
             env.pop(_BUNDLE_ENV, None)
+            env.pop(_VERIFIER_ENV, None)
+            env.pop(_SOURCE_ENV, None)
+            env.pop(_NOTICES_ENV, None)
             if proof is not None:
                 staged_bundle = helper_dir / "proof.json"
                 staged_bundle.write_bytes(proof)
                 env[_BUNDLE_ENV] = str(staged_bundle)
+            if args.provenance_verifier is not None:
+                verifier = helper_dir / "verifier.exe"
+                verifier_image = _read_native_image(args.provenance_verifier, arch)
+                verifier.write_bytes(verifier_image)
+                Path(str(verifier) + ".sha256").write_text(
+                    hashlib.sha256(verifier_image).hexdigest() + "\n", encoding="ascii")
+                notices = helper_dir / "NOTICES.txt"
+                notices.write_bytes(read_provenance_bundle(args.provenance_notices))
+                env[_VERIFIER_ENV] = str(verifier)
+                env[_SOURCE_ENV] = env["GITHUB_SHA"]
+                env[_NOTICES_ENV] = str(notices)
             _run(
                 "install build frontend",
                 [sys.executable, "-m", "pip", "install", "build"],
@@ -148,6 +173,9 @@ def main() -> int:
             pure_env = env.copy()
             pure_env.pop(_HELPER_ENV, None)
             pure_env.pop(_BUNDLE_ENV, None)
+            pure_env.pop(_VERIFIER_ENV, None)
+            pure_env.pop(_SOURCE_ENV, None)
+            pure_env.pop(_NOTICES_ENV, None)
             pure_dist = root / "dist-pure-python"
             _run(
                 "build pure Python wheel without native helper",
@@ -159,7 +187,7 @@ def main() -> int:
                 raise RuntimeError("build without helper must remain a universal pure-Python wheel")
             with zipfile.ZipFile(pure_wheels[0]) as archive:
                 names = archive.namelist()
-                if any("icode-sandbox-windows-" in name for name in names):
+                if any("icode-sandbox-windows-" in name or "icode-provenance-" in name for name in names):
                     raise RuntimeError("pure-Python wheel unexpectedly contains a Windows helper")
 
             pure_venv = root / "pure-venv"
@@ -175,7 +203,9 @@ def main() -> int:
                 "pure-Python install reports helper unavailable",
                 [str(pure_python), "-c",
                  "from icode.native_helper import bundled_windows_helper; "
-                 "assert bundled_windows_helper() is None"],
+                 "from icode.windows_provenance import verify_bundled_windows_provenance; "
+                 "assert bundled_windows_helper() is None; "
+                 "assert verify_bundled_windows_provenance() is None"],
                 cwd=root, env=clean_pure_env,
             )
 
@@ -187,7 +217,8 @@ def main() -> int:
             wheels = list(dist.glob("*.whl"))
             if len(wheels) != 1:
                 raise RuntimeError(f"expected one wheel, found {len(wheels)}")
-            if check_windows_wheel(wheels[0], expected_bundle=proof):
+            if check_windows_wheel(wheels[0], expected_bundle=proof,
+                                   expected_source_sha=env.get(_SOURCE_ENV)):
                 raise RuntimeError("final wheel provenance transport contract failed")
             _run(
                 "inspect Windows wheel metadata and integrity",
@@ -204,6 +235,9 @@ def main() -> int:
             clean_env.pop("PYTHONPATH", None)
             clean_env.pop(_HELPER_ENV, None)
             clean_env.pop(_BUNDLE_ENV, None)
+            clean_env.pop(_VERIFIER_ENV, None)
+            clean_env.pop(_SOURCE_ENV, None)
+            clean_env.pop(_NOTICES_ENV, None)
             _run("install Windows wheel", [str(python), "-m", "pip", "install",
                  "--no-deps", str(wheels[0])], cwd=root, env=clean_env)
             code = (
@@ -227,6 +261,18 @@ def main() -> int:
                      _provenance_verify_argv(installed_helper, installed_bundle,
                                              env.get("GITHUB_SHA", "")),
                      cwd=root, env=clean_env)
+                if args.provenance_verifier is not None:
+                    verification_code = (
+                        "from icode.windows_provenance import verify_bundled_windows_provenance; "
+                        "receipt=verify_bundled_windows_provenance(); "
+                        "assert receipt is not None and receipt['launch_authorized'] is False"
+                    )
+                    _run("verify installed wheel using its offline verifier",
+                         [str(python), "-I", "-c", verification_code], cwd=root, env=clean_env)
+                    _run("installed verifier rejects actual cryptographic negative controls",
+                         [str(python), "-I", str(_REPOSITORY / "scripts" /
+                          "probe_installed_windows_provenance.py"),
+                          "--source-sha", env["GITHUB_SHA"]], cwd=root, env=clean_env)
 
             if args.native_helper is not None:
                 # CI executes only the artifact explicitly built from this job's

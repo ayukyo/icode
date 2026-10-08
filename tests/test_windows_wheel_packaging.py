@@ -6,6 +6,7 @@ import base64
 import csv
 import hashlib
 import io
+import inspect
 from pathlib import Path
 import tempfile
 import unittest
@@ -14,6 +15,8 @@ import zipfile
 from icode.native_helper import windows_arch_from_platform
 from scripts.check_windows_wheel import check as check_windows_wheel
 from scripts.windows_wheel import reject_stale_windows_helpers, stage_windows_helper
+from scripts import windows_wheel
+import json
 
 
 def _pe_image(machine: int) -> bytes:
@@ -32,7 +35,9 @@ def _record_line(name: str, content: bytes) -> tuple[str, str, str]:
 
 def _write_wheel(path: Path, *, arch: str, helper: bytes, manifest: bytes,
                  tag: str | None = None, bad_record: bool = False,
-                 bundle: bytes | None = None, bad_bundle_record: bool = False) -> None:
+                 bundle: bytes | None = None, bad_bundle_record: bool = False,
+                 resources: dict[str, bytes] | None = None,
+                 bad_resource_record: str | None = None) -> None:
     platform_tag = {"x64": "win_amd64", "arm64": "win_arm64"}[arch]
     wheel_tag = tag or f"py3-none-{platform_tag}"
     dist_info = "icode_agent-0.1.0.dist-info"
@@ -51,6 +56,10 @@ def _write_wheel(path: Path, *, arch: str, helper: bytes, manifest: bytes,
         record.append(_record_line(helper_name + ".sigstore.json", bundle))
         if bad_bundle_record:
             record[-1] = (record[-1][0], "sha256=invalid", record[-1][2])
+    for resource_name, content in (resources or {}).items():
+        record.append(_record_line(resource_name, content))
+        if resource_name == bad_resource_record:
+            record[-1] = (resource_name, "sha256=invalid", str(len(content)))
     stream = io.StringIO(newline="")
     csv.writer(stream, lineterminator="\n").writerows(record)
     with zipfile.ZipFile(path, "w") as archive:
@@ -58,11 +67,131 @@ def _write_wheel(path: Path, *, arch: str, helper: bytes, manifest: bytes,
         archive.writestr(manifest_name, manifest)
         if bundle is not None:
             archive.writestr(helper_name + ".sigstore.json", bundle)
+        for resource_name, content in (resources or {}).items():
+            archive.writestr(resource_name, content)
         archive.writestr(f"{dist_info}/WHEEL", wheel_metadata)
         archive.writestr(f"{dist_info}/RECORD", stream.getvalue())
 
 
 class TestWindowsWheelPackaging(unittest.TestCase):
+    def test_checker_requires_complete_offline_resources_metadata_and_record(self) -> None:
+        self.assertIn("expected_source_sha", inspect.signature(check_windows_wheel).parameters,
+                      "offline verifier wheel contract is missing")
+        for arch, machine, platform in (("x64", 0x8664, "win_amd64"),
+                                        ("arm64", 0xAA64, "win_arm64")):
+            for label in ("valid", "missing", "digest", "arch", "source", "record", "extra_arch", "notices", "no_proof"):
+                with self.subTest(arch=arch, case=label), tempfile.TemporaryDirectory() as raw:
+                    image = _pe_image(machine)
+                    verifier = f"icode/native/icode-provenance-windows-{arch}.exe"
+                    resources = {
+                        verifier: image,
+                        verifier + ".sha256": hashlib.sha256(image).hexdigest().encode(),
+                        "icode/native/icode-provenance-release.json": json.dumps({
+                            "schema_version": 1, "source_sha": "a" * 40, "architecture": arch}).encode(),
+                        "icode/native/icode-provenance-NOTICES.txt": b"license transport fixture\n",
+                    }
+                    if label == "missing":
+                        resources.pop(verifier)
+                    elif label == "digest":
+                        resources[verifier + ".sha256"] = b"0" * 64
+                    elif label == "arch":
+                        resources[verifier] = _pe_image(0xAA64 if arch == "x64" else 0x8664)
+                        resources[verifier + ".sha256"] = hashlib.sha256(resources[verifier]).hexdigest().encode()
+                    elif label == "source":
+                        resources["icode/native/icode-provenance-release.json"] = resources["icode/native/icode-provenance-release.json"].replace(b"a" * 40, b"b" * 40)
+                    elif label == "extra_arch":
+                        resources[f"icode/native/icode-provenance-windows-{'arm64' if arch == 'x64' else 'x64'}.exe"] = image
+                    elif label == "notices":
+                        resources["icode/native/icode-provenance-NOTICES.txt"] = b""
+                    wheel = Path(raw) / f"icode_agent-0.1.0-py3-none-{platform}.whl"
+                    _write_wheel(wheel, arch=arch, helper=image,
+                                 manifest=hashlib.sha256(image).hexdigest().encode(),
+                                 bundle=None if label == "no_proof" else b"unsigned transport fixture",
+                                 resources=resources,
+                                 bad_resource_record=verifier if label == "record" else None)
+                    problems = check_windows_wheel(wheel, expected_source_sha="a" * 40)
+                    if label == "valid":
+                        self.assertEqual(problems, [])
+                    else:
+                        self.assertTrue(problems)
+
+    def test_checker_rejects_partial_offline_resources_without_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            image = _pe_image(0x8664)
+            wheel = Path(raw) / "icode_agent-0.1.0-py3-none-win_amd64.whl"
+            _write_wheel(wheel, arch="x64", helper=image,
+                         manifest=hashlib.sha256(image).hexdigest().encode(),
+                         resources={"icode/native/icode-provenance-release.json": b"{}"})
+            self.assertTrue(check_windows_wheel(wheel), "partial verifier resources must fail closed")
+
+    def test_stage_offline_verifier_requires_matching_arch_proof_and_source_metadata(self) -> None:
+        stage = getattr(windows_wheel, "stage_windows_provenance", None)
+        self.assertIsNotNone(stage, "offline verifier staging is missing")
+        for arch, machine, platform in (("x64", 0x8664, "win-amd64"),
+                                        ("arm64", 0xAA64, "win-arm64")):
+            with self.subTest(arch=arch), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                image = _pe_image(machine)
+                helper = root / "helper.exe"
+                verifier = root / "verifier.exe"
+                for source in (helper, verifier):
+                    source.write_bytes(image)
+                    Path(str(source) + ".sha256").write_text(hashlib.sha256(image).hexdigest())
+                proof = root / "proof.json"
+                proof.write_bytes(b"unsigned transport fixture")
+                notices = root / "NOTICES.txt"
+                notices.write_text("License transport fixture\n", encoding="utf-8")
+                build = root / "build"
+                stage_windows_helper(helper, build, platform_name=platform, provenance_bundle=proof)
+                paths = stage(verifier, build, platform_name=platform, source_sha="a" * 40, notices=notices)
+                self.assertEqual([path.name for path in paths], [
+                    f"icode-provenance-windows-{arch}.exe", f"icode-provenance-windows-{arch}.exe.sha256",
+                    "icode-provenance-release.json", "icode-provenance-NOTICES.txt"])
+                self.assertEqual(paths[0].read_bytes(), image)
+                self.assertEqual(json.loads(paths[2].read_text()), {
+                    "schema_version": 1, "source_sha": "a" * 40, "architecture": arch})
+                self.assertEqual(paths[3].read_bytes(), notices.read_bytes())
+
+    def test_offline_staging_rejects_bad_inputs_before_writing_verifier(self) -> None:
+        stage = getattr(windows_wheel, "stage_windows_provenance", None)
+        self.assertIsNotNone(stage, "offline verifier staging is missing")
+        for label in ("no_proof", "wrong_arch", "bad_sha", "empty_notices", "large_notices", "source_sha"):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as raw:
+                root = Path(raw)
+                image = _pe_image(0x8664)
+                helper = root / "helper.exe"
+                verifier = root / "verifier.exe"
+                for source in (helper, verifier):
+                    source.write_bytes(image)
+                    Path(str(source) + ".sha256").write_text(hashlib.sha256(image).hexdigest())
+                proof = root / "proof.json"
+                proof.write_bytes(b"unsigned transport fixture")
+                notices = root / "NOTICES.txt"
+                notices.write_bytes(b"licenses\n")
+                build = root / "build"
+                stage_windows_helper(helper, build, platform_name="win-amd64",
+                                     provenance_bundle=None if label == "no_proof" else proof)
+                if label == "wrong_arch":
+                    verifier.write_bytes(_pe_image(0xAA64))
+                    Path(str(verifier) + ".sha256").write_text(hashlib.sha256(verifier.read_bytes()).hexdigest())
+                elif label == "bad_sha":
+                    Path(str(verifier) + ".sha256").write_text("0" * 64)
+                elif label in ("empty_notices", "large_notices"):
+                    notices.write_bytes(b"" if label == "empty_notices" else b"x" * (2 * 1024 * 1024 + 1))
+                with self.assertRaises((OSError, ValueError)):
+                    stage(verifier, build, platform_name="win-amd64", notices=notices,
+                          source_sha="main" if label == "source_sha" else "a" * 40)
+                self.assertFalse((build / "icode/native/icode-provenance-windows-x64.exe").exists())
+
+    def test_pure_wheel_rejects_orphan_offline_verifier(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            build = Path(raw) / "build"
+            native = build / "icode/native"
+            native.mkdir(parents=True)
+            (native / "icode-provenance-windows-x64.exe").write_bytes(_pe_image(0x8664))
+            with self.assertRaises(ValueError):
+                reject_stale_windows_helpers(build)
+
     def test_stage_rejects_redirected_native_directory_without_writing_outside(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

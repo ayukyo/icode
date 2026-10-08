@@ -174,7 +174,7 @@
 
 | 子阶段 | 实施范围 | 必须通过的退出条件 | 不通过时 |
 |---|---|---|---|
-| RL-0 | 固定 `process_limit` 的计数口径：是否包含根命令、helper、线程及其他并发进程 | Linux、Windows、macOS 的语义和可接受差异得到明确记录；用户尚未确认时不改字段含义 | 保持 `resource_limits=false`，不开始影响命令行为的集成 |
+| RL-0 | 固定 `process_limit` 的计数口径 | **2026-10-08 用户已确认**：[单命令计数合同](../specs/2026-10-08-r2-process-limit-contract.md)。根及后代计入，任务外监督程序排除；Linux TID 含线程，Windows 活跃进程不含线程；并发命令边界独立 | 允许按已确认口径开始接线；真实 RL-1/2/3 门未通过前仍保持 `resource_limits=false` |
 | RL-1 | Linux 原生执行链接入 per-task 限额候选 | 同一 payload cap 内成功、超限拒绝；deadline/output cap 真正通过 Agent 命令入口；scope 创建失败前无 payload marker；正常/超时/脱组后代清理与无残留均有正反对照 | capability 不加分，R2 Linux 自动模式保持关闭 |
 | RL-2 | Windows spawn 协议传递上限并由真实 Job 生效 | `process_limit` 从 policy 经 runner IPC 到 Job Object；同载荷阈值正反对照；超时及异常后确认整 Job 回收 | 仅保留组件诊断，不开放 Windows 自动模式 |
 | RL-3 | macOS 任务级进程限制可行性与真实探针 | 不用 per-user 全局限额冒充 per-task 限制；有真实 Seatbelt/受支持 OS mechanism 才计分 | 无合格机制时保持未验证，不能用进程组清理补分 |

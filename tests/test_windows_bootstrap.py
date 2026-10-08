@@ -17,6 +17,30 @@ SOURCE = Path(__file__).resolve().parents[1] / "native/windows/icode_windows_boo
 
 
 class TestWindowsBootstrap(unittest.TestCase):
+    def test_signed_ci_builds_and_installs_offline_verifier_without_product_toolchain(self) -> None:
+        workflow = (SOURCE.parents[2] / ".github/workflows/windows-helper-provenance.yml").read_text(encoding="utf-8")
+        for token in ("uses: actions/setup-go@", 'go-version: "1.27.1"',
+                      "--provenance-verifier", "--provenance-notices", "GOMAXPROCS", "CGO_ENABLED"):
+            self.assertIn(token, workflow)
+        self.assertIn('python-version: "3.12"', workflow,
+                      "real signed installed verification must cover Python 3.12")
+        source = inspect.getsource(wheel_ci.main)
+        for token in ("pure_env.pop(_VERIFIER_ENV, None)", "pure_env.pop(_SOURCE_ENV, None)",
+                      "pure_env.pop(_NOTICES_ENV, None)", "verify_bundled_windows_provenance",
+                      "expected_source_sha=", "--provenance-verifier", "--provenance-notices"):
+            self.assertIn(token, source)
+        self.assertLess(source.index("verify installed wheel using its offline verifier"),
+                        source.index("run installed native bootstrap metadata"))
+
+    def test_build_declares_complete_explicit_offline_inputs_and_sdist_sources(self) -> None:
+        setup_source = (SOURCE.parents[2] / "setup.py").read_text(encoding="utf-8")
+        for token in ("ICODE_WINDOWS_PROVENANCE_VERIFIER", "ICODE_WINDOWS_PROVENANCE_SOURCE_SHA",
+                      "ICODE_WINDOWS_PROVENANCE_NOTICES", "stage_windows_provenance(",
+                      "requires a proof-carrying Windows helper"):
+            self.assertIn(token, setup_source)
+        manifest = (SOURCE.parents[2] / "MANIFEST.in").read_text(encoding="utf-8")
+        self.assertIn("recursive-include native/provenance", manifest)
+
     def test_provenance_ci_binds_exact_workflow_ref_commit_and_hosted_runner(self) -> None:
         builder = getattr(wheel_ci, "_provenance_verify_argv", None)
         self.assertIsNotNone(builder, "CI cryptographic verification policy is missing")

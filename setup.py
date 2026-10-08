@@ -20,11 +20,16 @@ sys.path.insert(0, str(_SETUP_ROOT / "src"))
 sys.path.insert(0, str(_SETUP_ROOT / "scripts"))
 
 from icode.native_helper import windows_arch_from_platform  # noqa: E402
-from windows_wheel import reject_stale_windows_helpers, stage_windows_helper  # noqa: E402
+from windows_wheel import (  # noqa: E402
+    reject_stale_windows_helpers, stage_windows_helper, stage_windows_provenance,
+)
 
 
 _WINDOWS_HELPER_ENV = "ICODE_WINDOWS_SANDBOX_HELPER"
 _WINDOWS_BUNDLE_ENV = "ICODE_WINDOWS_SANDBOX_BUNDLE"
+_WINDOWS_VERIFIER_ENV = "ICODE_WINDOWS_PROVENANCE_VERIFIER"
+_WINDOWS_SOURCE_ENV = "ICODE_WINDOWS_PROVENANCE_SOURCE_SHA"
+_WINDOWS_NOTICES_ENV = "ICODE_WINDOWS_PROVENANCE_NOTICES"
 
 
 class NativeDistribution(Distribution):
@@ -58,6 +63,14 @@ class BuildWithNativeHelper(build_py):
         super().run()
         windows_helper = os.environ.get(_WINDOWS_HELPER_ENV)
         windows_bundle = os.environ.get(_WINDOWS_BUNDLE_ENV)
+        windows_verifier = os.environ.get(_WINDOWS_VERIFIER_ENV)
+        windows_source_sha = os.environ.get(_WINDOWS_SOURCE_ENV)
+        windows_notices = os.environ.get(_WINDOWS_NOTICES_ENV)
+        offline_inputs = (windows_verifier, windows_source_sha, windows_notices)
+        if any(offline_inputs) and not all(offline_inputs):
+            raise RuntimeError("Windows offline verifier requires all explicit build inputs")
+        if any(offline_inputs) and not (windows_helper and windows_bundle):
+            raise RuntimeError("Windows offline verifier requires a proof-carrying Windows helper")
         if windows_bundle and not windows_helper:
             raise RuntimeError("Windows provenance bundle requires an explicit native helper")
         if windows_helper and sys.platform != "win32":
@@ -89,6 +102,11 @@ class BuildWithNativeHelper(build_py):
                 windows_helper, self.build_lib, platform_name=sysconfig.get_platform(),
                 provenance_bundle=windows_bundle,
             )
+            if windows_verifier:
+                stage_windows_provenance(
+                    windows_verifier, self.build_lib, platform_name=sysconfig.get_platform(),
+                    source_sha=windows_source_sha, notices=windows_notices,
+                )
         elif sys.platform == "win32":
             reject_stale_windows_helpers(self.build_lib)
 

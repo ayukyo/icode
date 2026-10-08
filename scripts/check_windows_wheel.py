@@ -6,6 +6,7 @@ import base64
 import csv
 import hashlib
 import io
+import json
 import re
 import zipfile
 from pathlib import Path
@@ -19,14 +20,69 @@ _SHA256_LINE = re.compile(rb"[0-9a-f]{64}(?:\r?\n)?")
 _MAX_PROVENANCE_BYTES = 2 * 1024 * 1024  # Same opaque transport cap as staging.
 
 
+def _unique_metadata(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate metadata member")
+        result[key] = value
+    return result
+
+
+def _offline_resources(
+    archive: zipfile.ZipFile, names: set[str], arch: str,
+    expected_source_sha: str | None,
+) -> dict[str, bytes]:
+    """Validate transport only; embedded roots/verifier belong to the wheel TCB."""
+    binary = f"icode/native/icode-provenance-windows-{arch}.exe"
+    manifest = binary + ".sha256"
+    release = "icode/native/icode-provenance-release.json"
+    notices = "icode/native/icode-provenance-NOTICES.txt"
+    limits = {binary: 64 * 1024 * 1024, manifest: 66, release: 1024,
+              notices: 2 * 1024 * 1024}
+    present = {name for name in names if name.startswith("icode/native/icode-provenance-")}
+    if not present and expected_source_sha is None:
+        return {}
+    if present != set(limits):
+        raise ValueError("incomplete or wrong-architecture verifier resources")
+    if f"icode/native/icode-sandbox-windows-{arch}.exe.sigstore.json" not in names:
+        raise ValueError("offline verifier requires helper proof")
+    resources: dict[str, bytes] = {}
+    for name, limit in limits.items():
+        if not 0 < archive.getinfo(name).file_size <= limit:
+            raise ValueError("verifier resource length invalid")
+        resources[name] = archive.read(name)
+    if (windows_pe_architecture(resources[binary]) != arch
+            or _SHA256_LINE.fullmatch(resources[manifest]) is None
+            or hashlib.sha256(resources[binary]).hexdigest().encode() != resources[manifest].strip()):
+        raise ValueError("verifier architecture or digest mismatch")
+    metadata = json.loads(resources[release], object_pairs_hook=_unique_metadata)
+    if (type(metadata) is not dict
+            or set(metadata) != {"schema_version", "source_sha", "architecture"}
+            or type(metadata["schema_version"]) is not int or metadata["schema_version"] != 1
+            or type(metadata["source_sha"]) is not str
+            or re.fullmatch(r"[0-9a-f]{40}", metadata["source_sha"]) is None
+            or metadata["architecture"] != arch
+            or (expected_source_sha is not None and metadata["source_sha"] != expected_source_sha)):
+        raise ValueError("verifier release metadata mismatch")
+    resources[notices].decode("utf-8", errors="strict")
+    return resources
+
+
 def _record_hash(content: bytes) -> str:
     encoded = base64.urlsafe_b64encode(hashlib.sha256(content).digest())
     return "sha256=" + encoded.rstrip(b"=").decode("ascii")
 
 
-def check(wheel: Path, *, expected_bundle: bytes | None = None) -> list[str]:
+def check(wheel: Path, *, expected_bundle: bytes | None = None,
+          expected_source_sha: str | None = None) -> list[str]:
     """Return path-free package contract violations; never executes the helper."""
     problems: list[str] = []
+    if expected_source_sha is not None and (
+        type(expected_source_sha) is not str
+        or re.fullmatch(r"[0-9a-f]{40}", expected_source_sha) is None
+    ):
+        return ["invalid expected provenance source commit"]
     name = Path(wheel).name
     platform_tag = next(
         (tag for tag in _ARCHES if name.endswith(f"-py3-none-{tag}.whl")), None,
@@ -74,6 +130,11 @@ def check(wheel: Path, *, expected_bundle: bytes | None = None) -> list[str]:
                 bundle = archive.read(bundle_name)
             if expected_bundle is not None and bundle != expected_bundle:
                 problems.append("wheel provenance bundle missing or changed")
+            try:
+                offline_resources = _offline_resources(archive, names, arch, expected_source_sha)
+            except (ValueError, UnicodeError, RecursionError):
+                problems.append("wheel offline verifier resources invalid")
+                return problems
             if len(wheel_metadata_names) != 1:
                 problems.append("wheel must contain exactly one WHEEL metadata file")
                 return problems
@@ -108,6 +169,8 @@ def check(wheel: Path, *, expected_bundle: bytes | None = None) -> list[str]:
                 or record.get(manifest_name) != [_record_hash(manifest), str(len(manifest))]
                 or (bundle is not None and
                     record.get(bundle_name) != [_record_hash(bundle), str(len(bundle))])
+                or any(record.get(name) != [_record_hash(content), str(len(content))]
+                       for name, content in offline_resources.items())
             ):
                 problems.append("wheel RECORD mismatch")
     except (OSError, UnicodeDecodeError, zipfile.BadZipFile, csv.Error):
