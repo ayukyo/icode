@@ -2039,3 +2039,17 @@
 - **固定一手源码：**独立只读研究SWE-agent `3ea751c087f32b16e039a2233dd6eefecef325d5`，[MIT](https://github.com/SWE-agent/SWE-agent/blob/3ea751c087f32b16e039a2233dd6eefecef325d5/LICENSE)，观察2026-10-08。[构建配置](https://github.com/SWE-agent/SWE-agent/blob/3ea751c087f32b16e039a2233dd6eefecef325d5/pyproject.toml#L84)使用setuptools/package-data，但[资源定位](https://github.com/SWE-agent/SWE-agent/blob/3ea751c087f32b16e039a2233dd6eefecef325d5/sweagent/__init__.py#L28)仍依赖包父目录的config/tools/trajectories；[安装文档](https://github.com/SWE-agent/SWE-agent/blob/3ea751c087f32b16e039a2233dd6eefecef325d5/docs/installation/source.md)为clone+editable。不能把它当pip-only已闭合正例，未运行上游构建作动态证明。
 - **采纳/不适配：**结合[PyPA资源文档](https://setuptools.pypa.io/en/stable/userguide/datafiles.html)，采纳包内数据、固定成员原字节和wheel/sdist分别验证；不适配checkout父目录和短生命周期临时资源路径。[Python3.11资源API](https://docs.python.org/3.11/library/importlib.resources.html)的as_file仅文件，整目录支持3.12才新增，不作为项目3.11稳定Settings根。暂缓容器安装机制；只借机制，无上游代码复制或新运行依赖。成本为显式闭包、build_py/sdist共同staging及真实安装负控，收益为普通用户免clone和配置。
 - **ICODE现状及验收：**已授权上游三lint修复1693651c，本工程固定版本兼容验收中。原72候选1,922,179 bytes，新169同72成员1,928,781 bytes，五成员变化须全部重算manifest。机器控制面/inspection/三lint所需候选内，指南另有43个候选外真实字面引用；这只是引用欠项，不是能力分母或完整SKILL闭包。固定许可/PPT排除、包内损坏不回退HOME、sdist离开Git重建、临时HOME/-I/空PATH/Unicode及四原生平台实际工作台/握手是后续门；研究不关闭pip-only或R2/R3。
+
+### 同日后续：包内入口本机闭合及检出原字节
+
+固定169已独立提交推送并接入Agent757。采用上述PyPA/SWE-agent取舍后，本机真正直接wheel与无Git/vendor的sdist重建wheel分别干净安装，临时HOME/-I/空PATH/C locale下doctor、steps、握手、三strict gate、动态inspection与双语建单/列表/查找通过。最终18×20=360PASS/0skip、308.713秒；独立SPEC194项、不同QUALITY66项及三实际staging负控通过。每次默认Settings解析校验72资源，损坏不退HOME；manifest为安装TCB的完整性清单，不是publisher签名或每次CP调用原子认证。没有复制上游代码、运行时联网下载或新增core依赖。
+
+新增成本是共同build_py/sdist staging、显式原字节清单及异平台实际安装验收；七CI矩阵覆盖五OS的311加Windows双架构312。独立CI25SPEC/35QUALITY及7×20=140PASS，40次真实仅本地递归clone确认autocrlf=true改成CRLF且validator拒、步骤env=false覆盖local true后固定169原字节通过。[Git官方command环境](https://git-scm.com/docs/git-config#Documentation/git-config.txt-GITCONFIGCOUNT)作为依据，采纳checkout步骤限定配置，不改原/global配置；不适配生产归一化或hash放宽。最初新fixture重复keyword导致2ERROR已修，不计作产品RED；正式七checkout接线子场景先FAIL/0ERROR再GREEN。
+
+### 同日后续：Windows WP0提权镜像及DLL边界（2026-10-08，只读设计）
+
+复核固定SRT `3f0bad7345238f47736435e3f2b064399c1cad74` [self_protect](https://github.com/anthropics/sandbox-runtime/blob/3f0bad7345238f47736435e3f2b064399c1cad74/vendor/srt-win-src/src/self_protect.rs)及Codex `14c8b7771ab2b617a131f5d8e55e98d18e56ed09` [copy](https://github.com/openai/codex/blob/14c8b7771ab2b617a131f5d8e55e98d18e56ed09/codex-rs/windows-sandbox-rs/src/helper_materialization/copy.rs)，实际fixed LICENSE均Apache2.0。采纳持锁/protected-root机制；不适配锁失败warn继续、len/mtime替代原字节、接管或删除陌生旧对象。ICODE当前bootstrap仍metadata-only，setup/spawn拒绝；已有Go先构建→最终C→attest顺序，下一片采纳C内绑定确切Go hash而非提权运行可变pip verifier/邻接sha。绑定不认证C自身，首个UAC C继续明确安装/发布TCB。
+
+[Microsoft DLL搜索规则](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order)及[CMake CRT属性](https://cmake.org/cmake/help/latest/prop_tgt/MSVC_RUNTIME_LIBRARY.html)说明/MT不等于零DLL、main后加载策略不能证明入口前安全。采纳系统DLL/实际PE imports与canary验收，暂缓未证实的mitigations与WP1/WP2；HANDLE锁与普通用户不可写owner/DACL分开证明。收益为提权TCB收束，成本为构建输入绑定、安全copy/hash及双架构真实负控；不复制代码/加用户工具安装/扩大权限。详见[WP0计划](./nbl/plans/2026-10-08-r2-windows-production-runner.md)，本条是源码/文档推断，无Windows原生执行或R2完成信用。
+
+实际动态inspection只prepare声明，严格检查拒绝未Read，随后failure收尾，不伪造已审核完成。去掉安装子进程PYTHONDONTWRITEBYTECODE并清仅该临时bundle pycache后，原字节/成员不变；RAM删outer-B产生真实inspection pyc并1FAIL/0ERROR。上述只是本机包装/资源消费者，Windows/macOS原生七矩阵及完整SKILL/R2/R3另验；不把72数量算成90%能力。

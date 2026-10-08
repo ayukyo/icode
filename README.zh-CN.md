@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
 
-**一个必须证明自己所声称工作过程的可审计 AI 编码 Agent。**
+**用工单管理软件研发，让 AI 处理需求、修改代码和执行检查。**
 
 [ICODE-SKILL](https://github.com/ayukyo/icode-skill) 的执行平面：契约驱动、失败关闭、可恢复，并产出可独立校验的过程证据。
 
@@ -19,11 +19,9 @@
 
 ## 为什么还要做一个编码 Agent？
 
-多数工作流工具审查 Agent 最终提交了什么。ICODE Agent 要审计的是**实际执行过程**：工具决策、副作用、状态迁移、步骤产物和验证回执都在工作发生时留下记录。
+把需求写成工单，随时查看进度、处理结果和检查记录。需要你决定的操作会请求确认；中断的任务保留现场，恢复时先检查已做过的动作，避免重复执行。
 
-目标不是宣称模型永远不会犯错，而是一条更窄、可测试的原则：
-
-> 运行时无法证明完成，就不能报告已经完成。
+底层仍是软件研发工具。界面提供中英文任务列表和状态，代码差异、执行记录及验证结果可以按需展开；完整自主研发链路的当前进度见下方能力表。
 
 ## ICODE Agent 和 ICODE-SKILL 的关系
 
@@ -31,7 +29,7 @@
 
 | 组件 | 职责 | 关系 |
 | --- | --- | --- |
-| [ICODE-SKILL](https://github.com/ayukyo/icode-skill) | 工作流契约、门禁、状态机和事件账本 | 固定版本、只读消费的控制平面，位于 `vendor/icode-skill` |
+| [ICODE-SKILL](https://github.com/ayukyo/icode-skill) | 工作流契约、门禁、状态机和事件账本 | 固定版本、只读消费；开发使用子模块，安装包携带运行所需资源 |
 | **ICODE Agent**（本仓） | 模型循环、工具、审批、隔离、恢复和证据包装 | 自主执行平面 |
 
 ```text
@@ -55,7 +53,9 @@
 
 ## 快速开始
 
-需要 Git、Python 3.11+ 和已初始化的 ICODE-SKILL 子模块。离线检查不需要模型密钥。
+运行安装包需要 Python 3.11+。固定版本的核心工作流资源随包携带，无需另装 ICODE-SKILL 或配置其路径；离线检查不需要模型密钥。
+
+下面是开发者源码安装示例，需要 Git 和已初始化的子模块；Linux 源码构建还需要 C 编译器。它不代表用户安装 wheel 时也需要这些开发工具。
 
 ```bash
 git clone --recurse-submodules https://github.com/ayukyo/icode.git

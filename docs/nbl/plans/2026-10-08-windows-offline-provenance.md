@@ -126,3 +126,16 @@ main `d65ecf8e210d273984f2b0bf12fe163eb695e2ad` 的 [provenance run 37731144892]
 各组真实日志确认 gh oracle、包内离线 API、实际密码学负控集合、metadata、拒绝 setup/commands 均 PASS；六类负控来自该 SHA 脚本强制集合验收，不伪装六条独立输出。临时目录清理依据正常退出包含清理推导，不声称额外显式 GC 日志。主代理实读 validate 日志另确认签名fixture9/9、完整preflight3/3与governance通过。
 
 同 SHA [主 CI 37731144778](https://github.com/ayukyo/icode/actions/runs/37731144778) 32 success／2 failure／3 skipped；Python3.11/3.12各1899项，OK、71 skips。两失败仍是旧Windows Reviewer硬门，不能由此开放自动模式。该复验仅闭合离线签名验证：`launch_authorized=false`、bootstrap setup/execution/ready=false及R2/R3未整体验收均保持。
+
+## 757b05d 固定SKILL接入后的原生复验
+
+2026-10-08 09:03:16 UTC，[provenance37751929147](https://github.com/ayukyo/icode/actions/runs/37751929147)终态5/5success，绑定已推送并核对的完整main `757b05d0f33b3cef6bf13f8ba48e73a671bad6af`。独立只读观察者实际读取四组安装日志，密码学oracle、离线verifier、真实负控集合、metadata与setup/commands拒绝皆PASS。
+
+| 矩阵 | job | artifact |
+| --- | ---: | ---: |
+| x64 / Python3.11 | 113231200526 | 11539695214 |
+| ARM64 / Python3.11 | 113231200563 | 11539186899 |
+| x64 / Python3.12 | 113231200564 | 11538684315 |
+| ARM64 / Python3.12 | 113231200708 | 11539570641 |
+
+validate113227490790的Go test/vet、许可证9项与完整preflight3/3PASS。同SHA主CI37751929100终态37项32success/2旧Reviewerfailure/3skip；Pages37751929004终态2success，artifact11538795794。全部停止重复查询；没有把主CI failure或原生skip归为R2/R3通过。新的包内资源与UI补丁不在此SHA，不能混用本记录作为其验收。`launch_authorized=false`与bootstrap三false保持。

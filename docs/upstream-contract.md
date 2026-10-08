@@ -1,8 +1,10 @@
 # 上游契约依赖面（icode-skill）
 
-- 日期：2026-09-23（Phase 1 探测）
+- 首次探测：2026-09-23；当前接入与安装边界复核：2026-10-08
 - 对应决策：**A3** —— 上游无契约稳定性承诺，因此依赖面必须文档化 + bump 时冒烟测试
-- 当前 pin：`vendor/icode-skill` @ `a4ddbce`（浅克隆，跟随 `main`，**升级靠手动 bump**）
+- 当前 pin：`vendor/icode-skill` @ `1693651c1bd7daad3272eb054f0f81d6f254d08d`；固定 gitlink，升级需独立验收，不在用户运行时拉取main。
+
+下文Phase1/2探测保留历史语境，不表示当前R2/R3只剩推理门禁；最新进度见[路线图](./roadmap.md)。
 
 ---
 
@@ -11,19 +13,26 @@
 | 类别 | 路径 | 用途 |
 |---|---|---|
 | 契约真源 | `mcp/workflow-gate/gates.json` | 步骤契约 / 边界 / 操作类别 / 失败分类 / 状态机 / 门禁策略 |
-| 流程文档 | `steps/*.md`（29 个） | 步骤流程合同；**渐进披露**的懒加载对象 |
+| 流程文档 | `steps/*.md`（当前27个） | 步骤流程合同；**渐进披露**的懒加载对象 |
 | 控制面 | `tools/icode_control.py` | 唯一写入口，以子进程 CLI 方式调用 |
 | 推理门禁真源 | `mcp/reasoning-gate/gates.json` | 各步骤默认思考等级与是否 `requires_trace` |
 | 参考文档 | `references/*.md` | 按需查阅（不由本仓自动加载） |
+| 控制面依赖 | `tools/inspection_worklist.py`、三个 `tools/lint_*.py` | 动态检查清单与三个固定Python门禁；当前解释器/UTF8执行 |
 
 **本仓永不修改以上任何文件**（D3：两仓完全独立）。
+
+### 安装后的运行资源
+
+开发从固定子模块读取；wheel与sdist携带72个原字节机器运行成员，清单见[固定资源manifest](../src/icode/skill_runtime_manifest.json)。安装后默认发现包内资源，显式参数/env/local高级来源保留。默认入口解析时先校验全部成员；缺失或损坏不偷偷回退HOME。随后调用沿用可信Settings与CP，不声称每次调用原子认证或OS只读。
+
+资源只读消费，工单和事件仍只写任务目录；CP使用当前Python的 `-B -X utf8`，三固定校验器在上游使用同一解释器。真正动态inspection/三gate及工作台通过离仓直接wheel和sdist重建安装验证；安装不运行上游install/MCP同步器，也不将指南中的43个候选外引用等同已支持完整SKILL。受限PPT模板和预览未分发，72成员不是90%能力分母。
 
 ### 1.1 明确**不消费**的上游面（D13）
 
 | 不消费 | 原因 |
 |---|---|
 | `/icode <step>` slash 命令（`integrations/codebuddy/commands/icode.md`） | 那是**给宿主 LLM 的入口**（宿主理解后自己执行步骤）。本仓自带 Tool Loop，本身就是执行者，再引入一层"请别人执行"会产生两个写者 |
-| `install.sh` | 它把 skill 与 MCP 装进宿主机；我们以子模块方式只读引用，不需要安装 |
+| `install.sh` | 它把 skill 与 MCP 装进宿主机；本仓只读消费固定子模块/包内资源，不执行该安装器 |
 | `agent_runtime/`（ICODE Manager UI 与 host_runner） | 它是"通过宿主 CLI 执行受控步骤"的管理入口；我们的 UI 要展示 Tool Loop 实时过程，不走它 |
 
 **保留消费的**：流程语义（`steps/*.md`）、门禁真源（两个 `gates.json`）、控制面 CLI。
@@ -118,7 +127,7 @@ git submodule update --remote --depth 1 vendor/icode-skill
 
 # 2) 冒烟：契约握手 + 全量测试（离线，零成本）
 python -m unittest
-python -m src/icode doctor  # 或 PYTHONPATH=src python -m icode.cli doctor
+PYTHONPATH=src python -m icode.cli doctor
 
 # 3) 关注点：doctor 的「契约与 steps/ 不一致」与「控制面可执行」两项
 #    以及 tests/test_handshake.py 的门禁拦截断言
@@ -128,3 +137,5 @@ git add vendor/icode-skill && git commit -m "chore: bump icode-skill to <sha>"
 ```
 
 **若冒烟失败**：不要在本仓打补丁（D3）。改为在上游仓库独立修复，或暂时回退到上一个可用 gitlink。
+
+增加随包资源后，bump还须审许可及成员边界、更新全部原字节hash/固定manifest身份，再运行正式setuptools>=80的包安装测试、sdist离仓重建和完整preflight。Windows检出固定资源必须保留Git原字节；CI只在checkout步骤使用command-scope core.autocrlf=false，不修改用户全局配置或打包时归一化。异平台安装与完整隔离验收仍单列，不用本机安装通过关闭R2/R3。

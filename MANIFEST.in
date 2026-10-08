@@ -4,3 +4,4 @@ include native/linux/icode_task_resource.h
 recursive-include native/windows *.c CMakeLists.txt
 include scripts/windows_wheel.py
 recursive-include native/provenance *.go *.py go.mod go.sum *.json *.base64 *.md LICENSE* NOTICE*
+include src/icode/skill_runtime_manifest.json

@@ -73,6 +73,7 @@ DEFAULT_MODULES = (
     "tests.test_workspace_hook_contract",
     "tests.test_autonomy",
     "tests.test_workbench",
+    "tests.test_workbench_rejected_body",
     "tests.test_cli_resume_sandbox",
     "tests.test_shared_runtime_budget",
     # Keep the integration matrix bounded while exercising task-tree capture,

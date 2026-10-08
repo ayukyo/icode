@@ -15,6 +15,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .skill_resources import SkillResourceError, bundled_skill_root
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover
@@ -80,15 +82,24 @@ def find_skill_root(explicit: str | os.PathLike[str] | None = None) -> Path:
     local = _load_local_config().get("skill_root")
     if local:
         candidates.append(Path(local))
-    candidates += [
-        repo_root() / DEFAULT_SUBMODULE_REL,
-        repo_root().parent / "icode-skill",
-        Path.home() / "icode-skill",
-    ]
+    # Advanced overrides retain the existing precedence. An installed package
+    # uses its own fixed TCB and never hides missing/corrupt data behind HOME.
+    development = Path(__file__).resolve().parent == repo_root() / "src" / "icode"
+    if development:
+        candidates += [
+            repo_root() / DEFAULT_SUBMODULE_REL,
+            repo_root().parent / "icode-skill",
+            Path.home() / "icode-skill",
+        ]
     for c in candidates:
         root = c.expanduser()
         if (root / "tools" / "icode_control.py").is_file():
             return root.resolve()
+    if not development:
+        try:
+            return bundled_skill_root()
+        except SkillResourceError:
+            raise ConfigError("随包 SKILL 资源缺失或损坏，请重新安装完整的 icode-agent 包。") from None
     raise ConfigError(
         "未找到 icode-skill 源仓（需含 tools/icode_control.py）。"
         "请确认子模块已初始化（git submodule update --init），"

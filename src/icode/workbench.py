@@ -93,7 +93,28 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         self._send_bytes(status, body, "application/json; charset=utf-8")
 
     def _error(self, status: int, code: str, message: str) -> None:
+        self._drain_unread_post_body()
         self._send_json(status, {"ok": False, "code": code, "message": message})
+
+    def _drain_unread_post_body(self) -> None:
+        """Discard only known, bounded POST framing; never parse rejected input."""
+        if self.command != "POST" or getattr(self, "_body_read_attempted", False):
+            return
+        lengths = self.headers.get_all("Content-Length", [])
+        if len(lengths) != 1 or self.headers.get("Transfer-Encoding") is not None:
+            return
+        # HTTP framing permits ASCII digits and surrounding SP/HTAB, not int() extensions.
+        raw_length = lengths[0].strip(" \t")
+        if not raw_length or any(char < "0" or char > "9" for char in raw_length):
+            return
+        try:
+            length = int(raw_length)
+        except ValueError:
+            return
+        if not 0 < length <= MAX_REJECTED_BODY_DRAIN_BYTES:
+            return
+        self._body_read_attempted = True
+        self._drain_rejected_body(length)
 
     def _host_ok(self) -> bool:
         raw = (self.headers.get("Host") or "").strip()
@@ -131,7 +152,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         return True
 
     def _drain_rejected_body(self, length: int) -> None:
-        """有界丢弃小幅超限请求，避免未读数据导致 Windows 关闭连接时丢失 413。"""
+        """有界丢弃拒绝请求，减少未读数据导致关闭连接时丢失错误响应。"""
         if length > MAX_REJECTED_BODY_DRAIN_BYTES:
             return
         original_timeout = self.connection.gettimeout()
@@ -163,6 +184,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             raise TicketError("Content-Length 非法") from exc
         if length <= 0:
             raise TicketError("请求体不能为空")
+        # Error responses must not drain a body twice, even after partial I/O.
+        self._body_read_attempted = True
         if length > MAX_BODY_BYTES:
             self._drain_rejected_body(length)
             raise RequestTooLarge(f"请求体不能超过 {MAX_BODY_BYTES} 字节")
@@ -252,6 +275,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         self._error(HTTPStatus.NOT_FOUND, "not_found", "路径不存在")
 
     def do_POST(self) -> None:  # noqa: N802
+        self._body_read_attempted = False
         if not self._host_ok():
             return
         path = urlsplit(self.path).path

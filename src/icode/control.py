@@ -69,7 +69,7 @@ class ControlPlane:
         script = self.settings.control_script
         if not script.is_file():
             raise ControlError(f"控制面脚本不存在：{script}")
-        cmd: Sequence[str] = [self.settings.python, str(script), *args]
+        cmd: Sequence[str] = [self.settings.python, "-B", "-X", "utf8", str(script), *args]
         proc = subprocess.run(  # noqa: S603 - 参数列表且 shell=False
             list(cmd),
             capture_output=True,

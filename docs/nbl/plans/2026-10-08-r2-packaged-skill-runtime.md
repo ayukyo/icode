@@ -87,3 +87,29 @@ TDD新12方法中5断言FAIL/0 ERROR，GREEN后20轮240 PASS/0 SKIP（没有记�
 独立研究固定SWE-agent `3ea751c087f32b16e039a2233dd6eefecef325d5`（MIT），实际源码仍依赖clone/父目录config/tools，不能用作pip-only成功例；记录及原始链接见[持续竞品对照](../../agent-landscape-live.md)。采纳PyPA包内数据与wheel/sdist分别验证，不复制上游或加依赖。
 
 新169候选仍72tracked普通文件，1,928,781 bytes，较旧版本五成员变化，必须重新固定全部hash。机器CP直接源/动态inspection/三lint闭包未发现候选外必读项，但指南另有43个真实候选外字面引用，不承诺整个SKILL或90%能力闭包。资源共同staging必须先于setup.py Linux提前return；sdist release tree也生成同一原字节闭包，脱离Git验证构建，不能只build_py成功。最低Python3.11不返回as_file的已清理临时目录。默认包内损坏/缺件明确拒绝，显式外部高级Settings独立兼容；只读消费不冒充OS级不可修改或manifest等于签名。
+
+### 包内入口及构建接线：本机最终冻结验收（2026-10-08）
+
+上面任务清单和旧b74字节数保留为实施前历史。本轮固定169的72文件共1,928,781 bytes，分组2根文件/3catalog/28references/7schemas/27steps/5tools；manifest SHA256 `1afcdfa48214a5a0c16f14c9bf25617bb1015e8fbda7e3de3a613d8dc2b6986c`。共同build_py/sdist staging、安装默认来源及outer CP当前解释器/-B/-X utf8已实现，显式/env/local高级来源与开发vendor/sibling兼容。资源完整性在默认Settings发现时验证，不承诺每次CP的原子校验、OS不可修改或发布者签名。损坏安装包即使存在合法HOME Skill也拒绝默认降级。
+
+生产冻结：setup `379b05227b6c6036b820f4b1f1c5417a6e173156f655315a29f5b17e74f7a79b`，MANIFEST `8dcb411289fde525e42dc346c8ed9ace2f1ef7e5ea3c1c9ae06b9c061974031d`，pyproject `be6b67a19438de2681ac8ecbd17823048370c14e035a2e27e3b86181059dc99f`，config `dbacfa889e3600659f064613746f535519042582440b725ebfafa57f22e5f75a`，control `bab7da59d06d52c3fa5383c1676baa15b3c0ec109c92ba4a9812ebd7dffe8781`，skill_resources `9b2c51e4f3d75fc26f2a5b84bc8db87cbabb16ae49dfe24f373b605e91c480d9`，最终测试 `4141221e69616b4bbe933dfbf073f8d358060905c833d3b305da215d24760cba`。核心运行依赖仍为零；setuptools>=80仅构建/开发验收，不把本机79的诊断构建记为正式通过。
+
+正式环境Python3.11.15/setuptools84.0.0。最终18方法连续20轮360 PASS、0FAIL/ERROR/SKIP、308.713秒，各轮八文件摘要一致；此前360/265.831秒使用旧测试摘要，仅历史。关联十模块303 PASS、0SKIP、161.208秒。独立SPEC18+176共194 PASS、0SKIP；不同作者QUALITY18+48共66 PASS、0SKIP，加实际staging重复运行、最后源件损坏前零写入、目标外部symlink拒绝三负控，摘要保持一致。
+
+直接wheel及仓库外无.git/vendor的sdist重建wheel各自安装到新venv，pip --no-index --no-deps、-I、空PATH、临时HOME/cwd、关闭locale UTF8，实际执行doctor/steps/handshake/三lint及真实动态inspection prepare/check失败关闭；工作台两语言真实建单/列表/搜索/详情。验收未通过的handshake/inspection状态如实保留init_in_progress及空open_steps，不能把fixture计划称最终审定计划或全流程成功。测试显式移除PYTHONDONTWRITEBYTECODE环境，记录真实installed bundle的原字节/成员不变；只在可丢弃venv清理测试缓存。移除outer CP的-B的独立RAM负控实际1FAIL、0ERROR，新增inspection_worklist pyc被发现，证明确实覆盖动态导入而非仅mock。
+
+许可：原MIT LICENSE入包；受限第三方PPT模板/预览不入包，steps中的MIT说明仍可分发；43条候选外指南引用未补齐，因此本片不是全SKILL能力或90%一致验收。安装脚本、MCP、Office/TB外部能力没有因打包而自动运行或宣布通过。
+
+CI本机冻结：ci `843b137bb4da8a29347e17e191e18c88f85e2725928c4b2868f574cfd8431993`，provenance workflow `65c28e7984bdd8beb88de045782233734de33289c93720e093b3381910609a22`，新接线测试 `3499445bc339d616a201752db255a2d563229a524de1e2d04a37a6ec022a7fbf`。新增七项真实安装矩阵覆盖Ubuntu/mac Apple/mac Intel/Windows x64/ARM64的311及Windows双架构312；四既有wheel构建入口同步递归固定子模块，七消费者首次checkout用步骤局部GIT_CONFIG_COUNT禁止autocrlf，避免子模块CRLF破坏原字节。没有修改core依赖、全局Git配置或CI权限；OIDC/attestations仍只限可信main签名job。独立CI SPEC25 PASS，QUALITY35 PASS且七新方法20轮140 PASS、0SKIP/23.093秒；40次本地真实递归clone的CRLF负控/原字节正控均成立，原仓Git配置不变。
+
+【架构级自检报告】
+
+- ✅ 语法/编译：本片AST/JSON/TOML及workflow YAML解析通过，整体最终门禁另记。
+- ✅ 依赖/调用链：构建→默认Settings→CP→三lint/动态inspection→工作台实际安装链闭合。
+- ✅ 逻辑/边界：固定原字节、缺件/损坏/路径/硬链接及不安全目标均有负控。
+- ✅ 异常处理：损坏编码/JSON、构建失败、默认资源失败关闭及原中断合同保持。
+- ✅ 关联模块：303本机关联、194独立SPEC与66不同QUALITY通过。
+- ✅ 兼容安全：高级外部来源、strict/状态/自动模式关闭不变；无素材越权或新运行依赖。
+- ✅ 可运行性：Ubuntu真实wheel/sdist安装闭合；新SHA七项原生安装CI待验，不外推Windows正式运行器或R2/R3整体验收。
+
+整体冻结后最终preflight于2026-10-08 09:52 UTC三道全部PASS，发现2067项；守护成功时不输出unittest skip明细，不声称2067项零skip。最终DEFAULT238 PASS、0SKIP、97.310秒。compileall-j6/治理/官网/严格竞品/diff通过，包内八文件、CI三文件及最终UI四文件冻结摘要未变。新SHA远端矩阵待推送后核验，当前版本未发布PyPI或Release。

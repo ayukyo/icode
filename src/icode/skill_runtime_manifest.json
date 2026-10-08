@@ -1,0 +1,370 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repository": "https://github.com/ayukyo/icode-skill",
+    "commit": "1693651c1bd7daad3272eb054f0f81d6f254d08d",
+    "license": "MIT"
+  },
+  "members": [
+    {
+      "path": "LICENSE",
+      "size": 1063,
+      "sha256": "1d011db58bfcfdf1b75e6f10b5ae2d262c95b519214737410030d4d4e45454fb"
+    },
+    {
+      "path": "SKILL.md",
+      "size": 46612,
+      "sha256": "275dbb209ba97001c1bf4bc33b3cf545c093effa96be6e62f58d90cc81149011"
+    },
+    {
+      "path": "mcp/cheap-research/gates.json",
+      "size": 6501,
+      "sha256": "d277d459b1ca26516bc80db8676d63f980d8eae7af6bf7eb0396e7173052d9f4"
+    },
+    {
+      "path": "mcp/reasoning-gate/gates.json",
+      "size": 4598,
+      "sha256": "0741049706f19c37c5425e89f77cd65f694887b9a169bb6bb07b4b0a66b74d14"
+    },
+    {
+      "path": "mcp/workflow-gate/gates.json",
+      "size": 33027,
+      "sha256": "70ecb453eaa4e80c77de9bb2a3c83988a7992044a0f7ba63cd575ac5a8996aae"
+    },
+    {
+      "path": "references/adversarial.md",
+      "size": 32668,
+      "sha256": "a0d9dce94860e9c1d9009073501173dcc9b7b8c39341e8faee8dbce173149274"
+    },
+    {
+      "path": "references/anti_laziness.md",
+      "size": 63153,
+      "sha256": "0dc815413c85ae7e694b9a3690d65f4ec86c68956940911ec66b2a5c5c51e5d8"
+    },
+    {
+      "path": "references/control_plane.md",
+      "size": 20509,
+      "sha256": "1aee6c0e286cdfe8febb2b124730d876e616b68f8dca937058655d0cf0e4b067"
+    },
+    {
+      "path": "references/crosscheck_mode.md",
+      "size": 5834,
+      "sha256": "bb8de63790d716773d3e04c29001f669b898b824d76e6ccbd61a46a60c38d0d0"
+    },
+    {
+      "path": "references/debug_mode.md",
+      "size": 16469,
+      "sha256": "c545e0107deffa15ae3420d6abe4986b0ee4062dc9c6566c5259fff8f3eb041d"
+    },
+    {
+      "path": "references/decision_anchors.md",
+      "size": 7485,
+      "sha256": "4ec46b540d691d87b1a69012fe04e37d3e4585aa4537170c1609419ce24d519d"
+    },
+    {
+      "path": "references/dir_and_metadata.md",
+      "size": 117741,
+      "sha256": "44a82fcbe392de76cf81e92859851bdd903879ef3ee232a51d42161a99b57a94"
+    },
+    {
+      "path": "references/doc_template.md",
+      "size": 31726,
+      "sha256": "42b69a84d30acda555a503dc55d2b55c65a3bc7292d320626e2fbfbf040f63bb"
+    },
+    {
+      "path": "references/evidence_and_verification.md",
+      "size": 4510,
+      "sha256": "b22f0ff29c9a02deb86ef6030fe84e98fdb06a15e7a6e3f9e255798d3d77d139"
+    },
+    {
+      "path": "references/execution_model.md",
+      "size": 8894,
+      "sha256": "25c5f4b19bf3a46db874b76d111233e12011d7ca1d7b1cb69ebc9e5e14b0f281"
+    },
+    {
+      "path": "references/external_brief_contract.md",
+      "size": 13455,
+      "sha256": "61c2a7cee3ab5314a754ab2275905a5eb5be87f07ed45fd1702455bddeca0363"
+    },
+    {
+      "path": "references/first_activation_path.md",
+      "size": 3111,
+      "sha256": "e1cdbda0109044af19ef5bf9e4edff677c112d28f550aebe4dd73c8fbde0ac80"
+    },
+    {
+      "path": "references/guide_contract.md",
+      "size": 10805,
+      "sha256": "b5ec21bca10cdbf4abf2f5ccb60d7326e99ac898c79b4db1c19b8872f5d973fc"
+    },
+    {
+      "path": "references/host_adapters.md",
+      "size": 10246,
+      "sha256": "2523bb9186e1910fb67a14b60debefc0c1b86a34f8593a621bcd2a94a15347b8"
+    },
+    {
+      "path": "references/inspection_evidence.md",
+      "size": 7089,
+      "sha256": "e9bc724574f064a95ce7f85226099557fdcd209e939c1a6ff5ada190d44dbfce"
+    },
+    {
+      "path": "references/inspection_worklist.md",
+      "size": 5655,
+      "sha256": "f2cb506b4e4e18264e73824eb264f68b46d2eb83c2b9d0849a0bbe1d91c6ed0e"
+    },
+    {
+      "path": "references/mcp_integration.md",
+      "size": 18420,
+      "sha256": "07688c9f82809bc54da23e7f979304fe84a52fbfb1e5a2b6ba95cccd217cdc39"
+    },
+    {
+      "path": "references/mcp_per_step.md",
+      "size": 28266,
+      "sha256": "33adfcbb103475b7a5606a18a3fe7a9f857e091bef92c2ad717f401cf0adcbb1"
+    },
+    {
+      "path": "references/media_routing.md",
+      "size": 6365,
+      "sha256": "d6cfbad95196574f7ddc588fb7d4693aa6804c6193c3dc32073010c56944f2c6"
+    },
+    {
+      "path": "references/natural_language_entry.md",
+      "size": 20483,
+      "sha256": "a6ab5b1e84d999bff39db0ef3ba1929440ff78425d9ed85d257d83add27c61cb"
+    },
+    {
+      "path": "references/necessity_check.md",
+      "size": 8776,
+      "sha256": "2ab61c403363fc0926a5da15b7ca66d5a2882e9dd9f27d1f39776357c41a58d4"
+    },
+    {
+      "path": "references/project_intake.md",
+      "size": 7002,
+      "sha256": "fbbb92c7cf0df0389cf337173728f5276145dcb4fafb8b1ac99c88f188bd2a65"
+    },
+    {
+      "path": "references/skill_routing.md",
+      "size": 4774,
+      "sha256": "bcc1a99ee1326d828ec6ffc3a96755edac76c88525a351f9e759e41efc612fb7"
+    },
+    {
+      "path": "references/subagent_spawn_wait.md",
+      "size": 8816,
+      "sha256": "5989c121fbcce928cbef85a5e456981a380ff247f2e85912a0b68c7b2c3f8493"
+    },
+    {
+      "path": "references/thinking.md",
+      "size": 367,
+      "sha256": "7b08fa404d2438121b3acaecec429bfd1bc82f917226a72f6fc9bdfb894279c4"
+    },
+    {
+      "path": "references/thinking_core.md",
+      "size": 29619,
+      "sha256": "09e2938681db963e78a78b040657b141ff2838b3d4544557147a1426eb212246"
+    },
+    {
+      "path": "references/thinking_detail.md",
+      "size": 10490,
+      "sha256": "9b7e5a0e6ce49ad57bf2e17246ef95ce118894d6c95994a11bf80dc9a0e4aba0"
+    },
+    {
+      "path": "references/worktree_isolation.md",
+      "size": 57070,
+      "sha256": "a7c8576151e650c6245822f8d6a6c785eb6465b29f209c58cb2e83075df0706c"
+    },
+    {
+      "path": "schemas/crosscheck-manifest.schema.json",
+      "size": 3003,
+      "sha256": "ec4b2511481c5cd1c6e835df97e7e09495bb7dd0a5d48f7c68ad54bed2fce943"
+    },
+    {
+      "path": "schemas/crosscheck-round.schema.json",
+      "size": 2661,
+      "sha256": "eaf383d399b32f2c10d3433d282ba81105bea6446f832e451363101dee60de9e"
+    },
+    {
+      "path": "schemas/embedded-baseline.schema.json",
+      "size": 5223,
+      "sha256": "b54341582dcf855a51f76b808a81df81aacc0567712f5afa140589177caffef4"
+    },
+    {
+      "path": "schemas/inspection-worklist.schema.json",
+      "size": 3613,
+      "sha256": "aa760882eb2eee34144ba32d6e9f7516c97d0d5899c08ab0998e477a7b5a87d3"
+    },
+    {
+      "path": "schemas/ticket-event.schema.json",
+      "size": 1951,
+      "sha256": "6e37518689fdc56764e868264d7f6d3b6104683d18dc83aa450960e2c2a80b92"
+    },
+    {
+      "path": "schemas/ticket-index.schema.json",
+      "size": 3493,
+      "sha256": "d0d8f7df2b0ce9aef4e46b530223272234322603cd34cabbfacd2f6bd05b9590"
+    },
+    {
+      "path": "schemas/ticket-metadata.schema.json",
+      "size": 19861,
+      "sha256": "8593a2a330a8ce02ed29f0f3a62ab1629716381e2292cae1f1db0aa6ce093269"
+    },
+    {
+      "path": "steps/00_init.md",
+      "size": 53685,
+      "sha256": "51b8d5a722f99783c41549e5559655180ae51d10fe7aec4c919284998c1e8b73"
+    },
+    {
+      "path": "steps/01_plan.md",
+      "size": 67276,
+      "sha256": "f73fd1922bc5887303cc81229e22713e6cf827f5bd7c74bae4c41ddbd6005e03"
+    },
+    {
+      "path": "steps/02_review.md",
+      "size": 55775,
+      "sha256": "28340ed2a6aa4c50569b0578db26205167b153de501831530a525062c3ca9dc1"
+    },
+    {
+      "path": "steps/03_merge.md",
+      "size": 15179,
+      "sha256": "e8048ec053006ede1152b3028f2e35ed91181fa230b8ff60f18e3a634f21ed20"
+    },
+    {
+      "path": "steps/04_code.md",
+      "size": 40083,
+      "sha256": "5d194a0706d7b51432c136e93e3726760a8bd154930a7cee662319607a4d711c"
+    },
+    {
+      "path": "steps/05_deepcheck.md",
+      "size": 51549,
+      "sha256": "d29283995f2a07b8f2a18d0e6354822a9e6c430e6eeecdf3b48ec89b13e2fa18"
+    },
+    {
+      "path": "steps/06_audit.md",
+      "size": 44553,
+      "sha256": "fd0166ccf2ddde12b3ecb8a1873eac267dd1828df694ddd78253a2b7276a58b7"
+    },
+    {
+      "path": "steps/07_readme.md",
+      "size": 28272,
+      "sha256": "68203d450a6bf04b3bde6dd623d597239f2c5c152c9d52da3a4dc20508e804ea"
+    },
+    {
+      "path": "steps/08_patch.md",
+      "size": 69358,
+      "sha256": "e24c3f601355786633b2ea1184ca261047ad6c1a2b0831b32a08be922a04ab97"
+    },
+    {
+      "path": "steps/bak.md",
+      "size": 10257,
+      "sha256": "ea8648b140863b33e403bd423532c1b1dd5b6efde5509da093ae2086be66a71c"
+    },
+    {
+      "path": "steps/close.md",
+      "size": 13897,
+      "sha256": "0a6ab86485480d2f9980ab8cf0e175f2de13045ff3919cce0358db66273278fb"
+    },
+    {
+      "path": "steps/crosscheck.md",
+      "size": 5898,
+      "sha256": "1641547eacc8118b69af77cfb35cee2aa0e14de0eeb97e965034668fbcc1f20e"
+    },
+    {
+      "path": "steps/doc.md",
+      "size": 48419,
+      "sha256": "6c63e174c71146eb13ff34275e0f92a75188a19af3ca5d5456e0f84d6d733bba"
+    },
+    {
+      "path": "steps/docx.md",
+      "size": 5533,
+      "sha256": "f5a147ae579547ef856381eab2c93098427a1821927a2b5c22c38d44fc783c28"
+    },
+    {
+      "path": "steps/fast.md",
+      "size": 14592,
+      "sha256": "078f4ea29f510f6067a8b0bd1943987d9361e777d7f3f530523bd9deb8f9c24c"
+    },
+    {
+      "path": "steps/install.md",
+      "size": 19584,
+      "sha256": "c53288bc2bbeac7d96ea3123deaa3270d17a483a7b3e79d8f5fe877210bee902"
+    },
+    {
+      "path": "steps/learn.md",
+      "size": 5733,
+      "sha256": "050f191eebff45b7037df380242cd2df4c6ed5171617ca8c4c0926c26ba3d11d"
+    },
+    {
+      "path": "steps/limit.md",
+      "size": 22974,
+      "sha256": "ab71f55ddfe9d45dc8c40bc2f291494e320e72ad5ffe2bd22097912bb295a450"
+    },
+    {
+      "path": "steps/list.md",
+      "size": 14076,
+      "sha256": "ea86eca5e260080513a5491a0d50a3cf35ed67b2b7bcd5746b448941f392da05"
+    },
+    {
+      "path": "steps/log.md",
+      "size": 145397,
+      "sha256": "25a5e385d18f34e1780ab27b42b7b2a8335d963c6edb4a2e16ea866d1fdcf821"
+    },
+    {
+      "path": "steps/ppt.md",
+      "size": 15409,
+      "sha256": "ab9507aa4e84c29c720b87eb6b6b36ac29eed71328c28b921634b1162dd32052"
+    },
+    {
+      "path": "steps/reopen.md",
+      "size": 8373,
+      "sha256": "24c89c70039ff37c0ce21c89f93af1adea19a74618ff0997f8d5c6093ce8ca34"
+    },
+    {
+      "path": "steps/status.md",
+      "size": 21480,
+      "sha256": "7eae021ecd613a6855c76f0fded4ac7ca7f4dc9cb44797cef81d014652cc3f45"
+    },
+    {
+      "path": "steps/study.md",
+      "size": 7527,
+      "sha256": "1504487c34463e76517438bc698c7df06c5ee64eef9dc872591293307f94faf5"
+    },
+    {
+      "path": "steps/ui.md",
+      "size": 5834,
+      "sha256": "d44947dabf7bd07d29ccda04bceb7545749d15e91ecb75ac677c6d80bdb16f11"
+    },
+    {
+      "path": "steps/verify.md",
+      "size": 22513,
+      "sha256": "5be42fd31596947b831c541666e8d9d243823b494f4f9081eedf84913bf912b1"
+    },
+    {
+      "path": "steps/worktree.md",
+      "size": 17003,
+      "sha256": "b1c3942b91e904602c09fe131fa3ad27726275da9b1873f7eedeaf60c860ec2a"
+    },
+    {
+      "path": "tools/icode_control.py",
+      "size": 292533,
+      "sha256": "0b7e2577844f135269bdcc78bee195ad974a350f20792af7de46b2bdae76564c"
+    },
+    {
+      "path": "tools/inspection_worklist.py",
+      "size": 26457,
+      "sha256": "590a45cc696a03e0b1f1a6dd5f80b0ce50ddf8640be1c6d623152b67b6b30811"
+    },
+    {
+      "path": "tools/lint_mcp_coverage.py",
+      "size": 28288,
+      "sha256": "b6098c10283bb252af6d14cd23f4c7e066f8c5f3bb51c25f97c034350bc6b257"
+    },
+    {
+      "path": "tools/lint_thinking_gate.py",
+      "size": 21751,
+      "sha256": "56e1e63dcd5a1c2579eec8d3265a7fe57c952bc510122faabbc4381c2677808d"
+    },
+    {
+      "path": "tools/lint_workflow_contract.py",
+      "size": 38119,
+      "sha256": "862fe0a36bf35f1b35bbcd7b9d7901780be54abd1fed85fb9f0063dd6536fec5"
+    }
+  ]
+}

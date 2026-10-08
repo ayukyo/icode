@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
 
-**An auditable AI coding agent that must prove the work it claims.**
+**Manage software work as tickets, with AI handling requirements, code changes, and checks.**
 
 The execution plane for [ICODE-SKILL](https://github.com/ayukyo/icode-skill): contract-driven, fail-closed, resumable, and designed to produce independently verifiable evidence.
 
@@ -19,11 +19,9 @@ The execution plane for [ICODE-SKILL](https://github.com/ayukyo/icode-skill): co
 
 ## Why another coding agent?
 
-Most workflow tools audit what an agent submits. ICODE Agent is built to make the **execution process itself** auditable: tool decisions, side effects, workflow transitions, artifacts, and verification receipts are recorded while the work happens.
+Describe a requirement as a ticket and follow its progress, results, and check records. Actions that need your decision request approval. Interrupted work keeps its checkpoint, and recovery checks earlier actions before repeating them.
 
-The goal is not to claim that a model never makes mistakes. The goal is narrower and testable:
-
-> If the runtime cannot prove completion, it must not report completion.
+This remains a software-development tool. The bilingual interface presents tickets and their status, with code changes, execution records, and verification results available on demand. See the capability table below for the current autonomous-workflow status.
 
 ## ICODE Agent and ICODE-SKILL
 
@@ -31,7 +29,7 @@ These are two independent repositories with different responsibilities.
 
 | Component | Responsibility | Relationship |
 | --- | --- | --- |
-| [ICODE-SKILL](https://github.com/ayukyo/icode-skill) | Workflow contracts, gates, state machine, and event ledger | Pinned, read-only control plane in `vendor/icode-skill` |
+| [ICODE-SKILL](https://github.com/ayukyo/icode-skill) | Workflow contracts, gates, state machine, and event ledger | Pinned and read-only; a development submodule, with required runtime resources included in the package |
 | **ICODE Agent** (this repository) | Model loop, tools, approvals, isolation, recovery, and evidence packaging | Autonomous execution plane |
 
 ```text
@@ -55,7 +53,9 @@ The agent never calls `/icode plan` or another host agent to do its job. It read
 
 ## Quick start
 
-Requirements: Git, Python 3.11+, and an initialized ICODE-SKILL submodule. The offline checks do not require a model key.
+Running an installation package requires Python 3.11+. The pinned core workflow resources are bundled; no separate ICODE-SKILL installation or path setting is needed. Offline checks do not require a model key.
+
+The source-development example below requires Git and the initialized submodule; Linux source builds also need a C compiler. These are not requirements for users installing a wheel.
 
 ```bash
 git clone --recurse-submodules https://github.com/ayukyo/icode.git

@@ -14,12 +14,14 @@ from pathlib import Path
 from setuptools import Distribution, setup
 from setuptools.command.bdist_wheel import bdist_wheel
 from setuptools.command.build_py import build_py
+from setuptools.command.sdist import sdist
 
 _SETUP_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SETUP_ROOT / "src"))
 sys.path.insert(0, str(_SETUP_ROOT / "scripts"))
 
 from icode.native_helper import windows_arch_from_platform  # noqa: E402
+from icode.skill_resources import stage_resources, verify_resources  # noqa: E402
 from windows_wheel import (  # noqa: E402
     reject_stale_windows_helpers, stage_windows_helper, stage_windows_provenance,
 )
@@ -58,9 +60,28 @@ class NativeWheel(bdist_wheel):
         return python_tag, abi_tag, platform_tag
 
 
+def _skill_source() -> Path:
+    vendor = _SETUP_ROOT / "vendor" / "icode-skill"
+    if vendor.exists() or vendor.is_symlink():
+        if vendor.parent.is_symlink():
+            raise RuntimeError("Unsafe fixed SKILL source directory")
+        return verify_resources(vendor)
+    # A detached sdist has the same original-byte closure under src.
+    return verify_resources(_SETUP_ROOT / "src" / "icode" / "skill_runtime")
+
+
+class SourceWithSkillResources(sdist):
+    def make_release_tree(self, base_dir, files) -> None:
+        source = _skill_source()
+        super().make_release_tree(base_dir, files)
+        stage_resources(source, Path(base_dir) / "src" / "icode" / "skill_runtime")
+
+
 class BuildWithNativeHelper(build_py):
     def run(self) -> None:
         super().run()
+        # Common data must stage before the Linux native branch returns.
+        stage_resources(_skill_source(), Path(self.build_lib) / "icode" / "skill_runtime")
         windows_helper = os.environ.get(_WINDOWS_HELPER_ENV)
         windows_bundle = os.environ.get(_WINDOWS_BUNDLE_ENV)
         windows_verifier = os.environ.get(_WINDOWS_VERIFIER_ENV)
@@ -112,6 +133,7 @@ class BuildWithNativeHelper(build_py):
 
 
 setup(
-    cmdclass={"build_py": BuildWithNativeHelper, "bdist_wheel": NativeWheel},
+    cmdclass={"build_py": BuildWithNativeHelper, "bdist_wheel": NativeWheel,
+              "sdist": SourceWithSkillResources},
     distclass=NativeDistribution,
 )

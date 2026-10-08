@@ -19,7 +19,7 @@ dependencies = []
 llm = ["httpx>=0.27"]
 # 本地 WebUI —— P5 使用
 web = []
-dev = ["pytest>=7.4", "ruff>=0.5"]
+dev = ["pytest>=7.4", "ruff>=0.5", "setuptools>=80"]
 
 [project.scripts]
 icode = "icode.cli:main"
@@ -29,7 +29,8 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # WebUI 资源必须随包分发（页面、脚本、样式；无 CDN / 无内联脚本）
-icode = ["web_assets/*", "workbench_assets/*", "schemas/*.json", "conformance/*.json", "native/*"]
+icode = ["web_assets/*", "workbench_assets/*", "schemas/*.json", "conformance/*.json", "native/*",
+         "skill_runtime_manifest.json", "skill_runtime/*", "skill_runtime/*/*", "skill_runtime/*/*/*"]
 
 [project.urls]
 Homepage = "https://github.com/ayukyo/icode"

@@ -23,6 +23,9 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
     def test_shared_runtime_budget_contract_runs_on_every_platform(self) -> None:
         self.assertIn("tests.test_shared_runtime_budget", DEFAULT_MODULES)
 
+    def test_rejected_post_transport_runs_on_every_platform(self) -> None:
+        self.assertIn("tests.test_workbench_rejected_body", DEFAULT_MODULES)
+
     def test_cross_platform_matrix_selects_os_neutral_R3_regressions(self) -> None:
         self.assertEqual(len(CROSS_PLATFORM_R3_TESTS), 50)
         self.assertTrue(set(CROSS_PLATFORM_R3_TESTS).issubset(DEFAULT_MODULES))
