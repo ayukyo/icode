@@ -1,12 +1,64 @@
 import tempfile
 import hashlib
+import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import license_notices
 from license_notices import collect_notices, validate_review
 
 
 class LicenseClosureTests(unittest.TestCase):
+    def _generate_with_cp1252_locale(self, package_output, *, unicode_goroot=True):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            project = root / "project"
+            goroot = root / ("go-\u201d" if unicode_goroot else "go")
+            project.mkdir()
+            goroot.mkdir()
+            (goroot / "LICENSE").write_bytes(b"Go original\n")
+            (project / "LICENSE.sigstore").write_bytes(b"Trust original\n")
+            review = {"schema_version": 1, "modules": [],
+                      "go_license_sha256": hashlib.sha256(b"Go original\n").hexdigest(),
+                      "trust_anchor_license_sha256": hashlib.sha256(b"Trust original\n").hexdigest()}
+            (project / "license-review.json").write_bytes(json.dumps(review).encode("utf-8"))
+            output = root / "notices.txt"
+            real_run = subprocess.run
+
+            def emitted_go_output(argv, **kwargs):
+                # Actual child pipe decoding with a Windows-like default locale;
+                # explicit protocol encoding must override it, not ignore bytes.
+                data = package_output if argv[1] == "list" else str(goroot).encode("utf-8") + b"\n"
+                options = dict(kwargs)
+                options.setdefault("encoding", "cp1252")
+                return real_run([sys.executable, "-c",
+                                 f"import sys; sys.stdout.buffer.write(bytes.fromhex('{data.hex()}'))"],
+                                **options)
+
+            with mock.patch.object(license_notices, "__file__", str(project / "tools/license_notices.py")), \
+                    mock.patch.object(sys, "argv", ["license_notices.py", "--output", str(output)]), \
+                    mock.patch.object(license_notices.subprocess, "run", side_effect=emitted_go_output):
+                license_notices.main()
+            return output.read_bytes()
+
+    def test_go_json_and_goroot_are_utf8_independent_of_windows_locale(self):
+        package = json.dumps({"Doc": "\u201cUTF-8\u201d", "Module": {"Main": True}},
+                             ensure_ascii=False).encode("utf-8")
+        result = self._generate_with_cp1252_locale(package)
+        self.assertIn(b"Go original\n", result)
+        self.assertIn(b"Trust original\n", result)
+
+    def test_invalid_go_utf8_is_rejected_without_lossy_decoding(self):
+        invalid_json = b'{"Doc":"\xff","Module":{"Main":true}}'
+        with self.assertRaises(UnicodeDecodeError) as rejected:
+            self._generate_with_cp1252_locale(invalid_json,
+                                             unicode_goroot=False)
+        self.assertEqual(rejected.exception.encoding, "utf-8")
+        self.assertEqual(rejected.exception.object, invalid_json)
+
     def test_missing_reviewed_root_notice_is_a_distribution_blocker(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -121,8 +121,10 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
     project = Path(__file__).resolve().parents[1]
-    listed = subprocess.run([args.go, "list", "-mod=readonly", "-deps", "-json", "."], cwd=project, check=True, capture_output=True, text=True, timeout=60)
-    goroot = subprocess.run([args.go, "env", "GOROOT"], cwd=project, check=True, capture_output=True, text=True, timeout=30)
+    # Go emits UTF-8; Windows locale decoding can reject valid JSON/docs/paths.
+    # Decode strictly: do not silently replace bytes or relax notice hashes.
+    listed = subprocess.run([args.go, "list", "-mod=readonly", "-deps", "-json", "."], cwd=project, check=True, capture_output=True, text=True, encoding="utf-8", timeout=60)
+    goroot = subprocess.run([args.go, "env", "GOROOT"], cwd=project, check=True, capture_output=True, text=True, encoding="utf-8", timeout=30)
     review = json.loads((project / "license-review.json").read_text(encoding="utf-8"))
     if review.get("schema_version") != 1:
         raise ValueError("unsupported license review schema")

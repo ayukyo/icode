@@ -60,3 +60,27 @@ Python 33 个关联方法连续 20 轮（660 次），Go 16 个函数连续 20 �
 公开 x64/ARM64 check annotations 只给 `Process completed with exit code 1`，没有 raw details；不能断言是 go test、vet、build、license tests 或 closure 中的某一项，也不能因为四格同一步失败就认定内部根因相同。下一次只加入各原生命令固定 stage/exit，Go JSON fail 只投影严格白名单形状、数量有界的顶层测试名，许可输出只匹配固定错误类别，不输出证明、路径或异常正文；失败仍返回原退出码且不进入签名/上传。实际原因待下一 SHA，严禁猜测修改密码学或规范化许可证字节来放宽判据。
 
 同 SHA 的 [主 CI](https://github.com/ayukyo/icode/actions/runs/37717792363) 为 32 success、2 Windows Reviewer snapshot candidate failure、3 skipped；两个 Python 全仓、Windows 旧 bootstrap wheel、workspace 和 R3 lifecycle 子门通过，不替代本 provenance 或 R2/R3 总门。[官网](https://github.com/ayukyo/icode/actions/runs/37717792362) success。
+
+## ffc3792 阶段定位与严格 UTF-8 修复候选
+
+[run 37720691064](https://github.com/ayukyo/icode/actions/runs/37720691064) 的四组原生 job（`113128677034`、`113128677135`、`113128677172`、`113128677027`）均失败；分别读取的公开注解均为 `stage=license_closure exit=1 reason=unclassified`。前置 validate 成功，四组签名/安装正例/六类负例/上传全部跳过。主代理也直接重读 x64 Python 3.12 原始公开注解；仍未取得异常类型或 runner locale，不以共同阶段推断底层原因。
+
+| 基线 | 本次证据与未观测边界 |
+|---|---|
+| identity | 以上四个 GitHub hosted matrix job；物理 serial/MAC 不适用，实际 ANSI code page unknown |
+| time_window | 该 run 2026-10-08 03:01–03:12 UTC，按 job 时间定位；无原始异常文本 |
+| repo_matrix | runtime/main `ffc3792401dca0edde0570e53e0d3711a53f02ef`；analysis/verification 为其上的两处编码工作树补丁，子模块未改 |
+| artifact_identity | 本机 Go 1.27.1；远端编译器产物未取得/hash unknown，签名 wheel 未生成；本机 notice 双架构均 625239 bytes、SHA-256 `f6c4772fb032b893dc74e99df4bec4e9a0926f1fbd80219c8b5007e09fb3b6e4` |
+| evidence_sources | 公开固定阶段注解、当前源码、真实 go list 元数据与 child-pipe 回归；没有完整远端日志 |
+| unresolved | Windows 实际解码页/异常类型及修复后原生行为；主代理以新 SHA 四组 CI 验收，不放宽失败条件 |
+| conclusion_ceiling | `fix_verified_host`：修复真实平台编码缺陷；禁止称旧 CI 确定根因或 Windows 验签通过 |
+
+Go 1.27.1 的 [list JSON 输出](https://github.com/golang/go/blob/go1.27.1/src/cmd/go/internal/list/list.go#L470)与 [JSON 编码](https://github.com/golang/go/blob/go1.27.1/src/encoding/json/encode.go#L82)采用 UTF-8；CPython 3.12.10 的 [subprocess 默认文本编码](https://github.com/python/cpython/blob/v3.12.10/Lib/subprocess.py)和 [Windows ANSI code page 路径](https://github.com/python/cpython/blob/v3.12.10/Python/fileutils.c)说明未指定编码会受 locale/UTF-8 mode 影响。真实本机 go list 输出 2141305 bytes 严格 UTF-8 通过，CP1252 在位置 145465、字节 157 拒绝；独立复现一致。两次 Go subprocess 现显式严格 UTF-8，未改 read_notice、原文 bytes、哈希、模块审核、密码学或权限。
+
+| 断言 | 类别 / 状态 |
+|---|---|
+| locale 默认解码存在真实缺陷 | 当前源码＋真实输出，已复现 |
+| 它导致 ffc3792 原生失败 | 候选解释，未确认，不作根因结论 |
+| 严格 UTF-8 不改变 notice 原文/摘要 | 两架构生成器与完整许可审核通过，本机证据 |
+
+新增正常 UTF-8 JSON/Unicode GOROOT 与坏 UTF-8 两例先 RED 后 GREEN；8 项许可测试、最终 20 轮 160 次通过。独立 SPEC/QUALITY 通过；QUALITY 发现 Unicode 临时父路径可能让 GOROOT 的无关解码异常冒充坏 JSON 拒绝，现负例绑定异常编码及原始坏 JSON bytes。独立旧版变体明确 RED、新版 Unicode 父路径变体 GREEN，Minor 关闭。生产文件冻结后的完整 preflight 3/3、补强测试后的许可回归与密钥/子模块守护、编译/治理/官网/竞品/diff 均通过。整体 R2/R3 与自动模式门不变，待新 SHA 原生复验。
