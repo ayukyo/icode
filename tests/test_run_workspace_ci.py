@@ -14,6 +14,34 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_pe_reader_portable_contract_is_selected_once_without_skips(self):
+        module_name = "tests.test_windows_pe_reader"
+        self.assertEqual(DEFAULT_MODULES.count(module_name), 1)
+        module = importlib.import_module(module_name)
+        test_class = getattr(module, "TestWindowsPeReader", None)
+        self.assertTrue(isinstance(test_class, type))
+        methods = unittest.defaultTestLoader.getTestCaseNames(test_class)
+        self.assertTrue(methods)
+        self.assertFalse(getattr(test_class, "__unittest_skip__", False))
+        for method in methods:
+            self.assertFalse(getattr(getattr(test_class, method), "__unittest_skip__", False))
+
+        def cases(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from cases(test)
+                else:
+                    yield test
+
+        expected = {module_name + ".TestWindowsPeReader." + method for method in methods}
+        actual = [test for selection in DEFAULT_MODULES
+                  if selection == module_name or selection.startswith(module_name + ".")
+                  for test in cases(unittest.defaultTestLoader.loadTestsFromName(selection))]
+        self.assertEqual({test.id() for test in actual}, expected)
+        self.assertEqual(len(actual), len(expected))
+        for test in actual:
+            self.assertIs(type(test), test_class)
+
     def test_snapshot_rejection_diagnostic_selected_once_portably(self):
         name = "tests.test_windows_snapshot_rejection_diagnostic"
         self.assertEqual(DEFAULT_MODULES.count(name), 1)

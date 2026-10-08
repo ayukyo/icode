@@ -27,3 +27,11 @@
 ## 后续验收前置
 
 先有范围/预算/明确错误分类的独立设计、SPEC→不同QUALITY，再TDD、完整软件守卫和同SHA四格真实PE。原始结构读取须只读、有界、固定受验证目标，并保持采集前后目标bytes不变；不用本机mock代替原生或标准用户/Win10验证。当前研究结论为`unverified`，不关闭R2/R3任何执行门。
+
+## 2026-10-09 当前上游复核（保留旧固定观察）
+
+本轮基线main118a262，独立只读研究复核公开refs及相关函数，root另读下列构建/启动、ordinary/delay、资源及读取函数。Codex新固定`2c3156adf4c9454f0e01c839669255c6a32b5416`：[build.rs](https://github.com/openai/codex/blob/2c3156adf4c9454f0e01c839669255c6a32b5416/codex-rs/windows-sandbox-rs/build.rs)、[setup.rs](https://github.com/openai/codex/blob/2c3156adf4c9454f0e01c839669255c6a32b5416/codex-rs/windows-sandbox-rs/src/setup.rs#L940)相关分层未变。pefile新固定`cc9f5501ba93938e505858eaa3230608b6fbc34f`，源码版本仍2024.8.26：[ordinary](https://github.com/erocarrera/pefile/blob/cc9f5501ba93938e505858eaa3230608b6fbc34f/pefile.py#L5849)、[delay](https://github.com/erocarrera/pefile/blob/cc9f5501ba93938e505858eaa3230608b6fbc34f/pefile.py#L5647)、[resource](https://github.com/erocarrera/pefile/blob/cc9f5501ba93938e505858eaa3230608b6fbc34f/pefile.py#L4604)、[读取](https://github.com/erocarrera/pefile/blob/cc9f5501ba93938e505858eaa3230608b6fbc34f/pefile.py#L6341)。独立逐函数比较报告变化主要为格式、异常收窄、NameIsString及ordinal标记，宽容partial、截短/回退和未遇NUL仍返回片段的语义没有消失。两个新固定LICENSE分别[Apache2](https://github.com/openai/codex/blob/2c3156adf4c9454f0e01c839669255c6a32b5416/LICENSE)/[MIT](https://github.com/erocarrera/pefile/blob/cc9f5501ba93938e505858eaa3230608b6fbc34f/LICENSE)，独立比较未变；无复制或新依赖。
+
+**采纳候选补充：**完整区间唯一file-backed映射，描述符与name/thunk各自映射；ImportDir Size不必包住后两者。resource目录/名字/data-entry位置用root相对偏移，data-entry的OffsetToData另作RVA；跨section不能无依据称格式非法。普通未绑定IAT与ILT可相等，delay IAT则不能强套hint/name解释。[Microsoft导入/资源格式](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)为结构依据。该页[delay Attributes专节](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format#attributes)明确bit0为RvaBased，而前表仍写Must be zero，设计应记录此原文不一致并依据专节，不机械沿表格。
+
+**暂缓：**whole-parser、工具文本双解析、manifest语义与生产准入。**不适配：**overlay RVA=offset回退、截短/零填充冒充原bytes、预算耗尽返回已解析部分、#1替全部资源、目录检查授加载信用。若采用A，先独立头部/RVA基础，再导入/资源遍历和四格CI消费；现有machine API/消费者不改，三false保留。具体接受子集（例如目录数、VirtualSize零、raw padding、bound/VA-delay）必须明确标ICODE策略及兼容成本。本轮不刷新完整20名单，不以研究更新通过R2/R3。

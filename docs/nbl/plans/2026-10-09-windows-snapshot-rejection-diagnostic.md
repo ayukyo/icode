@@ -1421,7 +1421,7 @@ Task 1 实测履历：首轮指定2项为2 assertion FAIL/0ERROR/0skip，0.000�
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（仅本诊断阶段；下述原生失败及R2/R3总门仍开放）
 
 **Dependencies:** Task 1
 **Parallelizable:** No (必须同五文件冻结SHA，SPEC先于不同QUALITY，root定点→20轮→DEFAULT→full串行，发布后才有对应新SHA原生)
@@ -1479,7 +1479,7 @@ sha256sum tests/windows_snapshot_rejection_diagnostic.py tests/test_windows_snap
 
 Expected：全部退出0，源码五SHA仍相同；`check_agent_landscape`只证日期/20项结构，不证20个上游已刷新。root用apply_patch向阶段记录与landscape写实际软件摘要和研究采纳/暂缓/不适配，保留未通过平台门及历史日期。文档更新后再跑治理/site/landscape/diff和preflight的secrets/submodule门；不再修改源码，如改源码须回Step1。root要逐一记录下面七维实际证据，不写未经测试的“异常全覆盖”或“可运行100%”。
 
-- [ ] **Step 5: 仅已授权main精确提交推送，再绑定新SHA。**
+- [x] **Step 5: 仅已授权main精确提交推送，再绑定新SHA。**
 
 提交前 `git branch --show-current` 必须main，`git status --short` 与实际diff确定精确目标；不用 `git add .`，不纳其它用户dirty。仅暂存本片五文件、本计划、必要的原冻结设计、新landscape段及上述两份由root独自写入的 b389 收尾记录；精确清单必须重新核对。忽略docs只对这些必要路径显式force-add，不扩大到其它候选方案。
 
@@ -1503,7 +1503,7 @@ git ls-remote origin refs/heads/main
 
 Expected：提交/push退出0、local HEAD与origin main完整SHA相等；保留其它dirty。受本会话既有main提交推送授权，不重复问分支/批准；命令失败先解释并定位，不能强推、清工作区或绕守卫。这里只是源码阶段发布，不包含release/tag或额外CI权限。
 
-- [ ] **Step 6: 新SHA原生仅观察，完整回读x64与ARM workspace日志。**
+- [x] **Step 6: 新SHA原生仅观察，完整回读x64与ARM workspace日志。**
 
 发布自动触发的既有CI由独立只读观察者绑定精确source SHA、workflow/run/job，读取元数据及完整decoded日志；root另独立回读。可用既有`gh api`只读或官方公开GET，不调用dispatch/rerun/cancel/修改workflow或下载执行native。具体run/job ID来自该新SHA实际列表，不沿用b389/ccbe的ID；当前没有可预填的新SHA/run。对每格记录平台/image、actualPython、total/PASS/FAIL/ERROR/既有skip、实际fixture是否越过baseline、是否出现 `ICODE_WINDOWS_SNAPSHOT_REJECTION=`。若有行，按冻结schema逐字段读两槽与call_outcome，禁止从mask推Git/Defender/正文根因；若无行仅表示该格本窗口未观察actual目录拒绝，不作稳定性修复结论。
 
@@ -1554,6 +1554,24 @@ root计划复核：实现前全文回读1384行原计划，确认步骤/调用�
 后续实际状态：DEFAULT已退出0，485PASS/0FAIL/ERROR/skip、163.460秒，installed bootstrap verifier byte binding为PASS。文档技能脚本对精确10个相关文件连续两轮0疑似项；人工核两槽、scope与entry分类、mask/状态枚举及段引用一致。六个Python代码块去共同缩进后AST解析通过，两完整样例与实际源码逐字相同，新模块实际22方法、十个共享schema字段在设计/实现/测试均有消费。首轮自制AST checker未去fixture语句缩进而自身报IndentationError，已改为dedent并重验；没有改源码、删除负控或将此checker ERROR算RED。DEFAULT退出后才启动原三道完整preflight，未取得其结果前不填写full通过。
 
 完整守护后续实测：原三道preflight实际退出0，secrets/submodule均通过；原unittest命令2339 total/2280PASS/59既有环境skip/0FAIL/ERROR、481.407秒，子进程退出0、wall481.694秒。没有改原解释器、argv、cwd、env、测试选择或返回码。结束后全仓compileall-j1退出0、0.543秒，pycache仅仓外临时目录；governance/site/landscape（显式2026-10-09）及diffcheck均退出0。五源码SHA、设计16b93a保持，vendor仍1693651且干净。文档最终更新后的两轮一致性及三个文档检查/密钥/子模块门会在精确stage之前重验；发布和新SHA原生尚未取得，不填写总门通过。
+
+发布后续实测：最终十文件连续两轮一致性0疑似项，governance/site/landscape/diff及secrets/submodule重验均退出0。普通add对ignored docs提示退出1，但实际index已收相关tracked项；仅显式force-add两份必要新doc，重新核精确10路径、逐文件index bytes等于工作树、五源码SHA/设计16b93a/父b389/vendor1693651且子模块干净。main提交`118a2621cef92a5fcda510db295ea8c7658e5d4f`，push退出0；独立remote heads仅main同SHA，GitHub官方main与父b389精确相同，推后工作树干净。新CI37850895865、provenance37850895825、Pages37850895869已绑定118a并由新独立只读观察者接管；新双架构原生尚未取得，Task2 Step6及总门不勾选。没有分支/release/PyPI/vendor或权限改变。
+
+新SHA原生观察后续：root与独立观察者分别完整读取双workspace decodedlog，actual checkout118a/vendor1693651、CPython3.11.9及byte binding PASS均可见。x64 job113563238944为Server2025 10.0.26100、image20260925.250.1，479 total/457PASS/1FAIL/1ERROR/20既有skip、282.900秒；ARM job113563238598为Win11 10.0.26200、image20261004.176.1，同计数、333.521秒。每格恰好一行闭schema回执；root逐字段核schema、类型、枚举及两槽关系，与观察者结论一致：call_outcome=returned，第一槽directory_rejected/git_metadata/listing，changed_entry_class=git_metadata、listing_difference_mask=16、handle_observation=not_observed、handle_difference_mask=null；第二槽completed/unavailable/none、class=not_observed、两个mask=null、handle_observation=not_observed。这只证明实际`.git`子树listing的ChangeTime字段变化以及第二次快照返回，未观察第一次final-held pair，不能推具体名字、写入者、Git/Defender或修复信用。两格继续到增量prepare后仍因Git10093失败，legacy dispatch仍因Git10038失败；fake工具两turn不是实际模型1→6。对应jobs终态STOP，不重复轮询或重跑。
+
+CI37850895865终态failure，44/44 jobs为36success/5failure/3整项skip/0cancel。五失败是双workspace、双Reviewer及macos-15-intel lifecycle；相较上一SHA新增Intel耗时断言失败，不用旧窗口抵消。Intel job113563238539实际31 total/26PASS/1FAIL/4既有skip、9.373秒，输出不完整拒绝已满足，但4.037273346999996秒不小于4秒；单独基线与未确认根因见[耗时调查](../specs/2026-10-09-macos-detached-output-timing-research.md)。Windows网络/WFP、Mac quota和整体门仍未通过。
+
+Pages37850895869终态success；root独立完整读取deploy job113563305681，artifact11581668783、build_version118a完整SHA与22:04:00.9077703 UTC Reported success相互绑定，发布地址https://ayukyo.github.io/icode/。这只有站点发布信用。provenance37850895825截至本记录仍在四matrix构建，validate成功但不能提前填写四包/签名结果。本片Task2 Step6与诊断阶段软件/接线观察完成，R2/R3整体验收、实际PE目录检查、加载/首UAC、Win10、隔离配额、SKILL Git管道以及模型六步均不因此关闭。
+
+provenance终态后续：run37850895825为failure，完整5/5 jobs为validate及三matrix success、x64/Python3.11 failure、0skip/cancel；所有观察者已STOP。独立观察者完整读取各格decodedlog，root另外取得各格完整字符串并检查实际checkout/vendor/Python、具名19项脚本阶段、唯一回执和attestation行，以及终态jobs/artifacts API，不声称root逐行人工阅读所有依赖下载日志。x64/Python3.11 job113566689296实际3.11.9、tools9PASS/0.173秒，22:15:57.739 UTC编译产出exe后22:16:48.377 UTC构建上下文probe失败；API后续采集/签名/安装/upload均skipped，无context/PE receipt、attestation、安装信用或artifact。泛错误与约50秒跨度不能定性timeout根因。
+
+| matrix | job | actual Python / tools unittest | helper与attestation SHA256 | 新artifact / bytes |
+| --- | --- | --- | --- | --- |
+| x64 py3.12 | 113566689339 | 3.12.10 / 9PASS、0.178秒 | a19dd2a9ae37ba433b97dd6dd8c70111ee6613c8da249fffeeb558505c47c1e7 | 11582342535 / 8359585 |
+| ARM py3.12 | 113566689380 | 3.12.10 / 9PASS、0.378秒 | 0c8b9f7413b01f2be20fe7332d379b5d2e6895bca9c28096abf4c9f91346daf0 | 11582611993 / 7569646 |
+| ARM py3.11 | 113566689391 | 3.11.9 / 9PASS、0.160秒 | 29494626a46e9340db25552639a1ef5e46b6eda905726d048f99d49a9cebb9c6 | 11583001517 / 7569374 |
+
+三成功格各19项安装脚本PASS，不是19unittest；新CAPTURED回执三false保持，buildcontext与schema/架构/hash、实际attestation行匹配。artifact API完整3/3均source118a/run37850895825且未过期，created分别22:15:32/22:16:08/22:17:45 UTC；ZIP SHA256分别b73c986c8639ede67ef56dcb449dbae8fb8a7ffaa8491a4f4948ef58713c74ae、49fceb2eeb5fbacb4baf79749a6d6cfcf2aed76df4a1074559b6e68688f4a73a、c000d399d1a7fd52b72ff98cce3f31f7aace4cfa8f13066aa448cebe660cc209。helper摘要不同于artifact ZIP摘要，不混用。root首个阶段提取正则只匹配18条，漏了pure-Python开头的具名阶段；已改为匹配实际`: PASS`行并核三格完整相同19项，没有删改原测试。validate实际tools9PASS/0.044秒、Go与原preflight/治理通过；该workflow不输出完整unittest总计，未杜撰total。前一SHA四格成功保持历史，本窗口不能填四格PASS，整体验收仍开放。
 
 ---
 
