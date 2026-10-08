@@ -14,6 +14,38 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_pe_capture_portable_contract_is_selected_once(self) -> None:
+        from tests.test_windows_pe_capture import TestWindowsPeCapture
+        module = "tests.test_windows_pe_capture"
+        name = module + ".TestWindowsPeCapture"
+        host = module + ".TestWindowsPeCaptureHostCLI"
+        self.assertEqual(DEFAULT_MODULES.count(name), 1)
+        self.assertNotIn(module, DEFAULT_MODULES)
+        self.assertNotIn(host, DEFAULT_MODULES)
+
+        def cases(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from cases(test)
+                else:
+                    yield test
+
+        portable = list(cases(unittest.defaultTestLoader.loadTestsFromName(name)))
+        methods = unittest.defaultTestLoader.getTestCaseNames(TestWindowsPeCapture)
+        self.assertTrue(methods)
+        expected = {name + "." + method for method in methods}
+        self.assertEqual({test.id() for test in portable}, expected)
+        selected = [test for selection in DEFAULT_MODULES if selection.startswith(module)
+                    for test in cases(unittest.defaultTestLoader.loadTestsFromName(selection))]
+        self.assertEqual(sorted(test.id() for test in selected), sorted(expected))
+        for test in selected:
+            self.assertIs(type(test), TestWindowsPeCapture)
+            self.assertFalse(getattr(type(test), "__unittest_skip__", False))
+            self.assertFalse(getattr(getattr(test, test._testMethodName), "__unittest_skip__", False))
+        host_ids = {test.id() for test in cases(unittest.defaultTestLoader.loadTestsFromName(host))}
+        self.assertTrue(host_ids)
+        self.assertTrue(host_ids.isdisjoint(test.id() for test in selected))
+
     def test_build_context_portable_contract_is_selected_once(self):
         from tests.test_windows_build_context import TestWindowsBuildContext
         name = "tests.test_windows_build_context.TestWindowsBuildContext"

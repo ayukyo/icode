@@ -12,7 +12,24 @@
 
 基线main `0f557b10c9df759de4d7550dc73f5d99c3b95f2a`；只改测试根的前片已验收推送，本片原生产者与设计基线58相同。设计 [build-context](../specs/2026-10-09-windows-build-context-design.md) 冻结SHA256 `5bed7f91d70f18554474d40bacdc71104b71b247ede5eddf9eb7ca2bd8f4f07c`，独立SPEC及不同QUALITY批准；QUALITY唯一非阻断建议纳入：MSBuild17.8以下不支持getProperty，必须固定错误且零后续签名，不另造版本/PATH探测。原设计的“待审”属于写入窗口，本条为最新批准状态；本计划尚未实施。
 
+最新发布窗口（2026-10-09）：本片软件已main提交推送 `3ef4ecd7b4854985202e39704c8efa9e2c1be22b`（父0f），push/远端refs/官方main分别核实、提交后工作树干净。精确CI37829612670、来源37829612739仍观察中；Pages37829612642终态success，根另读deploy113491304514，artifact11572727568及pages_build_version精确3ef，Pages观察STOP。根另读macOS workspace113491240520：实际438/0skip（265.021秒）及75lease/0skip（3.950秒）成功，image macos26-arm64 20260907.0351.1；非verbose无逐method PASS标记，不冒称取得独立单测输出。Windows四context尚未执行；0f四signed19PASS不覆盖本片，R2/R3总门不变。下文实施前、守护中、待提交文字保留其历史窗口，最新本条优先。
+
+CI终态追加（2026-10-09）：根独立回读 run37829612670 的 head SHA 精确3ef及44 jobs，completed/failure，37success/4failure/3whole-job-skip。失败限于下述两工作区和两Reviewer；三个已关闭历史probe gate仍为skip，不算PASS。根另读 Python3.11 job113491240860 与 Python3.12 job113491240971：各2287 tests/71skip/0failure/0error，分别616.409与575.483秒，即各2216PASS；不能倒填本机2228PASS/59skip。CI观察STOP，Pages已STOP；只继续签名四格。此是固定提交的远端结果，不是R2/R3整体验收。
+
+签名终态追加（2026-10-09）：根独立核 run37829612739 的 head SHA 精确3ef、completed/success，并回读下列四份 decoded 日志；每份都有固定 `windows-build-context status=PASS production_authority=none`、schema1的完整canonical receipt，且该receipt在本格真实attestation之前，后续19项安装/验签/绑定/负控全部PASS。七源码 SHA 与冻结441788逐项不变。本诊断子门关闭；CI整体失败与R2/R3未完成状态保持，不用旧0f回执补证。
+
+| 实际平台/Python | job | 实际映像版本 | receipt UTC / attest UTC | proof | 安装PASS |
+|---|---|---|---|---|---|
+| Server2025 x64 / 3.11.9 | 113496182651 | windows-2025-vs2026 / 20260925.250.1 | 19:22:05 / 19:22:07 | [54067141](https://github.com/ayukyo/icode/attestations/54067141) | 19 |
+| Server2025 x64 / 3.12.10 | 113496182793 | windows-2025-vs2026 / 20260925.250.1 | 19:21:53 / 19:21:55 | [54067077](https://github.com/ayukyo/icode/attestations/54067077) | 19 |
+| Windows11 ARM64 / 3.11.9 | 113496182648 | windows-11-vs2026-arm64 / 20261004.176.1 | 19:24:29 / 19:24:32 | [54067855](https://github.com/ayukyo/icode/attestations/54067855) | 19 |
+| Windows11 ARM64 / 3.12.10 | 113496182838 | windows-11-vs2026-arm64 / 20261004.176.1 | 19:22:37 / 19:22:39 | [54067313](https://github.com/ayukyo/icode/attestations/54067313) | 19 |
+
+四格共同receipt字段：`schema_version=1`、`generator=Visual Studio 18 2026`、`toolset=v145`、`sdk_version=10.0.26100.0`、`VCToolsInstallDir=C:\Program Files\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC\14.51.36231\`、`WindowsSdkDir=C:\Program Files (x86)\Windows Kits\10\`。x64两格 `architecture=x64`、`msbuild=C:/Program Files/Microsoft Visual Studio/18/Enterprise/MSBuild/Current/Bin/amd64/MSBuild.exe`、`MSBuildToolsPath=C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\Bin\amd64`；ARM两格 `architecture=arm64`、`msbuild=C:/Program Files/Microsoft Visual Studio/18/Enterprise/MSBuild/Current/Bin/arm64/MSBuild.exe`、`MSBuildToolsPath=C:\Program Files\Microsoft Visual Studio\18\Enterprise\MSBuild\Current\Bin\arm64`。这些是项目评估后所选值，不是dumpbin/mt文件存在性、工具对象锁或Win10原生证据。UTC时间均为2026-10-08，Asia/Shanghai观察日期为10-09。三个run均终态，观察STOP。
+
 根代理唯一文档写者。串行实现者只可改下列七文件；不改vendor、C代码、产品API、权限、其它workflow、Go或MANIFEST。用户指定main自主继续，不创建开发分支/额外worktree，不因技能默认交接要求等待新命令；安全范围或特权变更仍需新授权。编译保守1、不超过6。
+
+同 SHA 的工作区回读（2026-10-09）：根独立取得 x64 job113491240924 与 ARM64 job113491240965 的 decoded 日志，分别432 tests/320.296秒与432 tests/350.341秒，均 failures=1/errors=1/skipped=20、exit1。新失败只有 code 步的 Git WinError10038 与 history prepare 的 Git WinError10093；本窗口未出现旧 IndexError，不移植旧失败。无逐方法输出，故仅能记录整套结果和本片未列入失败列表，不能列20条独立原生PASS。根另读 Reviewer113491241001/113491241208：x64 observer gate=unavailable、ARM=ready，但两者 IPv6 loopback=evidence_unavailable、helper exit78、cleanup=true、单测1failure；不能把ARM的observer就绪写为网络拒绝已证明。进一步 SKILL Git 源码变更仍待独立授权，既有三校验器授权不扩大到它；本片不绕过这些失败。
 
 | 文件 | 责任 |
 |---|---|
@@ -397,15 +414,15 @@ DEFAULT实际438PASS/0FAIL/0ERROR/0SKIP（163.275秒）并正常退出后，根�
 | tests/test_windows_bootstrap.py | 061d302d3e73eb3577e5e18b21a6115edb40eab7db30e0c6a16d17394a64d071 |
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成（Task4；仅本片CI诊断子门）
 
 **Dependencies:** Task 3
 **Parallelizable:** No（冻结后审查；远端只读观察可独立并行）
 
-- [ ] 全读七文件diff与调用链，freeze各SHA256；独立SPEC→不同fresh QUALITY，不携root思考历史。整改须TDD后重新freeze/审查，不沿用旧批准。
-- [ ] 20轮串行新portable/选择/治理及旧bootstrap/direct-volume，零新skip；串行DEFAULT、完整 `python -B scripts/preflight.py`，打印实际unittest尾部而不改变结果；compileall-j1、治理/站点/竞品/diff、vendor gitlink干净。任一阻断不commit。
-- [ ] 根更新分层证据及研究采纳记录，文档收尾后重核非测试检查。git stage精确七文件与本片docs，核staged列表/父SHA，按现用户授权main提交推送、验证remote refs及官方main。原0f CI独立观察须终态STOP；不取消它以赶进度。
-- [ ] 独立只读新SHA四格run，每格实际记录OS/image/Python/context receipt/固定PASS、签名前位置、proof/安装后19PASS；缺字段/旧MSBuild或错误编码阻断均保留，不回退或跳过。只有四格成功才关闭此诊断子门；再设计dumpbin/mt有限定位，不提前实现生产安全措施。
+- [x] 全读七文件diff与调用链，freeze各SHA256；独立SPEC→不同fresh QUALITY，不携root思考历史。整改须TDD后重新freeze/审查，不沿用旧批准。
+- [x] 20轮串行新portable/选择/治理及旧bootstrap/direct-volume，零新skip；DEFAULT、完整 `python -B scripts/preflight.py`，打印实际unittest尾部而不改变结果；compileall-j1、治理/站点/竞品/diff、vendor gitlink干净。20轮末段与DEFAULT短暂重叠的实际时间顺序见上文，不声称所有套件启动完全串行。
+- [x] 根更新分层证据及研究采纳记录，文档收尾后重核非测试检查。git stage精确七文件与本片docs，核staged列表/父SHA，按现用户授权main提交推送、验证remote refs及官方main。原0f CI独立观察终态STOP，未以新推送取消它。
+- [x] 独立只读新SHA四格run，每格实际记录OS/image/Python/context receipt/固定PASS、签名前位置、proof/安装后19PASS；四格成功才关闭此诊断子门。下一设计仍不提前实现生产安全措施。
 
 ## acceptance_contract
 
@@ -417,24 +434,24 @@ DEFAULT实际438PASS/0FAIL/0ERROR/0SKIP（163.275秒）并正常退出后，根�
 
 ## verification_matrix
 
-| 层 | 必需 | 实际证据/状态 |
-|---|---|---|
-| static | yes | 设计与七源码GLOBAL SPEC→不同QUALITY均批准，冻结441788保持 |
-| unit | yes | root定点89、20轮1780、DEFAULT438均PASS/0skip；完整preflight2287 total/2228PASS/59既有skip、0FAIL/ERROR，三道通过 |
-| build/host | yes | 4项实际CMake合成序列化/默认OFF通过，仅主机信用，无真实VS |
-| deploy/consumption | yes | 新SHA四signed真实MSBuild及日志，未运行 |
+| Layer | Required | Consumer | Scenario | Environment/device | Baseline/artifact | Action | Evidence | Result |
+|---|---|---|---|---|---|---|---|---|
+| static | yes | 七文件实际调用链 | 字段/权限/顺序与旧兼容 | 当前源码 | 七源码冻结441788、设计5bed7f | 全读/独立SPEC→不同QUALITY | 上文两全局审查0问题及七逐项SHA | pass |
+| unit | yes | probe/DEFAULT/workflow | 正负控与既有回归 | Linux主机、合成Windows元数据 | 同七冻结 | 定点/20轮/DEFAULT/full preflight | 89、1780、438均0skip；2287 total/2228PASS/59既有skip、0F/E、3道通过 | pass（skip明示） |
+| build/host | yes | CMake metadata producer | ON序列化及OFF兼容 | 本机实际CMake3.22.1 | 同七冻结 | 4项HostCMake | 上文实际4PASS/0skip；不是最低3.20实跑 | pass（主机范围） |
+| deploy/consumption | yes | 四格sign消费者 | 实际MSBuild评估→attest→安装 | Server2025 x64/Windows11 ARM，各CPython3.11.9/3.12.10 | 精确3ef及顶部四proof | 独立取得四decoded log、解析receipt并核顺序/后续 | run37829612739 success；四context固定PASS及各19安装PASS，root全部回读 | pass（CI范围） |
 
 ## negative_evidence
 
-固定CMake可回退裸MSBuild，反驳变量必为绝对路径的假设；现有signed日志无工具选择receipt，不能由成品构建成功倒推已收集。旧MSBuild/属性在评估阶段缺失/非UTF8输出均允许此片实际失败，不能伪装支持。
+固定CMake可回退裸MSBuild，反驳变量必为绝对路径的假设；实施前signed日志无工具选择receipt，不能由成品构建成功倒推已收集。3ef四格现在已实际取得receipt，但旧MSBuild/属性缺失/非UTF8原生负控仍只有软件模拟，不称所有VS版本受支持。新CI的Git与Reviewer失败见顶部，不由本片成功抵消。
 
 ## gaps
 
-owner根：文档收尾后重核非测试守护与七冻结、精确main提交推送；owner根与独立观察者：新SHA原生四格待执行。前片0f独立观察不替本片。生产held-HANDLE/祖先/DACL/UAC/DLL/DPAPI/配额、macOS quota、默认新工单与R3模型1→6/90%仍是独立硬门，不在本片关闭范围。
+本诊断正向四格及软件门已关闭，根补齐远端记录，这两份后续文档拟随下一PE软件交付，不伪称追加已在3ef中。owner根：后续采集已独立设计/TDD/全局双审/20/default/full通过（六源码923e226），见[采集当前计划](./2026-10-09-windows-pe-capture.md)，但dumpbin/mt精确文件/输出与manifest行为尚无新SHA原生样本；四格另验，不阻断已关闭的本片范围，但阻断PE解析/加载结论。生产held-HANDLE/祖先/DACL/UAC/DLL/DPAPI/配额、macOS quota、默认新工单与R3模型1→6/90%仍是独立硬门，不在本片关闭范围。
 
 ## verdict
 
-`partially_verified`：实现、全局双审与本机完整守护通过；新SHA四格原生仍缺，不称此诊断整体verified、Windows生产加载或R2/R3验收完成。
+`verified`（仅本片CI build-context）：实现、全局双审、本机完整守护和3ef四格签名安装正向链均通过；不称Windows生产加载、全部工具版本/原生负控或R2/R3验收完成。
 
 ---
 **Execution Mode:** serial

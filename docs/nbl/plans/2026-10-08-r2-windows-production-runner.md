@@ -1,5 +1,13 @@
 # R2 Windows 正式安装与命令运行器
 
+## 2026-10-09后续最新窗口：构建诊断原生子门通过，PE采集软件门已过
+
+最新PE软件窗口：六源码冻结923e226，独立全局SPEC→不同QUALITY各0问题/121PASS0skip；root定点121、20轮2420、DEFAULT461均PASS/0skip，全仓2313 total/2254PASS/59既有skip/0失败及三道守护通过，编译1。接线仅签名前CLI/退出门与portable选择，不改产品权限。当前按授权准备main提交推送，新SHA四格工具存在性/最小环境/样本/后续安装仍未验；[当前采集验收计划](./2026-10-09-windows-pe-capture.md)优先于下段“设计审查中/未实施”的原观察文字。R3[工作台验证工厂预研](../specs/2026-10-09-r3-workbench-verification-research.md)仅设计输入，没有接线实现；不授pre-main/首次UAC、生产或R2/R3信用。
+
+后续终态（2026-10-09）：精确3ef来源run37829612739 success，validate与四signed均通过；根独立回读完整四context、签名前顺序及每格19安装PASS，证明54067141/54067077/54067855/54067313。本CI build-context诊断子门现在关闭；实际两种MSBuild host目录为amd64与arm64，详见[验收记录](./2026-10-09-windows-build-context.md)。同SHA主CI仍37success/4failure/3whole-job-skip（Windows Git管道及Reviewer缺网络证据），不能称R2/R3通过；Pages成功。下一[PE样本采集设计](../specs/2026-10-09-windows-pe-capture-design.md)已写、独立审查中，仍未实施，不给pre-main加载信用。下段“待验”是原发布窗口。
+
+WP0a后续修复与直达卷CI兼容性已在58及0f四格实际签名安装各19PASS，根独立回读全部日志；0f证明54052974/54052995/54055031/54053287，实际x64 Server2025与ARM Windows11、Python3.11.9/3.12.10，不补Win10/标准用户/首次UAC信用。见[精确来源与夹具窗口](./2026-10-09-windows-direct-volume-canary.md)。下一默认OFF构建context软件完成并已推送main `3ef4ecd7b4854985202e39704c8efa9e2c1be22b`，来源run37829612739仍前置校验，真实四context尚无；[本片分层验收](./2026-10-09-windows-build-context.md)。当前C只有v1与binding查询、setup/spawn仍78；直达卷脚本share7并在执行前关闭HANDLE，不能授持锁/首UAC/生产权限。WP0b首次认证、祖先/DACL/DLL/事务/DPAPI及WP1/2仍未完成。下面9ed失败及早期未实现描述保留其原观察日期，不覆盖本条最新范围。
+
 ## 2026-10-09最新原生窗口：9ed双Py3.11通过，双Py3.12失败
 
 精确main `9ed070010f934fb6fee69d8b8b000e63cfdc2b47`：[签名run37815279662](https://github.com/ayukyo/icode/actions/runs/37815279662)终态3success/2failure。x64 Py3.11 job113447129562与ARM64 Py3.11 job113447129712各9testsOK/18PASS，实际gh→C绑定→Go正负例→v1/78→导出通过，证明54031492/54032350。x64 Py3.12 job113447129610和ARM64 Py3.12 job113447129541均在Build final architecture-specific bootstrap bytes失败：固定invalid_verifier_input_or_header_output/MSB8066；后续attest/query/hash/Go/export全部skipped。根独立回读x64日志实际Python3.12.10，不以软件门或两格成功补齐四格。
@@ -118,6 +126,18 @@ TDD及原生门：ownedSID/DPAPI错误用户、损坏状态/账户碰撞、WFP�
 同日后续独立研究实际git ls-remote（官方API403后只读fallback）刷新Codex main为[`9b738582b13c2cdbeff54af0afd04c50c3e7ba09`](https://github.com/openai/codex/tree/9b738582b13c2cdbeff54af0afd04c50c3e7ba09)，package为0.0.0-dev；SRT仍固定3f0bad7/package0.0.79，两实际LICENSE均Apache2.0。新Codex[copy](https://github.com/openai/codex/blob/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/windows-sandbox-rs/src/helper_materialization/copy.rs)仍len/mtime及删除旧destination；[runner client](https://github.com/openai/codex/blob/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/windows-sandbox-rs/src/elevated/runner_client.rs#L449)原process HANDLE及认证两pipe后发送机制采纳，registered alias/MSIX分支不适配。SRT[cli](https://github.com/anthropics/sandbox-runtime/blob/3f0bad7345238f47736435e3f2b064399c1cad74/vendor/srt-win-src/src/cli.rs#L1428)锁失败继续仍不适配。上述只定点刷新，保留旧commit历史、不称全上游复核或原生已运行；WP0a明确采纳构建绑定、暂缓promotion至WP0b，独立源码/TDD/native验收不由研究代替。
 
 ## 共用交付门
+
+### 首次 UAC 的定点源码复核（2026-10-09）
+
+独立只读研究与根代理分别回读固定 Codex `9b738582b13c2cdbeff54af0afd04c50c3e7ba09` 和 sandbox-runtime `3f0bad7345238f47736435e3f2b064399c1cad74`（沿已核 Apache-2.0 许可，未刷新 HEAD）。Codex 的 [setup 提权分支](https://github.com/openai/codex/blob/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/windows-sandbox-rs/src/setup.rs#L965-L1056) 将路径放进 `ShellExecuteExW(runas)`；`retained_handles` 仅在非提权分支消费。[setup_launch](https://github.com/openai/codex/blob/9b738582b13c2cdbeff54af0afd04c50c3e7ba09/codex-rs/windows-sandbox-rs/src/setup_launch.rs#L25-L44) 在 suspended child 已创建后复制目录 HANDLE，不证明首次提权前核验与启动是同一映像。SRT 的 [self_protect](https://github.com/anthropics/sandbox-runtime/blob/3f0bad7345238f47736435e3f2b064399c1cad74/vendor/srt-win-src/src/self_protect.rs#L55-L78) 说明常规 exec 的 FILE_SHARE_READ 锁失败仍继续；[安装提权分支](https://github.com/anthropics/sandbox-runtime/blob/3f0bad7345238f47736435e3f2b064399c1cad74/vendor/srt-win-src/src/cli.rs#L1638-L1711) 也是 current_exe 路径启动，不能借此关闭 ICODE 的首 UAC 门。
+
+- 采纳候选：文件原字节与身份、祖先 no-reparse 与运行期持锁分开验证；锁失败拒绝，owner/DACL/元数据另外核验。收益是复用已明确的局部机制，成本是受控原生正负实验；不复制上游代码，不新增依赖、安装步骤或权限。
+- 暂缓：首次 UAC 路径与已核验 HANDLE 的同对象启动生产接线，验收门保持阻断；另一管理员同意 UAC 时原 host SID/DPAPI 归属也未关闭。当前 wheel/可信 host TCB 不自动扩大为抗同权限宿主或管理员篡改；受保护目录的后续启动也必须独立验证。
+- 不适配：SRT 锁失败继续、把 Codex UAC 当已证明模板、将持锁等同 protected-root/ACL 不可改，或增加 SYSTEM/MSIX/服务/新 token 特权绕过未闭合项。
+
+SRT 锁失败继续的实际调用位置另见 [cli.rs#L1428-L1449](https://github.com/anthropics/sandbox-runtime/blob/3f0bad7345238f47736435e3f2b064399c1cad74/vendor/srt-win-src/src/cli.rs#L1428-L1449)；根也独立回读此处，不只依赖 self_protect 注释。
+
+根另核 Microsoft [CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)：share 约束后续读写/删除 open，属性及扩展属性访问不受它约束，已有不兼容句柄会使锁失败；[SHELLEXECUTEINFOW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow) 输入是 lpFile 字符串，hProcess 是创建后的输出，不是输入 image HANDLE；[File Security](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights) 的 owner/DACL/WRITE_DAC 是独立访问面。验收需分别覆盖原文件与硬链写、预有WRITE/DELETE opener、祖先junction/rename/盘符alias、属性/ACL/owner与新增子对象、首次及晋升后映像/pre-main DLL、另一管理员凭据的原host身份；Win10 22H2/Win11 x64/ARM64 按真实运行记录，不能由 CI share7且执行前关闭HANDLE的 canary 补齐。本条只研究记录，无实现、原生实验或 readiness 信用。
 
 每片真实RED→GREEN/20轮、旧消费者兼容、独立SPEC→不同QUALITY、七维自检、全量preflight、compile≤j6/治理/站点/竞品/diff后才main commit/push及精确SHA原生矩阵。WP0组件、签名、旧Reviewer诊断与完整产品门分别记录，不删除历史失败或把CI job绿等同skip/全R2通过。macOS清理豁免不豁免单任务quota，本计划也不授权其新增管理员初始化。
 

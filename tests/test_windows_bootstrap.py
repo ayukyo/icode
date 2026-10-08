@@ -17,6 +17,29 @@ SOURCE = Path(__file__).resolve().parents[1] / "native/windows/icode_windows_boo
 
 
 class TestWindowsBootstrap(unittest.TestCase):
+    def test_pe_capture_runs_after_context_before_attestation(self) -> None:
+        workflow = (SOURCE.parents[2] / ".github/workflows/windows-helper-provenance.yml").read_text(encoding="utf-8")
+        validate, separator, signing = workflow.partition("\n  sign:\n")
+        self.assertTrue(separator)
+        capture = "python scripts/probe_windows_pe_capture.py --build-directory $buildDirectory --architecture '${{ matrix.helper-architecture }}'"
+        self.assertEqual(workflow.count(capture), 1)
+        self.assertNotIn(capture, validate)
+        build = "cmake --build $buildDirectory --config Release --target icode_windows_bootstrap --parallel 1"
+        context = "python scripts/probe_windows_build_context.py --build-directory $buildDirectory --architecture '${{ matrix.helper-architecture }}'"
+        stop = "if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+        sequence = "\n          ".join((build, stop, context, stop, capture, stop))
+        self.assertIn(sequence, signing)
+        self.assertLess(signing.index(sequence), signing.index("uses: actions/attest@"))
+        self.assertLess(signing.index("uses: actions/attest@"),
+                        signing.index("python scripts/run_windows_wheel_ci.py"))
+        self.assertLess(signing.index("python scripts/run_windows_wheel_ci.py"),
+                        signing.index("uses: actions/upload-artifact@"))
+        for guard in ("github.ref == 'refs/heads/main'", "github.event_name == 'push'"):
+            self.assertIn(guard, signing)
+        for permission in ("id-token: write", "attestations: write"):
+            self.assertEqual(workflow.count(permission), 1)
+            self.assertNotIn(permission, validate)
+
     def test_build_context_diagnostic_runs_after_final_build_before_attestation(self) -> None:
         workflow = (SOURCE.parents[2] / ".github/workflows/windows-helper-provenance.yml").read_text(encoding="utf-8")
         validate, separator, signing = workflow.partition("\n  sign:\n")

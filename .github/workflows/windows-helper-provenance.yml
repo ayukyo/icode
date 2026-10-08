@@ -177,6 +177,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python scripts/probe_windows_build_context.py --build-directory $buildDirectory --architecture '${{ matrix.helper-architecture }}'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/probe_windows_pe_capture.py --build-directory $buildDirectory --architecture '${{ matrix.helper-architecture }}'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Attest exactly one final helper before building the wheel
         id: attest
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1

@@ -128,6 +128,7 @@ DEFAULT_MODULES = (
     "tests.test_windows_bootstrap_binding.TestWindowsBootstrapBinding",
     "tests.test_windows_direct_volume.TestWindowsDirectVolume",
     "tests.test_windows_build_context.TestWindowsBuildContext",
+    "tests.test_windows_pe_capture.TestWindowsPeCapture",
     *CONTRACT_ENGINEERING_TESTS,
     # Host/framework contracts are bounded; optional Go SDK diagnostics are
     # separate and do not stand in for native resource-scope acceptance.
