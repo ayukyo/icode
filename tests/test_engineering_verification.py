@@ -909,6 +909,398 @@ class TestEngineeringAdapters(unittest.TestCase):
         self.assertEqual(api.parse_test_result("go_test_json_v1", encode([start, passed, passed, end])), 0)
 
 
+class TestPythonIsolatedTemplate(_EngineeringHelpers, unittest.TestCase):
+    """Exact host template and actual CPython observations, not OS isolation."""
+
+    def isolated_argv(self, root, *, executable=None):
+        return (executable or sys.executable, "-I", "-B", "-X", "utf8", "-m", "unittest",
+                "discover", "-s", str(root.resolve()), "-t", str(root.resolve()))
+
+    def isolated_check(self, api, root, **kwargs):
+        try:
+            return self.check(api, argv=self.isolated_argv(root), **kwargs)
+        except ValueError as error:
+            self.fail("The exact twelve-token isolated template is unsupported: " + str(error))
+
+    def test_exact_template_loads_stdlib_before_root_and_src_startup_shadows(self):
+        api = self.api()
+        with temp_workspace() as root:
+            root = root.resolve()
+            (root / "src").mkdir()
+            shadow_marker = root / "startup-shadow-loaded"
+            for parent in (root, root / "src"):
+                for name in ("unittest.py", "sitecustomize.py"):
+                    (parent / name).write_text(
+                        "from pathlib import Path\nPath(" + repr(str(shadow_marker)) + ").write_text('loaded')\n"
+                        "raise RuntimeError('workspace startup shadow loaded')\n", encoding="utf-8")
+            (root / "project_module.py").write_text("VALUE = '中文'\n", encoding="utf-8")
+            (root / "test_actual.py").write_text(
+                "import sys, unittest, project_module\n"
+                "class Actual(unittest.TestCase):\n"
+                "    def test_actual(self):\n"
+                "        self.assertEqual(project_module.VALUE, '中文')\n"
+                "        self.assertEqual(sys.flags.isolated, 1)\n"
+                "        self.assertEqual(sys.flags.utf8_mode, 1)\n"
+                "        self.assertTrue(sys.dont_write_bytecode)\n"
+                "        print('中文标准输出')\n"
+                "        print('中文标准错误', file=sys.stderr)\n", encoding="utf-8")
+            check = self.isolated_check(api, root)
+            self.assertEqual(len(check.argv), 12)
+            self.assertEqual(check.cwd, ".")
+            run = self.execute(api, self.plan(api, root, (check,)))
+            self.assertTrue(run.passed, (run.status, run.checks))
+            self.assertEqual(run.checks[0].tests_passed, 1)
+            self.assertIn("中文标准输出".encode(), run.checks[0].output)
+            self.assertIn("中文标准错误".encode(), run.checks[0].output)
+            self.assertNotIn(b"workspace startup shadow loaded", run.checks[0].output)
+            self.assertFalse(shadow_marker.exists())
+            self.assertEqual(run.source_before, run.source_after)
+            self.assertFalse(run.os_enforced)
+            self.assertEqual(list(root.rglob("*.pyc")), [])
+
+    def test_only_exact_twelve_tokens_and_literal_root_cwd_are_admitted(self):
+        api = self.api()
+        with temp_workspace() as root, temp_workspace() as other:
+            argv = self.isolated_argv(root)
+            variants = [argv[:index] + argv[index + 1:] for index in range(1, 12)]
+            variants += [argv + ("-v",), (argv[0], "-B", "-I", *argv[3:]),
+                (argv[0], "-I", "-B", "-m", "unittest", "discover", "-s", argv[9], "-t", argv[11])]
+            for index, values in ((3, ("-c",)), (4, ("utf8=0", "utf8=1")),
+                                  (6, ("other_module",)), (7, ("other_discovery",)),
+                                  (9, (".", str(other.resolve()))), (11, (".", str(other.resolve())))):
+                variants += [(*argv[:index], value, *argv[index + 1:]) for value in values]
+            for value in variants:
+                with self.subTest(argv=value), self.assertRaises(ValueError):
+                    self.check(api, argv=value)
+            for cwd in ("./", "nested", "nested/.."):
+                with self.subTest(cwd=cwd), self.assertRaises(ValueError):
+                    self.check(api, argv=argv, cwd=cwd)
+            # Old diagnostics retain their previous additional-argument and
+            # workspace-relative cwd grammar; no new default factory is added.
+            old = self.check(api, argv=(sys.executable, "-B", "-m", "unittest", "discover", "-v"), cwd="nested")
+            self.assertEqual(old.argv[-2:], ("discover", "-v"))
+            self.assertEqual(old.cwd, "nested")
+
+    def test_plan_rejects_other_or_noncanonical_discovery_root(self):
+        api = self.api()
+        with temp_workspace() as root, temp_workspace() as other:
+            root, other = root.resolve(), other.resolve()
+            for named in (str(other), str(root) + os.sep, str(root / "nested" / "..")):
+                argv = list(self.isolated_argv(root))
+                argv[9] = argv[11] = named
+                check = self.check(api, argv=tuple(argv))
+                with self.subTest(named=named), self.assertRaises(ValueError):
+                    self.plan(api, root, (check,))
+
+    def test_runtime_tampered_flags_roots_or_cwd_refuse_shared_admission_and_launch(self):
+        api = self.api()
+        with temp_workspace() as root, temp_workspace() as other:
+            self.fixture(root)
+            for mutation in ("flags", "root", "second_root", "cwd"):
+                with self.subTest(mutation=mutation):
+                    check = self.isolated_check(api, root)
+                    plan = self.plan(api, root, (check,))
+                    ctx = ToolContext(root=plan.workspace_root, sandbox=NoIsolation())
+                    if mutation == "cwd":
+                        object.__setattr__(check, "cwd", "./")
+                    else:
+                        argv = list(check.argv)
+                        if mutation == "flags":
+                            argv[4] = "utf8=0"
+                        elif mutation == "root":
+                            argv[9] = argv[11] = str(other.resolve())
+                        else:
+                            argv[11] = str(other.resolve())
+                        object.__setattr__(check, "argv", tuple(argv))
+                    self.assertFalse(api._context_matches(plan, ctx, "task"))
+                    with patch("icode.runner._run_unittest_with_bounded_output") as plain, \
+                         patch("icode.tools.builtin._controlled_dispatch") as resource:
+                        run = self.execute(api, plan, ctx=ctx)
+                    self.assertFalse(run.passed)
+                    self.assertEqual(run.status, "execution_unavailable")
+                    self.assertEqual(run.checks[0].status, "not_run")
+                    plain.assert_not_called()
+                    resource.assert_not_called()
+
+    def test_each_dispatch_rechecks_template_and_changed_next_check_never_starts(self):
+        api = self.api()
+        with temp_workspace() as root, temp_workspace() as other:
+            self.fixture(root)
+            first = self.isolated_check(api, root)
+            later = self.isolated_check(api, root, check_id="later")
+            plan = self.plan(api, root, (first, later))
+            ctx = ToolContext(root=plan.workspace_root, sandbox=NoIsolation())
+            actual = api._execute_check
+            def execute_and_mutate(check, context, cache):
+                result = actual(check, context, cache)
+                if check is first:
+                    argv = list(later.argv)
+                    argv[9] = argv[11] = str(other.resolve())
+                    object.__setattr__(later, "argv", tuple(argv))
+                return result
+            with patch.object(api, "_execute_check", side_effect=execute_and_mutate) as dispatch:
+                run = self.execute(api, plan, ctx=ctx)
+            self.assertFalse(run.passed)
+            self.assertEqual(run.checks[0].status, "passed")
+            self.assertEqual(run.checks[1].status, "not_run")
+            dispatch.assert_called_once()
+            with patch("icode.runner._run_unittest_with_bounded_output") as plain, \
+                 patch("icode.tools.builtin._controlled_dispatch") as resource:
+                result = actual(later, ctx, None)
+            self.assertEqual(result.status, "execution_unavailable")
+            self.assertEqual(result.cleanup_scope, "not_started")
+            plain.assert_not_called()
+            resource.assert_not_called()
+
+    def test_explicit_utf8_mode_and_pipe_encoding_override_adverse_python_environment(self):
+        api = self.api()
+        original_environment = api._policy_environment
+        def adverse_environment(root, **kwargs):
+            return dict(original_environment(root, **kwargs), PYTHONUTF8="0", PYTHONIOENCODING="latin1")
+        with temp_workspace() as root:
+            self.fixture(root,
+                "self.assertEqual(__import__('os').environ['PYTHONUTF8'], '0'); "
+                "self.assertEqual(__import__('os').environ['PYTHONIOENCODING'], 'latin1'); "
+                "self.assertEqual(__import__('sys').flags.utf8_mode, 1); "
+                "self.assertEqual(__import__('sys').stdout.encoding.lower().replace('-', ''), 'utf8'); "
+                "self.assertEqual(__import__('sys').stderr.encoding.lower().replace('-', ''), 'utf8'); "
+                "print('中文管道'); print('中文错误', file=__import__('sys').stderr)")
+            with patch.object(api, "_policy_environment", side_effect=adverse_environment):
+                run = self.execute(api, self.plan(api, root, (self.isolated_check(api, root),)))
+            self.assertTrue(run.passed, run.checks)
+            self.assertIn("中文管道".encode(), run.checks[0].output)
+            self.assertIn("中文错误".encode(), run.checks[0].output)
+            self.assertFalse(run.os_enforced)
+
+    def test_alternate_lexical_venv_keeps_prefix_without_forcing_current_executable(self):
+        api = self.api()
+        import venv
+        with temp_workspace() as root, temp_workspace() as runtime:
+            venv.EnvBuilder(with_pip=False, symlinks=os.name == "posix").create(runtime)
+            python = runtime / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+            self.assertNotEqual(str(python), sys.executable)
+            self.fixture(root,
+                "self.assertEqual(__import__('pathlib').Path(__import__('sys').prefix).resolve(), "
+                "__import__('pathlib').Path(" + repr(str(runtime)) + ").resolve()); "
+                "self.assertNotEqual(__import__('pathlib').Path(__import__('sys').prefix).resolve(), "
+                "__import__('pathlib').Path(__import__('sys').base_prefix).resolve()); "
+                "self.assertEqual(__import__('sys').flags.isolated, 1); "
+                "self.assertEqual(__import__('sys').flags.utf8_mode, 1)")
+            check = self.check(api, argv=self.isolated_argv(root, executable=str(python)))
+            self.assertEqual(check.argv[0], str(python))
+            run = self.execute(api, self.plan(api, root, (check,)))
+            self.assertTrue(run.passed, run.checks)
+            self.assertFalse(run.os_enforced)
+            self.assertEqual(list(root.rglob("*.pyc")), [])
+            self.assertEqual(list(runtime.rglob("*.pyc")), [])
+            if os.name == "posix":
+                # A resolved symlink launches the base interpreter instead of
+                # the selected venv. This is a runtime semantic contrast, not
+                # an added restriction that argv0 must equal sys.executable.
+                resolved = python.resolve(strict=True)
+                self.assertNotEqual(str(resolved), str(python))
+                self.fixture(root,
+                    "self.assertEqual(__import__('pathlib').Path(__import__('sys').prefix).resolve(), "
+                    "__import__('pathlib').Path(__import__('sys').base_prefix).resolve()); "
+                    "self.assertEqual(__import__('sys').flags.utf8_mode, 1)")
+                resolved_check = self.check(api, argv=self.isolated_argv(root, executable=str(resolved)))
+                contrast = self.execute(api, self.plan(api, root, (resolved_check,)))
+                self.assertTrue(contrast.passed, contrast.checks)
+                self.assertFalse(contrast.os_enforced)
+
+    def test_missing_dependency_src_only_zero_skip_and_real_failure_remain_failed(self):
+        api = self.api()
+        cases = (
+            ("missing", "import icode_fixture_missing_dependency_574d4d1a", "ModuleNotFoundError"),
+            ("src_only", "import project_src_only", "ModuleNotFoundError"),
+            ("empty", "", "Ran 0 tests"),
+            ("skip", "self.skipTest('not exercised')", "skipped=1"),
+            ("nonzero", "self.fail('real failing assertion')", "FAILED"),
+        )
+        for mode, content, expected in cases:
+            with self.subTest(mode=mode), temp_workspace() as root:
+                if mode == "src_only":
+                    (root / "src").mkdir()
+                    (root / "src" / "project_src_only.py").write_text("VALUE = 1\n", encoding="utf-8")
+                if mode in ("missing", "src_only"):
+                    (root / "test_actual.py").write_text(content + "\n", encoding="utf-8")
+                elif content:
+                    self.fixture(root, content)
+                run = self.execute(api, self.plan(api, root, (self.isolated_check(api, root),)))
+                self.assertFalse(run.passed)
+                self.assertEqual(run.checks[0].status, "failed")
+                self.assertEqual(run.checks[0].tests_passed, 0)
+                self.assertIn(expected.encode(), run.checks[0].output)
+                self.assertFalse(run.os_enforced)
+                self.assertEqual(list(root.rglob("*.pyc")), [])
+
+    def test_illegal_bytes_missing_summary_and_output_limit_never_gain_credit(self):
+        api = self.api()
+        for mode, body in (
+            ("illegal_bytes", "__import__('os').write(1, b'\\xff')"),
+            ("missing_summary", "__import__('os')._exit(0)"),
+            ("output_limit", "print('x' * 1000)"),
+        ):
+            with self.subTest(mode=mode), temp_workspace() as root:
+                self.fixture(root, body)
+                check = self.isolated_check(api, root)
+                if mode == "output_limit":
+                    check = dataclasses.replace(check, output_limit_bytes=64)
+                run = self.execute(api, self.plan(api, root, (check,)))
+                self.assertFalse(run.passed)
+                self.assertEqual(run.checks[0].tests_passed, 0)
+                self.assertEqual(run.checks[0].status, "output_incomplete" if mode == "output_limit" else "failed")
+                if mode == "output_limit":
+                    self.assertIsNone(run.checks[0].output)
+                else:
+                    self.assertEqual(run.checks[0].exit_code, 0)
+
+    def test_source_and_executable_drift_keep_existing_fail_closed_window(self):
+        api = self.api()
+        with temp_workspace() as root:
+            self.fixture(root, "__import__('pathlib').Path('source-change').write_text('changed')")
+            run = self.execute(api, self.plan(api, root, (self.isolated_check(api, root),)))
+            self.assertFalse(run.passed)
+            self.assertEqual(run.status, "source_changed")
+            self.assertEqual(run.checks[0].status, "passed")
+            self.assertNotEqual(run.source_before, run.source_after)
+        with temp_workspace() as root:
+            self.fixture(root)
+            plan = self.plan(api, root, (self.isolated_check(api, root),))
+            with patch.object(api, "_executable_identity", return_value="drift"), \
+                 patch("icode.runner._run_unittest_with_bounded_output") as launch:
+                run = self.execute(api, plan)
+            self.assertFalse(run.passed)
+            self.assertEqual(run.checks[0].status, "tool_changed")
+            launch.assert_not_called()
+
+    def test_runtime_tamper_blocks_actual_contract_entry_before_cp_and_model(self):
+        from icode import runner
+        from icode.backends import FakeBackend
+        from tests._support import require_skill
+        api = self.api()
+        settings = require_skill()
+        with temp_workspace() as root, temp_workspace() as other:
+            ctx = TestEngineeringResourceDispatch().context(root)
+            for mutation in ("flags", "roots"):
+                with self.subTest(mutation=mutation):
+                    check = self.isolated_check(api, root)
+                    plan = self.plan(api, root, (check,))
+                    argv = list(check.argv)
+                    if mutation == "flags":
+                        argv[4] = "utf8=1"
+                    else:
+                        argv[9] = argv[11] = str(other.resolve())
+                    object.__setattr__(check, "argv", tuple(argv))
+                    with patch.object(runner, "ControlPlane") as cp, patch.object(runner, "_run_agent") as model:
+                        report = runner.run_contract_step(settings, backend=FakeBackend([]),
+                            workspace=root, step="code", ticket_id="ENG-1", policy=ctx.policy,
+                            sandbox=ctx.sandbox, verification_plan=plan)
+                    self.assertEqual(report.error, "verification_plan_identity_mismatch")
+                    cp.assert_not_called()
+                    model.assert_not_called()
+
+    def test_policy_resource_unknown_and_unavailable_still_have_no_plain_fallback(self):
+        api = self.api()
+        output = b"Ran 1 test in 0.01s\n\nOK\n"
+        resource = dict(schema_version=1, resource="linux_payload_tasks", limit=64, configured=True,
+                        payload_started=None, terminal="finished", channel_status="complete")
+        good = ExecutionResult(0, "transport fixture", len(output), None, False, True, None,
+            raw_output=output, resource_receipt=resource, scope_cleanup_ok=True,
+            violation_observer_status="complete")
+        for changes in ({}, {"scope_cleanup_ok": None}, {"violation_observer_status": "incomplete"},
+                        {"resource_receipt": dict(resource, channel_status="incomplete")},
+                        {"resource_receipt": None}):
+            with self.subTest(changes=changes), temp_workspace() as root:
+                ctx = TestEngineeringResourceDispatch().context(root)
+                plan = self.plan(api, root, (self.isolated_check(api, root),))
+                with patch("icode.tools.builtin.sys.platform", "linux"), \
+                     patch("icode.tools.builtin.execute_linux_resource_observed_command",
+                           return_value=dataclasses.replace(good, **changes)) as dispatch, \
+                     patch("icode.tools.builtin.execute_policy_command") as fallback, \
+                     patch("icode.runner._run_unittest_with_bounded_output") as plain:
+                    run = api.execute_verification_plan(plan, ctx=ctx, step="code", attempt="12-template")
+                self.assertEqual(run.passed, not changes)
+                dispatch.assert_called_once()
+                fallback.assert_not_called()
+                plain.assert_not_called()
+            # Complete transport facts prove orchestration only, never native
+            # resource acceptance. Unsupported native platforms still refuse.
+        with temp_workspace() as root:
+            plan = self.plan(api, root, (self.isolated_check(api, root),))
+            ctx = TestEngineeringResourceDispatch().context(root)
+            with patch("icode.tools.builtin._uses_resource_dispatch", return_value=False), \
+                 patch("icode.tools.builtin._controlled_dispatch") as dispatch, \
+                 patch("icode.runner._run_unittest_with_bounded_output") as plain:
+                run = api.execute_verification_plan(plan, ctx=ctx, step="code", attempt="12-template")
+            self.assertEqual(run.status, "execution_unavailable")
+            dispatch.assert_not_called()
+            plain.assert_not_called()
+
+    def test_exact_argv_cwd_digest_receipt_save_export_and_independent_verifier(self):
+        import hashlib
+        import subprocess
+        from icode.engineering_evidence import build_engineering_evidence
+        from icode.self_verify import VerificationEvidence, evidence_fingerprint
+        from icode.evidence import build_evidence_pack, load_verification_receipts, save_verification_receipt
+        from icode.pack_verify import verify_pack
+        from tests._support import make_finished_plan_ticket, require_skill
+        api = self.api()
+        settings = require_skill()
+        with temp_workspace() as root, temp_workspace() as host, temp_workspace() as outside:
+            root, host, outside = root.resolve(), host.resolve(), outside.resolve()
+            self.fixture(root)
+            check = self.isolated_check(api, root)
+            plan = self.plan(api, root, (check,))
+            run = api.execute_verification_plan(plan, ctx=ToolContext(root=root, sandbox=NoIsolation()),
+                                                step="code", attempt="isolated-12-actual")
+            self.assertTrue(run.passed)
+            self.assertFalse(run.os_enforced)
+            binding = VerificationEvidence(step=run.step, attempt=run.attempt, kind="test",
+                initial_worktree_fingerprint=run.source_before, tested_worktree_fingerprint=run.source_after)
+            evidence = build_engineering_evidence(plan, run, binding=binding)
+            row = evidence.to_receipt()
+            # Process-group observations are recorded, not silently promoted
+            # into the formal native resource/cleanup evidence required to pass.
+            self.assertFalse(evidence.passed)
+            expected = hashlib.sha256(json.dumps({"argv": list(check.argv), "cwd": "."},
+                ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            self.assertEqual(row["public_plan"]["checks"][0]["parameters_sha256"], expected)
+            self.assertEqual(row["run"]["plan_digest"], plan.digest)
+            self.assertEqual(row["run"]["checks"][0]["output_sha256"], hashlib.sha256(run.checks[0].output).hexdigest())
+            old = self.plan(api, root, (self.check(api),))
+            self.assertNotEqual(old.digest, plan.digest)
+            receipt = save_verification_receipt(evidence, host / "isolated.json")
+            rows = load_verification_receipts([receipt])
+            self.assertEqual(rows, [row])
+            self.assertEqual(rows[0]["fingerprint"], evidence_fingerprint(evidence))
+            wire = json.dumps(row, ensure_ascii=False)
+            self.assertNotIn(sys.executable, wire)
+            self.assertNotIn(str(root), wire)
+            ticket = make_finished_plan_ticket(settings, host / "work", ticket_id="ENG-1")
+            pack = host / "pack"
+            report = build_evidence_pack(ticket, dest=pack, gates_json=settings.gates_json, verifications=rows)
+            self.assertTrue(report.ok, report.render())
+            self.assertEqual(verify_pack(pack), [])
+            independent = subprocess.run([sys.executable, "-I", "-B", str(pack / "verify.py"), str(pack)],
+                                         cwd=outside, capture_output=True, timeout=15)
+            self.assertEqual(independent.returncode, 0, independent.stdout + independent.stderr)
+            exported = json.loads((pack / "verifications.json").read_bytes())["receipts"][0]
+            self.assertEqual(exported["fingerprint"], row["fingerprint"])
+            self.assertEqual(exported["public_plan"]["checks"][0]["parameters_sha256"], expected)
+
+    def test_isolation_flags_do_not_authenticate_forgeable_framework_output(self):
+        api = self.api()
+        with temp_workspace() as root:
+            self.fixture(root,
+                "__import__('os').write(2, b'Ran 7 tests in 0.01s\\n\\nOK\\n'); __import__('os')._exit(0)")
+            run = self.execute(api, self.plan(api, root, (self.isolated_check(api, root),)))
+            self.assertTrue(run.passed)
+            self.assertEqual(run.checks[0].tests_passed, 7)
+            self.assertFalse(run.os_enforced)
+            self.assertEqual(run.source_before, run.source_after)
+
+
 @unittest.skipUnless(os.name == "posix" and (os.environ.get("ICODE_TEST_GO") or shutil.which("go")),
                      "existing Go toolchain required; not native isolation acceptance")
 class TestRealGoEngineeringVerification(_EngineeringHelpers, unittest.TestCase):

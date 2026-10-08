@@ -39,6 +39,7 @@ _SUMMARY = re.compile(r"(?m)^Ran ([0-9]{1,7}) tests? in [0-9.]+s\r?$\n\r?\n(OK(?
 _GO_PREFIX = ("test", "-json", "-count=1", "-p", "1", "-parallel", "1", "-mod=readonly")
 _GO_FIELDS = frozenset({"Time", "Action", "Package", "Test", "Elapsed", "Output",
                         "OutputType", "FailedBuild", "Key", "Value", "Path"})
+_ISOLATED_UNITTEST_PREFIX = ("-I", "-B", "-X", "utf8", "-m", "unittest", "discover", "-s")
 
 
 def _canonical_digest(value: object) -> str:
@@ -53,6 +54,25 @@ def _text(value: object, *, max_bytes: int = 8192) -> bool:
         return len(value.encode("utf-8")) <= max_bytes
     except UnicodeEncodeError:
         return False
+
+
+def _unittest_arguments_match(argv: tuple[str, ...], cwd: str, root: Path | None = None) -> bool:
+    """Preserve the old diagnostic prefix; admit one exact isolated template.
+
+    The executable spelling is deliberately untouched: resolving a venv
+    launcher here could select its base interpreter and change runtime semantics.
+    Grammar observes arguments, not the interpreter's publisher or test quality.
+    """
+    if type(argv) is not tuple:
+        return False
+    if argv[1:4] == ("-B", "-m", "unittest"):
+        return True
+    if (len(argv) != 12 or argv[1:9] != _ISOLATED_UNITTEST_PREFIX
+            or argv[10] != "-t" or cwd != "."
+            or not _text(argv[9]) or not _text(argv[11])):
+        return False
+    return (Path(argv[9]).is_absolute() and argv[9] == argv[11]
+            and (root is None or argv[9] == str(root)))
 
 
 def _executable_identity(path: Path) -> str:
@@ -132,7 +152,7 @@ class VerificationCheck:
         except (OSError, RuntimeError, ValueError):
             raise ValueError("verification executable is unavailable") from None
         object.__setattr__(self, "executable_identity", identity)
-        if self.adapter == "unittest_summary_v1" and self.argv[1:4] != ("-B", "-m", "unittest"):
+        if self.adapter == "unittest_summary_v1" and not _unittest_arguments_match(self.argv, self.cwd):
             raise ValueError("unittest adapter requires the actual unittest module")
         if self.adapter == "go_test_json_v1":
             packages = self.argv[1 + len(_GO_PREFIX):]
@@ -213,6 +233,9 @@ class VerificationPlan:
                 or len(set(self.platforms)) != len(self.platforms)
                 or any(item not in ("Linux", "Darwin", "Windows") for item in self.platforms)):
             raise ValueError("unsupported verification platforms")
+        if any(item.adapter == "unittest_summary_v1"
+               and not _unittest_arguments_match(item.argv, item.cwd, root) for item in self.checks):
+            raise ValueError("isolated unittest roots must match the canonical workspace")
         object.__setattr__(self, "workspace_root", root)
         object.__setattr__(self, "workspace_identity", (status.st_dev, status.st_ino))
         object.__setattr__(self, "environment", tuple(sorted(_policy_environment(root).items())))
@@ -399,6 +422,11 @@ def _context_matches(plan: VerificationPlan, ctx: ToolContext, step: str) -> boo
         return False
     try:
         root = plan.workspace_root
+        # Contract admission consumes this shared path before CP writes/model
+        # calls too. Frozen dataclasses alone are not a runtime grammar check.
+        if any(item.adapter == "unittest_summary_v1"
+               and not _unittest_arguments_match(item.argv, item.cwd, root) for item in plan.checks):
+            return False
         status = root.lstat()
         if (ctx.root.resolve(strict=True) != root or not stat.S_ISDIR(status.st_mode)
                 or (status.st_dev, status.st_ino) != plan.workspace_identity
@@ -429,6 +457,10 @@ def _resource_receipt_valid(resource: object) -> bool:
 
 def _execute_check(check: VerificationCheck, ctx: ToolContext, cache: Path | None) -> EngineeringCheckResult:
     try:
+        if (check.adapter == "unittest_summary_v1"
+                and not _unittest_arguments_match(check.argv, check.cwd, ctx.root.resolve(strict=True))):
+            return EngineeringCheckResult(check.check_id, "execution_unavailable", error="invalid_unittest_template",
+                                          cleanup_scope="not_started", cache_owner_cleanup_confirmed=True)
         if _executable_identity(Path(check.argv[0])) != check.executable_identity:
             return EngineeringCheckResult(check.check_id, "tool_changed", cleanup_scope="not_started",
                                           cache_owner_cleanup_confirmed=True)

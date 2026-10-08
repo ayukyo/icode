@@ -129,6 +129,7 @@ DEFAULT_MODULES = (
     "tests.test_engineering_verification.TestEngineeringVerification",
     "tests.test_engineering_verification.TestEngineeringAdapters",
     "tests.test_engineering_verification.TestEngineeringResourceDispatch",
+    "tests.test_engineering_verification.TestPythonIsolatedTemplate",
     "tests.test_engineering_evidence.TestEngineeringEvidence",
     "tests.test_engineering_evidence.TestEngineeringReceiptValidation",
     "tests.test_engineering_evidence.TestEngineeringEvidencePack",

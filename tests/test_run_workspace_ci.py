@@ -34,6 +34,18 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
             self.assertEqual(DEFAULT_MODULES.count("tests.test_engineering_verification." + case), 1)
         self.assertNotIn("tests.test_engineering_verification.TestRealGoEngineeringVerification", DEFAULT_MODULES)
 
+    def test_isolated_python_template_runs_once_without_optional_toolchain(self) -> None:
+        name = "tests.test_engineering_verification.TestPythonIsolatedTemplate"
+        self.assertEqual(DEFAULT_MODULES.count(name), 1)
+        from tests.test_engineering_verification import TestPythonIsolatedTemplate
+        methods = unittest.defaultTestLoader.getTestCaseNames(TestPythonIsolatedTemplate)
+        self.assertTrue(methods)
+        for method in methods:
+            self.assertTrue(callable(getattr(TestPythonIsolatedTemplate, method)))
+            self.assertFalse(getattr(getattr(TestPythonIsolatedTemplate, method), "__unittest_skip__", False))
+        self.assertNotIn("tests.test_engineering_verification", DEFAULT_MODULES)
+        self.assertNotIn("tests.test_engineering_verification.TestRealGoEngineeringVerification", DEFAULT_MODULES)
+
     def test_engineering_evidence_contract_runs_once_on_every_platform(self) -> None:
         for case in ("TestEngineeringEvidence", "TestEngineeringReceiptValidation", "TestEngineeringEvidencePack"):
             self.assertEqual(DEFAULT_MODULES.count("tests.test_engineering_evidence." + case), 1)

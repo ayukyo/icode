@@ -2100,6 +2100,12 @@ ICODE当前旧`evidence_fingerprint`包含原输出SHA；主代理RAM对象实�
 
 ### 同日补充：隔离启动与UTF-8候选（2026-10-08，只读）
 
+2026-10-09 Asia/Shanghai持续复核：固定本仓0a/vendor169及CPython3.11.15（PSF License v2），独立研究与主代理核对[Windows selector不支持pipe](https://github.com/python/cpython/blob/v3.11.15/Doc/library/selectors.rst#L27)；实际双架构CI的新合同Git baseline错误与此固定路径一致，不能用WSA初始化或skip绕过。**采纳候选：**沿ICODE既有binary reader有界保留及runner同步读取消机制，保持SKILL standalone与完整失败语义；[取消API](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelsynchronousio)仅请求取消，须确认线程/读端回收。**暂缓：**父工程无界join/wait重构及PeekNamedPipe路线；**不适配：**无界communicate或清理未知报成功。无源码复制、依赖或系统权限增加；成本为生命周期/原生双架构验收，进一步SKILL源码授权待答，[独立设计](./nbl/plans/2026-10-09-skill-windows-bounded-git.md)未实施，不替代R2/R3验收。
+
+同日Python阶段结束刷新：精确十二项机制已在本机TDD、不同SPEC/QUALITY、20轮540、关联163、DEFAULT381、干净安装21（新增安装版14实际子测）、完整preflight2157PASS/59skip验证；四文件冻结SHA见实施记录。**采纳**显式隔离/UTF8及共享根准入的当前软件片，**暂缓**默认工厂/新工作台根绑定及Windows/macOS动态信用；框架输出可伪造、host site可信假设及src-only失败上限保留。无新上游复制/运行依赖/权限；源码实测不倒填原设计RAM或0a平台失败，更不授R2/R3整体通过。
+
+阶段起始刷新现绑定已推送production `0a20251b2c783680708b73852dcdf7029a6d4bad`，只读 `git show`不审唯一写者WIP。独立研究核定完整argv/cwd摘要与原v1消费者均可复用，无其它prefix解析器须扩范围；新grammar/root须进入工程 `_context_matches` 共用准入，使runner CP前与实际执行都拒绝构造后篡改。仅工程模块内配对实现/负控，不能拿执行后失败当CP前零写。CPython3.11.15/Aider5dc9490固定机制与许可同日继续适配，未新增实验/测试或修改源码；原静态批准不能替代新TDD、跨平台及模型验收。
+
 独立研究与主代理回读[CPython3.11.15命令行](https://github.com/python/cpython/blob/v3.11.15/Doc/using/cmdline.rst#L480)及[preconfig源码](https://github.com/python/cpython/blob/v3.11.15/Python/preconfig.c#L551)：`-I`忽略现broker的 `PYTHONUTF8/PYTHONIOENCODING`，但显式 `-X utf8`仍生效。主代理实际词法venv两次CLI flags RAM：环境UTF8=1加-I时mode0，环境UTF8=0加-I/-X时mode1，后者中文输出正常；均正式3.11.15、venv保留。不是Windows实测或新模板完整执行。**采纳（更新候选）**严格十二项 `exe,-I,-B,-X,utf8,-m,unittest,discover,-s,root,-t,root`，仅一个新形式与旧-B分支；**暂缓**legacy默认编码迁移及src-only支持；**不适配**泛化flags、replace decode或把UTF8/框架摘要当认证。UTF8还影响默认open/文件名，工程可主动改流/输出非法bytes，host site信任不变。旧十项shadow/import实验及静态批准只属其旧窗口，十二项须独立复核/真实TDD与分平台观察，用户偏好询问尚未答复；[更新设计](./nbl/plans/2026-10-08-r3-python-isolated-template.md)不修改当前合同冻结源码。
 
 同时复用Aider `5dc9490bb35f9729ef2c95d00a19ccd30c26339c` [显式命令配置](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/args.py#L548)与[cmd_test实际消费](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/commands.py#L993)：借鉴配置/实际结果分离，不声称其有-I模板，不借shell字符串/无限输出/空命令成功。PSF/Apache2许可沿固定主源核对，无实现复制、依赖或权限增加；收益为小白双语默认体验与安全启动一致，成本为严格grammar/root负控及旧golden保持。研究不填R2/R3、原生或模型总门。

@@ -1,6 +1,14 @@
 # R3 Python 安全默认工程模板（合同接线后的独立片）
 
-> REQUIRED SUB-SKILL: nbl.test-driven-development、nbl.subagent-driven-development。本文件仅设计候选，未实现、未验收。先完成合同接线冻结、独立SPEC→不同QUALITY、完整守护及main提交推送；不与合同唯一源码写者同时修改执行器。
+> REQUIRED SUB-SKILL: nbl.test-driven-development、nbl.subagent-driven-development。本文件按窗口保存设计与实施记录；最新状态见下段，原设计中的“未实现/unobserved”不倒填运行信用。先完成合同接线冻结、独立SPEC→不同QUALITY、完整守护及main提交推送；不与合同唯一源码写者同时修改执行器。
+
+2026-10-09 Asia/Shanghai阶段中间记录（UTC 10-08）：四文件实现已冻结，生产`0d98080f9ad5aec567b23073048eca8bd584924f26ee927f17a49e582c901027`、测试`590fdfbee5461c5ea8230eb871c96b39028ff6d09b2f4ccf4ce4885b40b8345e`、CI`32e8e76173cb820037cec976e6538691ec69e07e4ab58d794f2beda41c3bd990`、CI测试`423245467dec8d1d477146dee1c2620487670cc50cb0fc5065457a310d6a9a89`。第二组真实RED为Plan根3FAIL及runtime篡改4FAIL，CI选择另有0!=1的RED；最小实现后新14方法+CI13方法最终27PASS/0skip，旧工程/evidence/golden/broker/taskNone/合同关联163PASS/0skip。根代理冻结20轮540PASS/0skip（47.612秒）；独立SPEC→不同QUALITY、安装版/DEFAULT/完整守护尚在进行，未提交新源码，不提高原生或R2/R3总门信用。
+
+后续同窗口：不同审查者SPEC与QUALITY分别27PASS/0skip（2.389/2.415秒）并APPROVED、0/0/0，前后四SHA一致。根代理干净安装21外层PASS/0skip（54.506秒），新增安装版实际14子测及既有安装版37合同子测均零skip；先从安装包导入生产模块，测试后再次核对文件来源和冻结SHA，包内SKILL与当前解释器断言通过。宿主软件/transport evidence仍不授原生信用；完整DEFAULT/preflight继续，未预报通过。compileall-j1/治理/官网/竞品排期/diff已通过。
+
+本机软件阶段门收尾：DEFAULT381PASS/0skip（164.303秒）；完整preflight3/3、2216 total/2157PASS/59既有skip/0FAIL/0ERROR（474.199秒），固定Go1.27.1及构建并发1。四生产/测试SHA不变，关联163、冻结20轮540和安装21均保留上述准确口径；没有重录旧golden、修改vendor或读取模型KEY。最终文档后重新验证非测试守护，再按已有授权提交推送main。本片只关闭安全Python启动语法的软件门：默认宿主工厂/新工作台受管根绑定、历史正文、真实模型1→6/90%和R2原生总门仍未关闭。0a远端窗口的四Windows失败及未执行的macOS lifecycle不由本机成功抵消。
+
+2026-10-08 UTC实施启动：合同片已完成全部阶段守护并推送 `0a20251b2c783680708b73852dcdf7029a6d4bad`，远端refs/main及官方GitHub connector commits/main独立核对同SHA。当前唯一写者仅负责工程模块、其测试及两CI选择文件；研究和精确新SHA原生CI观察独立只读。十二项准入已取得真实RED：合法新Check在旧实现上ValueError，1 assertion FAIL、无fixture ERROR。源码未冻结、无新增实施验收信用；下面原设计/静态审查各保留观察窗口。
 
 2026-10-08补充：原十项候选曾按 `27e29318df73271c1e2b242b2266040ba0bf467b8ed848e5019fc972caa782bf` 获静态SPEC批准。随后独立研究发现 `-I` 同时忽略broker现有 `PYTHONUTF8`，根代理按三步结构化评估选择下述十二项作为可逆推荐候选，并向用户发出默认编码偏好询问（尚未收到回答，不称用户已确认）。这是明确设计变更，不继承旧十项批准，须重新独立SPEC→不同QUALITY；合同冻结源码、adapter与验证规则未改。
 
@@ -14,8 +22,8 @@
 
 - 旧`-B -m unittest`分支及既有额外参数行为不变，只保留既有观察/诊断上限。
 - 新候选必须恰好12项：`(lexical_sys_executable, "-I", "-B", "-X", "utf8", "-m", "unittest", "discover", "-s", root, "-t", root)`；cwd固定`"."`。只接纳一个新形式，不同时默许原十项候选；不接受额外flags、调序、`utf8=0/1`、通用`-c`或其他模块。
-- Check核对固定tokens/长度、两个绝对root相同；Plan再核对两个root精确等于其规范workspace_root；执行前重核。合法Check不能通过另一工程的Plan获得本工程信用。
-- 解释器使用当前`sys.executable`的词法路径，不将argv0 resolve为基础解释器。复用既有_executable_identity对requested/resolved及别名观察；venv prefix语义必须实际验证。
+- Check核对固定tokens/长度、两个绝对root相同；Plan再核对两个root精确等于其规范workspace_root；执行前重核。合法Check不能通过另一工程的Plan获得本工程信用。固定0a研究补充：合同CP前准入通过 `_context_matches`，不调用 `_execute_check`；新grammar/root重核须进入这条共享路径，使构造后对象篡改也在CP写与模型前拒绝，无须扩大runner源码范围。
+- 随后默认工厂选择当前`sys.executable`的词法路径，不将argv0 resolve为基础解释器；grammar本身不强制等于它，也不认证该二进制必然是可信CPython。复用既有_executable_identity对宿主明确指定路径的requested/resolved及别名观察；venv prefix语义必须实际验证。
 - 不改变现有resource dispatch、策略准入、输出/清理/源窗口、零测试及整体unknown门；unsupported没有裸subprocess fallback。
 
 新模板的`-I`忽略启动cwd、PYTHONPATH及user-site；stdlib unittest先加载，discover才加入top-level root并加载测试。root普通imports可用；只依赖src路径或尚未安装的依赖会失败，不通过回填全局PYTHONPATH、修改工程布局或自动安装掩盖。高级仓外宿主模板的配置入口另片，不将仓内TOML、工单JSON或浏览器字段升为执行授权。
