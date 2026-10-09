@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R3 merge 真实试跑与 cheap-research 门确认（2026-10-09）：**临时工单使用结构化 host trace 证明 review 两条 gate 在合法 `skipped_not_eligible`/`unavailable_before_call` 证据下可前移；随后真实模型 merge 17 次调用/85,537 tokens，成功提交 `03_plan_final.md`，但 `merge.cross_round_summary` 缺最终 trace，仍被门禁拦截。下一实现阶段聚焦宿主 gate eligibility/trace 适配，不让模型直接写隐藏账本，也不以手工临时 trace 计入 R3 完成信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **真实 R3 review 链复验与机器清单时序修复（2026-10-09）：**首次真实审查暴露“模型 round 在最终登记前出现时，`review_manifest.json` 未再次装配”的缺口；最小修复加入最终幂等装配重试，并保留模型 round 原始字节以避免重复 artifact 回执冲突。新增回归与链路/预算 44 项测试全绿。新的真实控制面工单实际 23 次调用/135,095 tokens，提交 `02_review.md`、`review_round_1.json`，机器成功装配 manifest，review finish success；严格 `mcp_coverage` 明确缺少 `review.dedup`、`review.result_summary` 两条最终 trace，因当前 runner 尚无 cheap-research 适配器而被诚实拦截，工单保持 `review_in_progress`，不授 merge/code 或 R3 完成信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
 - **真实模型 pycalc 三 canary（2026-10-09）：**使用仓外测试密钥且未入库，隔离临时副本实际运行。默认任务 13 次调用/54,224 tokens，模型虽改动文件但独立测试仍失败，Reviewer 在必需提交工具处 `required_tool_not_called`；显式 `calc_gcd/calc_lcm` 任务 3 次调用/8,039 tokens，模型尝试被拒绝的 `run_command` 后未产生改动，基线 12 tests 全绿仍因“无改动”合同失败关闭；同一任务明确要求使用 `edit_file/write_file` 后，16 次调用/88,482 tokens、独立 19 tests 全绿、Reviewer 结构化提交成功，结果通过。结果证明真实 backend、隔离、独立测试与 fail-closed Reviewer 链路可运行，也证明窄任务在明确工具纪律时可闭环；三次样本不证明模型 90% 一致性，暂不放宽工具/审批/证据门。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)

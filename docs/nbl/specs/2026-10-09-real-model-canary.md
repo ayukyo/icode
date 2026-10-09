@@ -23,3 +23,5 @@
 随后用首次真实模型产生的 `01_plan.md` 作为计划正文，在新的真实控制面工单中重跑 review，仍使用仓外密钥路径和 bubblewrap。模型实际 23 次调用、135,095 tokens（含 108,928 cached），提交 `02_review.md`、`review_round_1.json`；控制面最终装配 `review_manifest.json`，三项边界检查通过，步骤 finish success。审查 JSON 含 5 条建议、4 条驳回、3 条待核实，manifest 的摘要计数与 detail SHA 一致。
 
 该次状态前移仍被 `mcp_coverage` 门禁拒绝（工单保持 `review_in_progress`）：严格校验报告明确缺少 `review.dedup` 与 `review.result_summary` 两条 `.mcp_gate_trace.jsonl` 最终记录。当前 ICODE runner 尚未接入 cheap-research 的确定性 eligibility/trace 适配器，不能把“模型已提交审查正文”冒充这两条 gate 的履行；下一步应补宿主适配或记录可验证的 unavailable/degraded 证据，不得手写成功 trace 绕过门禁。因此本次只证明“真实模型 review 产物→机器清单→诚实停步”链路，不证明 merge/code/deepcheck/audit 或 R3 完成。模型期间额外执行了受控 `run_command` 探查，说明仅靠任务文本仍不能视为工具纪律稳定；不放宽门禁，也不把本次单样本外推为 90% 一致性。
+
+在临时工单中按 cheap-research 契约写入了可验证的 host trace（dedup：0 个受影响函数，合法 `skipped_not_eligible`；summary：工具未暴露，`unavailable_before_call` 且带回退证据），校验器通过后 review 状态可前移。随后真实模型继续 merge，17 次调用、85,537 tokens，成功提交 `03_plan_final.md`；但 `merge.cross_round_summary` 仍缺最终 trace，状态前移再次被门禁拦截。该实验说明下一阶段应实现宿主 gate 适配/trace 生成，而不是让每个模型自行伪造隐藏账本。
