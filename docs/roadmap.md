@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **真实模型 pycalc 双 canary（2026-10-09）：**使用仓外测试密钥且未入库，隔离临时副本实际运行。默认任务 13 次调用/54,224 tokens，模型虽改动文件但独立测试仍失败，Reviewer 在必需提交工具处 `required_tool_not_called`；显式 `calc_gcd/calc_lcm` 任务 3 次调用/8,039 tokens，模型尝试被拒绝的 `run_command` 后未产生改动，基线 12 tests 全绿仍因“无改动”合同失败关闭。结果证明真实 backend、隔离、独立测试与 fail-closed Reviewer 链路可运行，但不证明模型 90% 一致性；暂不放宽工具/审批/证据门。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **0447be8 诊断兼容片已发布，原生总门仍未关闭（2026-10-09）：**本机默认 `616P/0F/E/skip`、完整 preflight `2498P/60环境skip/0F/E` 三道通过，compileall-j1、治理、官网、竞品排期与 diff check 通过；修正了 Windows x64 在规范化 `chain_error` 路径下对 `OSError` 的过严测试断言，并让测试自有 Git 夹具关闭自动维护。精确提交 `0447be800e4d92e41509725dd5c2b3956242476a` 已推送 main。线上 CI [37926412232](https://github.com/ayukyo/icode/actions/runs/37926412232) 终态 37 success/4 failure/3 skip：双 Windows DEFAULT 的新增 missing-report 断言不再失败，但旧 Win10093/Win10038、双 reviewer `Win10035/wait_expired` 仍失败；macOS DEFAULT 616P，本轮 `maintenance.lock` 未复现，不能称修复；双 Python full 各 2504/71skip/2433P，Pages 与 provenance success。四 Linux bridge 仍 `native_ready=false`，签名/PE capture 仍不等于产品启动或隔离。R2/R3、真实模型1→6/≥90%与自动模式继续关闭。[分层记录](./nbl/plans/2026-10-09-linux-engineering-bridge.md)。
 
 - **CI构建context软件门完成（2026-10-09）：**七源码冻结441788，独立SPEC→不同QUALITY各89PASS/0skip/0问题，根20轮1780PASS/0skip、DEFAULT438PASS/0skip；完整preflight2287 total/2228PASS/59既有skip/0FAIL/ERROR，三道通过（测试475.079秒/守护476.450秒），编译1及其它检查通过。复用实际选定MSBuild、有界七属性评估及生成项目交叉校验，默认OFF，仅sign构建后/签名前启用，无新用户依赖或权限。准备精确main提交推送，新SHA四格真实context必须另验；生产WP0b/资源与R3模型总门仍未过。[分层验收](./nbl/plans/2026-10-09-windows-build-context.md)。
