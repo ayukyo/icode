@@ -105,7 +105,7 @@ def _step_start_request(
         events = trace.data.get("events") or []
         starts = [
             event for event in events
-            if event.get("type") == "step_started"
+            if (event.get("type") == "step_started" or event.get("event_type") == "step_started")
             and (event.get("step") == step or event.get("payload", {}).get("step") == step)
         ]
         finished = {

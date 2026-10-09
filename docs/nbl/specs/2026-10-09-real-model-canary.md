@@ -215,3 +215,16 @@ R2、code→deepcheck→audit、90% 一致性及自动模式继续关闭。
 payload 仍拒绝。新增离线回归；相关 176 项测试通过、5 项条件跳过。该修改不伪造审查产物、不放宽
 ArtifactBroker 合同、不改变 fail-closed 门禁。当前真实信用仍仅为已验证的 plan→review→merge
 历史样本，R2/R3 总验收继续关闭。
+
+## 重试 trace 字段兼容补齐（2026-10-10）
+
+复用 `R3-REAL-FRESH-19` 做 review 重试时，控制面明确返回“已终结 step attempt 禁止继续 gate
+check”，而运行器的重试辅助函数仍选出了原 attempt。核对事件链确认：控制面新格式使用
+`event_type=step_started/step_finished`，旧格式才使用 `type`；辅助函数此前只在统计 start
+事件时读取 `type`，导致已终结 attempt 的 occurrence 没有递增。现已同时识别两个字段，仍保持
+“存在未闭合 attempt 时复用默认键、所有历史 attempt 已终结时递增 occurrence”的原有边界。
+
+本次仅修复幂等键选择，不修改控制面事件、不重放旧副作用、不将失败工单或 review 产物补写为成功。
+`test_chain_offline`、`test_runner`、`test_recovery`、`test_loop` 与 `test_artifact_broker` 共
+107 项相关测试通过、5 项条件跳过，`py_compile` 与 `git diff --check` 通过；修复后的新鲜真实
+review attempt 尚未重新运行，R3 六步、90% 一致性和 R2 总验收继续关闭。

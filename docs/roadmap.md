@@ -11,6 +11,11 @@
   转换为 `submit_review_round`；其它 malformed generic call 直接拒绝。新增回归，相关 176 项
   测试通过、5 项条件跳过；R2/R3 总验收仍未通过。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
+- **真实 trace 字段兼容补齐（2026-10-10，待提交）：**复用上述失败工单做 review 重试时发现，
+  控制面 trace 的步骤事件使用 `event_type`，重试辅助函数只统计旧字段 `type`，导致已终结
+  attempt 仍可能复用旧幂等键。现已同时识别两种字段并通过 107 项相关回归；未改变未闭合
+  attempt 的恢复保护，也未把失败工单升级为成功。
+
 - **真实后半段复验与步骤重试幂等修复（2026-10-10，工作树基于 `cffabdf`）：**
   `R3-REAL-FINAL-17` 的真实 plan→review→merge 仍保持成功（75 次调用、728,692 tokens）。
   继续跑 code 时，模型真实修改/回读了临时 `calc.py`、`test_calc.py`，但先后出现未闭合
