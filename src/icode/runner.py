@@ -88,6 +88,7 @@ _CONTRACT_ENGINEERING_PENDING = "engineering_verification_pending"
 
 def _step_start_request(
     cp: ControlPlane, out_dir: Path, step: str, ticket_id: str,
+    *, trace_result=None,
 ) -> str:
     """选择可重试步骤的幂等键，同时保留未闭合 attempt 的恢复语义。
 
@@ -102,7 +103,11 @@ def _step_start_request(
         # The control-plane default is a recent-event view (50 rows).  Retry
         # identity must inspect the complete bounded ticket history, otherwise
         # an older start can fall out of the window and reuse its occurrence.
-        trace = cp.trace(out_dir, limit=10000)
+        # Reuse the entry trace already captured by run_contract_step when
+        # the step has an in-progress state.  Besides avoiding a redundant
+        # control-plane read, this keeps the budget-stop boundary to exactly
+        # one entry observation plus one independent final observation.
+        trace = trace_result if trace_result is not None else cp.trace(out_dir, limit=10000)
         if trace.returncode != 0 or trace.data.get("ok") is not True:
             return default
         events = trace.data.get("events") or []
@@ -1313,7 +1318,10 @@ def run_contract_step(
 
         attempt = cp.step_start(
             out_dir, step, ticket_id=ticket_id,
-            request=_step_start_request(cp, out_dir, step, ticket_id),
+            request=_step_start_request(
+                cp, out_dir, step, ticket_id,
+                trace_result=(state if in_prog else None),
+            ),
         )
         report.add("step start", bool(attempt), f"attempt={attempt}")
 

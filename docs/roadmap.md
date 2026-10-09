@@ -1224,6 +1224,10 @@ manifest（97 条事件、无未闭合动作）。继续 code 时，隔离工作
 均成立，但仓外模型 key 在首次请求返回 HTTP 401，未产生代码改动，故 code/deepcheck/audit
 仍未通过。任何“测试通过但没有源码变更”的结果都不得计入 R3 code 信用；需更换有效凭据后
 重新进行后半段真实验收。
+
+全量回归还发现预算硬停止的重复控制面观测：步骤入口已捕获的 trace 被重试幂等键辅助函数
+再次读取，导致失败收尾窗口出现 3 次观测。现已复用入口 trace，恢复为“入口一次 + 独立终态
+一次”，不改变重试 occurrence 或 fail-closed 语义；定向 83 项、编译和差异检查通过。
 - **Windows Git匿名管道修复（2026-10-09，子仓库 `21566a5` 已推送）：**线上 `8e66713` 的双Windows workspace 在 `inspection_worklist._git` 使用 `selectors` 监听 `Popen.stdout` 时分别报 WinError 10093/10038，导致基线解析失败；这不是父工程夹具可合理绕过的问题。最小修复仅在 Windows 分流到有界 reader thread/`Queue(maxsize=2)`，保留 5 秒 deadline、输出上限、超时/溢出 kill、reap/close/join 和非零退出拒绝，POSIX selector 路径不变。真实匿名管道回归与子仓库定向 114 项通过；全量子仓库 829 passed/7 skipped/1 既有 crosscheck failure（未跟本改动），父仓库资源/契约/打包定向测试在 Python 3.11 通过。父固定 gitlink、manifest 与 source pin 已同步。新SHA Windows x64/ARM workspace 与 Reviewer 原生复验待线上终态，不能把软件修复写成R2/R3或自动模式完成。[实施记录](./nbl/plans/2026-10-09-skill-windows-bounded-git.md)
 - **`5101d9f` Windows Git 修复线上复验（2026-10-09）：**子仓库 `21566a5` 的有界匿名管道读取已随父仓库 `5101d9f6d0cae18119ff8ec0877b1280ea84e11f` 发布。主 CI [37943880201](https://github.com/ayukyo/icode/actions/runs/37943880201) 终态 37 success/4 failure/3 skipped；Windows x64/ARM workspace 已越过原 WinError 10093/10038 基线阶段，失败均收敛为测试工单的 Windows 受策略写入仍 fail-closed（模型提交产物但没有源码变更，独立审查拒绝把基线测试当编码完成），不是 Git 管道错误。[x64 workspace](https://github.com/ayukyo/icode/actions/runs/37943880201/job/113864977680) · [ARM workspace](https://github.com/ayukyo/icode/actions/runs/37943880201/job/113864977610)。Reviewer 两架构仍为 `archive_member_missing`、标准用户订阅 `0x5`、网络 `10035→timeout`，未获得 `10013`，不改变硬门。[x64 Reviewer](https://github.com/ayukyo/icode/actions/runs/37943880201/job/113864978041) · [ARM Reviewer](https://github.com/ayukyo/icode/actions/runs/37943880201/job/113864977591)。Python 3.11/3.12、Linux/macOS workspace、Pages 均成功；Provenance [37943880319](https://github.com/ayukyo/icode/actions/runs/37943880319) 四格成功。下一步应单独设计并验证 Windows policy write 的安全实现，不能用 skip、无策略写入或放宽 reviewer/network 门替代；R2/R3、自动模式和模型 90% 仍未关闭。
 
