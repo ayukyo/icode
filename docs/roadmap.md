@@ -1,5 +1,7 @@
 # 开发路线图与取舍原则
 
+- **Windows transport fixture 诊断归一化（2026-10-10，`0fe53ce`）：**独立证据包校验在 Windows 返回空 `stdout` 时，测试断言现在将 `stdout/stderr` 统一按空文本处理，避免诊断代码本身把真实返回码遮蔽为 `None + str`。本机目标回归、全量测试、密钥/子模块门禁与 `compileall -j6` 已通过；不改变 verifier 结论、Windows 原生隔离或自动模式准入，远端 CI 待复核。
+
 - **Windows transport-only 合同 fixture 边界（2026-10-10，本次修复待远端复核）：**`test_native_legacy_code_actual_cp_to_independent_pack` 在 Windows 上不再调用尚未验证的策略 `write_file`；由宿主 fixture 在模型回合后注入声明的源码差异，继续验证真实控制面、独立 Reviewer、证据包导出与独立校验。POSIX 仍保留真实工具写入覆盖。该调整只修正跨平台测试口径，不增加 Windows 原生隔离、策略写入、R2/R3 或自动模式信用。
 
 - **Linux 原生资源限制证据接入（2026-10-10，本机 `590722d` 工作树）：**原生探针新增一个独立的真实 `run_command` 配额用例，复用 `TestLinuxProductTaskQuota.test_registry_cap_one_enforces_real_fork_quota`，仅在非 root user-manager、真实 scope、fork 被 `EAGAIN` 拒绝且 scope 收束完成时计入 `resource_limits`。本机 `scripts/run_native_probe_ci.py` 以 CPython 3.11.15、Linux 6.8、systemd 249 实跑通过，评分由 `8/10` 提升为 `9/10`、`critical_passed=true`、`ready=true`；`uniform_violation` 仍未验证，工程 bridge 仍是 `conformance_credit=none`。该证据只更新 Linux 原生探针评分，不改变跨平台准入、`policy_contract_ready`、Native 自动模式或 R2/R3 总验收；远端 CI 待本提交终态后复核。
