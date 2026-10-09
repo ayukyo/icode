@@ -117,3 +117,19 @@ code 步骤实际用 `edit_file` 修改了临时 `calc.py` 和 `test_calc.py`，
 
 随后 `R3-REAL-FINAL-E94A86B` 在 plan 阶段收到兼容端点 HTTP 400，未形成 `01_plan.md`，也不作
 能力信用。当前仍没有 code→deepcheck→audit 的完整真实成功样本，不提高 R3/90% 一致性或 R2 总验收。
+
+## inspection 状态机修复与真实边界（2026-10-10，`8fabe36`、`fee0353`、`695a381`）
+
+针对真实 code 回合中“同一模型回复包含多次编辑时提前切换工具”、源码编辑后继续沿用旧
+worklist、以及恢复时旧 worklist 未重新绑定的问题，运行器现在会在一条 assistant 回复的所有工具
+结果配对后再切换；编辑后强制 `prepare → read(code_review) → check`，按 worklist 逐文件读取；恢复
+检测到既有 worklist 时先重新 prepare。新增恢复/多调用顺序测试；定向套件最终为 **151 passed、5
+skipped、32 subtests passed**，compileall 与 diff check 通过，三个提交均已推送 `main`。
+
+真实证据：`R3-REAL-FINAL-8FABE36` 的 plan、review、merge 成功；code 真实修改了临时
+`calc.py`、`test_calc.py`，并由宿主 inspection 生成了 `code_worklist.json` 与 `04_code_review_fix.md`。
+但模型在源码变更后未完成有效的 `read/check` 顺序，code finish 被控制面拒绝，未进入
+deepcheck/audit。随后对该失败 attempt 的 recovery 也如实停在 `required_tool_not_called`，旧 attempt
+被控制面标记 failure，未重放或冒充成功。新的完整链路尝试 `R3-REAL-FINAL-FEE0353` 在 merge 阶段
+缺少 `03_plan_final.md` 停步，未取得后半段证据。以上结果证明状态机与 fail-closed 行为可观察，
+不证明 code→deepcheck→audit、R3 六步、跨平台原生隔离、90% 一致性或 R2 总验收。
