@@ -3,11 +3,13 @@
 零第三方依赖：只用标准库 urllib —— core 保持零依赖（D6）。
 需要 SDK 能力的场景再走 `icode-agent[llm]` extras。
 
-安全：密钥只在内存，绝不写入日志、异常或任何落盘内容。
+安全边界：默认 repr 和公开模型调用错误隐藏敏感配置/原始失败详情；
+请求凭据仍保存在实例字段中，只发往调用者选择的初始端点。
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import time
@@ -23,7 +25,32 @@ DEFAULT_MODEL = "MiniMax-M3"
 
 
 class BackendError(RuntimeError):
-    """模型调用失败。异常信息已脱敏，不含密钥。"""
+    """模型调用失败；传输与响应解析路径使用固定公开说明。"""
+
+
+class _RejectRedirects(urllib.request.HTTPRedirectHandler):
+    """凭据只发往选定的初始端点；所有重定向均按 HTTP 错误失败。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _transport_error_label(exc: Exception) -> str:
+    """只从固定类型集合生成展示标签，不检查或格式化原异常。"""
+    for kind, label in (
+        (TimeoutError, "TimeoutError"),
+        (urllib.error.URLError, "URLError"),
+        (ConnectionError, "ConnectionError"),
+        (http.client.HTTPException, "HTTPException"),
+        (UnicodeError, "UnicodeError"),
+        (json.JSONDecodeError, "JSONDecodeError"),
+        (ValueError, "ValueError"),
+        (TypeError, "TypeError"),
+        (OSError, "OSError"),
+    ):
+        if isinstance(exc, kind):
+            return label
+    return "unavailable"
 
 
 @dataclass
@@ -87,12 +114,12 @@ class OpenAICompatibleBackend:
     它对外部模型端点可能直接 502。此时必须能显式绕过，而不是让人猜。
     """
 
-    api_key: str
+    api_key: str = field(repr=False)
     model: str = ""
-    base_url: str = ""
+    base_url: str = field(default="", repr=False)
     timeout: int = 180
     temperature: float | None = None
-    proxy: str | None = None
+    proxy: str | None = field(default=None, repr=False)
     no_proxy: bool = False
     max_retries: int = 2
     retry_backoff: float = 1.5
@@ -127,28 +154,27 @@ class OpenAICompatibleBackend:
         if not mapping:
             # 显式传空映射：禁用代理（注意空 ProxyHandler 不注册为 handler，
             # 因此不能用 opener.handlers 断言，见 _proxy_mapping）
-            return urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        return urllib.request.build_opener(urllib.request.ProxyHandler(mapping))
+            return urllib.request.build_opener(urllib.request.ProxyHandler({}), _RejectRedirects())
+        return urllib.request.build_opener(urllib.request.ProxyHandler(mapping), _RejectRedirects())
 
     def active_proxy(self) -> str:
         """当前生效的代理描述（用于自检与错误提示）。"""
         if self.no_proxy:
             return "禁用（强制直连）"
         if self.proxy:
-            return self.proxy
+            return "已配置（显式代理）"
         env = urllib.request.getproxies()
         got = env.get("https") or env.get("http")
-        return got or "无"
+        return "已配置（环境代理）" if got else "无"
 
     def _proxy_hint(self, exc: Exception) -> str:
-        """代理相关的失败要给出可执行的下一步，而不是让人猜。"""
-        text = str(exc)
+        """仅按配置给出固定提示，不从异常文字猜测代理根因。"""
         if self.no_proxy or self.proxy:
             return ""
-        if "502" in text or "407" in text or "Tunnel connection failed" in text:
-            current = self.active_proxy()
+        env = urllib.request.getproxies()
+        if env.get("https") or env.get("http"):
             return (
-                f"\n  提示：当前请求经由代理 {current}。"
+                "\n  提示：当前请求使用环境代理。"
                 "若该代理不适用于此端点，可用 `--no-proxy` 或环境变量 `ICODE_LLM_NO_PROXY=1` 强制直连。"
             )
         return ""
@@ -220,16 +246,23 @@ class OpenAICompatibleBackend:
                     data = json.loads(resp.read().decode("utf-8"))
                 break
             except urllib.error.HTTPError as exc:
-                detail = ""
+                # 状态是唯一可展示的原错误字段；拒绝 bool/int 子类等动态值。
+                code = exc.code
+                status = code if type(code) is int and 100 <= code <= 599 else None
                 try:
-                    detail = exc.read().decode("utf-8", errors="replace")[:400]
+                    exc.close()
+                except MemoryError:
+                    raise
                 except Exception:  # noqa: BLE001
-                    detail = "<unreadable>"
-                last_error = f"HTTP {exc.code}: {detail}"
-                if not self._retryable_http(exc.code) or attempt >= self.max_retries:
+                    # 普通关闭失败不能覆盖原 HTTP 状态或改变其重试策略。
+                    pass
+                last_error = f"HTTP {status if status is not None else 'unknown'}（详情已隐藏）"
+                if status is None or not self._retryable_http(status) or attempt >= self.max_retries:
                     raise BackendError(last_error + self._proxy_hint(exc)) from None
+            except MemoryError:
+                raise
             except Exception as exc:  # noqa: BLE001
-                last_error = f"{type(exc).__name__}: {exc}"
+                last_error = f"模型传输失败（{_transport_error_label(exc)}；详情已隐藏）"
                 if not self._retryable_exc(exc) or attempt >= self.max_retries:
                     raise BackendError(last_error + self._proxy_hint(exc)) from None
             self.usage.retries += 1
@@ -239,33 +272,33 @@ class OpenAICompatibleBackend:
 
         try:
             msg = data["choices"][0]["message"]
-        except (KeyError, IndexError, TypeError):
-            raise BackendError(f"响应结构异常：{json.dumps(data, ensure_ascii=False)[:400]}") from None
 
-        self.last_usage = _usage_from(data)
-        self.usage = self.usage.merge(self.last_usage)
+            self.last_usage = _usage_from(data)
+            self.usage = self.usage.merge(self.last_usage)
 
-        calls: list[ToolCall] = []
-        for idx, raw in enumerate(msg.get("tool_calls") or []):
-            fn = raw.get("function") or {}
-            raw_args = fn.get("arguments", "{}")
-            try:
-                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-            except json.JSONDecodeError:
-                args = {"_raw": raw_args}
-            calls.append(
-                ToolCall(
-                    id=str(raw.get("id") or f"call_{idx}"),
-                    name=str(fn.get("name") or ""),
-                    arguments=args or {},
+            calls: list[ToolCall] = []
+            for idx, raw in enumerate(msg.get("tool_calls") or []):
+                fn = raw.get("function") or {}
+                raw_args = fn.get("arguments", "{}")
+                try:
+                    args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                except json.JSONDecodeError:
+                    args = {"_raw": raw_args}
+                calls.append(
+                    ToolCall(
+                        id=str(raw.get("id") or f"call_{idx}"),
+                        name=str(fn.get("name") or ""),
+                        arguments=args or {},
+                    )
                 )
-            )
 
-        return AssistantMessage(
-            content=strip_think(msg.get("content")),
-            tool_calls=calls,
-            raw={"model": data.get("model"), "usage": data.get("usage")},
-        )
+            return AssistantMessage(
+                content=strip_think(msg.get("content")),
+                tool_calls=calls,
+                raw={"model": data.get("model"), "usage": data.get("usage")},
+            )
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError, OverflowError):
+            raise BackendError("响应结构异常（详情已隐藏）") from None
 
 
 def _protocol_selfcheck() -> None:

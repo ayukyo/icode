@@ -1539,9 +1539,10 @@ class TestProxyStrategy(unittest.TestCase):
         b = OpenAICompatibleBackend(api_key="k")
         self.assertFalse(b.no_proxy)
         self.assertIsNone(b.proxy)
-        # 环境相关：要么是某个代理 URL，要么是"无"——只要求可描述、不抛异常
-        desc = b.active_proxy()
-        self.assertTrue(desc == "无" or "//" in desc, f"代理描述异常：{desc}")
+        with mock.patch("urllib.request.getproxies", return_value={}):
+            self.assertEqual(b.active_proxy(), "无")
+        with mock.patch("urllib.request.getproxies", return_value={"https": "http://env.invalid:1"}):
+            self.assertEqual(b.active_proxy(), "已配置（环境代理）")
 
     def test_强制直连时描述明确(self) -> None:
         b = OpenAICompatibleBackend(api_key="k", no_proxy=True)
@@ -1549,7 +1550,8 @@ class TestProxyStrategy(unittest.TestCase):
 
     def test_显式代理优先于环境(self) -> None:
         b = OpenAICompatibleBackend(api_key="k", proxy="http://127.0.0.1:1")
-        self.assertEqual(b.active_proxy(), "http://127.0.0.1:1")
+        with mock.patch("urllib.request.getproxies", return_value={"https": "http://env.invalid:1"}):
+            self.assertEqual(b.active_proxy(), "已配置（显式代理）")
 
     def test_直连时代理映射为空(self) -> None:
         b = OpenAICompatibleBackend(api_key="k", no_proxy=True)
@@ -1564,16 +1566,23 @@ class TestProxyStrategy(unittest.TestCase):
         b = OpenAICompatibleBackend(api_key="k")
         import urllib.request
 
-        self.assertEqual(b._proxy_mapping(), dict(urllib.request.getproxies()))
+        mapping = {"https": "http://env.invalid:1"}
+        with mock.patch.object(urllib.request, "getproxies", return_value=mapping):
+            self.assertEqual(b._proxy_mapping(), mapping)
 
     def test_opener_可构造且不改状态(self) -> None:
-        for kwargs in ({}, {"no_proxy": True}, {"proxy": "http://127.0.0.1:1"}):
-            opener = OpenAICompatibleBackend(api_key="k", **kwargs)._opener()  # type: ignore[arg-type]
-            self.assertTrue(hasattr(opener, "open"))
+        with mock.patch("urllib.request.getproxies", return_value={}):
+            for kwargs in ({}, {"no_proxy": True}, {"proxy": "http://127.0.0.1:1"}):
+                backend = OpenAICompatibleBackend(api_key="k", **kwargs)  # type: ignore[arg-type]
+                before = (backend.proxy, backend.no_proxy)
+                opener = backend._opener()
+                self.assertTrue(hasattr(opener, "open"))
+                self.assertEqual((backend.proxy, backend.no_proxy), before)
 
     def test_代理失败时给出可执行提示(self) -> None:
         b = OpenAICompatibleBackend(api_key="k")
-        hint = b._proxy_hint(RuntimeError("Tunnel connection failed: 502 Bad Gateway"))
+        with mock.patch("urllib.request.getproxies", return_value={"https": "http://env.invalid:1"}):
+            hint = b._proxy_hint(RuntimeError())
         self.assertIn("--no-proxy", hint)
         self.assertIn("ICODE_LLM_NO_PROXY=1", hint)
 

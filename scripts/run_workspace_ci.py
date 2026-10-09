@@ -118,6 +118,7 @@ DEFAULT_MODULES = (
     "tests.test_workspace",
     "tests.test_workspace_hook_contract",
     "tests.test_windows_snapshot_rejection_diagnostic",
+    "tests.test_backend_transport_privacy",
     "tests.test_autonomy",
     "tests.test_workbench",
     "tests.test_workbench_rejected_body",

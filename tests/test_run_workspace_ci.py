@@ -14,6 +14,36 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_backend_transport_privacy_selected_once_without_skips(self):
+        name = "tests.test_backend_transport_privacy"
+        self.assertEqual(DEFAULT_MODULES.count(name), 1)
+        module = importlib.import_module(name)
+        test_class = getattr(module, "TestBackendTransportPrivacy", None)
+        self.assertTrue(isinstance(test_class, type))
+        methods = unittest.defaultTestLoader.getTestCaseNames(test_class)
+        self.assertTrue(methods)
+        self.assertFalse(getattr(test_class, "__unittest_skip__", False))
+        for method in methods:
+            self.assertFalse(getattr(getattr(test_class, method), "__unittest_skip__", False))
+
+        def cases(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from cases(test)
+                else:
+                    yield test
+
+        expected = {name + ".TestBackendTransportPrivacy." + method for method in methods}
+        actual = [test for selection in DEFAULT_MODULES
+                  if selection == name or selection.startswith(name + ".")
+                  for test in cases(unittest.defaultTestLoader.loadTestsFromName(selection))]
+        self.assertEqual({test.id() for test in actual}, expected)
+        self.assertEqual(len(actual), len(expected))
+        for test in actual:
+            self.assertIs(type(test), test_class)
+            self.assertFalse(getattr(type(test), "__unittest_skip__", False))
+            self.assertFalse(getattr(getattr(test, test._testMethodName), "__unittest_skip__", False))
+
     def test_pe_reader_portable_contract_is_selected_once_without_skips(self):
         module_name = "tests.test_windows_pe_reader"
         self.assertEqual(DEFAULT_MODULES.count(module_name), 1)
