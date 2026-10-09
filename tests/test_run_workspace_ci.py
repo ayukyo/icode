@@ -14,6 +14,139 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_operation_admission_methods_selected_once_required_and_never_static_skipped(self):
+        definitions = (
+            ("tests.test_operation_admission", "TestOperationAdmissionProtocol", 5),
+            ("tests.test_operation_admission", "TestOperationAdmissionRealCP", 7),
+        )
+        expected = set()
+        classes = {}
+        for module_name, class_name, count in definitions:
+            test_class = getattr(importlib.import_module(module_name), class_name)
+            methods = unittest.defaultTestLoader.getTestCaseNames(test_class)
+            self.assertEqual(len(methods), count)
+            self.assertFalse(getattr(test_class, "__unittest_skip__", False))
+            for method in methods:
+                test_id = module_name + "." + class_name + "." + method
+                expected.add(test_id)
+                classes[test_id] = test_class
+                self.assertFalse(getattr(getattr(test_class, method), "__unittest_skip__", False))
+        for method in (
+            "test_open_operation_replay_refuses_before_host_payload_without_closing",
+            "test_early_admission_failure_and_exact_replay_keep_old_error_categories",
+        ):
+            test_id = "tests.test_contract_engineering.TestContractEngineering." + method
+            expected.add(test_id)
+            classes[test_id] = importlib.import_module("tests.test_contract_engineering").TestContractEngineering
+        self.assertEqual(len(expected), 14)
+        self.assertTrue(hasattr(run_workspace_ci, "OPERATION_ADMISSION_TESTS"))
+        declared = run_workspace_ci.OPERATION_ADMISSION_TESTS
+        self.assertEqual(set(declared), expected)
+        self.assertEqual(len(declared), len(expected))
+
+        def cases(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from cases(test)
+                else:
+                    yield test
+
+        selected = [
+            test for entry in run_workspace_ci.DEFAULT_MODULES
+            for test in cases(unittest.defaultTestLoader.loadTestsFromName(entry))
+            if test.id() in expected or test.id().startswith("tests.test_operation_admission.")
+        ]
+        self.assertEqual({test.id() for test in selected}, expected)
+        self.assertEqual(len(selected), len(expected))
+        for test_id in sorted(expected):
+            with self.subTest(test_id=test_id):
+                loaded = list(cases(unittest.defaultTestLoader.loadTestsFromName(test_id)))
+                self.assertEqual(len(loaded), 1)
+                self.assertIs(type(loaded[0]), classes[test_id])
+                self.assertEqual(loaded[0].id(), test_id)
+                self.assertFalse(getattr(getattr(loaded[0], loaded[0]._testMethodName), "__unittest_skip__", False))
+
+                class SkippedRequiredTest(unittest.TestCase):
+                    def id(self):
+                        return test_id
+
+                    def runTest(self):
+                        self.skipTest("simulated missing admission dependency")
+
+                with patch.object(
+                    run_workspace_ci.unittest.defaultTestLoader,
+                    "loadTestsFromNames",
+                    return_value=unittest.TestSuite([SkippedRequiredTest()]),
+                ), redirect_stderr(io.StringIO()):
+                    self.assertEqual(run_workspace_ci.main((test_id,)), 1)
+
+        # Run actual class setup lifecycle: required missing skill must be ERROR.
+        actual = []
+
+        class ObservingRunner:
+            def run(self, suite):
+                result = unittest.TestResult()
+                suite.run(result)
+                actual.append(result)
+                return result
+
+        selected_id = "tests.test_operation_admission.TestOperationAdmissionRealCP.test_actual_first_raw_open_replay_and_structured_next_occurrence"
+        with patch(
+            "tests.test_operation_admission.require_skill",
+            side_effect=unittest.SkipTest("simulated required CP absent"),
+        ), patch.object(run_workspace_ci.unittest, "TextTestRunner", return_value=ObservingRunner()):
+            self.assertEqual(run_workspace_ci.main((selected_id,)), 1)
+        self.assertEqual(len(actual), 1)
+        self.assertEqual(actual[0].testsRun, 0)
+        self.assertEqual(len(actual[0].errors), 1)
+        self.assertEqual(actual[0].failures, [])
+        self.assertEqual(actual[0].skipped, [])
+        self.assertIn("Required admission CP fixture unavailable", actual[0].errors[0][1])
+
+        # Existing engineering class remains optional; only selected new required methods promote holder skip.
+        engineering_ids = (
+            "tests.test_contract_engineering.TestContractEngineering.test_open_operation_replay_refuses_before_host_payload_without_closing",
+            "tests.test_contract_engineering.TestContractEngineering.test_early_admission_failure_and_exact_replay_keep_old_error_categories",
+        )
+        holder_id = "setUpClass (tests.test_contract_engineering.TestContractEngineering)"
+        for selected_id in engineering_ids:
+            with self.subTest(required_engineering=selected_id):
+                actual.clear()
+                with patch(
+                    "tests.test_contract_engineering.require_skill",
+                    side_effect=unittest.SkipTest("simulated engineering CP absent"),
+                ), patch.object(
+                    run_workspace_ci.unittest, "TextTestRunner", return_value=ObservingRunner(),
+                ), redirect_stderr(io.StringIO()):
+                    self.assertEqual(run_workspace_ci.main((selected_id,)), 1)
+                self.assertEqual(len(actual), 1)
+                self.assertEqual(actual[0].testsRun, 0)
+                self.assertEqual(actual[0].errors, [])
+                self.assertEqual(actual[0].failures, [])
+                self.assertEqual(len(actual[0].skipped), 1)
+                self.assertEqual(actual[0].skipped[0][0].id(), holder_id)
+                self.assertTrue(actual[0].wasSuccessful())
+
+        # Same holder without selected new required method keeps optional semantics.
+        actual.clear()
+        optional_id = "tests.test_contract_engineering.TestContractEngineering.test_policy_code_missing_plan_refuses_before_control_write_and_model"
+        self.assertNotIn(optional_id, run_workspace_ci.OPERATION_ADMISSION_TESTS)
+        self.assertNotIn(optional_id, run_workspace_ci.POSIX_R3_TESTS)
+        with patch(
+            "tests.test_contract_engineering.require_skill",
+            side_effect=unittest.SkipTest("simulated optional engineering CP absent"),
+        ), patch.object(
+            run_workspace_ci.unittest, "TextTestRunner", return_value=ObservingRunner(),
+        ), redirect_stderr(io.StringIO()):
+            self.assertEqual(run_workspace_ci.main((optional_id,)), 0)
+        self.assertEqual(len(actual), 1)
+        self.assertEqual(actual[0].testsRun, 0)
+        self.assertEqual(actual[0].errors, [])
+        self.assertEqual(actual[0].failures, [])
+        self.assertEqual(len(actual[0].skipped), 1)
+        self.assertEqual(actual[0].skipped[0][0].id(), holder_id)
+        self.assertTrue(actual[0].wasSuccessful())
+
     def test_session_git_projection_methods_selected_once_and_required(self):
         module_name = "tests.test_session_git_projection"
         module = importlib.import_module(module_name)
@@ -362,7 +495,14 @@ class TestWorkspaceCiCoverage(unittest.TestCase):
         from tests.test_contract_engineering import TestContractEngineering
         cases = unittest.defaultTestLoader.getTestCaseNames(TestContractEngineering)
         expected = {"tests.test_contract_engineering.TestContractEngineering." + name for name in cases}
-        self.assertEqual(set(CONTRACT_ENGINEERING_TESTS) | set(POSIX_CONTRACT_ENGINEERING_TESTS), expected)
+        admission_engineering = {
+            test_id for test_id in run_workspace_ci.OPERATION_ADMISSION_TESTS
+            if test_id.startswith("tests.test_contract_engineering.TestContractEngineering.")
+        }
+        self.assertEqual(
+            set(CONTRACT_ENGINEERING_TESTS) | set(POSIX_CONTRACT_ENGINEERING_TESTS) | admission_engineering,
+            expected,
+        )
         self.assertFalse(set(CONTRACT_ENGINEERING_TESTS) & set(POSIX_CONTRACT_ENGINEERING_TESTS))
         for test_id in CONTRACT_ENGINEERING_TESTS:
             self.assertEqual(DEFAULT_MODULES.count(test_id), 1)

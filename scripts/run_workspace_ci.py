@@ -111,6 +111,23 @@ POSIX_CONTRACT_ENGINEERING_TESTS = tuple(_CONTRACT_ENGINEERING_PREFIX + name for
     "test_native_legacy_deepcheck_actual_cp_to_independent_pack",
 ))
 
+OPERATION_ADMISSION_TESTS = (
+    "tests.test_operation_admission.TestOperationAdmissionProtocol.test_legacy_construction_and_strict_permission",
+    "tests.test_operation_admission.TestOperationAdmissionProtocol.test_missing_false_and_true_response_markers",
+    "tests.test_operation_admission.TestOperationAdmissionProtocol.test_malformed_marker_is_normalized_without_mutating_raw",
+    "tests.test_operation_admission.TestOperationAdmissionProtocol.test_structured_ambiguity_old_fallback_and_transport",
+    "tests.test_operation_admission.TestOperationAdmissionProtocol.test_occurrence_and_scope_preserve_exact_double_calls",
+    "tests.test_operation_admission.TestOperationAdmissionRealCP.test_actual_first_raw_open_replay_and_structured_next_occurrence",
+    "tests.test_operation_admission.TestOperationAdmissionRealCP.test_open_replay_refuses_loop_with_zero_or_one_prior_effect",
+    "tests.test_operation_admission.TestOperationAdmissionRealCP.test_completed_replay_refuses_and_new_occurrence_remains_usable",
+    "tests.test_operation_admission.TestOperationAdmissionRealCP.test_old_duck_success_and_read_only_do_not_require_new_attribute",
+    "tests.test_operation_admission.TestOperationAdmissionRealCP.test_start_exception_invoke_exception_and_finish_false_do_not_fake_closure",
+    "tests.test_operation_admission.TestOperationAdmissionRealCP.test_real_child_restart_reuses_durable_cp_but_never_reexecutes_payload",
+    "tests.test_operation_admission.TestOperationAdmissionRealCP.test_converged_read_only_observation_preserves_open_receipt_and_effect",
+    "tests.test_contract_engineering.TestContractEngineering.test_open_operation_replay_refuses_before_host_payload_without_closing",
+    "tests.test_contract_engineering.TestContractEngineering.test_early_admission_failure_and_exact_replay_keep_old_error_categories",
+)
+
 SESSION_GIT_PROJECTION_TESTS = tuple(
     "tests.test_session_git_projection.TestSessionGitProjection." + name for name in (
         "test_real_split_dot_matches_commit_tree",
@@ -154,6 +171,7 @@ DEFAULT_MODULES = (
     "tests.test_windows_pe_capture.TestWindowsPeCapture",
     "tests.test_windows_pe_reader",
     *CONTRACT_ENGINEERING_TESTS,
+    *OPERATION_ADMISSION_TESTS,
     # Host/framework contracts are bounded; optional Go SDK diagnostics are
     # separate and do not stand in for native resource-scope acceptance.
     "tests.test_engineering_verification.TestEngineeringVerification",
@@ -185,18 +203,30 @@ def main(modules: tuple[str, ...] = DEFAULT_MODULES) -> int:
             details = traceback[-1800:] if traceback else "test failed without traceback"
             summary = _workflow_escape(f"{test.id()}:\n{details}")
             print(f"::error title=Workspace regression test failure::{summary}", flush=True)
-    # unittest reports skipped tests as successful; this selected Git oracle
-    # is required coverage, so only a skip of an explicitly selected POSIX
-    # differential makes this bounded workspace matrix fail.
-    required_test_ids = frozenset(POSIX_R3_TESTS).intersection(modules)
+    # unittest reports skipped tests as successful. Explicitly selected POSIX
+    # and admission methods are required; selected admission fixture skips also
+    # fail without changing optional engineering class setup semantics.
+    required_test_ids = frozenset((*POSIX_R3_TESTS, *OPERATION_ADMISSION_TESTS)).intersection(modules)
+    selected_admission_ids = frozenset(OPERATION_ADMISSION_TESTS).intersection(modules)
+    selected_admission_classes = {test_id.rsplit(".", 1)[0] for test_id in selected_admission_ids}
+    selected_admission_modules = {class_id.rsplit(".", 1)[0] for class_id in selected_admission_classes}
+    selected_fixture_ids = {
+        f"{fixture} ({class_id})"
+        for class_id in selected_admission_classes
+        for fixture in ("setUpClass", "tearDownClass")
+    } | {
+        f"{fixture} ({module_id})"
+        for module_id in selected_admission_modules
+        for fixture in ("setUpModule", "tearDownModule")
+    }
     skipped_required_tests = sorted({
         test.id()
         for test, _reason in result.skipped
-        if test.id() in required_test_ids
+        if test.id() in required_test_ids or test.id() in selected_fixture_ids
     })
     if skipped_required_tests:
         print(
-            "Required POSIX workspace regression test was skipped: "
+            "Required workspace regression test was skipped: "
             + ", ".join(skipped_required_tests),
             file=sys.stderr,
         )

@@ -10,7 +10,7 @@
 
 ---
 
-日期：2026-10-09。**状态：Task 1–3、全局独立双审与 root 全片本地软件验收通过；正在关闭文档/索引与 main 发布门，尚未提交或推送，不授 R2/R3 整体通过。** 获准设计 `docs/nbl/specs/2026-10-09-session-git-tree-design.md` SHA256 `cb50043d8314a8fd7793e3b4fae5d0f0171440390bc9f0866a43292911c2f679` 已由 fresh SPEC 与不同 QUALITY 分别 C0/I0/M0 审查（root 输入，不冒称计划作者审查）。基线 main `8d53670192e3e2cbfebaa0300d697fb3036308be`，vendor `1693651c1bd7daad3272eb054f0f81d6f254d08d`。下方代码保留获准计划示例；实际 fixture 返回形状及运行履历以后文为准。
+日期：2026-10-09。**状态：本片 Git 修复、本地软件验收及 main `923433b` 发布收尾完成；新 SHA 三条线上观察已终态 STOP，CI 仍四项 Windows 失败，不授 R2/R3 整体通过。** 获准设计 `docs/nbl/specs/2026-10-09-session-git-tree-design.md` SHA256 `cb50043d8314a8fd7793e3b4fae5d0f0171440390bc9f0866a43292911c2f679` 已由 fresh SPEC 与不同 QUALITY 分别 C0/I0/M0 审查（root 输入，不冒称计划作者审查）。基线 main `8d53670192e3e2cbfebaa0300d697fb3036308be`，vendor `1693651c1bd7daad3272eb054f0f81d6f254d08d`。下方代码保留获准计划示例；实际 fixture 返回形状及运行履历以后文为准。
 
 用户明确要求连续实施、仅 main，不建分支/worktree；全片软件验收后才提交推送，覆盖技能的 routine 等待与每任务提交模板，但不覆盖 RED/GREEN、独立审查或安全门。本计划作者只写本文，交回 root 后 STOP，不自行调用执行技能或启动实现代理。
 
@@ -1000,7 +1000,7 @@ Task3冻结 loader SHA256 `6e46fb09bae2673a583da0f41e9abe0b4fe638b0f5f0f08f35d6d
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（本片软件/发布与终态观察收尾；非整体 CI/Native 通过）
 
 **Dependencies:** Task 3
 
@@ -1094,7 +1094,7 @@ session_git_python /home/orbbec/.agents/skills/doc-contract-consistency-audit/sc
 
 Expected：两轮各0疑似项，人工核计数/枚举/字段/标题/历史与当前观测。文档改动后再两轮；仅docmetadata变化不重跑同freezefull。
 
-- [ ] **Step 6: 非测试守卫、exact main索引提交推送。**
+- [x] **Step 6: 非测试守卫、exact main索引提交推送。**
 
 ```bash
 session_git_python scripts/preflight.py --only secrets
@@ -1125,7 +1125,7 @@ git status --short
 
 Expected：commit/push实际0、remote仅main且HEAD一致，记录actualparent/tree/pathcount/SHAs。用户既有主仓本阶段授权覆盖上述操作；不创建release/分支/权限，不把push成功当CI通过。
 
-- [ ] **Step 7: root绑定新SHA持续只读观察并自动继续后续bridge。**
+- [x] **Step 7: root绑定新SHA持续只读观察并自动继续后续bridge。**
 
 使用现有GitHub connector读取 **本次实际新SHA** 的CI/Pages/Windows provenance runs/jobs；记录run/job/headSHA/结论及有界一次日志获取，所有终态STOP，不再轮询8d旧run。源码scope/native/installed/模型各层分开，Windows已知10093/10038与Reviewer10035/WFP、macquota等仍单列，不能把main绿或本片Linuxhost软件绿称R2/R3总体完成。
 
@@ -1167,6 +1167,34 @@ root 所有测试串行、使用本文严格既存解释器/PATH/环境，未以
 - ✅ 可运行性：所列Linuxhost软件命令实际通过；Windows/macOS Native、installed桥接与真实模型未验，不能写生产100%。
 
 已批准的后续bridge计划仅静态双审通过，未实施。G1重入设计已另独立双审，未修源码；G2 vendor身份范围修复授权未得。Windows Git pipe/Reviewer/WFP与PE来源执行、macOS quota、Linux完整Native/installed及真实模型endpoint/1→6/≥90%仍未关闭。发布与新SHA CI是下一项实际门，不将本地软件成功等同R2/R3整体完成。
+
+### main 实际发布记录（2026-10-09 06:14 UTC）
+
+两轮文档检查各9文件/0疑似项，人工核计数/字段/向量/平台与历史时点；最终非测试守卫全exit0。最初普通add因docs ignore返回1，已停止该链，未因此冒称索引完整；随后只对获准七个新文档exact force-add，不改ignore规则。新文档no-index检查只因新增差异返回1且空错误输出，不把tracked空diff代替检查。最终index实际14路径，逐blob SHA与五软件冻结及九最终文档文件字节全相同、cached check0，vendor/gitlink/native与下一G1 ignored设计未入索引。
+
+commit与push均实际exit0：`923433b5d6be5e3bda05684ef4ed98daa69eb9e7`，parent `8d53670192e3e2cbfebaa0300d697fb3036308be`，tree `82bb2b07667ab1f122795b0be48b970ccc1c72c1`，14paths/4199insertions/17deletions。远程heads只有main并指同SHA，tracked工作区当次清洁。此记录是发布后的下一阶段元数据，不回写已发布tree或重跑同冻结full。
+
+只读观察者 `/root/923433b_ci_observer` 绑定新SHA：CI `37892478455`、Pages `37892478447`、Windows provenance `37892478524`，首次06:15UTC分别queued/queued/in_progress；非终态不授通过，所有终态后停止轮询。G0本地主机源码修复/软件/发布前置已关闭，CI/目标平台信用另列；自动开始G1实施计划，不据此授bridge/Native/installed/模型完成。
+
+### 新 SHA 终态观察收尾（2026-10-09 06:31–06:33 UTC）
+
+独立只读 `/root/923433b_ci_observer` 按实际 `923433b5d6be5e3bda05684ef4ed98daa69eb9e7`、attempt1核下表。wrapper首30 jobs、REST仅page2补14；CI选定14日志与provenance5日志各取一次，未重取/重试/下载或运行binary，所有终态STOP。root据该独立报告登记，不冒称自身重抓19日志。
+
+| run | 实际结论 | 关键 job / 结果 |
+| --- | --- | --- |
+| [CI37892478455](https://github.com/ayukyo/icode/actions/runs/37892478455) | 44jobs：37success/4failure/3retired skip | Python311 `113696266005` /312 `113696265811` 各2454total/2383P/71环境skip/0F/E，426.537/552.495s；Ubuntu `113696266115` /macOS `113696266040` 各DEFAULT595P/0skip，164.853/304.040s；bootstrap均PASS |
+| [Pages37892478447](https://github.com/ayukyo/icode/actions/runs/37892478447) | success2/2 | validate `113696265446`、deploy `113696300128` |
+| [Windows provenance37892478524](https://github.com/ayukyo/icode/actions/runs/37892478524) | success5/5 | validate `113696265861` 9unitP；四安装job各9unitP/0skip、19安装验签P+1buildcontextP |
+
+Windows workspace x64 `113696266060` /ARM `113696266130` 各575total/553P/1F/1E/20skip，331.973/336.944s；实际 incremental CP inspection prepare报10093、legacy code CP baseline报10038。当前失败摘要无新Git投影失败，不等于全部Windows软件通过。两个full的71skip无逐ID清单，不补造或合并本地59。
+
+Native：Ubuntu22 x64 `113696266425` /ARM `113696266142` 8/10、criticalTrue/readyFalse；Ubuntu latest x64 `113696266205` /24 ARM `113696266154` 7/10、criticalFalse/readyFalse；macIntel `113696266165` /ARM `113696266363` 6/10、criticalFalse/同组清理True/readyFalse。全部quota/uniform UNVERIFIED；这些是新运行观测，不覆盖旧8d的不同计数，也不将mac同组清理改回整树零残留承诺。
+
+Reviewer x64 `113696266014` /ARM `113696266308` 均exit78/cleanupTrue/tokenNone；IPv4/6 error10035、connectedFalse/deniedFalse/waitExpiredTrue/canaryFalse。**本次target_context=valid**，observer ready/collection enabled但no_matching_event、cap_drop0、CAB archive_member_missing；不沿用旧wait_timeout、不当DENY。标准用户/部分禁写与ACL恢复的局部正证据不替代整体Reviewer失败。
+
+四安装job/官方artifact：ARM311 `113699204976`/`11599517779`、x64312 `113699204997`/`11599298211`、x64311 `113699205004`/`11599476612`、ARM312 `113699205024`/`11599697121`；实际创建日志helper SHA与对应 [54216154](https://github.com/ayukyo/icode/attestations/54216154)、[54215663](https://github.com/ayukyo/icode/attestations/54215663)、[54215624](https://github.com/ayukyo/icode/attestations/54215624)、[54215892](https://github.com/ayukyo/icode/attestations/54215892) subject匹配，官方artifact run/head/ZIPdigest与上传日志匹配、未过期。未独立解析statement或下载运行PE；四capture parse_complete/runtime_load_verified/source_launch_verified仍全False，production_authority=none。签名安装成功不是生产Windows或R2/R3通过。
+
+G0 Git软件/发布前置关闭；自动推进G1最小准入修复计划。G1当前仅设计双审通过/计划初审，未改源码；G2 vendor范围和Windows Gitpipe授权、Linux完整bridge/installed、各OS Native/资源与真实模型endpoint/1→6/≥90%仍分别未通过，不重试旧923工作流或改源码skip取绿。
 
 ## 验收向量映射与信用
 

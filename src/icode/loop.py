@@ -225,14 +225,20 @@ class AgentLoop:
                 input_desc=json.dumps(safe_args, ensure_ascii=False),
             )
             if not started.can_execute:
+                replayed = getattr(started, "already_applied", False) is True
+                prefix = (
+                    "此前动作的回执不能用于再次执行：" if replayed else
+                    "副作用回执不明确，已停止执行并等待人工核对（禁止盲目重放）："
+                )
                 inv.result = ToolResult(
                     False,
-                    "副作用回执不明确，已停止执行并等待人工核对（禁止盲目重放）："
-                    + (started.detail or "ambiguous_side_effect"),
+                    prefix + (started.detail or "ambiguous_side_effect"),
                     {"error": "ambiguous_side_effect"},
                     opclass=tool.opclass,
                 )
-                inv.note = "副作用歧义，拒绝重放"
+                inv.note = (
+                    "此前动作的回执不能用于再次执行" if replayed else "副作用歧义，拒绝重放"
+                )
                 self.on_event("operation_ambiguous", {"tool": call_name, "detail": started.detail})
                 return inv
             op_attempt = started.attempt

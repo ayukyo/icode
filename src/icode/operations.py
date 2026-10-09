@@ -22,11 +22,17 @@ class StartedOperation:
     ok: bool
     ambiguous: bool
     detail: str = ""
+    already_applied: bool = False
 
     @property
     def can_execute(self) -> bool:
-        """只有拿到 attempt 且不歧义，才允许真正执行副作用。"""
-        return self.ok and not self.ambiguous and bool(self.attempt)
+        """只有新的准入确认才允许执行副作用，旧动作回执不能再次授权。"""
+        return (
+            self.ok
+            and not self.ambiguous
+            and bool(self.attempt)
+            and self.already_applied is False
+        )
 
 
 class OperationRecorder:
@@ -73,17 +79,26 @@ class OperationRecorder:
             ),
         )
         attempt = res.data.get("attempt")
-        ambiguous = bool(res.data.get("ambiguous_side_effect")) or (
-            str(res.data.get("error", "")).find("ambiguous_side_effect") >= 0
+        ambiguous = (
+            bool(res.data.get("ambiguous_side_effect"))
+            or res.data.get("gate_id") == "ambiguous_side_effect"
+            or str(res.data.get("error", "")).find("ambiguous_side_effect") >= 0
         )
         ok = res.returncode == 0 and res.data.get("ok") is True
+        detail = str(res.data.get("error") or res.data.get("message") or "")[:300]
+        already_applied = res.data.get("already_applied", False)
+        if type(already_applied) is not bool:
+            ok = False
+            already_applied = False
+            detail = "operation_start_protocol_invalid: already_applied 必须是 bool"
         return StartedOperation(
             name=name,
             opclass=opclass,
             attempt=str(attempt) if attempt else None,
             ok=ok,
             ambiguous=ambiguous,
-            detail=str(res.data.get("error") or res.data.get("message") or "")[:300],
+            detail=detail,
+            already_applied=already_applied,
         )
 
     def finish(

@@ -481,6 +481,57 @@ class TestContractEngineering(unittest.TestCase):
         self.assertEqual(execute.call_count, 1)
         self.assertEqual(report.error, "engineering_operation_replay_refused")
 
+    def test_open_operation_replay_refuses_before_host_payload_without_closing(self):
+        for before in (b"", b"x"):
+            with self.subTest(before=before):
+                root, cp, directory, _outcome, report, args = self.gate_fixture()
+                marker = root / "engineering-marker.txt"
+                if before:
+                    marker.write_bytes(before)
+                with patch.object(runner, "execute_verification_plan", side_effect=OSError("fixture stop")), \
+                        patch("icode.tools.builtin._controlled_dispatch") as first_dispatch:
+                    with self.assertRaises(OSError):
+                        runner._contract_engineering_gate(**args)
+                first_dispatch.assert_not_called()
+                trace = cp.trace(directory)
+                self.assertEqual(trace.returncode, 0)
+                self.assertIs(trace.data.get("ok"), True)
+                opened = trace.data["open_operations"]
+                self.assertEqual(len(opened), 1)
+                args["operations"] = OperationRecorder(cp, directory, "ENG-CONTRACT", scope="code")
+                fresh = args["operations"]
+                with patch.object(fresh, "finish", wraps=fresh.finish) as finish, \
+                        patch.object(runner, "execute_verification_plan") as host, \
+                        patch("icode.tools.builtin._controlled_dispatch") as dispatch:
+                    self.assertFalse(runner._contract_engineering_gate(**args))
+                self.assertEqual(report.error, "engineering_operation_replay_refused")
+                finish.assert_not_called()
+                host.assert_not_called()
+                dispatch.assert_not_called()
+                self.assertEqual(marker.read_bytes() if marker.exists() else b"", before)
+                self.assertEqual(cp.trace(directory).data["open_operations"], opened)
+                self.assertEqual(self.event_rows(directory, "operation_finished"), [])
+
+    def test_early_admission_failure_and_exact_replay_keep_old_error_categories(self):
+        from icode.operations import StartedOperation
+        for marker, ok, expected in ((False, False, "engineering_operation_start_unconfirmed"),
+                                     (True, True, "engineering_operation_replay_refused"),
+                                     (1, True, "engineering_operation_start_unconfirmed")):
+            with self.subTest(marker=marker, ok=ok):
+                _root, _cp, directory, _outcome, report, args = self.gate_fixture()
+                started = StartedOperation("fixture", "managed_write", "a1", ok, False,
+                                           "detail", marker)
+                operations = SimpleNamespace(start=Mock(return_value=started), finish=Mock())
+                args["operations"] = operations
+                with patch.object(runner, "execute_verification_plan") as host, \
+                        patch("icode.tools.builtin._controlled_dispatch") as dispatch:
+                    self.assertFalse(runner._contract_engineering_gate(**args))
+                self.assertEqual(report.error, expected)
+                operations.finish.assert_not_called()
+                host.assert_not_called()
+                dispatch.assert_not_called()
+                self.assertEqual(self.event_rows(directory, "operation_started"), [])
+
     def test_zero_skipped_nonzero_and_unknown_scope_never_receive_quality_credit(self):
         cases = (
             (b"Ran 0 tests in 0.01s\n\nOK\n", 0, {}, False),

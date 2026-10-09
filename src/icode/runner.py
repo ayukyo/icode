@@ -1736,7 +1736,11 @@ def _contract_engineering_gate(
     started = operations.start(name=operation_name, opclass="managed_write",
         input_desc=f"step={step} attempt={attempt} plan={plan_digest} checks={len(plan.checks)}")
     if not started.can_execute:
-        report.error = "engineering_operation_start_unconfirmed"
+        report.error = (
+            "engineering_operation_replay_refused"
+            if getattr(started, "already_applied", False) is True
+            else "engineering_operation_start_unconfirmed"
+        )
         report.add("工程动作开始确认", False)
         return False
     action_trace = cp.trace(out_dir)
