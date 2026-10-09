@@ -15,7 +15,13 @@ from .contracts import Port, StepContract
 
 _ARTIFACT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 # review_manifest 由带真实 attempt/哈希的控制面装配，模型正文不可替代。
+# These files are written by the host/control plane from frozen execution
+# inputs.  Allowing a model to replace them after ``inspection`` would detach
+# the receipt from the actual code/read evidence.
 _MACHINE_OWNED = frozenset({"review_manifest.json"})
+_INSPECTION_WORKLISTS = frozenset({
+    "code_worklist.json", "deepcheck_worklist.json", "audit_worklist.json",
+})
 
 
 class ArtifactAccessError(ValueError):
@@ -43,7 +49,8 @@ class ArtifactBroker:
     def _target(self, name: str, ports: tuple[Port, ...], *, write: bool) -> Path:
         if type(name) is not str or _ARTIFACT_NAME.fullmatch(name) is None:
             raise ArtifactAccessError("产物名非法")
-        if write and name in _MACHINE_OWNED:
+        if write and (name in _MACHINE_OWNED
+                      or (name in _INSPECTION_WORKLISTS and (self.out_dir / name).exists())):
             raise ArtifactAccessError("机器装配产物不可由模型提交")
         allowed = any(
             (port.kind == "ticket_file" and port.value == name)

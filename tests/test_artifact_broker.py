@@ -48,6 +48,16 @@ class TestArtifactBroker(unittest.TestCase):
                 self.broker.submit(name, "untrusted")
         self.assertFalse((self.root / "escape.md").exists())
 
+    def test_自查工作清单是机器所有不能被模型替换(self) -> None:
+        contract = StepContract(
+            step="code",
+            outputs=(Port("worklist", "ticket_file", "code_worklist.json"),),
+        )
+        broker = ArtifactBroker(self.out_dir, contract, max_bytes=1024)
+        (self.out_dir / "code_worklist.json").write_text('{"coverage_status":"partial"}', encoding="utf-8")
+        with self.assertRaises(ArtifactAccessError):
+            broker.submit("code_worklist.json", '{"coverage_status":"complete"}')
+
     def test_拒绝链接和无效JSON时保留原文件(self) -> None:
         outside = self.root / "outside.md"
         outside.write_text("untouched", encoding="utf-8")

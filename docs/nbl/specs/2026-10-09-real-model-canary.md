@@ -37,3 +37,11 @@
 随后在同一工单继续真实 `code→deepcheck→audit`。code 步骤 12 回合、20 次工具调用后，模型确实编辑了临时工作区的 `calc.py`、`test_calc.py`，但没有提交合同要求的 `04_code_review_fix.md` 与 `code_worklist.json`；宿主检测到 `code_files` 变更但控制面元数据写入未通过，按 fail-closed 停在 code，未进入 deepcheck/audit。独立 diff 还显示模型删除了原有 gcd/lcm 实现，说明“有代码改动”不等于实现正确，不能人工补齐产物或把这次运行计入 R3 完成。
 
 事后从事件链确认，`code_files` 写入失败的直接原因是宿主复用了 plan 阶段的通用 metadata request，触发控制面 `idempotency_conflict`；`24e58dd` 已按 code attempt 与文件集合生成独立 request 并加入回归。该失败工单的 step attempt 已终结，不能重放覆盖原证据；修复后的真实 code→deepcheck→audit 需新工单重新验证。
+
+## inspection 工具接线（2026-10-09，本机实现待新工单真实复验）
+
+失败样本还暴露了一个独立的运行器能力缺口：模型原先只能使用普通 `write_file`/`submit_artifact`，没有办法调用固定工单身份的 ICODE-SKILL 原生 `inspection --phase prepare/read/check`。仅让模型手写 `code_worklist.json` 会缺少控制面 `artifact_written` 回执，不能作为真实审查证据。
+
+本轮实现了宿主绑定的 `inspection` 工具。运行器把当前 `out_dir`、ticket、step、attempt 和控制面实例闭包绑定，模型只能提交阶段、工程内相对路径、关联范围和基线 JSON；路径越界、非法阶段和超过有界数量的范围在工具层拒绝。控制面仍负责冻结输入、哈希、事件回执和最终 check，失败结果原样返回模型，不绕过门禁。`code_worklist.json`、`deepcheck_worklist.json`、`audit_worklist.json` 已加入“已由 inspection 生成后不可被模型覆盖”的保护；兼容夹具仍允许在尚未生成时通过合同提交，避免破坏旧离线回归。
+
+本机针对工具边界、机器工作清单保护、`code_files` 幂等键修复及相关链路共 15 项定向测试通过，compileall 与 diff check 通过。下一步必须用新 ticket、同一仓外模型 key 和真实隔离环境重新跑 code→deepcheck→audit，并分别核对源码正确性、独立测试、inspection 回执、Reviewer 只读与状态前移；在该证据取得前，R3 和“≥90% 一致性”仍未通过。

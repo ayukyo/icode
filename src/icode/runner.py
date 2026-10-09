@@ -1300,6 +1300,8 @@ def run_contract_step(
                     operations=step_ops, sandbox=sandbox, policy=policy,
                     workspace_session=workspace_session,
                     change_baseline=change_baseline,
+                    inspection_runner=_bound_inspection_runner(
+                        cp, out_dir, ticket_id, step, attempt),
                 )
                 report.loop = loop
                 if loop.stop_reason == "budget_exceeded":
@@ -1380,6 +1382,8 @@ def run_contract_step(
                         policy=policy,
                         workspace_session=workspace_session,
                         change_baseline=change_baseline,
+                        inspection_runner=_bound_inspection_runner(
+                            cp, out_dir, ticket_id, step, attempt),
                         extra_instructions=repair_instructions,
                         operations=step_ops,
                     )
@@ -2259,6 +2263,71 @@ def _persist_missing_from_response(
     return persisted
 
 
+def _bound_inspection_runner(
+    cp: ControlPlane, out_dir: Path, ticket_id: str, step: str, attempt: str,
+):
+    """Return a host-bound inspection adapter for the current step attempt.
+
+    The model supplies only inspection options; the control root, ticket, step,
+    and attempt stay bound to the admitted execution.  The adapter deliberately
+    returns the control-plane JSON as a tool result so a failed prepare/read/check
+    remains visible to the model and is still subject to the final gate.
+    """
+    if step not in {"code", "deepcheck", "audit"}:
+        return None
+
+    def run(*, phase, read_phase=None, path=None, related=None, scopes=None,
+            baselines_json=None):
+        if phase not in {"prepare", "read", "check"}:
+            return ToolResult(False, "非法 inspection phase", {"error": "bad_phase"})
+        if phase == "read" and (
+            not isinstance(read_phase, str) or read_phase not in {"code_review", "reverse", "fixed", "free", "audit"}
+            or not isinstance(path, str) or not path or Path(path).is_absolute()
+            or ".." in Path(path).parts
+        ):
+            return ToolResult(False, "read 必须提供工程根相对路径和合法 read_phase",
+                              {"error": "bad_read_scope"})
+        values = []
+        for label, items in (("related", related), ("scope", scopes)):
+            if items is None:
+                items = []
+            if not isinstance(items, list) or len(items) > 200 or any(
+                not isinstance(item, str) or not item or Path(item).is_absolute()
+                or ".." in Path(item).parts for item in items
+            ):
+                return ToolResult(False, f"{label} 必须是工程内相对路径列表",
+                                  {"error": "bad_scope"})
+            values.extend(f"{label}={item}" for item in sorted(set(items)))
+        if baselines_json is not None and not isinstance(baselines_json, str):
+            return ToolResult(False, "baselines_json 必须是字符串", {"error": "bad_baseline"})
+        boundary = "|".join([phase, read_phase or "", path or "", *values, baselines_json or ""])
+        args = ["inspection", "--dir", str(out_dir), "--step", step,
+                "--attempt", attempt, "--phase", phase,
+                "--request", make_request(ticket_id, f"inspection-{step}-{phase}",
+                                           attempt=attempt, boundary=boundary)]
+        if read_phase:
+            args += ["--read-phase", read_phase]
+        if path:
+            args += ["--path", path]
+        for item in sorted(set(related or [])):
+            args += ["--related", item]
+        for item in sorted(set(scopes or [])):
+            args += ["--scope", item]
+        if baselines_json:
+            args += ["--baselines-json", baselines_json]
+        result = cp.run(*args, check=False)
+        ok = result.returncode == 0 and result.data.get("ok") is True
+        return ToolResult(
+            ok,
+            json.dumps(result.data, ensure_ascii=False, indent=2),
+            {"phase": phase, "step": step, "attempt": attempt,
+             "returncode": result.returncode},
+            opclass="managed_write",
+        )
+
+    return run
+
+
 def _run_agent(
     *, backend, workspace, out_dir, ticket_id, step, brief, contract, requirement,
     approver, loop_config, budget, on_event, checkpointer=None, resume_context: str = "",
@@ -2268,6 +2337,7 @@ def _run_agent(
     operations: OperationRecorder | None = None,
     budget_tracker: BudgetTracker | None = None,
     workspace_session: WorkspaceSession | None = None,
+    inspection_runner=None,
 ) -> LoopResult:
     read_only_workspace = step == "review"
     deny_read_roots = list(policy.deny_read_roots if policy is not None else ())
@@ -2312,6 +2382,7 @@ def _run_agent(
         include_artifacts=artifact_broker is not None,
         include_changes=change_baseline is not None,
         git_status_context=ctx,
+        inspection_runner=inspection_runner,
     )
     on_turn = None
     if checkpointer is not None:
@@ -2407,6 +2478,15 @@ def _run_agent(
             )
     if requirement:
         system += f"\n【本次需求】\n{requirement}\n"
+    if inspection_runner is not None:
+        system += (
+            "\n【工程自查清单（code/deepcheck/audit 必须真实执行）】\n"
+            "  - 代码文件改动完成并确认范围后，必须调用 inspection phase=prepare。\n"
+            "  - 每一个你实际重新读取的源码/测试/配置文件，都要调用 inspection phase=read，"
+            "read_phase 使用当前步骤合同允许的阶段；path 只填工程根相对路径。\n"
+            "  - 最后调用 inspection phase=check；仅有 prepare 或模型自述不算审查完成。\n"
+            "  - 该工具已由宿主绑定当前 ticket/step/attempt，不要尝试通过 run_command 直接写工单账本。\n"
+        )
     if extra_instructions:
         system += f"\n【本步骤的额外交付要求（只描述内容，落盘路径以上方清单为准）】\n{extra_instructions}\n"
         # 把交付路径再钉一次：模型容易把产物写到工作区根目录（实测踩过）

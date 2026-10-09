@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **code/deepcheck/audit inspection 工具接线（2026-10-09）：**真实 code 失败暴露运行器只开放普通文件/产物工具，模型无法调用 ICODE-SKILL 的原生 `inspection --phase prepare/read/check`，因此不能取得 `code_worklist.json` 的真实回执。现在由宿主按当前 ticket/step/attempt 闭包绑定 inspection 工具，仅允许工程内相对路径与固定阶段；工作清单由控制面写入，已存在的 worklist 不可被模型覆盖。新增工具边界与 artifact 保护回归，目标是新工单重新验证 code→deepcheck→audit；此前失败工单不重放、不补信用。
+
 - **code_files 幂等键冲突修复（2026-10-09）：**真实 code 复验暴露 `set_code_files()` 与 plan 元数据写入复用同一 request key，控制面按幂等契约拒绝；`24e58dd` 按 attempt+文件集合派生独立 request，并新增回归验证 metadata 正常写入。此前失败工单的 code attempt 已终结，不能重放冒充修复后的真实信用；需新工单重新跑 code→deepcheck→audit。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
 - **R3 cheap-research 宿主适配器本机落地（2026-10-09）：**新增链路回调与 `mcp_gates` 确定性 trace 记录器，按固定子仓 `gates.json` 读取阈值；默认 runner 未暴露 cheap-research 时只写结构化 `unavailable_before_call`/`skipped_not_eligible`，不让模型伪造隐藏账本。review/merge 适配器合同测试通过，固定校验器报告 `missing_gate=0/schema_errors=0/sensitive_data=0`，写入按 gate 幂等替换。真实模型 review→merge 重跑、线上 CI 和 R3 总门仍待验，不能据此宣称完成。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)

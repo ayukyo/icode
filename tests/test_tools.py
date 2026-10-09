@@ -35,6 +35,27 @@ class TestFileTools(unittest.TestCase):
         self.assertIn("1| def add", r.content)
         self.assertEqual(r.meta["total_lines"], 6)
 
+    def test_宿主绑定inspection工具只在注入时暴露并转发阶段(self) -> None:
+        calls = []
+
+        def runner(**kwargs):
+            calls.append(kwargs)
+            from icode.tools import ToolResult
+            return ToolResult(True, "inspection-ok", {"phase": kwargs["phase"]})
+
+        self.assertNotIn("inspection", default_registry().names())
+        registry = default_registry(inspection_runner=runner)
+        result = registry.invoke("inspection", self.ctx, {
+            "phase": "read", "read_phase": "code_review", "path": "pkg/m.py",
+        })
+        self.assertTrue(result.ok)
+        self.assertEqual(calls[0]["path"], "pkg/m.py")
+        bad = registry.invoke("inspection", self.ctx, {
+            "phase": "read", "read_phase": "code_review", "path": "../secret.py",
+        })
+        self.assertFalse(bad.ok)
+        self.assertEqual(bad.meta.get("error"), "bad_read_scope")
+
     def test_精确工作区路径不能读取工作区外文件的硬链接(self) -> None:
         with temp_workspace() as outside:
             secret = outside / "review-private.txt"

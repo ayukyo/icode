@@ -21,7 +21,7 @@ import sys
 from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 from ..artifact_broker import ArtifactAccessError
 from ..execution_broker import (
@@ -583,6 +583,56 @@ def read_artifact(
     )
 
 
+def inspection(
+    ctx: ToolContext, *, runner: Callable[..., ToolResult], phase: str,
+    read_phase: str | None = None, path: str | None = None,
+    related: list[str] | None = None, scopes: list[str] | None = None,
+    baselines_json: str | None = None,
+) -> ToolResult:
+    """调用宿主固定身份的 inspection 控制面入口。
+
+    该工具不是任意命令执行：``runner`` 由运行器按当前工单/步骤/attempt
+    闭包绑定，模型只能提供自查阶段和工程内相对路径。这样 code/deepcheck/audit
+    可以真实登记 prepare/read/check 证据，而不允许模型伪造工单目录或 ticket 身份。
+    """
+    if ctx.read_only_workspace and phase != "read":
+        return ToolResult(False, "只读 Reviewer 不能写 inspection 工作清单",
+                          {"error": "inspection_write_denied"}, opclass=OPCLASS_MANAGED_WRITE)
+    if phase not in {"prepare", "read", "check"}:
+        return ToolResult(False, "inspection phase 必须是 prepare、read 或 check",
+                          {"error": "bad_phase"})
+    if phase == "read" and (
+        not isinstance(read_phase, str)
+        or read_phase not in {"code_review", "reverse", "fixed", "free", "audit"}
+        or not isinstance(path, str) or not path or Path(path).is_absolute()
+        or ".." in Path(path).parts
+    ):
+        return ToolResult(False, "read 必须提供工程根相对路径和合法 read_phase",
+                          {"error": "bad_read_scope"})
+    for label, items in (("related", related), ("scopes", scopes)):
+        if items is None:
+            continue
+        if (not isinstance(items, list) or len(items) > 200 or any(
+            not isinstance(item, str) or not item or Path(item).is_absolute()
+            or ".." in Path(item).parts for item in items
+        )):
+            return ToolResult(False, f"{label} 必须是工程内相对路径列表",
+                              {"error": "bad_scope"})
+    try:
+        result = runner(
+            phase=phase,
+            read_phase=read_phase,
+            path=path,
+            related=related or [],
+            scopes=scopes or [],
+            baselines_json=baselines_json,
+        )
+    except (TypeError, ValueError, OSError, RuntimeError) as exc:
+        return ToolResult(False, f"inspection 调用失败：{type(exc).__name__}",
+                          {"error": "inspection_failed"}, opclass=OPCLASS_MANAGED_WRITE)
+    return result
+
+
 def workspace_changes(ctx: ToolContext) -> ToolResult:
     """不调用 Git，只报告相对本链路初始快照的文件增删改。"""
     if ctx.change_baseline is None:
@@ -966,7 +1016,8 @@ def git_status(ctx: ToolContext) -> ToolResult:
 
 def default_registry(*, include_artifacts: bool = False,
                      include_changes: bool = False,
-                     git_status_context: ToolContext | None = None) -> ToolRegistry:
+                     git_status_context: ToolContext | None = None,
+                     inspection_runner: Callable[..., ToolResult] | None = None) -> ToolRegistry:
     """Phase 2 最小工具集。
 
     **不含任意 shell 执行**：`run_command` 需经 guard 白名单放行，
@@ -1076,5 +1127,25 @@ def default_registry(*, include_artifacts: bool = False,
                 "limit": {"type": "integer", "description": "读取行数，默认 400，最多 1000"},
             }, ["name"]),
             handler=read_artifact,
+        ))
+    if inspection_runner is not None:
+        # 仅运行器在已绑定 ticket/step/attempt 后注入；普通工具集不暴露此端口。
+        reg.register(Tool(
+            name="inspection",
+            description=(
+                "登记当前步骤的工程自查工作清单。按顺序调用 prepare，"
+                "对每个实际读取的源码文件调用 read，最后调用 check。"
+                "身份、工单目录和 attempt 已由宿主固定，不可自定义。"
+            ),
+            parameters=_params({
+                "phase": {"type": "string", "enum": ["prepare", "read", "check"]},
+                "read_phase": {"type": "string", "enum": ["code_review", "reverse", "fixed", "free", "audit"]},
+                "path": {"type": "string", "description": "工程根相对源码路径，仅 read 时填写"},
+                "related": {"type": "array", "items": {"type": "string"}},
+                "scopes": {"type": "array", "items": {"type": "string"}},
+                "baselines_json": {"type": "string", "description": "宿主已知 Git 基线 JSON；无则省略"},
+            }, ["phase"]),
+            handler=lambda ctx, **kwargs: inspection(ctx, runner=inspection_runner, **kwargs),
+            opclass=OPCLASS_MANAGED_WRITE,
         ))
     return reg
