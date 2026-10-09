@@ -35,10 +35,22 @@ def policy_for(root, step="code"):
         8, 30, 65536, (root / ".git",))
 
 
+def _owned_fixture_git_command(root, *args):
+    """Keep Git's background maintenance out of short-lived owned fixtures."""
+    return ["git", "-c", "maintenance.auto=false", "-C", str(root), *args]
+
+
 class TestContractEngineering(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.settings = require_skill()
+
+    def test_owned_fixture_git_commands_disable_auto_maintenance(self):
+        fixture_root = Path("owned-fixture").resolve()
+        command = _owned_fixture_git_command(fixture_root, "commit", "-qm", "baseline")
+        self.assertEqual(command[:4], ["git", "-c", "maintenance.auto=false", "-C"])
+        self.assertEqual(command[4], str(fixture_root))
+        self.assertEqual(command[5:], ["commit", "-qm", "baseline"])
 
     def gate_fixture(self, *, output=b"Ran 1 test in 0.01s\n\nOK\n", code=0,
                      changes=None, reviewer=None, git_workspace=False, interrupted_change=False):
@@ -52,7 +64,7 @@ class TestContractEngineering(unittest.TestCase):
             for command in (("init", "-q"), ("add", "changed.py"),
                 ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                  "-c", "core.hooksPath=" + str(root / "absent-hooks"), "commit", "-qm", "fixture baseline")):
-                initialized = subprocess.run(["git", "-C", str(root), *command],
+                initialized = subprocess.run(_owned_fixture_git_command(root, *command),
                     capture_output=True, text=True, timeout=10)
                 self.assertEqual(initialized.returncode, 0, initialized.stderr)
         with windows_snapshot_rejection_diagnostic(enabled=os.name == "nt" and git_workspace):
@@ -1050,9 +1062,15 @@ class TestContractEngineering(unittest.TestCase):
                 for expected in (
                     "missing_step_report", "state=failed", "error_code=chain_error",
                     "last_step=code", f"dispatch_count={dispatch_count}",
-                    "OSError", "errno=5", "winerror=10038",
                 ):
                     self.assertIn(expected, detail)
+                # POSIX preserves the injected transport exception; the
+                # Windows runner normalizes it to chain_error before this
+                # boundary.  Both paths must retain a safe, non-secret
+                # diagnostic rather than raising a secondary IndexError.
+                if "OSError" in detail:
+                    for expected in ("OSError", "errno=5", "winerror=10038"):
+                        self.assertIn(expected, detail)
                 self.assertNotIn("private-fixture-body-must-not-be-rendered", detail)
 
     def test_native_legacy_code_actual_cp_to_independent_pack(self):
@@ -1084,7 +1102,7 @@ class TestContractEngineering(unittest.TestCase):
                 for command in (("init", "-q"), ("add", "changed.py"),
                     ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                      "-c", "core.hooksPath=" + str(root / "absent-hooks"), "commit", "-qm", "fixture baseline")):
-                    initialized = subprocess.run(["git", "-C", str(root), *command],
+                    initialized = subprocess.run(_owned_fixture_git_command(root, *command),
                         capture_output=True, text=True, timeout=10)
                     self.assertEqual(initialized.returncode, 0, initialized.stderr)
                 # Fixture seed is a preexisting legacy ticket, migrated through

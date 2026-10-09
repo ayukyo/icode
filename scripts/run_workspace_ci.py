@@ -101,6 +101,7 @@ CONTRACT_ENGINEERING_TESTS = tuple(_CONTRACT_ENGINEERING_PREFIX + name for name 
     "test_build_only_and_required_not_run_plan_never_gain_quality_credit",
     "test_native_legacy_code_actual_cp_to_independent_pack",
     "test_native_legacy_missing_report_preserves_safe_failure_diagnostic",
+    "test_owned_fixture_git_commands_disable_auto_maintenance",
 ))
 POSIX_CONTRACT_ENGINEERING_TESTS = tuple(_CONTRACT_ENGINEERING_PREFIX + name for name in (
     "test_split_session_gate_real_tree_reviewer_and_final_binding",

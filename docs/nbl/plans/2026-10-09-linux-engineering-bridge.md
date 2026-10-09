@@ -1654,6 +1654,16 @@ root获准五模块定点140P/0F/0E/0skip、120.724s、rc0；真实HEAD漂移用
 
 原DEFAULT实际614P/0F/E/skip、193.213s、rc0，installed bootstrap verifier byte binding另输出PASS。数量仍614，因为本片native诊断测试没有加入DEFAULT选择。随后启动同冻结源码的原preflight三门，完整unittest子进程的原argv/kwargs/环境不变；外层仅打印返回后的原summary及HEAD保留路径，结果待记录。
 
+### Task5 后续：macOS Git 夹具竞态候选
+
+线上 cdf8123 的 macOS DEFAULT 只剩 1 个 `maintenance.lock` 初始快照错误。根因尚未确认，生产 snapshot 仍 fail-closed。本轮仅在两个测试夹具入口关闭 Git 自动维护，并新增命令形状测试；不修改 WorkspaceManager、不吞 `FileNotFoundError`、不提高 native readiness。
+
+独立 SPEC/QUALITY 各 3P/0F/E/skip、C0/I0/M0；根定点 4 项 20 轮 `80P/0F/E/skip`、83.809s。新 guard 已加入 `run_workspace_ci.py` 的显式选择集合。下一步按既定顺序运行 DEFAULT、完整 preflight、j1 compile、治理/站点/排期及文档双轮，再精确提交并观察新 SHA；线上 cdf8123 的单 macOS 错误在新 SHA 终态前保留为未解决。
+
+### Windows 线上断言口径校正
+
+cdf8123 x64 job 还显示 missing-report 用例无条件要求 `OSError`，而 Windows runner 已按既有边界规范化为 `chain_error`；ARM 未复现该新增失败。根代理仅将断言改成平台兼容的安全诊断条件：保留 OSError 时核对纯整数 errno/winerror，规范化时核对稳定 chain_error，两者均拒绝私有正文和二次 IndexError。定点 2 项 2P/0F/E/skip、3.438s；不触碰生产或子仓。需重新跑 DEFAULT、完整 preflight 和新 SHA CI，不能把本地通过替代 Windows 旧 Win10093/Win10038 或 reviewer timeout。
+
 ### 当前18向量的证据层级
 
 下表更新上方计划窗口的“待运行”状态；不改写旧L1或失败历史，不把18个向量等同测试方法数。

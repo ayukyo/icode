@@ -2216,6 +2216,12 @@ ICODE 的真实 Linux 工程验收在 create 阶段暴露存储根与执行根�
 
 该小修阶段结束复核10:39:25–10:39:42 UTC：官方main仍2351d9e，指定error.rs与历史固定2c3156ad版本字节完全相同，取舍无变化；未核本次许可或其它文件，不把定点比较说成全仓/全20复核。
 
+### 2026-10-09：macOS Git 夹具竞态候选
+
+本轮没有新增上游实现复制；仅把现有 Codex/Aider 的“执行边界与诊断分层”作为背景，继续保持生产快照异常不被吞掉。cdf8123 线上 macOS DEFAULT 的 `maintenance.lock` 错误已从 3 个收敛到 1 个，但仍未证明是生产缺陷。采纳候选是在测试自有短命 Git 夹具上显式 `maintenance.auto=false`，并用命令形状守卫防止平台路径假设；暂缓生产 snapshot 改动、通用 Git 全局配置和任何原生 readiness 加分。不新增依赖、权限或许可风险，正式取舍及 `80P/0F/E/skip` 稳定性证据见[诊断规格](./nbl/specs/2026-10-09-legacy-step-diagnostic.md)。
+
+同一线上窗口还暴露 Windows x64 的诊断口径差异：POSIX 可保留注入异常，Windows runner 会先规范化为 `chain_error`。采纳测试层的条件断言并保留两种安全字段，不采纳修改生产错误协议或把单架构通过写成原生准入；旧 Win10093/Win10038、reviewer timeout 与 macOS lock 仍是独立门。该观察只借鉴“错误分类与执行边界分离”的机制，不复制上游代码或新增依赖。
+
 ### 同日后续：历史正文保存与真实增量验包（2026-10-08，只读）
 
 合同阶段结束刷新：根代理冻结49项20轮980PASS/0skip，独立SPEC→不同QUALITY批准，扩大关联325PASS/5既有skip、DEFAULT367PASS/0skip、干净安装20外层含37新增子测零skip；完整preflight2201 total/2142PASS/59skip/0FAIL。CRLF夹具同冻结验收，生产verifier未改；仅软件编排及安装输运，不提高原生/模型/R2/R3总门。下一Python候选的十二项设计经标签修正后静态SPEC→不同QUALITY批准，尚未实施。历史正文研究的正式默认增量缺口及进一步源码授权仍未关闭，以下取舍继续有效。

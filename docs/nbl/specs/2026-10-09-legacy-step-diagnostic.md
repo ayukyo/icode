@@ -65,3 +65,17 @@ root完整核默认集合及原选择断言，仅在scripts/run_workspace_ci.py�
 - ✅ 可运行性：42项模块、原三方法20轮60P、关联守卫20轮40P及新冻结615P/2444P分层记录；59项环境skip不算通过。
 
 未完成的产品门：G2完整Git审查身份、Windows有界Git读取、跨平台原生准入、安装态工程链、真实模型1→6及≥90%一致性。已合并询问前两项新增子仓最小修复授权，当前未获答复；已有执行根绑定授权不自动扩展。macOS maintenance.lock仅为独立待确认候选，不由本片诊断修正宣布解决。
+
+## macOS 夹具维护竞态候选（同日后续）
+
+线上 cdf8123 的 macOS DEFAULT 已由 3 个错误收敛为 1 个错误，剩余现场仍是初始快照读取 `maintenance.lock` 时的 `FileNotFoundError`。该证据只说明短生命周期 Git 夹具可能与后台维护竞争，不能证明生产快照有普遍缺陷；因此没有放宽 `WorkspaceSnapshot` 对普通源文件消失的 fail-closed 语义，也没有修改生产执行链。
+
+本轮采用最小测试层候选：短生命周期、由测试完全拥有的 Git 夹具统一使用 `git -c maintenance.auto=false -C <fixture> ...`，并新增命令形状守卫，避免依赖 POSIX 临时路径。先以缺少 helper 的真实 NameError 做 RED，再 GREEN；独立 SPEC 与不同 QUALITY 均为 3P/0F/E/skip、C0/I0/M0。当前冻结源码摘要：`tests/test_contract_engineering.py`=`a3d29a3e08a572449517ebdedaf43448b1b0dec3bc3d5f70ea9cc03bdae763db`，`scripts/run_workspace_ci.py`=`59dc03342ce22c1a7c0f1d226924b902a3c7b792a67bc1bbc8d5d8491b61bbcf`。新增 guard 已登记到默认选择集合，避免只测到未被 CI 选择的测试。
+
+定点验收：选择完整性、候选 guard、两个 macOS 失败边界共 4 项连续 20 轮，`80P/0F/E/skip`，83.809s；该重复矩阵仅证明测试稳定性，不授予 macOS 原生隔离或整树清理信用。待本轮默认、完整 preflight 及新 SHA 线上矩阵完成后，才能判断 cdf8123 的剩余错误是否真正消失；若仍复现，继续沿生产调用链做独立 TDD，不吞掉快照异常。
+
+## Windows 诊断断言兼容修正（线上反馈后）
+
+cdf8123 的 x64 Windows job 暴露了同一测试的跨平台语义差异：POSIX 入口保留注入的 `OSError(errno=5, winerror=10038)`，Windows runner 在进入边界前将其规范化为 `chain_error`，因此原先无条件要求 `OSError` 会产生新的测试错误。该失败不是生产错误分类漂移，也不能回写成 Windows 原生已通过。
+
+最小修正仅将异常类型/错误码断言改为“若诊断保留 `OSError` 则核对纯整数码；否则接受稳定 `chain_error`”，两条路径都继续强制 `missing_step_report`、`state=failed`、正确 dispatch 次数及私有正文不泄漏。定点 2 项（missing-report + legacy code）`2P/0F/E/skip`、3.438s；随后默认 `616P/0F/E/skip`、191.197s，完整 preflight `2498P/60skip/0F/E` 三道门通过；compileall-j1、治理、官网、竞品排期与 diff check 也通过。未修改生产代码、Windows 子仓或错误协议；该修正不解决仍存在的旧 Win10093/Win10038、双 reviewer timeout 或 macOS maintenance.lock。
