@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **强制交付回合后的真实 code 复验仍停在 code（2026-10-10，`e94a86b`）：**`R3-REAL-FINAL-2FE8169` 的 plan、review、merge 全部成功；code 真实用 `edit_file` 修改了临时 `calc.py` 与 `test_calc.py`，并登记 `04_code_review_fix.md`，但 `code_worklist.json` 缺失，按 fail-closed 停步，deepcheck/audit 未运行。随后 `R3-REAL-FINAL-E94A86B` 在 plan 收到 HTTP 400，未形成产物，不计能力信用。当前仍无 code→deepcheck→audit 完整真实成功样本，不授 R3 六步、90% 一致性或 R2 总验收信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **修复后真实模型窄任务复验（2026-10-09）：**MiniMax-M3 在 bubblewrap 临时 `pycalc` 副本中按明确工具纪律完成 `calc_gcd/calc_lcm`，真实模型循环 12 回合、Reviewer 4 回合，共 16 次调用/69,484 tokens；实际改动 `calc.py`、`test_calc.py`，独立 `python -B -m unittest` 为 21 tests、退出码 0，Reviewer 结构化提交成功。越界 `run_command` 仍被拒绝，仓库保持无改动。该结果只恢复窄任务闭环证据，不授予 R3 1→6、跨平台原生隔离、90% 一致性或 R2/R3 总验收信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
 - **修复后 R3 计划→审查复验仍停在 review（2026-10-09）：**新工单的 plan 真实通过，但 review 5 回合/8 次工具调用未生成 `02_review.md` 或合法 `review_round_*.json`，宿主未装配 `review_manifest.json` 并 fail-closed；merge 未运行。总计 48 次调用/304,057 tokens。该结果确认门禁没有被放宽，也说明窄任务通过不能外推到链路审查稳定性；不授予 R3 1→6、90% 或总验收信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)

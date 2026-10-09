@@ -104,3 +104,16 @@ code→deepcheck→audit 能力，也不提高 R3 或 90% 一致性信用。
 随后主线 `e3e1022` 让真实 code 步骤接近回合上限时优先获得一次 `edit_file` 机会；离线 144
 项回归通过，尚未取得该修复后的真实 code→deepcheck→audit 成功证据。因此 R3 仍只对
 plan→review→merge 三步闭环有真实信用，R2、90% 一致性和总验收继续关闭。
+
+## 强制交付回合与真实 code 改动复验（2026-10-10，`e94a86b`）
+
+在 `86cdc14`、`8d1f5f3`、`e562624`、`2fe8169`、`e94a86b` 的连续窄修复中，运行器为真实提供方
+增加了有界交付回合、非目标工具拒绝和 code 产物提交切换；149 项定向回归、5 项跳过，compileall
+通过，所有提交均推送 `main`。真实工单 `R3-REAL-FINAL-2FE8169` 的 plan、review、merge 全部成功，
+code 步骤实际用 `edit_file` 修改了临时 `calc.py` 和 `test_calc.py`，并登记了
+`04_code_review_fix.md`；但 `code_worklist.json` 未形成合法 JSON 产物，按 fail-closed 停在 code，
+没有进入 deepcheck/audit。该样本首次证明“两个工程文件真实变更”与“code 产物完整”被分别核验，
+不能把部分成功折算为 R3 六步成功。
+
+随后 `R3-REAL-FINAL-E94A86B` 在 plan 阶段收到兼容端点 HTTP 400，未形成 `01_plan.md`，也不作
+能力信用。当前仍没有 code→deepcheck→audit 的完整真实成功样本，不提高 R3/90% 一致性或 R2 总验收。
