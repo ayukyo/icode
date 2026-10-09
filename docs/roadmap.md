@@ -16,6 +16,14 @@
   attempt 仍可能复用旧幂等键。现已同时识别两种字段并通过 107 项相关回归；未改变未闭合
   attempt 的恢复保护，也未把失败工单升级为成功。
 
+- **新 attempt 命中结构化 round，但旧工单副作用仍阻断（2026-10-10，待提交）：**补齐完整
+  trace 读取后，`R3-REAL-FRESH-19` 的新 review attempt=`step-req-a2c341e3c94842bad3dd58a5`
+  成功登记 `review_round_1.json`；提供方先回传 generic `submit_artifact`，运行器严格转换为
+  typed `submit_review_round`，证明兼容路径在真实模型上命中。旧 attempt 的副作用历史仍触发
+  `operation_ambiguous`，本次未能合法完成 review 前移，未进入 merge/code/deepcheck/audit。
+  同时修复 `step-run --step review` 未经 chain post hook 时不会装配机器 `review_manifest` 的入口
+  缺口；108 项相关测试通过、5 项条件跳过。R3 六步、90% 一致性和 R2 总验收仍关闭。
+
 - **真实后半段复验与步骤重试幂等修复（2026-10-10，工作树基于 `cffabdf`）：**
   `R3-REAL-FINAL-17` 的真实 plan→review→merge 仍保持成功（75 次调用、728,692 tokens）。
   继续跑 code 时，模型真实修改/回读了临时 `calc.py`、`test_calc.py`，但先后出现未闭合

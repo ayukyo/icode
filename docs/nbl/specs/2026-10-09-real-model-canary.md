@@ -228,3 +228,18 @@ check”，而运行器的重试辅助函数仍选出了原 attempt。核对事�
 `test_chain_offline`、`test_runner`、`test_recovery`、`test_loop` 与 `test_artifact_broker` 共
 107 项相关测试通过、5 项条件跳过，`py_compile` 与 `git diff --check` 通过；修复后的新鲜真实
 review attempt 尚未重新运行，R3 六步、90% 一致性和 R2 总验收继续关闭。
+
+## 新 attempt 的真实 round 命中与旧副作用阻断（2026-10-10）
+
+完整 trace 读取和字段兼容修复后，在同一临时工单启动的新 review attempt 为
+`step-req-a2c341e3c94842bad3dd58a5`，不再复用已终结的旧 attempt。模型前 20 回合多次尝试提交
+旧 generic artifact，但控制面按历史请求拒绝重放；在第 21 回合 generic `submit_artifact` 成功
+提交 review 正文，第 22 回合由运行器严格转换并成功执行 typed `submit_review_round`，真实登记
+`review_round_1.json`（事件链 event_count=93）。这确认别名转换在真实 MiniMax-M3 + bubblewrap
+上命中，而不是只通过离线单测。
+
+该次仍不能算 review 成功：旧 attempt 的副作用回执历史触发 `operation_ambiguous`，运行器拒绝
+盲目重放；直接调用 `run_contract_step` 也没有 chain 的 post hook，机器 `review_manifest` 未在
+本次报告中登记。随后补齐公共 `step-run --step review` 的宿主装配回调，只从已验证 round 文件
+装配 manifest，不接受模型自述或手写机器产物；新增回归后相关 108 项测试通过、5 项条件跳过。
+本次未进入 merge/code/deepcheck/audit，不授予 R3 六步、90% 一致性或 R2 总验收信用。

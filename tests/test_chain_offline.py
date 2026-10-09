@@ -579,6 +579,22 @@ class TestReviewArtifactHonestyOffline(unittest.TestCase):
             self.assertTrue(report.steps[0].ok, report.steps[0].render())
             self.assertEqual(report.steps[0].trace.get("open_steps"), {})
 
+    def test_direct_review_step_run_assembles_machine_manifest(self) -> None:
+        """step-run 入口也必须执行宿主拥有的 review manifest 装配。"""
+        with temp_workspace() as workspace:
+            out_dir = self._ticket(workspace)
+            backend = self._backend({
+                "02_review.md": REVIEW_TEXT,
+                "review_round_1.json": json.dumps(REVIEW_JSON),
+            }, "完成")
+            report = run_contract_step(
+                self.settings, backend=backend, workspace=workspace, step="review",
+                ticket_id="REVIEW-HONESTY", requirement="Independent plan review",
+                out_dir=out_dir, sandbox=NoIsolation(),
+            )
+            self.assertTrue(report.ok, report.render())
+            self.assertTrue((out_dir / "review_manifest.json").is_file())
+
     def test_existing_body_is_not_overwritten_by_long_reply(self) -> None:
         with temp_workspace() as workspace:
             out_dir, _backend, report = self._chain(workspace, {

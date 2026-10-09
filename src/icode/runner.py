@@ -1236,6 +1236,18 @@ def run_contract_step(
     cp = ControlPlane(settings)
     report = StepReport(step=step, ok=False, out_dir="")
 
+    # `step-run --step review` does not go through chain.py's post hook.  Keep
+    # the same machine-owned manifest contract for that public entry point:
+    # assemble only from broker-validated round artifacts, never from model
+    # prose or a caller-supplied manifest.
+    if post_write is None and step == "review":
+        def _assemble_review_post(directory: Path, current_step: str, attempt: str) -> None:
+            from .chain import assemble_review_manifest
+
+            assemble_review_manifest(directory, ticket_id, attempt)
+
+        post_write = _assemble_review_post
+
     try:
         contracts = ContractSet.load(settings.gates_json)
         if not contracts.has(step):
