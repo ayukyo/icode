@@ -1025,6 +1025,36 @@ class TestContractEngineering(unittest.TestCase):
                 if kind == "not_run":
                     self.assertEqual(row["run"]["checks"][1]["status"], "not_run")
 
+    def test_native_legacy_missing_report_preserves_safe_failure_diagnostic(self):
+        from icode.tools import builtin
+
+        for dispatch_count in (0, 1):
+            with self.subTest(dispatch_count=dispatch_count):
+                def fail_without_report(*args, **kwargs):
+                    # Inject only a transport-double count, not an actual command.
+                    if dispatch_count:
+                        builtin._controlled_dispatch()
+                    error = OSError(5, "private-fixture-body-must-not-be-rendered")
+                    error.winerror = 10038
+                    raise error
+
+                case = type(self)("test_native_legacy_code_actual_cp_to_independent_pack")
+                result = unittest.TestResult()
+                with patch.object(runner, "run_contract_step", side_effect=fail_without_report):
+                    case.run(result)
+                self.assertEqual(result.testsRun, 1)
+                self.assertEqual(result.errors, [])
+                self.assertEqual(len(result.failures), 1)
+                self.assertEqual(result.skipped, [])
+                detail = result.failures[0][1]
+                for expected in (
+                    "missing_step_report", "state=failed", "error_code=chain_error",
+                    "last_step=code", f"dispatch_count={dispatch_count}",
+                    "OSError", "errno=5", "winerror=10038",
+                ):
+                    self.assertIn(expected, detail)
+                self.assertNotIn("private-fixture-body-must-not-be-rendered", detail)
+
     def test_native_legacy_code_actual_cp_to_independent_pack(self):
         self._native_legacy_contract_to_pack(("code",))
 
@@ -1095,6 +1125,7 @@ class TestContractEngineering(unittest.TestCase):
                 observed = []
                 finish_results = []
                 fixture_errors = []
+                runner_errors = []
                 def observed_step(*a, **kw):
                     original_post = kw["post_write"]
                     def fixture_inspection(path, current_step, attempt):
@@ -1146,7 +1177,15 @@ class TestContractEngineering(unittest.TestCase):
                             fixture_errors.append(str(error))
                             raise
                     kw["post_write"] = capture_fixture_error
-                    report = runner.run_contract_step(*a, **kw)
+                    try:
+                        report = runner.run_contract_step(*a, **kw)
+                    except Exception as error:
+                        # Preserve the original failure without printing its body.
+                        codes = {name: value if type(value := getattr(error, name, None)) is int else None
+                                 for name in ("errno", "winerror")}
+                        runner_errors.append(
+                            f"{type(error).__name__} errno={codes['errno']} winerror={codes['winerror']}")
+                        raise
                     observed.append(report)
                     return report
                 actual_finish = runner._finish_step
@@ -1166,15 +1205,20 @@ class TestContractEngineering(unittest.TestCase):
                     result = NativeChainExecutor(self.settings, backend=backend, sandbox=sandbox,
                         verification_plan_provider=provider).execute(context, control)
                 provider.assert_called_once_with(context, policy)
-                self.assertEqual(dispatch.call_count, 1, str(fixture_errors) + observed[0].render())
+                self.assertEqual(len(observed), 1,
+                    f"missing_step_report state={result.state} error_code={result.error_code} "
+                    f"last_step={result.last_step} dispatch_count={dispatch.call_count} "
+                    f"runner_errors={runner_errors}")
+                report_detail = observed[0].render()
+                self.assertEqual(dispatch.call_count, 1, str(fixture_errors) + report_detail)
                 receipts = list(directory.glob(".engineering-*.json"))
                 self.assertEqual(len(receipts), 1, result)
                 row = load_verification_receipts(receipts)[0]
                 self.assertTrue(row["passed"])
                 starts = self.event_rows(directory, "step_started")
                 finishes = self.event_rows(directory, "step_finished")
-                self.assertEqual(len(finishes), 1, str(finish_results) + observed[0].render())
-                self.assertEqual(finishes[0]["payload"]["outcome"], "success", str(row["binding"]) + observed[0].render())
+                self.assertEqual(len(finishes), 1, str(finish_results) + report_detail)
+                self.assertEqual(finishes[0]["payload"]["outcome"], "success", str(row["binding"]) + report_detail)
                 self.assertEqual(row["binding"]["attempt"], starts[0]["payload"]["attempt"])
                 self.assertIn(row["fingerprint"], finishes[0]["payload"]["evidence"])
                 self.assertFalse(cp.trace(directory).data["open_operations"])

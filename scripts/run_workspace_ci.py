@@ -100,6 +100,7 @@ CONTRACT_ENGINEERING_TESTS = tuple(_CONTRACT_ENGINEERING_PREFIX + name for name 
     "test_contract_and_resume_reject_same_bytes_other_cp_root_before_write_or_model",
     "test_build_only_and_required_not_run_plan_never_gain_quality_credit",
     "test_native_legacy_code_actual_cp_to_independent_pack",
+    "test_native_legacy_missing_report_preserves_safe_failure_diagnostic",
 ))
 POSIX_CONTRACT_ENGINEERING_TESTS = tuple(_CONTRACT_ENGINEERING_PREFIX + name for name in (
     "test_split_session_gate_real_tree_reviewer_and_final_binding",

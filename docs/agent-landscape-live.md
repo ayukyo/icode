@@ -2212,6 +2212,10 @@ ICODE 的真实 Linux 工程验收在 create 阶段暴露存储根与执行根�
 
 阶段结束再次独立核对（2026-10-09 10:10:52–10:11:15 UTC）：上述Codex/Aider官方HEAD未变，相关exec/process_group/orchestrator及cmd_test/cmd_run源码定点重读无取舍变化。未重查全20名单或许可依赖；Linux工程诊断实际运行与全局软件验收单独记在执行计划，不由本次研究授予通过。
 
+后续测试诊断小修（2026-10-09 10:30:58–10:31:11 UTC）：独立定点读取Codex历史固定提交2c3156ad的[typed error分类](https://github.com/openai/codex/blob/2c3156adf4c9454f0e01c839669255c6a32b5416/codex-rs/protocol/src/error.rs)，不声称当前HEAD或许可复核。采纳分类与原异常分离、不让诊断二次异常掩盖原故障；不适配把Debug/Display当脱敏。ICODE仅改测试层，保留异常与失败状态，新增正文marker负控；无复制、新依赖或权限。[实测记录](./nbl/specs/2026-10-09-legacy-step-diagnostic.md)区分注入传输计数与真实命令，不能关闭Windows生产失败或R2/R3。
+
+该小修阶段结束复核10:39:25–10:39:42 UTC：官方main仍2351d9e，指定error.rs与历史固定2c3156ad版本字节完全相同，取舍无变化；未核本次许可或其它文件，不把定点比较说成全仓/全20复核。
+
 ### 同日后续：历史正文保存与真实增量验包（2026-10-08，只读）
 
 合同阶段结束刷新：根代理冻结49项20轮980PASS/0skip，独立SPEC→不同QUALITY批准，扩大关联325PASS/5既有skip、DEFAULT367PASS/0skip、干净安装20外层含37新增子测零skip；完整preflight2201 total/2142PASS/59skip/0FAIL。CRLF夹具同冻结验收，生产verifier未改；仅软件编排及安装输运，不提高原生/模型/R2/R3总门。下一Python候选的十二项设计经标签修正后静态SPEC→不同QUALITY批准，尚未实施。历史正文研究的正式默认增量缺口及进一步源码授权仍未关闭，以下取舍继续有效。

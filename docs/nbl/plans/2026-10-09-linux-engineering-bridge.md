@@ -1427,7 +1427,7 @@ env PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 GOMAXPROCS=1 GOFLAGS=-p=1 CMAKE_B
 
 **状态**
 
-- [ ] 任务完成
+- [x] 本片软件验收、main发布与终态观察完成；9b22490线上五个失败及R2/R3整体门保留开放。
 
 **Dependencies:** Task 1, Task 2, Task 3, Task 4
 **Parallelizable:** No (writer全部STOP，同冻结源、软件门与发布必须串行)
@@ -1476,7 +1476,7 @@ env PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 GOMAXPROCS=1 GOFLAGS=-p=1 CMAKE_B
 
 DEFAULT仅原portable集合，不新增Linux静态skip。原full子进程保持原argv/kwargs/环境，恰好一次；实际total/P/F/E/skip与bootstrap binding独立记录，不猜动态方法总数。无源变化的文档收尾不重复full，源发生修复则更新冻结身份、重过所需软件门，不能称旧full为新源证据。
 
-- [ ] **Step 3：编译j1、非测试守卫、文档连续两clean和七维报告。**
+- [x] **Step 3：编译j1、非测试守卫、文档连续两clean和七维报告。**
 
 ```bash
 env PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 /tmp/icode-packaged-skill-acceptance-fqxSO0bh/venv/bin/python -B -m compileall -q -j 1 src tests scripts
@@ -1490,7 +1490,7 @@ git diff --check
 
 root更新当前18向量实际结果与G1/G2，闭与未闭分层。doc-contract脚本跑本文/设计/研究/L1/新增blockers/实际证据两轮，各0疑似项并人工核方法数、枚举、阶段、字段、版本/链接。代码assert通过只授对应软件层；报告可运行性仅实际执行范围，不写R2/R3或Native100%。
 
-- [ ] **Step 4：仅验收后的exact main commit/push，绑定新SHA观察。**
+- [x] **Step 4：仅验收后的exact main commit/push，绑定新SHA观察。**
 
 root重新只读核dirty和允许文件，对本文ignored路径仅force exact单个文件；不得stage他人改动、批量force docs目录。提交前所有source冻结、七维与文档两clean成立，正常gitcommit和push main；用户已授权阶段推送。原8d所有线上runs已STOP，本片只观察新commit实际CI/Pages/Windows provenance直到终态，不反复轮询旧runs。源Linux诊断、installed wheel现有诊断、native其他门与模型分开记录；不因Pages/签名绿色宣布R2/R3整体通过。
 
@@ -1698,3 +1698,21 @@ Python src/scripts/tests全部compileall -j1通过，缓存置新临时目录；
 - ✅ 可运行性：本机定点140P、20轮180P、DEFAULT614P及全量2443P/59skip；模型double、source与安装/跨平台/真实模型信用分开。
 
 剩余本片发布动作：八文档连续两轮检查、九路径精确暂存与main提交推送、新SHA线上观察。G2完整成功、installed工程桥接、原生剩余门、真实模型与R2/R3总体验收仍未完成。
+
+### 本片main已发布，线上观察进行中
+
+八文档连续两轮0疑似项；精确九路径暂存，普通git add提示docs忽略规则后仅对六个已知文档路径force，未扩大目录范围。cached diff-check通过、worktree相对index无差异，提交`9b22490b6feb55be8aa2ab459b1f00b1d898b41f`（parent43e7739，tree`ea8e5a40a028043e71fff59d6c03dd45f9f6617c`），736增17删。push main成功，ls-remote仅main且同SHA，发布后工作区干净。此发布履历随下一小修登记，不制造提交自引用。
+
+新SHA attempt1：[CI37917926621](https://github.com/ayukyo/icode/actions/runs/37917926621)、[Pages37917926634](https://github.com/ayukyo/icode/actions/runs/37917926634)、[provenance37917926590](https://github.com/ayukyo/icode/actions/runs/37917926590)已交独立只读观察；当前Pages成功，其余尚未全部终态。已读Linux诊断明确conformance_credit=none/native_ready=false；不能因此关闭R2/R3。下一小修仅处理已有Windows测试诊断自身IndexError，生产/vendor不动，另记实测与发布。
+
+### 9b22490线上终态及新失败
+
+独立只读观察已全部终态并STOP：上述三个workflow均attempt1，CI为36success/5failure/3skip；Pages validate/deploy成功；provenance validate及四签名安装矩阵成功。Linux Py3.11/Py3.12 full各2502total/2431P/71skip，分别702.171s与607.019s；Ubuntu DEFAULT614P/236.479s，后续75P。七个packaged安装矩阵全部成功。
+
+四Linux native的新增bridge均passed、conformance_credit=none、native_ready=false；Ubuntu22双架构8/10 critical=true、Ubuntu24系双架构7/10 critical=false，所有ready=false。两macOS native均成功但6/10 critical=false/ready=false，不授产品准入。
+
+新增macOS DEFAULT失败[job113778563314](https://github.com/ayukyo/icode/actions/runs/37917926621/job/113778563314)：614测试3errors，maintenance.lock在workspace_snapshot.py:845 entry.stat时消失；分别为incremental_cp_worklist_history_without_old_bodies_blocks_export，以及split_session_reviewer_and_final_boundary_reject_real_drift的source_during_review/identity_after_review子例。三者均在gate_fixture首次baseline，尚未进入刻意漂移；macos-26-arm64/Git2.55.0。日志仅basename，未证明锁完整路径或删除进程。独立源码诊断认为提交后的异步Git维护是候选而非确认根因；不吞FileNotFoundError或放宽snapshot，后续应对owned夹具做定点取证。
+
+双Windows DEFAULT x64 job113778563427、ARM job113778563749均594total/20skip/1F/1E，明确inspection Win10093与legacy Win10038/dispatch0。x64本轮未复现上一轮IndexError，不把偶然未复现当诊断缺陷已修。双Reviewer x64 job113778563256、ARM job113778563503均exit78、Win10035、wait_expired；两runner observer均ready且no_matching_event，前轮x64 unavailable的差异不等于隔离通过。
+
+四签名矩阵密码学验证、offline verifier、实际密码学负控与signed-mode wheel导出PASS；抽查三个PE capture仍parse_complete/runtime_load_verified/source_launch_verified三false，第四只授已读签名日志信用。无独立制品下载/执行、无重跑或凭据访问。源码桥接本片软件/发布/观察已闭环，跨平台五个失败及R2/R3总门仍开放。
