@@ -177,3 +177,22 @@ cached 590,645）。
 该结果确认上一轮“写入文件但未登记”的失败由强制交付提示与工具选择不一致触发，`315fa3e` 修复后
 真实 merge 闭环成立。它只增加 plan→review→merge 的真实信用；code→deepcheck→audit、R3 六步、
 跨平台原生隔离、90% 一致性和 R2 总验收仍未通过。
+
+## 真实 code 后半段复验与重试幂等修复（2026-10-10，工作树 `cffabdf`）
+
+在 `R3-REAL-FINAL-17` 的前三步成功工单上继续跑 `code`，没有把文件存在当成完成：
+
+1. 首次 code attempt 真实修改了 `calc.py`、`test_calc.py`，并生成 `04_code_review_fix.md`、
+   `code_worklist.json`，但源码变更后的 inspection hash/read 没有闭合，控制面拒绝成功回执；
+   记录为 failure。
+2. 恢复 attempt 的 inspection 暴露临时目录没有 Git 基线，工作清单出现明确未观测债务，
+   `check-outputs` 继续 fail-closed；没有用 `--allow-incomplete` 冒充 code success。
+3. 后续真实模型把机器生成的 `code_worklist.json` 当普通文件写入，控制面检测到身份/字段漂移并
+   拒绝；再次以标准 `pycalc` Git 基线复验时，模型仍未形成可推进的完整边界回执。所有失败 attempt
+   均显式 finish failure，未进入 deepcheck/audit，未增加 R3 六步信用。
+
+这轮还发现运行器重试缺陷：同一步骤失败后，`step_start` 复用第一次的确定性 request，导致新
+ attempt 被误判为旧 attempt 的幂等重放。已做最小修复：仍有未闭合 attempt 时保留旧键以支持恢复，
+ 已终结 attempt 则按历史 start 次数生成新 occurrence；新增离线回归验证失败重试得到新 attempt。
+该修复不放宽任何产物、inspection、隔离或模型门禁。当前真实证据仍仅覆盖 plan→review→merge；
+R2、code→deepcheck→audit、90% 一致性及自动模式继续关闭。

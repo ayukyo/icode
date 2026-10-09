@@ -2,6 +2,15 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **真实后半段复验与步骤重试幂等修复（2026-10-10，工作树基于 `cffabdf`）：**
+  `R3-REAL-FINAL-17` 的真实 plan→review→merge 仍保持成功（75 次调用、728,692 tokens）。
+  继续跑 code 时，模型真实修改/回读了临时 `calc.py`、`test_calc.py`，但先后出现未闭合
+  attempt、无 Git 关联 inspection 债务、模型误写机器 `code_worklist.json` 等 fail-closed
+  边界，未进入 deepcheck/audit；这些失败均已写入控制面事件链，未折算为成功。期间修复运行器
+  在“已终结失败 attempt”后的重试幂等键复用缺陷：未闭合 attempt 仍复用原键，已终结 attempt
+  按历史 start 次数生成新 occurrence；新增回归通过。R3 仍只授予真实前三步信用，R2、六步链、
+  90% 一致性与自动模式继续关闭。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **提供方忽略 typed review round 的真实边界（2026-10-10，工作树基于 `a5fbf56`）：**新工单
   `R3-REAL-FINAL-15` 的 plan 成功，但 review 只提交 `02_review.md`，缺少合法
   `review_round_*.json`，宿主按 fail-closed 停止；46 次调用、557,849 tokens，未进入

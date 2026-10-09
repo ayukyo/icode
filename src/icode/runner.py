@@ -86,6 +86,44 @@ _DARWIN_PROCESS_GROUP_AUDIT_TIMEOUT_SECONDS = 1.0
 _CONTRACT_ENGINEERING_PENDING = "engineering_verification_pending"
 
 
+def _step_start_request(
+    cp: ControlPlane, out_dir: Path, step: str, ticket_id: str,
+) -> str:
+    """选择可重试步骤的幂等键，同时保留未闭合 attempt 的恢复语义。
+
+    第一次启动使用历史兼容的 occurrence=1。若同一步骤已有已终结的
+    attempt，下一次启动必须使用新的 occurrence；否则控制面会把重试
+    误判为第一次 start 的幂等重放并返回旧 attempt。仍有未闭合 attempt
+    时继续使用默认键，让调用方走原有恢复/并发保护路径。
+    """
+    action = f"step-{step}-start"
+    default = make_request(ticket_id, action)
+    try:
+        trace = cp.trace(out_dir)
+        if trace.returncode != 0 or trace.data.get("ok") is not True:
+            return default
+        events = trace.data.get("events") or []
+        starts = [
+            event for event in events
+            if event.get("type") == "step_started"
+            and (event.get("step") == step or event.get("payload", {}).get("step") == step)
+        ]
+        finished = {
+            event.get("attempt") or event.get("payload", {}).get("attempt")
+            for event in events
+            if event.get("type") == "step_finished"
+            or event.get("event_type") == "step_finished"
+        }
+        if any(
+            (event.get("attempt") or event.get("payload", {}).get("attempt")) not in finished
+            for event in starts
+        ):
+            return default
+        return make_request(ticket_id, action, occurrence=len(starts) + 1)
+    except Exception:  # noqa: BLE001 - key selection must not block fail-closed CP
+        return default
+
+
 class VerificationOutputError(RuntimeError):
     """The verifier did not produce a complete, safely captured output stream."""
 
@@ -1258,7 +1296,10 @@ def run_contract_step(
                     report.error = "中间状态流转未通过，未启动步骤"
                     return report
 
-        attempt = cp.step_start(out_dir, step, ticket_id=ticket_id)
+        attempt = cp.step_start(
+            out_dir, step, ticket_id=ticket_id,
+            request=_step_start_request(cp, out_dir, step, ticket_id),
+        )
         report.add("step start", bool(attempt), f"attempt={attempt}")
 
         # 检查点：让中断后可恢复（不保存模型正文）

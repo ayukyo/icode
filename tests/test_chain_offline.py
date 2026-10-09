@@ -21,7 +21,7 @@ from icode.chain import STEP_INSTRUCTIONS, assemble_review_manifest, chain_steps
 from icode.config import load_settings
 from icode.contracts import ContractSet
 from icode.control import ControlPlane
-from icode.runner import AUTOPERSIST_HEADER, run_contract_step, run_unittest
+from icode.runner import AUTOPERSIST_HEADER, _step_start_request, run_contract_step, run_unittest
 from icode.runner import StepReport
 from icode.isolation import NoIsolation
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
@@ -97,6 +97,25 @@ class TestChainOffline(unittest.TestCase):
         self.assertIn("不要提交 review_manifest.json", instruction)
         self.assertIn("必须立即调用 submit_artifact", instruction)
         self.assertIn("不能只在最终回复中描述审查", instruction)
+
+    def test_failed_step_retry_gets_new_idempotency_request(self) -> None:
+        """已终结失败 attempt 的重试不得复用第一次 start 的幂等键。"""
+        with temp_workspace() as workspace:
+            from icode.handshake import next_out_dir
+
+            out_dir = next_out_dir(workspace)
+            ticket_id = "OFFLINE-RETRY-1"
+            cp = ControlPlane(self.settings)
+            cp.create(out_dir, ticket_id=ticket_id, requirement="重试", birth="plan")
+            first = cp.step_start(out_dir, "plan", ticket_id=ticket_id)
+            self.assertTrue(cp.step_finish(
+                out_dir, "plan", first, "failure", ticket_id=ticket_id,
+                evidence=("test-failure",), check=False,
+            ).data.get("ok"))
+
+            request = _step_start_request(cp, out_dir, "plan", ticket_id)
+            second = cp.step_start(out_dir, "plan", ticket_id=ticket_id, request=request)
+            self.assertNotEqual(first, second)
 
     def test_run_chain复用可信已有工单目录(self) -> None:
         with temp_workspace() as workspace:
