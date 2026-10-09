@@ -149,3 +149,19 @@ class TestArtifactBroker(unittest.TestCase):
         invalid = '{"round":1,"status":"approve","checks":[]}'
         with self.assertRaisesRegex(ArtifactAccessError, "三个字符串数组"):
             self.broker.submit("review_round_1.json", invalid)
+
+    def test_结构化review_round工具由宿主序列化(self) -> None:
+        registry = default_registry(include_artifacts=True, include_review_round=True)
+        context = ToolContext(root=self.root, artifact_broker=self.broker)
+        result = registry.invoke("submit_review_round", context, {
+            "round": 1,
+            "new_issues": ["n"],
+            "refuted_issues": [],
+            "pending_verification": ["p"],
+        })
+        self.assertTrue(result.ok, result.content)
+        self.assertEqual(
+            (self.out_dir / "review_round_1.json").read_text(encoding="utf-8"),
+            '{"round":1,"new_issues":["n"],"refuted_issues":[],'
+            '"pending_verification":["p"]}',
+        )

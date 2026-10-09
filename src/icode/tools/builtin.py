@@ -576,6 +576,38 @@ def submit_artifact(ctx: ToolContext, name: str, content: str) -> ToolResult:
                       {"name": name, "bytes": size}, opclass=OPCLASS_MANAGED_WRITE)
 
 
+def submit_review_round(
+    ctx: ToolContext,
+    round: int,
+    new_issues: list[str],
+    refuted_issues: list[str],
+    pending_verification: list[str],
+) -> ToolResult:
+    """提交 review round 的结构化字段，避免模型手写 JSON 字符串。"""
+    if ctx.artifact_broker is None:
+        return ToolResult(False, "当前步骤未开放受控产物端口",
+                          {"error": "artifact_unavailable"}, opclass=OPCLASS_MANAGED_WRITE)
+    if type(round) is not int or round < 1:
+        return ToolResult(False, "round 必须是正整数", {"error": "bad_arguments"},
+                          opclass=OPCLASS_MANAGED_WRITE)
+    arrays = (new_issues, refuted_issues, pending_verification)
+    if any(
+        not isinstance(items, list) or any(type(item) is not str for item in items)
+        for items in arrays
+    ):
+        return ToolResult(False, "三个审查字段必须是字符串数组", {"error": "bad_arguments"},
+                          opclass=OPCLASS_MANAGED_WRITE)
+    body = json.dumps({
+        "round": round,
+        "new_issues": new_issues,
+        "refuted_issues": refuted_issues,
+        "pending_verification": pending_verification,
+    }, ensure_ascii=False, separators=(",", ":"))
+    return submit_artifact(
+        ctx, f"review_round_{round}.json", body,
+    )
+
+
 def read_artifact(
     ctx: ToolContext, name: str, offset: int = 1, limit: int = 400,
 ) -> ToolResult:
@@ -1032,6 +1064,7 @@ def git_status(ctx: ToolContext) -> ToolResult:
 
 
 def default_registry(*, include_artifacts: bool = False,
+                     include_review_round: bool = False,
                      include_changes: bool = False,
                      git_status_context: ToolContext | None = None,
                      inspection_runner: Callable[..., ToolResult] | None = None) -> ToolRegistry:
@@ -1145,6 +1178,22 @@ def default_registry(*, include_artifacts: bool = False,
             }, ["name"]),
             handler=read_artifact,
         ))
+        if include_review_round:
+            reg.register(Tool(
+                name="submit_review_round",
+                description=(
+                    "提交只读 review 的机器可读单轮结果；由宿主序列化为 "
+                    "review_round_N.json。"
+                ),
+                parameters=_params({
+                    "round": {"type": "integer", "minimum": 1},
+                    "new_issues": {"type": "array", "items": {"type": "string"}},
+                    "refuted_issues": {"type": "array", "items": {"type": "string"}},
+                    "pending_verification": {"type": "array", "items": {"type": "string"}},
+                }, ["round", "new_issues", "refuted_issues", "pending_verification"]),
+                handler=submit_review_round,
+                opclass=OPCLASS_MANAGED_WRITE,
+            ))
     if inspection_runner is not None:
         # 仅运行器在已绑定 ticket/step/attempt 后注入；普通工具集不暴露此端口。
         reg.register(Tool(

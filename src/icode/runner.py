@@ -2380,6 +2380,7 @@ def _run_agent(
     )
     registry = default_registry(
         include_artifacts=artifact_broker is not None,
+        include_review_round=read_only_workspace,
         include_changes=change_baseline is not None,
         git_status_context=ctx,
         inspection_runner=inspection_runner,

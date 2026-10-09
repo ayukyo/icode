@@ -446,11 +446,11 @@ class AgentLoop:
                     tool_choice = self.config.tool_choice_after_read
                 if (
                     tool_choice != "auto"
-                    and call.name in ("submit_review", "submit_artifact")
+                    and call.name in ("submit_review", "submit_artifact", "submit_review_round")
                     and inv.result is not None
                     and inv.result.ok
                     and (
-                        call.name == "submit_artifact"
+                        call.name in ("submit_artifact", "submit_review_round")
                         and not missing_artifacts()
                         or inv.result.meta.get("review_output") == "schema_valid"
                     )
@@ -466,6 +466,12 @@ class AgentLoop:
                 ):
                     missing = missing_artifacts()
                     if missing:
+                        if (
+                            call.name == "submit_artifact"
+                            and self.registry.get("submit_review_round") is not None
+                            and any(name.startswith("review_round_") for name in missing)
+                        ):
+                            tool_choice = "submit_review_round"
                         history.append({
                             "role": "user",
                             "content": (
