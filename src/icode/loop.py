@@ -309,6 +309,7 @@ class AgentLoop:
         read_totals: dict[Path, int] = {}
         completed_read_files: set[Path] = set()
         forced_output_tool: str | None = None
+        forced_edit_paths: set[str] = set()
         artifact_broker = self.ctx.artifact_broker
         artifact_outputs = tuple(
             port for port in (getattr(artifact_broker, "contract", None).outputs
@@ -529,8 +530,29 @@ class AgentLoop:
                     and inv.result is not None
                     and inv.result.ok
                 ):
-                    tool_choice = "auto"
-                    forced_output_tool = None
+                    if call.name == "edit_file" and artifact_broker is not None:
+                        path = str((inv.arguments or {}).get("path") or "")
+                        if path:
+                            forced_edit_paths.add(Path(path).name)
+                        missing = missing_artifacts()
+                        if len(forced_edit_paths) >= 2 and missing:
+                            tool_choice = "submit_artifact"
+                            forced_output_tool = "submit_artifact"
+                            history.append({
+                                "role": "user",
+                                "content": (
+                                    "代码文件已实际修改；现在必须调用 submit_artifact，"
+                                    "逐项提交以下全部 code 产物：" + "、".join(missing)
+                                    + "。每次只提交一个文件，name/content 都必须是字符串，"
+                                    "不要再读取或执行命令。"
+                                ),
+                            })
+                        else:
+                            tool_choice = "auto"
+                            forced_output_tool = None
+                    else:
+                        tool_choice = "auto"
+                        forced_output_tool = None
                 if (
                     tool_choice != "auto"
                     and call.name == "submit_artifact"
