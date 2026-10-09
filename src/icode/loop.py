@@ -372,9 +372,21 @@ class AgentLoop:
                     })
 
             try:
+                request_tools = self.registry.schemas()
+                # A few OpenAI-compatible providers accept the function-level
+                # tool_choice field but still return an arbitrary tool call.
+                # During the bounded delivery turn, exposing other tools would
+                # let harmless-looking inspection calls consume the final
+                # budget.  Restrict the advertised set to the required tool;
+                # the host still validates the returned name below.
+                if forced_output_tool is not None:
+                    request_tools = [
+                        schema for schema in request_tools
+                        if schema.get("function", {}).get("name") == forced_output_tool
+                    ]
                 assistant = self.backend.complete(
                     history,
-                    tools=self.registry.schemas(),
+                    tools=request_tools,
                     max_tokens=self.config.max_output_tokens,
                     tool_choice=tool_choice,
                 )
@@ -517,6 +529,7 @@ class AgentLoop:
                             and any(name.startswith("review_round_") for name in missing)
                         ):
                             tool_choice = "submit_review_round"
+                            forced_output_tool = "submit_review_round"
                         history.append({
                             "role": "user",
                             "content": (
