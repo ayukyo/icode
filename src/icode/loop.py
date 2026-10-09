@@ -51,6 +51,7 @@ class LoopConfig:
     force_tool_after_turns: int | None = None
     force_tool_after_turns_tool: str | None = None
     force_tool_prompt: str | None = None
+    required_tool_retry_count: int = 1
     # 已读全白名单后，保留给必需工具提交、纠正和结束的回合。
     required_tool_turn_reserve: int = 0
 
@@ -303,7 +304,9 @@ class AgentLoop:
         total_tool_calls = 0
         tool_choice = self.config.tool_choice
         tool_choice_on_no_tool = self.config.tool_choice_on_no_tool
-        required_tool_retry_remaining = 1 if tool_choice != "auto" else 0
+        required_tool_retry_remaining = (
+            self.config.required_tool_retry_count if tool_choice != "auto" else 0
+        )
         expected_read_files = set(self.guard.scope.allowed_read_files or ())
         read_spans: dict[Path, list[tuple[int, int]]] = {}
         read_totals: dict[Path, int] = {}
@@ -365,7 +368,7 @@ class AgentLoop:
                     or self.config.tool_choice_on_no_tool
                 )
                 forced_output_tool = tool_choice
-                required_tool_retry_remaining = 1
+                required_tool_retry_remaining = self.config.required_tool_retry_count
                 if self.config.force_tool_prompt:
                     history.append({
                         "role": "user",
@@ -425,7 +428,7 @@ class AgentLoop:
                     # sees all prior read results; no host-side content is
                     # fabricated and a second miss remains fail-closed.
                     tool_choice = tool_choice_on_no_tool
-                    required_tool_retry_remaining = 1
+                    required_tool_retry_remaining = self.config.required_tool_retry_count
                     history.append({
                         "role": "user",
                         "content": (

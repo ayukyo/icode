@@ -2439,6 +2439,10 @@ def _run_agent(
                 if getattr(backend, "name", "") != "fake"
                 else None
             ),
+            required_tool_retry_count=(
+                3 if getattr(backend, "name", "") != "fake" else
+                (loop_config or LoopConfig()).required_tool_retry_count
+            ),
             # FakeBackend is an offline compatibility fixture whose scripted
             # replies intentionally exercise host-side persistence.  Real
             # provider responses get one bounded structured-output turn when
