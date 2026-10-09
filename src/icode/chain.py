@@ -24,7 +24,7 @@ from .backends import Backend
 from .budget import Budget, BudgetTracker
 from .config import Settings
 from .contracts import ContractSet
-from .control import ControlPlane
+from .control import ControlPlane, make_request
 from .loop import LoopConfig
 from .mcp_gates import record_step_gate_trace
 from .runner import StepReport, _runtime_budget, _snapshot, run_contract_step
@@ -232,14 +232,22 @@ def assemble_review_manifest(out_dir: Path, ticket_id: str, attempt: str) -> tup
 
 
 def set_code_files(
-    cp: ControlPlane, out_dir: Path, ticket_id: str, workspace: Path, before: dict[str, str]
+    cp: ControlPlane, out_dir: Path, ticket_id: str, workspace: Path, before: dict[str, str],
+    *, attempt: str,
 ) -> tuple[list[str], bool]:
     """把工作区实际改动写入 metadata 的 `code_files`（`/code_files` 端口）。"""
     after = _snapshot(workspace)
     names = sorted(n for n in set(before) | set(after) if before.get(n) != after.get(n))
     if not names:
         return [], False
-    res = cp.metadata_update(out_dir, ticket_id=ticket_id, set_json={"code_files": names})
+    # `metadata-update` 的默认 request 只按 ticket/action 派生，会与 plan
+    # 阶段的同名动作冲突；把当前 step attempt 与文件集合纳入逻辑坐标，
+    # 既避免跨步骤幂等键碰撞，也让同一 attempt 的重试保持可重放。
+    request = make_request(ticket_id, "code-files", attempt=attempt,
+                           boundary="\n".join(names))
+    res = cp.metadata_update(
+        out_dir, ticket_id=ticket_id, set_json={"code_files": names}, request=request,
+    )
     return names, res.returncode == 0 and res.data.get("ok") is True
 
 
@@ -361,7 +369,9 @@ def run_chain(
                     )
         if name in ("code", "deepcheck", "audit"):
             def post(o: Path, st: str, at: str) -> None:  # noqa: ANN001
-                changed, ok = set_code_files(cp, o, ticket_id, workspace, before)
+                changed, ok = set_code_files(
+                    cp, o, ticket_id, workspace, before, attempt=at,
+                )
                 if changed:
                     report.notes.append(f"code_files 写入：{len(changed)} 个文件（{ok}）")
                 else:

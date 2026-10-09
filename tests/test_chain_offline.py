@@ -17,7 +17,7 @@ from unittest.mock import patch
 from tests._support import REPO_ROOT, make_finished_plan_ticket, require_skill, temp_workspace
 
 from icode.backends import FakeBackend
-from icode.chain import assemble_review_manifest, chain_steps, run_chain
+from icode.chain import assemble_review_manifest, chain_steps, run_chain, set_code_files
 from icode.config import load_settings
 from icode.contracts import ContractSet
 from icode.control import ControlPlane
@@ -134,6 +134,31 @@ class TestChainOffline(unittest.TestCase):
                 invoked.call_args.kwargs["change_baseline"]["code.py"],
                 expected_code_snapshot,
             )
+
+    def test_code_files_metadata_request_does_not_collide_with_plan_metadata(self) -> None:
+        """code_files 写入不能复用 plan 的通用 metadata-update request。"""
+        with temp_workspace() as workspace:
+            from icode.handshake import next_out_dir
+
+            out_dir = next_out_dir(workspace)
+            ticket_id = "OFFLINE-CODE-FILES-REQUEST-1"
+            ControlPlane(self.settings).create(
+                out_dir, ticket_id=ticket_id, requirement="记录代码文件", birth="plan",
+            )
+            ControlPlane(self.settings).metadata_update(
+                out_dir, ticket_id=ticket_id,
+                set_json={"semantic_decisions": [], "requirement_deltas": []},
+            )
+            before = snapshot_workspace(workspace)
+            (workspace / "changed.py").write_text("value = 1\n", encoding="utf-8")
+            changed, ok = set_code_files(
+                ControlPlane(self.settings), out_dir, ticket_id, workspace, before,
+                attempt="code-attempt-1",
+            )
+            self.assertEqual(changed, ["changed.py"])
+            self.assertTrue(ok)
+            metadata = json.loads((out_dir / ".ico_metadata.json").read_text(encoding="utf-8"))
+            self.assertEqual(metadata["code_files"], ["changed.py"])
 
     def test_run_chain拒绝非工单目录与身份不匹配目录(self) -> None:
         with temp_workspace() as workspace:
