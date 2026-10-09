@@ -267,3 +267,18 @@ manifest 缺失均保持可观察且 fail-closed。后续应优先优化 review 
 该调整只改变交付时序，不放宽读取/写入范围、ArtifactBroker 合同、typed round 校验或
 fail-closed；若模型在交付点仍未提交，仍按缺件失败。178 项相关测试通过、5 项条件跳过；需要
 新鲜真实工单验证审查覆盖仍完整，当前不增加 R3 六步、90% 一致性或 R2 总验收信用。
+
+## 全新工单三步闭环与 code 凭据阻塞（2026-10-10，`b6e1b39`）
+
+新工单 `R3-REAL-FRESH-21` 在同一 MiniMax-M3 + bubblewrap 临时靶场中完成了真实
+`plan → review → merge`：控制面事件链 `event_count=97`，无未闭合步骤/动作，登记
+`01_plan.md`、`02_review.md`、`review_round_1.json`、宿主装配的 `review_manifest.json` 和
+`03_plan_final.md`。plan/review/merge 合计 63 次调用、677,977 tokens；review 在提前交付点
+完成了合法结构化 round 与机器清单，merge 单步续跑为成功。
+
+随后按真实绑定路径继续 `code`：临时靶场建立了 Git 基线，控制面以一次性执行根绑定到
+隔离 checkout，Landlock 工程验证器也形成了完整的 `unittest` 通过回执（12 tests）。但模型
+回合在首个请求即收到仓外测试 key 的 `HTTP 401`，没有发生模型调用或源码/测试改动；工程
+门禁因此以 `engineering_reviewer_failed` 停止，未进入 deepcheck/audit。该回执证明“无改动
+不能借测试通过冒充 code 完成”，不增加 R3 六步信用；R2 原生完整合同、自动模式、90% 一致性
+和总验收继续关闭。后续需要有效的仓外测试凭据后，才可重新做真实 code→deepcheck→audit。
