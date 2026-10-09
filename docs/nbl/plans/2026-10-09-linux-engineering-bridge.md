@@ -1664,6 +1664,15 @@ root获准五模块定点140P/0F/0E/0skip、120.724s、rc0；真实HEAD漂移用
 
 cdf8123 x64 job 还显示 missing-report 用例无条件要求 `OSError`，而 Windows runner 已按既有边界规范化为 `chain_error`；ARM 未复现该新增失败。根代理仅将断言改成平台兼容的安全诊断条件：保留 OSError 时核对纯整数 errno/winerror，规范化时核对稳定 chain_error，两者均拒绝私有正文和二次 IndexError。定点 2 项 2P/0F/E/skip、3.438s；不触碰生产或子仓。需重新跑 DEFAULT、完整 preflight 和新 SHA CI，不能把本地通过替代 Windows 旧 Win10093/Win10038 或 reviewer timeout。
 
+### 0447be8 线上终态
+
+`0447be800e4d92e41509725dd5c2b3956242476a` 已推送 main，工作树干净。CI [37926412232](https://github.com/ayukyo/icode/actions/runs/37926412232) attempt1 终态为 37 success / 4 failure / 3 skip；Pages [37926412212](https://github.com/ayukyo/icode/actions/runs/37926412212) 与 Windows provenance [37926412288](https://github.com/ayukyo/icode/actions/runs/37926412288) success。
+
+- 双 Windows DEFAULT 各 596 total / 20 skip / 1 failure + 1 error，仅旧 Win10093、Win10038/dispatch0；新 missing-report 断言不再失败，也没有 IndexError。
+- macOS DEFAULT 616P（214.408s），本轮 `maintenance.lock` 未复现；按证据只能记为未复现，不能记为根因修复。Ubuntu DEFAULT 616P（250.667s）。
+- Py3.11/Py3.12 full 各 2504 total / 71 skip / 2433P；四 Linux bridge 仍 `conformance_credit=none,native_ready=false`，七项 packaged 安装成功；四签名矩阵的 PE capture 仍 `parse_complete=false/runtime_load_verified=false/source_launch_verified=false`。
+- 双 Reviewer 仍 exit78、Win10035、`wait_expired=true`、`event=no_matching_event`。因此本片只完成软件诊断与跨平台断言兼容，未关闭 Windows Git/Reviewer、原生隔离、模型或 R2/R3 总门。
+
 ### 当前18向量的证据层级
 
 下表更新上方计划窗口的“待运行”状态；不改写旧L1或失败历史，不把18个向量等同测试方法数。

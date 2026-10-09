@@ -2222,6 +2222,8 @@ ICODE 的真实 Linux 工程验收在 create 阶段暴露存储根与执行根�
 
 同一线上窗口还暴露 Windows x64 的诊断口径差异：POSIX 可保留注入异常，Windows runner 会先规范化为 `chain_error`。采纳测试层的条件断言并保留两种安全字段，不采纳修改生产错误协议或把单架构通过写成原生准入；旧 Win10093/Win10038、reviewer timeout 与 macOS lock 仍是独立门。该观察只借鉴“错误分类与执行边界分离”的机制，不复制上游代码或新增依赖。
 
+0447be8 线上复核：新增断言在双 Windows DEFAULT 均不再失败，macOS `maintenance.lock` 本轮未复现；双 reviewer 仍无匹配事件，四 Linux bridge 仍未 ready。该结果支持“诊断状态与原生能力分层”的取舍，但不改变任何上游采纳结论、不授予 ICODE 原生或模型总门信用。CI/Pages/provenance 的精确链接与计数见[实施计划](./nbl/plans/2026-10-09-linux-engineering-bridge.md)。
+
 ### 同日后续：历史正文保存与真实增量验包（2026-10-08，只读）
 
 合同阶段结束刷新：根代理冻结49项20轮980PASS/0skip，独立SPEC→不同QUALITY批准，扩大关联325PASS/5既有skip、DEFAULT367PASS/0skip、干净安装20外层含37新增子测零skip；完整preflight2201 total/2142PASS/59skip/0FAIL。CRLF夹具同冻结验收，生产verifier未改；仅软件编排及安装输运，不提高原生/模型/R2/R3总门。下一Python候选的十二项设计经标签修正后静态SPEC→不同QUALITY批准，尚未实施。历史正文研究的正式默认增量缺口及进一步源码授权仍未关闭，以下取舍继续有效。
