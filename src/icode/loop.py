@@ -470,6 +470,12 @@ class AgentLoop:
             allowed = assistant.tool_calls[: self.config.max_tool_calls_per_turn]
             skipped = assistant.tool_calls[len(allowed) :]
             post_tool_prompts: list[str] = []
+            # Tool-choice transitions are applied only after every result for
+            # this assistant message has been appended.  Switching in the
+            # middle of a multi-call response used to deny the remaining
+            # edit/inspection calls and left the model without a coherent
+            # next-turn contract.
+            deferred_tool_transition: tuple[str, str | None] | None = None
 
             for call in allowed:
                 if forced_output_tool is not None and call.name != forced_output_tool:
@@ -545,40 +551,34 @@ class AgentLoop:
                             forced_edit_paths.add(Path(path).name)
                         missing = missing_artifacts()
                         if len(forced_edit_paths) >= 2 and missing:
-                            delivery_edit_required = False
                             if self.registry.get("inspection") is not None:
-                                tool_choice = "inspection"
-                                forced_output_tool = "inspection"
                                 content = (
                                     "代码文件已实际修改；现在必须调用 inspection，先用 phase=prepare "
                                     "建立当前 code 工作清单，再对每个实际读取的工程文件用 phase=read、"
                                     "read_phase=code_review 登记，最后用 phase=check 完成机器审查。"
                                     "不要提交 code_worklist.json，也不要再执行 run_command。"
                                 )
+                                deferred_tool_transition = ("inspection", content)
                             else:
-                                tool_choice = "submit_artifact"
-                                forced_output_tool = "submit_artifact"
                                 content = (
                                     "代码文件已实际修改；现在必须调用 submit_artifact，"
                                     "逐项提交以下全部 code 产物：" + "、".join(missing)
                                     + "。每次只提交一个文件，name/content 都必须是字符串，"
                                     "不要再读取或执行命令。"
                                 )
+                                deferred_tool_transition = ("submit_artifact", content)
                             post_tool_prompts.append(content)
-                        else:
-                            tool_choice = "auto"
-                            forced_output_tool = None
                     elif call.name == "inspection":
                         phase = (inv.arguments or {}).get("phase")
                         if phase == "check" and artifact_broker is not None:
-                            tool_choice = "submit_artifact"
-                            forced_output_tool = "submit_artifact"
                             missing = missing_artifacts()
-                            post_tool_prompts.append(
+                            content = (
                                 "inspection check 已成功；现在只能调用 submit_artifact，"
                                 "提交缺失的模型产物：" + "、".join(missing)
                                 + "。name/content 必须是字符串，不要提交机器生成的 worklist。"
                             )
+                            deferred_tool_transition = ("submit_artifact", content)
+                            post_tool_prompts.append(content)
                         else:
                             tool_choice = "inspection"
                             forced_output_tool = "inspection"
@@ -602,13 +602,12 @@ class AgentLoop:
                             and self.registry.get("submit_review_round") is not None
                             and any(name.startswith("review_round_") for name in missing)
                         ):
-                            tool_choice = "submit_review_round"
-                            forced_output_tool = "submit_review_round"
                             follow_up = (
                                 "仍缺少 review round；现在必须调用 submit_review_round，"
                                 "参数使用 round=1、new_issues/refuted_issues/pending_verification"
                                 " 三个字符串数组。不要再次调用 submit_artifact，也不要用普通文本结束。"
                             )
+                            deferred_tool_transition = ("submit_review_round", follow_up)
                         else:
                             follow_up = (
                                 "请继续调用 submit_artifact，逐项提交缺失产物；"
@@ -643,6 +642,13 @@ class AgentLoop:
                 turn.invocations.append(inv)
                 history.append(_tool_message(call.id, inv))
                 self.on_event("tool_skipped_budget", {"tool": call.name})
+
+            if deferred_tool_transition is not None:
+                next_tool, _ = deferred_tool_transition
+                tool_choice = next_tool
+                forced_output_tool = next_tool
+                if next_tool == "inspection":
+                    delivery_edit_required = False
 
             # OpenAI-compatible chat history requires all tool results for one
             # assistant message to remain adjacent.  Defer corrective user

@@ -203,6 +203,56 @@ class TestLoopGuards(unittest.TestCase):
             ["auto", "submit_artifact", "submit_artifact", "auto"],
         )
 
+    def test_同一回复的多次代码编辑在结果配对后才切换inspection(self) -> None:
+        first = self.root / "first.py"
+        second = self.root / "second.py"
+        first.write_text("before = 1\n", encoding="utf-8")
+        second.write_text("before = 2\n", encoding="utf-8")
+        out_dir = self.root / "ticket"
+        out_dir.mkdir()
+        broker = ArtifactBroker(out_dir, StepContract(
+            step="code",
+            outputs=(Port("worklist", "ticket_file", "code_worklist.json"),),
+        ), max_bytes=4096)
+
+        backend = FakeBackend([
+            {"content": "", "tool_calls": [
+                {"id": "edit-1", "name": "edit_file",
+                 "arguments": {"path": "first.py", "old": "before = 1", "new": "after = 1"}},
+                {"id": "edit-2", "name": "edit_file",
+                 "arguments": {"path": "second.py", "old": "before = 2", "new": "after = 2"}},
+            ]},
+            {"content": "", "tool_calls": [{
+                "id": "inspect", "name": "inspection", "arguments": {"phase": "prepare"},
+            }]},
+        ])
+        registry = default_registry(
+            include_artifacts=True,
+            inspection_runner=lambda **_kwargs: ToolResult(True, "inspection-ok"),
+        )
+        loop = AgentLoop(
+            backend=backend,
+            registry=registry,
+            guard=Guard(Scope(workspace_root=self.root)),
+            ctx=ToolContext(root=self.root, artifact_broker=broker),
+            budget=BudgetTracker(),
+            config=LoopConfig(
+                max_turns=2,
+                max_tool_calls_per_turn=2,
+                force_tool_after_turns=1,
+                force_tool_after_turns_tool="edit_file",
+            ),
+        )
+
+        result = loop.run([{"role": "user", "content": "修改两个源码文件"}])
+
+        self.assertEqual([call["tool_choice"] for call in backend.calls], ["edit_file", "inspection"])
+        self.assertTrue(all(inv.result is not None and inv.result.ok for inv in result.turns[0].invocations))
+        self.assertEqual(result.turns[1].invocations[0].name, "inspection")
+        self.assertEqual(result.turns[1].invocations[0].decision, "allow")
+        self.assertEqual(first.read_text(encoding="utf-8"), "after = 1\n")
+        self.assertEqual(second.read_text(encoding="utf-8"), "after = 2\n")
+
     def test_精确Reviewer读完全部文件后强制结构化提交(self) -> None:
         first = self.root / "first.py"
         second = self.root / "second.py"
