@@ -39,6 +39,6 @@
 - `tools/inspection_worklist.py` 保留 POSIX selector 路径；Windows 改用有界 `Thread`/`Queue(maxsize=2)` 读取匿名管道，保留 5 秒 deadline、limit+1 溢出判定、kill/reap/close/join 清理和非零退出拒绝。
 - `tests/test_inspection_worklist.py` 增加真实匿名管道 20,000 字节→128 字节截断回归；子仓库定向套件 114 passed，`compileall` 与 `git diff --check` 通过。子仓库全量 829 passed/7 skipped/1 failure；唯一失败为既有 `test_related_source_drift_reenters_a_new_round`，与本改动无关，未改测试绕过。
 - 父仓库更新 `src/icode/skill_runtime_manifest.json`、`skill_resources.py` 与固定版本测试；资源完整性 11 项、控制运行时 1 项、契约工程 43 项及打包 CI 7 项在 Python 3.11 通过。Python 3.10 本机缺少 `Self`/`tomllib`，不作为跨版本验收证据。
-- 新SHA的Windows x64/ARM工作区与Reviewer原生复验尚未取得，因此本修复不单独关闭R2/R3、自动模式或模型1→6/90%总门。
+- 同 SHA 主 CI [37943880201](https://github.com/ayukyo/icode/actions/runs/37943880201) 已证明 Windows x64/ARM workspace 不再在 Git 匿名管道基线阶段报 WinError 10093/10038；两者后续均因 Windows 受策略写入仍 fail-closed 而失败。Reviewer 两架构仍为 `archive_member_missing`、`0x5` 订阅与 `10035→timeout`。Provenance [37943880319](https://github.com/ayukyo/icode/actions/runs/37943880319) 四格成功，Pages [37943880431](https://github.com/ayukyo/icode/actions/runs/37943880431) 成功。该修复不单独关闭 R2/R3、自动模式或模型1→6/90%总门；Windows policy write 另立安全设计，不能以绕过或跳过验收。
 
 本片不修历史正文归档、不解决受管根绑定，不开放Windows自动模式，不关闭R2/R3或模型1→6/90%总门。
