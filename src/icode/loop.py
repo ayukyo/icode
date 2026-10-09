@@ -313,6 +313,10 @@ class AgentLoop:
         completed_read_files: set[Path] = set()
         forced_output_tool: str | None = None
         forced_edit_paths: set[str] = set()
+
+        def call_arguments(call: ToolCall) -> dict[str, Any]:
+            """Normalize provider arguments without letting malformed JSON crash the loop."""
+            return dict(call.arguments) if isinstance(call.arguments, dict) else {}
         artifact_broker = self.ctx.artifact_broker
         artifact_outputs = tuple(
             port for port in (getattr(artifact_broker, "contract", None).outputs
@@ -402,7 +406,7 @@ class AgentLoop:
                     inv = ToolInvocation(
                         name=call.name,
                         # 已拒绝的调用不解析非对象参数；原JSON仍在assistant历史中。
-                        arguments=dict(call.arguments) if isinstance(call.arguments, dict) else {},
+                        arguments=call_arguments(call),
                         decision=Decision.DENY.value, approved=False,
                         result=ToolResult(
                             False, "未执行：运行预算超限，已停止本次调用。",
@@ -472,7 +476,7 @@ class AgentLoop:
                     # the bounded retry can select the required tool.
                     inv = ToolInvocation(
                         name=call.name,
-                        arguments=dict(call.arguments or {}),
+                        arguments=call_arguments(call),
                         decision=Decision.DENY.value,
                         approved=False,
                         result=ToolResult(
@@ -492,7 +496,7 @@ class AgentLoop:
                         ),
                     })
                     continue
-                inv = self._invoke(call.name, dict(call.arguments or {}))
+                inv = self._invoke(call.name, call_arguments(call))
                 turn.invocations.append(inv)
                 history.append(_tool_message(call.id, inv))
                 completed_path = _record_complete_read_file(
@@ -631,7 +635,7 @@ class AgentLoop:
             for call in skipped:
                 inv = ToolInvocation(
                     name=call.name,
-                    arguments=dict(call.arguments or {}),
+                    arguments=call_arguments(call),
                     decision=Decision.DENY.value,
                     approved=False,
                     result=ToolResult(
