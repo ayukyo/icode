@@ -765,14 +765,14 @@ Expected：全部0且四源码 SHA 不变。compileall 缓存仅仓外临时目�
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（仅本片软件发布与同 SHA 事实观察；整体 R2/R3 未通过）
 
 **Dependencies:** Task 3
 **Parallelizable:** No (必须全部守卫通过，精确index核对后发布，再独立观察新SHA)
 
-- [ ] **Step 1: 只暂存四源码及精确相关交付文档。** root 先只读核 `git status --short`、`git branch --show-current`、parent/vendor gitlink、四SHA。精确七文档为本计划、原冻结设计、研究输入、本片更新的 `docs/agent-landscape-live.md`、root独自写入的上一片收尾 `docs/nbl/plans/2026-10-09-windows-snapshot-rejection-diagnostic.md`，及新原生失败输入 `docs/nbl/specs/2026-10-09-macos-detached-output-timing-research.md` / `docs/nbl/specs/2026-10-09-windows-build-context-rejection-research.md`；后二者只有调查，不借此添加实施范围。若有其它用户 dirty 不暂存，必要新 ignored doc 只显式 force-add 单路径。不 `git add .`、不创建分支、不修改 vendor/权限。
+- [x] **Step 1: 只暂存四源码及精确相关交付文档。** root 先只读核 `git status --short`、`git branch --show-current`、parent/vendor gitlink、四SHA。精确七文档为本计划、原冻结设计、研究输入、本片更新的 `docs/agent-landscape-live.md`、root独自写入的上一片收尾 `docs/nbl/plans/2026-10-09-windows-snapshot-rejection-diagnostic.md`，及新原生失败输入 `docs/nbl/specs/2026-10-09-macos-detached-output-timing-research.md` / `docs/nbl/specs/2026-10-09-windows-build-context-rejection-research.md`；后二者只有调查，不借此添加实施范围。若有其它用户 dirty 不暂存，必要新 ignored doc 只显式 force-add 单路径。不 `git add .`、不创建分支、不修改 vendor/权限。
 
-- [ ] **Step 2: 核index恰好以上四源码+七文档（总11路径）、逐文件index bytes等于工作树、四SHA和vendor `1693651c1bd7daad3272eb054f0f81d6f254d08d` 干净，再已授权main提交推送。** 如基线/vendor在安全收尾阶段正常前进，先解释实际差异并重验门，不假装仍118a；源码变动返回独立验收。示范命令仅在 exact index 已验证后：
+- [x] **Step 2: 核index恰好以上四源码+七文档（总11路径）、逐文件index bytes等于工作树、四SHA和vendor `1693651c1bd7daad3272eb054f0f81d6f254d08d` 干净，再已授权main提交推送。** 如基线/vendor在安全收尾阶段正常前进，先解释实际差异并重验门，不假装仍118a；源码变动返回独立验收。示范命令仅在 exact index 已验证后：
 
 ```bash
 git commit -m "test: add bounded PE header and RVA reader"
@@ -782,9 +782,9 @@ git ls-remote origin refs/heads/main
 
 Expected：commit/push退出0；remote main与本次新SHA相同，保留仅main。独立官方GitHub读取核main/parent及新CI/provenance/Pages run的head_sha。不新发release/PyPI、不加CI权限、不取消/重跑原生job。
 
-- [ ] **Step 3: 新独立只读观察者绑定新SHA，root独立回读决定性原生日志/回执。** 记录每格目标/image/Python/commit/vendor/summary/skip/actualreceipt，terminal后STOP；旧118a成功/失败不能挪用作新SHA。签名/provenance/页面各自信用分开。新 portable reader在workspace运行仍不是同SHA成品被实际解析，不更新capture三false；成品目录/manifest接入须下一独立设计，不能本片偷加。
+- [x] **Step 3: 新独立只读观察者绑定新SHA，root独立回读决定性原生日志/回执。** 记录每格目标/image/Python/commit/vendor/summary/skip/actualreceipt，terminal后STOP；旧118a成功/失败不能挪用作新SHA。签名/provenance/页面各自信用分开。新 portable reader在workspace运行仍不是同SHA成品被实际解析，不更新capture三false；成品目录/manifest接入须下一独立设计，不能本片偷加。
 
-- [ ] **Step 4: 据实写本片阶段结论和整体未过门，自动续安全下一片。** 本片可完成的是软件基础层与具体发布观察，不宣称整个R2/R3完成。模型KEY/endpoint、SKILL Git管道、macOS额度、Windows标准用户/WFP/首次UAC/Win10及其它硬门继续按已确认权限制定后续设计，不用本片绕过。
+- [x] **Step 4: 据实写本片阶段结论和整体未过门，自动续安全下一片。** 本片可完成的是软件基础层与具体发布观察，不宣称整个R2/R3完成。模型KEY/endpoint、SKILL Git管道、macOS额度、Windows标准用户/WFP/首次UAC/Win10及其它硬门继续按已确认权限制定后续设计，不用本片绕过。
 
 ## 计划静态自审与实施交付报告边界
 
@@ -819,7 +819,24 @@ root最终软件门：compileall显式-j1 exit0/wall0.496253621s，pyc仅仓外`
 - 兼容安全：旧70-byte API、捕获三false、四源码SHA/vendor及无新依赖/权限保持；原生未过门保留。
 - 可运行性：本机本片软件合同通过；59既有环境skip、跨平台成品解析/生产隔离/模型及R2/R3未验证，不填总体100%。
 
-Task4提交/推送和新SHA观察仍待，不能将上述软件验收写作远端已发布。
+该段发布前状态已由后续实际提交更新：root精确核11路径/index bytes/四SHA/冻结设计/vendor后，commit与push均exit0，新SHA `d365e6f15d2d1a223ec60ba18310647c338f4eba`，parent118a262，官方GitHub main与ls-remote一致且远端只main。新CI `37857267632`、provenance `37857268450`、Pages `37857267624`各自绑定d365；原生观察未终态，Task4后两步仍未勾选。
+
+新窗口root独立回读：Pages部署job113584391290完整67行，artifact11583883578绑定d365，23:04:11.9982591Z Reported success；只是网站发布。双Windows Workspace各512total/490P/1F/1E/20skip，新33portable reader已执行但非成品解析；legacy code均WinError10038，incremental x64为snapshot windows_directory_changed、ARM为inspection code中WinError10093，不能合为一个根因。双Reviewer均exit78/cleanup_ok true/child_token_receipt None，两族10035等待耗尽而connect_denied false，不证明网络隔离。root读取的是完整返回日志再定点核决定性原文，不声称逐行人工阅读所有长日志。
+
+CI官方API在root23:14核已completed/failure，head_sha d365，updated23:12:53Z；独立observer44job归并37success/4failure/3workflow skip，双Python full各2373total/2302P/71环境skip，CI artifact为0。CI与Pages已终态STOP，不重跑/取消/重复取日志；新provenance validate仍运行、四格尚未创建，Task4原生观察继续，不把本窗口的macOS Intel生命周期通过说成既有期限失败修复或额度通过。
+
+root另核原`ICODE_WINDOWS_SNAPSHOT_REJECTION`唯一闭回执：x64 job113584347320行375为call_outcome raised、两次directory_rejected/git_metadata/listing、mask16、handle not_observed/null；ARM job113584346872行421为returned，第一次同拒绝，第二次completed/unavailable/none/not_observed与null mask。x64当前两次拒绝不同于118a第二次completed的历史；mask16仅定位ChangeTime差异，不标识写者、条目或Git/扫描根因，ARM快照完成也不能抵消随后inspection WinError10093。未改变既有重试次数或快照门。
+
+后续发布观察终态：provenance37857268450在23:21:21Z completed/success，validate与四签名格全成功；root另取四份decoded原日志，逐格解析真实PE receipt并核三个false、helper摘要与attestation subject一致，各9工具unittest与19实际脚本phase通过（19非unittest）。actual Python分别3.11.9/3.12.10，VS18 2026/v145/MSVC19.51.36260.0/SDK10.0.26100.0；源码d365/vendor1693651一致。官方artifact API四项head_sha=d365，ZIP摘要与上传日志逐项匹配；没有下载ZIP/PE，不称离线独立重验实际binary。
+
+| 格 / Job | Helper SHA256（等于attestation subject） | 上传ZIP SHA256 | Artifact / bytes |
+| --- | --- | --- | --- |
+| x64 py3.11 /113587933627 | da7ae5cb419f462037132883878b50f8cf18cd3291a40d8c7f35f5bbc3d8986e | d2aff5d5c6a25fffc3875168413ef4fbdddfd3d75643b70bd074efa3fbb721ca | 11584993447 /8359718 |
+| x64 py3.12 /113587933518 | fcbd6634cfb0ded1b01028e96346cb2ceafff1ba03999a9c81549c9cd9766023 | 7904cd0a5be15294880d34aa90c4aba2d2677a6d12e808275209a81fea529e2b | 11585395686 /8359683 |
+| ARM py3.11 /113587933657 | 624f2884b1ea5af6d3facffb79daeb3a2d902fb68f19bd67fc9f6a0eac81ea0c | 06ae920ebd0390bdcdebd6947d9404413e5bfb9b2a72e9ebf5f3893eff2ae62f | 11584609459 /7569931 |
+| ARM py3.12 /113587933563 | 1104ba360ff34d001f2b349e304ae005f56786917663937cc74af4f73525cf45 | 7ee55fa01269770b9ab006e9d94c22b9f9b02e6013ce5480a1b9a0b694f4274c | 11585420574 /7569893 |
+
+三个新run均终态并STOP，无重跑/取消/额外权限；Task4仅软件基础层交付与事实观察已结束。四个CI失败、完整成品PE解析/生产加载/source launch、模型六步、资源/隔离等整体门仍开放。root已自动进入下一CI-only构建失败分类设计（独立SPEC→不同QUALITY均C0/I0/M0），源码尚未实施；下一阶段仍不修改vendor/workflow或生产准入。
 
 **Execution Mode:** serial
 

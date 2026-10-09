@@ -16,7 +16,11 @@ _REPOSITORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPOSITORY))
 sys.path.insert(0, str(_REPOSITORY / "src"))
 
-from icode.runner import _run_unittest_with_bounded_output  # noqa: E402
+from icode.runner import (  # noqa: E402
+    VerificationOutputCaptureError,
+    VerificationOutputLimitError,
+    _run_unittest_with_bounded_output,
+)
 
 _CONTEXT_LIMIT = 4096
 _PROJECT_LIMIT = 1024 * 1024
@@ -28,6 +32,120 @@ _PROPERTY_FIELDS = (
 )
 _NS = "{http://schemas.microsoft.com/developer/msbuild/2003}"
 _UNSAFE_TEXT = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
+
+_STAGES = frozenset((
+    "input", "context_read", "context_validate", "msbuild_identity",
+    "project_read", "project_validate", "query", "query_result", "output_json",
+    "properties_validate", "tool_directory", "unavailable",
+))
+_FAILURE_KINDS = frozenset((
+    "timeout", "output_capture", "output_limit", "unicode_error", "xml_parse",
+    "os_error", "validation_value", "validation_runtime", "subprocess_error", "unavailable",
+))
+_REJECTION_PREFIX = "windows-build-context rejection="
+
+
+class _ProbeDiagnostic:
+    __slots__ = ("stage",)
+
+    def __init__(self):
+        self.stage = "unavailable"
+
+
+def _new_diagnostic() -> _ProbeDiagnostic:
+    return _ProbeDiagnostic()
+
+
+def _set_diagnostic_stage(diagnostic: _ProbeDiagnostic, stage: str) -> None:
+    diagnostic.stage = stage
+
+
+def _mark_diagnostic_stage(diagnostic: object, stage: object) -> None:
+    if type(diagnostic) is not _ProbeDiagnostic:
+        return
+    try:
+        selected = stage if type(stage) is str and stage in _STAGES else "unavailable"
+        _set_diagnostic_stage(diagnostic, selected)
+    except MemoryError:
+        raise
+    except Exception:
+        # A failed new marker cannot leave the previous operation as evidence.
+        try:
+            object.__setattr__(diagnostic, "stage", "unavailable")
+        except MemoryError:
+            raise
+        except Exception:
+            try:
+                object.__delattr__(diagnostic, "stage")
+            except MemoryError:
+                raise
+            except Exception:
+                pass
+
+
+def _get_diagnostic_stage(diagnostic: object) -> str:
+    if type(diagnostic) is not _ProbeDiagnostic:
+        return "unavailable"
+    try:
+        stage = diagnostic.stage
+        return stage if type(stage) is str and stage in _STAGES else "unavailable"
+    except MemoryError:
+        raise
+    except Exception:
+        return "unavailable"
+
+
+def _failure_kind(error: BaseException) -> str:
+    # Type-only matching; specific runner/subprocess types precede their bases.
+    for error_type, label in (
+        (subprocess.TimeoutExpired, "timeout"),
+        (VerificationOutputCaptureError, "output_capture"),
+        (VerificationOutputLimitError, "output_limit"),
+        (UnicodeError, "unicode_error"),
+        (ET.ParseError, "xml_parse"),
+        (OSError, "os_error"),
+        (ValueError, "validation_value"),
+        (RuntimeError, "validation_runtime"),
+        (subprocess.SubprocessError, "subprocess_error"),
+    ):
+        if isinstance(error, error_type):
+            return label
+    return "unavailable"
+
+
+def _rejection_line(diagnostic: object, error: BaseException) -> str | None:
+    stage = _get_diagnostic_stage(diagnostic)
+    try:
+        kind = _failure_kind(error)
+    except MemoryError:
+        raise
+    except Exception:
+        kind = "unavailable"
+    if type(kind) is not str or kind not in _FAILURE_KINDS:
+        kind = "unavailable"
+    payload = {"schema_version": 1, "stage": stage, "failure_kind": kind,
+               "production_authority": "none"}
+    serialized = json.dumps(payload, separators=(",", ":"), ensure_ascii=True)
+    if type(serialized) is not str:
+        return None
+    line = _REJECTION_PREFIX + serialized + "\n"
+    if len(line.encode("ascii")) > 256:
+        return None
+    # Closed keys and labels have no whitespace; require one compact JSON line.
+    if any(character.isspace() for character in serialized):
+        return None
+    decoded = json.loads(serialized, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+    if (type(decoded) is not dict or decoded != payload
+            or type(decoded.get("schema_version")) is not int):
+        return None
+    return line
+
+
+def _emit_rejection(diagnostic: object, error: BaseException) -> None:
+    line = _rejection_line(diagnostic, error)
+    if line is not None:
+        # One write only after the complete bounded ASCII line is ready.
+        sys.stdout.write(line)
 
 
 def _string(value: object) -> str:
@@ -101,13 +219,17 @@ def _project_selection(raw: bytes, platform: str) -> tuple[str, str]:
     return _string(sdks[0].text), _string(toolsets[0].text)
 
 
-def probe(build_directory: Path, architecture: str) -> dict:
+def probe(build_directory: Path, architecture: str, *, _diagnostic=None) -> dict:
     """One bounded, property-only query of an explicitly selected CI MSBuild."""
+    _mark_diagnostic_stage(_diagnostic, "input")
     if sys.platform != "win32" or architecture not in ("x64", "arm64"):
         raise ValueError("unsupported platform or architecture")
     if not build_directory.is_absolute() or not stat.S_ISDIR(build_directory.lstat().st_mode):
         raise ValueError("build directory must exist and be absolute")
-    context = _json(_read_regular(build_directory / "icode-windows-build-context.json", _CONTEXT_LIMIT))
+    _mark_diagnostic_stage(_diagnostic, "context_read")
+    context_raw = _read_regular(build_directory / "icode-windows-build-context.json", _CONTEXT_LIMIT)
+    _mark_diagnostic_stage(_diagnostic, "context_validate")
+    context = _json(context_raw)
     if type(context) is not dict or set(context) != _CONTEXT_FIELDS:
         raise ValueError("context field set mismatch")
     if type(context["schema_version"]) is not int or context["schema_version"] != 1:
@@ -119,11 +241,15 @@ def probe(build_directory: Path, architecture: str) -> dict:
             or context["platform"] != platform):
         raise ValueError("generator or platform mismatch")
     msbuild = context["msbuild"]
+    _mark_diagnostic_stage(_diagnostic, "msbuild_identity")
     if PureWindowsPath(msbuild).name.casefold() != "msbuild.exe":
         raise ValueError("explicit MSBuild executable required")
     _windows_path(msbuild, directory=False)
     project = build_directory / "icode_windows_bootstrap.vcxproj"
-    sdk, toolset = _project_selection(_read_regular(project, _PROJECT_LIMIT), platform)
+    _mark_diagnostic_stage(_diagnostic, "project_read")
+    project_raw = _read_regular(project, _PROJECT_LIMIT)
+    _mark_diagnostic_stage(_diagnostic, "project_validate")
+    sdk, toolset = _project_selection(project_raw, platform)
     if sdk != context["sdk_version"] or toolset != context["toolset"]:
         raise ValueError("project and context selected properties disagree")
     argv = [
@@ -131,17 +257,21 @@ def probe(build_directory: Path, architecture: str) -> dict:
         "-property:Configuration=Release", f"-property:Platform={platform}",
         "-getProperty:" + ",".join(_PROPERTY_FIELDS),
     ]
+    _mark_diagnostic_stage(_diagnostic, "query")
     result = _run_unittest_with_bounded_output(
         argv, workspace=build_directory, timeout=30, output_limit_bytes=_OUTPUT_LIMIT,
         environment=os.environ.copy(),
     )
+    _mark_diagnostic_stage(_diagnostic, "query_result")
     if type(result) is not tuple or len(result) != 3:
         raise RuntimeError("invalid MSBuild runner result")
     code, stdout, stderr = result
     if (type(code) is not int or code != 0 or type(stdout) is not bytes
             or not 0 < len(stdout) <= _OUTPUT_LIMIT or type(stderr) is not bytes or stderr):
         raise RuntimeError("MSBuild property query failed")
+    _mark_diagnostic_stage(_diagnostic, "output_json")
     output = _json(stdout)
+    _mark_diagnostic_stage(_diagnostic, "properties_validate")
     if type(output) is not dict or set(output) != {"Properties"}:
         raise ValueError("MSBuild output root mismatch")
     properties = output["Properties"]
@@ -155,6 +285,7 @@ def probe(build_directory: Path, architecture: str) -> dict:
     ):
         if properties[field] != expected:
             raise ValueError("MSBuild evaluated selection mismatch")
+    _mark_diagnostic_stage(_diagnostic, "tool_directory")
     for field in _PROPERTY_FIELDS[4:]:
         _windows_path(properties[field], directory=True)
     return {
@@ -170,9 +301,21 @@ def main() -> int:
     parser.add_argument("--architecture", required=True, choices=("x64", "arm64"))
     args = parser.parse_args()
     try:
-        receipt = probe(args.build_directory, args.architecture)
-    except (OSError, UnicodeError, ValueError, RuntimeError, ET.ParseError, subprocess.SubprocessError):
+        diagnostic = _new_diagnostic()
+    except MemoryError:
+        raise
+    except Exception:
+        diagnostic = None
+    try:
+        receipt = probe(args.build_directory, args.architecture, _diagnostic=diagnostic)
+    except (OSError, UnicodeError, ValueError, RuntimeError, ET.ParseError, subprocess.SubprocessError) as error:
         print("::error::windows_build_context_probe_failed")
+        try:
+            _emit_rejection(diagnostic, error)
+        except MemoryError:
+            raise
+        except Exception:
+            pass
         return 1
     print("windows-build-context status=PASS production_authority=none")
     print("windows-build-context receipt=" + json.dumps(receipt, separators=(",", ":"), ensure_ascii=True))
