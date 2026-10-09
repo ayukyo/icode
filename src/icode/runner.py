@@ -2473,6 +2473,8 @@ def _run_agent(
                     1,
                     (loop_config or LoopConfig()).max_turns - 4
                     if step == "code"
+                    else (loop_config or LoopConfig()).max_turns - 6
+                    if step in ("review", "merge")
                     else (loop_config or LoopConfig()).max_turns,
                 )
                 if getattr(backend, "name", "") != "fake"
