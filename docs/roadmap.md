@@ -1,5 +1,7 @@
 # 开发路线图与取舍原则
 
+- **R3 真实链路边界、全量回归与线上结果（2026-10-10，`69b9e25`）：**更新竞品架构对照，记录 OpenHands、SWE-agent、Aider 的当前官方实现与 ICODE 的采纳/暂缓/不适配取舍；真实模型 `R3-REAL-FRESH-21` 已完成 `plan→review→merge`，事件链 `event_count=97` 且无未闭合动作，但 `code` 首次请求因外部测试 KEY 返回 HTTP 401，未产生代码、deepcheck 或 audit 信用。修复预算停止路径重复读取 trace 的缺陷后，项目 `.venv` CPython 3.11.15 全量 `2522 tests / 60 skipped / OK`，安装后 bootstrap verifier 通过，`compileall -j6` 与 diff check 通过。该 SHA 的 Pages、Python 3.11/3.12 全量、provenance validate 成功；Windows x64/ARM workspace 因无实际源码改动而被“基线通过不能冒充编码任务”质量门拒绝，双 Windows Reviewer 仍为 `10035/wait_expired`。因此仍不授予 R3 六步、90% 一致性、R2/R3 总验收或自动模式信用；下一次真实 code 复验需先恢复有效测试 KEY，并保持 fail-closed。
+
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
 - **Review round 兼容别名收窄并完成回归（2026-10-10，工作树基于 `8ed3bac`）：**新工单
