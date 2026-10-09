@@ -51,6 +51,8 @@ STEP_INSTRUCTIONS: dict[str, str] = {
         "提交时必须调用 submit_artifact，且 arguments.name 与 arguments.content 都是字符串；"
         "JSON 产物的 content 传合法 JSON 文本字符串，不要把对象直接作为 arguments。"
         "不要提交 review_manifest.json（由宿主根据 round 文件装配）。"
+        "读完计划后必须立即调用 submit_artifact 提交 02_review.md 和至少一个合法的"
+        " review_round_*.json；不能只在最终回复中描述审查，也不能在没有工具提交的情况下结束本步骤。"
     ),
     "merge": (
         "把审查意见合并进计划形成定稿：逐条说明采纳/反驳了哪些意见及理由，"

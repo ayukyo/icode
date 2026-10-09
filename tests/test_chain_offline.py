@@ -95,6 +95,8 @@ class TestChainOffline(unittest.TestCase):
         self.assertIn("arguments.name 与 arguments.content 都是字符串", instruction)
         self.assertIn("合法 JSON 文本字符串", instruction)
         self.assertIn("不要提交 review_manifest.json", instruction)
+        self.assertIn("必须立即调用 submit_artifact", instruction)
+        self.assertIn("不能只在最终回复中描述审查", instruction)
 
     def test_run_chain复用可信已有工单目录(self) -> None:
         with temp_workspace() as workspace:
