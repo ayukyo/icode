@@ -313,6 +313,7 @@ class AgentLoop:
         completed_read_files: set[Path] = set()
         forced_output_tool: str | None = None
         forced_edit_paths: set[str] = set()
+        delivery_edit_required = False
 
         def call_arguments(call: ToolCall) -> dict[str, Any]:
             """Normalize provider arguments without letting malformed JSON crash the loop."""
@@ -372,6 +373,8 @@ class AgentLoop:
                     or self.config.tool_choice_on_no_tool
                 )
                 forced_output_tool = tool_choice
+                if tool_choice == "edit_file":
+                    delivery_edit_required = True
                 required_tool_retry_remaining = self.config.required_tool_retry_count
                 if self.config.force_tool_prompt:
                     history.append({
@@ -530,7 +533,8 @@ class AgentLoop:
                     if forced_output_tool == call.name:
                         forced_output_tool = None
                 if (
-                    forced_output_tool == call.name
+                    (forced_output_tool == call.name
+                     or (delivery_edit_required and call.name == "edit_file"))
                     and call.name not in ("submit_artifact", "submit_review_round")
                     and inv.result is not None
                     and inv.result.ok
@@ -541,6 +545,7 @@ class AgentLoop:
                             forced_edit_paths.add(Path(path).name)
                         missing = missing_artifacts()
                         if len(forced_edit_paths) >= 2 and missing:
+                            delivery_edit_required = False
                             if self.registry.get("inspection") is not None:
                                 tool_choice = "inspection"
                                 forced_output_tool = "inspection"
