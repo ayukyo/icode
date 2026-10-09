@@ -2145,6 +2145,147 @@ def verify_pack(pack_dir: Path) -> list[str]:
     return problems.render()
 
 
+MAX_EXECUTION_BINDING_ANCESTORS = 256
+
+
+def execution_binding_shape_ok(binding):
+    """Validate portable recorded identities without accessing the filesystem."""
+    if not isinstance(binding, dict) or set(binding) != {"version", "path", "ancestors"}:
+        return False
+    if type(binding["version"]) is not int or binding["version"] != 1:
+        return False
+    raw = binding["path"]
+    if not isinstance(raw, str) or not raw or "\x00" in raw:
+        return False
+    cls = PureWindowsPath if PureWindowsPath(raw).is_absolute() else PurePosixPath
+    root = cls(raw)
+    if not root.is_absolute() or str(root) != raw or ".." in root.parts:
+        return False
+    depth = len(root.parents) + 1
+    if depth > MAX_EXECUTION_BINDING_ANCESTORS:
+        return False
+    chain = list(reversed(root.parents)) + [root]
+    rows = binding["ancestors"]
+    if not isinstance(rows, list) or len(rows) != depth:
+        return False
+    for row, expected in zip(rows, chain):
+        if not isinstance(row, dict) or set(row) != {"path", "device", "inode"}:
+            return False
+        if row["path"] != str(expected):
+            return False
+        if type(row["device"]) is not int or row["device"] < 0:
+            return False
+        if type(row["inode"]) is not int or row["inode"] <= 0:
+            return False
+    return True
+
+
+def execution_binding_topology_ok(meta):
+    if "execution_binding" not in meta:
+        return True
+    history = meta.get("checkout_history") or []
+    return (execution_binding_shape_ok(meta["execution_binding"])
+            and meta.get("active_checkout") is None
+            and isinstance(history, list)
+            and not any(isinstance(row, dict) and row.get("state") == "active"
+                        for row in history))
+
+
+
+class ExecutionBindingMirror:
+    """Stream binding consistency and open IDs, without duplicating the event log."""
+    def __init__(self, metadata):
+        self.metadata = metadata
+        self.binding = None
+        self.seen = False
+        self.open_steps = set()
+        self.open_operations = set()
+        self.open_agents = set()
+        self.closed = False
+        self.issues = set()
+
+    def consume(self, event):
+        kind = event.get("event_type")
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            # Missing pairing identities still represent unclosed execution.
+            payload = {}
+        for start, finish, key, opened in (
+            ("step_started", "step_finished", "attempt", self.open_steps),
+            ("operation_started", "operation_finished", "attempt", self.open_operations),
+            ("agent_spawned", "agent_result", "spawn_id", self.open_agents),
+        ):
+            identity = payload.get(key)
+            if kind == start:
+                if isinstance(identity, str) and identity:
+                    opened.add(identity)
+                else:
+                    # Legacy starts without pairing identity cannot prove quiescence.
+                    opened.add(None)
+            elif kind == finish and isinstance(identity, str):
+                opened.discard(identity)
+        if kind == "close_phase":
+            self.closed = True
+        elif kind == "ticket_reopened":
+            self.closed = False
+            if self.seen:
+                self.issues.add("binding_checkout_conflict")
+        if kind != "metadata_updated":
+            if "execution_root_binding" in payload:
+                self.issues.add("binding_wrong_event_type")
+            return
+        updates = payload.get("set")
+        appends = payload.get("append")
+        touches = ((isinstance(updates, dict) and "execution_binding" in updates)
+                   or (isinstance(appends, dict) and "execution_binding" in appends))
+        marked = "execution_root_binding" in payload
+        if not touches and not marked:
+            if self.seen:
+                for change in (updates, appends):
+                    if isinstance(change, dict) and change.get("active_checkout") is not None:
+                        self.issues.add("binding_checkout_conflict")
+                    history = change.get("checkout_history") if isinstance(change, dict) else None
+                    if isinstance(history, list) and any(
+                        isinstance(row, dict) and row.get("state") == "active" for row in history
+                    ):
+                        self.issues.add("binding_checkout_conflict")
+            return
+        required = {"execution_root_binding", "set", "append", "metadata_hash_after"}
+        recorded_hash = payload.get("metadata_hash_after")
+        if (type(payload.get("execution_root_binding")) is not int
+                or payload.get("execution_root_binding") != 1
+                or set(payload) != required
+                or not isinstance(recorded_hash, str)
+                or re.fullmatch(r"[0-9a-f]{64}", recorded_hash) is None
+                or not isinstance(updates, dict)
+                or set(updates) != {"execution_binding"}
+                or appends != {}
+                or not isinstance(event.get("request_id"), str)
+                or not event["request_id"].strip()
+                or event.get("actor") != "icode"):
+            self.issues.add("binding_event_shape")
+        if self.seen:
+            self.issues.add("binding_event_duplicate")
+        if self.open_steps or self.open_operations or self.open_agents or self.closed:
+            self.issues.add("binding_not_quiescent")
+        candidate = updates.get("execution_binding") if isinstance(updates, dict) else None
+        if not execution_binding_shape_ok(candidate):
+            self.issues.add("binding_shape")
+        self.binding = candidate
+        self.seen = True
+
+    def finish(self):
+        meta = self.metadata
+        if isinstance(meta, dict):
+            if not execution_binding_topology_ok(meta):
+                self.issues.add("binding_checkout_conflict")
+            if ("execution_binding" in meta) != self.seen:
+                self.issues.add("binding_metadata_mismatch")
+            elif self.seen and meta["execution_binding"] != self.binding:
+                self.issues.add("binding_metadata_mismatch")
+        return sorted(self.issues)
+
+
 def _verify_event_chain(
     path: Path, *, expected_ticket_id: str | None = None,
     expected_event_mirrors: object = _UNSET_METADATA_EVENT_MIRRORS,
@@ -2206,6 +2347,7 @@ def _verify_event_chain(
     ticket_state_mirror = _TicketStateMirror(
         expected_ticket_state_machine, expected_ticket_metadata,
     )
+    binding_mirror = ExecutionBindingMirror(expected_ticket_metadata)
     execution_event_mirror = _ExecutionEventMirror(
         expected_execution_model, expected_completion_receipt,
     )
@@ -2353,6 +2495,7 @@ def _verify_event_chain(
                 event_type = event.get("event_type")
                 payload = event.get("payload")
                 ticket_state_mirror.consume(event, event_count)
+                binding_mirror.consume(event)
                 execution_event_mirror.consume(event, event_count)
                 if isinstance(payload, dict):
                     marker = payload.get("metadata_hash_after")
@@ -2443,6 +2586,7 @@ def _verify_event_chain(
             f"metadata.{_METADATA_AGENT_SPAWNS_FIELD} 不一致"
         )
     problems.extend(ticket_state_mirror.finish())
+    problems.extend(binding_mirror.finish())
     problems.extend(execution_event_mirror.finish())
     return artifact_facts, problems.render()
 

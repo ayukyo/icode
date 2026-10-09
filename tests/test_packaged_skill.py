@@ -23,7 +23,7 @@ from icode.control import ControlPlane
 from icode import config
 
 
-PIN = "1693651c1bd7daad3272eb054f0f81d6f254d08d"
+PIN = "d935a5218ca2970bce8157814bfda1f03aa6c9c4"
 TOOLS = ("icode_control.py", "inspection_worklist.py", "lint_thinking_gate.py",
          "lint_mcp_coverage.py", "lint_workflow_contract.py")
 
@@ -264,12 +264,35 @@ class TestPackagedSkillInstallation(unittest.TestCase):
                 trace=cp.trace(out_dir)
                 assert trace.ok and trace.data.get('status')=='init_in_progress',trace.data
                 assert trace.data.get('open_steps')=={},trace.data
+            with tempfile.TemporaryDirectory() as raw:
+                root=Path(raw).resolve()
+                control=root/'control';control.mkdir()
+                code=root/'代码 空间';code.mkdir()
+                ticket=next_out_dir(control)
+                cp=ControlPlane(s)
+                cp.create(ticket,ticket_id='INSTALLED-BINDING',requirement='Separate code and control')
+                before_binding=json.loads((ticket/'.ico_metadata.json').read_bytes())
+                bound=cp.bind_execution_root(ticket,ticket_id='INSTALLED-BINDING',execution_root=code)
+                assert bound.ok,bound.data
+                events=(ticket/'.ico_events.jsonl').read_bytes()
+                replay=cp.bind_execution_root(ticket,ticket_id='INSTALLED-BINDING',execution_root=code)
+                assert replay.data.get('already_applied'),replay.data
+                assert (ticket/'.ico_events.jsonl').read_bytes()==events
+                metadata=json.loads((ticket/'.ico_metadata.json').read_bytes())
+                assert metadata['project_path']==before_binding['project_path']==str(control)
+                projected=cp.run('action-policy','--dir',str(ticket))
+                assert projected.data['execution_root']==str(code),projected.data
+                assert metadata['execution_binding']['path']==str(code),metadata
+                code.rmdir()
+                assert cp.trace(ticket).ok
+                print('installed-execution-binding PASS')
             after={p.relative_to(s.skill_root).as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
                    for p in s.skill_root.rglob('*') if p.is_file()}
             assert before==after,('runtime modified installed resources',sorted(set(after)-set(before)))
             print('installed-control-consumers PASS')
         ''', python=python)
         self.assertIn("installed-control-consumers PASS", output)
+        self.assertIn("installed-execution-binding PASS", output)
 
     def test_installed_workbench_creates_lists_finds_both_locales(self):
         self._workbench_consumers()
@@ -382,7 +405,7 @@ class TestFixedSkillResources(unittest.TestCase):
         self.assertEqual(manifest["source"]["license"], "MIT")
         self.assertEqual([m["path"] for m in manifest["members"]], candidate_paths())
         self.assertEqual(len(manifest["members"]), 72)
-        self.assertEqual(sum(m["size"] for m in manifest["members"]), 1928781)
+        self.assertEqual(sum(m["size"] for m in manifest["members"]), 1944413)
         for member in manifest["members"]:
             raw = (REPO_ROOT / "vendor/icode-skill" / member["path"]).read_bytes()
             self.assertEqual(hashlib.sha256(raw).hexdigest(), member["sha256"])

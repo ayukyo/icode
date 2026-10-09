@@ -7,7 +7,7 @@ from pathlib import Path
 
 from tests._support import require_skill
 
-from icode.control import ControlPlane, ControlResult
+from icode.control import ControlPlane, ControlResult, make_request
 
 
 class RecordingControlPlane(ControlPlane):
@@ -23,6 +23,20 @@ class RecordingControlPlane(ControlPlane):
 
 
 class TestControlPlaneIntakeAdapter(unittest.TestCase):
+    def test_bind_execution_root_uses_explicit_trusted_path_and_stable_request(self):
+        cp = RecordingControlPlane()
+        trusted_path = Path("/isolated/code")
+        self.assertTrue(callable(getattr(cp, "bind_execution_root", None)))
+        cp.bind_execution_root("/control/ticket", ticket_id="IC-1",
+                               execution_root=trusted_path)
+        self.assertEqual(cp.calls[-1], (
+            "bind-execution-root", "--dir", "/control/ticket",
+            "--ticket-id", "IC-1", "--execution-root", str(trusted_path),
+            "--request-id", make_request("IC-1", "bind-execution-root")))
+        cp.bind_execution_root("/control/ticket", ticket_id="IC-1",
+                               execution_root="/isolated/code", request="retry-key")
+        self.assertEqual(cp.calls[-1][-1], "retry-key")
+
     def test_create_next_只转发可信工作区与业务意图(self) -> None:
         cp = RecordingControlPlane()
 

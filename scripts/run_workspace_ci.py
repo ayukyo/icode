@@ -128,6 +128,13 @@ OPERATION_ADMISSION_TESTS = (
     "tests.test_contract_engineering.TestContractEngineering.test_early_admission_failure_and_exact_replay_keep_old_error_categories",
 )
 
+EXECUTION_BINDING_TESTS = (
+    "tests.test_control.TestControlPlaneIntakeAdapter.test_bind_execution_root_uses_explicit_trusted_path_and_stable_request",
+    "tests.test_execution_binding_pack.BindingPackTests.test_real_bound_partial_pack_is_portable_after_code_disappears",
+    "tests.test_execution_binding_pack.BindingPackTests.test_self_consistent_hash_does_not_replace_binding_semantics",
+    "tests.test_execution_binding_pack.BindingPackTests.test_verify_pack_and_independent_process_reject_rehashed_binding_forgery",
+)
+
 SESSION_GIT_PROJECTION_TESTS = tuple(
     "tests.test_session_git_projection.TestSessionGitProjection." + name for name in (
         "test_real_split_dot_matches_commit_tree",
@@ -172,6 +179,8 @@ DEFAULT_MODULES = (
     "tests.test_windows_pe_reader",
     *CONTRACT_ENGINEERING_TESTS,
     *OPERATION_ADMISSION_TESTS,
+    *EXECUTION_BINDING_TESTS,
+    "tests.test_run_workspace_ci.TestWorkspaceCiCoverage.test_execution_binding_methods_selected_once_and_required_with_fixture_holders",
     # Host/framework contracts are bounded; optional Go SDK diagnostics are
     # separate and do not stand in for native resource-scope acceptance.
     "tests.test_engineering_verification.TestEngineeringVerification",
@@ -203,20 +212,23 @@ def main(modules: tuple[str, ...] = DEFAULT_MODULES) -> int:
             details = traceback[-1800:] if traceback else "test failed without traceback"
             summary = _workflow_escape(f"{test.id()}:\n{details}")
             print(f"::error title=Workspace regression test failure::{summary}", flush=True)
-    # unittest reports skipped tests as successful. Explicitly selected POSIX
-    # and admission methods are required; selected admission fixture skips also
-    # fail without changing optional engineering class setup semantics.
-    required_test_ids = frozenset((*POSIX_R3_TESTS, *OPERATION_ADMISSION_TESTS)).intersection(modules)
-    selected_admission_ids = frozenset(OPERATION_ADMISSION_TESTS).intersection(modules)
-    selected_admission_classes = {test_id.rsplit(".", 1)[0] for test_id in selected_admission_ids}
-    selected_admission_modules = {class_id.rsplit(".", 1)[0] for class_id in selected_admission_classes}
+    # Only explicitly selected required contracts promote fixture-level skips.
+    # Optional tests in the same class/module keep their historical semantics.
+    required_test_ids = frozenset((
+        *POSIX_R3_TESTS, *OPERATION_ADMISSION_TESTS, *EXECUTION_BINDING_TESTS,
+    )).intersection(modules)
+    selected_contract_ids = frozenset((
+        *OPERATION_ADMISSION_TESTS, *EXECUTION_BINDING_TESTS,
+    )).intersection(modules)
+    selected_contract_classes = {test_id.rsplit(".", 1)[0] for test_id in selected_contract_ids}
+    selected_contract_modules = {class_id.rsplit(".", 1)[0] for class_id in selected_contract_classes}
     selected_fixture_ids = {
         f"{fixture} ({class_id})"
-        for class_id in selected_admission_classes
+        for class_id in selected_contract_classes
         for fixture in ("setUpClass", "tearDownClass")
     } | {
         f"{fixture} ({module_id})"
-        for module_id in selected_admission_modules
+        for module_id in selected_contract_modules
         for fixture in ("setUpModule", "tearDownModule")
     }
     skipped_required_tests = sorted({

@@ -2200,6 +2200,14 @@ ICODE当前旧`evidence_fingerprint`包含原输出SHA；主代理RAM对象实�
 
 ICODE已存在Go→最终C→attest→安装独立gh核验，但metadata-only C无Go摘要。**采纳（设计）**[WP0a](./nbl/plans/2026-10-08-r2-windows-production-runner.md)：真实匹配架构Go原字节摘要生成build内绑定，嵌最终C后attest，CI只对明确构建且已验签C查询独立binding并核对安装Go实际bytes；旧v1与setup/spawn78保持，metadata不授执行。**暂缓**WP0b真实protected promotion、HANDLE/祖先/DACL/事务/DLL实验及WP1/2；**不适配**邻接sha/RECORD自证、任意候选C执行探真、内嵌Go摘要认证首个UAC C或纯fixture给原生信用。收益为防替换/混架构与受保护晋升前依赖闭合，成本为少量build/schema/CI同步及随后双架构实验；不复制源码、增加runtime/用户Go/MSVC安装、SYSTEM/MSIX/权限。验收包括同尺寸变bytes、缺/错架构、重配生成物、签后变化、新schema与原入口负控及真实四签名安装矩阵；它们只证明可信构建窗口C→Go关系，不关闭R2/3或第一次UAC/发布者/加载/资源隔离门。
 
+### 外置控制面与隔离执行目录（2026-10-09，只读研究）
+
+独立研究于 08:30–08:31 UTC 核对官方 HEAD：Codex `2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4`、Aider `5dc9490bb35f9729ef2c95d00a19ccd30c26339c`。Codex [recorder](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/rollout/src/recorder.rs#L910) 分离执行上下文与会话存储，并明确持久化确认；Aider [repo](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/repo.py#L86) 优先显式目标并拒绝零或多个仓库。两项目根 Apache-2.0 许可已核，不复制实现或增加依赖；未审核全部依赖许可，未运行上游。
+
+ICODE 的真实 Linux 工程验收在 create 阶段暴露存储根与执行根不能合法分离的问题。**采纳**一次性、显式、事件化绑定及每次使用前对象核验；**暂缓**自动重绑、跨宿主恢复和历史身份迁移；**不适配**把恢复路径筛选当授权、为隔离目录自动向祖先发现 Git。收益为复用原控制面事务而不伪造 project_path，成本为窄接口、纯事件检查及跨平台负控。具体范围、许可影响及可执行验收见[绑定设计](./nbl/specs/2026-10-09-execution-root-binding-design.md)。子仓库本片经独立 SPEC、不同 QUALITY、五项旧契约及 20 轮新增模块验证，已发布 main `d935a5218ca2970bce8157814bfda1f03aa6c9c4`；主工程接入进行中。此为合同分片，不替代 Linux dispatch、Windows 原生或 R2/R3 总体验收。本次仅刷新这两个相关项目，不代表完整二十项名单已复核。
+
+阶段结束独立复核窗口 09:17–09:18 UTC：官方 `git ls-remote` 两个 HEAD 仍与上述观察一致，相关源码重读未改变结论。Codex 的 [persist/flush](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/rollout/src/recorder.rs#L1062) 确认为写入任务结果，不直接等于断电耐久性；Aider 向祖先查找 Git 仍不适合作为本工程隔离根授权。根许可核对为 [Codex LICENSE](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/LICENSE) 与 [Aider LICENSE.txt](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/LICENSE.txt)，均 Apache-2.0；未复制实现或审全依赖。本片实际采纳机制仍以 ICODE 自身事务、对象替换、重复绑定、重签负控和目录消失后离线验证证明，不声称上游有完全相同契约。主工程接入独立双审已通过，Linux 源码双正控与20轮定点矩阵通过；总体验收未关闭。
+
 ### 同日后续：历史正文保存与真实增量验包（2026-10-08，只读）
 
 合同阶段结束刷新：根代理冻结49项20轮980PASS/0skip，独立SPEC→不同QUALITY批准，扩大关联325PASS/5既有skip、DEFAULT367PASS/0skip、干净安装20外层含37新增子测零skip；完整preflight2201 total/2142PASS/59skip/0FAIL。CRLF夹具同冻结验收，生产verifier未改；仅软件编排及安装输运，不提高原生/模型/R2/R3总门。下一Python候选的十二项设计经标签修正后静态SPEC→不同QUALITY批准，尚未实施。历史正文研究的正式默认增量缺口及进一步源码授权仍未关闭，以下取舍继续有效。

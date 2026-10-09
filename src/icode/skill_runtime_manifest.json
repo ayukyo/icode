@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source": {
     "repository": "https://github.com/ayukyo/icode-skill",
-    "commit": "1693651c1bd7daad3272eb054f0f81d6f254d08d",
+    "commit": "d935a5218ca2970bce8157814bfda1f03aa6c9c4",
     "license": "MIT"
   },
   "members": [
@@ -43,8 +43,8 @@
     },
     {
       "path": "references/control_plane.md",
-      "size": 20509,
-      "sha256": "1aee6c0e286cdfe8febb2b124730d876e616b68f8dca937058655d0cf0e4b067"
+      "size": 22817,
+      "sha256": "1ef443b8ea6910b23630d6ee4d53268e243737266e09d3473d018c1c779e8fcc"
     },
     {
       "path": "references/crosscheck_mode.md",
@@ -203,8 +203,8 @@
     },
     {
       "path": "schemas/ticket-metadata.schema.json",
-      "size": 19861,
-      "sha256": "8593a2a330a8ce02ed29f0f3a62ab1629716381e2292cae1f1db0aa6ce093269"
+      "size": 20597,
+      "sha256": "451f8e684fcc32f13eeea9cffd5525fa6b2659b7bccd9f7347cf1cb4f2860f92"
     },
     {
       "path": "steps/00_init.md",
@@ -343,8 +343,8 @@
     },
     {
       "path": "tools/icode_control.py",
-      "size": 292533,
-      "sha256": "0b7e2577844f135269bdcc78bee195ad974a350f20792af7de46b2bdae76564c"
+      "size": 305121,
+      "sha256": "f561d4971aba2068607e2a3e74651099d4228a45de01ece65b942941187f65e4"
     },
     {
       "path": "tools/inspection_worklist.py",

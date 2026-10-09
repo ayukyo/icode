@@ -27,6 +27,8 @@
 
 静态规划新发现的两个缺口已经先报告 root，并获 root 指示保留阻塞：
 
+以下为初始设计诊断历史；G0/G1 当前已在独立分片验收并发布，现状见末尾发布交接与 Task2 更新。G2 仍保持原阻塞，不改写下表原始证据。
+
 | ID | 实际来源与机制 | 本片能验证什么 | 必需剩余门 |
 | --- | --- | --- | --- |
 | G1：内部 gate 未决重入 | vendor `cmd_operation` 4845–4902 先返回相同 request 的 idempotent start，后判断同名未决；runner gate 只核 returned attempt 在 open_operations。fresh recorder 重置 occurrence 后，内部同 attempt gate 不是安全重试 API | 同 recorder 新 occurrence 的真实 ambiguous 拒绝；公共 resume 2658–2688 的 open/started action 拒绝。不得据此称任意内部 fresh-recorder 重入安全 | root 另立最小 production 修复设计与验收；不从 CP 幂等外推 payload 幂等，不在 test-only 片改 vendor |
@@ -59,7 +61,7 @@ installed 片**不在本次写入范围**：现有 `run_native_wheel_ci.py` 建�
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成：前置绑定修复后5项实际通过，接入独立双审、阶段20轮及全量复验通过；具体证据见末尾及绑定执行记录。
 
 **Dependencies:** G0（外部 session Git 修复源码软件验收）
 **Parallelizable:** No (生产接线依赖；本文件单 writer 与真实 scope 测试必须串行)
@@ -729,6 +731,8 @@ Expected：2 方法 actual PASS/0F/E/skip、各实际一个 dispatch/owned scope
 
 正控直接用原生产路径；fault 字段仅在明确负例中修改**已经真实执行并实际回收**的返回值，原 result 另保存；不能说这些故障是现场自然发生。未决 operation 不补 finish、不自动重放。
 
+追加前同步三个实际依赖：从 `icode.checkpoint` 导入 `Checkpointer`，现有 `icode.control` 导入补 `ControlResult`，现有 `icode.evidence` 导入补 `EvidenceError`。这些只用于下列负控，不增加运行时依赖。当前固定子仓库已提供一次性绑定，但错误工单负控应合法保持未绑定，使其默认根自然不同于隔离代码目录，不能再向 create 注入受保护的 project_path。
+
 ```python
     def test_real_session_prepare_rejects_nested_deny_without_deleting_protection(self):
         f = _Bridge(self)
@@ -898,7 +902,10 @@ Expected：2 方法 actual PASS/0F/E/skip、各实际一个 dispatch/owned scope
         wrong_root.mkdir()
         wrong = next_out_dir(wrong_root).resolve()
         self.assertTrue(f.cp.create(wrong, ticket_id=f.ticket_id,
-            requirement="mismatch", birth="plan", metadata_json=json.dumps({"project_path": str(f.source)})).ok)
+            requirement="mismatch", birth="plan").ok)
+        projected = f.cp.run("action-policy", "--dir", str(wrong))
+        self.assertEqual(projected.data["execution_root"], str(wrong_root))
+        self.assertNotEqual(projected.data["execution_root"], str(f.root))
         before = f.cp.trace(wrong).data["event_count"]
         backend = FakeBackend(reviewer_script())
         report = runner.run_contract_step(f.settings, backend=backend, workspace=f.root,
@@ -979,7 +986,7 @@ Expected：2 方法 actual PASS/0F/E/skip、各实际一个 dispatch/owned scope
 env PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 GOMAXPROCS=1 GOFLAGS=-p=1 CMAKE_BUILD_PARALLEL_LEVEL=1 /tmp/icode-packaged-skill-acceptance-fqxSO0bh/venv/bin/python -B -m unittest tests.test_linux_contract_engineering.TestLinuxContractEngineering -v
 ```
 
-Expected：Task 1–2 当前 18 方法实际通过，故障注入与真实窗口分开；每个资源实际调用均 own scope collected，不完整 evidence 的 CP action 仍 open。方法数是在本文所列两段代码的静态计数，不是已经运行数；Task 3 会再增加方法。G1 的内部 fresh-recorder 重入正控仍 blocked，不运行第二个未决 payload 去“验证”或取得通过。
+Expected：Task 1–2 当前 18 方法实际通过，故障注入与真实窗口分开；每个资源实际调用均 own scope collected，不完整 evidence 的 CP action 仍 open。方法数是在本文所列两段代码的静态计数，不是已经运行数；Task 3 会再增加方法。G1 fresh-recorder 准入已在020aceb修复并单独验收，不再标blocked；本片16个新增方法不含该向量。同recorder新occurrence仍应拒绝为 engineering_operation_start_unconfirmed，不改成replay错误；不运行第二个未决payload来冒充恢复成功。
 
 - [ ] **Step 3：作者自SPEC/QUALITY、fresh SPEC→不同QUALITY。**
 
@@ -1148,7 +1155,7 @@ env PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 GOMAXPROCS=1 GOFLAGS=-p=1 CMAKE_B
 
 Expected：3 方法实际通过；前2个方法通过的含义是**原 success 正控被真实债务拒绝**且各已过子门如实记录，不是 code/deepcheck成功。第三个方法使用真实 session/原 Landlock/正常状态派生，未改 chain_steps/readiness；safe_point是观察驱动，不声称整个 AutonomyManager run零控制写。
 
-真实 `TestLinuxContractEngineering` 在本计划代码内共21方法（18 + 3）；同文件另有 `TestBridgeObservationSafety` 的3个portable fixture方法，所以新文件共24方法，不是24原生方法。子向量与表中的18 ID不是方法数。真正完整成功正控仍 G2 blocked，不删除 requirements；G1 fresh-recorder内部重入同样 blocked。新增最小授权或独立修复到位后须另审更新计划/正控，不能直接把本方法的原拒绝断言反转成成功。
+真实 `TestLinuxContractEngineering` 在本计划代码内共21方法（18 + 3）；同文件另有 `TestBridgeObservationSafety` 的3个portable fixture方法，所以新文件共24方法，不是24原生方法。子向量与表中的18 ID不是方法数。真正完整成功正控仍 G2 blocked，不删除 requirements；G1 fresh-recorder内部重入已由020aceb独立验收。新增最小授权或独立修复到位后须另审更新G2计划/正控，不能直接把本方法的原拒绝断言反转成成功。
 
 - [ ] **Step 4：作者自SPEC/QUALITY、fresh SPEC→不同QUALITY。**
 
@@ -1504,7 +1511,7 @@ root重新只读核dirty和允许文件，对本文ignored路径仅force exact�
 | ENG-05 | 新 frozen-plan drift方法（5子向量） | originaladmission，零本次dispatch；无平台fallback |
 | ENG-06 | 新实际test源码写、HEAD变化、Reviewer后源码、deepcheck开始后source/scope、finalCP方法 | G0通过后的真实树/稳定窗口；split结果commit仍不支持 |
 | CP-01 | code L2a method的actualoperation不同attempt、唯一receipt、first/replayverification事件与指纹 | host CP已消费，step未关闭不报成功 |
-| CP-02 | 新execution-root/wrongattempt/recordack/publicresume/同recorder新occurrence方法 | 这些子向量实际；**内部fresh-recorder同request G1仍blocked，整项不PASS** |
+| CP-02 | 新execution-root/wrongattempt/recordack/publicresume/同recorder新occurrence方法 | G1已单独验收；本片其余真实子向量待运行，当前不授整项通过 |
 | REV-01 | L2a fresh只读read/submit及5协议负例、实际源码漂移 | model_double协议/应用只读，不授语义/独立OS沙箱 |
 | PACK-01 | L2a真实partial导出/原verify_pack/外部cwd新processverify.py；4坏receipt负例 | 结构一致性，不授认证/整流程/完整历史body |
 | STEP-01 | 新full-code/full-deepcheck方法真实读取/partial debt/工程/推演/successfinish拒绝 | **G2完整成功正控blocked**；仅原拒绝及已过子门，无先前三步模型信用 |
@@ -1560,3 +1567,35 @@ different QUALITY 对上一版本文 SHA256 `0887707ca80821c539cf9d9542a0d355750
 **Execution Mode:** serial
 
 执行交接由root使用nbl.subagent-driven-development，每任务fresh writer与双审，全局审查后发布。本计划作者STOP，不依技能惯例自行启动下一任务或新agents（任务明确只规划、外部依赖未过）。
+
+## root实施启动（2026-10-09）
+
+本片实际基线为已发布main `020acebf51b61179bf401181ac703cb3d71446b6`，vendor仍1693651。G0已在923完成生产接线、独立审查和软件发布；G1随后在020aceb修复旧start回执的执行许可，四任务及全局独立双审通过，root定点141P、20轮320次、DEFAULT609P、原full一次2469total/2410P/59skip/0F/E、j1/守卫/文档及精确main发布通过。前述G0/G1 blocked属于旧设计窗口，当前不再阻止本片启动；它们的软件信用仍不替本片真实Linux运行。
+
+root已完整回读本计划全部任务与四份设计/研究/命令证据/阻塞记录，另核现scope配置cache、原收束检查、实际gate/loader，sequential-thinking172–174完成需求、复用和风险评估。Task1唯一writer `/root/linux_bridge_task1_writer` 仅新增测试文件并独占runtime；root只更新文档与读结果，CI观察独立只读。获准fixture与任务代码未变，原18向量/21native+3portable/4选择guard边界保持。G2额外vendor授权和完整步骤成功、installed、Native及模型门继续未通过。
+
+并行独立研究 `/root/linux_bridge_stage_start_research` 已DONE STOP，窗口08:02:07–08:05:59 UTC：Codex main2351d9e、Aider main5dc9490，固定来源与取舍补充到配套研究记录。只读研究未运行本工程或修改文件，不授实际资源/恢复/清理信用。
+
+### Task1首次执行：控制面创建契约阻塞（2026-10-09）
+
+作者仅新增 `tests/test_linux_contract_engineering.py`，604行，SHA256 `e14e2c6c61811ba5b645e7c7eb8791442cfb2af53b2e80b6bbfe256102eeba58`。portable实际3P/0F/0E/0skip、13子场景、0.170秒、rc0；两个Linux正控实际0P/0F/2E/0skip、0.875秒、rc1。helper编译成功，但未登记该次二进制/manifest摘要。两例均在create被拒，错误为 `--metadata-json 含控制面受保护字段: ['project_path']`；dispatch、Reviewer、receipt、pack均为0。原cleanup已回收两个未dispatch的owned目录，并只读确认不存在；无运行中scope。
+
+root核对vendor `cmd_create`、`classify_ticket_dir`、`trusted_execution_workspace`和生产runner：create从标准工单目录推导workspace并自动填写受保护project_path；去掉seed字段会绑定control根而非session代码根。active_checkout又要求实际独立Git checkout，与当前无.git代码树不符。生产runner复用工单时严格比较action-policy.execution_root，因此不能靠只改测试断言解决。批准示例与现存契约冲突；此前计划静态双审没有发现此问题，不授运行信用。
+
+Task1作者selfSPEC仍有I1，selfQUALITY未宣告通过，Task2未启动。保留失败文件；不直接写保护字段、不伪造legacy迁移、不把控制数据移进代码树。root已请求独立只读复核现存入口，并单独询问新增最小受校验、事件化宿主绑定接口的vendor授权；该事项超出已完成的三个Python校验器授权。授权和契约设计未完成前，不修改vendor，不声称Linux工程桥接完成。其它不依赖此项的工作继续。
+
+随后用户明确答复“允许最小契约修复及验收后推送”。独立只读复核确认create-next、reopen、migration也不能提供现成可信split绑定。新设计见 [执行根绑定](../specs/2026-10-09-execution-root-binding-design.md)：先修专用宿主绑定、在线根消费与离线语义，再恢复Task1。只此授权已解除；G2 inspection Git身份与Windows Git管道的额外授权不因此扩展。子仓库独立main及远端main实核仍1693651，工作区干净；计划阶段不改vendor固定副本。
+
+### 前置绑定合同已发布，主工程接入复核中
+
+子仓库最小绑定实现经独立 SPEC、不同 QUALITY、五项旧契约、23项新增模块20轮共460P零skip及j1语法检查，已提交推送 main `d935a5218ca2970bce8157814bfda1f03aa6c9c4` 并核远端。root 已将干净 vendor 固定到该 SHA。主工程 wrapper/离线验证/fixture/CI 接线四模块217P零skip；发现并同步随包固定来源与72成员清单，完整安装测试18P零skip，实际wheel和独立sdist安装消费新入口。完整接入正在独立双审，尚未再次运行本文件两个真实Linux正控，因此创建阻塞解除不能提前记为dispatch/Reviewer/receipt/pack通过。详细冻结与证据见[绑定执行记录](2026-10-09-execution-root-binding.md)。
+
+接入独立SPEC随后51P零skip、无问题。root首次恢复实跑本模块5P/0F/0E/0skip、5.633s、rc0，包括3portable与2真实Linux code/deepcheck正控：每例实际命令exit0、scope_cleanup_ok true、observer complete，CP operation/verification回执和fresh Reviewer三调用断言通过，独立partial pack通过。测试使用模型double且step保持开放，native_ready仍false；不称完整步骤、installed工程桥接或R2/R3通过。helper、源、receipt和pack摘要已记绑定执行记录。主仓软件全局门与发布仍待执行，再继续本计划后续负控/普通步骤/诊断接线。
+
+### 下一任务静态就绪核对
+
+绑定片全局预检期间，独立只读 `/root/linux_bridge_next_readiness` 核对 Task2 的16个新增方法与当前实际接口，发现并由root修正：wrong-ticket fixture 不能再通过create注入project_path，改合法普通建单并明确核action-policy根等于wrong_root且不等于f.root；追加 Checkpointer/ControlResult/EvidenceError 三个已有模块导入说明。独立复核确认两项已修正。Task2/Task3当前说明与CP-02表同步G1已由020aceb验收，历史诊断保留并加历史标记；同recorder新occurrence仍断言 engineering_operation_start_unconfirmed，HEAD变化仍按实际包装异常断言ValueError，不把它们改成另一错误来凑通过。
+
+本次只修实施计划，没有新增负控方法或运行它们；18 runtime向量、后续21 native+3portable方法计数不变。源码冻结与正在运行的绑定片full预检未受影响。下一writer在绑定片发布后接手此文件，仍保留G2/Windows/model及未知清理边界。
+
+绑定片发布前全局复验已通过：DEFAULT614P零skip，原full2479total/2420P/59skip/0F/E，j1编译、治理/站点/排期检查通过。首次full的旧HEAD检出测试2个subTest失败保留在绑定记录，最小修正为暂存树检出后完整重跑成功，未先提交绕过检查。此处Task1已完成；Task2尚未写入或执行，下一作者仅接手16个新增负控，不能将这里的全量结果转记为后续方法已通过。

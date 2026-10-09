@@ -114,6 +114,15 @@ class TestPackagedSkillCi(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr[-1200:])
 
+        # Preflight runs before commit: exercise the prospective gitlink, not
+        # the previous HEAD. CI's clean index yields the committed tree too.
+        tree = subprocess.run(
+            ["git", "write-tree"], cwd=ROOT, capture_output=True,
+            encoding="utf-8", timeout=10, check=False,
+        )
+        self.assertEqual(tree.returncode, 0, tree.stderr[-1200:])
+        index_tree = tree.stdout.strip()
+
         with tempfile.TemporaryDirectory(prefix="icode-checkout-bytes-") as temporary:
             base = Path(temporary).resolve()
             for conversion in ("true", "false"):
@@ -126,6 +135,8 @@ class TestPackagedSkillCi(unittest.TestCase):
                     git("-C", str(checkout), "config", "submodule.vendor/icode-skill.url",
                         str(ROOT / "vendor/icode-skill"), env=env)
                     git("-C", str(checkout), "checkout", "--detach", "HEAD", env=env)
+                    git("-C", str(checkout), "read-tree", "--reset", "-u",
+                        index_tree, env=env)
                     # Local-only temporary clone; file transport is not enabled
                     # in product, CI checkout, user/global config, or the source.
                     git("-c", "protocol.file.allow=always", "-C", str(checkout),

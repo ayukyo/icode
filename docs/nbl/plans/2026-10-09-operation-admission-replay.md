@@ -701,7 +701,7 @@ python -B -m unittest tests.test_operation_admission tests.test_loop tests.test_
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成
 
 **Dependencies:** Task 3
 **Parallelizable:** No（选择数依赖最终methods，CI运行串行）
@@ -1009,7 +1009,7 @@ git diff --no-index --check /dev/null docs/nbl/specs/2026-10-09-operation-admiss
 
 同时记录每行raw、normalized、attempt、marker、host/dispatch/invoke/finish计数、trace和清理；不得只写“全生命周期通过”。工程Broker/model保持double，loopFakeBackend离线；Native false、Linux工程桥接、Windows安装/Reviewer/WFP/Job/PE/UAC、macOS单任务quota、真实模型1→6和≥90%一致及vendor额外授权保持各自门，不能完成R2/R3总goal。
 
-- [ ] **Step 11: 仅实际完成root全门后精确main发布，启动新SHA观察并继续下一片。**
+- [x] **Step 11: 仅实际完成root全门后精确main发布，启动新SHA观察并继续下一片。**
 
 当前root已额外更新前片Git发布履历 `docs/nbl/plans/2026-10-09-session-git-tree.md`，本作者不改该文件。下一G1片需纳入该已批准元数据，因此精确11路径（七源+本文+设计+landscape+前片Git计划）；文档checker实际清单也增为这四文档，两轮clean后暂存。若另有批准同步文档，暂存前重列清单及计数，不能 `git add .`。
 
@@ -1162,3 +1162,22 @@ root单独按Step6原六模块命令完成141方法/63.194s/0F/E/skip/rc0，07:5
 原始工单随owned fixture清理，本片未另存可供第三方重放的原始事件包。Linux实际工程桥接、G2巡检额外授权/完整步骤、Windows Gitpipe/网络/WFP/PE/UAC、macOS单任务配额、真实模型1→6/≥90%及R2/R3整体仍未完成。下一步为四文档两轮检查、精确11路径main提交推送及新SHA观察，再继续已批准Linux桥接。
 
 文档收尾实际四文件连续两轮0疑似项/rc0；手工核新增15/required14、DEFAULT609/full2469、六维边界及历史状态。tracked diff空白检查rc0；两个新增文档各no-index全文检查rc1且零诊断（差异返回码），无空白错误。此次进度标记更新后再次对同四文档两轮检查，提交前以最终工具结果为准；只剩精确索引、main提交推送与新SHA观察，Step11未提前完成。
+
+### main发布与下一片交接
+
+已提交推送 `020acebf51b61179bf401181ac703cb3d71446b6`，parent `923433b5d6be5e3bda05684ef4ed98daa69eb9e7`、tree `494ff7ccfef513489eb08a7e070b48eaa44a8ce2`，精确11路径、2093增20删。提交前11个index blob与工作区完整SHA逐项相同、cached check通过，最终四文档再两轮0疑似项，密钥及子模块守卫再通过。普通git add因docs ignore返回1，随后只对既定文档路径force add；实际index清单和摘要重新核实，无额外路径。push成功，远端仅main且同SHA，发布后工作区clean。此后元数据随下一片提交，避免提交自引用。
+
+新SHA只读观察已启动：CI `37904311427`、Pages `37904311440`、provenance `37904311450`。观察者初次报告Pages两job成功，其余仍在运行；完整终态另记，不回填旧923或提前授跨平台通过。Step11已完成其要求的发布和新观察启动，root已交唯一writer开始批准的Linux桥接Task1。G1软件完成与R2/R3整体未完成同时成立。
+
+后续只读观察：CI `37904311427` 全44 job终态为37success/4failure/3retired skip；Pages `37904311440` 两job成功。Ubuntu/macOS DEFAULT均609/609、零skip；双Linux full（jobs113733975163/113733975322）各2469total/2398P/71skip/0F/E。远端71skip与本机59skip分开，不宣称覆盖相同。双Windows DEFAULT（113733975497/113733975381）各589total/567P/20skip/1F/1E，仍为inspection baseline WinError10093和native legacy dispatch0/WinError10038；双Reviewer仍exit78、10035 wait_expired且denied=false。WFP观察者ready、目标valid但no_matching_event，不能给拒绝网络信用；child_token_receipt=None不误判为token查询失败。provenance验证job已成功，四平台签名安装矩阵仍在观察，待终态单独登记。
+
+最终provenance `37904311450` attempt1已5/5成功，观察者DONE/STOP。四矩阵日志报告installed crypto/offline verifier/负控/bootstrap拒绝setup和commands通过；artifact元数据均绑定该run、main及完整020aceb SHA，未过期，ZIP摘要与上传日志一致：
+
+| 矩阵 / job / artifact | helper SHA256 | ZIP SHA256 |
+|---|---|---|
+| x64/3.11 / 113737120537 / 11603954724 | f655a51ec930b654baaae72cb5ea59862a6104451817d55797446da9a5f808f0 | 50f716f1fa40badc2ba368da4396bcf81976b02f2fb67bfd5c2e8ac71c2e8942 |
+| x64/3.12 / 113737120506 / 11604601260 | a0031579f2f2bd7c429086d9ea702c3b9dac6fa5c5f66b6ac328b162d3b9a03a | 44a76ec5795573271b910c275b89162f968b8fbdcf7ce824ff9e6a4645020027 |
+| ARM/3.11 / 113737120455 / 11604182410 | e7e069811ea65222bf4112a69b7c5151f819225bd13b7e026f0cc8e91816d91b | b120a30dfd8303aa954c8f08d8e48d62060e12242a590c348321384d0ce931cf |
+| ARM/3.12 / 113737120504 / 11604850186 | bd9b570cb333802306d7cddd783d46aa25de0268c862c8f3cba6634f800fd343 | 7a11d9baa91752226230da565308cb499f02978b9fc82da32d963383083561fb |
+
+helper摘要与各自日志attestation subject、PE receipt一致，但PE的parse_complete/runtime_load_verified/source_launch_verified均false。观察仅日志及API元数据，没有下载包、独立解码statement或执行PE，不授实际生产Windows隔离信用。六native jobs虽success却全部ready=false：Ubuntu22双架构8/10、latest与24ARM7/10、macOS双架构6/10；评分不是整体完成。DEFAULT非verbose不能单凭远端日志逐项确认新增14个required测试身份。当前已无该SHA后台观察任务。

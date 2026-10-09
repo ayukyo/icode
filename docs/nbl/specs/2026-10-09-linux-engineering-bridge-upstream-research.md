@@ -47,3 +47,27 @@
 修订后先selfSPEC再selfQUALITY：上游观察不代替本仓已知阻塞；nested映射、前置生产修复依赖、deepcheck捕获前固定与after-start mutation负例已同步；日期/路径/许可对象/信用边界仍明确。修订后作者自审C0/I0/M0，非重新独立SPEC结论。
 
 静态研究完成；实际连接有已知Git投影前置阻塞且未运行，verdict为`partially_verified`（固定官方材料与本仓身份已核、运行层未验）。允许称“有固定源码支持的分层验收设计输入及明确前置阻塞”，禁止称“仅新增测试即可接通”“上游机制已在ICODE部署生效”“Linuxready”“R2/R3整体通过”。root另立最小Git投影生产修复设计；本研究/设计作者STOP，等待重新fresh独立SPEC，不进入计划/实现。
+
+## 实施启动前独立刷新
+
+2026-10-09 08:02:07–08:05:59 UTC，独立 `/root/linux_bridge_stage_start_research` 两次官方远端核main：Codex `2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4`，Aider `5dc9490bb35f9729ef2c95d00a19ccd30c26339c`。两commit API各一次403后改官方git ls-remote与固定raw，无连续重试；本轮未取得committer/archive元数据。两根LICENSE全文均Apache-2.0，未审全依赖或重读bubblewrap许可。无本工程runtime、模型、文件写入或源码复制。
+
+| 固定来源 | 实际阅读范围 | 完整raw Git blob |
+| --- | --- | --- |
+| [Codex landlock](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/sandboxing/src/landlock.rs) | 全115行 | dad16e238c081a36d01914e2847ba16cf67b220b |
+| [manager](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/sandboxing/src/manager.rs) | 273–578 | f6c281a061d0af01ddf0ee9d56646ea5c0943ad9 |
+| [linux_run_main](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/linux-sandbox/src/linux_run_main.rs) | 166–346 | 5c08c8c39ace69d95fcd5a22fa49c4b6b00eb36c |
+| [Linux README](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/linux-sandbox/README.md) | 全113行 | 95865ded7462b92c49da4f56c405a3eea7993156 |
+| [exec](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/core/src/exec.rs) | 85–130、258–293、784–856、947–1193 | f72396e38320e838e21b6a9ceaaa433ada62f0c0 |
+| [exec_output](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/protocol/src/exec_output.rs) | 全169行 | 63675fe1d1046e74b6fa60b2c9de1196dabf49c3 |
+| [process_group](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/utils/pty/src/process_group.rs) | 全309行 | f403b7e647dbf697b88d14e8f5468dc277da648e |
+| [Codex LICENSE](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/LICENSE) | 全10926bytes | 4606e72e042564097e8780d66c1d4dcb611869bd |
+| [Aider repo](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/repo.py) | 20–140、510–570 | 92b5e3bf5b81ec1bcee62feaf64c9c09fc607f54 |
+| [Aider commands](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/commands.py) | 970–1060 | 3881403c5c10212119e77a3ab0d3e092830054e6 |
+| [Aider LICENSE](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/LICENSE.txt) | 全11358bytes | d645695673349e3947e8e5ae42332d0ac3164cd7 |
+
+Codex所列8文件与原82883固定提交完整raw blob均相同，仅证明选中文件身份。上述blob由实际raw字节按Git算法计算，非API tree结果；读取范围仍以上表为限，不把完整摘要当全文审计。
+
+采纳：权限/参数编译、helper执行、命令结果和业务终结分层；FullBufferWithExpiration的leader退出后drain期限与清理错误传播；Aider整仓/subtree显式范围。ICODE复用既有Plan/session/私有通道/CP/pack，收益为清楚定位不完整证据，成本为观察和身份负控；验收对应ENG-01/02/03/04/05/06、CMD-04/06及NATIVE-01，核真实测试、scope终态、CP与pack，不凭exit0或组信号授成功。
+
+暂缓bwrap迁移、任意provider、reconciliation、缓存和业务补偿，需独立部署/许可/恢复合同。不适配ShellTool drain超时abort后空stream、无expiration的FullBuffer及启发式sandbox denial来替代本仓完整证据；不适配用killpg成功/leader reaped证明全部后代收束，或默认exit0对象/空test返回None证明运行。没有sudo/service/系统权限或Native准入变化。root已发布G0/G1，旧8d阻塞保留历史；实际Linux桥接、installed、模型与R2/R3仍逐层待验，完整20名单本轮未重查。

@@ -126,6 +126,17 @@ class ControlPlane:
         args += ["--request-id", request or make_request(ticket_id, "create")]
         return self.run(*args)
 
+    def bind_execution_root(
+        self, out_dir: Path | str, *, ticket_id: str,
+        execution_root: Path | str, request: str | None = None,
+    ) -> ControlResult:
+        """Bind only a trusted host WorkspaceSession root, never model/browser text."""
+        return self.run(
+            "bind-execution-root", "--dir", str(out_dir),
+            "--ticket-id", ticket_id, "--execution-root", str(execution_root),
+            "--request-id", request or make_request(ticket_id, "bind-execution-root"),
+        )
+
     def create_next(
         self,
         *,

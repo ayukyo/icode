@@ -14,6 +14,115 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_execution_binding_methods_selected_once_and_required_with_fixture_holders(self):
+        expected = {
+            "tests.test_control.TestControlPlaneIntakeAdapter.test_bind_execution_root_uses_explicit_trusted_path_and_stable_request",
+            "tests.test_execution_binding_pack.BindingPackTests.test_real_bound_partial_pack_is_portable_after_code_disappears",
+            "tests.test_execution_binding_pack.BindingPackTests.test_self_consistent_hash_does_not_replace_binding_semantics",
+            "tests.test_execution_binding_pack.BindingPackTests.test_verify_pack_and_independent_process_reject_rehashed_binding_forgery",
+        }
+        self.assertTrue(hasattr(run_workspace_ci, "EXECUTION_BINDING_TESTS"))
+        declared = run_workspace_ci.EXECUTION_BINDING_TESTS
+        self.assertEqual(set(declared), expected)
+        self.assertEqual(len(declared), 4)
+        guard_id = (
+            "tests.test_run_workspace_ci.TestWorkspaceCiCoverage."
+            "test_execution_binding_methods_selected_once_and_required_with_fixture_holders"
+        )
+        self.assertEqual(run_workspace_ci.DEFAULT_MODULES.count(guard_id), 1)
+
+        def cases(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from cases(test)
+                else:
+                    yield test
+
+        selected = [
+            test.id()
+            for entry in run_workspace_ci.DEFAULT_MODULES
+            for test in cases(unittest.defaultTestLoader.loadTestsFromName(entry))
+            if test.id() in expected
+        ]
+        self.assertEqual(set(selected), expected)
+        self.assertEqual(len(selected), 4)
+        for test_id in sorted(expected):
+            self.assertEqual(run_workspace_ci.DEFAULT_MODULES.count(test_id), 1)
+            loaded = list(cases(unittest.defaultTestLoader.loadTestsFromName(test_id)))
+            self.assertEqual(len(loaded), 1)
+            self.assertEqual(loaded[0].id(), test_id)
+            self.assertFalse(getattr(type(loaded[0]), "__unittest_skip__", False))
+            self.assertFalse(getattr(getattr(loaded[0], loaded[0]._testMethodName),
+                                     "__unittest_skip__", False))
+
+        actual = []
+
+        class ObservingRunner:
+            def run(self, suite):
+                result = unittest.TestResult()
+                suite.run(result)
+                actual.append(result)
+                return result
+
+        def skip_body(_case):
+            raise unittest.SkipTest("simulated required binding body unavailable")
+
+        # These four cases prove runner classification, not business correctness.
+        for test_id in sorted(expected):
+            class_id, method = test_id.rsplit(".", 1)
+            module_id, class_name = class_id.rsplit(".", 1)
+            test_class = getattr(importlib.import_module(module_id), class_name)
+            actual.clear()
+            with self.subTest(body_skip=test_id):
+                with patch.object(test_class, method, skip_body), patch.object(
+                    run_workspace_ci.unittest, "TextTestRunner", return_value=ObservingRunner()
+                ), redirect_stderr(io.StringIO()):
+                    self.assertEqual(run_workspace_ci.main((test_id,)), 1)
+                self.assertEqual(len(actual), 1)
+                self.assertEqual(actual[0].testsRun, 1)
+                self.assertEqual(actual[0].failures, [])
+                self.assertEqual(actual[0].errors, [])
+                self.assertEqual([test.id() for test, _ in actual[0].skipped], [test_id])
+                self.assertTrue(actual[0].wasSuccessful())
+
+        representatives = (
+            "tests.test_control.TestControlPlaneIntakeAdapter.test_bind_execution_root_uses_explicit_trusted_path_and_stable_request",
+            "tests.test_execution_binding_pack.BindingPackTests.test_real_bound_partial_pack_is_portable_after_code_disappears",
+        )
+        optional = "tests.test_control.TestControlPlaneIntakeAdapter.test_create_next_索引覆盖可省略"
+        self.assertNotIn(optional, run_workspace_ci.EXECUTION_BINDING_TESTS)
+        self.assertNotIn(optional, run_workspace_ci.OPERATION_ADMISSION_TESTS)
+        self.assertNotIn(optional, run_workspace_ci.POSIX_R3_TESTS)
+
+        def skip_fixture(*_args):
+            raise unittest.SkipTest("simulated binding fixture unavailable")
+
+        for test_id in (*representatives, optional):
+            class_id, method = test_id.rsplit(".", 1)
+            module_id, class_name = class_id.rsplit(".", 1)
+            module = importlib.import_module(module_id)
+            test_class = getattr(module, class_name)
+            required = test_id != optional
+            for fixture in ("setUpClass", "tearDownClass", "setUpModule", "tearDownModule"):
+                is_class = fixture.endswith("Class")
+                target = test_class if is_class else module
+                replacement = classmethod(skip_fixture) if is_class else skip_fixture
+                holder_id = fixture + " (" + (class_id if is_class else module_id) + ")"
+                actual.clear()
+                with self.subTest(test_id=test_id, fixture=fixture):
+                    with patch.object(test_class, method, lambda _case: None), patch.object(
+                        target, fixture, replacement, create=True
+                    ), patch.object(
+                        run_workspace_ci.unittest, "TextTestRunner", return_value=ObservingRunner()
+                    ), redirect_stderr(io.StringIO()):
+                        self.assertEqual(run_workspace_ci.main((test_id,)), 1 if required else 0)
+                    self.assertEqual(len(actual), 1)
+                    self.assertEqual(actual[0].testsRun, 0 if fixture.startswith("setUp") else 1)
+                    self.assertEqual(actual[0].errors, [])
+                    self.assertEqual(actual[0].failures, [])
+                    self.assertEqual([test.id() for test, _ in actual[0].skipped], [holder_id])
+                    self.assertTrue(actual[0].wasSuccessful())
+
     def test_operation_admission_methods_selected_once_required_and_never_static_skipped(self):
         definitions = (
             ("tests.test_operation_admission", "TestOperationAdmissionProtocol", 5),
