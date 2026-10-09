@@ -89,3 +89,18 @@ code→deepcheck→audit 能力，也不提高 R3 或 90% 一致性信用。
 这是当前真实模型 plan→review→merge 的完整闭环证据，证明结构化 round 工具和回合边界修复
 有效；仍不证明 code→deepcheck→audit、跨平台原生隔离、任意项目成功率、90% 一致性或 R2/R3
 总验收。密钥未打印、未复制、未进入工单与提交。
+
+## 后续真实后半段复验与失败边界（2026-10-10，`e3e1022`）
+
+两次后续尝试均如实保留失败：
+
+1. 在已通过三步的 `R3-REAL-CHAIN-FINAL` 工单继续执行 `code→deepcheck→audit` 时，模型提交了
+   `04_code_review_fix.md` 与 `code_worklist.json`，但 `calc.py`、`test_calc.py` 没有任何工作区改动；
+   inspection `prepare` 返回失败，code step fail-closed，未进入 deepcheck/audit。该样本证明
+   “产物齐全”不会冒充“真实代码完成”。
+2. 新建 `R3-REAL-FULL` 与 `R3-REAL-FULL-FINAL` 尝试完整六步时，plan 通过，但 review 未产生
+   合法 round，均停在 review；没有把未验证的后半段写成成功。
+
+随后主线 `e3e1022` 让真实 code 步骤接近回合上限时优先获得一次 `edit_file` 机会；离线 144
+项回归通过，尚未取得该修复后的真实 code→deepcheck→audit 成功证据。因此 R3 仍只对
+plan→review→merge 三步闭环有真实信用，R2、90% 一致性和总验收继续关闭。
