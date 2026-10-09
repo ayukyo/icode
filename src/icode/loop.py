@@ -328,6 +328,26 @@ class AgentLoop:
                               if artifact_broker is not None else ())
             if port.value != "review_manifest.json"
         )
+        existing_worklists = tuple(
+            port.value for port in artifact_outputs
+            if port.value.endswith("_worklist.json")
+            and (Path(artifact_broker.out_dir) / port.value).is_file()
+        ) if artifact_broker is not None else ()
+        if existing_worklists and tool_choice == "auto":
+            # Recovery may re-enter after a previous model already produced a
+            # worklist.  Do not let the model continue ordinary exploration:
+            # rebind the worklist to the current tree before any new evidence.
+            inspection_phase_required = "prepare"
+            tool_choice = "inspection"
+            forced_output_tool = "inspection"
+            history.append({
+                "role": "user",
+                "content": (
+                    "检测到已有 inspection worklist；它可能对应旧源码状态。"
+                    "恢复本步骤时必须先调用 inspection phase=prepare 重新绑定，"
+                    "然后按宿主提示完成 read(code_review) 与 check。"
+                ),
+            })
 
         def missing_artifacts() -> list[str]:
             """Return model-owned broker outputs still absent from the ticket."""

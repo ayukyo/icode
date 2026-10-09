@@ -280,6 +280,54 @@ class TestLoopGuards(unittest.TestCase):
         self.assertEqual(first.read_text(encoding="utf-8"), "after = 1\n")
         self.assertEqual(second.read_text(encoding="utf-8"), "after = 2\n")
 
+    def test_恢复时已有worklist先重新绑定再检查(self) -> None:
+        source = self.root / "existing.py"
+        source.write_text("value = 1\n", encoding="utf-8")
+        out_dir = self.root / "ticket"
+        out_dir.mkdir()
+        (out_dir / "code_worklist.json").write_text(
+            '{"units":[{"files":[{"path":"existing.py"}]}]}', encoding="utf-8",
+        )
+        broker = ArtifactBroker(out_dir, StepContract(
+            step="code",
+            outputs=(Port("worklist", "ticket_file", "code_worklist.json"),),
+        ), max_bytes=4096)
+        backend = FakeBackend([
+            {"content": "", "tool_calls": [{
+                "id": "prepare", "name": "inspection", "arguments": {"phase": "prepare"},
+            }]},
+            {"content": "", "tool_calls": [{
+                "id": "read", "name": "inspection",
+                "arguments": {"phase": "read", "read_phase": "code_review", "path": "existing.py"},
+            }]},
+            {"content": "", "tool_calls": [{
+                "id": "check", "name": "inspection", "arguments": {"phase": "check"},
+            }]},
+            "恢复检查完成",
+        ])
+
+        def inspection_runner(**kwargs: Any) -> ToolResult:
+            return ToolResult(True, "inspection-ok")
+
+        loop = AgentLoop(
+            backend=backend,
+            registry=default_registry(
+                include_artifacts=True, inspection_runner=inspection_runner,
+            ),
+            guard=Guard(Scope(workspace_root=self.root)),
+            ctx=ToolContext(root=self.root, artifact_broker=broker),
+            budget=BudgetTracker(),
+            config=LoopConfig(max_turns=4),
+        )
+
+        result = loop.run([{"role": "user", "content": "恢复 code 检查"}])
+
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            [call["tool_choice"] for call in backend.calls],
+            ["inspection", "inspection", "inspection", "auto"],
+        )
+
     def test_精确Reviewer读完全部文件后强制结构化提交(self) -> None:
         first = self.root / "first.py"
         second = self.root / "second.py"
