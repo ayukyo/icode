@@ -445,8 +445,9 @@ class TestWindowsBuildContext(unittest.TestCase):
 
     def test_diagnostic_real_json_xml_property_semantics_are_not_mocked(self):
         valid = json.dumps(self.metadata).encode()
+        # Shallow valid JSON tests shape rejection without interpreter recursion thresholds.
         for raw, kind in ((b"\xff", "unicode_error"),
-                          (b"[" * 2000 + b"0" + b"]" * 2000, "validation_runtime"),
+                          (b"[" * 100 + b"0" + b"]" * 100, "validation_value"),
                           (valid[:-1] + b',"schema_version":1}', "validation_value"),
                           (b'{"schema_version":NaN}', "validation_value")):
             with self.subTest(context_kind=kind):

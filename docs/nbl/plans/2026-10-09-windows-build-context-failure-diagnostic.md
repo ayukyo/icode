@@ -1087,12 +1087,12 @@ Expected：全部实际0且两源SHA与双审/软件测试相同；冻结设计S
 ### Task 3: root 精确 main 发布与独立新 SHA 观察
 
 **状态**
-- [ ] 任务完成
+- [x] 发布和观察结束（ef43 CI五失败保留；测试兼容修正与原生总门另验）
 
 **Dependencies:** Task 2
 **Parallelizable:** No (必须软件门与双审结束，观察必须绑定本片新SHA)
 
-- [ ] **Step 1: root 核最终范围与已授权发布条件，显式暂存本片两源和精确文档。**
+- [x] **Step 1: root 核最终范围与已授权发布条件，显式暂存本片两源和精确文档。**
 
 ```bash
 git branch --show-current
@@ -1109,7 +1109,7 @@ git diff --cached --check
 
 命令是已知候选清单，不授权混入未知root dirty。root发布前核上述历史/研究/landscape确实是本片收尾；若还有新的实际相关证据文档，先说明精确路径、纳入Step7/8验证、再逐路径暂存。不能 `git add .`/`git add -A`、不能创建分支或修改vendor。force-add只用于已审查的新spec/plan单路径，若其它文档ignored只对已核路径显式force；不扩大源scope。
 
-- [ ] **Step 2: root 在 main 精确阶段 commit/push，读取远端新 SHA。**
+- [x] **Step 2: root 在 main 精确阶段 commit/push，读取远端新 SHA。**
 
 ```bash
 git commit -m "fix(ci): classify Windows build-context rejection without payload"
@@ -1121,7 +1121,7 @@ git status --short
 
 Expected：提交实际成功、origin/main与HEAD精确相同；报告实际SHA和保留的无关dirty。用户已授权此阶段main发布，不能新增权限；若推送受拒先定位真实原因/现有authority，禁止force-push、禁绕过检查。不得提前标记发布完成。
 
-- [ ] **Step 3: 派独立只读观察者绑定新SHA，分别读取Windows四格日志和jobs/artifacts。**
+- [x] **Step 3: 派独立只读观察者绑定新SHA，分别读取Windows四格日志和jobs/artifacts。**
 
 root先用实际新SHA找到新 run，观察者不能把118a/d365窗口代新SHA，不重新触发workflow或增签名权限。只读命令先列精确run与headSha：
 
@@ -1138,7 +1138,7 @@ gh api "repos/ayukyo/icode/actions/runs/$diagnostic_provenance_run/artifacts"
 
 已只读核实际文件名为 `windows-helper-provenance.yml` 和 `ci.yml`；观察时再核 `rg --files .github/workflows`、run headSha 与 main精确相同。没有匹配run时以上test失败，保留unknown并继续产品提供的只读等待/监控，不用历史run补齐。观察者按工具结构化实参读取确认的run/jobs/raw log/artifacts，长原日志分片完整读且不只依赖摘要，记录 Windows x64/arm64 × Python3.11/3.12 每格状态、原始context首行/失败闭JSON或成功receipt、后续PE采集/签名/安装与artifact是否实际发生；missing/skip/unknown分别保留。失败诊断只有query+output_capture时不推Job/EOF/timeout根因；无失败重现只说本窗口。
 
-- [ ] **Step 4: root 收独立新SHA报告，记录阶段七维证据与剩余原生门。**
+- [x] **Step 4: root 收独立新SHA报告，记录阶段七维证据与剩余原生门。**
 
 受本片范围影响的stage/kind诊断实际拒绝行必须四keys/闭标签/ASCII/≤256/LF，完整原日志可解析才授诊断信用；不把物理截断行作可信回执。独立观察与root证据按run/job/headSha分别核，签名/19项安装/artifact仅据本SHA实际发生记。当前软件阶段完成不等于原生故障修复、实际PE解析/加载、Windows生产隔离或整体R2/R3通过。
 
@@ -1187,6 +1187,61 @@ compileall实际-j1/exit0/wall0.483069s，缓存仅仓外`/tmp/icode-context-dia
 本片预计发布精确7路径：两源码及本计划、冻结设计、root新provider研究、历史reader计划收尾、持续对照，共五文档。旧rejection研究只参与一致性扫描，未修改不暂存。下一R3设计`docs/nbl/specs/2026-10-09-r3-provider-transport-privacy-design.md`已独立静态SPEC→不同QUALITY C0/I0/M0，计划仅文档编写中；其设计/计划属于下一片，本片不暂存且不在持续对照新增未发布链接，也不在完整守卫期间实施后端。
 
 root最终守卫实际：精确六文档第一/第二轮各0疑似项/exit0，新增provider研究已明确加入清单；治理/site/landscape/diff/secrets/submodule再次逐项exit0。两源SHA和冻结设计ca76a993不变，vendor HEAD/gitlink1693651且工作树空。上述七维的本片兼容安全最终门通过；更新本状态后仍重跑当前文档连续两轮clean，再核精确index，不能把Task3提交/观察提前标通过。下一R3设计/计划只留下一片，旧全文检查命令与测试scope没有改。
+
+发布后实际履历：root状态更新后的当前六文档连续两轮各0疑似项，再次治理/site/landscape/secrets/submodule/diff全exit0；精确index为上述7路径，逐项index bytes=工作树，两源与冻结设计SHA对应双审和完整测试。普通git add因父docs忽略规则返回1但已暂存已跟踪路径；随后只对明确七路径中的已核文档force-add，未扩大目录，最后exact index/diff检查通过。commit与push分别exit0，新SHA `ef43f6f316d319a530f4ffc9df002e63a057f7a0`，parent d365；远端ls-remote只main且SHA相同，root官方GitHub API亦核main/parent/tree。
+
+root00:05:59UTC绑定新CI37862964280 queued、provenance37862964266 in_progress、Pages37862964261 in_progress，各head_sha精确ef43。已派新的独立只读观察者；尚无终态/四格/实际失败闭JSON或成品信用，不重跑/取消或借旧d365补齐。下一R3传输隐私仅设计双审已过、独立计划编写中，不在本片源冻结期间改后端。
+
+ef43观察中间事实（不替代最终run结论）：Pages已completed/success，root一次独立读取完整67行deploy日志，job113602891841/artifact11587141330/build_version精确ef43，00:06:01.598Z Reported success。随后root各一次取得Windows Reviewer x64 job113602846304与arm64 job113602846072的完整decoded日志，分别1828/1878行；全返回保存、只对源SHA/镜像与决定性尾段逐行回读，不冒称逐行读完全部日志。两格均1test/1F、候选exit78/cleanup=true/child_token_receipt=None；IPv4/IPv6 error10035、wait_expired=true、connect_denied=false，private-network正控exit91/credit=false，WFP capability订阅return5、classify未尝试，runner观察者有效但no_matching_event、capture archive_member_missing。上述不能算网络DENY或确认根因，也不授R2/R3通过信用。CI/签名仍由独立观察者按同SHA继续，不重复轮询已终态Pages或旧d365/118a。
+
+### Python JSON 测试可移植性复核基线
+
+ef43新CI的Python3.12.15 job113602846168在00:13:28UTC出现具名断言失败；root一次取得完整281行decoded日志，逐行核决定性234–255段。深度2000、4001字节的顶层数组在context预算4096内；测试固定期待validation_runtime，而该窗口实际context_validate/validation_value，旧首行及四字段仍闭合。生产分类忠实于实际异常，不能改分类或放宽安全准入来配合测试。
+
+| 基线项 | 已绑定事实与未观察边界 |
+| --- | --- |
+| identity/time | GitHub hosted Linux/x64 job113602846168，Python3.12.15；原始失败00:13:28UTC；非用户目标设备，不适用物理序列号 |
+| repo/runtime | job checkout ef43；分析仓库 `/home/orbbec/git/icode` 分支main/HEAD ef43，vendor1693651；验证前源码冻结、dirty仅root诊断履历 |
+| artifact/evidence | 原CI完整decoded文本保存并定点回读；未下载或执行远端二进制；当前问题为portable测试假设，不是成品隔离失败归因 |
+| verification | 本机现有Python3.11.15同方法1P/0.055s；3.12.13为1F/0E/skip/0.147s，3.13.12为1F/0E/skip/0.168s，均独立串行重现；本机补丁尚未验收，非远端3.12.15同版本证明 |
+| parser boundary | root离线直接json.loads比较100/2000/8000层：3.11为list/RecursionError/RecursionError；3.12.13和3.13.12均为list。不能把8000层转到输出预算后预设runtime，不能推广全部Python实现的阈值 |
+| unresolved/ceiling | 已支持测试固定递归阈值不跨版本；仅限该测试原因。root派单方法最小修正与三版本TDD，再fresh双审和完整守卫；新发布/远端结果待证，不授R2/R3总验收 |
+
+方案：用100层、201字节有效顶层数组固定触发原context结构ValueError/query0，不改生产任何代码、预算或标签。已有RecursionError→validation_runtime分类器类型正控保留；不冒称这个新向量是真实递归拒绝证明。此次紧急小修沿用本阶段已核独立研究，不重复20竞品扫描，不让研究或下一个后端实现混入测试修复。后续所有修复结果按新源码SHA另记，不能回写ef43 CI为通过。
+
+ef43主CI已终态：root一次独立取得run37862964280/jobs全部44条/artifacts0，全部head_sha精确ef43，00:16:09UTC completed/failure，36success/5failure/3workflow skip。五失败逐项是Python3.12.15、双Windows Workspace、双Reviewer，不将跳过或软件成功抵消。root另一次取得Python3.11、Linux/Mac ARM workspace和Mac Intel原生日志：Python3.11完整2394total/2323P/71skip/0F/E/604.742s；3.12为2394/2322P/71skip/1F/0E/424.518s。Linux及Mac ARM DEFAULT分别539P/0skip/225.272s、539P/0skip/224.668s，随后各75P。Windows x64/arm64分别533total/511P/1F/1E/20skip/333.218s与347.836s，root各取完整429/480行并逐读失败尾段；ContractEngineering779的Git10093和1017的dispatch0≠1/Git10038保留。两格snapshot观察first git_metadata/listing/mask16，second completed，call returned；不推写入者或稳定性根因。Mac Intel两个slow deadline实际ok，但conformance6/10/critical=false/platform_critical=false/ready=false，resource_limits仍unverified，不授quota修复信用。
+
+签名validate job113602845025已success，root一次取得完整430行并逐读397–403实际三guard OK和治理通过；Python3.11.17/Go1.27.1、独立verifier fixture9P。quiet完整preflight不提供独立完整测试计数，不借用其它窗口总数。其后四格实际job x64/3.11=113605822271、x64/3.12=113605822261、arm64/3.11=113605822253、arm64/3.12=113605822239，仍按此run待最后终态，不能预先勾Task3 Step4。
+
+ef43窗口收尾：三个run均终态且独立观察者STOP，CI36success/5failure/3skip、provenance5/5success（00:21:47UTC）、Pages2/2success；不再轮询。root另一次取得签名终态run/全部5jobs/全部4artifacts，并各一次取得四格完整decoded日志（x64及ARM3.12各730行、ARM3.11为779行）；全保存并解析回执，仅源绑定、context、采集/attestation、19脚本阶段和上传段逐行回读，不称全部人类日志已通读。四格VS18 2026/v145/MSVC19.51.36260.0、VCTools14.51.36231、SDK10.0.26100.0、MSBuild18.10.1-1.26427.6+3cd27c13e，Python3.11实际3.11.9、3.12实际3.12.10，Go1.27.1及MSBuild工具路径匹配架构。context原两行PASS；本窗口无原生失败闭JSON，不授其实际query故障定位信用。
+
+| 格子/job | helper SHA256 / attestation | artifact / ZIP SHA256 / bytes |
+| --- | --- | --- |
+| x64/3.11，113605822271 | 9f8132cdc9d2ac2d06b232656574a5074680090b8b4144c5403e5b83df7971b9 / 54144584 | 11587461842 / 6da47f2c2a85e00f5539f5bb3273de06bca338997d2a99c668f0805e35c6e0b8 / 8359559 |
+| x64/3.12，113605822261 | 28188b5a4d5c398ef6877a7ff8fa243d9b24b2115874670164792a76012b9cd6 / 54144764 | 11587503000 / 0c3ecc7f03af629beb70a6b4144a71c6421e62740c1340338b9c11a5717aca85 / 8359441 |
+| ARM64/3.11，113605822253 | fa8f336343581343178105df94b44a2248e92fe85cfb92b943c14bbee02a5b05 / 54145211 | 11587702707 / 417c4b8b344cfe205989a7d4f0e4b177facb34165774496ac72253e85c88961a / 7569655 |
+| ARM64/3.12，113605822239 | 9d32a2a3423cb47f4687e40cb383194a1846c5dc8f34a2307c2a4868779c5eab / 54145094 | 11587846176 / 5ef814769df046428df3d70d1051d4dabd89cc83d2da7902ddcc68807235e2d7 / 7569647 |
+
+root独立比对四格采集helper_hash=attestation subject，上传ZIP digest/ID/size=artifact API且run/main/sourceSHA全精确ef43；只读文本，不下载成品或独立做成品密码学/PE解析。四格各19个实际安装脚本阶段PASS（ARM3.11为704–722，其它655–673），含cryptographic/offline verifier、实际negative controls、bytebinding/direct-volume/metadata及refusal；9fixture unittest另计。四CAPTURED均parse_complete/runtime_load_verified/source_launch_verified=false，不能因签名成功翻转。Pages artifact API的唯一11587141330同run/sourceef43、313411B、ZIP sha25622930eacaa75f0bb3ea0ad5eeec3ad6484a508bae99065e2b4be4956a8d6ae1b与日志对应。本Task3仅发布/独立观察结束，CI失败与R2/R3保持未通过。
+
+### 单方法兼容修正实施履历（尚未发布）
+
+fresh作者改前独立命名方法：3.11.15为1P/0.058s；3.12.13为1F/0E/skip/0.121s、3.13.12为1F/0E/skip/0.224s，两RED均同固定标签失配、exit1。仅指定方法+2/-1：新增原因注释、100层数组/validation_value，无production改动或版本分支/skip/宽标签。GREEN完整class三版各41P/0F/E/skip（0.215/0.299/0.319s），3.11关联三class84P/0.444s，全exit0；207为执行次数，不是207新增方法。SPEC→QUALITY作者自审均通过STOP。
+
+tests新冻结SHA256 `88ccaec7a27c3d5a9264313dc5d3049e50f08d52754184e04bf88a0c73323cac`（1027行）；probe仍972068e7、runner2b145db4、冻结设计ca76a993，方法外字节保持。fresh独立SPEC C0/I0/M0、三版各41P/0F/E/skip（0.205/0.288/0.327s）；不同freshQUALITY C0/I0/M0、三版各41P/0F/E/skip（0.216/0.248/0.473s），前后源SHA一致、只读STOP。root关联7class134total/130P/4原平台skip/0F/E/6.442s/exit0（首次输出部分截断，仅实际摘要及决定段信用，未声称全行阅读）；portable无skip。root随后20轮各84P/0F/E/skip、1680执行/exit0。
+
+修后独立软件门：DEFAULT539P/0F/E/skip/163.858s/exit0、bootstrap byte binding PASS；原完整三道全部exit0，2394total/2335P/59环境skip/0F/E/484.328s。原tests子调用一次、完整argv/kwargs绑定核相等且返回对象不改，child wall484.620307s、preflight wall485.730703s、结束恢复wrapper，byte binding PASS。此处仅本轮冻结源，不混用ef43修前记录。compileall -j1实际exit0/wall0.487686s，缓存仅仓外 `/tmp/icode-json-portability-pyc-Te8EkL`；治理/site/landscape/diff各exit0。最后文档连续两轮clean、密钥/vendor及发布仍待实际结果。
+
+【架构级自检报告】（本次三行测试修正，非整体R2/R3）
+- 语法/编译：三版本class、DEFAULT、原完整unittest及compile-j1通过。
+- 依赖/调用链：生产probe/runner及既有调用ABI未改，配对选择守卫通过。
+- 逻辑/边界：确定性201字节数组校验结构拒绝；独立类型分类仍严格测试RecursionError，无阈值假设。
+- 异常处理：真实UTF-8/JSON/XML及闭标签/预算/poison既有定点通过；不声称所有原生异常已覆盖。
+- 关联模块：仅单方法三行改动，原方法外字节相同；其余改动为窗口履历。
+- 兼容安全：本机3.11.15/3.12.13/3.13.12通过；最终保密与文档守卫据实补录，ef43的3.12.15旧失败保留。
+- 可运行性：本机冻结源可运行；新远端CI及Windows产品总验收尚未取得通过信用。
+
+发布前最终门：精确六文档连续两轮各0疑似项/exit0，密钥/子模块各exit0；vendor HEAD=gitlink1693651且工作树空。probe/tests/design冻结SHA一致，实际runner路径 `src/icode/runner.py` SHA2b145db4不变（初次误用不存在的scripts路径，已按probe真实import定位重核，不将失败命令报通过）。治理/site/landscape/diff实际通过。当前状态更新后再执行两轮文档clean并精确暂存三路径；提交/远端新窗口另外记录，下一R3设计/计划/研究留后续阶段。
 
 **Execution Mode:** serial
 
