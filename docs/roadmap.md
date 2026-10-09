@@ -1,5 +1,7 @@
 # 开发路线图与取舍原则
 
+- **Windows transport-only 合同 fixture 边界（2026-10-10，本次修复待远端复核）：**`test_native_legacy_code_actual_cp_to_independent_pack` 在 Windows 上不再调用尚未验证的策略 `write_file`；由宿主 fixture 在模型回合后注入声明的源码差异，继续验证真实控制面、独立 Reviewer、证据包导出与独立校验。POSIX 仍保留真实工具写入覆盖。该调整只修正跨平台测试口径，不增加 Windows 原生隔离、策略写入、R2/R3 或自动模式信用。
+
 - **Linux 原生资源限制证据接入（2026-10-10，本机 `590722d` 工作树）：**原生探针新增一个独立的真实 `run_command` 配额用例，复用 `TestLinuxProductTaskQuota.test_registry_cap_one_enforces_real_fork_quota`，仅在非 root user-manager、真实 scope、fork 被 `EAGAIN` 拒绝且 scope 收束完成时计入 `resource_limits`。本机 `scripts/run_native_probe_ci.py` 以 CPython 3.11.15、Linux 6.8、systemd 249 实跑通过，评分由 `8/10` 提升为 `9/10`、`critical_passed=true`、`ready=true`；`uniform_violation` 仍未验证，工程 bridge 仍是 `conformance_credit=none`。该证据只更新 Linux 原生探针评分，不改变跨平台准入、`policy_contract_ready`、Native 自动模式或 R2/R3 总验收；远端 CI 待本提交终态后复核。
 
 - **真实全链路后半段边界（2026-10-10，临时工单 `R3-REAL-FULL-NEXT`）：**在有效仓外 MiniMax-M3 key 下，新的完整工单 `plan→review` 真实通过，均有控制面 finish、结构化 round/manifest 与无未闭合事件。首轮 merge 因共享模型预算硬停；随后通过同一工单目录、带生产 gate-trace 回调的受控单步重试，真实登记 `03_plan_final.md` 并前移到 `plan_finalized`。code 尚未启动：工程步骤必须绑定独立 Git workspace、执行根、验证计划和原生隔离回执，普通链路入口不能冒充该绑定；未取得 `code→deepcheck→audit` 完整成功样本，不增加 R3 六步、90% 一致性、R2/R3 总验收或自动模式信用。

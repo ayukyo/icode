@@ -1117,8 +1117,13 @@ class TestContractEngineering(unittest.TestCase):
                 self.assertTrue(migration.data["ok"])
                 (directory / "03_plan_final.md").write_text("# Accepted legacy plan\n", encoding="utf-8")
                 outputs = ("04_code_review_fix.md",) if step == "code" else ("05_deepcheck.md",)
+                # Windows policy-backed write_file remains intentionally
+                # unverified.  This legacy fixture is transport-only and must
+                # not turn that boundary into native credit: let the host
+                # fixture create the declared diff after the model turn on
+                # Windows, while POSIX continues to exercise the real tool.
                 calls = ([{"id": "write", "name": "write_file", "arguments": {"path": "changed.py", "content": "value = 1\n"}}]
-                         if step == "code" else [])
+                         if step == "code" and os.name == "posix" else [])
                 calls += [{"id": "artifact-" + str(index), "name": "submit_artifact", "arguments": {
                     "name": name, "content": "{}" if name.endswith(".json") else "# Actual model fixture report\n"}}
                     for index, name in enumerate(outputs)]
@@ -1152,6 +1157,8 @@ class TestContractEngineering(unittest.TestCase):
                         from icode.artifact_broker import ArtifactBroker
                         from icode.contracts import ContractSet
                         original_post(path, current_step, attempt)
+                        if os.name != "posix" and current_step == "code":
+                            (root / "changed.py").write_text("value = 1\n", encoding="utf-8")
                         # Host fixture driver really reads the one declared
                         # source in every required phase. Declarations/hash
                         # checks prove no semantic judgment or native isolation.
