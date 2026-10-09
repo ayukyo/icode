@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **inspection 接线后的真实链路复验仍停在 review（2026-10-09）：**新工单 `R3-REAL-6AC32E5` 的 plan 成功，但 review 18 回合后未提交合法 `review_round_*.json`；四次 `submit_artifact` 均为 `bad_arguments`，宿主无法装配 `review_manifest.json`，按 fail-closed 停止。新 inspection 端口尚未获得 code 真实证据；下一次必须新建工单完成合法 review round 后再验证 code→deepcheck→audit，不能把此次失败归因或折算为 R3 信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **code/deepcheck/audit inspection 工具接线（2026-10-09）：**真实 code 失败暴露运行器只开放普通文件/产物工具，模型无法调用 ICODE-SKILL 的原生 `inspection --phase prepare/read/check`，因此不能取得 `code_worklist.json` 的真实回执。现在由宿主按当前 ticket/step/attempt 闭包绑定 inspection 工具，仅允许工程内相对路径与固定阶段；工作清单由控制面写入，已存在的 worklist 不可被模型覆盖。为兼容旧宿主/离线夹具，只有 worklist 已由 inspection 生成后才禁止模型提交；未生成时仍保留原合同入口。新增工具边界与 artifact 保护回归，目标是新工单重新验证 code→deepcheck→audit；此前失败工单不重放、不补信用。
 
 - **code_files 幂等键冲突修复（2026-10-09）：**真实 code 复验暴露 `set_code_files()` 与 plan 元数据写入复用同一 request key，控制面按幂等契约拒绝；`24e58dd` 按 attempt+文件集合派生独立 request，并新增回归验证 metadata 正常写入。此前失败工单的 code attempt 已终结，不能重放冒充修复后的真实信用；需新工单重新跑 code→deepcheck→audit。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)

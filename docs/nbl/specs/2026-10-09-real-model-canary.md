@@ -45,3 +45,7 @@
 本轮实现了宿主绑定的 `inspection` 工具。运行器把当前 `out_dir`、ticket、step、attempt 和控制面实例闭包绑定，模型只能提交阶段、工程内相对路径、关联范围和基线 JSON；路径越界、非法阶段和超过有界数量的范围在工具层拒绝。控制面仍负责冻结输入、哈希、事件回执和最终 check，失败结果原样返回模型，不绕过门禁。`code_worklist.json`、`deepcheck_worklist.json`、`audit_worklist.json` 已加入“已由 inspection 生成后不可被模型覆盖”的保护；兼容夹具仍允许在尚未生成时通过合同提交，避免破坏旧离线回归。
 
 本机针对工具边界、机器工作清单保护、`code_files` 幂等键修复及相关链路共 15 项定向测试通过，compileall 与 diff check 通过。下一步必须用新 ticket、同一仓外模型 key 和真实隔离环境重新跑 code→deepcheck→audit，并分别核对源码正确性、独立测试、inspection 回执、Reviewer 只读与状态前移；在该证据取得前，R3 和“≥90% 一致性”仍未通过。
+
+## 新工单真实复验（2026-10-09，6ac32e5 运行器）
+
+使用同一仓外 key、bubblewrap 和临时 `pycalc` 副本启动 `R3-REAL-6AC32E5`，真实链路共 63 次调用、417,756 tokens。plan 成功并前移；review 在 18 回合后 fail-closed：模型提交了 `02_review.md`，但没有形成合法的 `review_round_*.json`，多次 `submit_artifact` 事件均以 `bad_arguments` 失败，因此宿主不能装配 `review_manifest.json`。没有进入 merge/code/deepcheck/audit，不能把这次运行当作 inspection 工具的真实 code 证据，也不把失败归因于门禁放宽。该工单保留在临时目录供审计；后续若要重新取得 code 信用，必须新建工单并先让模型完成合法 review round。
