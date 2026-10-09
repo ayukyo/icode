@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **真实 R3 review 链复验与机器清单时序修复（2026-10-09）：**首次真实审查暴露“模型 round 在最终登记前出现时，`review_manifest.json` 未再次装配”的缺口；最小修复加入最终幂等装配重试，并保留模型 round 原始字节以避免重复 artifact 回执冲突。新增回归与链路/预算 44 项测试全绿。新的真实控制面工单实际 23 次调用/135,095 tokens，提交 `02_review.md`、`review_round_1.json`，机器成功装配 manifest，review finish success；状态前移仍因 `mcp_coverage` 被诚实拦截，工单保持 `review_in_progress`，不授 merge/code 或 R3 完成信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **真实模型 pycalc 三 canary（2026-10-09）：**使用仓外测试密钥且未入库，隔离临时副本实际运行。默认任务 13 次调用/54,224 tokens，模型虽改动文件但独立测试仍失败，Reviewer 在必需提交工具处 `required_tool_not_called`；显式 `calc_gcd/calc_lcm` 任务 3 次调用/8,039 tokens，模型尝试被拒绝的 `run_command` 后未产生改动，基线 12 tests 全绿仍因“无改动”合同失败关闭；同一任务明确要求使用 `edit_file/write_file` 后，16 次调用/88,482 tokens、独立 19 tests 全绿、Reviewer 结构化提交成功，结果通过。结果证明真实 backend、隔离、独立测试与 fail-closed Reviewer 链路可运行，也证明窄任务在明确工具纪律时可闭环；三次样本不证明模型 90% 一致性，暂不放宽工具/审批/证据门。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
 - **0447be8 诊断兼容片已发布，原生总门仍未关闭（2026-10-09）：**本机默认 `616P/0F/E/skip`、完整 preflight `2498P/60环境skip/0F/E` 三道通过，compileall-j1、治理、官网、竞品排期与 diff check 通过；修正了 Windows x64 在规范化 `chain_error` 路径下对 `OSError` 的过严测试断言，并让测试自有 Git 夹具关闭自动维护。精确提交 `0447be800e4d92e41509725dd5c2b3956242476a` 已推送 main。线上 CI [37926412232](https://github.com/ayukyo/icode/actions/runs/37926412232) 终态 37 success/4 failure/3 skip：双 Windows DEFAULT 的新增 missing-report 断言不再失败，但旧 Win10093/Win10038、双 reviewer `Win10035/wait_expired` 仍失败；macOS DEFAULT 616P，本轮 `maintenance.lock` 未复现，不能称修复；双 Python full 各 2504/71skip/2433P，Pages 与 provenance success。四 Linux bridge 仍 `native_ready=false`，签名/PE capture 仍不等于产品启动或隔离。R2/R3、真实模型1→6/≥90%与自动模式继续关闭。[分层记录](./nbl/plans/2026-10-09-linux-engineering-bridge.md)。

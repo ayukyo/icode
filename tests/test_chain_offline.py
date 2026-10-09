@@ -554,6 +554,31 @@ class TestReviewArtifactHonestyOffline(unittest.TestCase):
             self.assertEqual(len({attempt for _step, attempt, _exists in posts}), 1)
             self.assertEqual(report.finish_outcome, "success", report.render())
 
+    def test_contract_step_reassembles_machine_manifest_when_only_it_is_missing(self) -> None:
+        with temp_workspace() as workspace:
+            out_dir = self._ticket(workspace)
+            backend = self._backend({
+                "02_review.md": REVIEW_TEXT,
+                "review_round_1.json": json.dumps(REVIEW_JSON),
+            }, "完成")
+            posts: list[int] = []
+
+            def post(directory: Path, step: str, attempt: str) -> None:
+                posts.append(len(posts) + 1)
+                # The first assembly may run before the final round is visible;
+                # final registration must retry the idempotent machine assembly.
+                if len(posts) >= 2:
+                    ok, reason = assemble_review_manifest(directory, "REVIEW-HONESTY", attempt)
+                    self.assertTrue(ok, reason)
+
+            report = run_contract_step(
+                self.settings, backend=backend, workspace=workspace, step="review",
+                ticket_id="REVIEW-HONESTY", out_dir=out_dir, sandbox=NoIsolation(), post_write=post,
+            )
+            self.assertTrue(report.ok, report.render())
+            self.assertGreaterEqual(len(posts), 2)
+            self.assertTrue((out_dir / "review_manifest.json").is_file())
+
     def test_contract_step_post_persistence_exception_fails_before_finish(self) -> None:
         with temp_workspace() as workspace:
             out_dir = self._ticket(workspace)

@@ -188,7 +188,8 @@ def assemble_review_manifest(out_dir: Path, ticket_id: str, attempt: str) -> tup
     上游结构合同（review_evidence_issues）：
     - rounds 里的 new_issues / refuted_issues / pending_verification 是 **int 计数**
     - 每个 round 需要 detail_path（= `review_round_N.json`）+ detail_sha256
-    - detail 文件本身用 list 存实际 issues（与计数对应）
+    - detail 文件本身保留模型提交的原始字节；机器只读取其中的 list
+      计算计数，避免在已有 artifact 回执后重写文件造成哈希/幂等冲突
     """
     import hashlib
 
@@ -204,11 +205,8 @@ def assemble_review_manifest(out_dir: Path, ticket_id: str, attempt: str) -> tup
         ref_list = list(raw.get("refuted_issues") or [])
         pend_list = list(raw.get("pending_verification") or [])
 
-        # detail 文件：按 round 序号重写（确保与 manifest 引用一致）
-        detail_path.write_text(
-            json.dumps({"round": index, **raw}, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        # detail 文件是模型的受控提交，保持原始字节不变；否则在此前已登记
+        # glob 产物后重写它，会让同一路径的第二次回执变成歧义副作用。
         detail_sha = hashlib.sha256(detail_path.read_bytes()).hexdigest()
 
         rows.append({

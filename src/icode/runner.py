@@ -1410,6 +1410,15 @@ def run_contract_step(
                 _reset_artifact_checkpoints(report)
                 missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
 
+        # 机器装配产物可能依赖模型在最后一个受控提交中产生的 round/清单。
+        # 若前面的回调执行时尚未看到这些文件（尤其是只缺
+        # ``review_manifest.json`` 时不会进入模型补救回合），再在最终登记前
+        # 重跑一次幂等装配，避免把真实产物错误判为缺失。
+        if missing and post_write is not None:
+            post_write(out_dir, step, attempt)
+            _reset_artifact_checkpoints(report)
+            missing = _register_outputs(cp, out_dir, step, attempt, ticket_id, contract, report)
+
         if engineering:
             if not _contract_engineering_gate(cp=cp, out_dir=out_dir, ticket_id=ticket_id,
                     step=step, attempt=attempt, report=report, plan=verification_plan,
