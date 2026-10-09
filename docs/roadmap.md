@@ -1,5 +1,7 @@
 # 开发路线图与取舍原则
 
+- **`a447764` 远程终态（2026-10-10）：**主 CI `38005571901` 已完成，四平台 workspace 全部成功，Python 3.11/3.12 全量各 `2527 tests / 71 skipped`；总计 `38 success / 3 failure / 3 skipped`。唯一新增 Linux 失败是 Ubuntu 22.04 ARM 的 `test_deny_only_run_command_enforces_output_and_timeout_without_os_denial_receipt`：真实资源回执为 `resource_channel_failed` 而非期望的 `timeout`，本机连续 10 轮未复现，仍保留为未解决的 ARM 资源通道/时序问题，不改测试放宽门禁。两个 Windows Reviewer 仍为 `10035/wait_expired`、`cleanup_ok=true` 的既有候选失败；不能把 ACL 恢复或网络等待超时当作完整 WFP 拒绝证据。来源验证 `38005571757` 的 validate 已成功，四格签名仍在运行；该窗口不授予 R2/R3 总验收或自动模式信用。
+
 - **Windows transport fixture 诊断归一化（2026-10-10，`0fe53ce`）：**独立证据包校验在 Windows 返回空 `stdout` 时，测试断言现在将 `stdout/stderr` 统一按空文本处理，避免诊断代码本身把真实返回码遮蔽为 `None + str`。本机目标回归、全量测试、密钥/子模块门禁与 `compileall -j6` 已通过；不改变 verifier 结论、Windows 原生隔离或自动模式准入，远端 CI 待复核。
 
 - **Windows transport-only 合同 fixture 边界（2026-10-10，本次修复待远端复核）：**`test_native_legacy_code_actual_cp_to_independent_pack` 在 Windows 上不再调用尚未验证的策略 `write_file`；由宿主 fixture 在模型回合后注入声明的源码差异，继续验证真实控制面、独立 Reviewer、证据包导出与独立校验。POSIX 仍保留真实工具写入覆盖。该调整只修正跨平台测试口径，不增加 Windows 原生隔离、策略写入、R2/R3 或自动模式信用。
