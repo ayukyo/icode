@@ -8,6 +8,8 @@
 
 0.1. **R3 计划→审查复验（2026-10-09，提交 `120e94d` 后）**：新建临时 `pycalc` 工程，以 `chain --only plan,review,merge`、MiniMax-M3 和 bubblewrap 运行。plan 12 回合/20 次工具调用后通过并前移；review 5 回合/8 次工具调用后未生成 `02_review.md`，也没有合法 `review_round_*.json`，宿主无法装配 `review_manifest.json`，按 fail-closed 终止；merge 未运行。全链路共 48 次调用、304,057 tokens（prompt 287,743 / completion 16,314 / cached 246,831）。模型尝试的越界读取/命令仍被拒绝，未人工补产物。该结果证明修复后宿主仍能诚实停步，但不能授予 review、merge、code→deepcheck→audit、1→6 或 90% 一致性信用。
 
+0.2. **审查提交动作提示收窄（2026-10-09，`9c0ec26`）**：针对 0.1 中“读完输入后无工具收尾”的真实行为，review 步骤额外要求读完计划后立即调用 `submit_artifact`，明确禁止只在最终回复中描述审查或无工具结束；不改变工具白名单、ArtifactBroker、控制面事件或 fail-closed 逻辑。`test_chain_offline` 25 项、compileall-j1 和 diff check 通过。尚未取得该提示修复后的新真实 review 证据，不能将本地回归计作 R3 信用。
+
 1. 默认任务，6 回合、90,000 token 上限：13 次模型调用、54,224 tokens。模型修改了 `calc.py`、`test_calc.py`，但独立 `python -B -m unittest` 仍失败：`AssertionError: CalcError not raised`。两次有界修复后，独立 Reviewer 只读读取后未调用必需 `submit_review`，以 `required_tool_not_called` 失败关闭。
 2. 显式 `calc_gcd/calc_lcm` 任务，12 回合、120,000 token 上限：3 次调用、8,039 tokens。模型尝试被拒绝的 `run_command`，随后只读取并未修改文件；基线测试虽 `12 tests / OK`，因无改动文件按合同失败关闭（`没有改动文件，不能把基线测试通过当作编码任务完成`）。
 3. 同一显式任务但在需求中明确“不要调用 `run_command`，直接使用 `edit_file/write_file`”，12 回合、120,000 token 上限：16 次调用、88,482 tokens；模型修改 `calc.py`、`test_calc.py`，独立测试 `19 tests / OK`，Reviewer 完整读取并成功调用 `submit_review`，结果通过。

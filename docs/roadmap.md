@@ -6,6 +6,8 @@
 
 - **修复后 R3 计划→审查复验仍停在 review（2026-10-09）：**新工单的 plan 真实通过，但 review 5 回合/8 次工具调用未生成 `02_review.md` 或合法 `review_round_*.json`，宿主未装配 `review_manifest.json` 并 fail-closed；merge 未运行。总计 48 次调用/304,057 tokens。该结果确认门禁没有被放宽，也说明窄任务通过不能外推到链路审查稳定性；不授予 R3 1→6、90% 或总验收信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
+- **审查提交动作提示收窄（2026-10-09，`9c0ec26`）：**针对真实 review 无工具收尾，步骤提示明确要求读完计划后立即 `submit_artifact`，禁止只用回复正文结束；不改变权限、事件或 fail-closed 门。离线 `test_chain_offline` 25 项与 compileall-j1 通过，但尚未取得修复后的新真实 review 证据，不授 R3 信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **Review 结构化正文兼容修复（2026-10-09，eb42ab9 后续）：**真实 review 连续 `bad_arguments` 说明部分 OpenAI-compatible 提供方会忽略 JSON Schema 的字符串约束，把 `review_round_*.json` 正文作为对象传入。宿主提示现明确要求 `name/content` 为字符串、JSON 正文为合法文本且不得提交宿主装配的 `review_manifest.json`；`submit_artifact` 仅对 `.json` 的 dict/list 做窄序列化，Markdown 等文本仍拒绝非字符串。10 项定向测试与 compileall 通过；必须用新工单重新取得真实 review/code 证据，不能把本地回归当作 R3 完成。
 
 - **新工单复验仍停在 review（2026-10-09，修复前进程）：**`R3-REAL-REVIEW-PROMPT` 的 plan 通过；review 最终 5 回合/9 次工具调用，只登记 `02_review.md`，没有合法 `review_round_*.json`，宿主无法装配 `review_manifest.json`，按 fail-closed 停步。总计 56 次调用、483,922 tokens；未进入 merge/code/deepcheck/audit，不能把窄兼容修复或该次运行计入 R3/90% 信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
