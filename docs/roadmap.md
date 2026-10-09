@@ -1138,3 +1138,4 @@ R3 核心切片已合入 main（2026-09-26）：`src/icode/self_verify.py` 实�
 
 > 调研告诉我们**别做广度**。我们的开发决策只有一条主线：
 > **把"证据与门禁"这一个维度做到无人能及，其余一切都可以晚做、少做、甚至不做。**
+- **Windows Git匿名管道修复（2026-10-09，子仓库 `21566a5` 已推送）：**线上 `8e66713` 的双Windows workspace 在 `inspection_worklist._git` 使用 `selectors` 监听 `Popen.stdout` 时分别报 WinError 10093/10038，导致基线解析失败；这不是父工程夹具可合理绕过的问题。最小修复仅在 Windows 分流到有界 reader thread/`Queue(maxsize=2)`，保留 5 秒 deadline、输出上限、超时/溢出 kill、reap/close/join 和非零退出拒绝，POSIX selector 路径不变。真实匿名管道回归与子仓库定向 114 项通过；全量子仓库 829 passed/7 skipped/1 既有 crosscheck failure（未跟本改动），父仓库资源/契约/打包定向测试在 Python 3.11 通过。父固定 gitlink、manifest 与 source pin 已同步。新SHA Windows x64/ARM workspace 与 Reviewer 原生复验待线上终态，不能把软件修复写成R2/R3或自动模式完成。[实施记录](./nbl/plans/2026-10-09-skill-windows-bounded-git.md)

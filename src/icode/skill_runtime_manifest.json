@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source": {
     "repository": "https://github.com/ayukyo/icode-skill",
-    "commit": "d935a5218ca2970bce8157814bfda1f03aa6c9c4",
+    "commit": "21566a589cbe98bd35372a04bbb6ca1c51d8eed2",
     "license": "MIT"
   },
   "members": [
@@ -348,8 +348,8 @@
     },
     {
       "path": "tools/inspection_worklist.py",
-      "size": 26457,
-      "sha256": "590a45cc696a03e0b1f1a6dd5f80b0ce50ddf8640be1c6d623152b67b6b30811"
+      "size": 29312,
+      "sha256": "39ff1170f173de7eb7286162323d792c8cbb49953dd2518198d3ddea51f27cb2"
     },
     {
       "path": "tools/lint_mcp_coverage.py",

@@ -1,6 +1,6 @@
 # ICODE-SKILL Windows Git 受限读取修复候选
 
-状态：2026-10-09 Asia/Shanghai只读设计；未获本片源码/测试/提交推送授权，未实施或验收。此前三个Python校验器的授权不包含本片。独立SPEC→不同QUALITY与分架构原生验收仍须完成。
+状态：2026-10-09 已按继续完成R2/R3的范围实施并推送子仓库 `21566a589cbe98bd35372a04bbb6ca1c51d8eed2`；父仓库已更新固定gitlink，Windows原生CI复验待新SHA终态。此前三个Python校验器授权不覆盖本片，但本片获得后续最小契约修复授权。
 
 ## 三问与来源
 
@@ -33,5 +33,12 @@
 4. baseline超限硬拒绝、候选扫描欠覆盖及删除历史正文原规则；旧POSIX真实Git关联回归。
 5. Windows x64/ARM分别在真实原生CI跑原失败方法及受限reader矩阵；模拟Windows分支不代替实机。
 6. SKILL全仓守护、干净安装、独立SPEC→不同QUALITY与七维自检后，按新增授权提交推送其main，再更新父工程固定gitlink并重跑父工程守护。用户授权、原生证据与提交顺序不能由此设计替代。
+
+## 实施记录
+
+- `tools/inspection_worklist.py` 保留 POSIX selector 路径；Windows 改用有界 `Thread`/`Queue(maxsize=2)` 读取匿名管道，保留 5 秒 deadline、limit+1 溢出判定、kill/reap/close/join 清理和非零退出拒绝。
+- `tests/test_inspection_worklist.py` 增加真实匿名管道 20,000 字节→128 字节截断回归；子仓库定向套件 114 passed，`compileall` 与 `git diff --check` 通过。子仓库全量 829 passed/7 skipped/1 failure；唯一失败为既有 `test_related_source_drift_reenters_a_new_round`，与本改动无关，未改测试绕过。
+- 父仓库更新 `src/icode/skill_runtime_manifest.json`、`skill_resources.py` 与固定版本测试；资源完整性 11 项、控制运行时 1 项、契约工程 43 项及打包 CI 7 项在 Python 3.11 通过。Python 3.10 本机缺少 `Self`/`tomllib`，不作为跨版本验收证据。
+- 新SHA的Windows x64/ARM工作区与Reviewer原生复验尚未取得，因此本修复不单独关闭R2/R3、自动模式或模型1→6/90%总门。
 
 本片不修历史正文归档、不解决受管根绑定，不开放Windows自动模式，不关闭R2/R3或模型1→6/90%总门。

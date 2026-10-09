@@ -23,7 +23,7 @@ from icode.control import ControlPlane
 from icode import config
 
 
-PIN = "d935a5218ca2970bce8157814bfda1f03aa6c9c4"
+PIN = "21566a589cbe98bd35372a04bbb6ca1c51d8eed2"
 TOOLS = ("icode_control.py", "inspection_worklist.py", "lint_thinking_gate.py",
          "lint_mcp_coverage.py", "lint_workflow_contract.py")
 
@@ -405,7 +405,7 @@ class TestFixedSkillResources(unittest.TestCase):
         self.assertEqual(manifest["source"]["license"], "MIT")
         self.assertEqual([m["path"] for m in manifest["members"]], candidate_paths())
         self.assertEqual(len(manifest["members"]), 72)
-        self.assertEqual(sum(m["size"] for m in manifest["members"]), 1944413)
+        self.assertEqual(sum(m["size"] for m in manifest["members"]), 1947268)
         for member in manifest["members"]:
             raw = (REPO_ROOT / "vendor/icode-skill" / member["path"]).read_bytes()
             self.assertEqual(hashlib.sha256(raw).hexdigest(), member["sha256"])
