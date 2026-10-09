@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **修复后真实模型窄任务复验（2026-10-09）：**MiniMax-M3 在 bubblewrap 临时 `pycalc` 副本中按明确工具纪律完成 `calc_gcd/calc_lcm`，真实模型循环 12 回合、Reviewer 4 回合，共 16 次调用/69,484 tokens；实际改动 `calc.py`、`test_calc.py`，独立 `python -B -m unittest` 为 21 tests、退出码 0，Reviewer 结构化提交成功。越界 `run_command` 仍被拒绝，仓库保持无改动。该结果只恢复窄任务闭环证据，不授予 R3 1→6、跨平台原生隔离、90% 一致性或 R2/R3 总验收信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **Review 结构化正文兼容修复（2026-10-09，eb42ab9 后续）：**真实 review 连续 `bad_arguments` 说明部分 OpenAI-compatible 提供方会忽略 JSON Schema 的字符串约束，把 `review_round_*.json` 正文作为对象传入。宿主提示现明确要求 `name/content` 为字符串、JSON 正文为合法文本且不得提交宿主装配的 `review_manifest.json`；`submit_artifact` 仅对 `.json` 的 dict/list 做窄序列化，Markdown 等文本仍拒绝非字符串。10 项定向测试与 compileall 通过；必须用新工单重新取得真实 review/code 证据，不能把本地回归当作 R3 完成。
 
 - **新工单复验仍停在 review（2026-10-09，修复前进程）：**`R3-REAL-REVIEW-PROMPT` 的 plan 通过；review 最终 5 回合/9 次工具调用，只登记 `02_review.md`，没有合法 `review_round_*.json`，宿主无法装配 `review_manifest.json`，按 fail-closed 停步。总计 56 次调用、483,922 tokens；未进入 merge/code/deepcheck/audit，不能把窄兼容修复或该次运行计入 R3/90% 信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)

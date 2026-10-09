@@ -4,6 +4,8 @@
 
 ## 结果
 
+0. **修复后窄任务复验（2026-10-09）**：使用同一仓外密钥、MiniMax-M3、`https://api.minimaxi.com/v1` 与 bubblewrap 临时 `pycalc` 副本；需求明确要求通过 `edit_file`/`write_file` 修改，不把代码只写在回复中。主模型循环 12 回合/11 次工具调用，Reviewer 4 回合/4 次工具调用，共 16 次调用、69,484 tokens（prompt 63,306 / completion 6,178 / cached 52,094）。实际修改 `calc.py`、`test_calc.py`，独立 `python -B -m unittest` 执行 21 tests、退出码 0；Reviewer 精确读取两文件并提交结构化结果，最终通过。模型尝试的越界 `run_command` 仍被拒绝，未放宽工具或审批门。该样本证明当前窄 pycalc 任务的真模型→写入→独立测试→Reviewer 闭环可运行；不证明六阶段 1→6、跨平台原生隔离、90% 一致性或 R2/R3 总验收。临时工作区位于 `/tmp`，仓库无改动，密钥未打印、未复制、未进入产物。
+
 1. 默认任务，6 回合、90,000 token 上限：13 次模型调用、54,224 tokens。模型修改了 `calc.py`、`test_calc.py`，但独立 `python -B -m unittest` 仍失败：`AssertionError: CalcError not raised`。两次有界修复后，独立 Reviewer 只读读取后未调用必需 `submit_review`，以 `required_tool_not_called` 失败关闭。
 2. 显式 `calc_gcd/calc_lcm` 任务，12 回合、120,000 token 上限：3 次调用、8,039 tokens。模型尝试被拒绝的 `run_command`，随后只读取并未修改文件；基线测试虽 `12 tests / OK`，因无改动文件按合同失败关闭（`没有改动文件，不能把基线测试通过当作编码任务完成`）。
 3. 同一显式任务但在需求中明确“不要调用 `run_command`，直接使用 `edit_file/write_file`”，12 回合、120,000 token 上限：16 次调用、88,482 tokens；模型修改 `calc.py`、`test_calc.py`，独立测试 `19 tests / OK`，Reviewer 完整读取并成功调用 `submit_review`，结果通过。
