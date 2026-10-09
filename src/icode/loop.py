@@ -536,20 +536,55 @@ class AgentLoop:
                             forced_edit_paths.add(Path(path).name)
                         missing = missing_artifacts()
                         if len(forced_edit_paths) >= 2 and missing:
-                            tool_choice = "submit_artifact"
-                            forced_output_tool = "submit_artifact"
-                            history.append({
-                                "role": "user",
-                                "content": (
+                            if self.registry.get("inspection") is not None:
+                                tool_choice = "inspection"
+                                forced_output_tool = "inspection"
+                                content = (
+                                    "代码文件已实际修改；现在必须调用 inspection，先用 phase=prepare "
+                                    "建立当前 code 工作清单，再对每个实际读取的工程文件用 phase=read、"
+                                    "read_phase=code_review 登记，最后用 phase=check 完成机器审查。"
+                                    "不要提交 code_worklist.json，也不要再执行 run_command。"
+                                )
+                            else:
+                                tool_choice = "submit_artifact"
+                                forced_output_tool = "submit_artifact"
+                                content = (
                                     "代码文件已实际修改；现在必须调用 submit_artifact，"
                                     "逐项提交以下全部 code 产物：" + "、".join(missing)
                                     + "。每次只提交一个文件，name/content 都必须是字符串，"
                                     "不要再读取或执行命令。"
-                                ),
+                                )
+                            history.append({
+                                "role": "user",
+                                "content": content,
                             })
                         else:
                             tool_choice = "auto"
                             forced_output_tool = None
+                    elif call.name == "inspection":
+                        phase = (inv.arguments or {}).get("phase")
+                        if phase == "check" and artifact_broker is not None:
+                            tool_choice = "submit_artifact"
+                            forced_output_tool = "submit_artifact"
+                            missing = missing_artifacts()
+                            history.append({
+                                "role": "user",
+                                "content": (
+                                    "inspection check 已成功；现在只能调用 submit_artifact，"
+                                    "提交缺失的模型产物：" + "、".join(missing)
+                                    + "。name/content 必须是字符串，不要提交机器生成的 worklist。"
+                                ),
+                            })
+                        else:
+                            tool_choice = "inspection"
+                            forced_output_tool = "inspection"
+                            history.append({
+                                "role": "user",
+                                "content": (
+                                    "inspection 尚未完成；继续按顺序调用 inspection 的 read 或 check，"
+                                    "不要调用其它工具或用普通文本结束。"
+                                ),
+                            })
                     else:
                         tool_choice = "auto"
                         forced_output_tool = None
