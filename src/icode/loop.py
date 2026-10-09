@@ -466,6 +466,7 @@ class AgentLoop:
 
             allowed = assistant.tool_calls[: self.config.max_tool_calls_per_turn]
             skipped = assistant.tool_calls[len(allowed) :]
+            post_tool_prompts: list[str] = []
 
             for call in allowed:
                 if forced_output_tool is not None and call.name != forced_output_tool:
@@ -488,13 +489,10 @@ class AgentLoop:
                     )
                     turn.invocations.append(inv)
                     history.append(_tool_message(call.id, inv))
-                    history.append({
-                        "role": "user",
-                        "content": (
-                            f"请立即改用唯一允许的 {forced_output_tool} 工具；"
-                            "不要再调用其它工具，也不要用普通文本结束。"
-                        ),
-                    })
+                    post_tool_prompts.append(
+                        f"请立即改用唯一允许的 {forced_output_tool} 工具；"
+                        "不要再调用其它工具，也不要用普通文本结束。"
+                    )
                     continue
                 inv = self._invoke(call.name, call_arguments(call))
                 turn.invocations.append(inv)
@@ -561,10 +559,7 @@ class AgentLoop:
                                     + "。每次只提交一个文件，name/content 都必须是字符串，"
                                     "不要再读取或执行命令。"
                                 )
-                            history.append({
-                                "role": "user",
-                                "content": content,
-                            })
+                            post_tool_prompts.append(content)
                         else:
                             tool_choice = "auto"
                             forced_output_tool = None
@@ -574,24 +569,18 @@ class AgentLoop:
                             tool_choice = "submit_artifact"
                             forced_output_tool = "submit_artifact"
                             missing = missing_artifacts()
-                            history.append({
-                                "role": "user",
-                                "content": (
-                                    "inspection check 已成功；现在只能调用 submit_artifact，"
-                                    "提交缺失的模型产物：" + "、".join(missing)
-                                    + "。name/content 必须是字符串，不要提交机器生成的 worklist。"
-                                ),
-                            })
+                            post_tool_prompts.append(
+                                "inspection check 已成功；现在只能调用 submit_artifact，"
+                                "提交缺失的模型产物：" + "、".join(missing)
+                                + "。name/content 必须是字符串，不要提交机器生成的 worklist。"
+                            )
                         else:
                             tool_choice = "inspection"
                             forced_output_tool = "inspection"
-                            history.append({
-                                "role": "user",
-                                "content": (
-                                    "inspection 尚未完成；继续按顺序调用 inspection 的 read 或 check，"
-                                    "不要调用其它工具或用普通文本结束。"
-                                ),
-                            })
+                            post_tool_prompts.append(
+                                "inspection 尚未完成；继续按顺序调用 inspection 的 read 或 check，"
+                                "不要调用其它工具或用普通文本结束。"
+                            )
                     else:
                         tool_choice = "auto"
                         forced_output_tool = None
@@ -620,13 +609,10 @@ class AgentLoop:
                                 "请继续调用 submit_artifact，逐项提交缺失产物；"
                                 "不要以普通文本结束，也不要提交 review_manifest.json。"
                             )
-                        history.append({
-                            "role": "user",
-                            "content": (
-                                "仍缺少以下步骤产物：" + "、".join(missing)
-                                + "。" + follow_up
-                            ),
-                        })
+                        post_tool_prompts.append(
+                            "仍缺少以下步骤产物：" + "、".join(missing)
+                            + "。" + follow_up
+                        )
 
             # 超出单回合上限的调用**也要回一条配对结果**：
             # OpenAI 兼容协议要求 assistant 消息里每个 tool_call 都有对应的 tool 消息，
@@ -652,6 +638,14 @@ class AgentLoop:
                 turn.invocations.append(inv)
                 history.append(_tool_message(call.id, inv))
                 self.on_event("tool_skipped_budget", {"tool": call.name})
+
+            # OpenAI-compatible chat history requires all tool results for one
+            # assistant message to remain adjacent.  Defer corrective user
+            # prompts until every allowed/skipped tool call has its paired
+            # result; inserting a user message between tool results causes
+            # HTTP 400 on otherwise valid multi-call turns.
+            for prompt in post_tool_prompts:
+                history.append({"role": "user", "content": prompt})
 
             total_tool_calls += len(turn.invocations)
             turns.append(turn)
