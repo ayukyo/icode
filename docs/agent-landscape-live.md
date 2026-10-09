@@ -2224,6 +2224,10 @@ ICODE 的真实 Linux 工程验收在 create 阶段暴露存储根与执行根�
 
 0447be8 线上复核：新增断言在双 Windows DEFAULT 均不再失败，macOS `maintenance.lock` 本轮未复现；双 reviewer 仍无匹配事件，四 Linux bridge 仍未 ready。该结果支持“诊断状态与原生能力分层”的取舍，但不改变任何上游采纳结论、不授予 ICODE 原生或模型总门信用。CI/Pages/provenance 的精确链接与计数见[实施计划](./nbl/plans/2026-10-09-linux-engineering-bridge.md)。
 
+### 2026-10-09 HEAD 只读刷新
+
+仅执行远程 `git ls-remote`，未拉取、运行或复制上游源码：Codex HEAD=`a06545b311fe01e51ce855c7aa5d8da21e9e7aaf`，Aider HEAD=`5dc9490bb35f9729ef2c95d00a19ccd30c26339c`，OpenHands Software Agent SDK HEAD=`33044182505244749928644a4643368a9e998ee7`。本次只更新观察版本，不把 HEAD 变化解释成机制变化，也不改写此前基于固定提交的采纳/暂缓结论；下一次涉及具体机制时必须重新读取对应文件并做许可与兼容性核对。
+
 ### 同日后续：历史正文保存与真实增量验包（2026-10-08，只读）
 
 合同阶段结束刷新：根代理冻结49项20轮980PASS/0skip，独立SPEC→不同QUALITY批准，扩大关联325PASS/5既有skip、DEFAULT367PASS/0skip、干净安装20外层含37新增子测零skip；完整preflight2201 total/2142PASS/59skip/0FAIL。CRLF夹具同冻结验收，生产verifier未改；仅软件编排及安装输运，不提高原生/模型/R2/R3总门。下一Python候选的十二项设计经标签修正后静态SPEC→不同QUALITY批准，尚未实施。历史正文研究的正式默认增量缺口及进一步源码授权仍未关闭，以下取舍继续有效。
