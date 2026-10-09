@@ -603,12 +603,21 @@ class AgentLoop:
                         ):
                             tool_choice = "submit_review_round"
                             forced_output_tool = "submit_review_round"
+                            follow_up = (
+                                "仍缺少 review round；现在必须调用 submit_review_round，"
+                                "参数使用 round=1、new_issues/refuted_issues/pending_verification"
+                                " 三个字符串数组。不要再次调用 submit_artifact，也不要用普通文本结束。"
+                            )
+                        else:
+                            follow_up = (
+                                "请继续调用 submit_artifact，逐项提交缺失产物；"
+                                "不要以普通文本结束，也不要提交 review_manifest.json。"
+                            )
                         history.append({
                             "role": "user",
                             "content": (
                                 "仍缺少以下步骤产物：" + "、".join(missing)
-                                + "。请继续调用 submit_artifact，逐项提交；"
-                                "不要以普通文本结束，也不要提交 review_manifest.json。"
+                                + "。" + follow_up
                             ),
                         })
 
