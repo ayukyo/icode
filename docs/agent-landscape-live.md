@@ -2208,6 +2208,10 @@ ICODE 的真实 Linux 工程验收在 create 阶段暴露存储根与执行根�
 
 阶段结束独立复核窗口 09:17–09:18 UTC：官方 `git ls-remote` 两个 HEAD 仍与上述观察一致，相关源码重读未改变结论。Codex 的 [persist/flush](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/rollout/src/recorder.rs#L1062) 确认为写入任务结果，不直接等于断电耐久性；Aider 向祖先查找 Git 仍不适合作为本工程隔离根授权。根许可核对为 [Codex LICENSE](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/LICENSE) 与 [Aider LICENSE.txt](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/LICENSE.txt)，均 Apache-2.0；未复制实现或审全依赖。本片实际采纳机制仍以 ICODE 自身事务、对象替换、重复绑定、重签负控和目录消失后离线验证证明，不声称上游有完全相同契约。主工程接入独立双审已通过，Linux 源码双正控与20轮定点矩阵通过；总体验收未关闭。
 
+09:48:31–09:49:19 UTC，Linux失败矩阵实施期间独立复核上述两HEAD及许可不变。新增核Codex [orchestrator](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/core/src/tools/orchestrator.rs#L394)特定Denied分支的受约束重试与fresh review；不把同调用重试当崩溃恢复许可。采纳非零/超时/截断/清理未知分层，暂缓通用重试/补偿，不适配空输出或Aider None作通过、信号发送成功作后代收束、降沙箱fallback。ICODE复用现有CP/scope/receipt与实际负控，无新依赖或源码复制；具体读行、成本与验收见[本轮研究](./nbl/specs/2026-10-09-linux-engineering-bridge-upstream-research.md)。绑定片主工程已发布43e7739，后续负控仍按实测记录，不授整体完成。
+
+阶段结束再次独立核对（2026-10-09 10:10:52–10:11:15 UTC）：上述Codex/Aider官方HEAD未变，相关exec/process_group/orchestrator及cmd_test/cmd_run源码定点重读无取舍变化。未重查全20名单或许可依赖；Linux工程诊断实际运行与全局软件验收单独记在执行计划，不由本次研究授予通过。
+
 ### 同日后续：历史正文保存与真实增量验包（2026-10-08，只读）
 
 合同阶段结束刷新：根代理冻结49项20轮980PASS/0skip，独立SPEC→不同QUALITY批准，扩大关联325PASS/5既有skip、DEFAULT367PASS/0skip、干净安装20外层含37新增子测零skip；完整preflight2201 total/2142PASS/59skip/0FAIL。CRLF夹具同冻结验收，生产verifier未改；仅软件编排及安装输运，不提高原生/模型/R2/R3总门。下一Python候选的十二项设计经标签修正后静态SPEC→不同QUALITY批准，尚未实施。历史正文研究的正式默认增量缺口及进一步源码授权仍未关闭，以下取舍继续有效。

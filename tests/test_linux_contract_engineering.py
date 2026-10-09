@@ -19,12 +19,16 @@ from unittest.mock import Mock, patch
 
 from tests._support import REPO_ROOT, require_skill
 from icode import runner
+from icode.artifact_broker import ArtifactBroker
+from icode.autonomy import ExecutionContext, NativeChainExecutor
 from icode.backends import FakeBackend
 from icode.budget import BudgetTracker
-from icode.control import ControlPlane
+from icode.chain import set_code_files
+from icode.checkpoint import Checkpointer
+from icode.control import ControlPlane, ControlResult
 from icode.contracts import ContractSet
 from icode.engineering_verification import VerificationCheck, VerificationPlan
-from icode.evidence import build_evidence_pack, load_verification_receipts
+from icode.evidence import EvidenceError, build_evidence_pack, load_verification_receipts
 from icode.handshake import next_out_dir
 from icode.isolation import LandlockSandbox
 from icode.loop import LoopConfig
@@ -139,7 +143,7 @@ class _Bridge:
                                      steps=(step,), platforms=("Linux",))
         if full:
             # Explicit fixture_seed only. No earlier model phase is claimed.
-            self.directory.mkdir(parents=True)
+            self.directory.mkdir(parents=True, exist_ok=True)
             legacy = dict(ticket_id=self.ticket_id, requirement="change value",
                 created_at="2026-10-09T00:00:00Z", status=step + "_in_progress",
                 completed_steps=["1", "2", "3"], code_files=["changed.py"],
@@ -312,6 +316,55 @@ class _Bridge:
         (self.directory / "bridge-observation.json").write_text(json.dumps(public, sort_keys=True) + "\n", encoding="utf-8")
         print("linux-engineering-bridge observation=" + json.dumps(public, sort_keys=True), flush=True)
 
+    def post_inspection_with_actual_debt(self, path, step, attempt):
+        self.case.assertEqual(path, self.directory)
+        self.case.assertEqual(step, self.step)
+        self.attempt = attempt
+        if step == "code":
+            changed, updated = set_code_files(self.cp, path, self.ticket_id, self.root, self.baseline)
+            self.case.assertEqual(changed, ["changed.py"])
+            self.case.assertTrue(updated)
+        prepared = self.cp.run("inspection", "--dir", str(path), "--step", step,
+            "--attempt", attempt, "--phase", "prepare", "--scope", ".",
+            "--request", "bridge-inspection-prepare")
+        self.case.assertTrue(prepared.ok, prepared.data)
+        worklist_path = path / (step + "_worklist.json")
+        worklist = json.loads(worklist_path.read_text(encoding="utf-8"))
+        self.case.assertEqual(worklist["coverage_status"], "partial")
+        self.case.assertTrue(any("no affected Git repository" in debt["debt_reason"]
+                                 for debt in worklist["unobserved"]))
+        read_phases = {}
+        for phase in worklist["required_phases"]:
+            read_phases[phase] = {}
+            for unit in worklist["units"]:
+                for file in unit["files"]:
+                    relative = file["path"]
+                    digest = digest_bytes((self.root / relative).read_bytes())
+                    self.case.assertEqual(digest, file["sha256"])
+                    read_phases[phase][relative] = digest
+                    read = self.cp.run("inspection", "--dir", str(path), "--step", step,
+                        "--attempt", attempt, "--phase", "read", "--read-phase", phase,
+                        "--path", relative, "--request", "bridge-read-" + canonical_digest([phase, relative]))
+                    self.case.assertTrue(read.ok, read.data)
+        worklist = json.loads(worklist_path.read_text(encoding="utf-8"))
+        self.case.assertEqual(worklist["coverage_status"], "partial")
+        self.case.assertTrue(worklist["unobserved"])
+        checked = self.cp.run("inspection", "--dir", str(path), "--step", step,
+            "--attempt", attempt, "--phase", "check", check=False)
+        self.case.assertFalse(checked.ok)
+        self.case.assertTrue(checked.data["violations"])
+        if step == "code":
+            self.case.assertTrue(self.cp.artifact(path, step, attempt, "changed.py",
+                ticket_id=self.ticket_id, scope="workspace").ok)
+        else:
+            unobserved = sorted({debt["path"] for debt in worklist["unobserved"]})
+            coverage = dict(schema_version=1, ticket_id=self.ticket_id, attempt=attempt,
+                review_scope=["changed.py"], coverage_status="partial", unobserved=unobserved,
+                debt_reason="Split metadata is outside the inspection repository discovery boundary",
+                dedup_status="partial", dedup_unobserved=unobserved, read_phases=read_phases)
+            broker = ArtifactBroker(path, ContractSet.load(self.settings.gates_json).step(step), 65536)
+            broker.submit("deepcheck_coverage.json", json.dumps(coverage))
+
     def export_and_verify(self):
         row = self.receipt()
         target = self.pack_root / "partial"
@@ -396,6 +449,344 @@ class TestLinuxContractEngineering(unittest.TestCase):
         self.assertEqual(len(reviewer.calls), 3)
         self.assertEqual(f.events("step_finished"), [])
         f.export_and_verify()
+
+    def _run_full_entry_with_original_inspection_block(self, step):
+        f = _Bridge(self, step, full=True)
+        calls = []
+        if step == "code":
+            calls.append({"id": "write", "name": "write_file",
+                          "arguments": {"path": "changed.py", "content": "value = 1\n"}})
+        calls.append({"id": "report", "name": "submit_artifact", "arguments": {
+            "name": "04_code_review_fix.md" if step == "code" else "05_deepcheck.md",
+            "content": "# Actual protocol fixture report\n"}})
+        thought = json.dumps({"step": "Recheck actual current fixture boundary", "next_thought_needed": False})
+        backend = FakeBackend([{"tool_calls": calls}, "done", *reviewer_script(), thought, thought, thought])
+        finish_results = []
+        original_finish = ControlPlane.step_finish
+        def observe_finish(control, *args, **kwargs):
+            result = original_finish(control, *args, **kwargs)
+            finish_results.append(result)
+            return result
+        frozen_start = runner._snapshot(f.root)
+        with f.observe(), patch.object(ControlPlane, "step_finish", new=observe_finish):
+            f.report = runner.run_contract_step(f.settings, backend=backend, workspace=f.root,
+                step=step, ticket_id=f.ticket_id, requirement="change value", out_dir=f.directory,
+                sandbox=f.sandbox, policy=f.policy, verification_plan=f.plan,
+                workspace_session=f.session, change_baseline=f.baseline,
+                post_write=f.post_inspection_with_actual_debt)
+        started = f.events("step_started")
+        self.assertEqual(len(started), 1)
+        f.attempt = started[0]["payload"]["attempt"]
+        self.assertEqual(f.events("step_finished"), [])
+        self.assertFalse(f.report.ok)
+        self.assertNotEqual(f.report.finish_outcome, "success")
+        self.assertTrue(finish_results, "actual_success_finish_call_was_not_reached")
+        self.assertFalse(finish_results[-1].ok)
+        self.assertEqual(finish_results[-1].data["gate_id"], "step_receipt")
+        self.assertIn("inspection_worklist:", repr(
+            finish_results[-1].data.get("missing_outputs")
+            or finish_results[-1].data.get("missing_output_receipts")))
+        worklist = json.loads((f.directory / (step + "_worklist.json")).read_text(encoding="utf-8"))
+        self.assertEqual(worklist["coverage_status"], "partial")
+        self.assertTrue(worklist["unobserved"])
+        row = f.receipt()
+        self.assertTrue(row["passed"])
+        self.assertEqual(row["binding"]["attempt"], f.attempt)
+        self.assertEqual(len(f.actual_results), 1)
+        self.assertFalse(f.pending_cleanup)
+        trace = f.cp.trace(f.directory)
+        self.assertFalse(trace.data["open_operations"])
+        self.assertTrue(trace.data["open_steps"])
+        self.assertTrue(all(event["payload"]["result"] == "pass" for event in f.events("gate_checked")))
+        self.assertTrue(f.report.reasoning_rows)
+        self.assertFalse(f.report.advance_status)
+        if step == "deepcheck":
+            self.assertEqual(runner._snapshot(f.root), frozen_start)
+            self.assertEqual(f.report.verification_review_files, ("changed.py",))
+        f.publish_observation(layer="source_host_model_double_full_step_blocked")
+
+    def test_full_code_original_inspection_debt_blocks_success(self):
+        self._run_full_entry_with_original_inspection_block("code")
+
+    def test_full_deepcheck_original_inspection_debt_blocks_success(self):
+        self._run_full_entry_with_original_inspection_block("deepcheck")
+
+    def test_native_ready_false_blocks_before_provider_model_and_step_start(self):
+        f = _Bridge(self, "code", full=True)
+        trace = f.cp.trace(f.directory)
+        self.assertTrue(trace.ok)
+        context = ExecutionContext(f.ticket_id, f.directory, f.root, "change value", trace.data["status"], ())
+        safe_points = []
+        control = SimpleNamespace(session=f.session, ticket_id=f.ticket_id, run_id=f.run_id,
+                                  safe_point=lambda step: safe_points.append(step))
+        backend = FakeBackend(["must not be called"])
+        provider = Mock(return_value=f.plan)
+        executor = NativeChainExecutor(f.settings, backend=backend, sandbox=f.sandbox,
+                                       verification_plan_provider=provider)
+        with patch.object(executor, "_step_runner", wraps=executor._step_runner) as step_runner:
+            result = executor.execute(context, control)
+        self.assertEqual(result.state, "blocked")
+        self.assertEqual(result.error_code, "isolation_unavailable")
+        self.assertFalse(f.sandbox.policy_contract_ready)
+        self.assertTrue(safe_points)
+        provider.assert_not_called()
+        step_runner.assert_not_called()
+        self.assertEqual(backend.calls, [])
+        self.assertEqual(f.events("step_started"), [])
+        self.assertEqual(f.actual_results, [])
+
+    def test_real_session_prepare_rejects_nested_deny_without_deleting_protection(self):
+        f = _Bridge(self)
+        original = f.policy
+        self.assertFalse(f.sandbox.policy_contract_ready)
+        with self.assertRaises(ValueError):
+            f.sandbox.prepare_policy(replace(original,
+                deny_write_roots=(*original.deny_write_roots, f.root / "protected")))
+        self.assertEqual(f.policy, original)
+        self.assertEqual(f.policy.protected_paths, f.session.protected_paths)
+        self.assertEqual(f.actual_results, [])
+
+    def test_real_assertion_and_import_failures_close_failure_and_stop_later_check(self):
+        for body in (test_source("self.assertEqual(changed.value, 99)"),
+                     "import missing_bridge_dependency\n"):
+            with self.subTest(body=body):
+                f = _Bridge(self, body=body, later=True)
+                passed, reviewer = f.run_gate()
+                self.assertFalse(passed)
+                row = f.receipt()
+                self.assertFalse(row["passed"])
+                self.assertEqual([check["status"] for check in row["run"]["checks"]],
+                                 ["failed", "not_run"])
+                self.assertEqual(len(f.actual_results), 1)
+                self.assertEqual(reviewer.calls, [])
+                self.assertFalse(f.cp.trace(f.directory).data["open_operations"])
+                self.assertEqual(f.events("operation_finished")[0]["payload"]["outcome"], "failure")
+                self.assertEqual(f.events("step_finished"), [])
+
+    def test_real_timeout_and_output_limit_keep_action_unresolved(self):
+        scenarios = (("timeout", "__import__('time').sleep(2)", .1, 65536),
+                     ("output_limit", "print('x' * 100000)", 5, 1024))
+        for name, body, timeout, limit in scenarios:
+            with self.subTest(scenario=name):
+                f = _Bridge(self, body=test_source(body), timeout=timeout, output_limit=limit)
+                passed, reviewer = f.run_gate()
+                self.assertFalse(passed)
+                self.assertEqual(f.receipt()["run"]["checks"][0]["status"], "output_incomplete")
+                self.assertTrue(f.cp.trace(f.directory).data["open_operations"])
+                self.assertEqual(f.events("operation_finished"), [])
+                self.assertEqual(reviewer.calls, [])
+
+    def test_injected_observer_channel_cleanup_faults_never_close_action(self):
+        for fault in ({"violation_observer_status": "incomplete"},
+                      {"scope_cleanup_ok": None}, {"resource_receipt": None}):
+            with self.subTest(fault=fault):
+                f = _Bridge(self)
+                passed, reviewer = f.run_gate(fault=fault)
+                self.assertFalse(passed)
+                self.assertEqual(f.receipt()["run"]["checks"][0]["status"], "output_incomplete")
+                self.assertTrue(f.cp.trace(f.directory).data["open_operations"])
+                self.assertEqual(f.events("operation_finished"), [])
+                self.assertEqual(reviewer.calls, [])
+                self.assertIs(f.actual_results[0].scope_cleanup_ok, True)
+                self.assertEqual(f.actual_results[0].violation_observer_status, "complete")
+
+    def test_frozen_plan_tool_environment_root_and_platform_admission_drift(self):
+        scenarios = (("executable_identity", "0" * 64, "verification_tool_changed"),
+                     ("environment", (), "verification_plan_identity_mismatch"),
+                     ("workspace_identity", (-1, -1), "verification_plan_identity_mismatch"),
+                     ("platforms", ("Darwin",), "verification_plan_identity_mismatch"),
+                     ("run_id", "other-run", "verification_plan_identity_mismatch"))
+        for field, value, expected in scenarios:
+            with self.subTest(field=field):
+                f = _Bridge(self)
+                backend = FakeBackend(reviewer_script())
+                before = f.cp.trace(f.directory).data["event_count"]
+                target = f.plan.checks[0] if field == "executable_identity" else f.plan
+                object.__setattr__(target, field, value)
+                self.assertFalse(runner._contract_engineering_gate(**f.arguments(backend)))
+                self.assertEqual(f.report.error, expected)
+                self.assertEqual(backend.calls, [])
+                self.assertEqual(f.cp.trace(f.directory).data["event_count"], before)
+                self.assertEqual(f.actual_results, [])
+
+    def test_real_test_source_write_invalidates_tested_window(self):
+        f = _Bridge(self, body=test_source(
+            "__import__('pathlib').Path('changed.py').write_text('value = 9\\n')"))
+        passed, reviewer = f.run_gate()
+        self.assertFalse(passed)
+        row = f.receipt()
+        self.assertFalse(row["passed"])
+        self.assertNotEqual(row["run"]["source_before"], row["run"]["source_after"])
+        self.assertEqual(reviewer.calls, [])
+
+    def test_actual_head_change_after_command_fails_identity_without_new_receipt(self):
+        f = _Bridge(self)
+        head = f.session.git_status_identity.git_dir / "HEAD"
+        def change_head():
+            head.write_text("0" * len(f.git_baseline[1]) + "\n", encoding="ascii")
+        # This unknown window deliberately retains the owned fixture unchanged.
+        print("linux-bridge-head-drift retained_root=" + str(f.raw), flush=True)
+        with self.assertRaises(ValueError):
+            f.run_gate(after_command=change_head)
+        self.assertEqual(len(f.actual_results), 1)
+        self.assertTrue(f.pending_cleanup)
+        self.assertTrue(f.uncertain_cleanup)
+        self.assertTrue(f.cp.trace(f.directory).data["open_operations"])
+        self.assertEqual(list(f.directory.glob(".engineering-*.json")), [])
+
+    def test_deepcheck_source_and_scope_after_start_are_rejected_without_recapture(self):
+        for drift in ("source", "scope"):
+            with self.subTest(drift=drift):
+                f = _Bridge(self, "deepcheck")
+                started = f.events("step_started")
+                if drift == "source":
+                    (f.root / "changed.py").write_text("value = 9\n", encoding="utf-8")
+                else:
+                    self.assertTrue(f.cp.metadata_update(f.directory, ticket_id=f.ticket_id,
+                        request="bridge-scope-drift",
+                        set_json={"code_files": ["changed.py", "test_value.py"]}).ok)
+                self.assertIsNone(runner._contract_deepcheck_review_files(
+                    f.cp, f.directory, f.root, f.ticket_id, f.attempt))
+                self.assertEqual(f.events("step_started"), started)
+                self.assertEqual(f.events("step_finished"), [])
+                self.assertEqual(f.actual_results, [])
+
+    def test_reviewer_protocol_negatives_preserve_actual_command_credit_only(self):
+        scenarios = (("no_read", reviewer_script(read=False)),
+                     ("no_submit", reviewer_script(submit=False)),
+                     ("denied", reviewer_script(denied=True)),
+                     ("blocking", reviewer_script(finding={"file": "changed.py", "line": 1,
+                        "severity": "blocking", "category": "correctness",
+                        "message": "Fixture blocking finding"})),
+                     ("invalid_submit", [{"tool_calls": [{"id": "bad", "name": "submit_review",
+                        "arguments": {"summary": "", "findings": []}}]}, "done"]))
+        for name, script in scenarios:
+            with self.subTest(scenario=name):
+                f = _Bridge(self)
+                passed, _reviewer = f.run_gate(FakeBackend(script))
+                self.assertFalse(passed)
+                self.assertEqual(f.report.error, "engineering_reviewer_failed")
+                self.assertTrue(f.receipt()["passed"])
+                self.assertEqual(len(f.actual_results), 1)
+                self.assertFalse(f.cp.trace(f.directory).data["open_operations"])
+                self.assertEqual(f.events("step_finished"), [])
+
+    def test_actual_reviewer_after_submit_source_drift_invalidates_quality(self):
+        f = _Bridge(self)
+        class DriftBackend(FakeBackend):
+            def complete(self, *args, **kwargs):
+                result = super().complete(*args, **kwargs)
+                if len(self.calls) == 3:
+                    (f.root / "changed.py").write_text("value = 8\n", encoding="utf-8")
+                return result
+        passed, _reviewer = f.run_gate(DriftBackend(reviewer_script()))
+        self.assertFalse(passed)
+        self.assertEqual(f.report.error, "engineering_reviewer_failed")
+        self.assertTrue(f.receipt()["passed"])
+        self.assertEqual(f.events("step_finished"), [])
+
+    def test_final_boundary_rejects_real_source_and_wrong_cp_attempt(self):
+        for drift, expected in (("source", "engineering_final_binding_changed"),
+                                ("attempt", "engineering_final_control_binding_changed")):
+            with self.subTest(drift=drift):
+                f = _Bridge(self)
+                self.assertTrue(f.run_gate()[0], f.report.error)
+                attempt = f.attempt
+                if drift == "source":
+                    (f.root / "changed.py").write_text("value = 7\n", encoding="utf-8")
+                else:
+                    attempt = "other-attempt"
+                self.assertEqual(runner._contract_engineering_binding_error(
+                    f.report, f.plan, f.root, f.step, f.ticket_id, f.policy, f.sandbox,
+                    f.session, cp=f.cp, out_dir=f.directory, attempt=attempt), expected)
+                self.assertEqual(f.events("step_finished"), [])
+
+    def test_real_control_execution_root_mismatch_refuses_before_model(self):
+        f = _Bridge(self, full=True)
+        wrong_root = f.control / "wrong-project"
+        wrong_root.mkdir()
+        wrong = next_out_dir(wrong_root).resolve()
+        self.assertTrue(f.cp.create(wrong, ticket_id=f.ticket_id,
+            requirement="mismatch", birth="plan").ok)
+        projection = f.cp.run("action-policy", "--dir", str(wrong))
+        self.assertEqual(projection.data["execution_root"], str(wrong_root))
+        self.assertNotEqual(projection.data["execution_root"], str(f.root))
+        before = f.cp.trace(wrong).data["event_count"]
+        backend = FakeBackend(reviewer_script())
+        report = runner.run_contract_step(f.settings, backend=backend, workspace=f.root,
+            step=f.step, ticket_id=f.ticket_id, out_dir=wrong, policy=f.policy,
+            sandbox=f.sandbox, verification_plan=f.plan, workspace_session=f.session)
+        self.assertEqual(report.error, "engineering_control_workspace_mismatch")
+        self.assertEqual(backend.calls, [])
+        self.assertEqual(f.cp.trace(wrong).data["event_count"], before)
+
+    def test_public_resume_refuses_actual_unknown_action_without_reexecuting(self):
+        f = _Bridge(self, body=test_source("__import__('time').sleep(2)"), timeout=.1)
+        self.assertFalse(f.run_gate()[0])
+        self.assertTrue(f.cp.trace(f.directory).data["open_operations"])
+        checkpoint = Checkpointer(f.directory, ticket_id=f.ticket_id, step=f.step, attempt=f.attempt)
+        checkpoint.save(turn_index=0, tool_calls=0, history=[],
+                        stop_reason="engineering_verification_pending")
+        before = f.cp.trace(f.directory).data["event_count"]
+        backend = FakeBackend(reviewer_script())
+        with f.observe():
+            report = runner.resume_contract_step(f.settings, backend=backend,
+                out_dir=f.directory, workspace=f.root, step=f.step, ticket_id=f.ticket_id,
+                policy=f.policy, sandbox=f.sandbox, verification_plan=f.plan,
+                workspace_session=f.session, change_baseline=f.baseline)
+        self.assertEqual(report.error, "engineering_recovery_attempt_unconfirmed")
+        self.assertEqual(len(f.actual_results), 1)
+        self.assertEqual(backend.calls, [])
+        self.assertEqual(f.cp.trace(f.directory).data["event_count"], before)
+        self.assertTrue(checkpoint.exists())
+
+    def test_same_recorder_new_occurrence_refuses_open_action_but_not_claim_fresh_reentry(self):
+        f = _Bridge(self, body=test_source("__import__('time').sleep(2)"), timeout=.1)
+        self.assertFalse(f.run_gate()[0])
+        backend = FakeBackend(reviewer_script())
+        with f.observe():
+            self.assertFalse(runner._contract_engineering_gate(**f.arguments(backend)))
+        self.assertEqual(f.report.error, "engineering_operation_start_unconfirmed")
+        self.assertEqual(len(f.actual_results), 1)
+        self.assertEqual(backend.calls, [])
+        self.assertTrue(f.cp.trace(f.directory).data["open_operations"])
+
+    def test_injected_record_and_operation_ack_failure_never_gain_success(self):
+        for method in ("record_verification", "operation_finish"):
+            with self.subTest(method=method):
+                f = _Bridge(self)
+                with patch.object(f.cp, method, return_value=ControlResult((), 1, {"ok": True})):
+                    passed, _reviewer = f.run_gate()
+                self.assertFalse(passed)
+                self.assertEqual(f.report.error, "engineering_verification_failed")
+                self.assertEqual(f.events("step_finished"), [])
+                self.assertEqual(len(f.actual_results), 1)
+                if method == "operation_finish":
+                    self.assertTrue(f.cp.trace(f.directory).data["open_operations"])
+
+    def test_pack_import_rejects_bad_binding_digest_duplicate_and_missing_fields(self):
+        f = _Bridge(self)
+        self.assertTrue(f.run_gate()[0], f.report.error)
+        original = f.receipt()
+        for kind in ("binding", "digest", "missing", "duplicate"):
+            with self.subTest(kind=kind):
+                candidate = json.loads(json.dumps(original))
+                if kind == "binding":
+                    # The ledger may relabel attempt; execution_attempt binds the host run.
+                    candidate["binding"]["execution_attempt"] = "other-attempt"
+                elif kind == "digest":
+                    candidate["fingerprint"] = "0" * 64
+                elif kind == "missing":
+                    candidate.pop("public_plan")
+                encoded = json.dumps(candidate)
+                if kind == "duplicate":
+                    encoded = '{"kind":"engineering_verification",' + encoded[1:]
+                path = f.control / ("bad-" + kind + ".json")
+                path.write_text(encoded, encoding="utf-8")
+                with self.assertRaises(EvidenceError):
+                    load_verification_receipts([path])
+        f.export_and_verify()
+
 
 class TestBridgeObservationSafety(unittest.TestCase):
     def _small_fixture(self):

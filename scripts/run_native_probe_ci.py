@@ -49,15 +49,27 @@ def _run_unittest_probe(test_case: unittest.TestCase) -> ProbeExecution:
     """执行一个行为用例并保留 unittest 的显式 skip/failure 语义。"""
     result = unittest.TestResult()
     unittest.TestSuite((test_case,)).run(result)
+    failures = result.failures + result.errors
+    if failures:
+        return ProbeExecution("failed", " ".join(failures[0][1].split())[-500:])
+    if result.testsRun == 0 and len(result.skipped) == 1:
+        skipped_case, reason = result.skipped[0]
+        case_class = type(test_case)
+        setup_id = f"setUpClass ({case_class.__module__}.{case_class.__qualname__})"
+        # Only the selected case's class prerequisite can explain zero execution.
+        if (
+            isinstance(test_case, unittest.TestCase)
+            and not isinstance(skipped_case, unittest.TestCase)
+            and skipped_case.id() == setup_id
+        ):
+            return ProbeExecution("skipped", reason)
     if result.testsRun != 1:
         return ProbeExecution("failed", f"expected one test, ran {result.testsRun}")
     if result.skipped:
         return ProbeExecution("skipped", result.skipped[0][1])
     if result.wasSuccessful():
         return ProbeExecution("passed", "")
-    failures = result.failures + result.errors
-    detail = failures[0][1] if failures else "unittest did not report success"
-    return ProbeExecution("failed", " ".join(detail.split())[-500:])
+    return ProbeExecution("failed", "unittest did not report success")
 
 
 def _probe_linux_network_lease_expiry() -> ProbeExecution:
@@ -125,6 +137,27 @@ def _probe_linux_observed_command_bounds() -> ProbeExecution:
     if execution.status == "skipped":
         return ProbeExecution("skipped", "native_command_bounds_environment_unavailable")
     return ProbeExecution("failed", "native_command_bounds_mismatch")
+
+
+def _probe_linux_engineering_bridge() -> ProbeExecution:
+    """Observe one source CP/receipt/partial-pack path without readiness credit."""
+    if not sys.platform.startswith("linux"):
+        return ProbeExecution("skipped", "linux_only")
+    repository_root = str(Path(__file__).resolve().parents[1])
+    if repository_root not in sys.path:
+        sys.path.insert(0, repository_root)
+    try:
+        from tests.test_linux_contract_engineering import TestLinuxContractEngineering
+
+        test_case = TestLinuxContractEngineering("test_bridge_code_cp_receipt_and_pack")
+    except Exception:  # noqa: BLE001 - Do not expose source paths or import details.
+        return ProbeExecution("failed", "engineering_bridge_case_unavailable")
+    execution = _run_unittest_probe(test_case)
+    if execution.status == "passed":
+        return ProbeExecution("passed", "source_cp_receipt_partial_pack_observed")
+    if execution.status == "skipped":
+        return ProbeExecution("skipped", "engineering_bridge_prerequisite_unavailable")
+    return ProbeExecution("failed", "engineering_bridge_rejected")
 
 
 def _emit_conformance_score(
@@ -216,6 +249,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     lease_expiry_result = None
     seccomp_receipt_result = None
     observed_command_bounds_result = None
+    engineering_bridge_result = None
     if platform == "macos":
         protected_result = probe_macos_protected_paths(backend)
         group_result = probe_macos_process_group_cleanup(backend)
@@ -226,6 +260,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         lease_expiry_result = _probe_linux_network_lease_expiry()
         seccomp_receipt_result = _probe_linux_seccomp_receipt()
         observed_command_bounds_result = _probe_linux_observed_command_bounds()
+        engineering_bridge_result = _probe_linux_engineering_bridge()
         protected_checks = LINUX_PROTECTED_PATH_CHECKS
     else:
         protected_checks = ()
@@ -255,6 +290,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     lease_expiry_failed = False
     violation_receipt_failed = False
     observed_command_bounds_failed = False
+    engineering_bridge_failed = False
     if lease_expiry_result is not None:
         lease_status = lease_expiry_result.status
         if lease_status not in {"passed", "skipped", "failed"}:
@@ -298,6 +334,17 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
             f"{backend.name} observed_command_bounds: {bounds_status.upper()} "
             f"({safe_detail})"
         )
+    if engineering_bridge_result is not None:
+        bridge_status = engineering_bridge_result.status
+        if bridge_status not in {"passed", "skipped", "failed"}:
+            bridge_status = "failed"
+        engineering_bridge_failed = bridge_status == "failed"
+        # Source bridge observations are diagnostic, never conformance evidence.
+        print(
+            f"::notice::linux-engineering-bridge status={bridge_status} "
+            "conformance_credit=none native_ready=false"
+        )
+        print(f"{backend.name} engineering_bridge: {bridge_status.upper()}")
     for name, passed in result.checks.items():
         print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
     _emit_conformance_score(checks, platform=platform,
@@ -325,6 +372,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     if (
         not native_ready or group_failed or lease_expiry_failed
         or violation_receipt_failed or observed_command_bounds_failed
+        or engineering_bridge_failed
     ):
         if not native_ready and isinstance(backend, MacSeatbeltSandbox):
             true_path = shutil.which("true")
@@ -363,6 +411,8 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
             failures.append("native seccomp receipt probe: failed")
         if observed_command_bounds_failed:
             failures.append("native observed command bounds probe: failed")
+        if engineering_bridge_failed:
+            failures.append("source engineering bridge: failed")
         print(f"::error::{backend.name} native probe failed: {'; '.join(failures)}")
         return 1
     return 0

@@ -1098,7 +1098,7 @@ env PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 /tmp/icode-packaged-skill-accepta
 ## Task 3: 真实 Linux 恢复、发布与边界交付
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成：母仓库43e7739已发布并核远端；在线新SHA各平台结果独立观察，不授总体验收。
 
 **Dependencies:** Task 1, Task 2
 
@@ -1118,7 +1118,7 @@ env PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 GOMAXPROCS=1 GOFLAGS=-p=1 GOTOOLC
 
 先 `git diff --check`，定点 wrapper/pack/control/lifecycle 与 bridge portable 回归；当前源码冻结后按原主仓库 DEFAULT → 原始 `scripts/preflight.py` 全量流程执行一次，保存真实 unittest 总数、skip、fail/error、stdout/stderr与rc。不能用缩减测试冒充 preflight，不能因 CI 还运行而重复触发。编译使用 compileall `-j1`，输出缓存到新临时目录。保留 secrets/submodule 原门禁。现存未解决平台 CI 失败必须逐项归因且保持未通过，不以本片 Linux 通过冲抵。
 
-- [ ] **Step 3: 文档记录和发布主仓库**
+- [x] **Step 3: 文档记录和发布主仓库**
 
 更新本计划状态、设计状态、Linux bridge 交接记录，写实测结果与尚未通过项；执行文档契约检查和两轮差异复核。精确暂存本片文件和已验收子模块指针，不顺带提交其他作者未验收 dirty。用户已有主线推送授权：作者及两独立审查均通过且所需门禁通过后提交 main、push、核远端 SHA，并把新 SHA 交只读 CI observer。在线 CI 未终结不要报告线上通过；持续进入 Linux bridge 后续任务而非宣称 R2/R3 完成。
 
@@ -1286,3 +1286,21 @@ d51f76424fa8b2fea38064a8e3871435ab139cba3dfc49bad7aefb5327aee83a  src/icode/skil
 - ✅ 可运行性：实际CLI、独立verify.py、临时wheel/sdist安装、Linux两个真实命令正控分别验证；不代表完整步骤、Windows/macOS原生、模型或R2/R3整体验收。
 
 剩余发布动作：六文档两轮检查、精确18路径暂存核验、main提交推送及远端SHA确认。发布后继续Linux bridge Task2，不因本分片通过结束总目标。
+
+### 本片已发布，继续 Linux 失败场景验收
+
+最终六文档连续两轮0疑似项，完整暂存diff-check通过；18路径恰为预定范围，暂存后worktree相对index无差异，十一源码SHA与上述冻结一致。提交 `43e773997e24bdb7e72a619ca005e5fd680748fb`，parent020acebf51b61179bf401181ac703cb3d71446b6，tree `a428428205a5b93e28e638095a8e6b8488e00070`，2601 additions / 30 deletions。push origin/main成功，ls-remote只返回同SHA的main，发布后工作区干净；本条提交履历随下一片记录，避免自引用。
+
+新SHA attempt1只读观察已启动：CI37913347447初见queued，Public website37913347500已success，Windows helper provenance37913347432初见in_progress。未提前授全平台通过。公共API未认证额度耗尽后使用官方只读GitHub工具，不访问凭据或重跑工作流。
+
+root已交唯一作者 `/root/linux_bridge_task2_writer` 接续原Linux计划Task2，限定一个测试文件16个新增负控，root仅更新文档/协调只读研究与CI；继续main-only、j1、不修改生产门、未知收束保留owned根、未决CP不自动重放。本片授权完成不表示G2/Windows/model额外子仓范围获准。
+
+### 43e7739 在线终态
+
+独立只读观察者已DONE/STOP，三个workflow均attempt1且绑定完整43e7739 SHA：[CI37913347447](https://github.com/ayukyo/icode/actions/runs/37913347447) failure（37success/4failure/3skip），[Pages37913347500](https://github.com/ayukyo/icode/actions/runs/37913347500) 两job success，[provenance37913347432](https://github.com/ayukyo/icode/actions/runs/37913347432) validate及四签名安装矩阵success。
+
+双Linux full各2479total/2408P/71skip；Ubuntu DEFAULT614P及后续75P。日志中的模拟required CP缺失error annotation来自预期负控，最终unittest OK，不认作full失败。七项packaged安装矩阵均success，实际抽查Ubuntu、Win x64 Py3.12、ARM Py3.11各18项OK；不声称逐项审阅其余四份日志。六native jobs success但全部ready=false，Ubuntu22双架构8/10、Ubuntu24系7/10、mac双架构6/10，评分不代替整体准入。
+
+四失败保留本轮区别：Windows x64 DEFAULT113763502045为594total/20skip/2E，inspection Win10093，native legacy测试错误信息自身observed[0].render触发IndexError，不能从这份日志直接认定原错为Win10038；ARM113763502200为594total/20skip/1F/1E，明确Win10093与Win10038/dispatch0。双Reviewer113763502112/113763502025均exit78、Win10035、wait_expired；x64 runner gate unavailable，ARM runner observer ready但no_matching_event，内部collector subscription均rc5，与runner层区分。
+
+四签名安装日志报告密码学校验、offline verifier及密码学负控通过；PE capture仍parse_complete/runtime_load_verified/source_launch_verified三false。只读API/日志观察，没有独立下载或校验制品、没有重跑工作流，不授生产Windows隔离或R2/R3完成。

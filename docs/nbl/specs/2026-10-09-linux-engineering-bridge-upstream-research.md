@@ -71,3 +71,15 @@ Codex所列8文件与原82883固定提交完整raw blob均相同，仅证明选�
 采纳：权限/参数编译、helper执行、命令结果和业务终结分层；FullBufferWithExpiration的leader退出后drain期限与清理错误传播；Aider整仓/subtree显式范围。ICODE复用既有Plan/session/私有通道/CP/pack，收益为清楚定位不完整证据，成本为观察和身份负控；验收对应ENG-01/02/03/04/05/06、CMD-04/06及NATIVE-01，核真实测试、scope终态、CP与pack，不凭exit0或组信号授成功。
 
 暂缓bwrap迁移、任意provider、reconciliation、缓存和业务补偿，需独立部署/许可/恢复合同。不适配ShellTool drain超时abort后空stream、无expiration的FullBuffer及启发式sandbox denial来替代本仓完整证据；不适配用killpg成功/leader reaped证明全部后代收束，或默认exit0对象/空test返回None证明运行。没有sudo/service/系统权限或Native准入变化。root已发布G0/G1，旧8d阻塞保留历史；实际Linux桥接、installed、模型与R2/R3仍逐层待验，完整20名单本轮未重查。
+
+## Task2 失败、未知与再次执行许可复核
+
+2026-10-09 09:48:31–09:49:19 UTC，独立只读研究再次由官方git ls-remote核对Codex2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4、Aider5dc9490bb35f9729ef2c95d00a19ccd30c26339c未变；两根许可证全文重读仍Apache-2.0，未审全依赖、不复制实现、不运行上游或本工程。
+
+本轮实读Codex exec.rs 85–130、258–293、784–856、947–1193，process_group.rs 1–200，新增 [orchestrator.rs](https://github.com/openai/codex/blob/2351d9e1b608e6f9d9a3699b71d7eb39ee41cfa4/codex-rs/core/src/tools/orchestrator.rs#L394) 1–330、360–626；Aider commands.py 970–1110。exec_output.rs本轮明确核到1–108，其后合并输出截断，不称全文重审。一次错误tools/src/orchestrator路径404后改正确core/src/tools路径成功，不认作上游缺实现。
+
+Codex普通非零、Timeout、Denied分层；FullBufferWithExpiration的drain/cleanup错误传播，而ShellTool超时drain可能返回空输出。orchestrator只有特定Denied分支才按策略/工具/授权重试，strict auto-review第二次需fresh review；这是同次调用重试，不是崩溃恢复后旧回执可再次执行的证明。Aider/test多种路径可返回None，适合交互反馈，不提供本工程验收凭证。
+
+采纳：结果分层、清理未知不被exit0覆盖、恢复读取与新执行许可分离；复用ICODE当前CP/receipt/scope和16个新增负控，验收确定失败关闭失败、timeout/截断保留未决、原始收束事实与注入副本分开、未知恢复不再次dispatch。暂缓自动重试/补偿/审批缓存扩展；不适配空输出或None作通过、killpg成功作后代收束证明、降沙箱重试作fallback。成本为测试和身份断言，无新依赖/权限；仅源码研究，不授Native或R2/R3通过。
+
+阶段结束独立刷新窗口2026-10-09 10:10:52–10:11:15 UTC：官方远端HEAD及refs/heads/main仍为上述两固定提交。重新读取Codex exec.rs 85–130、258–293、784–856、947–1193，process_group.rs 1–200，orchestrator.rs 360–626，以及Aider commands.py 970–1110；对应失败/清理/受约束重试语义与取舍未变。本次未重新审许可证、全依赖或完整仓库；不运行上游或本工程、不复制源码、不授ICODE运行信用。此前09:48根许可证观察保留原日期，不伪装本次重审。

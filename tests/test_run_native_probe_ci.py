@@ -23,6 +23,149 @@ from scripts import run_native_probe_ci
 
 
 class TestNativeProbeCi(unittest.TestCase):
+    def setUp(self) -> None:
+        self.real_engineering_bridge_probe = run_native_probe_ci._probe_linux_engineering_bridge
+        bridge_patch = mock.patch.object(
+            run_native_probe_ci, "_probe_linux_engineering_bridge",
+            return_value=run_native_probe_ci.ProbeExecution(
+                "skipped", "portable_unit_test_no_native_credit",
+            ),
+        )
+        self.bridge_probe_double = bridge_patch.start()
+        self.addCleanup(bridge_patch.stop)
+
+    def test_linux_engineering_bridge_skip_and_failure_keep_three_states(self) -> None:
+        for status in ("passed", "skipped", "failed"):
+            with self.subTest(status=status), \
+                 mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
+                 mock.patch.object(
+                     run_native_probe_ci, "_run_unittest_probe",
+                     return_value=run_native_probe_ci.ProbeExecution(status, "non-sensitive fixture"),
+                 ) as execute:
+                result = self.real_engineering_bridge_probe()
+                self.assertEqual(result.status, status)
+                execute.assert_called_once()
+        with mock.patch.object(run_native_probe_ci.sys, "platform", "darwin"), \
+             mock.patch.object(run_native_probe_ci, "_run_unittest_probe") as execute:
+            result = self.real_engineering_bridge_probe()
+            self.assertEqual(result.status, "skipped")
+            execute.assert_not_called()
+
+    def test_linux_engineering_bridge_diagnostic_selected_once_never_scored(self) -> None:
+        for status in ("passed", "skipped", "failed", "unknown"):
+            with self.subTest(status=status):
+                self.bridge_probe_double.reset_mock()
+                self.bridge_probe_double.return_value = SimpleNamespace(status=status, detail="fixture")
+                result, _lease, score, output = self._run_linux_check_with_lease_expiry(
+                    run_native_probe_ci.ProbeExecution("passed", "fixture"),
+                )
+                self.bridge_probe_double.assert_called_once_with()
+                expected_status = "failed" if status == "unknown" else status
+                self.assertEqual(result, 1 if expected_status == "failed" else 0)
+                self.assertIn(
+                    f"::notice::linux-engineering-bridge status={expected_status} "
+                    "conformance_credit=none native_ready=false",
+                    output,
+                )
+                self.assertNotIn("engineering_bridge", score.call_args.args[0])
+                self.assertNotIn("engineering_bridge", score.call_args.kwargs)
+
+    def test_linux_engineering_bridge_loader_selects_one_existing_case(self) -> None:
+        probe = getattr(run_native_probe_ci, "_probe_linux_engineering_bridge", None)
+        self.assertTrue(callable(probe), "engineering bridge case is not selected by native CI")
+        from tests.test_linux_contract_engineering import TestLinuxContractEngineering
+
+        with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
+             mock.patch.object(
+                 run_native_probe_ci, "_run_unittest_probe",
+                 return_value=run_native_probe_ci.ProbeExecution("passed", ""),
+             ) as execute:
+            result = self.real_engineering_bridge_probe()
+
+        self.assertEqual(result.status, "passed")
+        execute.assert_called_once()
+        case = execute.call_args.args[0]
+        self.assertIs(type(case), TestLinuxContractEngineering)
+        self.assertEqual(case._testMethodName, "test_bridge_code_cp_receipt_and_pack")
+
+    def test_unittest_probe_real_class_setup_skip_and_failure_lifecycle(self) -> None:
+        events = []
+
+        def make_case(mode):
+            class LifecycleCase(unittest.TestCase):
+                @classmethod
+                def setUpClass(cls):
+                    events.append("setup")
+
+                    def cleanup():
+                        events.append("cleanup")
+                        if mode in {
+                            "cleanup_error", "setup_skip_cleanup_error",
+                            "method_skip_cleanup_error",
+                        }:
+                            raise RuntimeError("fixture_cleanup_error")
+
+                    cls.addClassCleanup(cleanup)
+                    if mode in {"setup_skip", "setup_skip_cleanup_error"}:
+                        raise unittest.SkipTest("fixture_setup_prerequisite_unavailable")
+                    if mode == "setup_error":
+                        raise RuntimeError("fixture_setup_error")
+
+                @classmethod
+                def tearDownClass(cls):
+                    events.append("teardown")
+                    if mode == "failure_with_teardown_skip":
+                        raise unittest.SkipTest("fixture_teardown_skip")
+
+                def runTest(self):
+                    events.append("method")
+                    if mode in {"method_skip", "method_skip_cleanup_error"}:
+                        self.skipTest("fixture_method_skip")
+                    if mode == "failure_with_teardown_skip":
+                        self.fail("fixture_method_failure")
+
+            return LifecycleCase()
+
+        scenarios = (
+            ("setup_skip", "skipped", 0, 1, 0, 0),
+            ("setup_error", "failed", 0, 0, 0, 1),
+            ("normal", "passed", 1, 0, 0, 0),
+            ("method_skip", "skipped", 1, 1, 0, 0),
+            ("cleanup_error", "failed", 1, 0, 0, 1),
+            ("setup_skip_cleanup_error", "failed", 0, 1, 0, 1),
+            ("method_skip_cleanup_error", "failed", 1, 1, 0, 1),
+            ("failure_with_teardown_skip", "failed", 1, 1, 1, 0),
+        )
+        for mode, status, count, skips, failures, errors in scenarios:
+            with self.subTest(mode=mode):
+                events.clear()
+                raw = unittest.TestResult()
+                unittest.TestSuite((make_case(mode),)).run(raw)
+                self.assertEqual(
+                    (raw.testsRun, len(raw.skipped), len(raw.failures), len(raw.errors)),
+                    (count, skips, failures, errors),
+                )
+                expected_events = (
+                    ["setup", "cleanup"] if count == 0
+                    else ["setup", "method", "teardown", "cleanup"]
+                )
+                self.assertEqual(events, expected_events)
+                events.clear()
+                execution = run_native_probe_ci._run_unittest_probe(make_case(mode))
+                self.assertEqual(events, expected_events)
+                self.assertEqual(execution.status, status, execution.detail)
+                if mode == "setup_skip":
+                    self.assertEqual(execution.detail, "fixture_setup_prerequisite_unavailable")
+                elif mode == "method_skip":
+                    self.assertEqual(execution.detail, "fixture_method_skip")
+
+        raw = unittest.TestResult()
+        unittest.TestSuite().run(raw)
+        self.assertEqual((raw.testsRun, raw.skipped, raw.failures, raw.errors), (0, [], [], []))
+        execution = run_native_probe_ci._run_unittest_probe(unittest.TestSuite())
+        self.assertEqual(execution.status, "failed")
+        self.assertEqual(execution.detail, "expected one test, ran 0")
+
     def test_unittest探针结果区分通过跳过和失败(self) -> None:
         class PassingCase(unittest.TestCase):
             def runTest(self) -> None:

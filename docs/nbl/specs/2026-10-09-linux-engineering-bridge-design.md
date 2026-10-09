@@ -82,7 +82,9 @@ L2b与L2a同样被基线8d的分离Git tree投影阻断，必须先通过独立�
 
 新验收驱动的本地run清单绑定：repository main/vendor、被读生产文件SHA256、native源SHA256、实际helper二进制/manifest摘要、实际解释器lexical/resolved身份与版本、UID、kernel/arch、systemd版本、cgroupv2及实际同UIDbus/peer检查、本次session/run/ticket/root inode、Plan digest/environment/executable_identity、CP step attempt、operation name/attempt、base/head/object_format、tested tree/worktree fingerprint、resource receipt摘要、工程receipt fingerprint、pack摘要。只保存必要公开版本/摘要与闭结果，不输出私有路径、argv/env/模型正文或完整manager stderr。
 
-这些关系分开核：`public_plan.run_id == session.run_id == policy.run_id`；`row.binding.attempt == row.run.attempt == actual CP step attempt`；operation名称由`engineering- + sha256(step + "|" + attempt)`派生，operation attempt另外从真实CP取得；`record-verification`返回的UUID是CP验证记录run_id，不等于host `policy.run_id`。通过已保存fingerprint与真实verification_recorded的evidence/baseline连接CP记录，不强制UUID等同host run。资源回执本身没有run/attempt/unit公开字段；只能由可信宿主同一次调用的实际scope/私有通道/返回对象绑定并记入本地清单，不在生产schema虚增认证字段。
+这些关系分开核：`public_plan.run_id == session.run_id == policy.run_id`；本工程窗口的 `row.binding.execution_attempt == row.run.attempt == actual CP step attempt`；当前直接宿主fixture未经VerificationLedger重标，因此其binding.attempt也相等，但通用回执的binding.attempt可以是台账序号，不能要求所有回执都与执行attempt相等。operation名称由`engineering- + sha256(step + "|" + attempt)`派生，operation attempt另外从真实CP取得；`record-verification`返回的UUID是CP验证记录run_id，不等于host `policy.run_id`。通过已保存fingerprint与真实verification_recorded的evidence/baseline连接CP记录，不强制UUID等同host run。资源回执本身没有run/attempt/unit公开字段；只能由可信宿主同一次调用的实际scope/私有通道/返回对象绑定并记入本地清单，不在生产schema虚增认证字段。
+
+实施核对（2026-10-09）：原PACK-01的“坏binding”导入负控应单改binding.execution_attempt以制造与冻结run.attempt不一致；单改合法台账标签不是该纯快照格式的非法输入。当前离线pack不提供receipt与CP step attempt的交叉认证，不能从验包成功声称会话重放已认证；在线错误CP attempt另由最终控制边界负控验证。G0/G1及外置执行根绑定已分别由后续分片发布，实际建单不再使用上述旧设计的受保护project_path seed；当前装配、失败历史与逐层结果以[执行计划](../plans/2026-10-09-linux-engineering-bridge.md)为准，不把本文基线8d的历史阻塞当最新结果。
 
 读取日志、stdout/stderr和unittest summary只证明观察到报告；项目代码能伪造框架输出。独立pack验证的是内容/合同一致性，摘要不是签名认证。Reviewer为独立模型上下文、只读工具/Guard与snapshot核对；`read_only_verified`不是独立OS进程沙箱证明。
 

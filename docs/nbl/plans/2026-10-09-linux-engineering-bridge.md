@@ -722,7 +722,7 @@ Expected：2 方法 actual PASS/0F/E/skip、各实际一个 dispatch/owned scope
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成：21方法作者、独立SPEC及不同QUALITY各实际通过，零skip；先前失败与字段纠正保留在末尾。
 
 **Dependencies:** Task 1
 **Parallelizable:** No (同文件/真实 scope 串行，不能跨 writer 修改或重叠运行)
@@ -966,7 +966,7 @@ Expected：2 方法 actual PASS/0F/E/skip、各实际一个 dispatch/owned scope
                 candidate = json.loads(json.dumps(original))
                 path = f.control / ("bad-" + kind + ".json")
                 if kind == "binding":
-                    candidate["binding"]["attempt"] = "other-attempt"
+                    candidate["binding"]["execution_attempt"] = "other-attempt"
                 elif kind == "digest":
                     candidate["fingerprint"] = "0" * 64
                 elif kind == "missing":
@@ -996,7 +996,7 @@ Expected：Task 1–2 当前 18 方法实际通过，故障注入与真实窗口
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成：三项拒绝负控作者、独立SPEC与不同QUALITY均实测通过，不代表完整步骤成功。
 
 **Dependencies:** Task 2
 **Parallelizable:** No (同文件/CP/helper，不能跨 writer 或并行改输入)
@@ -1165,7 +1165,7 @@ Expected：3 方法实际通过；前2个方法通过的含义是**原 success �
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（实际结果及独立双审见文末）
 
 **Dependencies:** Task 3
 **Parallelizable:** No (同native调度调用链，必须在已过source正控后加入，不和原生测试并行)
@@ -1432,11 +1432,11 @@ env PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 GOMAXPROCS=1 GOFLAGS=-p=1 CMAKE_B
 **Dependencies:** Task 1, Task 2, Task 3, Task 4
 **Parallelizable:** No (writer全部STOP，同冻结源、软件门与发布必须串行)
 
-- [ ] **Step 1：fresh全局SPEC→不同QUALITY，root读实际新增全文与所有接线diff。**
+- [x] **Step 1：fresh全局SPEC→不同QUALITY，root读实际新增全文与所有接线diff。**
 
 scope应仅新测试/native调度及守卫、本片证据文档；实际runner Git生产diff必须来自G0独立slice，不计本片偷加。冻结source SHA256及vendor gitlink；本片21 native方法、3 portable fixture方法与4新增portable选择方法分别登记实际distinct IDs，native probe单case诊断不能充完整matrix。源码基线变化重核当前期望，不把8d旧softwarefull再跑一遍充新完成。
 
-- [ ] **Step 2：点测→20轮→DEFAULT→同冻结源原full恰好一次。**
+- [x] **Step 2：点测→20轮→DEFAULT→同冻结源原full恰好一次。**
 
 ```bash
 env PYTHONPATH=src:. PYTHONDONTWRITEBYTECODE=1 GOMAXPROCS=1 GOFLAGS=-p=1 CMAKE_BUILD_PARALLEL_LEVEL=1 /tmp/icode-packaged-skill-acceptance-fqxSO0bh/venv/bin/python -B -m unittest tests.test_linux_contract_engineering tests.test_run_native_probe_ci tests.test_contract_engineering tests.test_engineering_verification.TestPythonIsolatedTemplate tests.test_engineering_evidence -v
@@ -1599,3 +1599,102 @@ Task1作者selfSPEC仍有I1，selfQUALITY未宣告通过，Task2未启动。保�
 本次只修实施计划，没有新增负控方法或运行它们；18 runtime向量、后续21 native+3portable方法计数不变。源码冻结与正在运行的绑定片full预检未受影响。下一writer在绑定片发布后接手此文件，仍保留G2/Windows/model及未知清理边界。
 
 绑定片发布前全局复验已通过：DEFAULT614P零skip，原full2479total/2420P/59skip/0F/E，j1编译、治理/站点/排期检查通过。首次full的旧HEAD检出测试2个subTest失败保留在绑定记录，最小修正为暂存树检出后完整重跑成功，未先提交绕过检查。此处Task1已完成；Task2尚未写入或执行，下一作者仅接手16个新增负控，不能将这里的全量结果转记为后续方法已通过。
+
+### Task2 实施启动
+
+前置绑定片已发布main43e773997e24bdb7e72a619ca005e5fd680748fb，固定vendor d935a52，远端main核验一致且没有其它分支。root按sequential-thinking190–192复核边界，已将完整16方法要求及三项导入修订交唯一writer `/root/linux_bridge_task2_writer`。作者仅写现有测试文件、独占本机runtime；root更新本文和绑定发布履历，独立CI只读观察新SHA，上游研究复用同日固定证据并做相关失败语义复核。此处为开始状态，新增方法运行结果待记录。
+
+### Task2 首轮实测与身份标签合同校正
+
+作者新增16方法后完整模块21方法：首轮42.556s、19P/1F/1E/0skip；原full fixture在next_out_dir已创建目录后重复mkdir导致FileExistsError，已仅补exist_ok=True。第二轮42.857s、20P/1F/0E/0skip，错误工单根负控已实际到达预期拒绝；剩余唯一失败为原Task16把binding.attempt改成other-attempt却未被loader拒绝。保留两个实际HEAD漂移现场 `/tmp/icode-linux-bridge-0nis0z3z`、`/tmp/icode-linux-bridge-rnp7o2s3`，未清pending/unknown、未修HEAD或删除owned根。
+
+root与不同只读审查者核定是计划测错字段，不是本片应收紧的生产合同：VerificationLedger.record把binding.attempt合法改为台账序号，run.attempt与binding.execution_attempt保留宿主执行标签；已有test_host_attempt_survives_ledger_ordinal_and_base_binds_remain_live明确此行为，root实际复跑1P/0skip/.020s。原审计设计有意排除这些标签参加摘要，快照声明session_replay=not_included；独立pack未交叉认证CP step attempt，此能力不补造。
+
+按独立建议，Task16样例和实现改为篡改binding.execution_attempt，仍要求原loader抛EvidenceError；错误CP attempt继续由本任务独立final-boundary负控拒绝。未改production、摘要、schema或降低错误断言，设计身份段同步澄清直接宿主fixture与通用台账回执的差异。sequential-thinking193–195记录分类和兼容边界；作者正在按修正重跑，未把前两轮失败改写为通过。16方法实际34新增子场景，加2原正控共36 native场景，与21 unittest方法计数分开；作者先前36/38加总笔误已逐方法更正，不增加通过数量。
+
+### Task2 最终批准与 Task3 交接
+
+作者最终模块21P/0F/0E/0skip、44.508s，再串行旧ledger方法1P/.025s；selfSPEC/selfQUALITY通过。独立SPEC核实际完整fixture/增量/计划，21P/0skip44.288s、旧ledger1P/.030s，C0/I0/M0。随后root作为不同QUALITY全文核增量及observe/close、receipt/CP最终边界，独立完整21P/0F/0E/0skip42.862s（子进程墙钟43.017s），C0/I0/M0。源码冻结SHA256 `4b8bfcfdb7c6b763c81173cf23af63533410bbf3c0bf04656fb1e76f386603e3`，257增3删，仅一个测试文件。
+
+第三轮作者新增保留 `/tmp/icode-linux-bridge-mzqaoyx1`，SPEC新增 `/tmp/icode-linux-bridge-36em74xm`（只读核inode5910764），root QUALITY新增 `/tmp/icode-linux-bridge-v4awfrfk`；加前两轮共5个明确HEAD异常owned根保留。portable守卫中的retained输出来自显式Mock，不另算真实目录。没有清未知状态、修HEAD、补CP finish或删除现场。
+
+Task3仍是测试层验证原检查债务及Native拒绝，不修G2。受当前代理槽限制，root明确复用已STOP唯一测试作者，保持作者/独立SPEC/不同QUALITY分离，不并行写同文件。已交完整三方法和两个helper要求；新增ExecutionContext/NativeChainExecutor/set_code_files已有导入，先具名3方法，再成功时完整24方法。当前为开始状态，尚无Task3运行信用。
+
+### Task3 作者实测，独立审查中
+
+新增两个helper和三个方法137行，累计Task2+3为394增3删；冻结SHA256 `584dfc10e1502101d39696b7ee2a75512de9213bfbb9e3c81f1ea787fa91030e`。作者先3P/0skip8.372s，再完整模块24P/0F/0E/0skip51.124s；21 Linux方法与3 portable方法、39 Linux场景分开记录。本轮完整模块26次实际受控命令（25条完整observation与1个HEAD异常窗口）。新增保留 `/tmp/icode-linux-bridge-_tzuakza`，原五根不动。
+
+两个完整入口真实达到step_finish：工程receipt passed、operation闭、原检查与推演已执行，但CP返回gate_id=step_receipt且缺inspection_worklist，coverage/debt仍partial/unobserved，step仍open且无advance。Native实际返回blocked/isolation_unavailable，provider/模型/step runner未调用；safe_point不是零控制写证明。作者selfSPEC/selfQUALITY通过，正在独立SPEC，不提前授完整步骤成功。root已就G2宿主Git身份/审查范围最小子仓契约单独询问授权；当前等待用户答复，未修改vendor，Task4等不依赖它的工作继续。sequential-thinking196–198记录本片入口和拒绝边界。
+
+独立SPEC随后核同冻结增量、实际3P/0F/0E/0skip8.208s，C0/I0/M0；root不同QUALITY读完整新增helper/方法及生产inspection、runner、Native入口，独立3P/0skip8.099s，C0/I0/M0。两轮仅跑三个新增方法，无HEAD测试、无新增保留根；当前source冻结仍584dfc10…1030e。Task3已完成其拒绝验收要求，G2完整成功和Native准入没有解除。
+
+### Task4 原生持续诊断接入启动
+
+43e7739的只读CI观察已全部终态并写入绑定发布记录，观察任务STOP。受代理槽限制，root重新分配该已完成观察者为新的唯一Task4作者，仅改scripts/run_native_probe_ci.py与tests/test_run_native_probe_ci.py；Linux测试文件保持冻结，root只写文档。三步sequential-thinking199–201明确真实生命周期RED→最小分类GREEN，再缺选loader RED→接线GREEN；纯setup skip无信用，skip伴失败不能成功，原conformance/native_ready不改。实际测试结果待记录。
+
+### Task4 作者实测，独立审查中
+
+第一轮真实生命周期RED复现3个错误分类：setup_skip被报failed，method_skip_cleanup_error与failure_with_teardown_skip被报skipped。最小分类修正后新方法与原两个方法3P。第二轮loader首断言按预期失败，随后接入固定单case诊断；完整portable模块22P、0skip，恰好新增4方法。作者selfSPEC/selfQUALITY均通过，尚待独立审查。
+
+实际native脚本退出0，仅运行一个真实code正控，输出一条observation与一个partial-pack摘要；诊断为status=passed、conformance_credit=none、native_ready=false。原评分仍8/10、critical_passed=true、platform_critical_passed=true、ready=false；resource_limits与uniform_violation仍UNVERIFIED，不把诊断加入评分。源冻结为scripts/run_native_probe_ci.py SHA256 `63eddb70bdeed7165e4a6eb5275d01eb357868bc45b429e9be8abe7d43f48953`、tests/test_run_native_probe_ci.py SHA256 `2ab756c576a98dc5d1e1aaa66c705cf81775ebfa618fd6a78e88e747d7aff8f3`，Linux测试冻结仍584dfc10…1030e。
+
+作者已STOP并释放runtime；root已读两文件全部增量，独立SPEC交未参与这两个文件编写的前Task2作者，只读核计划并串行复跑22项，不运行额外native或修改源文件。
+
+独立SPEC随后22P/0F/E/skip、0.109s、C0/I0/M0；不同QUALITY核Task4及本阶段三个源码文件，22P/0F/E/skip、0.103s、C0/I0/M0。两者运行前后三源码摘要均与冻结一致，未运行额外native、未新增保留现场，均STOP。另只读集成规格核对确认Task5固定9方法、180次及原DEFAULT选择不变；该复核不替代参与作者的Linux模块已有独立审查。
+
+Task5进入执行，sequential-thinking202–204记录同冻结源、串行测试、未知现场保留和精确main发布边界。root先执行获准五模块定点，再20轮、DEFAULT、原full；不猜测实际数量，也不把旧全量结果计入本片。
+
+作者补回已有原始输出：22项耗时0.135s；实际native脚本完整耗时未记录，不将PTY等待相加作为运行耗时。其唯一code observation的resource receipt SHA256为`8dadc249fd843266feeb3633227f2947a8576607b954f82af1f44876f246e5b9`，partial-pack manifest为`f4e79f4e03c3968c22d3e6228f003f5a00f36d24a8ea347977f2e10109783cf8`。绑定main43e7739/vendor d935a52、Python3.11.15、Linux6.8.0-138/systemd249/UID1000；source before/after均74207282…84f21，tested_tree b101a49c…74420。这是作者原始单次诊断，不挪给后续定点或20轮。
+
+### Task5 全局实测记录
+
+root获准五模块定点140P/0F/0E/0skip、120.724s、rc0；真实HEAD漂移用例新增保留根`/tmp/icode-linux-bridge-o627pk6q`，此前六个现场不动，共七个明确实际根。三个冻结源码和vendor固定值未变。随后启动固定9方法20轮，结果待记录；不同方法总数不与重复运行次数混算。
+
+固定9方法20轮随后全部通过：180次实际运行、0F/E/外层skip，91.510s；每轮9项、4.219–4.552s。两Linux正控实际执行，生命周期守卫内部预期skip未计原生信用；未运行HEAD异常方法，未新增真实保留根。下一门为原DEFAULT及完整preflight。
+
+原DEFAULT实际614P/0F/E/skip、193.213s、rc0，installed bootstrap verifier byte binding另输出PASS。数量仍614，因为本片native诊断测试没有加入DEFAULT选择。随后启动同冻结源码的原preflight三门，完整unittest子进程的原argv/kwargs/环境不变；外层仅打印返回后的原summary及HEAD保留路径，结果待记录。
+
+### 当前18向量的证据层级
+
+下表更新上方计划窗口的“待运行”状态；不改写旧L1或失败历史，不把18个向量等同测试方法数。
+
+| 向量 | 当前结果与边界 |
+| --- | --- |
+| CMD-01 | 本片真实命令连接原scope的limit=8及同次回执；原根/线程计数向量仍引用L1，未将旧40项冒作新run。 |
+| CMD-02 | 本片原生诊断经过既有receipt probe；统一全部违规类别仍UNVERIFIED，不由8/10评分授予。 |
+| CMD-03 | 未新增来源认证；旧通道与伪造负控保持L1来源，partial pack不是签名。 |
+| CMD-04 | 真实timeout/outputlimit及同次owned收束检查通过；只覆盖该scope，未知现场保留。 |
+| CMD-05 | 新观察/清理失败为明确注入且回执原事实保留；原bus/ACK前置拒绝仍为既有测试，不冒充实际启动。 |
+| CMD-06 | 并发scope/host SIGKILL仍引用旧L1，不新增全后代回收或init已回收信用。 |
+| ENG-01 | 真实nested-deny prepare拒绝负控通过，保护未删；不授native ready。 |
+| ENG-02 | source code/deepcheck原dispatch、工程回执及独立partial pack正控通过，完整step成功除外。 |
+| ENG-03 | 真实assertion/import失败均关闭失败，后续check不执行，无Reviewer；负控通过。 |
+| ENG-04 | 真实timeout/截断与注入observer/cleanup缺失保持unknown、不补CP finish；负控通过。 |
+| ENG-05 | plan/tool/environment/root/platform漂移五子场景在本次执行前拒绝；无fallback。 |
+| ENG-06 | 实际源码、HEAD、Reviewer后及deepcheck开始后漂移被拒；HEAD异常根保留。split结果commit仍未支持。 |
+| CP-01 | 正控真实operation、verification记录及指纹连接通过；step保持开放。 |
+| CP-02 | 本片错误根/attempt/ACK、公共resume及同recorder新occurrence拒绝均通过；G1新recorder防重放仍引用020aceb独立证据。 |
+| REV-01 | 模型double的fresh读/submit、五协议负例及真实源码漂移通过；不是模型质量或独立OS沙箱验收。 |
+| PACK-01 | 真实partial导出及外部进程verify、四坏receipt负例通过；execution_attempt与run.attempt核验不等于CP attempt离线交叉认证。 |
+| STEP-01 | 完整code/deepcheck入口真实到达原finish并被inspection债务拒绝；G2成功正控仍blocked。 |
+| NATIVE-01 | 原Native入口在provider/模型/step runner前拒绝；safe_point有调用，不称整个run零控制写。 |
+
+### 全量及发布前软件门
+
+同冻结源码原preflight一次通过：2502total、2443P、59环境skip、0F/E，unittest耗时602.123s，原子进程墙钟602.621s，preflight604.200s，三道门均通过。外层保留了原命令及调用参数，仅汇总原返回结果；并未缩减测试、修改子测试结果或提前提交。此前43e绑定片2479项结果不作为本片2502项的替代。
+
+HEAD异常路径实际打印在捕获stdout，外层仅从stderr提取路径，故这次终端summary未带原路径行。随后只读列举已知fixture前缀，核新增`/tmp/icode-linux-bridge-9_r4ptdd`，与本次时间窗口吻合，原七个根仍在；这是目录核对而非保存的原始stdout证明，不补造原日志。所有八个根均未清理、未改HEAD或清unknown。
+
+Python src/scripts/tests全部compileall -j1通过，缓存置新临时目录；治理、站点、严格竞品排期检查均rc0。站点检查仅静态检查外链，不宣称在线抓取通过；排期检查不等于全部20项目重查。源码三个SHA与Task3/4冻结一致，vendor仍d935a52、干净；本片没有修改生产runner或vendor。
+
+【架构级自检报告】（本片实际验收范围）
+
+- ✅ 语法/编译：全量测试及j1 Python编译通过。
+- ✅ 依赖/调用链：原native脚本单case选择、CP/receipt/partial-pack及原DEFAULT调用保持；独立SPEC与不同QUALITY通过。
+- ✅ 逻辑/边界：三态及零执行分类、漂移、重复执行拒绝、完整步骤拒绝均有对应实测。
+- ✅ 异常处理：混合skip和错误优先失败，真实timeout/截断及注入失败保留未知；不声称覆盖所有异常。
+- ✅ 关联模块：三源码限定修改，原DEFAULT614P及完整2502项通过，无未审生产改动。
+- ✅ 兼容安全：旧测试与合法台账attempt语义保留；不提升native ready，不把Windows/macOS未通过改成通过。
+- ✅ 可运行性：本机定点140P、20轮180P、DEFAULT614P及全量2443P/59skip；模型double、source与安装/跨平台/真实模型信用分开。
+
+剩余本片发布动作：八文档连续两轮检查、九路径精确暂存与main提交推送、新SHA线上观察。G2完整成功、installed工程桥接、原生剩余门、真实模型与R2/R3总体验收仍未完成。
