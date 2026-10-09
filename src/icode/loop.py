@@ -46,6 +46,9 @@ class LoopConfig:
     # separate from ``tool_choice_after_read`` because the latter is tied to
     # complete file-read accounting and cannot describe artifact-broker reads.
     tool_choice_on_no_tool: str | None = None
+    # Optional hard hand-off point for real providers that keep reading until
+    # the normal turn cap.  At/after this turn the output tool is required.
+    force_tool_after_turns: int | None = None
     # 已读全白名单后，保留给必需工具提交、纠正和结束的回合。
     required_tool_turn_reserve: int = 0
 
@@ -133,6 +136,11 @@ class AgentLoop:
         if self.config.tool_choice_on_no_tool is not None:
             if self.registry.get(self.config.tool_choice_on_no_tool) is None:
                 raise ValueError("tool_choice_on_no_tool 必须是已注册工具名")
+        if (self.config.force_tool_after_turns is not None
+                and (type(self.config.force_tool_after_turns) is not int
+                     or self.config.force_tool_after_turns < 1
+                     or self.config.force_tool_after_turns > self.config.max_turns)):
+            raise ValueError("force_tool_after_turns 必须在 1..max_turns 内")
         if (type(self.config.required_tool_turn_reserve) is not int
                 or self.config.required_tool_turn_reserve < 0):
             raise ValueError("required_tool_turn_reserve 必须是非负整数")
@@ -295,6 +303,7 @@ class AgentLoop:
         read_spans: dict[Path, list[tuple[int, int]]] = {}
         read_totals: dict[Path, int] = {}
         completed_read_files: set[Path] = set()
+        forced_output_tool: str | None = None
         artifact_broker = self.ctx.artifact_broker
         artifact_outputs = tuple(
             port for port in (getattr(artifact_broker, "contract", None).outputs
@@ -336,6 +345,15 @@ class AgentLoop:
                 stop_reason = "required_tool_turn_reserve_exhausted"
                 error = "Reviewer 未在只读回合额度内完整读取改动；保留提交回合并失败关闭"
                 break
+            if (
+                self.config.force_tool_after_turns is not None
+                and index >= self.config.force_tool_after_turns
+                and tool_choice == "auto"
+                and self.config.tool_choice_on_no_tool is not None
+            ):
+                tool_choice = self.config.tool_choice_on_no_tool
+                forced_output_tool = tool_choice
+                required_tool_retry_remaining = 1
 
             try:
                 assistant = self.backend.complete(
@@ -399,6 +417,7 @@ class AgentLoop:
                         ),
                     })
                     tool_choice_on_no_tool = None
+                    forced_output_tool = tool_choice
                     _notify_turn(self.on_turn, index, total_tool_calls, history)
                     continue
                 if tool_choice != "auto":
@@ -458,7 +477,17 @@ class AgentLoop:
                     # Reviewer 结构化提交通过本地校验后，允许模型自然结束；
                     # 提交前强制使用工具，避免只返回自由文本绕过合同。
                     tool_choice = "auto"
-                elif (
+                    if forced_output_tool == call.name:
+                        forced_output_tool = None
+                if (
+                    forced_output_tool == call.name
+                    and call.name not in ("submit_artifact", "submit_review_round")
+                    and inv.result is not None
+                    and inv.result.ok
+                ):
+                    tool_choice = "auto"
+                    forced_output_tool = None
+                if (
                     tool_choice != "auto"
                     and call.name == "submit_artifact"
                     and inv.result is not None

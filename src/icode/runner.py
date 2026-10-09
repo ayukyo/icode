@@ -2412,6 +2412,11 @@ def _run_agent(
                 if getattr(backend, "name", "") != "fake"
                 else (loop_config or LoopConfig()).max_turns
             ),
+            force_tool_after_turns=(
+                max(1, (loop_config or LoopConfig()).max_turns)
+                if getattr(backend, "name", "") != "fake"
+                else None
+            ),
             # FakeBackend is an offline compatibility fixture whose scripted
             # replies intentionally exercise host-side persistence.  Real
             # provider responses get one bounded structured-output turn when
