@@ -88,6 +88,22 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertIs(type(case), TestLinuxContractEngineering)
         self.assertEqual(case._testMethodName, "test_bridge_code_cp_receipt_and_pack")
 
+    def test_linux_resource_loader_selects_real_quota_case_once(self) -> None:
+        from tests.test_linux_product_task_quota import TestLinuxProductTaskQuota
+
+        with mock.patch.object(run_native_probe_ci.sys, "platform", "linux"), \
+             mock.patch.object(
+                 run_native_probe_ci, "_run_unittest_probe",
+                 return_value=run_native_probe_ci.ProbeExecution("passed", "fixture"),
+             ) as execute:
+            result = run_native_probe_ci._probe_linux_resource_limits()
+
+        self.assertEqual(result.status, "passed")
+        execute.assert_called_once()
+        case = execute.call_args.args[0]
+        self.assertIs(type(case), TestLinuxProductTaskQuota)
+        self.assertEqual(case._testMethodName, "test_registry_cap_one_enforces_real_fork_quota")
+
     def test_unittest_probe_real_class_setup_skip_and_failure_lifecycle(self) -> None:
         events = []
 
@@ -209,7 +225,7 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertEqual(result.status, "passed", result.detail)
         self.assertFalse(FixtureCase.class_resource_ready)
 
-    def _run_linux_check_with_lease_expiry(self, lease_result):
+    def _run_linux_check_with_lease_expiry(self, lease_result, *, resource_result=None):
         sandbox = LandlockSandbox(helper="/tmp/icode-landlock")
         native = NativeProbeResult(True, {"workspace_write": True}, "native ok")
         protected = LinuxProtectedPathProbeResult(
@@ -251,7 +267,9 @@ class TestNativeProbeCi(unittest.TestCase):
              ) as bounds_probe, \
              mock.patch.object(run_native_probe_ci, "_emit_conformance_score") as score, \
              redirect_stdout(output):
-            result = run_native_probe_ci._check(sandbox, "/tmp/icode-landlock")
+            result = run_native_probe_ci._check(
+                sandbox, "/tmp/icode-landlock", resource_result=resource_result,
+            )
         receipt_probe.assert_called_once_with()
         bounds_probe.assert_called_once_with()
         return result, lease_probe, score, output.getvalue()
@@ -408,6 +426,40 @@ class TestNativeProbeCi(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("linux-observed-command-bounds status=failed", output)
         self.assertIn("native observed command bounds probe", output)
+
+    def test_linux独立进程配额证据进入评分(self) -> None:
+        result, _lease_probe, score, output = self._run_linux_check_with_lease_expiry(
+            SimpleNamespace(status="passed", detail="lease ok"),
+            resource_result=SimpleNamespace(
+                status="passed", detail="real_process_quota_observed",
+            ),
+        )
+        self.assertTrue(score.call_args.kwargs["resource_limits"])
+        self.assertEqual(result, 0)
+        self.assertIn("linux-resource-limits status=passed", output)
+
+    def test_linux独立进程配额环境跳过不计分(self) -> None:
+        result, _lease_probe, score, output = self._run_linux_check_with_lease_expiry(
+            SimpleNamespace(status="passed", detail="lease ok"),
+            resource_result=SimpleNamespace(
+                status="skipped", detail="resource_quota_environment_unavailable",
+            ),
+        )
+        self.assertNotIn("resource_limits", score.call_args.kwargs)
+        self.assertEqual(result, 0)
+        self.assertIn("linux-resource-limits status=skipped", output)
+
+    def test_linux独立进程配额回归失败时native作业失败(self) -> None:
+        result, _lease_probe, score, output = self._run_linux_check_with_lease_expiry(
+            SimpleNamespace(status="passed", detail="lease ok"),
+            resource_result=SimpleNamespace(
+                status="failed", detail="native_process_quota_mismatch",
+            ),
+        )
+        self.assertNotIn("resource_limits", score.call_args.kwargs)
+        self.assertEqual(result, 1)
+        self.assertIn("linux-resource-limits status=failed", output)
+        self.assertIn("resource limits: native process quota mismatch", output)
 
     def test_conformance来源字符串不会被拆成单字符(self) -> None:
         report = {

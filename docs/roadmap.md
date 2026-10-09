@@ -1,5 +1,7 @@
 # 开发路线图与取舍原则
 
+- **Linux 原生资源限制证据接入（2026-10-10，本机 `590722d` 工作树）：**原生探针新增一个独立的真实 `run_command` 配额用例，复用 `TestLinuxProductTaskQuota.test_registry_cap_one_enforces_real_fork_quota`，仅在非 root user-manager、真实 scope、fork 被 `EAGAIN` 拒绝且 scope 收束完成时计入 `resource_limits`。本机 `scripts/run_native_probe_ci.py` 以 CPython 3.11.15、Linux 6.8、systemd 249 实跑通过，评分由 `8/10` 提升为 `9/10`、`critical_passed=true`、`ready=true`；`uniform_violation` 仍未验证，工程 bridge 仍是 `conformance_credit=none`。该证据只更新 Linux 原生探针评分，不改变跨平台准入、`policy_contract_ready`、Native 自动模式或 R2/R3 总验收；远端 CI 待本提交终态后复核。
+
 - **真实全链路后半段边界（2026-10-10，临时工单 `R3-REAL-FULL-NEXT`）：**在有效仓外 MiniMax-M3 key 下，新的完整工单 `plan→review` 真实通过，均有控制面 finish、结构化 round/manifest 与无未闭合事件。首轮 merge 因共享模型预算硬停；随后通过同一工单目录、带生产 gate-trace 回调的受控单步重试，真实登记 `03_plan_final.md` 并前移到 `plan_finalized`。code 尚未启动：工程步骤必须绑定独立 Git workspace、执行根、验证计划和原生隔离回执，普通链路入口不能冒充该绑定；未取得 `code→deepcheck→audit` 完整成功样本，不增加 R3 六步、90% 一致性、R2/R3 总验收或自动模式信用。
 
 - **R3 真实链路边界、全量回归与线上结果（2026-10-10，`69b9e25`）：**更新竞品架构对照，记录 OpenHands、SWE-agent、Aider 的当前官方实现与 ICODE 的采纳/暂缓/不适配取舍；真实模型 `R3-REAL-FRESH-21` 已完成 `plan→review→merge`，事件链 `event_count=97` 且无未闭合动作，但 `code` 首次请求因外部测试 KEY 返回 HTTP 401，未产生代码、deepcheck 或 audit 信用。修复预算停止路径重复读取 trace 的缺陷后，项目 `.venv` CPython 3.11.15 全量 `2522 tests / 60 skipped / OK`，安装后 bootstrap verifier 通过，`compileall -j6` 与 diff check 通过。该 SHA 的 Pages、Python 3.11/3.12 全量、provenance validate 成功；Windows x64/ARM workspace 因无实际源码改动而被“基线通过不能冒充编码任务”质量门拒绝，双 Windows Reviewer 仍为 `10035/wait_expired`。因此仍不授予 R3 六步、90% 一致性、R2/R3 总验收或自动模式信用；下一次真实 code 复验需先恢复有效测试 KEY，并保持 fail-closed。

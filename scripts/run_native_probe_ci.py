@@ -139,6 +139,34 @@ def _probe_linux_observed_command_bounds() -> ProbeExecution:
     return ProbeExecution("failed", "native_command_bounds_mismatch")
 
 
+def _probe_linux_resource_limits() -> ProbeExecution:
+    """Run the real registry cap=1 fork probe for independent quota evidence.
+
+    The fixture uses the production ``run_command`` path and a real user
+    manager scope.  A skipped prerequisite remains unverified; it must not be
+    converted into a passing resource-limit claim.
+    """
+    if not sys.platform.startswith("linux"):
+        return ProbeExecution("skipped", "linux_only")
+    repository_root = str(Path(__file__).resolve().parents[1])
+    if repository_root not in sys.path:
+        sys.path.insert(0, repository_root)
+    try:
+        from tests.test_linux_product_task_quota import TestLinuxProductTaskQuota
+
+        test_case = TestLinuxProductTaskQuota(
+            "test_registry_cap_one_enforces_real_fork_quota",
+        )
+    except Exception:  # noqa: BLE001 - keep probe output stable and sanitized.
+        return ProbeExecution("failed", "native_resource_probe_unavailable")
+    execution = _run_unittest_probe(test_case)
+    if execution.status == "passed":
+        return ProbeExecution("passed", "real_process_quota_observed")
+    if execution.status == "skipped":
+        return ProbeExecution("skipped", "resource_quota_environment_unavailable")
+    return ProbeExecution("failed", "native_process_quota_mismatch")
+
+
 def _probe_linux_engineering_bridge() -> ProbeExecution:
     """Observe one source CP/receipt/partial-pack path without readiness credit."""
     if not sys.platform.startswith("linux"):
@@ -166,6 +194,7 @@ def _emit_conformance_score(
     platform: str,
     doctor_self_test: bool,
     process_tree_cleanup: bool | None = None,
+    resource_limits: bool | None = None,
     process_group_cleanup: bool | None = None,
 ) -> None:
     """把本次原生探针证据映射到十项一致性合同并打印评分。
@@ -173,13 +202,15 @@ def _emit_conformance_score(
     只把**本次探针实际采集的证据**计入；未验证能力保守为 False，
     因此该分数反映「当前探针矩阵已直接证明的能力」，不冒充完整验收。
     """
-    report = score_probe_evidence(
-        checks,
-        platform=platform,
-        process_tree_cleanup=process_tree_cleanup,
-        doctor_self_test=doctor_self_test,
-        process_group_cleanup=process_group_cleanup,
-    )
+    score_kwargs = {
+        "platform": platform,
+        "process_tree_cleanup": process_tree_cleanup,
+        "doctor_self_test": doctor_self_test,
+        "process_group_cleanup": process_group_cleanup,
+    }
+    if resource_limits is not None:
+        score_kwargs["resource_limits"] = resource_limits
+    report = score_probe_evidence(checks, **score_kwargs)
     score = report["score"]
     group_cleanup = score["process_group_cleanup"]
     process_group_status = (
@@ -228,6 +259,7 @@ def main() -> int:
             return _check(
                 LandlockSandbox(helper=str(helper), manifest=str(manifest)),
                 str(helper),
+                resource_result=_probe_linux_resource_limits(),
             )
     elif sys.platform == "darwin":
         executable = shutil.which("sandbox-exec")
@@ -240,7 +272,12 @@ def main() -> int:
         return 1
 
 
-def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> int:
+def _check(
+    backend: LandlockSandbox | MacSeatbeltSandbox,
+    executable: str,
+    *,
+    resource_result: ProbeExecution | None = None,
+) -> int:
     result = probe_native_sandbox(backend)
     platform = "linux" if sys.platform.startswith("linux") else "macos"
     group_result = None
@@ -290,6 +327,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     lease_expiry_failed = False
     violation_receipt_failed = False
     observed_command_bounds_failed = False
+    resource_limits_failed = False
     engineering_bridge_failed = False
     if lease_expiry_result is not None:
         lease_status = lease_expiry_result.status
@@ -334,6 +372,26 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
             f"{backend.name} observed_command_bounds: {bounds_status.upper()} "
             f"({safe_detail})"
         )
+    resource_score: bool | None = None
+    if resource_result is not None:
+        resource_status = resource_result.status
+        if resource_status not in {"passed", "skipped", "failed"}:
+            resource_status = "failed"
+        resource_limits_failed = resource_status == "failed"
+        if resource_status == "passed":
+            resource_score = True
+        print(f"::notice::linux-resource-limits status={resource_status}")
+        safe_detail = (
+            "real_process_quota_observed"
+            if resource_status == "passed"
+            else "resource_quota_environment_unavailable"
+            if resource_status == "skipped"
+            else "native_process_quota_mismatch"
+        )
+        print(
+            f"{backend.name} resource_limits: {resource_status.upper()} "
+            f"({safe_detail})"
+        )
     if engineering_bridge_result is not None:
         bridge_status = engineering_bridge_result.status
         if bridge_status not in {"passed", "skipped", "failed"}:
@@ -347,21 +405,25 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
         print(f"{backend.name} engineering_bridge: {bridge_status.upper()}")
     for name, passed in result.checks.items():
         print(f"{backend.name} {name}: {'PASS' if passed else 'FAIL'}")
-    _emit_conformance_score(checks, platform=platform,
-                            doctor_self_test=(
-                                result.ready
-                                and (protected_result is None or protected_result.passed)
-                                and (process_tree_result is None or process_tree_result.passed)
-                                and (group_result is None or group_result.passed)
-                            ),
-                            process_tree_cleanup=(
-                                process_tree_result.passed
-                                if process_tree_result is not None
-                                and process_tree_result.executed else None
-                            ),
-                            process_group_cleanup=(
-                                group_result.passed if group_result is not None else None
-                            ))
+    score_kwargs = {
+        "platform": platform,
+        "doctor_self_test": (
+            result.ready
+            and (protected_result is None or protected_result.passed)
+            and (process_tree_result is None or process_tree_result.passed)
+            and (group_result is None or group_result.passed)
+        ),
+        "process_tree_cleanup": (
+            process_tree_result.passed
+            if process_tree_result is not None and process_tree_result.executed else None
+        ),
+        "process_group_cleanup": (
+            group_result.passed if group_result is not None else None
+        ),
+    }
+    if resource_score is not None:
+        score_kwargs["resource_limits"] = resource_score
+    _emit_conformance_score(checks, **score_kwargs)
     group_failed = group_result is not None and not group_result.passed
     protected_failed = protected_result is not None and not protected_result.passed
     process_tree_failed = (
@@ -372,7 +434,7 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
     if (
         not native_ready or group_failed or lease_expiry_failed
         or violation_receipt_failed or observed_command_bounds_failed
-        or engineering_bridge_failed
+        or engineering_bridge_failed or resource_limits_failed
     ):
         if not native_ready and isinstance(backend, MacSeatbeltSandbox):
             true_path = shutil.which("true")
@@ -413,6 +475,8 @@ def _check(backend: LandlockSandbox | MacSeatbeltSandbox, executable: str) -> in
             failures.append("native observed command bounds probe: failed")
         if engineering_bridge_failed:
             failures.append("source engineering bridge: failed")
+        if resource_limits_failed:
+            failures.append("resource limits: native process quota mismatch")
         print(f"::error::{backend.name} native probe failed: {'; '.join(failures)}")
         return 1
     return 0
