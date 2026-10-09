@@ -26,6 +26,7 @@ from .config import Settings
 from .contracts import ContractSet
 from .control import ControlPlane
 from .loop import LoopConfig
+from .mcp_gates import record_step_gate_trace
 from .runner import StepReport, _runtime_budget, _snapshot, run_contract_step
 from .engineering_verification import VerificationPlan
 from .sandbox_policy import SandboxPolicy
@@ -344,6 +345,20 @@ def run_chain(
                 # 从真实回复补落盘，故此处记录缺件而不抢先抛出。
                 ok, detail = assemble_review_manifest(o, ticket_id, at)
                 report.notes.append(f"review_manifest 装配：{'成功' if ok else '失败'}（{detail}）")
+                skill_root = getattr(settings, "skill_root", None)
+                if skill_root is not None:
+                    record_step_gate_trace(
+                        o, step=st, ticket_id=ticket_id, workspace=workspace,
+                        skill_root=skill_root,
+                    )
+        if name == "merge":
+            def post(o: Path, st: str, at: str) -> None:  # noqa: ANN001
+                skill_root = getattr(settings, "skill_root", None)
+                if skill_root is not None:
+                    record_step_gate_trace(
+                        o, step=st, ticket_id=ticket_id, workspace=workspace,
+                        skill_root=skill_root,
+                    )
         if name in ("code", "deepcheck", "audit"):
             def post(o: Path, st: str, at: str) -> None:  # noqa: ANN001
                 changed, ok = set_code_files(cp, o, ticket_id, workspace, before)

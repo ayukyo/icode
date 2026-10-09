@@ -25,3 +25,7 @@
 该次状态前移仍被 `mcp_coverage` 门禁拒绝（工单保持 `review_in_progress`）：严格校验报告明确缺少 `review.dedup` 与 `review.result_summary` 两条 `.mcp_gate_trace.jsonl` 最终记录。当前 ICODE runner 尚未接入 cheap-research 的确定性 eligibility/trace 适配器，不能把“模型已提交审查正文”冒充这两条 gate 的履行；下一步应补宿主适配或记录可验证的 unavailable/degraded 证据，不得手写成功 trace 绕过门禁。因此本次只证明“真实模型 review 产物→机器清单→诚实停步”链路，不证明 merge/code/deepcheck/audit 或 R3 完成。模型期间额外执行了受控 `run_command` 探查，说明仅靠任务文本仍不能视为工具纪律稳定；不放宽门禁，也不把本次单样本外推为 90% 一致性。
 
 在临时工单中按 cheap-research 契约写入了可验证的 host trace（dedup：0 个受影响函数，合法 `skipped_not_eligible`；summary：工具未暴露，`unavailable_before_call` 且带回退证据），校验器通过后 review 状态可前移。随后真实模型继续 merge，17 次调用、85,537 tokens，成功提交 `03_plan_final.md`；但 `merge.cross_round_summary` 仍缺最终 trace，状态前移再次被门禁拦截。该实验说明下一阶段应实现宿主 gate 适配/trace 生成，而不是让每个模型自行伪造隐藏账本。
+
+## 宿主 gate 适配（2026-10-09，本机已验证）
+
+新增 `src/icode/mcp_gates.py`，由链路步骤产物落盘后的宿主回调确定性写入 review/merge 的最终 trace；模型不能写隐藏账本。当前默认 runner 的 cheap-research MCP 未暴露，因此 `review.dedup` 按真实 Python Git 文件计数并合法记录 `skipped_not_eligible`，`review.result_summary` 与达到两轮时的 `merge.cross_round_summary` 记录 `unavailable_before_call` 及回退来源；少于两轮的 merge gate 记录 `skipped_not_eligible`。写入按 `(step, gate_id)` 替换，重试不会重复累积旧结论。新增适配器合同测试，并用固定子仓校验器验证 `missing_gate=0/schema_errors=0/sensitive_data=0`。这只关闭“宿主能生成诚实 trace”的本机软件子门；尚未用真实模型重跑 review→merge，也不授予 R3 或 90% 一致性信用。

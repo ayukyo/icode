@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **R3 cheap-research 宿主适配器本机落地（2026-10-09）：**新增链路回调与 `mcp_gates` 确定性 trace 记录器，按固定子仓 `gates.json` 读取阈值；默认 runner 未暴露 cheap-research 时只写结构化 `unavailable_before_call`/`skipped_not_eligible`，不让模型伪造隐藏账本。review/merge 适配器合同测试通过，固定校验器报告 `missing_gate=0/schema_errors=0/sensitive_data=0`，写入按 gate 幂等替换。真实模型 review→merge 重跑、线上 CI 和 R3 总门仍待验，不能据此宣称完成。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **R3 merge 真实试跑与 cheap-research 门确认（2026-10-09）：**临时工单使用结构化 host trace 证明 review 两条 gate 在合法 `skipped_not_eligible`/`unavailable_before_call` 证据下可前移；随后真实模型 merge 17 次调用/85,537 tokens，成功提交 `03_plan_final.md`，但 `merge.cross_round_summary` 缺最终 trace，仍被门禁拦截。下一实现阶段聚焦宿主 gate eligibility/trace 适配，不让模型直接写隐藏账本，也不以手工临时 trace 计入 R3 完成信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
 - **真实 R3 review 链复验与机器清单时序修复（2026-10-09）：**首次真实审查暴露“模型 round 在最终登记前出现时，`review_manifest.json` 未再次装配”的缺口；最小修复加入最终幂等装配重试，并保留模型 round 原始字节以避免重复 artifact 回执冲突。新增回归与链路/预算 44 项测试全绿。新的真实控制面工单实际 23 次调用/135,095 tokens，提交 `02_review.md`、`review_round_1.json`，机器成功装配 manifest，review finish success；严格 `mcp_coverage` 明确缺少 `review.dedup`、`review.result_summary` 两条最终 trace，因当前 runner 尚无 cheap-research 适配器而被诚实拦截，工单保持 `review_in_progress`，不授 merge/code 或 R3 完成信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
