@@ -196,3 +196,22 @@ cached 590,645）。
  已终结 attempt 则按历史 start 次数生成新 occurrence；新增离线回归验证失败重试得到新 attempt。
 该修复不放宽任何产物、inspection、隔离或模型门禁。当前真实证据仍仅覆盖 plan→review→merge；
 R2、code→deepcheck→audit、90% 一致性及自动模式继续关闭。
+
+## Review round 别名边界与新鲜工单复验（2026-10-10，工作树 `8ed3bac` 后）
+
+新工单 `R3-REAL-FRESH-19` 使用同一仓外 key、MiniMax-M3、bubblewrap 和临时 `pycalc` 副本执行
+`chain --only plan,review,merge`。plan 真实通过：22 回合、34 次工具调用，产出 `01_plan.md`，
+越界命令被拒绝且事件链无未闭合项。review 读取了计划和靶场文件并实际提交了 `02_review.md`
+（5198 字节），但提供方在强制结构化 round 时连续返回 malformed/通用 `submit_artifact` 参数，
+所有失败均为控制面 `bad_arguments`，没有合法 `review_round_*.json`，宿主未装配
+`review_manifest.json`，最终按 fail-closed 停在 review。全工单 67 次调用、725,663 tokens，
+事件链 82 个事件；merge、code、deepcheck、audit 未运行，不授予 R3 六步、90% 一致性或 R2 总验收
+信用。
+
+该复验暴露此前兼容别名实现过宽：它允许任意 generic `submit_artifact` 进入强制 round 分支，却
+没有把 `name/content` 转成 typed round 参数。现已收窄为：只有精确的
+`review_round_N.json`、合法 JSON（或结构化对象）、`round` 与文件名一致，且三个字段均为字符串
+数组时，才转换为 `submit_review_round`；普通 Markdown、错误 round、额外/缺失字段和 malformed
+payload 仍拒绝。新增离线回归；相关 176 项测试通过、5 项条件跳过。该修改不伪造审查产物、不放宽
+ArtifactBroker 合同、不改变 fail-closed 门禁。当前真实信用仍仅为已验证的 plan→review→merge
+历史样本，R2/R3 总验收继续关闭。

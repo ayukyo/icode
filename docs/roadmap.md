@@ -2,6 +2,15 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **Review round 兼容别名收窄并完成回归（2026-10-10，工作树基于 `8ed3bac`）：**新工单
+  `R3-REAL-FRESH-19` 的 plan 真实通过；review 真实提交了 `02_review.md`，但提供方在被强制
+  要求结构化 round 时反复回传 malformed/通用 `submit_artifact` 参数，缺少合法
+  `review_round_*.json`，宿主按 fail-closed 停在 review。事件链记录 82 个事件、67 次调用、
+  725,663 tokens；未进入 merge/code/deepcheck/audit，不增加 R3 或 90% 信用。为避免此类兼容
+  调用被误放行，运行器现在只把严格匹配 `review_round_N.json` 且四字段/类型完整的通用 payload
+  转换为 `submit_review_round`；其它 malformed generic call 直接拒绝。新增回归，相关 176 项
+  测试通过、5 项条件跳过；R2/R3 总验收仍未通过。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **真实后半段复验与步骤重试幂等修复（2026-10-10，工作树基于 `cffabdf`）：**
   `R3-REAL-FINAL-17` 的真实 plan→review→merge 仍保持成功（75 次调用、728,692 tokens）。
   继续跑 code 时，模型真实修改/回读了临时 `calc.py`、`test_calc.py`，但先后出现未闭合

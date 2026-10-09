@@ -15,12 +15,13 @@ from __future__ import annotations
 import hashlib
 import json
 import fnmatch
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from .approvals import ApprovalRequest, Approver, DenyAllApprover
-from .backends import AssistantMessage, Backend, Usage
+from .backends import AssistantMessage, Backend, ToolCall, Usage
 from .budget import BudgetTracker
 from .guard import Decision, Guard, Verdict
 from .operations import OperationRecorder
@@ -99,6 +100,46 @@ class LoopResult:
 
 EventHook = Callable[[str, dict], None]
 TurnHook = Callable[[int, int, list[dict]], None]  # (turn_index, tool_calls, history)
+
+
+def _review_round_alias_arguments(arguments: dict[str, Any]) -> dict[str, Any] | None:
+    """Translate a provider's generic artifact call to the typed review-round call.
+
+    A few OpenAI-compatible endpoints ignore a forced function choice while
+    still returning the equivalent ``submit_artifact`` call.  Only the exact
+    review-round filename and the contract's four fields are accepted here;
+    ordinary artifacts and malformed JSON remain rejected by the normal tool
+    path.  This keeps the compatibility bridge narrow and fail-closed.
+    """
+    name = arguments.get("name")
+    content = arguments.get("content")
+    if not isinstance(name, str) or not name.startswith("review_round_") or not name.endswith(".json"):
+        return None
+    if isinstance(content, dict):
+        payload = content
+    elif isinstance(content, str):
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            return None
+    else:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    match = re.fullmatch(r"review_round_(\d+)\.json", name)
+    if match is None:
+        return None
+    round_value = payload.get("round")
+    if type(round_value) is not int or round_value != int(match.group(1)):
+        return None
+    keys = ("new_issues", "refuted_issues", "pending_verification")
+    if any(
+        not isinstance(payload.get(key), list)
+        or any(type(item) is not str for item in payload[key])
+        for key in keys
+    ):
+        return None
+    return {"round": round_value, **{key: payload[key] for key in keys}}
 
 
 class AgentLoop:
@@ -503,31 +544,17 @@ class AgentLoop:
             deferred_tool_transition: tuple[str, str | None] | None = None
 
             for call in allowed:
-                # Some OpenAI-compatible providers ignore a typed function
-                # choice and still send the equivalent generic artifact call.
-                # For the review round hand-off that call remains safe: the
-                # ArtifactBroker validates the filename and JSON schema before
-                # recording it.  Execute this narrow compatibility alias
-                # instead of denying a valid round and burning the final
-                # bounded retries.
-                forced_review_round_alias = (
-                    forced_output_tool == "submit_review_round"
-                    and call.name == "submit_artifact"
-                    and artifact_broker is not None
-                    and any(
-                        port.kind == "ticket_glob"
-                        and port.value.startswith("review_round_")
-                        for port in getattr(
-                            getattr(artifact_broker, "contract", None),
-                            "outputs",
-                            (),
-                        )
-                    )
-                )
+                # Some providers ignore a forced typed choice and return the
+                # generic artifact function.  Convert only a valid
+                # review_round_N.json payload before the normal forced-tool
+                # and operation-receipt paths run.
+                if forced_output_tool == "submit_review_round" and call.name == "submit_artifact":
+                    translated = _review_round_alias_arguments(call_arguments(call))
+                    if translated is not None:
+                        call = ToolCall(id=call.id, name="submit_review_round", arguments=translated)
                 if (
                     forced_output_tool is not None
                     and call.name != forced_output_tool
-                    and not forced_review_round_alias
                 ):
                     # Some providers may hallucinate a previously advertised
                     # function even when the request contains only the forced

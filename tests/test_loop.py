@@ -21,7 +21,7 @@ from icode.backends import FakeBackend
 from icode.budget import Budget, BudgetTracker
 from icode.contracts import Port, StepContract
 from icode.guard import Decision, Guard, Scope
-from icode.loop import AgentLoop, LoopConfig
+from icode.loop import AgentLoop, LoopConfig, _review_round_alias_arguments
 from icode.operations import StartedOperation
 from icode.tools import Tool, ToolContext, ToolResult, default_registry
 
@@ -77,6 +77,64 @@ class TestLoopGuards(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._ws.__exit__(None, None, None)
+
+    def test_review_round_alias_requires_exact_structured_payload(self) -> None:
+        translated = _review_round_alias_arguments({
+            "name": "review_round_1.json",
+            "content": '{"round":1,"new_issues":["n"],'
+                       '"refuted_issues":[],"pending_verification":[]}',
+        })
+        self.assertEqual(translated, {
+            "round": 1,
+            "new_issues": ["n"],
+            "refuted_issues": [],
+            "pending_verification": [],
+        })
+        self.assertIsNone(_review_round_alias_arguments({
+            "name": "review_round_1.json",
+            "content": '{"round":1,"new_issues":[],"refuted_issues":[],'
+                       '"pending_verification":[1]}',
+        }))
+        self.assertIsNone(_review_round_alias_arguments({
+            "name": "02_review.md", "content": "not a round",
+        }))
+
+    def test_review_round_alias_runs_typed_handler(self) -> None:
+        contract = StepContract(
+            step="review",
+            outputs=(Port("rounds", "ticket_glob", "review_round_*.json"),),
+        )
+        ticket = self.root / "ticket"
+        ticket.mkdir()
+        broker = ArtifactBroker(ticket, contract, max_bytes=1024)
+        backend = FakeBackend([
+            {"content": "", "tool_calls": [{
+                "id": "generic-round", "name": "submit_artifact",
+                "arguments": {
+                    "name": "review_round_1.json",
+                    "content": {
+                        "round": 1, "new_issues": [], "refuted_issues": [],
+                        "pending_verification": [],
+                    },
+                },
+            }]},
+            "完成",
+        ])
+        loop = AgentLoop(
+            backend=backend,
+            registry=default_registry(include_artifacts=True, include_review_round=True),
+            guard=Guard(Scope(workspace_root=self.root)),
+            ctx=ToolContext(root=self.root, artifact_broker=broker),
+            config=LoopConfig(
+                max_turns=2,
+                force_tool_after_turns=1,
+                force_tool_after_turns_tool="submit_review_round",
+            ),
+        )
+        result = loop.run([{"role": "user", "content": "提交 round"}])
+        self.assertTrue(result.ok, result.error)
+        self.assertTrue((ticket / "review_round_1.json").is_file())
+        self.assertEqual(result.turns[0].invocations[0].name, "submit_review_round")
 
     def test_无工具调用即正常结束(self) -> None:
         loop = _loop(["任务完成"], self.root)
