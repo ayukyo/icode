@@ -40,15 +40,22 @@ def require_user_manager(test):
 
 def _assert_process_gone_or_zombie(testcase, pid):
     # A proc entry can be reaped after open(), not just before an exists() check.
-    # Only disappearance is acceptable; unknown read failures must remain errors.
+    # A transient dead (X) entry is also non-live; unknown states and read
+    # failures must remain errors.
     try:
         status = Path(f"/proc/{pid}/status").read_text()
     except (FileNotFoundError, ProcessLookupError):
         return
-    testcase.assertIn("\nState:\tZ", status, "host death left a live charged process")
+    state = next((line.split("\t", 1)[1] for line in status.splitlines()
+                  if line.startswith("State:\t")), "")
+    testcase.assertIn(state[:1], {"Z", "X"}, "host death left a live charged process")
 
 
 class TestOwnedProcessStatus(unittest.TestCase):
+    def test_dead_proc_entry_is_not_live(self):
+        with mock.patch.object(Path, "read_text", return_value="Name:\tworker\nState:\tX (dead)\n"):
+            _assert_process_gone_or_zombie(self, 123)
+
     def test_only_disappeared_process_errors_are_accepted(self):
         import errno
         for error in (FileNotFoundError(errno.ENOENT, "gone"),
