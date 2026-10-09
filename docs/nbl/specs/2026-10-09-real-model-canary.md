@@ -71,3 +71,21 @@ JSON 接受、普通文本拒绝、旧 artifact 合同及 review 提示，共 10
 fail-closed 停步。总计 56 次调用、483,922 tokens（prompt 440,950 / completion 42,972 / cached
 380,889）。新的 dict/list 兼容没有获得真实命中样本；因此这次不证明 review、inspection 或
 code→deepcheck→audit 能力，也不提高 R3 或 90% 一致性信用。
+
+## 结构化 review round 与完整三步链复验（2026-10-10，`c90825b`）
+
+使用同一仓外 key、MiniMax-M3、bubblewrap 与临时 `pycalc` 副本，新建工单
+`R3-REAL-CHAIN-FINAL`，执行 `chain --only plan,review,merge`，预算上限 700,000 tokens。
+运行器为真实提供方保留交付回合；review 使用 typed `submit_review_round` 生成
+`review_round_1.json`，控制面再装配 `review_manifest.json`。结果如下：
+
+- plan：14 回合 / 22 次工具调用，`01_plan.md` 登记、finish success、状态前移；
+- review：11 回合 / 14 次工具调用，`02_review.md`、合法 `review_round_1.json`、宿主
+  `review_manifest.json` 均登记，三项边界检查、事件链和 finish success 通过；
+- merge：14 回合 / 21 次工具调用，`03_plan_final.md` 登记、finish success、状态前移；
+- 全链路：64 次调用、438,817 tokens（prompt 406,347 / completion 32,470 / cached
+  353,826），最终 `链路走完（completed）`。
+
+这是当前真实模型 plan→review→merge 的完整闭环证据，证明结构化 round 工具和回合边界修复
+有效；仍不证明 code→deepcheck→audit、跨平台原生隔离、任意项目成功率、90% 一致性或 R2/R3
+总验收。密钥未打印、未复制、未进入工单与提交。
