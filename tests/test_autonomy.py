@@ -901,6 +901,303 @@ class TestNativeChainExecutor(unittest.TestCase):
             )
 
 
+class TestNativePythonPreset(unittest.TestCase):
+    def provider(self):
+        import importlib
+        import importlib.util
+
+        name = "icode.verification_presets"
+        self.assertIsNotNone(importlib.util.find_spec(name), "Python preset module is missing")
+        return importlib.import_module(name).PythonUnittestPlanProvider(Path(sys.executable))
+
+    def context(self, root, *, ticket="NATIVE-PRESET"):
+        root = root.resolve()
+        return ExecutionContext(ticket, root / "ticket", root, "check", "code_in_progress", ())
+
+    def control(self, context, *, run="native-run"):
+        control = RecordingControl()
+        root = context.workspace.resolve()
+        control.session = SimpleNamespace(policy=lambda step: SandboxPolicy(
+            1, run, context.ticket_id, step, root, (root,), (root,), (), (root / ".git",),
+            NetworkMode.DENY, (), 8, 30, 65536, (root / ".git",),
+        ))
+        return control
+
+    def sandbox(self):
+        return SimpleNamespace(
+            is_real_isolation=True, policy_contract_ready=True,
+            prepare_policy=lambda policy: None,
+            wrap_policy=lambda argv, **kwargs: list(argv),
+        )
+
+    def execute_fixture(self, context, control, provider, callback):
+        # Bind both symbols to the same boundary double; Native itself is real.
+        with patch("icode.autonomy.run_chain", callback), \
+                patch("icode.autonomy.chain_steps", return_value=("code", "deepcheck")), \
+                patch("icode.autonomy.ControlPlane.trace", return_value=SimpleNamespace(
+                    returncode=0, data={"ticket_id": context.ticket_id, "status": "code_in_progress"})):
+            executor = NativeChainExecutor(
+                require_skill(), backend=FakeBackend([]), step_runner=callback,
+                sandbox=self.sandbox(), verification_plan_provider=provider,
+            )
+            return executor, executor.execute(context, control)
+
+    def test_exact_builtin_same_execute_reuses_one_plan_and_shared_budget(self):
+        with temp_workspace() as root:
+            context = self.context(root)
+            calls = []
+
+            def step(settings, **kwargs):
+                calls.append(kwargs)
+                return ChainReport(delivered=True)
+
+            provider = self.provider()
+            provider_type = type(provider)
+            original = provider_type.__call__
+            observed = []
+
+            def create(candidate, context, policy):
+                plan = original(candidate, context, policy)
+                observed.append(plan)
+                return plan
+
+            with patch.object(provider_type, "__call__", create):
+                _executor, result = self.execute_fixture(context, self.control(context), provider, step)
+            self.assertEqual(result.state, "succeeded")
+            self.assertEqual(len(observed), 1, "builtin must construct only the first engineering plan")
+            self.assertEqual([call["steps"] for call in calls], [("code",), ("deepcheck",)])
+            self.assertIs(calls[0]["verification_plan"], calls[1]["verification_plan"])
+            self.assertIs(calls[0]["budget_tracker"], calls[1]["budget_tracker"])
+            self.assertIs(calls[0]["verification_plan"], observed[0])
+
+    def test_new_execute_same_executor_creates_new_plan_for_new_run(self):
+        with temp_workspace() as root:
+            context = self.context(root)
+            calls = []
+
+            def step(settings, **kwargs):
+                calls.append(kwargs)
+                return ChainReport(delivered=True)
+
+            with patch("icode.autonomy.run_chain", step), \
+                    patch("icode.autonomy.chain_steps", return_value=("code", "deepcheck")), \
+                    patch("icode.autonomy.ControlPlane.trace", return_value=SimpleNamespace(
+                        returncode=0, data={"ticket_id": context.ticket_id, "status": "code_in_progress"})):
+                executor = NativeChainExecutor(
+                    require_skill(), backend=FakeBackend([]), step_runner=step,
+                    sandbox=self.sandbox(), verification_plan_provider=self.provider(),
+                )
+                self.assertEqual(executor.execute(context, self.control(context, run="one")).state, "succeeded")
+                self.assertEqual(executor.execute(context, self.control(context, run="two")).state, "succeeded")
+            plans = [call["verification_plan"] for call in calls]
+            self.assertIs(plans[0], plans[1])
+            self.assertIs(plans[2], plans[3])
+            self.assertIsNot(plans[0], plans[2])
+            self.assertEqual([plan.run_id for plan in plans], ["one", "one", "two", "two"])
+            self.assertIsNot(calls[0]["budget_tracker"], calls[2]["budget_tracker"])
+
+    def test_shared_executor_concurrent_tickets_do_not_share_plan_or_budget(self):
+        with temp_workspace() as parent:
+            roots = (parent / "first", parent / "second")
+            for root in roots:
+                root.mkdir()
+            contexts = [self.context(root, ticket=f"THREAD-{index}") for index, root in enumerate(roots)]
+            calls = []
+            results = []
+            failures = []
+            lock = threading.Lock()
+            barrier = threading.Barrier(2)
+
+            def step(settings, **kwargs):
+                with lock:
+                    calls.append(kwargs)
+                if kwargs["steps"] == ("code",):
+                    barrier.wait(ASYNC_TEST_TIMEOUT_SECONDS)
+                return ChainReport(delivered=True)
+
+            def trace(_self, out_dir):
+                ticket = next(context.ticket_id for context in contexts if context.out_dir == out_dir)
+                return SimpleNamespace(returncode=0, data={"ticket_id": ticket, "status": "code_in_progress"})
+
+            with patch("icode.autonomy.run_chain", step), \
+                    patch("icode.autonomy.chain_steps", return_value=("code", "deepcheck")), \
+                    patch("icode.autonomy.ControlPlane.trace", trace):
+                executor = NativeChainExecutor(
+                    require_skill(), backend=FakeBackend([]), step_runner=step,
+                    sandbox=self.sandbox(), verification_plan_provider=self.provider(),
+                )
+
+                def invoke(context):
+                    try:
+                        result = executor.execute(context, self.control(context, run="run-" + context.ticket_id))
+                        with lock:
+                            results.append(result)
+                    except BaseException as error:
+                        with lock:
+                            failures.append(error)
+
+                threads = [threading.Thread(target=invoke, args=(context,)) for context in contexts]
+                started = []
+                try:
+                    for thread in threads:
+                        thread.start()
+                        started.append(thread)
+                    for thread in started:
+                        thread.join(ASYNC_TEST_TIMEOUT_SECONDS)
+                    self.assertTrue(all(not thread.is_alive() for thread in started))
+                finally:
+                    barrier.abort()
+                    for thread in started:
+                        thread.join(ASYNC_TEST_TIMEOUT_SECONDS)
+            self.assertEqual(failures, [])
+            self.assertEqual([result.state for result in results], ["succeeded", "succeeded"])
+            groups = [[call for call in calls if call["ticket_id"] == context.ticket_id] for context in contexts]
+            self.assertTrue(all(len(group) == 2 for group in groups))
+            for context, group in zip(contexts, groups):
+                self.assertIs(group[0]["verification_plan"], group[1]["verification_plan"])
+                self.assertIs(group[0]["budget_tracker"], group[1]["budget_tracker"])
+                self.assertEqual(group[0]["verification_plan"].workspace_root, context.workspace)
+                self.assertEqual(group[0]["verification_plan"].ticket_id, context.ticket_id)
+            self.assertIsNot(groups[0][0]["verification_plan"], groups[1][0]["verification_plan"])
+            self.assertIsNot(groups[0][0]["budget_tracker"], groups[1][0]["budget_tracker"])
+
+    def test_generic_and_subclass_provider_keep_per_step_calls(self):
+        provider_type = type(self.provider())
+        for mode in ("generic", "subclass"):
+            with self.subTest(mode=mode), temp_workspace() as root:
+                context = self.context(root)
+                calls = []
+                generated = []
+                base = provider_type(Path(sys.executable))
+
+                def generic(context, policy):
+                    plan = base(context, policy)
+                    generated.append(plan)
+                    return plan
+
+                class Subclass(provider_type):
+                    def __call__(candidate, context, policy):
+                        plan = super().__call__(context, policy)
+                        generated.append(plan)
+                        return plan
+
+                provider = generic if mode == "generic" else Subclass(Path(sys.executable))
+
+                def step(settings, **kwargs):
+                    calls.append(kwargs)
+                    return ChainReport(delivered=True)
+
+                _executor, result = self.execute_fixture(context, self.control(context), provider, step)
+                self.assertEqual(result.state, "succeeded")
+                self.assertEqual(len(generated), 2)
+                self.assertIsNot(generated[0], generated[1])
+                self.assertIs(calls[0]["verification_plan"], generated[0])
+                self.assertIs(calls[1]["verification_plan"], generated[1])
+
+    def test_custom_adapter_keeps_signature_and_does_not_call_provider(self):
+        with temp_workspace() as root:
+            context = self.context(root)
+            calls = []
+
+            def provider(context, policy):
+                raise AssertionError("custom adapter must not acquire a new plan")
+
+            def custom(settings, *, backend, workspace, requirement, ticket_id, steps, out_dir,
+                       approver, loop_config, budget, on_event, sandbox, policy):
+                calls.append((steps, policy))
+                return ChainReport(delivered=True)
+
+            with patch("icode.autonomy.chain_steps", return_value=("code", "deepcheck")), \
+                    patch("icode.autonomy.ControlPlane.trace", return_value=SimpleNamespace(
+                        returncode=0, data={"ticket_id": context.ticket_id, "status": "code_in_progress"})):
+                executor = NativeChainExecutor(
+                    require_skill(), backend=FakeBackend([]), step_runner=custom,
+                    sandbox=self.sandbox(), verification_plan_provider=provider,
+                )
+                result = executor.execute(context, self.control(context))
+            self.assertEqual(result.state, "succeeded")
+            self.assertEqual([item[0] for item in calls], [("code",), ("deepcheck",)])
+
+    def test_reused_plan_identity_is_rechecked_on_later_step(self):
+        with temp_workspace() as root:
+            context = self.context(root)
+            calls = []
+
+            def step(settings, **kwargs):
+                calls.append(kwargs)
+                object.__setattr__(kwargs["verification_plan"], "run_id", "tampered")
+                return ChainReport(delivered=True)
+
+            _executor, result = self.execute_fixture(context, self.control(context), self.provider(), step)
+            self.assertEqual(result, ExecutionResult("blocked", "deepcheck", "verification_plan_identity_mismatch"))
+            self.assertEqual(len(calls), 1)
+
+    def test_between_steps_root_environment_and_tool_drift_do_not_reauthorize(self):
+        from icode import engineering_verification as verification, runner
+        from icode.isolation import NoIsolation
+
+        for mutation, expected in (("root", "verification_plan_identity_mismatch"),
+                                   ("environment", "verification_plan_identity_mismatch"),
+                                   ("tool", "verification_tool_changed")):
+            with self.subTest(mutation=mutation), temp_workspace() as parent, ExitStack() as stack:
+                root = parent / "workspace"
+                root.mkdir()
+                context = self.context(root)
+                plans = []
+                errors = []
+                original_environment = verification._policy_environment
+
+                def step(settings, **kwargs):
+                    plan = kwargs["verification_plan"]
+                    plans.append(plan)
+                    if kwargs["steps"] == ("code",):
+                        if mutation == "root":
+                            root.rename(parent / "original")
+                            root.mkdir()
+                        elif mutation == "environment":
+                            stack.enter_context(patch.object(
+                                verification, "_policy_environment",
+                                side_effect=lambda workspace: dict(original_environment(workspace), PRESET_DRIFT="1"),
+                            ))
+                        else:
+                            stack.enter_context(patch.object(runner, "_executable_identity", return_value="changed"))
+                        return ChainReport(delivered=True)
+                    with patch.object(runner, "ControlPlane") as cp, patch.object(runner, "_run_agent") as model:
+                        report = runner.run_contract_step(
+                            settings, backend=FakeBackend([]), workspace=context.workspace,
+                            step="deepcheck", ticket_id=context.ticket_id, policy=kwargs["policy"],
+                            verification_plan=plan, sandbox=NoIsolation(), out_dir=context.out_dir,
+                        )
+                    errors.append(report.error)
+                    cp.assert_not_called()
+                    model.assert_not_called()
+                    return ChainReport(delivered=False, stopped_at="deepcheck")
+
+                _executor, result = self.execute_fixture(context, self.control(context), self.provider(), step)
+                self.assertEqual(result.state, "blocked")
+                self.assertEqual(errors, [expected])
+                self.assertEqual(len(plans), 2)
+                self.assertIs(plans[0], plans[1])
+
+    def test_missing_and_broken_providers_keep_existing_stable_errors(self):
+        with temp_workspace() as root:
+            context = self.context(root)
+
+            def broken(context, policy):
+                raise ValueError("PRIVATE_SENTINEL")
+
+            for provider, expected in ((None, "verification_plan_required"),
+                                       (broken, "verification_plan_provider_failed"),
+                                       (lambda context, policy: object(), "verification_plan_invalid")):
+                with self.subTest(expected=expected):
+                    def step(settings, **kwargs):
+                        self.fail("invalid provider must not reach adapter")
+
+                    _executor, result = self.execute_fixture(context, self.control(context), provider, step)
+                    self.assertEqual(result.error_code, expected)
+                    self.assertNotIn("PRIVATE", repr(result))
+
+
 class TestIntentPayload(unittest.TestCase):
     def test_只接受稳定动作与request_id(self) -> None:
         for intent in ("start", "pause", "resume", "cancel", "takeover"):

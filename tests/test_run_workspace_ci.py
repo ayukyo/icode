@@ -14,6 +14,61 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_python_preset_module_selected_once_completely_without_static_skips(self):
+        name = "tests.test_verification_presets"
+        self.assertEqual(DEFAULT_MODULES.count(name), 1)
+        module = importlib.import_module(name)
+        test_class = getattr(module, "TestPythonUnittestPlanProvider", None)
+        self.assertTrue(isinstance(test_class, type))
+        methods = unittest.defaultTestLoader.getTestCaseNames(test_class)
+        self.assertTrue(methods)
+        self.assertFalse(getattr(test_class, "__unittest_skip__", False))
+        for method in methods:
+            self.assertFalse(getattr(getattr(test_class, method), "__unittest_skip__", False))
+        def cases(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from cases(test)
+                else:
+                    yield test
+        expected = {name + ".TestPythonUnittestPlanProvider." + method for method in methods}
+        selected = [test for selection in DEFAULT_MODULES
+                    if selection == name or selection.startswith(name + ".")
+                    for test in cases(unittest.defaultTestLoader.loadTestsFromName(selection))]
+        self.assertEqual({test.id() for test in selected}, expected)
+        self.assertEqual(len(selected), len(expected))
+        for test in selected:
+            self.assertIs(type(test), test_class)
+            self.assertFalse(getattr(type(test), "__unittest_skip__", False))
+            self.assertFalse(getattr(getattr(test, test._testMethodName), "__unittest_skip__", False))
+        for old in ("tests.test_workbench", "tests.test_autonomy"):
+            self.assertEqual(DEFAULT_MODULES.count(old), 1)
+
+    def test_preset_cli_and_native_methods_are_selected_once_without_static_skips(self):
+        from tests.test_workbench import TestWorkbenchCLI
+        from tests.test_autonomy import TestNativePythonPreset
+        def cases(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from cases(test)
+                else:
+                    yield test
+        for name, test_class in (("tests.test_workbench", TestWorkbenchCLI),
+                                 ("tests.test_autonomy", TestNativePythonPreset)):
+            self.assertEqual(DEFAULT_MODULES.count(name), 1)
+            methods = unittest.defaultTestLoader.getTestCaseNames(test_class)
+            self.assertTrue(methods)
+            expected = {name + "." + test_class.__name__ + "." + method for method in methods}
+            selected = [test for selection in DEFAULT_MODULES
+                        if selection == name or selection.startswith(name + ".")
+                        for test in cases(unittest.defaultTestLoader.loadTestsFromName(selection))
+                        if type(test) is test_class]
+            self.assertEqual({test.id() for test in selected}, expected)
+            self.assertEqual(len(selected), len(expected))
+            self.assertFalse(getattr(test_class, "__unittest_skip__", False))
+            for test in selected:
+                self.assertFalse(getattr(getattr(test, test._testMethodName), "__unittest_skip__", False))
+
     def test_backend_transport_privacy_selected_once_without_skips(self):
         name = "tests.test_backend_transport_privacy"
         self.assertEqual(DEFAULT_MODULES.count(name), 1)

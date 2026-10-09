@@ -27,6 +27,7 @@ from .control import ControlPlane
 from .loop import LoopConfig
 from .sandbox_policy import SandboxPolicy
 from .engineering_verification import VerificationPlan
+from .verification_presets import PythonUnittestPlanProvider
 from .tickets import TicketError, TicketService
 from .workspace import (
     GitWorkspaceIdentity,
@@ -149,6 +150,9 @@ class NativeChainExecutor:
         out_dir = context.out_dir.resolve()
         # Invocation-local, not an executor field: separate tickets never share usage.
         budget_tracker = BudgetTracker(self.budget or Budget())
+        # Only this built-in preset freezes one plan within this invocation.
+        # Never retain plans on the executor or change arbitrary provider calls.
+        preset_plan: VerificationPlan | None = None
         try:
             contracts = ContractSet.load(self.settings.gates_json)
         except Exception:  # noqa: BLE001 - 公开结果只保留稳定码。
@@ -215,7 +219,10 @@ class NativeChainExecutor:
                 if self.verification_plan_provider is None:
                     return ExecutionResult("blocked", step, "verification_plan_required")
                 try:
-                    verification_plan = self.verification_plan_provider(context, policy)
+                    if type(self.verification_plan_provider) is PythonUnittestPlanProvider and preset_plan is not None:
+                        verification_plan = preset_plan
+                    else:
+                        verification_plan = self.verification_plan_provider(context, policy)
                 except Exception:  # noqa: BLE001 - provider exceptions never disclose trusted inputs.
                     return ExecutionResult("blocked", step, "verification_plan_provider_failed")
                 if type(verification_plan) is not VerificationPlan:
@@ -225,6 +232,8 @@ class NativeChainExecutor:
                         or verification_plan.workspace_root != context.workspace.resolve()
                         or step not in verification_plan.steps):
                     return ExecutionResult("blocked", step, "verification_plan_identity_mismatch")
+                if type(self.verification_plan_provider) is PythonUnittestPlanProvider:
+                    preset_plan = verification_plan
             try:
                 workspace_session = None
                 if (

@@ -6,18 +6,20 @@ import http.client
 import json
 import os
 import re
+import sys
 import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from icode.autonomy import ExecutionResult
-from icode.cli import _build_parser, cmd_workbench
+from icode.autonomy import ExecutionContext, ExecutionResult, NativeChainExecutor
+from icode.cli import _build_parser, cmd_workbench, main
 from icode.workbench import ASSETS_DIR, MAX_BODY_BYTES, WorkbenchServer
 from icode.workspace import WorkspaceBusyError, WorkspaceError
 from tests._support import require_skill, temp_workspace
@@ -668,6 +670,190 @@ class TestWorkbenchAssets(unittest.TestCase):
 
 
 class TestWorkbenchCLI(unittest.TestCase):
+    def test_main_selected_provider_reaches_real_native_and_chain_default_stays_blocked(self):
+        from icode.runner import StepReport
+        from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+        settings = require_skill()
+        sandbox = SimpleNamespace(
+            is_real_isolation=True, policy_contract_ready=True,
+            wrap_policy=lambda argv, **kwargs: list(argv),
+            prepare_policy=lambda policy: None,
+        )
+        for selected in (False, True):
+            with self.subTest(selected=selected), temp_workspace() as root:
+                root = root.resolve()
+                directory = root / "ticket"
+                directory.mkdir()
+                (directory / ".ico_metadata.json").write_text(
+                    json.dumps({"ticket_id": "CLI-NATIVE"}), encoding="utf-8",
+                )
+                argv = ["workbench", "--workspace", str(root), "--enable-autonomous", "--no-browser"]
+                if selected:
+                    argv += ["--verification-preset", "python-unittest"]
+                with patch("icode.cli.load_settings", return_value=settings), \
+                        patch("icode.cli._build_runner", return_value=(None, None, None, None, sandbox)), \
+                        patch("icode.workbench.WorkbenchServer") as server, \
+                        patch("threading.Event") as event, redirect_stdout(StringIO()):
+                    server.return_value.start.return_value = "http://127.0.0.1:1234/"
+                    event.return_value.wait.side_effect = KeyboardInterrupt
+                    self.assertEqual(main(argv), 0)
+                executor = server.call_args.kwargs["autonomy_executor"]
+                self.assertIs(type(executor), NativeChainExecutor)
+                context = ExecutionContext("CLI-NATIVE", directory, root, "check", "code_in_progress", ())
+                control = SimpleNamespace(
+                    session=SimpleNamespace(policy=lambda step: SandboxPolicy(
+                        1, "cli-native-run", "CLI-NATIVE", step, root, (root,), (root,), (), (root / ".git",),
+                        NetworkMode.DENY, (), 8, 30, 65536, (root / ".git",),
+                    )),
+                    safe_point=lambda step: None,
+                )
+                observed = []
+
+                def contract_step(settings, **kwargs):
+                    observed.append(kwargs)
+                    return StepReport(kwargs["step"], True, str(directory), finish_outcome="success")
+
+                with patch("icode.autonomy.chain_steps", return_value=("code", "deepcheck")), \
+                        patch("icode.autonomy.ControlPlane.trace", return_value=SimpleNamespace(
+                            returncode=0, data={"ticket_id": "CLI-NATIVE", "status": "code_in_progress"})), \
+                        patch("icode.chain.run_contract_step", contract_step):
+                    result = executor.execute(context, control)
+                if selected:
+                    self.assertEqual(result.state, "succeeded")
+                    self.assertEqual([call["step"] for call in observed], ["code", "deepcheck"])
+                    self.assertIs(observed[0]["verification_plan"], observed[1]["verification_plan"])
+                    self.assertEqual(observed[0]["verification_plan"].run_id, "cli-native-run")
+                    self.assertEqual(observed[0]["verification_plan"].checks[0].argv[0], sys.executable)
+                    self.assertIs(observed[0]["budget_tracker"], observed[1]["budget_tracker"])
+                else:
+                    self.assertEqual(result, ExecutionResult("blocked", "code", "verification_plan_required"))
+                    self.assertEqual(observed, [])
+
+    def test_verification_preset_parser_is_explicit_and_workbench_only(self):
+        parser = _build_parser()
+        default = parser.parse_args(["workbench", "--workspace", "/srv/project"])
+        self.assertTrue(hasattr(default, "verification_preset"), "preset parser option is missing")
+        self.assertIsNone(default.verification_preset)
+        selected = parser.parse_args([
+            "workbench", "--workspace", "/srv/project", "--enable-autonomous",
+            "--verification-preset", "python-unittest",
+        ])
+        self.assertEqual(selected.verification_preset, "python-unittest")
+        with self.assertRaises(SystemExit) as unknown:
+            parser.parse_args(["workbench", "--workspace", "/srv/project", "--verification-preset", "shell"])
+        self.assertEqual(unknown.exception.code, 2)
+        with self.assertRaises(SystemExit) as other:
+            parser.parse_args(["webui", "--verification-preset", "python-unittest"])
+        self.assertEqual(other.exception.code, 2)
+
+    def test_preset_without_autonomy_main_refuses_before_settings_backend_server(self):
+        parser_args = _build_parser().parse_args(["workbench", "--workspace", "/srv/project"])
+        self.assertTrue(hasattr(parser_args, "verification_preset"), "preset parser option is missing")
+        output = StringIO()
+        with (
+            patch("icode.cli.load_settings") as settings,
+            patch("icode.cli._build_runner") as backend,
+            patch("icode.workbench.WorkbenchServer") as server,
+            redirect_stderr(output),
+        ):
+            code = main(["workbench", "--workspace", "/srv/project", "--verification-preset", "python-unittest"])
+        self.assertEqual(code, 2)
+        self.assertEqual(output.getvalue(), "错误：--verification-preset 需要 --enable-autonomous\n")
+        settings.assert_not_called()
+        backend.assert_not_called()
+        server.assert_not_called()
+
+    def test_real_cmd_constructs_real_native_with_selected_provider_and_old_namespace(self):
+        from icode.verification_presets import PythonUnittestPlanProvider
+
+        settings = require_skill()
+        sandbox = SimpleNamespace(
+            is_real_isolation=True, policy_contract_ready=True,
+            wrap_policy=lambda *args, **kwargs: [], prepare_policy=lambda policy: None,
+        )
+        for selected, old_namespace in ((False, False), (True, False), (False, True)):
+            with self.subTest(selected=selected, old_namespace=old_namespace):
+                argv = ["workbench", "--workspace", "/srv/project", "--enable-autonomous", "--no-browser"]
+                if selected:
+                    argv += ["--verification-preset", "python-unittest"]
+                args = _build_parser().parse_args(argv)
+                if old_namespace:
+                    del args.verification_preset
+                with (
+                    patch("icode.cli.load_settings", return_value=settings),
+                    patch("icode.cli._build_runner", return_value=(None, None, None, None, sandbox)),
+                    patch("icode.workbench.WorkbenchServer") as server,
+                    patch("threading.Event") as event,
+                    redirect_stdout(StringIO()),
+                ):
+                    server.return_value.start.return_value = "http://127.0.0.1:1234/"
+                    event.return_value.wait.side_effect = KeyboardInterrupt
+                    self.assertEqual(cmd_workbench(args), 0)
+                executor = server.call_args.kwargs["autonomy_executor"]
+                self.assertIs(type(executor), NativeChainExecutor)
+                self.assertIs(executor.settings, settings)
+                self.assertIs(executor.sandbox, sandbox)
+                provider = executor.verification_plan_provider
+                if selected:
+                    self.assertIs(type(provider), PythonUnittestPlanProvider)
+                    self.assertEqual(provider.executable, Path(sys.executable))
+                    with temp_workspace() as root:
+                        from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+                        context = ExecutionContext("CLI-1", root / "ticket", root.resolve(), "check", "code_in_progress", ())
+                        policy = SandboxPolicy(
+                            1, "cli-run", "CLI-1", "code", root.resolve(),
+                            (root.resolve(),), (root.resolve(),), (),
+                            (root.resolve() / ".git",), NetworkMode.DENY, (), 8, 30,
+                            65536, (root.resolve() / ".git",),
+                        )
+                        plan = provider(context, policy)
+                        self.assertEqual(plan.run_id, "cli-run")
+                        self.assertEqual(plan.checks[0].argv[0], sys.executable)
+                        self.assertEqual(plan.steps, ("code", "deepcheck"))
+                else:
+                    self.assertIsNone(provider)
+                server.return_value.stop.assert_called_once_with()
+
+    def test_selected_constructor_failure_is_fixed_and_precedes_backend(self):
+        from icode.config import ConfigError
+
+        args = _build_parser().parse_args([
+            "workbench", "--workspace", "/srv/project", "--enable-autonomous",
+            "--verification-preset", "python-unittest", "--no-browser",
+        ])
+        with (
+            patch("icode.cli.load_settings", return_value=require_skill()),
+            patch("icode.verification_presets._executable_identity", side_effect=OSError("PRIVATE_PATH")),
+            patch("icode.cli._build_runner") as backend,
+            patch("icode.workbench.WorkbenchServer") as server,
+            self.assertRaises(ConfigError) as caught,
+        ):
+            cmd_workbench(args)
+        self.assertEqual(str(caught.exception), "Python unittest 预设解释器不可用")
+        backend.assert_not_called()
+        server.assert_not_called()
+
+    def test_selected_constructor_fatal_reaches_direct_cmd_unchanged(self):
+        args = _build_parser().parse_args([
+            "workbench", "--workspace", "/srv/project", "--enable-autonomous",
+            "--verification-preset", "python-unittest", "--no-browser",
+        ])
+        for error in (MemoryError("fatal"), KeyboardInterrupt("fatal"), SystemExit(23)):
+            with (
+                self.subTest(error=type(error).__name__),
+                patch("icode.cli.load_settings", return_value=require_skill()),
+                patch("icode.verification_presets._executable_identity", side_effect=error),
+                patch("icode.cli._build_runner") as backend,
+                patch("icode.workbench.WorkbenchServer") as server,
+                self.assertRaises(type(error)) as caught,
+            ):
+                cmd_workbench(args)
+            self.assertIs(caught.exception, error)
+            backend.assert_not_called()
+            server.assert_not_called()
+
     def test_自动模式配置提示不代表任务执行检查已通过(self) -> None:
         cases = (
             (False, False, "not_configured", "未启用"),

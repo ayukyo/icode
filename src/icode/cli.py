@@ -190,6 +190,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="显式启用自主执行（默认关闭）",
     )
+    p_workbench.add_argument(
+        "--verification-preset",
+        choices=("python-unittest",),
+        default=None,
+        help="显式选择宿主工程检查预设（需要 --enable-autonomous）",
+    )
     _add_model_args(p_workbench)
     _add_loop_args(p_workbench, default_turns=20)
 
@@ -712,6 +718,10 @@ def cmd_workbench(args: argparse.Namespace) -> int:
 
     from .workbench import WorkbenchServer
 
+    verification_preset = getattr(args, "verification_preset", None)
+    if verification_preset is not None and not args.enable_autonomous:
+        raise ConfigError("--verification-preset 需要 --enable-autonomous")
+
     settings = load_settings(args.skill_root)
     executor = None
     isolation_level = "not_configured"
@@ -723,6 +733,12 @@ def cmd_workbench(args: argparse.Namespace) -> int:
         from .autonomy import NativeChainExecutor
         from .loop import LoopConfig
 
+        verification_plan_provider = None
+        if verification_preset == "python-unittest":
+            from .verification_presets import PythonUnittestPlanProvider
+
+            verification_plan_provider = PythonUnittestPlanProvider(Path(sys.executable))
+
         backend, approver, budget, on_event, sandbox = _build_runner(args)
         executor = NativeChainExecutor(
             settings,
@@ -732,6 +748,7 @@ def cmd_workbench(args: argparse.Namespace) -> int:
             budget=budget,
             on_event=on_event,
             sandbox=sandbox,
+            verification_plan_provider=verification_plan_provider,
         )
         isolation_level = (
             "enforced" if sandbox.is_real_isolation
