@@ -148,3 +148,19 @@ completion 31,627 / cached 475,525）。
 其它强制工具调用仍拒绝。本次真实运行发生在修改前，不能计作新兼容命中或 R3 信用。修改后
 全量本机回归（2,518 项，60 项平台条件跳过）通过；Windows 原生 CI 仍有独立失败项，R2/R3、
 六步链和 90% 一致性继续未通过。
+
+## Review round 兼容命中与 merge 副作用边界（2026-10-10，`028fd7a`）
+
+新工单 `R3-REAL-FINAL-16` 在 `028fd7a` 工作树后使用同一仓外 key、MiniMax-M3、bubblewrap
+和临时 `pycalc` 副本执行 `chain --only plan,review,merge`。plan 32 回合后成功；review
+只用 6 回合/4 次工具调用即完成，真实目录同时登记 `02_review.md`、合法
+`review_round_1.json` 和宿主装配的 `review_manifest.json`。其中模型先发通用
+`submit_artifact`，随后调用 typed `submit_review_round`；两者都经过同一合同和事件校验，
+证明窄兼容路径在真实模型上可命中，不是离线假设。
+
+merge 阶段模型确实生成了 `03_plan_final.md`，但连续重复写入触发宿主“副作用回执不完整”的
+保护，事件链不完整，控制面拒绝登记该产物并 fail-closed；没有人工重放或把文件存在当作成功。
+全工单共 132 次调用、1,610,565 tokens（prompt 1,524,629 / completion 85,936 /
+cached 1,395,820），最终停在 merge。该样本授予 plan→review（含真实 round/manifest）信用，
+不授予 merge、code→deepcheck→audit、R3 六步、90% 一致性或 R2 总验收信用；同时暴露长产物
+提交的事件链收尾仍需独立修复和新工单复验。

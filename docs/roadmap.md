@@ -11,6 +11,14 @@
   `2518` 项测试通过、`60` 项条件跳过；GitHub 主 CI `37978741565` 仍有 Windows workspace、
   verifier lifecycle 和 Reviewer snapshot 失败，不能报告 R2/R3 完成。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
+- **真实兼容命中但 merge 事件链仍 fail-closed（2026-10-10，`028fd7a`）：**新工单
+  `R3-REAL-FINAL-16` 的 plan 成功；review 同时登记 `02_review.md`、`review_round_1.json`、
+  `review_manifest.json`，模型先发通用 `submit_artifact` 再发 typed round，证明窄兼容在真实
+  提供方上命中。merge 虽生成 `03_plan_final.md`，但连续长写入导致宿主副作用回执不完整，控制面
+  拒绝登记并停止；132 次调用、1,610,565 tokens，未取得 merge/code/deepcheck/audit 成功。
+  该结果只增加 plan→review round/manifest 信用，不授 R3 六步、90% 一致性或 R2 总验收；下一步
+  应修复长产物提交的事件链收尾并用新工单复验。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **inspection 状态机与恢复边界（2026-10-10，`695a381`）：**`8fabe36`/`fee0353`/`695a381` 已推送 `main`。运行器在多工具回复完成配对后再切换强制工具；源码编辑后重新 `prepare`，按 worklist 逐文件 `read(code_review)` 后 `check`；恢复时检测旧 worklist 先重新绑定。151 项定向回归通过、5 项跳过、32 个子测试通过。真实 `R3-REAL-FINAL-8FABE36` 已证明 plan/review/merge、实际 code 文件变更和宿主 worklist 生成，但 code 的 inspection read/check 未完成，控制面 fail-closed；recovery 也未通过。`R3-REAL-FINAL-FEE0353` 在 merge 缺少 `03_plan_final.md` 停止。当前仍不授予 R3 1→6、90% 一致性、R2 总验收或自动模式信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
 - **强制交付回合后的真实 code 复验仍停在 code（2026-10-10，`e94a86b`）：**`R3-REAL-FINAL-2FE8169` 的 plan、review、merge 全部成功；code 真实用 `edit_file` 修改了临时 `calc.py` 与 `test_calc.py`，并登记 `04_code_review_fix.md`，但 `code_worklist.json` 缺失，按 fail-closed 停步，deepcheck/audit 未运行。随后 `R3-REAL-FINAL-E94A86B` 在 plan 收到 HTTP 400，未形成产物，不计能力信用。当前仍无 code→deepcheck→audit 完整真实成功样本，不授 R3 六步、90% 一致性或 R2 总验收信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
