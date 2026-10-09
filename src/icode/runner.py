@@ -99,7 +99,10 @@ def _step_start_request(
     action = f"step-{step}-start"
     default = make_request(ticket_id, action)
     try:
-        trace = cp.trace(out_dir)
+        # The control-plane default is a recent-event view (50 rows).  Retry
+        # identity must inspect the complete bounded ticket history, otherwise
+        # an older start can fall out of the window and reuse its occurrence.
+        trace = cp.trace(out_dir, limit=10000)
         if trace.returncode != 0 or trace.data.get("ok") is not True:
             return default
         events = trace.data.get("events") or []
