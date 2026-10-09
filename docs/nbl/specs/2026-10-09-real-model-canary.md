@@ -57,5 +57,11 @@ JSON 文件的正文必须是合法 JSON 文本，`review_manifest.json` 由宿�
 兼容：当提供方把 dict/list 作为 `.json` 正文传入时，仅将其序列化为 UTF-8 文本；Markdown 或其它文本
 仍拒绝非字符串，ArtifactBroker 的路径、大小、机器所有权和事件登记合同不变。回归测试覆盖结构化
 JSON 接受、普通文本拒绝、旧 artifact 合同及 review 提示，共 10 项通过，compileall 通过。该修改尚
-未取得新的真实 review 成功证据；新工单 `R3-REAL-REVIEW-PROMPT` 正在使用修复前已启动的进程，结果
-必须单独记录，不能与 `eb42ab9` 的新行为混写。
+未取得新的真实 review 成功证据；新工单 `R3-REAL-REVIEW-PROMPT` 的进程在修复前启动，结果必须
+单独记录，不能与 `eb42ab9` 的新行为混写。
+
+该工单随后结束：plan 通过；review 的最终有效阶段为 5 回合/9 次工具调用，模型只提交了
+`02_review.md`，没有形成合法 `review_round_*.json`，宿主无法装配 `review_manifest.json`，按
+fail-closed 停步。总计 56 次调用、483,922 tokens（prompt 440,950 / completion 42,972 / cached
+380,889）。新的 dict/list 兼容没有获得真实命中样本；因此这次不证明 review、inspection 或
+code→deepcheck→audit 能力，也不提高 R3 或 90% 一致性信用。
