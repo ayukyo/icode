@@ -49,6 +49,7 @@ class LoopConfig:
     # Optional hard hand-off point for real providers that keep reading until
     # the normal turn cap.  At/after this turn the output tool is required.
     force_tool_after_turns: int | None = None
+    force_tool_after_turns_tool: str | None = None
     # 已读全白名单后，保留给必需工具提交、纠正和结束的回合。
     required_tool_turn_reserve: int = 0
 
@@ -141,6 +142,9 @@ class AgentLoop:
                      or self.config.force_tool_after_turns < 1
                      or self.config.force_tool_after_turns > self.config.max_turns)):
             raise ValueError("force_tool_after_turns 必须在 1..max_turns 内")
+        if self.config.force_tool_after_turns_tool is not None:
+            if self.registry.get(self.config.force_tool_after_turns_tool) is None:
+                raise ValueError("force_tool_after_turns_tool 必须是已注册工具名")
         if (type(self.config.required_tool_turn_reserve) is not int
                 or self.config.required_tool_turn_reserve < 0):
             raise ValueError("required_tool_turn_reserve 必须是非负整数")
@@ -349,9 +353,15 @@ class AgentLoop:
                 self.config.force_tool_after_turns is not None
                 and index >= self.config.force_tool_after_turns
                 and tool_choice == "auto"
-                and self.config.tool_choice_on_no_tool is not None
+                and (
+                    self.config.force_tool_after_turns_tool is not None
+                    or self.config.tool_choice_on_no_tool is not None
+                )
             ):
-                tool_choice = self.config.tool_choice_on_no_tool
+                tool_choice = (
+                    self.config.force_tool_after_turns_tool
+                    or self.config.tool_choice_on_no_tool
+                )
                 forced_output_tool = tool_choice
                 required_tool_retry_remaining = 1
 
