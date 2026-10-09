@@ -50,6 +50,7 @@ class LoopConfig:
     # the normal turn cap.  At/after this turn the output tool is required.
     force_tool_after_turns: int | None = None
     force_tool_after_turns_tool: str | None = None
+    force_tool_prompt: str | None = None
     # 已读全白名单后，保留给必需工具提交、纠正和结束的回合。
     required_tool_turn_reserve: int = 0
 
@@ -364,6 +365,11 @@ class AgentLoop:
                 )
                 forced_output_tool = tool_choice
                 required_tool_retry_remaining = 1
+                if self.config.force_tool_prompt:
+                    history.append({
+                        "role": "user",
+                        "content": self.config.force_tool_prompt,
+                    })
 
             try:
                 assistant = self.backend.complete(
