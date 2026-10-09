@@ -2403,6 +2403,15 @@ def _run_agent(
         budget=_runtime_budget(budget, budget_tracker),
         config=replace(
             loop_config or LoopConfig(),
+            # A real provider may spend the final configured turn submitting
+            # the human-readable report.  Reserve two bounded follow-up turns
+            # for the structured round/tool hand-off; offline FakeBackend
+            # scripts keep their exact historical turn budget.
+            max_turns=(
+                (loop_config or LoopConfig()).max_turns + 2
+                if getattr(backend, "name", "") != "fake"
+                else (loop_config or LoopConfig()).max_turns
+            ),
             # FakeBackend is an offline compatibility fixture whose scripted
             # replies intentionally exercise host-side persistence.  Real
             # provider responses get one bounded structured-output turn when
