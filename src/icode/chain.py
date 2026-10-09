@@ -47,7 +47,10 @@ STEP_INSTRUCTIONS: dict[str, str] = {
         "  2) 机器可读的单轮结果 JSON，**严格**为\n"
         '     {"round": 1, "new_issues": [...], "refuted_issues": [...], "pending_verification": [...]}\n'
         "     三个数组的元素为字符串；没有问题就留空数组。\n"
-        "要求：真的去核对计划里的断言（读代码/文件），不要只做文字评价。"
+        "要求：真的去核对计划里的断言（读代码/文件），不要只做文字评价。\n"
+        "提交时必须调用 submit_artifact，且 arguments.name 与 arguments.content 都是字符串；"
+        "JSON 产物的 content 传合法 JSON 文本字符串，不要把对象直接作为 arguments。"
+        "不要提交 review_manifest.json（由宿主根据 round 文件装配）。"
     ),
     "merge": (
         "把审查意见合并进计划形成定稿：逐条说明采纳/反驳了哪些意见及理由，"
