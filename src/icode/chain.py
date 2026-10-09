@@ -233,7 +233,7 @@ def assemble_review_manifest(out_dir: Path, ticket_id: str, attempt: str) -> tup
 
 def set_code_files(
     cp: ControlPlane, out_dir: Path, ticket_id: str, workspace: Path, before: dict[str, str],
-    *, attempt: str,
+    *, attempt: str | None = None,
 ) -> tuple[list[str], bool]:
     """把工作区实际改动写入 metadata 的 `code_files`（`/code_files` 端口）。"""
     after = _snapshot(workspace)
@@ -243,7 +243,8 @@ def set_code_files(
     # `metadata-update` 的默认 request 只按 ticket/action 派生，会与 plan
     # 阶段的同名动作冲突；把当前 step attempt 与文件集合纳入逻辑坐标，
     # 既避免跨步骤幂等键碰撞，也让同一 attempt 的重试保持可重放。
-    request = make_request(ticket_id, "code-files", attempt=attempt,
+    # 保留旧的宿主/离线调用兼容性；正式链路总是传入真实 step attempt。
+    request = make_request(ticket_id, "code-files", attempt=attempt or "legacy",
                            boundary="\n".join(names))
     res = cp.metadata_update(
         out_dir, ticket_id=ticket_id, set_json={"code_files": names}, request=request,
