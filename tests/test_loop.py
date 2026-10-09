@@ -215,6 +215,14 @@ class TestLoopGuards(unittest.TestCase):
             outputs=(Port("worklist", "ticket_file", "code_worklist.json"),),
         ), max_bytes=4096)
 
+        def inspection_runner(**kwargs: Any) -> ToolResult:
+            if kwargs.get("phase") == "prepare":
+                (out_dir / "code_worklist.json").write_text(
+                    '{"units":[{"files":[{"path":"first.py"},{"path":"second.py"}]}]}',
+                    encoding="utf-8",
+                )
+            return ToolResult(True, "inspection-ok")
+
         backend = FakeBackend([
             {"content": "", "tool_calls": [
                 {"id": "edit-1", "name": "edit_file",
@@ -225,10 +233,22 @@ class TestLoopGuards(unittest.TestCase):
             {"content": "", "tool_calls": [{
                 "id": "inspect", "name": "inspection", "arguments": {"phase": "prepare"},
             }]},
+            {"content": "", "tool_calls": [{
+                "id": "read-1", "name": "inspection",
+                "arguments": {"phase": "read", "read_phase": "code_review", "path": "first.py"},
+            }]},
+            {"content": "", "tool_calls": [{
+                "id": "read-2", "name": "inspection",
+                "arguments": {"phase": "read", "read_phase": "code_review", "path": "second.py"},
+            }]},
+            {"content": "", "tool_calls": [{
+                "id": "check", "name": "inspection", "arguments": {"phase": "check"},
+            }]},
+            "完成",
         ])
         registry = default_registry(
             include_artifacts=True,
-            inspection_runner=lambda **_kwargs: ToolResult(True, "inspection-ok"),
+            inspection_runner=inspection_runner,
         )
         loop = AgentLoop(
             backend=backend,
@@ -237,7 +257,7 @@ class TestLoopGuards(unittest.TestCase):
             ctx=ToolContext(root=self.root, artifact_broker=broker),
             budget=BudgetTracker(),
             config=LoopConfig(
-                max_turns=2,
+                max_turns=6,
                 max_tool_calls_per_turn=2,
                 force_tool_after_turns=1,
                 force_tool_after_turns_tool="edit_file",
@@ -246,10 +266,17 @@ class TestLoopGuards(unittest.TestCase):
 
         result = loop.run([{"role": "user", "content": "修改两个源码文件"}])
 
-        self.assertEqual([call["tool_choice"] for call in backend.calls], ["edit_file", "inspection"])
+        self.assertTrue(result.ok)
+        self.assertEqual(
+            [call["tool_choice"] for call in backend.calls],
+            ["edit_file", "inspection", "inspection", "inspection", "inspection", "auto"],
+        )
         self.assertTrue(all(inv.result is not None and inv.result.ok for inv in result.turns[0].invocations))
-        self.assertEqual(result.turns[1].invocations[0].name, "inspection")
-        self.assertEqual(result.turns[1].invocations[0].decision, "allow")
+        self.assertEqual([turn.invocations[0].name for turn in result.turns[1:5]], [
+            "inspection", "inspection", "inspection", "inspection",
+        ])
+        self.assertTrue(all(turn.invocations[0].result is not None and turn.invocations[0].result.ok
+                            for turn in result.turns[1:5]))
         self.assertEqual(first.read_text(encoding="utf-8"), "after = 1\n")
         self.assertEqual(second.read_text(encoding="utf-8"), "after = 2\n")
 

@@ -314,6 +314,10 @@ class AgentLoop:
         forced_output_tool: str | None = None
         forced_edit_paths: set[str] = set()
         delivery_edit_required = False
+        forced_delivery_complete = False
+        inspection_phase_required: str | None = None
+        inspection_expected_paths: tuple[str, ...] = ()
+        inspection_read_paths: set[str] = set()
 
         def call_arguments(call: ToolCall) -> dict[str, Any]:
             """Normalize provider arguments without letting malformed JSON crash the loop."""
@@ -363,6 +367,7 @@ class AgentLoop:
                 self.config.force_tool_after_turns is not None
                 and index >= self.config.force_tool_after_turns
                 and tool_choice == "auto"
+                and not forced_delivery_complete
                 and (
                     self.config.force_tool_after_turns_tool is not None
                     or self.config.tool_choice_on_no_tool is not None
@@ -503,6 +508,31 @@ class AgentLoop:
                         "不要再调用其它工具，也不要用普通文本结束。"
                     )
                     continue
+                if call.name == "inspection" and inspection_phase_required is not None:
+                    phase = call_arguments(call).get("phase")
+                    if phase != inspection_phase_required:
+                        inv = ToolInvocation(
+                            name=call.name,
+                            arguments=call_arguments(call),
+                            decision=Decision.DENY.value,
+                            approved=False,
+                            result=ToolResult(
+                                False,
+                                f"当前 inspection 阶段只能调用 phase={inspection_phase_required}。",
+                                {
+                                    "error": "inspection_phase_order",
+                                    "required_phase": inspection_phase_required,
+                                },
+                            ),
+                            note="inspection 阶段顺序未满足，未执行",
+                        )
+                        turn.invocations.append(inv)
+                        history.append(_tool_message(call.id, inv))
+                        post_tool_prompts.append(
+                            "inspection 阶段顺序必须严格执行："
+                            f"现在只能调用 phase={inspection_phase_required}，不要调用其它工具。"
+                        )
+                        continue
                 inv = self._invoke(call.name, call_arguments(call))
                 turn.invocations.append(inv)
                 history.append(_tool_message(call.id, inv))
@@ -536,6 +566,7 @@ class AgentLoop:
                     # Reviewer 结构化提交通过本地校验后，允许模型自然结束；
                     # 提交前强制使用工具，避免只返回自由文本绕过合同。
                     tool_choice = "auto"
+                    forced_delivery_complete = True
                     if forced_output_tool == call.name:
                         forced_output_tool = None
                 if (
@@ -551,12 +582,19 @@ class AgentLoop:
                             forced_edit_paths.add(Path(path).name)
                         missing = missing_artifacts()
                         if len(forced_edit_paths) >= 2 and missing:
+                            # Any earlier worklist was produced against the
+                            # pre-edit tree.  Force a fresh prepare so hashes
+                            # and source scopes are rebound after the writes.
+                            inspection_phase_required = "prepare"
+                            inspection_expected_paths = ()
+                            inspection_read_paths.clear()
                             if self.registry.get("inspection") is not None:
                                 content = (
-                                    "代码文件已实际修改；现在必须调用 inspection，先用 phase=prepare "
-                                    "建立当前 code 工作清单，再对每个实际读取的工程文件用 phase=read、"
-                                    "read_phase=code_review 登记，最后用 phase=check 完成机器审查。"
-                                    "不要提交 code_worklist.json，也不要再执行 run_command。"
+                                    "代码文件已实际修改，旧 worklist 可能已过期；现在必须重新调用 "
+                                    "inspection，第一步只能用 phase=prepare 重建当前 code 工作清单。"
+                                    "prepare 成功后按宿主提示逐个用 phase=read、read_phase=code_review "
+                                    "登记，最后用 phase=check 完成机器审查。不要提交 code_worklist.json，"
+                                    "也不要再执行 run_command。"
                                 )
                                 deferred_tool_transition = ("inspection", content)
                             else:
@@ -570,21 +608,69 @@ class AgentLoop:
                             post_tool_prompts.append(content)
                     elif call.name == "inspection":
                         phase = (inv.arguments or {}).get("phase")
-                        if phase == "check" and artifact_broker is not None:
-                            missing = missing_artifacts()
+                        if inv.result is not None and inv.result.ok and phase == "prepare":
+                            expected: list[str] = []
+                            if artifact_broker is not None:
+                                worklist = Path(artifact_broker.out_dir) / "code_worklist.json"
+                                try:
+                                    payload = json.loads(worklist.read_text(encoding="utf-8"))
+                                    for unit in payload.get("units", []):
+                                        for item in unit.get("files", []):
+                                            path = item.get("path")
+                                            if isinstance(path, str) and path and path not in expected:
+                                                expected.append(path)
+                                except (OSError, UnicodeError, json.JSONDecodeError, AttributeError):
+                                    expected = []
+                            if not expected:
+                                expected = sorted(forced_edit_paths)
+                            inspection_expected_paths = tuple(expected)
+                            inspection_read_paths.clear()
+                            inspection_phase_required = "read"
                             content = (
-                                "inspection check 已成功；现在只能调用 submit_artifact，"
-                                "提交缺失的模型产物：" + "、".join(missing)
-                                + "。name/content 必须是字符串，不要提交机器生成的 worklist。"
+                                "inspection prepare 已成功。现在只能调用 inspection 的 "
+                                "phase=read，read_phase=code_review；请按顺序逐个读取这些路径："
+                                + "、".join(inspection_expected_paths)
+                                + "。全部 read 成功后再调用 phase=check。"
                             )
-                            deferred_tool_transition = ("submit_artifact", content)
                             post_tool_prompts.append(content)
+                        elif inv.result is not None and inv.result.ok and phase == "read":
+                            path = (inv.arguments or {}).get("path")
+                            if isinstance(path, str):
+                                inspection_read_paths.add(path)
+                            remaining = [
+                                item for item in inspection_expected_paths
+                                if item not in inspection_read_paths
+                            ]
+                            if remaining:
+                                inspection_phase_required = "read"
+                                post_tool_prompts.append(
+                                    "inspection read 已登记；继续只能调用 phase=read、"
+                                    "read_phase=code_review，剩余路径：" + "、".join(remaining)
+                                )
+                            else:
+                                inspection_phase_required = "check"
+                                post_tool_prompts.append(
+                                    "所有 inspection read 已登记；现在只能调用 phase=check，"
+                                    "不要调用其它工具。"
+                                )
+                        elif phase == "check" and inv.result is not None and inv.result.ok:
+                            inspection_phase_required = None
+                            missing = missing_artifacts()
+                            if missing:
+                                content = (
+                                    "inspection check 已成功；现在只能调用 submit_artifact，"
+                                    "提交缺失的模型产物：" + "、".join(missing)
+                                    + "。name/content 必须是字符串，不要提交机器生成的 worklist。"
+                                )
+                                deferred_tool_transition = ("submit_artifact", content)
+                                post_tool_prompts.append(content)
+                            else:
+                                deferred_tool_transition = ("auto", None)
                         else:
-                            tool_choice = "inspection"
-                            forced_output_tool = "inspection"
+                            inspection_phase_required = inspection_phase_required or "prepare"
                             post_tool_prompts.append(
-                                "inspection 尚未完成；继续按顺序调用 inspection 的 read 或 check，"
-                                "不要调用其它工具或用普通文本结束。"
+                                "inspection 调用未完成；请按当前要求重试 phase="
+                                + inspection_phase_required + "，不要调用其它工具或用普通文本结束。"
                             )
                     else:
                         tool_choice = "auto"
@@ -646,7 +732,9 @@ class AgentLoop:
             if deferred_tool_transition is not None:
                 next_tool, _ = deferred_tool_transition
                 tool_choice = next_tool
-                forced_output_tool = next_tool
+                forced_output_tool = None if next_tool == "auto" else next_tool
+                if next_tool == "auto":
+                    forced_delivery_complete = True
                 if next_tool == "inspection":
                     delivery_edit_required = False
 
