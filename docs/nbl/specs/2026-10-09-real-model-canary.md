@@ -164,3 +164,16 @@ merge 阶段模型确实生成了 `03_plan_final.md`，但连续重复写入触�
 cached 1,395,820），最终停在 merge。该样本授予 plan→review（含真实 round/manifest）信用，
 不授予 merge、code→deepcheck→audit、R3 六步、90% 一致性或 R2 总验收信用；同时暴露长产物
 提交的事件链收尾仍需独立修复和新工单复验。
+
+## Merge 产物端口修复后的真实三步闭环（2026-10-10，`315fa3e`）
+
+新工单 `R3-REAL-FINAL-17` 使用同一仓外 key、MiniMax-M3、bubblewrap 和临时 `pycalc` 副本，
+按 `chain --only plan,review,merge` 重跑。plan、review、merge 均完成并前移；review 真实登记
+`02_review.md`、`review_round_1.json`、`review_manifest.json`，merge 按新提示直接用
+`submit_artifact` 登记 `03_plan_final.md`，控制面事件链最终 `event_count=64`、无未闭合步骤/动作，
+链路状态 `completed`。全程 75 次调用、728,692 tokens（prompt 664,926 / completion 63,766 /
+cached 590,645）。
+
+该结果确认上一轮“写入文件但未登记”的失败由强制交付提示与工具选择不一致触发，`315fa3e` 修复后
+真实 merge 闭环成立。它只增加 plan→review→merge 的真实信用；code→deepcheck→audit、R3 六步、
+跨平台原生隔离、90% 一致性和 R2 总验收仍未通过。
