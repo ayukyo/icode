@@ -472,6 +472,34 @@ class AgentLoop:
             skipped = assistant.tool_calls[len(allowed) :]
 
             for call in allowed:
+                if forced_output_tool is not None and call.name != forced_output_tool:
+                    # Some providers may hallucinate a previously advertised
+                    # function even when the request contains only the forced
+                    # delivery schema.  Do not execute or spend a side-effect
+                    # receipt on that call; return a structured correction so
+                    # the bounded retry can select the required tool.
+                    inv = ToolInvocation(
+                        name=call.name,
+                        arguments=dict(call.arguments or {}),
+                        decision=Decision.DENY.value,
+                        approved=False,
+                        result=ToolResult(
+                            False,
+                            f"本回合只能调用 {forced_output_tool}，未执行 {call.name}。",
+                            {"error": "forced_tool_only", "required_tool": forced_output_tool},
+                        ),
+                        note="强制交付回合拒绝非目标工具",
+                    )
+                    turn.invocations.append(inv)
+                    history.append(_tool_message(call.id, inv))
+                    history.append({
+                        "role": "user",
+                        "content": (
+                            f"请立即改用唯一允许的 {forced_output_tool} 工具；"
+                            "不要再调用其它工具，也不要用普通文本结束。"
+                        ),
+                    })
+                    continue
                 inv = self._invoke(call.name, dict(call.arguments or {}))
                 turn.invocations.append(inv)
                 history.append(_tool_message(call.id, inv))

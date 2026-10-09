@@ -2429,10 +2429,10 @@ def _run_agent(
             ),
             force_tool_prompt=(
                 {
-                    "plan": "现在必须调用 write_file 提交完整 01_plan.md：包含需求理解、范围边界、方案、风险和验证方式。禁止占位、短句或只回复正文。",
+                    "plan": "现在必须调用 write_file，参数必须是 JSON 对象 {path, content}，提交完整 01_plan.md：包含需求理解、范围边界、方案、风险和验证方式。禁止占位、短句或只回复正文。",
                     "review": "现在必须提交完整审查产物；先用 submit_artifact 写 02_review.md，再用 submit_review_round 提交结构化轮结果。禁止占位或只回复正文。",
-                    "merge": "现在必须调用 write_file 提交完整 03_plan_final.md，合并计划与审查结论并给出可执行步骤。禁止占位或只回复正文。",
-                    "code": "现在必须先调用 edit_file 实际修改 calc.py 和 test_calc.py，再提交实施记录；禁止先写报告/worklist或只回复正文。",
+                    "merge": "现在必须调用 write_file，参数必须是 JSON 对象 {path, content}，提交完整 03_plan_final.md，合并计划与审查结论并给出可执行步骤。禁止占位或只回复正文。",
+                    "code": "现在必须先调用 edit_file，参数必须是 JSON 对象 {path, old, new}；依据已读原文分别实际修改 calc.py 和 test_calc.py，再提交实施记录。禁止先写报告/worklist或只回复正文。",
                     "deepcheck": "现在必须提交完整 deepcheck 报告和 worklist，并真实执行 inspection prepare/read/check；禁止占位。",
                     "audit": "现在必须提交完整 audit 报告和 worklist，并真实执行 inspection prepare/read/check；禁止占位。",
                 }.get(step)
