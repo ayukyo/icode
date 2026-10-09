@@ -49,3 +49,13 @@
 ## 新工单真实复验（2026-10-09，6ac32e5 运行器）
 
 使用同一仓外 key、bubblewrap 和临时 `pycalc` 副本启动 `R3-REAL-6AC32E5`，真实链路共 63 次调用、417,756 tokens。plan 成功并前移；review 在 18 回合后 fail-closed：模型提交了 `02_review.md`，但没有形成合法的 `review_round_*.json`，多次 `submit_artifact` 事件均以 `bad_arguments` 失败，因此宿主不能装配 `review_manifest.json`。没有进入 merge/code/deepcheck/audit，不能把这次运行当作 inspection 工具的真实 code 证据，也不把失败归因于门禁放宽。该工单保留在临时目录供审计；后续若要重新取得 code 信用，必须新建工单并先让模型完成合法 review round。
+
+## Review 参数兼容修复（2026-10-09，eb42ab9）
+
+针对上述 `bad_arguments`，主工程提示明确要求 `submit_artifact` 的 `name`、`content` 均为字符串，
+JSON 文件的正文必须是合法 JSON 文本，`review_manifest.json` 由宿主装配而非模型提交。运行器还增加窄
+兼容：当提供方把 dict/list 作为 `.json` 正文传入时，仅将其序列化为 UTF-8 文本；Markdown 或其它文本
+仍拒绝非字符串，ArtifactBroker 的路径、大小、机器所有权和事件登记合同不变。回归测试覆盖结构化
+JSON 接受、普通文本拒绝、旧 artifact 合同及 review 提示，共 10 项通过，compileall 通过。该修改尚
+未取得新的真实 review 成功证据；新工单 `R3-REAL-REVIEW-PROMPT` 正在使用修复前已启动的进程，结果
+必须单独记录，不能与 `eb42ab9` 的新行为混写。

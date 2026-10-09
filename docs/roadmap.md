@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **Review 结构化正文兼容修复（2026-10-09，eb42ab9 后续）：**真实 review 连续 `bad_arguments` 说明部分 OpenAI-compatible 提供方会忽略 JSON Schema 的字符串约束，把 `review_round_*.json` 正文作为对象传入。宿主提示现明确要求 `name/content` 为字符串、JSON 正文为合法文本且不得提交宿主装配的 `review_manifest.json`；`submit_artifact` 仅对 `.json` 的 dict/list 做窄序列化，Markdown 等文本仍拒绝非字符串。10 项定向测试与 compileall 通过；必须用新工单重新取得真实 review/code 证据，不能把本地回归当作 R3 完成。
+
 - **inspection 接线后的真实链路复验仍停在 review（2026-10-09）：**新工单 `R3-REAL-6AC32E5` 的 plan 成功，但 review 18 回合后未提交合法 `review_round_*.json`；四次 `submit_artifact` 均为 `bad_arguments`，宿主无法装配 `review_manifest.json`，按 fail-closed 停止。新 inspection 端口尚未获得 code 真实证据；下一次必须新建工单完成合法 review round 后再验证 code→deepcheck→audit，不能把此次失败归因或折算为 R3 信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
 - **code/deepcheck/audit inspection 工具接线（2026-10-09）：**真实 code 失败暴露运行器只开放普通文件/产物工具，模型无法调用 ICODE-SKILL 的原生 `inspection --phase prepare/read/check`，因此不能取得 `code_worklist.json` 的真实回执。现在由宿主按当前 ticket/step/attempt 闭包绑定 inspection 工具，仅允许工程内相对路径与固定阶段；工作清单由控制面写入，已存在的 worklist 不可被模型覆盖。为兼容旧宿主/离线夹具，只有 worklist 已由 inspection 生成后才禁止模型提交；未生成时仍保留原合同入口。新增工具边界与 artifact 保护回归，目标是新工单重新验证 code→deepcheck→audit；此前失败工单不重放、不补信用。

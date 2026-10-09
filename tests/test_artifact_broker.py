@@ -115,3 +115,25 @@ class TestArtifactBroker(unittest.TestCase):
         self.assertFalse(blocked.ok)
         self.assertFalse((self.out_dir / ".ico_metadata.json").exists())
         self.assertNotIn("submit_artifact", default_registry().names())
+
+    def test_json_artifact_accepts_structured_provider_payload_without_widening_text(self) -> None:
+        registry = default_registry(include_artifacts=True)
+        context = ToolContext(root=self.root, artifact_broker=self.broker)
+        result = registry.invoke(
+            "submit_artifact", context,
+            {"name": "review_round_1.json", "content": {
+                "round": 1, "new_issues": [], "refuted_issues": [],
+                "pending_verification": [],
+            }},
+        )
+        self.assertTrue(result.ok, result.content)
+        self.assertEqual(
+            (self.out_dir / "review_round_1.json").read_text(encoding="utf-8"),
+            '{"round":1,"new_issues":[],"refuted_issues":[],"pending_verification":[]}',
+        )
+        plain = registry.invoke(
+            "submit_artifact", context,
+            {"name": "02_review.md", "content": {"body": "not text"}},
+        )
+        self.assertFalse(plain.ok)
+        self.assertEqual(plain.meta.get("error"), "bad_arguments")

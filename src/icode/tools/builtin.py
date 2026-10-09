@@ -550,6 +550,23 @@ def submit_artifact(ctx: ToolContext, name: str, content: str) -> ToolResult:
     if ctx.artifact_broker is None:
         return ToolResult(False, "当前步骤未开放受控产物端口",
                           {"error": "artifact_unavailable"}, opclass=OPCLASS_MANAGED_WRITE)
+    # Some OpenAI-compatible providers ignore the JSON-schema string type and
+    # send an object for a JSON artifact.  Normalize only that narrow case;
+    # plaintext artifacts and all names remain strict so the broker contract
+    # cannot be widened into arbitrary serialization.
+    if not isinstance(name, str):
+        return ToolResult(False, "产物 name 必须是文件名字符串",
+                          {"error": "bad_arguments"}, opclass=OPCLASS_MANAGED_WRITE)
+    if not isinstance(content, str):
+        if name.endswith(".json") and isinstance(content, (dict, list)):
+            try:
+                content = json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+            except (TypeError, ValueError):
+                return ToolResult(False, "JSON 产物 content 无法序列化为文本",
+                                  {"error": "bad_arguments"}, opclass=OPCLASS_MANAGED_WRITE)
+        else:
+            return ToolResult(False, "产物 content 必须是 UTF-8 文本字符串",
+                              {"error": "bad_arguments"}, opclass=OPCLASS_MANAGED_WRITE)
     try:
         size = ctx.artifact_broker.submit(name, content)
     except ArtifactAccessError as exc:
