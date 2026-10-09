@@ -38,7 +38,11 @@ class TestArtifactBroker(unittest.TestCase):
         self.assertEqual(self.broker.submit("02_review.md", "review"), 6)
         self.assertEqual((self.out_dir / "02_review.md").read_text(encoding="utf-8"),
                          "review")
-        self.assertEqual(self.broker.submit("review_round_1.json", '{"round":1}'), 11)
+        valid_round = (
+            '{"round":1,"new_issues":[],"refuted_issues":[],'
+            '"pending_verification":[]}'
+        )
+        self.assertEqual(self.broker.submit("review_round_1.json", valid_round), len(valid_round))
         self.assertFalse(list(self.out_dir.glob(".icode-artifact-*")))
 
     def test_拒绝越界_隐藏文件_机器产物_未声明文件(self) -> None:
@@ -75,6 +79,9 @@ class TestArtifactBroker(unittest.TestCase):
         with self.assertRaises(ArtifactAccessError):
             self.broker.submit("review_round_1.json", "not json")
         self.assertEqual(target.read_text(encoding="utf-8"), '{"round":1}')
+
+        with self.assertRaisesRegex(ArtifactAccessError, "三个字符串数组"):
+            self.broker.submit("review_round_1.json", '{"round":1}')
 
     def test_大小上限和输入边界(self) -> None:
         with self.assertRaises(ArtifactAccessError):
@@ -137,3 +144,8 @@ class TestArtifactBroker(unittest.TestCase):
         )
         self.assertFalse(plain.ok)
         self.assertEqual(plain.meta.get("error"), "bad_arguments")
+
+    def test_review_round拒绝完整审查对象而要求轮次数组结构(self) -> None:
+        invalid = '{"round":1,"status":"approve","checks":[]}'
+        with self.assertRaisesRegex(ArtifactAccessError, "三个字符串数组"):
+            self.broker.submit("review_round_1.json", invalid)

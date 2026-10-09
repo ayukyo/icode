@@ -14,6 +14,7 @@ from pathlib import Path
 from .contracts import Port, StepContract
 
 _ARTIFACT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_REVIEW_ROUND = re.compile(r"^review_round_(\d+)\.json$")
 # review_manifest 由带真实 attempt/哈希的控制面装配，模型正文不可替代。
 # These files are written by the host/control plane from frozen execution
 # inputs.  Allowing a model to replace them after ``inspection`` would detach
@@ -83,6 +84,17 @@ class ArtifactBroker:
                 raise ArtifactAccessError("产物不是合法 JSON 对象") from None
             if not isinstance(parsed, dict):
                 raise ArtifactAccessError("产物不是合法 JSON 对象")
+            round_match = _REVIEW_ROUND.fullmatch(name)
+            if round_match is not None and self.contract.step == "review":
+                required = ("round", "new_issues", "refuted_issues", "pending_verification")
+                if (
+                    type(parsed.get("round")) is not int
+                    or parsed["round"] != int(round_match.group(1))
+                    or any(not isinstance(parsed.get(key), list) for key in required[1:])
+                ):
+                    raise ArtifactAccessError(
+                        "review round 必须包含 round 整数及三个字符串数组"
+                    )
 
         try:
             descriptor, temporary = tempfile.mkstemp(prefix=".icode-artifact-", dir=self.out_dir)

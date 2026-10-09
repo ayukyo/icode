@@ -160,6 +160,49 @@ class TestLoopGuards(unittest.TestCase):
         self.assertEqual(result.stop_reason, "required_tool_not_called")
         self.assertEqual(len(loop.backend.calls), 2)
 
+    def test_普通文本收尾后强制受控产物提交(self) -> None:
+        out_dir = self.root / "ticket"
+        out_dir.mkdir()
+        broker = ArtifactBroker(out_dir, StepContract(
+            step="review",
+            outputs=(
+                Port("review", "ticket_file", "02_review.md"),
+                Port("rounds", "ticket_glob", "review_round_*.json"),
+            ),
+        ), max_bytes=4096)
+        backend = FakeBackend([
+            {"content": "已读取并形成审查结论，但尚未提交。"},
+            {"content": "", "tool_calls": [{
+                "id": "submit", "name": "submit_artifact",
+                "arguments": {"name": "02_review.md", "content": "审查结论"},
+            }]},
+            {"content": "", "tool_calls": [{
+                "id": "round", "name": "submit_artifact",
+                "arguments": {
+                    "name": "review_round_1.json",
+                    "content": "{\"round\":1,\"new_issues\":[],"
+                               "\"refuted_issues\":[],\"pending_verification\":[]}",
+                },
+            }]},
+            "提交完成",
+        ])
+        registry = default_registry(include_artifacts=True)
+        loop = AgentLoop(
+            backend=backend,
+            registry=registry,
+            guard=Guard(Scope(workspace_root=self.root)),
+            ctx=ToolContext(root=self.root, artifact_broker=broker),
+            budget=BudgetTracker(),
+            config=LoopConfig(max_turns=5, tool_choice_on_no_tool="submit_artifact"),
+        )
+        result = loop.run([{"role": "user", "content": "review"}])
+        self.assertTrue(result.ok)
+        self.assertTrue((out_dir / "02_review.md").is_file())
+        self.assertEqual(
+            [call["tool_choice"] for call in backend.calls],
+            ["auto", "submit_artifact", "submit_artifact", "auto"],
+        )
+
     def test_精确Reviewer读完全部文件后强制结构化提交(self) -> None:
         first = self.root / "first.py"
         second = self.root / "second.py"

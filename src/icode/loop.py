@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import fnmatch
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -40,6 +41,11 @@ class LoopConfig:
     max_output_tokens: int = 2048
     tool_choice: str = "auto"
     tool_choice_after_read: str | None = None
+    # When a model ends an otherwise successful read/analysis turn with plain
+    # text, a caller may reserve one explicit output-tool turn.  This is kept
+    # separate from ``tool_choice_after_read`` because the latter is tied to
+    # complete file-read accounting and cannot describe artifact-broker reads.
+    tool_choice_on_no_tool: str | None = None
     # 已读全白名单后，保留给必需工具提交、纠正和结束的回合。
     required_tool_turn_reserve: int = 0
 
@@ -124,6 +130,9 @@ class AgentLoop:
                 raise ValueError("tool_choice_after_read 必须是已注册工具名")
             if not self.guard.scope.allowed_read_files:
                 raise ValueError("tool_choice_after_read 需要精确文件读取白名单")
+        if self.config.tool_choice_on_no_tool is not None:
+            if self.registry.get(self.config.tool_choice_on_no_tool) is None:
+                raise ValueError("tool_choice_on_no_tool 必须是已注册工具名")
         if (type(self.config.required_tool_turn_reserve) is not int
                 or self.config.required_tool_turn_reserve < 0):
             raise ValueError("required_tool_turn_reserve 必须是非负整数")
@@ -280,11 +289,37 @@ class AgentLoop:
         error = ""
         total_tool_calls = 0
         tool_choice = self.config.tool_choice
+        tool_choice_on_no_tool = self.config.tool_choice_on_no_tool
         required_tool_retry_remaining = 1 if tool_choice != "auto" else 0
         expected_read_files = set(self.guard.scope.allowed_read_files or ())
         read_spans: dict[Path, list[tuple[int, int]]] = {}
         read_totals: dict[Path, int] = {}
         completed_read_files: set[Path] = set()
+        artifact_broker = self.ctx.artifact_broker
+        artifact_outputs = tuple(
+            port for port in (getattr(artifact_broker, "contract", None).outputs
+                              if artifact_broker is not None else ())
+            if port.value != "review_manifest.json"
+        )
+
+        def missing_artifacts() -> list[str]:
+            """Return model-owned broker outputs still absent from the ticket."""
+            if artifact_broker is None:
+                return []
+            root = Path(artifact_broker.out_dir)
+            missing: list[str] = []
+            for port in artifact_outputs:
+                if port.kind == "ticket_file":
+                    if not (root / port.value).is_file():
+                        missing.append(port.value)
+                elif port.kind == "ticket_glob":
+                    if not any(
+                        path.is_file() and not path.is_symlink()
+                        and fnmatch.fnmatchcase(path.name, port.value)
+                        for path in root.iterdir()
+                    ):
+                        missing.append(port.value)
+            return missing
 
         for index in range(1, self.config.max_turns + 1):
             if self.budget.verdict == "over_budget":
@@ -346,6 +381,26 @@ class AgentLoop:
 
             if not assistant.has_tool_calls:
                 turns.append(turn)
+                if (
+                    tool_choice_on_no_tool is not None
+                    and tool_choice == "auto"
+                ):
+                    # Preserve the just-produced analysis in history, then
+                    # require one structured output call.  The model still
+                    # sees all prior read results; no host-side content is
+                    # fabricated and a second miss remains fail-closed.
+                    tool_choice = tool_choice_on_no_tool
+                    required_tool_retry_remaining = 1
+                    history.append({
+                        "role": "user",
+                        "content": (
+                            "本步骤不能以普通文本结束；请立即调用指定的结构化提交工具，"
+                            "提交真实审查内容，不要重复环境探查。"
+                        ),
+                    })
+                    tool_choice_on_no_tool = None
+                    _notify_turn(self.on_turn, index, total_tool_calls, history)
+                    continue
                 if tool_choice != "auto":
                     _notify_turn(self.on_turn, index, total_tool_calls, history)
                     if required_tool_retry_remaining > 0:
@@ -391,14 +446,34 @@ class AgentLoop:
                     tool_choice = self.config.tool_choice_after_read
                 if (
                     tool_choice != "auto"
-                    and call.name == "submit_review"
+                    and call.name in ("submit_review", "submit_artifact")
                     and inv.result is not None
                     and inv.result.ok
-                    and inv.result.meta.get("review_output") == "schema_valid"
+                    and (
+                        call.name == "submit_artifact"
+                        and not missing_artifacts()
+                        or inv.result.meta.get("review_output") == "schema_valid"
+                    )
                 ):
                     # Reviewer 结构化提交通过本地校验后，允许模型自然结束；
                     # 提交前强制使用工具，避免只返回自由文本绕过合同。
                     tool_choice = "auto"
+                elif (
+                    tool_choice != "auto"
+                    and call.name == "submit_artifact"
+                    and inv.result is not None
+                    and inv.result.ok
+                ):
+                    missing = missing_artifacts()
+                    if missing:
+                        history.append({
+                            "role": "user",
+                            "content": (
+                                "仍缺少以下步骤产物：" + "、".join(missing)
+                                + "。请继续调用 submit_artifact，逐项提交；"
+                                "不要以普通文本结束，也不要提交 review_manifest.json。"
+                            ),
+                        })
 
             # 超出单回合上限的调用**也要回一条配对结果**：
             # OpenAI 兼容协议要求 assistant 消息里每个 tool_call 都有对应的 tool 消息，

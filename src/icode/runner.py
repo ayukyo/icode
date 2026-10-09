@@ -2400,7 +2400,22 @@ def _run_agent(
         operations=operations or OperationRecorder(
             ControlPlane(load_settings_for(workspace)), out_dir, ticket_id),
         budget=_runtime_budget(budget, budget_tracker),
-        config=loop_config or LoopConfig(),
+        config=replace(
+            loop_config or LoopConfig(),
+            # FakeBackend is an offline compatibility fixture whose scripted
+            # replies intentionally exercise host-side persistence.  Real
+            # provider responses get one bounded structured-output turn when
+            # they otherwise end a deliverable step in plain text.
+            tool_choice_on_no_tool=(
+                "submit_artifact"
+                if artifact_broker is not None and getattr(backend, "name", "") != "fake"
+                else (
+                    "write_file"
+                    if artifact_broker is None and getattr(backend, "name", "") != "fake"
+                    else None
+                )
+            ),
+        ),
         on_event=on_event,
         on_turn=on_turn,
     )
