@@ -33,3 +33,5 @@
 ## 真实模型 plan→review→merge 复验（2026-10-09）
 
 在提交 `fe27a94` 后用仓外 key 文件、bubblewrap 和临时 `pycalc` 工作区重跑三步链路。第一次 12 回合、78,258 tokens 因模型把 plan 产物写成相对路径而由门禁失败关闭；第二次把绝对产物路径和工具白名单写入需求后，plan 18 回合、review 11 回合、merge 9 回合均完成，链路共 60 次模型调用、417,505 tokens（含 318,271 cached）。宿主自动生成 `.mcp_gate_trace.jsonl`：review 两条 gate 与 merge 一条 gate 均有最终记录，固定校验器两步均为 `missing_gate=0/schema_errors=0/sensitive_data=0/coverage=1.0`；review dedup 因临时 workspace 非 Git 合同地 `skipped_not_eligible`，summary 因默认 registry 未暴露 cheap-research 合同地 `unavailable_before_call`，merge 只有一轮 review 合同地 `skipped_not_eligible`。这证明真实模型→机器产物→宿主 gate trace→状态前移闭环，但只覆盖 plan/review/merge，尚未证明 code/deepcheck/audit、90% 一致性或 R2/R3 总验收。
+
+随后在同一工单继续真实 `code→deepcheck→audit`。code 步骤 12 回合、20 次工具调用后，模型确实编辑了临时工作区的 `calc.py`、`test_calc.py`，但没有提交合同要求的 `04_code_review_fix.md` 与 `code_worklist.json`；宿主检测到 `code_files` 变更但控制面元数据写入未通过，按 fail-closed 停在 code，未进入 deepcheck/audit。独立 diff 还显示模型删除了原有 gcd/lcm 实现，说明“有代码改动”不等于实现正确，不能人工补齐产物或把这次运行计入 R3 完成。

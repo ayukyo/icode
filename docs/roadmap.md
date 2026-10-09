@@ -6,6 +6,8 @@
 
 - **真实模型 plan→review→merge 与宿主 gate trace 复验（2026-10-09）：**第一次 12 回合/78,258 tokens 因相对产物路径失败关闭；第二次明确绝对路径与工具白名单后，三步均完成，共 60 次调用/417,505 tokens（318,271 cached）。review/merge 的固定校验器均 `missing_gate=0/schema_errors=0/sensitive_data=0/coverage=1.0`，gate 结论按真实环境记录为 skipped/unavailable，没有手工补写。只证明 R3 前三步与宿主门禁闭环，未运行 code/deepcheck/audit，不提高 90% 或 R2/R3 总验收信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
+- **真实 code 步骤 fail-closed（2026-10-09）：**同一真实工单继续 code 后，模型 12 回合/20 次工具调用修改了临时 `calc.py`、`test_calc.py`，却缺少 `04_code_review_fix.md`、`code_worklist.json`，且 `code_files` 控制面更新未通过；diff 还显示删除既有 gcd/lcm 实现。链路停在 code，deepcheck/audit 未运行，不把“有改动”记为完成，也不人工修补模型产物。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **R3 merge 真实试跑与 cheap-research 门确认（2026-10-09）：**临时工单使用结构化 host trace 证明 review 两条 gate 在合法 `skipped_not_eligible`/`unavailable_before_call` 证据下可前移；随后真实模型 merge 17 次调用/85,537 tokens，成功提交 `03_plan_final.md`，但 `merge.cross_round_summary` 缺最终 trace，仍被门禁拦截。下一实现阶段聚焦宿主 gate eligibility/trace 适配，不让模型直接写隐藏账本，也不以手工临时 trace 计入 R3 完成信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
 - **真实 R3 review 链复验与机器清单时序修复（2026-10-09）：**首次真实审查暴露“模型 round 在最终登记前出现时，`review_manifest.json` 未再次装配”的缺口；最小修复加入最终幂等装配重试，并保留模型 round 原始字节以避免重复 artifact 回执冲突。新增回归与链路/预算 44 项测试全绿。新的真实控制面工单实际 23 次调用/135,095 tokens，提交 `02_review.md`、`review_round_1.json`，机器成功装配 manifest，review finish success；严格 `mcp_coverage` 明确缺少 `review.dedup`、`review.result_summary` 两条最终 trace，因当前 runner 尚无 cheap-research 适配器而被诚实拦截，工单保持 `review_in_progress`，不授 merge/code 或 R3 完成信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
