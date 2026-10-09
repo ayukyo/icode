@@ -2684,6 +2684,29 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "reviewer_snapshot_acl_restore_verified=true;runtime_acl_restore_verified=true",
                 )
 
+            def synthetic_write_canary_control(
+                path: Path, payload: bytes, **_kwargs: object,
+            ) -> SimpleNamespace:
+                path.write_bytes(payload + path.read_bytes()[len(payload):])
+                return SimpleNamespace(
+                    verified=True,
+                    create_succeeded=True,
+                    write_succeeded=True,
+                    requested_bytes=len(payload),
+                    bytes_transferred=len(payload),
+                    close_succeeded=True,
+                    create_error=0,
+                    write_error=0,
+                    close_error=0,
+                )
+
+            # Patch the globals captured by the decorated native probe
+            # directly.  This remains correct if unittest discovery imports
+            # the module through a different package-qualified alias.
+            reviewer_globals = (
+                TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理
+                .__wrapped__.__globals__
+            )
             with mock.patch.object(sys, "prefix", str(source_root)), \
                  mock.patch.object(sys, "base_prefix", str(source_root)), \
                  mock.patch(
@@ -2692,29 +2715,15 @@ class TestWindowsAppContainer(unittest.TestCase):
                  ), mock.patch(
                      "tests.test_windows_appcontainer.subprocess.run",
                      return_value=mock.Mock(returncode=0),
-                 ), mock.patch(
-                     "tests.test_windows_appcontainer._current_process_standard_user_status",
-                     return_value="verified",
-                ), mock.patch(
-                    "tests.test_windows_appcontainer._dacl_write_control_succeeds",
-                    return_value=True,
-                ), mock.patch(
-                    "tests.test_windows_appcontainer._native_write_canary_control",
-                    create=True,
-                    side_effect=lambda path, payload, **_kwargs: (
-                        path.write_bytes(payload + path.read_bytes()[len(payload):])
-                        and SimpleNamespace(
-                            verified=True,
-                            create_succeeded=True,
-                            write_succeeded=True,
-                            requested_bytes=len(payload),
-                            bytes_transferred=len(payload),
-                            close_succeeded=True,
-                            create_error=0,
-                            write_error=0,
-                            close_error=0,
-                        )
-                    ),
+                ), mock.patch.dict(
+                    reviewer_globals,
+                    {
+                        "_current_process_standard_user_status": lambda *_args, **_kwargs: "verified",
+                        "_dacl_write_control_succeeds": lambda *_args, **_kwargs: True,
+                        "_native_write_canary_control": synthetic_write_canary_control,
+                        "_derive_appcontainer_profile_sid": lambda *_args, **_kwargs: "S-1-15-2-123456789",
+                        "run_windows_appcontainer": capture_runner,
+                    },
                 ), mock.patch.dict(
                     os.environ,
                     {
@@ -2725,12 +2734,6 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "ICODE_DIAGNOSTIC_WFP_RUNNER_TARGET_FILE": str(runner_target_path),
                         "ICODE_DIAGNOSTIC_WFP_RUNNER_READY_FILE": str(runner_ready_path),
                     },
-                ), mock.patch(
-                    "tests.test_windows_appcontainer._derive_appcontainer_profile_sid",
-                    return_value="S-1-15-2-123456789",
-                ), mock.patch(
-                    "tests.test_windows_appcontainer.run_windows_appcontainer",
-                    side_effect=capture_runner,
                 ), redirect_stdout(wfp_output):
                     TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理.__wrapped__(
                         _CaptureAssertions(),

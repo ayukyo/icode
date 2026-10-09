@@ -503,7 +503,32 @@ class AgentLoop:
             deferred_tool_transition: tuple[str, str | None] | None = None
 
             for call in allowed:
-                if forced_output_tool is not None and call.name != forced_output_tool:
+                # Some OpenAI-compatible providers ignore a typed function
+                # choice and still send the equivalent generic artifact call.
+                # For the review round hand-off that call remains safe: the
+                # ArtifactBroker validates the filename and JSON schema before
+                # recording it.  Execute this narrow compatibility alias
+                # instead of denying a valid round and burning the final
+                # bounded retries.
+                forced_review_round_alias = (
+                    forced_output_tool == "submit_review_round"
+                    and call.name == "submit_artifact"
+                    and artifact_broker is not None
+                    and any(
+                        port.kind == "ticket_glob"
+                        and port.value.startswith("review_round_")
+                        for port in getattr(
+                            getattr(artifact_broker, "contract", None),
+                            "outputs",
+                            (),
+                        )
+                    )
+                )
+                if (
+                    forced_output_tool is not None
+                    and call.name != forced_output_tool
+                    and not forced_review_round_alias
+                ):
                     # Some providers may hallucinate a previously advertised
                     # function even when the request contains only the forced
                     # delivery schema.  Do not execute or spend a side-effect

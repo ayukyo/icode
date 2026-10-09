@@ -300,12 +300,17 @@ class TestWindowsTestProcessObserver(unittest.TestCase):
             observer = _WindowsTestProcessObserver(
                 identity_path, ws / "acknowledged",
             )
-            with mock.patch(
-                "tests.test_runner._WindowsTestProcessHandle",
-                side_effect=delayed_process_capture,
+            observer_globals = _WindowsTestProcessObserver._observe.__globals__
+            with mock.patch.dict(
+                observer_globals,
+                {"_WindowsTestProcessHandle": delayed_process_capture},
             ):
                 observer.start()
-                self.assertTrue(entered_capture.wait(1.0))
+                # Full-suite discovery may have other bounded subprocess tests
+                # completing immediately before this case.  Keep the test
+                # deterministic under that scheduler load while retaining a
+                # finite wait and the same close-during-capture assertion.
+                self.assertTrue(entered_capture.wait(5.0))
                 try:
                     with self.assertRaisesRegex(
                         RuntimeError, "observer did not stop",

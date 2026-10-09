@@ -203,6 +203,42 @@ class TestLoopGuards(unittest.TestCase):
             ["auto", "submit_artifact", "submit_artifact", "auto"],
         )
 
+    def test_提供方忽略review_round工具选择时仍经产物校验提交(self) -> None:
+        out_dir = self.root / "ticket-round-alias"
+        out_dir.mkdir()
+        broker = ArtifactBroker(out_dir, StepContract(
+            step="review",
+            outputs=(
+                Port("review", "ticket_file", "02_review.md"),
+                Port("rounds", "ticket_glob", "review_round_*.json"),
+            ),
+        ), max_bytes=4096)
+        backend = FakeBackend([
+            {"content": "", "tool_calls": [{
+                "id": "review", "name": "submit_artifact",
+                "arguments": {"name": "02_review.md", "content": "结论"},
+            }]},
+            {"content": "", "tool_calls": [{
+                "id": "round", "name": "submit_artifact",
+                "arguments": {"name": "review_round_1.json", "content": {
+                    "round": 1, "new_issues": [], "refuted_issues": [],
+                    "pending_verification": [],
+                }},
+            }]},
+            "提交完成",
+        ])
+        loop = AgentLoop(
+            backend=backend,
+            registry=default_registry(include_artifacts=True, include_review_round=True),
+            guard=Guard(Scope(workspace_root=self.root)),
+            ctx=ToolContext(root=self.root, artifact_broker=broker),
+            budget=BudgetTracker(),
+            config=LoopConfig(max_turns=4),
+        )
+        result = loop.run([{"role": "user", "content": "review"}])
+        self.assertTrue(result.ok, result.error)
+        self.assertTrue((out_dir / "review_round_1.json").is_file())
+
     def test_同一回复的多次代码编辑在结果配对后才切换inspection(self) -> None:
         first = self.root / "first.py"
         second = self.root / "second.py"

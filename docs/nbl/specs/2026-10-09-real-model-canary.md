@@ -133,3 +133,18 @@ deepcheck/audit。随后对该失败 attempt 的 recovery 也如实停在 `requi
 被控制面标记 failure，未重放或冒充成功。新的完整链路尝试 `R3-REAL-FINAL-FEE0353` 在 merge 阶段
 缺少 `03_plan_final.md` 停步，未取得后半段证据。以上结果证明状态机与 fail-closed 行为可观察，
 不证明 code→deepcheck→audit、R3 六步、跨平台原生隔离、90% 一致性或 R2 总验收。
+
+## Review round 提供方兼容复验（2026-10-10，`a5fbf56` 工作树后）
+
+新工单 `R3-REAL-FINAL-15` 使用同一仓外 key、MiniMax-M3、bubblewrap 和临时 `pycalc` 副本执行
+`chain --only plan,review,merge`。plan 在 26 回合上限内成功；review 只提交了 `02_review.md`，
+没有合法的 `review_round_*.json`，宿主没有装配 `review_manifest.json`，按 fail-closed 停在 review；
+merge、code、deepcheck、audit 均未运行。全程 46 次调用、557,849 tokens（prompt 526,222 /
+completion 31,627 / cached 475,525）。
+
+该行为显示兼容 OpenAI 端点仍可能忽略 typed `submit_review_round`，改用通用 `submit_artifact`。
+主线随后增加窄兼容：仅当当前强制交付为 review round 且 ArtifactBroker 合同明确允许
+`review_round_*.json` 时，通用调用仍必须经过同一文件名、JSON schema、大小、路径和事件校验；
+其它强制工具调用仍拒绝。本次真实运行发生在修改前，不能计作新兼容命中或 R3 信用。修改后
+全量本机回归（2,518 项，60 项平台条件跳过）通过；Windows 原生 CI 仍有独立失败项，R2/R3、
+六步链和 90% 一致性继续未通过。
