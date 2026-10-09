@@ -2,6 +2,8 @@
 
 > 条目按观察时间倒序；同日多次更新时，以更靠前条目的状态为最新，后续条目保留历史结论。
 
+- **code_files 幂等键冲突修复（2026-10-09）：**真实 code 复验暴露 `set_code_files()` 与 plan 元数据写入复用同一 request key，控制面按幂等契约拒绝；`24e58dd` 按 attempt+文件集合派生独立 request，并新增回归验证 metadata 正常写入。此前失败工单的 code attempt 已终结，不能重放冒充修复后的真实信用；需新工单重新跑 code→deepcheck→audit。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
+
 - **R3 cheap-research 宿主适配器本机落地（2026-10-09）：**新增链路回调与 `mcp_gates` 确定性 trace 记录器，按固定子仓 `gates.json` 读取阈值；默认 runner 未暴露 cheap-research 时只写结构化 `unavailable_before_call`/`skipped_not_eligible`，不让模型伪造隐藏账本。review/merge 适配器合同测试通过，固定校验器报告 `missing_gate=0/schema_errors=0/sensitive_data=0`，写入按 gate 幂等替换。真实模型 review→merge 重跑、线上 CI 和 R3 总门仍待验，不能据此宣称完成。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
 
 - **真实模型 plan→review→merge 与宿主 gate trace 复验（2026-10-09）：**第一次 12 回合/78,258 tokens 因相对产物路径失败关闭；第二次明确绝对路径与工具白名单后，三步均完成，共 60 次调用/417,505 tokens（318,271 cached）。review/merge 的固定校验器均 `missing_gate=0/schema_errors=0/sensitive_data=0/coverage=1.0`，gate 结论按真实环境记录为 skipped/unavailable，没有手工补写。只证明 R3 前三步与宿主门禁闭环，未运行 code/deepcheck/audit，不提高 90% 或 R2/R3 总验收信用。[详细记录](./nbl/specs/2026-10-09-real-model-canary.md)
