@@ -14,6 +14,61 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_session_git_projection_methods_selected_once_and_required(self):
+        module_name = "tests.test_session_git_projection"
+        module = importlib.import_module(module_name)
+        test_class = module.TestSessionGitProjection
+        methods = unittest.defaultTestLoader.getTestCaseNames(test_class)
+        expected = {module_name + ".TestSessionGitProjection." + method for method in methods}
+        self.assertEqual(len(expected), 12)
+        selected = [entry for entry in DEFAULT_MODULES if entry.startswith(module_name)]
+        if os.name == "posix":
+            self.assertEqual(set(selected), expected)
+            self.assertEqual(len(selected), len(expected))
+        else:
+            self.assertEqual(selected, [])
+        self.assertTrue(expected.issubset(run_workspace_ci.POSIX_R3_TESTS))
+        self.assertFalse(getattr(test_class, "__unittest_skip__", False))
+
+        def cases(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from cases(test)
+                else:
+                    yield test
+
+        for test_id in sorted(expected):
+            with self.subTest(test_id=test_id):
+                loaded = list(cases(unittest.defaultTestLoader.loadTestsFromName(test_id)))
+                self.assertEqual(len(loaded), 1)
+                test = loaded[0]
+                self.assertIs(type(test), test_class)
+                self.assertEqual(test.id(), test_id)
+                self.assertFalse(getattr(getattr(test, test._testMethodName), "__unittest_skip__", False))
+
+                class SkippedRequiredTest(unittest.TestCase):
+                    def id(self) -> str:
+                        return test_id
+
+                    def runTest(self) -> None:
+                        self.skipTest("simulated unavailable session Git support")
+
+                suite = unittest.TestSuite([SkippedRequiredTest()])
+                with patch.object(
+                    run_workspace_ci.unittest.defaultTestLoader,
+                    "loadTestsFromNames",
+                    return_value=suite,
+                ), redirect_stderr(io.StringIO()):
+                    self.assertEqual(run_workspace_ci.main((test_id,)), 1)
+
+        for method in (
+            "test_split_session_gate_real_tree_reviewer_and_final_binding",
+            "test_split_session_reviewer_and_final_boundary_reject_real_drift",
+        ):
+            test_id = "tests.test_contract_engineering.TestContractEngineering." + method
+            self.assertIn(test_id, run_workspace_ci.POSIX_R3_TESTS)
+            self.assertEqual(DEFAULT_MODULES.count(test_id), 1 if os.name == "posix" else 0)
+
     def test_python_preset_module_selected_once_completely_without_static_skips(self):
         name = "tests.test_verification_presets"
         self.assertEqual(DEFAULT_MODULES.count(name), 1)

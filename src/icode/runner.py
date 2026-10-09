@@ -65,7 +65,7 @@ from .self_verify import (
     environment_fingerprint,
 )
 from .tools import Tool, ToolContext, ToolRegistry, ToolResult, default_registry
-from .workspace import WorkspaceSession
+from .workspace import GitWorkspaceIdentity, WorkspaceSession
 from .workspace_snapshot import changed_files as _changed
 from .workspace_snapshot import diff_fingerprint as _diff_fingerprint
 from .workspace_snapshot import WorktreeTreeUnavailable
@@ -1205,7 +1205,8 @@ def run_contract_step(
         if policy is not None and change_baseline is None:
             change_baseline = _snapshot(workspace)
         engineering_baseline = _snapshot(workspace) if engineering else None
-        engineering_git_baseline = _read_task_git_state(workspace) if engineering else None
+        git_session_kwargs = {"workspace_session": workspace_session} if workspace_session is not None else {}
+        engineering_git_baseline = _read_task_git_state(workspace, **git_session_kwargs) if engineering else None
 
         # 渐进披露：只取门禁强制层，不整篇注入
         reuse = out_dir is not None
@@ -1752,13 +1753,14 @@ def _contract_engineering_gate(
     # CP action admission appends the actual .ico_events.jsonl control event.
     # The tested window starts after admission, immediately around the host plan;
     # a later in-workspace control write is still genuine source/tree drift.
+    git_session_kwargs = {"workspace_session": workspace_session} if workspace_session is not None else {}
     before = _snapshot(workspace)
-    before_format, before_head = _read_task_git_state(workspace)
-    before_oid, before_status = _capture_task_git_tree_oid(workspace, before_head, object_format=before_format)
+    before_format, before_head = _read_task_git_state(workspace, **git_session_kwargs)
+    before_oid, before_status = _capture_task_git_tree_oid(workspace, before_head, object_format=before_format, **git_session_kwargs)
     run = execute_verification_plan(plan, ctx=ctx, step=step, attempt=attempt)
     after = _snapshot(workspace)
-    after_format, after_head = _read_task_git_state(workspace)
-    after_oid, after_status = _capture_task_git_tree_oid(workspace, before_head, object_format=after_format)
+    after_format, after_head = _read_task_git_state(workspace, **git_session_kwargs)
+    after_oid, after_status = _capture_task_git_tree_oid(workspace, before_head, object_format=after_format, **git_session_kwargs)
     tree_oid, tree_status = _resolve_tested_git_tree(before, after, before_oid, before_status,
         after_oid, after_status, before_format, after_format)
     changed, binding = _bind_task_evidence(baseline, after, 0, "", workspace, attempt=attempt,
@@ -1832,8 +1834,8 @@ def _contract_engineering_gate(
     quality_ok = review.ok and review.model_reviewed and review.read_only_verified
     report.add("独立代码质量审查", quality_ok, review.error[:160])
     error = _contract_plan_error(plan, workspace, step, ticket_id, policy, sandbox, workspace_session)
-    current_format, current_head = _read_task_git_state(workspace)
-    current_oid, current_status = _capture_task_git_tree_oid(workspace, before_head, object_format=current_format)
+    current_format, current_head = _read_task_git_state(workspace, **git_session_kwargs)
+    current_oid, current_status = _capture_task_git_tree_oid(workspace, before_head, object_format=current_format, **git_session_kwargs)
     stable_after_review = (
         plan.digest == plan_digest and not error and current_format == after_format
         and current_head == after_head and current_oid == after_oid and current_status == after_status
@@ -1876,13 +1878,14 @@ def _contract_engineering_binding_error(report, plan, workspace, step, ticket_id
     if error or evidence is None or not evidence.passed:
         return error or "engineering_final_binding_changed"
     row = evidence.to_receipt()
-    object_format, head = _read_task_git_state(workspace)
+    git_session_kwargs = {"workspace_session": session} if session is not None else {}
+    object_format, head = _read_task_git_state(workspace, **git_session_kwargs)
     if (row["run"]["plan_digest"] != plan.digest
             or _snapshot_fingerprint(_snapshot(workspace)) != evidence.tested_worktree_fingerprint
             or object_format != evidence.git_object_format or head != evidence.test_head_after_sha):
         return "engineering_final_binding_changed"
     if object_format:
-        oid, status = _capture_task_git_tree_oid(workspace, evidence.base_commit_sha, object_format=object_format)
+        oid, status = _capture_task_git_tree_oid(workspace, evidence.base_commit_sha, object_format=object_format, **git_session_kwargs)
         if status != "captured" or oid != evidence.tested_git_tree_oid:
             return "engineering_final_binding_changed"
     return ""
@@ -2700,7 +2703,8 @@ def resume_contract_step(
 
         checkpointer = Checkpointer(out_dir, ticket_id=ticket_id, step=step, attempt=attempt)
         report.checkpoint_path = str(checkpointer.path)
-        engineering_git_baseline = _read_task_git_state(workspace) if engineering else None
+        git_session_kwargs = {"workspace_session": workspace_session} if workspace_session is not None else {}
+        engineering_git_baseline = _read_task_git_state(workspace, **git_session_kwargs) if engineering else None
         step_ops = OperationRecorder(cp, out_dir, ticket_id, scope=step if engineering else "")
 
         guide = load_guide(settings.steps_dir, step)
@@ -3453,9 +3457,11 @@ def _run_task_reviewer(
         ), review_loop
 
     if evidence.tested_git_tree_oid:
+        git_session_kwargs = {"workspace_session": workspace_session} if workspace_session is not None else {}
         current_tree_oid, current_tree_status = _capture_task_git_tree_oid(
             workspace, evidence.base_commit_sha,
             object_format=evidence.git_object_format,
+            **git_session_kwargs,
         )
         if (
             current_tree_status != "captured"
@@ -3637,10 +3643,133 @@ def _reviewer_read_changed_sources(
     return sources
 
 
+def _task_git_session_layout(
+    workspace: Path, session: WorkspaceSession,
+) -> tuple[GitWorkspaceIdentity | None, tuple]:
+    """核可信会话的既有布局，仅返回本次调用栈内的绑定事实。"""
+    from .git_broker import GitStatusUnavailable, verify_git_workspace_identity
+
+    def absolute(path: Path) -> Path:
+        if (not isinstance(path, Path) or not path.is_absolute()
+                or Path(os.path.abspath(os.fspath(path))) != path):
+            raise ValueError("session_git_identity_unavailable")
+        return path
+
+    try:
+        if not isinstance(session, WorkspaceSession):
+            raise ValueError("session_git_identity_unavailable")
+        root = absolute(session.workspace_root)
+        if absolute(workspace) != root or session.kind not in ("snapshot", "git_worktree"):
+            raise ValueError("session_git_identity_unavailable")
+        protected = session.protected_paths
+        if not isinstance(protected, tuple):
+            raise ValueError("session_git_identity_unavailable")
+        for path in protected:
+            absolute(path)
+        binding = (session.kind, root, protected)
+        identity = session.git_status_identity
+        if session.kind == "snapshot":
+            if identity is not None:
+                raise ValueError("session_git_identity_unavailable")
+            return None, binding
+        if identity is None:
+            manifest = absolute(session.manifest_path)
+            runtime = absolute(session.runtime_root)
+            receipts = absolute(session.receipts_root)
+            ticket_root = manifest.parent
+            # 固定同级布局和原根保护均必要；extra 保护不赋分离根 fallback 资格。
+            if (manifest != ticket_root / "workspace.json"
+                    or runtime != ticket_root / "runtime"
+                    or receipts != ticket_root / "receipts"
+                    or root != ticket_root / "checkout"
+                    or root / ".git" not in protected):
+                raise ValueError("session_git_identity_unavailable")
+            return None, binding + (manifest, runtime, receipts)
+        if not isinstance(identity, GitWorkspaceIdentity):
+            raise ValueError("session_git_identity_unavailable")
+        if not isinstance(identity.source_relative_path, Path):
+            raise ValueError("session_git_identity_unavailable")
+        if identity.source_relative_path != Path("."):
+            raise ValueError("workspace_shape_unsupported")
+        paths = tuple(absolute(path) for path in (
+            identity.checkout_root, identity.code_root, identity.workspace_root,
+            identity.top_level, identity.common_dir, identity.git_dir,
+        ))
+        if (identity.workspace_root != root or identity.code_root != root
+                or identity.checkout_root / "code" != root):
+            raise ValueError("session_git_identity_unavailable")
+        layout = verify_git_workspace_identity(identity)
+        if layout.worktree_root != root or layout.pathspec_root != root:
+            raise ValueError("session_git_identity_unavailable")
+        try:
+            (root / ".git").lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError("session_git_identity_unavailable")
+        fixed_identity = paths + (
+            identity.revision, identity.identity_token, identity.source_relative_path,
+            identity.filesystem_identities,
+        )
+        return identity, binding + fixed_identity
+    except (GitStatusUnavailable, OSError, TypeError, AttributeError, ValueError) as exc:
+        if isinstance(exc, ValueError) and str(exc) == "workspace_shape_unsupported":
+            raise ValueError("workspace_shape_unsupported") from None
+        raise ValueError("session_git_identity_unavailable") from None
+
+
+def _recheck_task_git_session(
+    workspace: Path, session: WorkspaceSession,
+    identity: GitWorkspaceIdentity | None, binding: tuple,
+) -> None:
+    """窗口结束时重核原会话与身份引用，不重新授予另一布局资格。"""
+    current_identity, current_binding = _task_git_session_layout(workspace, session)
+    if current_identity is not identity or current_binding != binding:
+        raise ValueError("session_git_identity_unavailable")
+
+
 def _capture_task_git_tree_oid(
     workspace: Path, base_commit_sha: str, *, object_format: str | None = None,
+    workspace_session: WorkspaceSession | None = None,
 ) -> tuple[str, str]:
-    """尝试获取仓库根工作树的原始 Git tree 投影，不运行 Git helper。"""
+    """宿主捕获原始 Git tree 投影；可信会话前后只读查询 Git 状态。"""
+    if workspace_session is not None:
+        try:
+            identity, binding = _task_git_session_layout(workspace, workspace_session)
+        except ValueError as exc:
+            status = ("workspace_shape_unsupported" if str(exc) == "workspace_shape_unsupported"
+                      else "session_git_identity_unavailable")
+            return "", status
+        if identity is None:
+            result = _capture_task_git_tree_oid(
+                workspace, base_commit_sha, object_format=object_format,
+            )
+            try:
+                _recheck_task_git_session(workspace, workspace_session, identity, binding)
+            except ValueError:
+                return "", "session_git_identity_unavailable"
+            return result
+        try:
+            actual_format, before_head = _read_task_git_state(
+                workspace, workspace_session=workspace_session,
+            )
+            if (not base_commit_sha or base_commit_sha != identity.revision
+                    or before_head != identity.revision
+                    or (object_format is not None and object_format != actual_format)):
+                raise ValueError("session_git_identity_unavailable")
+            oid = _worktree_git_tree_oid(workspace, object_format=actual_format)
+            after_format, after_head = _read_task_git_state(
+                workspace, workspace_session=workspace_session,
+            )
+            _recheck_task_git_session(workspace, workspace_session, identity, binding)
+            if after_format != actual_format or after_head != before_head:
+                raise ValueError("session_git_identity_unavailable")
+            return oid, "captured"
+        except WorktreeTreeUnavailable as exc:
+            return "", exc.reason
+        except ValueError:
+            return "", "session_git_identity_unavailable"
+
     if not base_commit_sha:
         return "", "not_git_workspace"
 
@@ -3838,9 +3967,38 @@ def _bind_task_evidence(
     return changed, evidence
 
 
-def _read_task_git_state(workspace: Path) -> tuple[str, str]:
+def _read_task_git_state(
+    workspace: Path, *, workspace_session: WorkspaceSession | None = None,
+) -> tuple[str, str]:
     """读取仓库根的 storage object format 和完整 HEAD OID；非 Git 靶场留空。"""
     from .workspace import WorkspaceError, read_git_repository_state
+
+    if workspace_session is not None:
+        try:
+            identity, binding = _task_git_session_layout(workspace, workspace_session)
+        except ValueError:
+            raise ValueError("workspace_git_identity_unavailable") from None
+        if identity is None:
+            result = _read_task_git_state(workspace)
+            try:
+                _recheck_task_git_session(workspace, workspace_session, identity, binding)
+            except ValueError:
+                raise ValueError("workspace_git_identity_unavailable") from None
+            return result
+        try:
+            object_format, revision = read_git_repository_state(
+                identity.checkout_root, require_root=True,
+            )
+            _recheck_task_git_session(workspace, workspace_session, identity, binding)
+            expected_length = 40 if object_format == "sha1" else 64
+            if (object_format not in ("sha1", "sha256")
+                    or not isinstance(revision, str) or revision != identity.revision
+                    or len(revision) != expected_length
+                    or any(character not in "0123456789abcdef" for character in revision)):
+                raise ValueError("workspace_git_identity_unavailable")
+            return object_format, revision
+        except (WorkspaceError, OSError, ValueError, TypeError, AttributeError):
+            raise ValueError("workspace_git_identity_unavailable") from None
 
     has_git_metadata = any(
         (candidate / ".git").exists() or (candidate / ".git").is_symlink()

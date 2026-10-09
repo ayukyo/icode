@@ -91,6 +91,107 @@ class TestContractEngineering(unittest.TestCase):
         return [row for line in (directory / ".ico_events.jsonl").read_text(encoding="utf-8").splitlines()
                 if (row := json.loads(line))["event_type"] == kind]
 
+    def split_gate_fixture(self):
+        """Real split session and Git projection; broker outcomes remain doubles."""
+        from icode.workspace import WorkspaceManager
+        from tests.test_shared_runtime_budget import MeteredBackend
+
+        backend = MeteredBackend([
+            ({"tool_calls": [{"id": "split-read", "name": "read_file",
+                              "arguments": {"path": "changed.py"}}]}, 1),
+            ({"tool_calls": [{"id": "split-review", "name": "submit_review",
+                              "arguments": {"summary": "Checked split change", "findings": []}}]}, 1),
+            ("done", 1),
+        ])
+        source, cp, directory, outcome, report, args = self.gate_fixture(
+            reviewer=backend, git_workspace=True,
+        )
+        data = self.enterContext(temp_workspace()).resolve()
+        session = WorkspaceManager(source, data, "split-gate", isolate_git_metadata=True).open(
+            "ENG-CONTRACT", "contract-run",
+        )
+        self.addCleanup(session.close)
+        root = session.workspace_root
+        baseline = runner._snapshot(root)
+        (root / "changed.py").write_text("value = 1\n", encoding="utf-8")
+        old_plan = args["plan"]
+        args.update(workspace=root, workspace_session=session, baseline=baseline,
+            git_baseline=runner._read_task_git_state(root, workspace_session=session),
+            policy=session.policy("code", process_limit=8, wall_timeout_seconds=30, output_limit_bytes=65536),
+            plan=VerificationPlan(root, old_plan.run_id, old_plan.ticket_id, old_plan.checks,
+                                  old_plan.steps, old_plan.platforms))
+        return root, cp, directory, outcome, report, args
+
+    @unittest.skipUnless(os.name == "posix", "manager split Git identity is POSIX-only")
+    def test_split_session_gate_real_tree_reviewer_and_final_binding(self):
+        root, cp, directory, outcome, report, args = self.split_gate_fixture()
+        session = args["workspace_session"]
+        with patch.object(runner, "_read_task_git_state", wraps=runner._read_task_git_state) as state, \
+                patch.object(runner, "_capture_task_git_tree_oid", wraps=runner._capture_task_git_tree_oid) as tree, \
+                patch("icode.tools.builtin._controlled_dispatch", return_value=outcome) as dispatch:
+            self.assertTrue(runner._contract_engineering_gate(**args), report.error)
+            # This isolated final-binding check does not claim the fixture meets every CP input gate.
+            self.assertEqual(runner._contract_engineering_binding_error(
+                report, args["plan"], root, "code", "ENG-CONTRACT", args["policy"],
+                args["sandbox"], session,
+            ), "")
+        dispatch.assert_called_once()
+        self.assertTrue(state.call_args_list)
+        self.assertTrue(tree.call_args_list)
+        for call in state.call_args_list + tree.call_args_list:
+            self.assertIs(call.kwargs.get("workspace_session"), session)
+        self.assertEqual(report.verification_evidence.tested_git_tree_status, "stable")
+        self.assertEqual(report.verification_evidence.git_object_format, "sha1")
+        self.assertFalse(cp.trace(directory).data["open_operations"])
+        self.assertEqual(args["budget_tracker"].usage.calls, 3)
+        tools = {tool["function"]["name"] for call in args["backend"].calls for tool in call["tools"]}
+        self.assertEqual(tools, {"read_file", "submit_review"})
+
+    @unittest.skipUnless(os.name == "posix", "manager split Git identity is POSIX-only")
+    def test_split_session_reviewer_and_final_boundary_reject_real_drift(self):
+        from icode.reviewer import ReviewReport
+
+        for change in ("source_during_review", "identity_during_review",
+                       "source_after_review", "identity_after_review"):
+            with self.subTest(change=change):
+                root, _cp, directory, outcome, report, args = self.split_gate_fixture()
+                session = args["workspace_session"]
+
+                def mutate():
+                    if change.startswith("source"):
+                        (root / "changed.py").write_text("value = 9\n", encoding="utf-8")
+                    else:
+                        (session.git_status_identity.git_dir / "HEAD").write_text("0" * 40 + "\n", encoding="ascii")
+
+                def review(**kwargs):
+                    if "during" in change:
+                        mutate()
+                    return ReviewReport(ok=True, model_reviewed=True, read_only_verified=True), None
+
+                with patch("icode.tools.builtin._controlled_dispatch", return_value=outcome), \
+                        patch.object(runner, "_run_task_reviewer", side_effect=review):
+                    if change == "identity_during_review":
+                        with self.assertRaisesRegex(ValueError, "^workspace_git_identity_unavailable$"):
+                            runner._contract_engineering_gate(**args)
+                    elif change == "source_during_review":
+                        self.assertFalse(runner._contract_engineering_gate(**args))
+                        self.assertEqual(report.error, "engineering_reviewer_failed")
+                    else:
+                        self.assertTrue(runner._contract_engineering_gate(**args), report.error)
+                        mutate()
+                        if change == "identity_after_review":
+                            with self.assertRaisesRegex(ValueError, "^workspace_git_identity_unavailable$"):
+                                runner._contract_engineering_binding_error(
+                                    report, args["plan"], root, "code", "ENG-CONTRACT",
+                                    args["policy"], args["sandbox"], session,
+                                )
+                        else:
+                            self.assertEqual(runner._contract_engineering_binding_error(
+                                report, args["plan"], root, "code", "ENG-CONTRACT",
+                                args["policy"], args["sandbox"], session,
+                            ), "engineering_final_binding_changed")
+                self.assertFalse(self.event_rows(directory, "step_finished"))
+
     def test_policy_code_missing_plan_refuses_before_control_write_and_model(self):
         with temp_workspace() as root, patch.object(runner, "ControlPlane") as cp:
             backend = FakeBackend(["should not run"])

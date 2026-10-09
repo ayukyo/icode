@@ -102,6 +102,8 @@ CONTRACT_ENGINEERING_TESTS = tuple(_CONTRACT_ENGINEERING_PREFIX + name for name 
     "test_native_legacy_code_actual_cp_to_independent_pack",
 ))
 POSIX_CONTRACT_ENGINEERING_TESTS = tuple(_CONTRACT_ENGINEERING_PREFIX + name for name in (
+    "test_split_session_gate_real_tree_reviewer_and_final_binding",
+    "test_split_session_reviewer_and_final_boundary_reject_real_drift",
     "test_protected_deepcheck_scope_requires_unique_captured_current_cp_facts",
     "test_deepcheck_scope_rejects_missing_gate_changed_list_other_root_and_link",
     "test_scope_source_reads_enforce_existing_host_budget_before_materialization",
@@ -109,9 +111,27 @@ POSIX_CONTRACT_ENGINEERING_TESTS = tuple(_CONTRACT_ENGINEERING_PREFIX + name for
     "test_native_legacy_deepcheck_actual_cp_to_independent_pack",
 ))
 
+SESSION_GIT_PROJECTION_TESTS = tuple(
+    "tests.test_session_git_projection.TestSessionGitProjection." + name for name in (
+        "test_real_split_dot_matches_commit_tree",
+        "test_real_sha256_and_caller_format_base_rejection",
+        "test_paths_subtrees_and_other_session_rejected",
+        "test_identity_fields_missing_duplicate_device_inode_token_rejected",
+        "test_metadata_real_rewrites_replacements_and_symlinks_rejected",
+        "test_code_git_all_types_and_lstat_error_rejected_before_git_tree",
+        "test_missing_split_identity_same_head_injection_extra_protection_never_falls_back",
+        "test_session_field_layout_and_protection_validation",
+        "test_capture_window_observed_identity_head_format_and_fields_drift",
+        "test_tree_semantics_stability_and_existing_failures_preserved",
+        "test_ordinary_snapshot_non_git_and_exact_legacy_call_shapes",
+        "test_all_session_callers_pass_same_session_and_legacy_call_shapes_stay_exact",
+    )
+)
+
 POSIX_R3_TESTS = (
     "tests.test_r3_regression.TestWorktreeGitTreeOID.test_tree_oid与Git写树一致并覆盖忽略项链接和模式",
     *POSIX_CONTRACT_ENGINEERING_TESTS,
+    *SESSION_GIT_PROJECTION_TESTS,
 )
 
 DEFAULT_MODULES = (

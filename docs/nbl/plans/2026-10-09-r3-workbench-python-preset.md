@@ -1055,7 +1055,7 @@ Expected：全部 actual exit0，缓存仅任务 mktemp 目录，八源仍同 fr
 ### Task 5: 文档两轮 clean、精确 main 发布和新 SHA 观察
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成
 
 **Dependencies:** Task 4
 **Parallelizable:** No (源码完整门同 freeze 后才文档/发布；新观察绑定实际发布 SHA)
@@ -1089,7 +1089,7 @@ git ls-files -s vendor/icode-skill
 
 Expected：actual0、八源与全局双审/软件同 freeze，两输入 SHA 不变，vendor clean/head=gitlink。源变化回任务门；文档变化回两轮，final guard 后不悄改源。
 
-- [ ] **Step 3: root 精确暂存、提交/推送 main；不逐任务提交。**
+- [x] **Step 3: root 精确暂存、提交/推送 main；不逐任务提交。**
 
 ```bash
 git branch --show-current
@@ -1113,7 +1113,7 @@ git status --short
 
 Expected：仅已审八源和必要四文档候选，index bytes 与已验工作树逐一相同；parent/root main 绑定，远端refs/main同实际新 SHA，未知dirty不混入。已在旧提交发布的文档不重复计入变更路径；不使用 add . / -A、不创建分支、不改vendor。commit/push 只由 root 按既有 main 发布授权执行，完整门之前禁止执行。stage 若包含非预期路径，先定位，不提交。
 
-- [ ] **Step 4: fresh 独立只读观察新 SHA，root 独立回读关键日志。**
+- [x] **Step 4: fresh 独立只读观察新 SHA，root 独立回读关键日志。**
 
 本机没有 `gh` 可执行文件（独立 SPEC 和作者均 `command -v gh` exit1/no output），使用当前已可用 GitHub connector；不安装 CLI、不新增依赖。下列完整 JavaScript 在 `functions.exec` 运行，接口和 `structuredContent.content` 格式已由 root 实际验证。首次从本 repo 的真实 HEAD 发现 run，所有整数 ID 只来自该 SHA 的官方列表；后续调用用同一 store 保留已读取日志和 STOP 状态。作者此轮只静态核对代码，不调用 GitHub 网络。
 
@@ -1270,7 +1270,7 @@ root 后续独立收尾 [provenance37869620540](https://github.com/ayukyo/icode/
 - [x] Native 精确 type 的局部 Plan、每步 type/identity、跨新execute/线程和任意provider/subclass/custom adapter已运行。
 - [x] 新模块完整 DEFAULT 与无静态skip配对守卫已运行，全部旧项保留。
 - [x] fresh全局SPEC→不同QUALITY、root关联、20轮、DEFAULT、唯一原完整preflight、compile-j1、七维、两clean实际通过。
-- [ ] 精确main提交推送与新SHA只读观察完成；未验/失败native/model/R2/R3仍明确列出。
+- [x] 精确main提交推送与新SHA只读观察完成；未验/失败native/model/R2/R3仍明确列出。
 
 起草时全部 checkbox 未勾选。设计两审是已有静态输入，本文还需 fresh 计划 SPEC→不同 QUALITY，不能自动继承设计批准。上游机制仅引用研究中固定 Aider `5dc9490bb35f9729ef2c95d00a19ccd30c26339c`、Codex `0ada5d8806cdad498230d5b1b2924091e04c8feb` 与完整读 Apache-2.0 的历史观察，不扩大调研或复制实现。
 
@@ -1325,3 +1325,31 @@ Task 5文档两轮clean、最终守卫、精确main发布及新SHA观察须各�
 前片6ded三工作流终态/STOP仅属前片，详细run/job/来源表见上面历史窗口；新SHA结果不可从旧窗口填入。Windows Git10093/10038、Reviewer10035/缺token/WFP无匹配事件仍失败，签名capture三false/完整PE/实际加载/首次UAC仍未通过；macOS单任务quota和Linux完整产品资源/Reviewer/tree/CP/evidence往返仍未验。真实模型账户/完整endpoint待确认，模型1→6及≥90%实际对照、R2/R3整体均未通过；此前三个UTF8/current-interpreter校验器授权不扩成SKILL Git管道修改许可。
 
 03:12:34 UTC收尾文档/非测试门：四文档连续两轮实际各0疑似项；人工核计数/枚举与标题，尤其启动解释器和首次工程Plan冻结时点、静态skip守卫与运行skip、每命令限额非run总预算、作者/独立审查/root读取范围、旧/新窗口和软件/native/模型分层。root读取起草前1278行并仅逆转已勾checkbox后，与保存的原规范文本逐字符相同；两冻结设计/研究仍原SHA。secrets/submodule/治理/site/landscape/diff各exit0，vendor工作树空、HEAD和gitlink均1693651。本行仅追加实际时点；最终metadata后还须再做两轮clean与非测试守卫，源码没有变化，不重复full。Task5发布和新SHA观察仍未有结果，不能提前勾选。
+
+## 发布与线上观察收尾：2026-10-09 03:40 UTC
+
+main 已正常提交并推送 `8d53670192e3e2cbfebaa0300d697fb3036308be`，parent `6ded1d3c16c265fda16fa6506cb57c29067b5fbd`，tree `50e850d0d3c09e8709334d3d5d169367bc53bdfd`，恰好12路径、2210 insertions/4 deletions。root逐一核官方commit文件blob与本地commit对象一致，远端仅main且精确同SHA。首次暂存因三份新文档受 `docs/` 忽略而exit1，已诊断后仅显式强制加入这三份批准文档；没有源码或范围变化。最终metadata后两轮文档clean及secrets/submodule/治理/site/对照排期/diff均实际exit0，八源摘要不变，原完整suite没有重复。
+
+独立只读观察窗口03:15:54–03:33:15 UTC，三个run均精确绑定8d并terminal/STOP；root另核官方run/jobs、已保存的决定性日志及artifact元数据。保存完整decoded日志不等于全文人工实读，实际范围为摘要、固定标记、指定来源字段。Task5完成只表示发布和观察结束，不表示失败格通过。
+
+| 当前SHA窗口 | 实际结果与边界 |
+| --- | --- |
+| [CI37878374455](https://github.com/ayukyo/icode/actions/runs/37878374455) | failure；44jobs=37success/4failure/3retired skip。Python3.11 job113652081540及3.12 job113652081425均2439total/2368P/71环境skip/0F/E，623.671s及451.349s；bootstrap binding PASS。 |
+| Linux/macOS workspace113652081558/113652081447 | 各DEFAULT581P/0skip，215.991s/240.147s；各network75P，3.331s/3.852s；不是完整产品CP往返。 |
+| Windows workspace113652081436/113652081411 | x64/ARM64均575total/553P/1F/1E/20skip，326.466s/351.395s；incremental CP baseline Win10093 ERROR、nativelegacycode CP Win10038 FAIL仍实际发生。 |
+| Windows Reviewer113652081646/113652081805 | 外层为dataclass repr：exit78、cleanup_ok=True、child_token_receipt=None；独立观察者另解析内层notice JSON，v4/v6 host control=true、10035、connected/connect_denied=false、wait_expired=true、canary=false，固定诊断wait_timeout/no_matching_event/archive_member_missing。没有证明网络拒绝。 |
+| Native conformance | Intel/Apple Silicon macOS均6/10、critical/platform-critical/ready均false；Ubuntu24 x64/ARM64均7/10、criticalfalse/readyfalse；Ubuntu22均8/10、criticaltrue但readyfalse。resource/统一违规等UNVERIFIED，job success不等于R2 ready。 |
+| 已安装ICODE-SKILL | Windows x64 Python3.11 job113652081803、3.12 job113652081665各18P/0skip，50.944s/54.943s；七个bundled安装job元数据success。只给对应wheel/sdist隔离安装及解释器/UTF8修复信用，不称真实pipx或生产native启动通过。 |
+| [Pages37878374419](https://github.com/ayukyo/icode/actions/runs/37878374419) | success2/2；deploy113652117874明确build8d，03:15:41.0212686Z success，URL https://ayukyo.github.io/icode/；artifact11592854473、313410B、ZIP `9100ba3bca810ef7b9f7c0676de40d9f2393007f5c38380e2fe88202ea071802`，官方source/run一致且未过期。 |
+| [Provenance37878374492](https://github.com/ayukyo/icode/actions/runs/37878374492) | success5/5；每格实际19个安装验证脚本PASS，另一个独立buildcontext PASS、production_authority=none。 |
+
+| 矩阵 | job / attestation / artifact / bytes | helper SHA256 | ZIP SHA256 |
+| --- | --- | --- | --- |
+| ARM64/3.12 | 113654857518 / 54179589 / 11594116537 / 7572010 | `91a69ecb4cb5b7bdda593d9c570a9293092425b430439509047a2cab6ec05d95` | `eacfa1b7064b41ec016f59da49bbbc4ba4febf1a457598980b778f99da44c461` |
+| x64/3.12 | 113654857570 / 54179535 / 11593243427 / 8361710 | `dd27c11cf87b1f9eed36dcd34372bbde59bb59fdab0940af8e37007021a02ca1` | `f67d8f984104a61d7ea08991d26e2fa5111e36a821b8ced7f845088dbde363e9` |
+| x64/3.11 | 113654857655 / 54179537 / 11593098931 / 8361693 | `2c8d81ab314a24d4bb74e240b40ce16bbc333436234250edd41f013309b10dfc` | `7b25daeedea6e6a85eb67e42be638759286891deb29c962f8e510695d63c00e4` |
+| ARM64/3.11 | 113654857775 / 54179978 / 11593623480 / 7572005 | `523a01a5e554d2e44fd6e7dbc4f70c81af270efcef1874e8f8f504c80667b2f9` | `bd87f85fba3193bca46e699d9d1d353247918ca6d236ca68c55282489fcbb35d` |
+
+root与独立观察者分别程序比对capture helper=创建日志中的attestation subject；上传日志artifact ID/name/size/ZIP=官方artifact API，head/run精确匹配且未过期。subject来自创建日志，source来自官方workflow/job/artifact及checkout绑定，**未独立取得或解析加密statement**；脚本密码学验证PASS不冒称观察者自行重验。四capture的parse_complete/runtime_load_verified/source_launch_verified均false，未下载binary、独立PE解析、实际加载或first-UAC验收。API不可用没有绕过。
+
+本片软件发布/观察收尾；前文03:10/03:12“尚待”保留历史窗口。Windows Git/Reviewer、完整PE/首次UAC、macOS quota、Linux产品policy与工程CP/evidence完整往返、真实模型1→6/≥90%及R2/R3整体仍未通过。下一Linux工程桥接设计独立SPEC发现两个真实接线问题，修订设计并前置可信session-aware Git tree投影修复；不移动 `.git`、清空Git身份、用mock/降断言或开放native自动模式取绿。
