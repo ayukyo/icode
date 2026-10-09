@@ -243,3 +243,16 @@ review attempt 尚未重新运行，R3 六步、90% 一致性和 R2 总验收继
 本次报告中登记。随后补齐公共 `step-run --step review` 的宿主装配回调，只从已验证 round 文件
 装配 manifest，不接受模型自述或手写机器产物；新增回归后相关 108 项测试通过、5 项条件跳过。
 本次未进入 merge/code/deepcheck/audit，不授予 R3 六步、90% 一致性或 R2 总验收信用。
+
+## 全新工单复验仍停在 review（2026-10-10，`R3-REAL-FRESH-20`）
+
+在 `36ecf9d` 后新建干净临时 `pycalc` 工单，使用仓外 key、MiniMax-M3、bubblewrap，执行
+`chain --only plan,review,merge`。plan 在 22 回合、51 次工具调用后通过并登记 `01_plan.md`；
+review 实际读取 plan、源码和测试，并在一次补救循环中登记 `02_review.md`，但 22 回合内没有
+提交合法 `review_round_*.json`。模型反复尝试被只读策略拒绝的环境探查/外部路径写入，最终缺件
+门禁拒绝装配 `review_manifest.json` 并终结失败。全工单 75 次调用、698,068 tokens（prompt
+671,056 / completion 27,012 / cached 624,219），merge、code、deepcheck、audit 均未运行。
+
+该样本不增加 R3 或 90% 信用，但确认：隔离拒绝、review 只读边界、结构化 round 缺失和机器
+manifest 缺失均保持可观察且 fail-closed。后续应优先优化 review 强制输入/提示和 plan 完整性
+门禁，再消耗新的真实模型预算；不能把 plan 单步成功外推为完整链路成功。

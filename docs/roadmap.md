@@ -24,6 +24,13 @@
   同时修复 `step-run --step review` 未经 chain post hook 时不会装配机器 `review_manifest` 的入口
   缺口；108 项相关测试通过、5 项条件跳过。R3 六步、90% 一致性和 R2 总验收仍关闭。
 
+- **全新工单仍停在 review（2026-10-10，`R3-REAL-FRESH-20`）：**当前修复后的全新临时
+  `pycalc` 工单 plan 通过（22 回合、51 次工具调用），review 实际读取工程并提交了
+  `02_review.md`，但 22 回合后仍未提交合法 `review_round_*.json`，宿主按 fail-closed 未装配
+  `review_manifest.json`；全工单 75 次调用、698,068 tokens，merge/code/deepcheck/audit 未运行。
+  这不是 R3 或 90% 信用，只确认隔离拒绝、只读 reviewer 和缺件停步仍有效；下一步优先收窄
+  review 输入/提示与计划完整性门禁，避免把不完整计划传入后半段。
+
 - **真实后半段复验与步骤重试幂等修复（2026-10-10，工作树基于 `cffabdf`）：**
   `R3-REAL-FINAL-17` 的真实 plan→review→merge 仍保持成功（75 次调用、728,692 tokens）。
   继续跑 code 时，模型真实修改/回读了临时 `calc.py`、`test_calc.py`，但先后出现未闭合
