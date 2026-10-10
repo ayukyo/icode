@@ -1,5 +1,7 @@
 # 开发路线图与取舍原则
 
+- **随包 Linux wheel 资源配额探针（2026-10-10，待本 SHA 远端复核）：**`scripts/run_native_wheel_ci.py` 现在在隔离 venv 安装完成后，直接调用已安装包的 `execute_linux_resource_observed_command` 与 `wrap_policy_with_resource_receipt`，以 `process_limit=1` 的真实 fork `EAGAIN` 负例核对 `resource_receipt`（limit/configured/channel/terminal）和 scope 收束。该探针已先 RED（脚本生成的子代码缩进/语法问题）再 GREEN；本机 wheel 全流程、相关合同 34 项及全仓测试守护通过。它只增加“随包资源配额链”的 Linux 证据，不扩大为跨平台 R2/R3、自动模式或 `policy_contract_ready` 通过。
+
 - **Linux wheel 随包助手真实安装复核（2026-10-10，`d4b1e25`）：**在隔离 venv 中真实构建并安装 wheel，`inspect Linux wheel`、随包助手 namespace/Python/清理探针、native violation receipt、宿主崩溃后代清理、网络租约到期以及 Git status broker 均输出 `PASS`。这证明“Python 包安装后可找到并使用 Linux 开发期原生助手”的当前路径；不覆盖资源配额独立计分、`policy_contract_ready`、Windows/macOS、真实模型 1→6 或 R2/R3 总验收，`conformance_credit=none` 的网络租约证据边界保持不变。
 
 - **Linux 原生配额探针在当前 main 复核（2026-10-10，代码 `67c3e885`，证据复跑 `451ea5a`）：**在当前源码及其仅文档变更后的 main 上，使用 CPython 3.11.15、Linux 6.8、systemd 249、非 root user-manager 实际运行 `scripts/run_native_probe_ci.py`。真实 `run_command` 配额探针报告 `resource_limits: PASSED (real_process_quota_observed)`，受保护路径、后代清理、网络租约到期、seccomp 回执与命令超时/输出上限均通过；评分为 `9/10`，`critical_passed=true`、`ready=true`。工程 bridge 虽有真实资源回执和 scope 收束，仍明确 `conformance_credit=none`；`uniform_violation` 仍 `UNVERIFIED`，`LandlockSandbox.policy_contract_ready` 和 Native 自动模式保持关闭。这是 Linux 子项的当前独立实测证据，不扩大为跨平台 R2/R3 总验收或 90% 能力一致性。

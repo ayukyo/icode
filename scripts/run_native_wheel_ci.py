@@ -149,6 +149,60 @@ def main() -> int:
                 print('installed wheel helper: namespace, Python and cleanup PASS')
             """)
             _run("probe installed wheel", [str(python), "-c", code], cwd=root, env=clean_env)
+            resource_code = textwrap.dedent("""\
+                import sys
+                import tempfile
+                from pathlib import Path
+
+                from icode.execution_broker import execute_linux_resource_observed_command
+                from icode.isolation import LandlockSandbox
+                from icode.sandbox_policy import NetworkMode, SandboxPolicy
+
+                sandbox = LandlockSandbox.from_bundle()
+                assert sandbox is not None, "wheel sandbox missing"
+                with tempfile.TemporaryDirectory() as raw:
+                    workspace = Path(raw).resolve()
+                    policy = SandboxPolicy(
+                        schema_version=1, run_id="wheel-resource", ticket_id="wheel-resource",
+                        step="code", workspace_root=workspace, read_roots=(workspace,),
+                        write_roots=(workspace,), deny_read_roots=(), deny_write_roots=(),
+                        network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=1,
+                        wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
+                    )
+                    def wrap(argv, control_socket, resource_socket, unit):
+                        return sandbox.wrap_policy_with_resource_receipt(
+                            argv, policy=policy, control_socket=control_socket,
+                            resource_socket=resource_socket, unit=unit,
+                        )
+                    child = (
+                        "import errno, os\\n"
+                        "try:\\n"
+                        "    child = os.fork()\\n"
+                        "except OSError as error:\\n"
+                        "    assert error.errno == errno.EAGAIN\\n"
+                        "else:\\n"
+                        "    if child == 0: os._exit(23)\\n"
+                        "    os.waitpid(child, 0); raise SystemExit(24)\\n"
+                        "print('quota')"
+                    )
+                    result = execute_linux_resource_observed_command(
+                        [sys.executable, "-I", "-c", child], cwd=workspace,
+                        sandbox=sandbox, policy=policy, timeout=8, command_wrapper=wrap,
+                    )
+                    assert result.error is None, result
+                    assert result.exit_code == 0 and result.output.strip() == "quota", result
+                    receipt = result.resource_receipt
+                    assert isinstance(receipt, dict), result
+                    assert receipt.get("limit") == 1 and receipt.get("configured") is True, receipt
+                    assert receipt.get("channel_status") == "complete", receipt
+                    assert receipt.get("terminal") == "finished", receipt
+                    assert result.scope_cleanup_ok is True, result
+                print("installed wheel resource limits: real fork quota PASS")
+            """)
+            _run(
+                "probe installed wheel resource limits", [str(python), "-c", resource_code],
+                cwd=root, env=clean_env,
+            )
             _run(
                 "probe installed wheel native violation receipt",
                 [
