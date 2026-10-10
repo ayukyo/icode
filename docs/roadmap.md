@@ -1,5 +1,7 @@
 # 开发路线图与取舍原则
 
+- **Linux wheel 随包助手真实安装复核（2026-10-10，`d4b1e25`）：**在隔离 venv 中真实构建并安装 wheel，`inspect Linux wheel`、随包助手 namespace/Python/清理探针、native violation receipt、宿主崩溃后代清理、网络租约到期以及 Git status broker 均输出 `PASS`。这证明“Python 包安装后可找到并使用 Linux 开发期原生助手”的当前路径；不覆盖资源配额独立计分、`policy_contract_ready`、Windows/macOS、真实模型 1→6 或 R2/R3 总验收，`conformance_credit=none` 的网络租约证据边界保持不变。
+
 - **Linux 原生配额探针在当前 main 复核（2026-10-10，代码 `67c3e885`，证据复跑 `451ea5a`）：**在当前源码及其仅文档变更后的 main 上，使用 CPython 3.11.15、Linux 6.8、systemd 249、非 root user-manager 实际运行 `scripts/run_native_probe_ci.py`。真实 `run_command` 配额探针报告 `resource_limits: PASSED (real_process_quota_observed)`，受保护路径、后代清理、网络租约到期、seccomp 回执与命令超时/输出上限均通过；评分为 `9/10`，`critical_passed=true`、`ready=true`。工程 bridge 虽有真实资源回执和 scope 收束，仍明确 `conformance_credit=none`；`uniform_violation` 仍 `UNVERIFIED`，`LandlockSandbox.policy_contract_ready` 和 Native 自动模式保持关闭。这是 Linux 子项的当前独立实测证据，不扩大为跨平台 R2/R3 总验收或 90% 能力一致性。
 
 - **R3 provider 传输与公开错误隐私切片已发布（2026-10-10，`110bae7`）：**`6ded1d3` 已将凭据字段默认展示、重定向携密、传输错误与响应解析错误收敛到固定公开边界；本机软件门与新 SHA 观察已完成。CI [#38009094454](https://github.com/ayukyo/icode/actions/runs/38009094454) 为 39 success / 2 Windows Reviewer failure / 3 skipped，失败仍是 `10035/wait_expired` 候选观察，不能折算 DENY；Windows helper provenance [#38009094416](https://github.com/ayukyo/icode/actions/runs/38009094416) 5/5 成功，Pages [#38009094547](https://github.com/ayukyo/icode/actions/runs/38009094547) 2/2 成功。该切片不证明真实模型、R3 六步、90% 能力一致性、原生隔离/资源门或 R2/R3 总验收，自动模式继续 fail-closed。
