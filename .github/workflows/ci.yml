@@ -1347,10 +1347,13 @@ jobs:
 
             # Wait for one exact target tuple from the standard-user test, then
             # observe it from the runner token. The test stages its Python runtime
-            # before publishing the tuple, so allow a bounded 30-second window.
+            # and runs host/capability controls before publishing the tuple.
+            # Budget preparation separately from the 65-second payload wait;
+            # a slow runtime copy must not preemptively disable the observer.
+            $runnerPreparationTimeoutSeconds = 180
             $runnerTargetContext = $null
             $runnerWfpTargetContextState = 'waiting'
-            $runnerTargetDeadline = [DateTimeOffset]::UtcNow.AddSeconds(30)
+            $runnerTargetDeadline = [DateTimeOffset]::UtcNow.AddSeconds($runnerPreparationTimeoutSeconds)
             while ([DateTimeOffset]::UtcNow -lt $runnerTargetDeadline) {
               $process.Refresh()
               if ($process.HasExited) {
