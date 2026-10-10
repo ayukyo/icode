@@ -1191,12 +1191,12 @@ Expected：各actual0，五源与独立审查和software相同，设计/研究�
 ### Task 4: root精确main发布与fresh源SHA跨平台观察
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成（仅 provider transport/privacy 切片；R2/R3 总门、真实模型和原生整体门仍独立）
 
 **Dependencies:** Task 3
 **Parallelizable:** No (只有完整软件门通过后发布，fresh观察必须绑定实际发布SHA)
 
-- [ ] **Step 1: root全文核实际diff和index范围，精确暂存。**
+- [x] **Step 1: root全文核实际diff和index范围，精确暂存。**
 
 ```bash
 git branch --show-current
@@ -1214,7 +1214,7 @@ git diff --cached --stat
 
 研究若已由构建诊断发布则原SHA保持，不重复纳提交；若尚未入库且确是本片必要记录，root先核既有owner/来源与最终文档门后才精确暂存该路径。上述候选不授权未知dirty、其它ticket或先前未验证修改入库；不使用git add . / -A、不创建分支、不改vendor。root逐一核index bytes等于已验工作树、五源SHA匹配、main父为Task1实际绑定；force-add仅上述已审新plan/spec路径。范围不匹配必须停发布定位，不能混入。
 
-- [ ] **Step 2: root依既有授权commit/push main，验证远端精确SHA。**
+- [x] **Step 2: root依既有授权commit/push main，验证远端精确SHA。**
 
 ```bash
 git commit -m "fix(backend): protect transport credentials and public failures"
@@ -1226,7 +1226,7 @@ git status --short
 
 Expected：actual成功，新HEAD与remote main相同，记录父SHA/sourceSHA/精确路径；剩余无关dirty如实说明。push失败先定位实际权限/检查，不forcepush，不创建新rights、release、PyPI/vendor提交。发布前SOURCE不能变化；用户既有授权无需再次例行等待，不绕任何自动审批或测试拒绝。
 
-- [ ] **Step 3: fresh独立只读观察者绑定新SHA的现有CI，root另核。**
+- [x] **Step 3: fresh独立只读观察者绑定新SHA的现有CI，root另核。**
 
 ```bash
 privacy_commit=$(git rev-parse HEAD)
@@ -1267,7 +1267,7 @@ Expected：真实新SHA/checkouts/vendor、workflow/run/job/image/Python均绑�
 - [x] 异常处理：poison不读原详情、普通close不覆盖，ME/KI/SE传播、decode/已知响应异常安全失败，重试次数/backoff/URL实际保持。
 - [x] 关联模块：五源独立全局SPEC→不同QUALITY C0/I0/M0，其他runner/config/base/native/vendor/workflow未改。
 - [x] 兼容安全：成功payload/auth/tools/choice/usage与旧参数/default保持，明列3xx拒绝/公开错误变更；内存/任意序列化不授安全信用。
-- [x] 可运行性（本机）：实际RED→GREEN、root定点/20/DEFAULT/ORIGINAL三道同freeze；发布/新SHA各平台软件观察仍待另验，实际模型与R2/R3总门独立。
+- [x] 可运行性（本机）：实际RED→GREEN、root定点/20/DEFAULT/ORIGINAL三道同freeze；发布/新SHA各平台软件观察已取得本片 CI/provenance/Pages 证据，实际模型与R2/R3总门仍独立。
 
 计划作者静态自审：逐条覆盖映射齐全；所有代码步骤给完整代码块或准确完整替换方法，Task2完整tuple保留原余项；helper/classes/import均定义，public签名/default和Usage顺序一致；RED为具名assertion而非fixture ERROR；仅作者计划文件可写。AST检查只解析去共同缩进的Python代码块，不执行它们；不把静态解析算实施或测试。root后续计划双审绑定最终本文件SHA。
 
@@ -1303,3 +1303,15 @@ root 本窗口软件门：DEFAULT实际558total/558P/0F/E/skip/162.812s/exit0，
 提交前本机收尾：五份精确相关文档（本计划、冻结设计、旧研究、上游阶段刷新、landscape）连续两轮各0疑似项/exit0；人工复核闭类别顺序/Usage/75子向量、静态skip与实际零skip、默认端点不变、memory与公开文本边界。最终secrets/submodule、治理/site/landscape和diff-check各actual0，vendor1693651 clean/head=gitlink，设计及两研究SHA保持、五source freeze不变。以上 Task3 勾选仅此软件范围；元数据收尾后重跑文档两轮和最终守卫，不重跑原完整测试。本文正文及设计中的早期“尚未实施/待双审/待完整守卫”是起草/作者STOP时点，实际后续记录以本履历为准。下一步按用户既有授权精确9路径发布：五源、landscape、本计划、冻结设计、上游阶段刷新；旧研究已在ef43发布，保持原SHA且不重复暂存。root没有对真实模型、90%或未通过的原生门勾选。
 
 四任务为纯链：fresh Task1 writer→作者自审STOP→fresh SPEC→不同QUALITY→fresh Task2 writer→作者自审STOP→fresh全局SPEC→不同全局QUALITY→root完整软件守卫→root发布/新SHA观察。复杂业务边界、多文件、真实urllib负控，不满足inline；没有可并行写入/全量测试阶段。用户与root明确要求本计划作者freeze后STOP，覆盖writing-plans默认自动调用执行技能；计划作者不自行派发、实施或阶段handoff。
+
+### Task 4 实际发布与新 SHA 观察（2026-10-10）
+
+本片生产实现已由 `6ded1d3c16c265fda16fa6506cb57c29067b5fbd`（parent `cad0eb17b206ce276b325f3209ff601480be06d8`）发布到 `main`；随后 `f0d06c8167cc148c6dcdea3f1a566bf4ffc7a7a8` 仅修正文档中的上一轮 CI 统计，未改动五源生产代码。工作树及 `origin/main` 均精确绑定 f0d06c8，vendor gitlink 保持 `1693651c1bd7daad3272eb054f0f81d6f254d08d`。
+
+fresh 只读观察者绑定 f0d06c8 取得以下终态（没有 dispatch、rerun、cancel，也未下载签名制品）：
+
+- CI [38009094454](https://github.com/ayukyo/icode/actions/runs/38009094454)：`failure`，39 success / 2 failure / 3 skipped。唯一失败是 Windows Reviewer snapshot candidate：x64 job `114084780908` 与 ARM job `114084781092`，均为临时标准用户候选步骤 exit 78，双栈 `10035` / `wait_expired`，`cleanup_ok=true`；没有 DENY 事件信用。Python 3.11 与 3.12 完整套件均为 2527 tests、71 skipped、成功；双 Windows workspace 成功。该失败保持为观察边界，不通过放宽断言或解析 stderr 记为成功。
+- Windows helper provenance [38009094416](https://github.com/ayukyo/icode/actions/runs/38009094416)：`success`，5 jobs success（validate 加 x64/ARM × Python 3.11/3.12 四矩阵）。四矩阵日志均确认安装制品密码学 provenance、离线验证器、密码学负控拒绝和 signed-mode wheel 导出通过；日志明确不是产品启动授权，未授予完整 PE/生产加载准入信用。
+- Pages [38009094547](https://github.com/ayukyo/icode/actions/runs/38009094547)：`success`，2 jobs success。
+
+本切片因此完成“代码→本机软件门→main→新 SHA 跨平台观察”的证据链，但不把 CI/provenance/Pages 结果升级成 R2/R3 总验收、模型 1→6 或 ≥90% 能力一致性、原生隔离/资源门、Windows Reviewer DENY 或真实 KEY 可用性证明。
