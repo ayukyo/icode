@@ -931,6 +931,7 @@ class LandlockSandbox:
     helper: str
     name: str = "landlock"
     manifest: str | None = None
+    supports_workspace_object_fd: bool = field(default=True, init=False)
 
     @property
     def is_real_isolation(self) -> bool:
@@ -1182,14 +1183,42 @@ class LandlockSandbox:
 
     def wrap_policy(
         self, argv: Sequence[str], *, policy: SandboxPolicy, network: bool = False,
+        workspace_fd: int | None = None, workspace_identity: tuple[int, int] | None = None,
     ) -> list[str]:
-        return self._wrap_policy_with_metadata_roots(
+        wrapped = self._wrap_policy_with_metadata_roots(
             argv, policy=policy, metadata_roots=(), network=network,
+        )
+        return self._with_workspace_object_fd(wrapped, policy.workspace_root,
+                                              workspace_fd, workspace_identity)
+
+    @staticmethod
+    def _with_workspace_object_fd(
+        wrapped: list[str], workspace: Path, descriptor: int | None,
+        identity: tuple[int, int] | None,
+    ) -> list[str]:
+        if descriptor is None and identity is None:
+            return wrapped
+        if (type(descriptor) is not int or descriptor < 3 or type(identity) is not tuple
+                or len(identity) != 2 or any(type(value) is not int for value in identity)
+                or identity[0] < 0 or identity[1] <= 0):
+            raise ValueError("invalid workspace object binding")
+        pinned = os.fstat(descriptor)
+        current = workspace.lstat()
+        if (not stat.S_ISDIR(pinned.st_mode) or not stat.S_ISDIR(current.st_mode)
+                or (pinned.st_dev, pinned.st_ino) != identity
+                or (current.st_dev, current.st_ino) != identity):
+            raise ValueError("workspace object identity changed")
+        index = wrapped.index("--")
+        return PreparedCommand(
+            [*wrapped[:index], "--workspace-object-fd", str(descriptor),
+             str(identity[0]), str(identity[1]), *wrapped[index:]],
+            pass_fds=(descriptor,), cwd="/",
         )
 
     def wrap_policy_with_violation_receipt(
         self, argv: Sequence[str], *, policy: SandboxPolicy,
         control_socket: socket.socket,
+        workspace_fd: int | None = None, workspace_identity: tuple[int, int] | None = None,
     ) -> list[str]:
         """Wrap one deny-only command with a private native receipt channel."""
         if (
@@ -1205,16 +1234,21 @@ class LandlockSandbox:
             or policy.allowed_domains
         ):
             raise ValueError("native violation receipt channel is unavailable")
-        return self._wrap_policy_with_metadata_roots(
+        if workspace_fd == control_socket.fileno():
+            raise ValueError("workspace FD aliases control channel")
+        wrapped = self._wrap_policy_with_metadata_roots(
             argv,
             policy=policy,
             metadata_roots=(),
             violation_control_descriptor=control_socket.fileno(),
         )
+        return self._with_workspace_object_fd(wrapped, policy.workspace_root,
+                                              workspace_fd, workspace_identity)
 
     def wrap_policy_with_resource_receipt(
         self, argv: Sequence[str], *, policy: SandboxPolicy,
         control_socket: socket.socket, resource_socket: socket.socket, unit: str,
+        workspace_fd: int | None = None, workspace_identity: tuple[int, int] | None = None,
     ) -> list[str]:
         """Private dual-endpoint policy wrapper; no model-selected resource flags."""
         if (not sys.platform.startswith("linux") or not isinstance(policy, SandboxPolicy)
@@ -1228,11 +1262,17 @@ class LandlockSandbox:
                 or resource_socket.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET
                 or resource_socket.fileno() == control_socket.fileno()):
             raise ValueError("native resource receipt channel is unavailable")
-        wrapped = self.wrap_policy_with_violation_receipt(argv, policy=policy, control_socket=control_socket)
+        if workspace_fd == resource_socket.fileno():
+            raise ValueError("workspace FD aliases resource channel")
+        wrapped = self.wrap_policy_with_violation_receipt(
+            argv, policy=policy, control_socket=control_socket,
+            workspace_fd=workspace_fd, workspace_identity=workspace_identity)
         index = wrapped.index("--")
-        return [*wrapped[:index], "--task-quota-unit", unit,
+        command = [*wrapped[:index], "--task-quota-unit", unit,
                 "--task-quota-limit", str(policy.process_limit),
                 "--resource-control-fd", str(resource_socket.fileno()), *wrapped[index:]]
+        return (PreparedCommand(command, pass_fds=wrapped.pass_fds, cwd=wrapped.cwd)
+                if isinstance(wrapped, PreparedCommand) else command)
 
     def _wrap_policy_with_metadata_roots(
         self, argv: Sequence[str], *, policy: SandboxPolicy,

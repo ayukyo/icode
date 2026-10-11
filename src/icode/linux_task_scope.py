@@ -181,10 +181,15 @@ class LinuxTaskScope:
             raise LinuxTaskScopeError() from None
 
     def wrap(self, helper: list[str]) -> list[str]:
+        from .isolation import PreparedCommand
         flags = ["--expand-environment=no"] if self.version >= 254 else []
-        return ["/usr/bin/systemd-run", "--user", "--scope", "--quiet", "--collect",
+        wrapped = ["/usr/bin/systemd-run", "--user", "--scope", "--quiet", "--collect",
                 "--no-ask-password", "--description=ICODE task command", f"--unit={self.unit}",
                 "--property=Delegate=pids", *flags, "--", *helper]
+        # scope mode executes locally: preserve the helper's inherited objects.
+        if isinstance(helper, PreparedCommand):
+            return PreparedCommand(wrapped, pass_fds=helper.pass_fds, cwd=helper.cwd)
+        return wrapped
 
     def bind_process(self, pid: int) -> None:
         if self._pid is not None or type(pid) is not int or pid <= 1:

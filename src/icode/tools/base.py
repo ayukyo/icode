@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
 from ..artifact_broker import ArtifactBroker
+from ..isolation import PreparedCommand
 from ..sandbox_policy import SandboxPolicy
 from ..workspace import WorkspaceSession
 
@@ -242,7 +243,9 @@ class ToolContext:
         if self.policy is not None:
             wrap_policy = self._policy_command_wrapper()
             try:
-                return list(wrap_policy(argv, policy=self.policy, network=network))
+                prepared = wrap_policy(argv, policy=self.policy, network=network,
+                                       **self._workspace_command_options())
+                return prepared if isinstance(prepared, PreparedCommand) else list(prepared)
             except Exception:  # noqa: BLE001 - 策略绑定失败不允许退回普通 wrap
                 raise IsolationUnavailable("工单隔离策略绑定失败，命令已拒绝") from None
         wrap = getattr(self.sandbox, "wrap", None)
@@ -270,6 +273,25 @@ class ToolContext:
             raise IsolationUnavailable("原生后端尚不能执行该工单的完整隔离策略")
         return wrap_policy
 
+    def _workspace_command_options(self) -> dict[str, object]:
+        """Borrow the live session root, keeping its original identity frozen."""
+        if not getattr(self.sandbox, "supports_workspace_object_fd", False):
+            return {}
+        session = self.workspace_session
+        # Legacy experimental contexts without a session keep their old path
+        # contract; they cannot grant Native readiness.
+        if session is None:
+            return {}
+        if (not isinstance(session, WorkspaceSession) or self.policy is None
+                or session.ticket_id != self.policy.ticket_id
+                or session.run_id != self.policy.run_id
+                or session.workspace_root != self.policy.workspace_root
+                or type(session.workspace_fd) is not int or session.workspace_fd < 3
+                or session.workspace_fd_identity is None):
+            raise IsolationUnavailable("工作区固定目录会话不可用")
+        return {"workspace_fd": session.workspace_fd,
+                "workspace_identity": session.workspace_fd_identity}
+
     def wrap_command_with_violation_receipt(
         self, argv: list[str], control_socket: object,
     ) -> list[str]:
@@ -279,9 +301,11 @@ class ToolContext:
         if not callable(wrap_receipt):
             raise IsolationUnavailable("原生违规回执通道不可用，命令已拒绝")
         try:
-            return list(wrap_receipt(
+            prepared = wrap_receipt(
                 argv, policy=self.policy, control_socket=control_socket,
-            ))
+                **self._workspace_command_options(),
+            )
+            return prepared if isinstance(prepared, PreparedCommand) else list(prepared)
         except Exception:  # noqa: BLE001 - handoff 包装失败时拒绝执行
             raise IsolationUnavailable("工单隔离策略绑定失败，命令已拒绝") from None
 
@@ -294,8 +318,10 @@ class ToolContext:
         if not callable(wrap_receipt):
             raise IsolationUnavailable("原生资源回执通道不可用，命令已拒绝")
         try:
-            return list(wrap_receipt(argv, policy=self.policy, control_socket=control_socket,
-                                     resource_socket=resource_socket, unit=unit))
+            prepared = wrap_receipt(argv, policy=self.policy, control_socket=control_socket,
+                                    resource_socket=resource_socket, unit=unit,
+                                    **self._workspace_command_options())
+            return prepared if isinstance(prepared, PreparedCommand) else list(prepared)
         except Exception:
             raise IsolationUnavailable("工单隔离策略绑定失败，命令已拒绝") from None
 

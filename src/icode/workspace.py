@@ -415,6 +415,22 @@ class GitWorkspaceIdentity:
 
 
 @dataclass
+class _WorkspaceObject:
+    """One shared owner, including dataclass copies of a session."""
+
+    descriptor: int | None
+    identity: tuple[int, int]
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def close(self) -> None:
+        with self.lock:
+            descriptor = self.descriptor
+            self.descriptor = None
+            if descriptor is not None:
+                os.close(descriptor)
+
+
+@dataclass
 class WorkspaceSession:
     """持有工单租约的隔离工作区会话。"""
 
@@ -430,6 +446,17 @@ class WorkspaceSession:
     protected_paths: tuple[Path, ...]
     lease: TicketLease
     git_status_identity: GitWorkspaceIdentity | None = None
+    # Linux session ownership; tool contexts borrow, never close this FD.
+    _workspace_object: _WorkspaceObject | None = field(default=None, repr=False)
+
+    @property
+    def workspace_fd(self) -> int | None:
+        return self._workspace_object.descriptor if self._workspace_object is not None else None
+
+    @property
+    def workspace_fd_identity(self) -> tuple[int, int] | None:
+        owner = self._workspace_object
+        return owner.identity if owner is not None and owner.descriptor is not None else None
 
     def policy(
         self,
@@ -457,7 +484,11 @@ class WorkspaceSession:
         )
 
     def close(self) -> None:
-        self.lease.release()
+        try:
+            if self._workspace_object is not None:
+                self._workspace_object.close()
+        finally:
+            self.lease.release()
 
     def __enter__(self) -> Self:
         return self
@@ -2170,7 +2201,7 @@ class WorkspaceManager:
                     )
                 ),
             )
-        return WorkspaceSession(
+        session = WorkspaceSession(
             project_id=self.project_id,
             ticket_id=ticket_id,
             run_id=run_id,
@@ -2184,3 +2215,16 @@ class WorkspaceManager:
             lease=lease,
             git_status_identity=git_status_identity,
         )
+        if sys.platform.startswith("linux"):
+            descriptor = os.open(workspace_root, os.O_PATH | os.O_DIRECTORY
+                                 | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                status = os.fstat(descriptor)
+                if descriptor < 3 or not stat.S_ISDIR(status.st_mode):
+                    raise WorkspaceError("无法固定工作区目录对象")
+                session._workspace_object = _WorkspaceObject(
+                    descriptor, (status.st_dev, status.st_ino))
+            except BaseException:
+                os.close(descriptor)
+                raise
+        return session

@@ -10,8 +10,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 
 from icode.isolation import LandlockSandbox, PreparedCommand
+from icode.tools import ToolContext
+from icode.tools.base import IsolationUnavailable
+from icode.workspace import WorkspaceManager
 
 
 @unittest.skipUnless(sys.platform.startswith("linux") and shutil.which("cc"),
@@ -186,3 +190,185 @@ class TestLinuxWorkspaceFd(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "original-object")
         self.assertTrue(Path(str(self.workspace) + "-old", "source").is_file())
         self.assertFalse((self.workspace / "source").exists())
+
+    def session(self):
+        # The real split Git layout keeps protected metadata outside the code
+        # root. Do not erase snapshot .git protection to make Landlock pass.
+        for args in (("init", "-q"), ("add", "source"),
+                     ("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+                      "commit", "-qm", "base")):
+            subprocess.run(["git", "-C", str(self.workspace), *args], check=True,
+                           capture_output=True, timeout=15)
+        session = WorkspaceManager(self.workspace, self.root / "data", "fd-project",
+                                   isolate_git_metadata=True).open(
+            "fd-ticket", "fd-run")
+        self.addCleanup(session.close)
+        return session
+
+    def test_session_owns_fd_and_context_only_borrows_it(self):
+        session = self.session()
+        fd = getattr(session, "workspace_fd", None)
+        self.assertIs(type(fd), int, "Linux session must own its workspace FD")
+        status = os.fstat(fd)
+        self.assertEqual(session.workspace_fd_identity, (status.st_dev, status.st_ino))
+        ctx = ToolContext(session.workspace_root, sandbox=self.sandbox,
+                          policy=session.policy("code"), workspace_session=session)
+        prepared = ctx.wrap_command(["/usr/bin/python3", "-c",
+                                     "open('new-source','w').write('created')"])
+        self.assertIsInstance(prepared, PreparedCommand)
+        self.assertEqual(prepared.pass_fds, (fd,))
+        ctx.close()
+        self.assertEqual(os.fstat(fd).st_ino, status.st_ino)
+        result = subprocess.run(prepared, pass_fds=prepared.pass_fds, cwd=prepared.cwd,
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((session.workspace_root / "new-source").read_text(), "created")
+        session.close()
+        self.assertIsNone(session.workspace_fd)
+        with self.assertRaises(OSError):
+            os.fstat(fd)
+        with self.assertRaises(IsolationUnavailable):
+            ctx.wrap_command(["/usr/bin/true"])
+
+    def test_context_rejects_wrong_ticket_and_recycled_descriptor(self):
+        session = self.session()
+        ctx = ToolContext(session.workspace_root, sandbox=self.sandbox,
+                          policy=session.policy("code"), workspace_session=session)
+        ctx.policy = replace(ctx.policy, ticket_id="other-ticket")
+        with self.assertRaises(IsolationUnavailable):
+            ctx.wrap_command(["/usr/bin/true"])
+        ctx.policy = session.policy("code")
+        fd = session.workspace_fd
+        os.close(fd)  # Explicit fault injection: external close/reuse of owner's FD.
+        replacement = os.open(self.workspace, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+        if replacement != fd:
+            os.dup2(replacement, fd, inheritable=False)
+            os.close(replacement)
+        with self.assertRaises(IsolationUnavailable):
+            ctx.wrap_command(["/usr/bin/true"])
+
+    def test_broker_rejects_channel_collision_before_payload(self):
+        from icode.execution_broker import execute_linux_violation_observed_command
+        session = self.session()
+        def collision(argv, channel):
+            return PreparedCommand(argv, pass_fds=(channel.fileno(),), cwd="/")
+        result = execute_linux_violation_observed_command(
+            ["/usr/bin/touch", "created"], cwd=session.workspace_root,
+            sandbox=self.sandbox, policy=session.policy("code"), timeout=3,
+            command_wrapper=collision)
+        self.assertEqual(result.error, "isolation_unavailable")
+        self.assertFalse((session.workspace_root / "created").exists())
+        self.assertTrue(os.fstat(session.workspace_fd))
+
+    def test_prepared_command_rejects_reuse_after_host_validation(self):
+        session = self.session()
+        ctx = ToolContext(session.workspace_root, sandbox=self.sandbox,
+                          policy=session.policy("code"), workspace_session=session)
+        prepared = ctx.wrap_command(["/usr/bin/touch", "created"])
+        # Replace both the path and the FD after Python validates them. Native
+        # must compare its frozen claim, not merely compare these two new objects.
+        original = session.workspace_root.with_name("original-code")
+        session.workspace_root.rename(original)
+        session.workspace_root.mkdir()
+        fd = session.workspace_fd
+        os.close(fd)
+        replacement = os.open(session.workspace_root,
+                              os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+        if replacement != fd:
+            os.dup2(replacement, fd, inheritable=False)
+            os.close(replacement)
+        result = subprocess.run(prepared, pass_fds=prepared.pass_fds, cwd=prepared.cwd,
+                                capture_output=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((session.workspace_root / "created").exists())
+        self.assertFalse((original / "created").exists())
+
+    def test_native_writable_fd_has_frozen_identity_and_is_closed_on_exec(self):
+        fd = os.open(self.workspace, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+        self.addCleanup(os.close, fd)
+        status = os.fstat(fd)
+        result = subprocess.run(
+            [str(self.helper), "--workspace", str(self.workspace), "--parent-pid",
+             str(os.getpid()), "--workspace-object-fd", str(fd), str(status.st_dev),
+             str(status.st_ino), "--", "/usr/bin/python3", "-c",
+             f"import os; assert not os.path.exists('/proc/self/fd/{fd}'); "
+             "open('created','w').write('ok')"], pass_fds=(fd,),
+            capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.workspace / "created").read_text(), "ok")
+
+    def test_scope_wrap_preserves_workspace_launch_metadata(self):
+        from icode.linux_task_scope import LinuxTaskScope
+        scope = object.__new__(LinuxTaskScope)
+        scope.version = 249
+        scope.unit = "icode-task-0123456789abcdef0123456789abcdef.scope"
+        command = PreparedCommand(["/usr/bin/true"], pass_fds=(17,), cwd="/")
+        wrapped = scope.wrap(command)
+        self.assertIsInstance(wrapped, PreparedCommand)
+        self.assertEqual(wrapped.pass_fds, (17,))
+        self.assertEqual(wrapped.cwd, "/")
+        self.assertIs(type(scope.wrap(["/usr/bin/true"])), list)
+
+    def test_session_copies_share_one_idempotent_descriptor_owner(self):
+        session = self.session()
+        copied = replace(session)
+        fd = session.workspace_fd
+        copied.close()
+        self.assertIsNone(session.workspace_fd)
+        replacement = os.open(self.workspace, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+        if replacement != fd:
+            os.dup2(replacement, fd, inheritable=False)
+            os.close(replacement)
+        self.addCleanup(os.close, fd)
+        session.close()
+        self.assertTrue(os.fstat(fd))
+
+    def test_native_rejects_wrong_frozen_identity_before_payload(self):
+        fd = os.open(self.workspace, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
+        self.addCleanup(os.close, fd)
+        status = os.fstat(fd)
+        result = subprocess.run(
+            [str(self.helper), "--workspace", str(self.workspace), "--parent-pid",
+             str(os.getpid()), "--workspace-object-fd", str(fd), str(status.st_dev),
+             str(status.st_ino + 1), "--", "/usr/bin/touch", "created"],
+            pass_fds=(fd,), cwd=self.workspace, capture_output=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.workspace / "created").exists())
+
+    def test_real_resource_chain_retains_borrowed_workspace_object(self):
+        from icode.execution_broker import execute_linux_resource_observed_command
+        from tests.test_linux_product_task_quota import require_user_manager
+        session = self.session()
+        ctx = ToolContext(session.workspace_root, sandbox=self.sandbox,
+                          policy=session.policy("code"), workspace_session=session)
+
+        @require_user_manager
+        def run(case):
+            result = execute_linux_resource_observed_command(
+                ["/usr/bin/python3", "-c",
+                 f"import os; assert not os.path.exists('/proc/self/fd/{session.workspace_fd}'); "
+                 "open('created','w').write('resource-chain')"],
+                cwd=session.workspace_root, sandbox=self.sandbox, policy=ctx.policy,
+                timeout=15, command_wrapper=ctx.wrap_command_with_resource_receipt)
+            case.assertIsNone(result.error, result)
+            case.assertEqual(result.exit_code, 0, result)
+            case.assertEqual(result.violation_observer_status, "complete")
+            case.assertIs(result.scope_cleanup_ok, True)
+            # Resource v1 proves CONFIGURED/terminal, not positive exec receipt.
+            # The created file independently proves this payload ran.
+            case.assertIsNone(result.payload_started)
+            case.assertIs(result.resource_receipt["configured"], True)
+            case.assertEqual(result.resource_receipt["channel_status"], "complete")
+            case.assertEqual((session.workspace_root / "created").read_text(), "resource-chain")
+            case.assertTrue(os.fstat(session.workspace_fd))
+            timed = execute_linux_resource_observed_command(
+                ["/usr/bin/python3", "-c",
+                 "import time; open('started-timeout','w').write('ok'); time.sleep(30)"],
+                cwd=session.workspace_root, sandbox=self.sandbox, policy=ctx.policy,
+                timeout=1, command_wrapper=ctx.wrap_command_with_resource_receipt)
+            case.assertEqual(timed.error, "timeout", timed)
+            case.assertIs(timed.cleanup_ok, True)
+            case.assertIs(timed.scope_cleanup_ok, True)
+            case.assertTrue((session.workspace_root / "started-timeout").is_file())
+            case.assertTrue(os.fstat(session.workspace_fd))
+        run(self)

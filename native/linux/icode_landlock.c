@@ -1346,6 +1346,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
                 "usage: icode-landlock --workspace PATH --parent-pid PID "
                 "[--workspace-read-only] [--network-loopback-only] "
                 "[--workspace-fd FD] "
+                "[--workspace-object-fd FD DEVICE INODE] "
                 "[--proxy-control-fd FD | --violation-control-fd FD] "
                 "[--runtime-read PATH]... "
                 "[--metadata-read PATH DEVICE INODE]... "
@@ -1380,6 +1381,9 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     size_t execute_only_count = 0;
     int workspace_read_only = 0;
     int workspace_descriptor = -1;
+    int workspace_fd_read_only = 0;
+    int workspace_has_identity = 0;
+    uint64_t workspace_device = 0, workspace_inode = 0;
     int network_loopback_only = 0;
     int proxy_control_descriptor = -1;
     int violation_control_descriptor = -1;
@@ -1388,12 +1392,24 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     uint64_t quota_limit = 0;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
-        if (strcmp(argv[command_index], "--workspace-fd") == 0) {
+        if (strcmp(argv[command_index], "--workspace-object-fd") == 0) {
+            uint64_t descriptor;
+            if (workspace_descriptor >= 0 || command_index + 3 >= argc ||
+                parse_u64_decimal(argv[command_index + 1], &descriptor) != 0 ||
+                descriptor < 3 || descriptor > INT_MAX ||
+                parse_u64_decimal(argv[command_index + 2], &workspace_device) != 0 ||
+                parse_u64_decimal(argv[command_index + 3], &workspace_inode) != 0 ||
+                workspace_inode == 0) goto invalid_task_quota;
+            workspace_descriptor = (int)descriptor;
+            workspace_has_identity = 1;
+            command_index += 4;
+        } else if (strcmp(argv[command_index], "--workspace-fd") == 0) {
             uint64_t descriptor;
             if (workspace_descriptor >= 0 || command_index + 1 >= argc ||
                 parse_u64_decimal(argv[command_index + 1], &descriptor) != 0 ||
                 descriptor < 3 || descriptor > INT_MAX) goto invalid_task_quota;
             workspace_descriptor = (int)descriptor;
+            workspace_fd_read_only = 1;
             command_index += 2;
         } else if (strcmp(argv[command_index], "--resource-control-fd") == 0) {
             uint64_t descriptor;
@@ -1541,7 +1557,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         }
     }
     if ((quota_unit != NULL) != (quota_limit != 0)) goto invalid_task_quota;
-    if (workspace_descriptor >= 0 && (!workspace_read_only ||
+    if (workspace_descriptor >= 0 && ((workspace_fd_read_only && !workspace_read_only) ||
         workspace_descriptor == proxy_control_descriptor ||
         workspace_descriptor == violation_control_descriptor ||
         workspace_descriptor == resource_control_descriptor)) goto invalid_task_quota;
@@ -1593,7 +1609,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         free(runtime_roots); free(metadata_roots); free(execute_only);
         return 1;
     }
-    /* Keep authenticated channels and the pinned read-only directory only. */
+    /* Keep authenticated channels and the pinned workspace directory only. */
     int preserved_descriptor = proxy_control_descriptor >= 0
         ? proxy_control_descriptor : violation_control_descriptor;
     if (close_inherited_descriptors_with_workspace(
@@ -1627,6 +1643,8 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         if (fstat(workspace_descriptor, &pinned) != 0 || !S_ISDIR(pinned.st_mode) ||
             lstat(workspace, &current) != 0 || !S_ISDIR(current.st_mode) ||
             pinned.st_dev != current.st_dev || pinned.st_ino != current.st_ino ||
+            (workspace_has_identity && ((uint64_t)pinned.st_dev != workspace_device ||
+                                        (uint64_t)pinned.st_ino != workspace_inode)) ||
             fcntl(workspace_descriptor, F_SETFD, FD_CLOEXEC) != 0) {
             fprintf(stderr, "workspace FD does not match directory object\n");
             free(workspace); free(runtime_roots); free(metadata_roots); free(execute_only);

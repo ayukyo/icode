@@ -268,9 +268,9 @@ class NativeChainExecutor:
                     # side-effectful call after TypeError to discover capabilities.
                     step_kwargs["budget_tracker"] = budget_tracker
                     step_kwargs["verification_plan"] = verification_plan
-                    if step in ("code", "deepcheck") and isinstance(session, WorkspaceSession):
-                        # The complete session binds the host gate even for a
-                        # non-Git snapshot. Git tool authorization remains separate.
+                    if isinstance(session, WorkspaceSession):
+                        # Every production step borrows the same live session.
+                        # Git tool authorization remains an independent check.
                         step_kwargs["workspace_session"] = session
                 report = self._step_runner(self.settings, **step_kwargs)
             except Exception:  # noqa: BLE001 - 只返回稳定码，不泄露异常正文。

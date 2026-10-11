@@ -307,6 +307,18 @@ def _execute_linux_observed_command(
                                                  limit=policy.process_limit, on_configured=configured)
         else:
             wrapped = command_wrapper(argv, sender_control)
+        # Preserve the borrowed workspace object alongside both private channels.
+        # A collision is an invalid launch contract, never silently deduplicated.
+        workspace_fds = getattr(wrapped, "pass_fds", ())
+        channel_fds = ((sender_control.fileno(), resource_sender.fileno())
+                       if resource_sender is not None else (sender_control.fileno(),))
+        if (type(workspace_fds) is not tuple
+                or any(type(fd) is not int or fd < 3 for fd in workspace_fds)):
+            raise ValueError("invalid workspace descriptors")
+        launch_fds = (*workspace_fds, *channel_fds)
+        if len(set(launch_fds)) != len(launch_fds):
+            raise ValueError("duplicate launch descriptor")
+        launch_cwd = getattr(wrapped, "cwd", None)
         monitor = LinuxSeccompViolationMonitor(host_control)
     except (OSError, RuntimeError, TypeError, ValueError):
         close_endpoints()
@@ -352,7 +364,8 @@ def _execute_linux_observed_command(
             policy=policy,
             timeout=timeout,
             output_limit_bytes=output_limit_bytes,
-            pass_fds=(sender_control.fileno(), resource_sender.fileno()) if resource_sender is not None else (sender_control.fileno(),),
+            pass_fds=launch_fds,
+            launch_cwd=launch_cwd,
             on_spawn=start_observer,
             launch_env=launch_env,
             manager_stderr=resource_mode,
