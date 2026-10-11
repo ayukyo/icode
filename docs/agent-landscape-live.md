@@ -1,5 +1,11 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
+- **2026-10-11 15:27 UTC：输入负控修复守护结束：**hotfix完整preflight6118三道exit0、不同SPEC→QUALITY零C/I/M、346关联及5620轮次方法通过，功能仅一个测试的平台分账，生产/权限/源码provenance不变。e783四Windows923run/同源3F不计通过；其签装新原始consumer目前3格只证root拒绝/26实际close/2SD读取回收，未授系统根兼容/叶政策/加载/UAC/R2/R3。采纳真实平台负控和阶段分账，无复制源/新依赖权限；下一片独立研究的直接DACL实现将在hotfix发布后恢复。[完整履历](./nbl/plans/2026-10-11-windows-source-owner-native.md)保留历史失败和修复，不借Linux全仓PASS作Windows信用。
+
+- **2026-10-11：e783350实Windows负控纠正：**新workspace x64/3.12 actual923run/20 optional skip/3F0E，核心是合法SHA被测试当invalid的平台假设，其余2项为同测试的guard关联失败。root真实raw及独立观察者复核；已1assertionRED/0E后仅修测试win32/nonwin分账，生产/权限/probe不改。采纳跨平台真实执行而非Linux-only正控，研究取舍不变、无源复制/新依赖权限；hotfix SPEC已零问题，新完整守护/QUALITY与后续新SHA四格另验，不借e783失败作软件通过。[失败履历](./nbl/plans/2026-10-11-windows-source-owner-native.md)保留，不授兼容/UAC/R2/R3。
+
+- **2026-10-11：私有直接DACL窗口开始：**fixedconsumer观测软件已main `e783350` 推送核remote，其新四格native另验。14:59–15:01 UTC独立只读沿固定Codex8c0f701/SRT5507fb0、Apache2及Microsoft主源，未刷HEAD/20名单；root另打开文件访问/SetSecurityInfo/继承规则原文。**采纳：**先行WRITE_DAC与pin后新开分账、parent/leaf四变体三窗口、真实same-object SD效果/前后正控、全sharing观察器避免污染未pin控制。**暂缓：**研究其它两组sibling/继承、TI、祖先policy及加载/UAC；**不适配：**generic-write分享冲突冒充SD锁、父set成功当孩子传播、同host actor当不可信principal、系统root ACL修改。复用现有ABI/pin/reader，成本为测试専用ctypes及四格native，无复制源/新依赖/权限。设计SPEC补I2及pin内reset窗口后零问题，不同QUALITYC0/I0/M0，[设计及主源](./nbl/specs/2026-10-11-windows-private-dacl-window-design.md)/[实施](./nbl/plans/2026-10-11-windows-private-dacl-window.md)进入Task1TDD；mutation成功也不算安全或默认pip兼容/R2/R3通过。
+
 - **2026-10-11 15:06 UTC：原生观测软件完整守护结束：**root新完整preflight session59265三道OK/exit0，编译-j1、四文档0疑似、site及秘密/vendor/diff检查通过，六功能摘要与全片双审/20轮不变。沿本片固定来源的取舍保持，未复制源码/新增依赖权限；下一片只准备临时直接WRITE_DAC实验，sibling/继承与policy调整暂缓。软件待main发布，新SHA四格actual consumer、默认兼容/加载/UAC/R2/R3仍待；前条运行中描述为历史。[七维软件范围](./nbl/plans/2026-10-11-windows-source-owner-native.md)不升级为原生或发布通过。
 
 - **2026-10-11：固定消费者原生观测软件审查结束：**Task1/2六功能文件已冻结，独立全片SPEC后不同QUALITY均C0/I0/M0，各72PASS/0skip/F/E；root346关联=336PASS/10既有native环境skip、20轮5620PASS/0skip/F/E。沿本阶段固定Codex/SRT及Python/Microsoft主源，采纳实际回收与前缀分账、严格raw/版本监督，暂缓祖先角色修改/加载/UAC，不适配root拒绝当全链通过或-I当OS沙箱；没有源码复制/新依赖/权限。软件完整preflight仍跑、发布及新SHA四格原生仍待；[冻结与实际选择清单](./nbl/plans/2026-10-11-windows-source-owner-native.md)区分923词法ID与实际Windows执行，不授兼容或R2/R3。下面实现中的描述保留各自历史窗口。

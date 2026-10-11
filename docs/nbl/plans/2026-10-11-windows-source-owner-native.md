@@ -34,11 +34,23 @@ root独立重跑11模块346run=336PASS/10既有native平台skip/F0/E0，20轮真
 ## Task3：软件发布、四格原生分账、下一片
 
 - [x] root全文回读全部源及上下游，独立全片SPEC→不同QUALITY零C/I/M；关联/20轮、完整preflight三道、文档/site/diff/秘密/固定vendor、七维真实范围报告。
-- [ ] exact add/commit/push main并核remote；不带用户无关改动。
+- [x] exact add/commit/push main并核remote；不带用户无关改动。
 - [ ] 新SHA Windows x64/ARM64×Python3.11/3.12读取完整安装原始回执，父validator再核；分别记录根拒绝和实际回收，不授默认兼容/叶负控/UAC/R2/R3。
 - [ ] 继续临时叶真实运输负控与卷根/加载操作合同工作，不能以本观测代替完成。
 
 ### root最终软件守护
+
+软件已实际exact10文件提交 `e7833509030392e88a6ce11e9b455064925c0e06`，推送main后git ls-remote同SHA、工作树clean。CI38150048884、provenance38150048901、Pages38150048904已新SHA启动，独立只读观察者并行跟踪；四格新原生回执仍未授信用。
+
+### e783350实Windows失败与窄测试修复（进行中）
+
+root取得x64/3.12 workspace job114501428931完整raw：actual923run/20 optional skip/3 assertion failure/0error。核心是 `test_input_rejected_before_native_or_consumer` 将合法SHA列为invalid且未固定nonWindows，Windows会实际进入已mock入口；另两个是guard真实运行该class/module时关联同一失败。不能以Linux933PASS/0skip（root另跑182.001s）替代Windows通过。独立观察者另核两旧Reviewer，仍10035/wait_expired/private control creditfalse，非DENY，非此测试回归。
+
+rootWindows模拟（真实probe+固定实际版本/架构边界，消费者仅测试mock）重取1assertionF/0E，再仅修改该测试315–328：win32/linux均坏SHA0入口，合法SHA只nonwin0入口，合法win32正控仍由原两轮ready/rejected测试验证。修后50PASS及外层Windows1PASS，11关联346run=336PASS/10既有native skip/F0/E0、20轮5620PASS/0skip/F/E；测试新SHA256 `8d09f8dc1cbab92ecca799b496bec09c8ddb7fa59db82a1187e0eea6ef00e136`，probe及其余五功能摘要不变，不修改生产或权限。hotfix独立SPEC后不同QUALITY均C0/I0/M0，各50PASS及外层Windows2PASS；新完整preflight session6118仍运行。下一片两draft文件暂冻结10P，仅为全仓守护保持稳定，不纳hotfix提交或授实验实现。
+
+2026-10-11 15:27 UTC，hotfix新完整preflight6118三道OK/exit0；测试及两draft摘要从守护前后均不变。双独立复核、关联/20轮、compile-j1、docs0疑似/site/diff通过。守护包含稳定的10项下一片draft合同但它们不纳本提交，不授该实验功能；功能交付仍仅一个输入负控测试。七维自检语法/依赖/逻辑/异常/关联/兼容/便携运行通过，新的实际Windows四格待新SHA，不声称跨平台完成。
+
+e783主CI窗口已终态37success/6failure/3conditional skip，四workspace均923run/20skip/同源3F，root实际读取四完整raw；fullPython3.11/3.12各2876run/81skip/2795PASS，root分别核原始日志658.671s/789.814s。Pages2/2success。e783签装目前三格新消费者raw经独立观察者真实validator核过；root另核x64/3.12原始wire且预期Windows版本取runnerOS 10.0.26100：baseline拒绝关闭信用null，实际观测两资源各13节点/26确认逆序close，仅helper/root一个owner_untrusted事件及2SD读/alloc/free，无未知。此为固定consumer拒绝与回收的组件证据，非e783全软件通过；最后格及hotfix新四格仍验，compatibility/launch/protected均false。
 
 2026-10-11 15:06 UTC，完整preflight session59265三道均OK、exit0；工具不打印全仓成功方法数，不估算。额外密钥扫描亦exit0，固定vendor `21566a589cbe98bd35372a04bbb6ca1c51d8eed2` 无改动。compileall-j1、git diff-check均通过；四文档一致性检查0疑似项，site两次通过HTML2/MD6/上游品牌3/social2，9个外部导航未fetch，不授可达性。六功能摘要与双审/20轮相同。下一片直接DACL临时实验仅草拟、未纳本片软件提交，不借实验信用。
 

@@ -315,9 +315,15 @@ class SourceConsumerObservationTests(unittest.TestCase):
 
     def test_input_rejected_before_native_or_consumer(self):
         with patch.object(self.m.source, 'pin_installed_startup_sources') as entry:
-            for value in (None, True, 'A' * 40, 'a' * 39, SHA):
-                with self.assertRaises(ValueError):
-                    self.m.probe(value)
+            for platform in ('win32', 'linux'):
+                # A valid SHA is rejected by the platform gate only off Windows.
+                values = (None, True, 'A' * 40, 'a' * 39)
+                if platform != 'win32':
+                    values += (SHA,)
+                with self.subTest(platform=platform), patch.object(self.m.sys, 'platform', platform):
+                    for value in values:
+                        with self.assertRaises(ValueError):
+                            self.m.probe(value)
             entry.assert_not_called()
 
     def test_observed_native_faults_restore_bindings_and_preserve_interrupts(self):
