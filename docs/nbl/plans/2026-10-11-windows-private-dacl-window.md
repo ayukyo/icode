@@ -125,6 +125,18 @@ SPEC→不同QUALITY均C0/I0/M0。QUALITY另实际执行64组prepare trace（四
 - 兼容安全：生产/vendor/权限/API/成功wire不变，三个授权false保持。
 - 可运行性：本机最终软件通过；新SHA Windows原生、加载/UAC/其它平台及R2/R3整体仍待，不主张跨平台100%。
 
+### 8b1afd4 私有初始化与DACL机制原生门
+
+17:17 UTC，初始化候选提交并推送main `8b1afd4d347173453252d3d22ba7ec5cdbd805f5`，远端相同、工作树干净、线上仅main。新主CI `38158982005` 四workspace job：`114527732967`（x64/3.11）、`114527732885`（x64/3.12）、`114527733007`（ARM/3.11）、`114527732950`（ARM/3.12）均实际958run/20既有可选skip/938PASS，无F/E。root与独立observer各逐份读取原始canonical wire、用冻结fixture validator真运行；每格exact四变体/12窗口，四格16变体/48窗口全部完整，cleanup true、三个授权false。软件摘要仍为冻结值，不借旧SHA信用。
+
+每个pinned操作实际SetSecurityInfo返回0，SD确变；new均实际open=0，未pin与released也均changed正控。结果证明“整链只读共享pin不阻止同host WRITE_DAC”，不是安全通过；metadata_changed与SD变化不一致，不可用metadata没变判定DACL未变。只能说新顺序消除了这轮初始化障碍，仍不能倒推旧失败由空DACL造成；没有旧失败时的owner/SD/native code。
+
+独立observer核新主CI46job=41success/2旧Reviewerfailure/3条件skip，两fullPython各2911run/83skip；Pages `38158981995` 2/2success。provenance `38158981990` validate通过、四签装尚在运行，此刻不授其新原始wire信用。两Reviewer仍10035/wait_expired/deny=false，不能把主CI剩余失败消除为网络DENY或R2/R3通过。
+
+Task3私有DACL“新SHA四格完整三窗口观察”子门已通过；默认pip根政策、非可信principal、sibling/继承、PE加载与首次UAC仍未验收。下一Windows片只读预研刷新中，不放宽策略。并行[Linux绑定诊断设计](../specs/2026-10-12-linux-admission-receipt-design.md)SPEC→不同QUALITY修后零遗留，保持incomplete/no authority，不借本片原生信用。
+
+随后同SHA签装窗口闭合：provenance `38158981990` 5/5success。root直接读取四签装 job `114530361075 / 114530360952 / 114530360972 / 114530360994` 的唯一原始source-consumer wire，以冻结validator、固定Python/架构网格及独立runner OS（x64 26100、ARM 26200）实际验证exit0；独立observer也另行验证。每格baseline rejected/close=null、consumer owner_untrusted，26全局逆序确认关闭与2SD读取/分配/释放，合计104/8/8/8、未知0、三个授权false。只证明拒绝及收尾机制，不给叶政策、首次关闭或UAC信用；旧chain及19安装步骤另账。两网络Reviewer仍10035/wait_expired/deny=false，R2/R3整体未通过。
+
 设计SPEC两轮已定位并修复全sharing观察器/owner绑定、精确wire与先行生命周期，以及pin内reset抢先失败问题；最终C0/I0/M0，后续不同独立QUALITY亦C0/I0/M0，冻结design SHA256 `8ee8d8c4900fb38fb57a07c209f121319f32799f3b493fdfbdeb59a53db834d4`。ROOT实际sequential-thinking77–79分解真实缺口、复用与风险；Task1单writer已开始真实TDD，未授软件/原生信用。研究14:59–15:01 UTC仅机制借鉴，无复制源、新依赖/权限，不以研究代实验。
 
 实施前预算口径澄清：四格窗口Set/SDDL最多24，另初始parent/leaf配置8，总32/每变体8；GetSecurityInfo allocation及HANDLE关闭另计。该澄清SPEC后不同QUALITY均C0/I0/M0，新design SHA256 `ab8fc3b4701599f81970bf6ae76755c70acd02123d7349231e104a263eacf010`，旧design摘要仅历史。writer已10便携合同PASS，observer/窗口尚未实施；为root修前片e783 Windows测试平台假设、完整守护6118稳定，暂冻结两draft、只读预算研究。不是阶段完成/原生信用，root守护后恢复真实TDD。
