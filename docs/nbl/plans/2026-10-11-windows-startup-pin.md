@@ -10,6 +10,14 @@
 
 设计：[可信启动与受保护晋升](../specs/2026-10-11-windows-trusted-startup-design.md)。基线 fb35f55/vendor21566a5。全部完成状态均以实际命令/审查为准。
 
+## 当前状态刷新（提交 90370b1 后）
+
+本片软件已提交并推送 main `90370b1dfc0b21df3b8e0e9970bd9ccedcfc391f`，主代理再次核远端同 SHA。下方早期“尚未提交/仍在运行”只描述各自历史窗口，不是当前状态。新 [权限合同计划](./2026-10-11-windows-startup-security.md)继续下一依赖，不等待重复批准。
+
+精确 SHA 的 [CI run38132136078](https://github.com/ayukyo/icode/actions/runs/38132136078)：Windows x64 job114448479543 与 ARM64 job114448479619 workspace success，各实际 704 tests / 20 skip。该 SHA 的 DEFAULT 在 nt 显式选择六个 WindowsEnforcementTests，selected_pin_ids 将 body、fixture、subTest skip 提升为 exit1，因此这六项已获两台实际 Python3.11主机证据；不以整体 success 掩盖其余20个历史可选 skip。Win10、Python3.12及普通宿主矩阵未补齐。
+
+同 run Reviewer x64/ARM64 两作业仍 failure，日志 ipv4/ipv6 error10035、wait_expired=true、connect_denied=false，不能算网络 DENY 或 R2/R3 通过。权限/DLL/UAC/晋升及完整 WP0b 尚未完成。官网 run38132136023 validate/deploy 两作业 success。
+
 ## 文件职责
 
 - 新 `src/icode/windows_startup_pin.py`：内部 pin owner、严格路径/metadata 及有界 bytes 合同。
@@ -58,7 +66,7 @@ Task1 实施者已停止写文件。首次 1 方法及扩展 14 方法均预期 
 - [x] 实现 `windows_startup_native.py`：QueryDosDeviceW 有界结果严格接收直接 HarddiskVolume；卷根与祖先持有，NtCreateFile 相对打开；通过 FILE_ID_INFO、FILE_STANDARD_INFO、FILE_BASIC_INFO、FILE_ATTRIBUTE_TAG_INFO 查询完整身份和链接数；ReadFile 有界，CloseHandle 状态如实返回。
 - [x] 可复用 windows_worktree ctypes 布局，但不得复用 share7/open-root 路径，也不得修改该 snapshot 后端。复用私有布局时显式记录依赖并关联回归；不把仅 READ_ATTRIBUTES 的 open 误当能参与全部数据分享检查。
 - [x] 每取得句柄即登记，API 查询异常也必须进入 cleanup；尚 live 的 handle 数字不能绕 owner 直接暴露给模型。目录保持非继承，文件身份再核验与原字节绑定。
-- [ ] 真 Windows 临时目录测试：正常读、held image 写/删除/rename 拒绝、原先 WRITE/DELETE opener 导致 pin 拒绝、祖先 rename/junction/多链接拒绝；关闭后合法写入恢复。只处理测试本次创建的对象，不改宿主 ACL/全局设置。
+- [x] 真 Windows 临时目录测试：正常读、held image 写/删除/rename 拒绝、原先 WRITE/DELETE opener 导致 pin 拒绝、祖先 rename/junction/多链接拒绝；关闭后合法写入恢复。已在上列 x64/ARM64 Python3.11 CI 两主机通过，未授其余平台格；只处理测试本次创建的对象，不改宿主 ACL/全局设置。
 - [x] Linux 上跑 portable suite，Windows 测试按平台单列 skip；原生四格随后按精确提交实际执行，不能以 Linux 无失败授它们通过。
 
 ### Task 3：选择器、双独立审查与阶段发布
@@ -73,8 +81,8 @@ Task1 实施者已停止写文件。首次 1 方法及扩展 14 方法均预期 
 - [x] 冻结后定点 portable 方法连续串行 20 轮，逐轮记录实际通过数、skip 和失败；原生方法在 Linux 的 skip 不计入 portable 通过数量，不用单次测试重复报作新原生证据。
 - [x] 新完整 `./.venv/bin/python scripts/preflight.py` 三道通过；`./.venv/bin/python -m compileall -q -j1 src/icode/windows_startup_pin.py src/icode/windows_startup_native.py`、diff、治理及密钥/子模块检查通过。测试数量与 skip 取实际输出，不能猜。
 - [x] 执行 `./.venv/bin/python scripts/check_site.py`，确认本片不新增提前宣称启动或隔离已就绪的文案，不绕过站点守卫。
-- [ ] 七维自检据实记录；精确暂存路径（新 docs 需 `git add -f`）、cached diff check 后主代理提交推送 main 并核远端 SHA。精确 SHA 的真实 Windows 矩阵未通过仍记缺口。
-- [ ] 阶段结束更新持续竞品对照：采纳对象 pin、暂缓首 UAC 证明、不适配锁失败继续；记录当前源码/许可/观察日期，不能伪装全二十项目刷新。
+- [x] 七维自检据实记录；精确暂存路径（新 docs 需 `git add -f`）、cached diff check 后主代理提交推送 main 并核远端 SHA90370b1。精确 SHA 的完整 Windows 支持矩阵缺口单列。
+- [x] 阶段结束更新持续竞品对照：采纳对象 pin、暂缓首 UAC 证明、不适配锁失败继续；记录当前源码/许可/观察日期，未伪装全二十项目刷新。新原生窗口见顶部刷新。
 
 ## WP0b 后续连续任务（不因第一片通过而关闭）
 
