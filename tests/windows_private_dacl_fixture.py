@@ -454,7 +454,9 @@ class _Fixture:
         _, components = _at_stage('components', _local_components, self.leaf)
         if not 2 <= len(components) + 1 <= _MAX_NODES:
             raise RuntimeError(_FAILURE)
-        for role in ('parent', 'leaf'):
+        # Protect the leaf before changing its parent: SetSecurityInfo may
+        # propagate parent ACL changes to an unprotected child.
+        for role in ('leaf', 'parent'):
             def configure():
                 if self.api.set_marker(self.pending.value, self.host, 0x80) != 0:
                     raise RuntimeError(_FAILURE)

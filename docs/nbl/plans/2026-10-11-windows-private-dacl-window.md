@@ -99,6 +99,32 @@ writer45PASS、20轮900PASS/0skip/F/E、381run/369PASS/12native平台skip；root
 - 兼容安全：生产/vendor/API/ACL/成功wire/三个授权false未变，无新增依赖/权限。
 - 可运行性：本机最终软件通过；Windows新SHA原生、DACL真实根因与R2/R3总验收仍待，不主张跨平台100%。
 
+### a6fd29c 有限诊断原生结果与初始化顺序候选
+
+2026-10-11 16:52 UTC，诊断修复提交并推送 main `a6fd29cf3af403b560e8c798f7244af36063959d`，remote 相同且工作树干净。新主 CI `38157260949` 的四个 Windows workspace 原始 job `114522696686 / 114522696788 / 114522696824 / 114522696938`，独立 observer 与 root 均逐份读取：每格实际958run、20既有可选skip、2F/0E。guard13通过，旧缺属性ERROR消失；两个 private 方法均在 `initial_leaf_open:{leaf|parent}:preexisting` 失败，成功窗口 wire 为零，new未执行，不授窗口效果或cleanup信用。runtime/analysis 均 a6fd29c；后续 verification 候选必须新 SHA 重跑，不借该轮结果。
+
+实际 prepare 调用链为创建两个私有对象 → 配置父目录 protected/non-inheritable DACL → 配置叶文件。root直接读取 Microsoft [自动传播规则](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)与 [SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo)：父继承 ACE 的移除可以移除未保护子对象的继承副本；先设置子对象 `SE_DACL_PROTECTED` 可避免这种影响。候选只交换初始配置为 leaf → parent，复用相同接口、权限、模板与回收，无生产修改。
+
+结论上限仍是 candidate_path：尚无失败叶对象实际 owner/SD/具体 native code；owner 的隐式 READ_CONTROL/WRITE_DAC 权利意味着“传播导致空DACL”不能单独证明该打开失败的根因。便携低层传播模型只验证准备顺序契约，不冒充 Windows 重现。root实际 sequential-thinking89–91、单 writer TDD及独立只读研究开始；须保留非传播打开失败负控、初始配置失败/中断/清理、原预算与成功 schema，再独立审查及新四格原生验收。三个授权 false、未知失败阻断与 R2/R3 未验收边界不变。
+
+17:11 UTC，候选两测试源冻结：fixture SHA256 `b5ec139da140a8432a2274c1c045e7f20888a2f1c57efb1d973cc61b76a3bd70`，private test `39e7b681e172a2d03253d11018f9cc5d30ce73bd3b44bb27e566ee19a7d38ab1`。有效 TDD 为当前强化方法在旧 a6 fixture 上1F/0E；writer、root、独立SPEC与不同QUALITY各自复现，不将这些重复回放相加。候选每方45PASS；writer、root、QUALITY各20轮900PASS/0skip/F/E，摘要稳定；每方同次12模块381run/369PASS/12平台native skip/0F/E。方法数仍32便携/2native/13guard，权限与成功wire不变。
+
+a6三线上运行随后闭合：主CI46job=37success/6failure/3条件skip，provenance5/5、Pages2/2success；两fullPython原始日志各2911run/83skip由独立observer核。root逐份读取四签装 job `114525564967 / 114525564932 / 114525564942 / 114525564949` 的原始sourceconsumer wire，并以冻结validator、固定job网格及独立runner OS版本实核通过（x64 build26100、ARM build26200）。每格26逆序确认关闭、2SD读取/分配/释放，四格104/8/8/8；baseline rejected/close=null、consumer owner_untrusted、三个授权false，仍不授叶政策/首轮关闭/UAC。旧chain/19安装步骤由observer另账核，不用它们覆盖零DACL窗口；两Reviewer继续10035/wait_expired/deny=false，R2/R3未通过。
+
+SPEC→不同QUALITY均C0/I0/M0。QUALITY另实际执行64组prepare trace（四变体×leaf/parent×open/set/close/pending退役边界×KI/SE），原异常身份、已取得HANDLE单次回收、转换SD单次free、精确私有树清理均通过；不是Windows原生计数。root compile-j1、docs两文件0疑似、site检查通过（9外部导航未fetch）、diff通过，vendor21566a5干净。冻结后完整preflight33304已通过密钥/子模块两道、全仓测试仍运行，尚不授最终软件守护或发布；a6原生失败不被便携结果覆盖。
+
+17:15 UTC，冻结后完整preflight33304三道全部通过、exit0；工具不打印成功方法总数，不估计。两功能摘要未变，上段仍运行状态为历史窗口。仅关闭此初始化候选的软件门，随后范围提交main及新SHA四格原生验收；没有放宽生产策略或授R2/R3。
+
+【架构级自检报告：初始化候选软件范围】
+
+- 语法/编译：compile-j1、完整preflight三道通过。
+- 依赖/调用链：真实prepare/native/reader/pin与选择器关联，SPEC→不同QUALITY零遗留。
+- 逻辑/边界：顺序、protected/marker、正控及非传播拒绝负控，45/900/381验证通过。
+- 异常处理：有限诊断、KI/SE原对象、64组独立中断及一次回收/精确清理通过。
+- 关联模块：381run/369PASS/12平台skip，无F/E；原测试方法数及预算不变，文档同步。
+- 兼容安全：生产/vendor/权限/API/成功wire不变，三个授权false保持。
+- 可运行性：本机最终软件通过；新SHA Windows原生、加载/UAC/其它平台及R2/R3整体仍待，不主张跨平台100%。
+
 设计SPEC两轮已定位并修复全sharing观察器/owner绑定、精确wire与先行生命周期，以及pin内reset抢先失败问题；最终C0/I0/M0，后续不同独立QUALITY亦C0/I0/M0，冻结design SHA256 `8ee8d8c4900fb38fb57a07c209f121319f32799f3b493fdfbdeb59a53db834d4`。ROOT实际sequential-thinking77–79分解真实缺口、复用与风险；Task1单writer已开始真实TDD，未授软件/原生信用。研究14:59–15:01 UTC仅机制借鉴，无复制源、新依赖/权限，不以研究代实验。
 
 实施前预算口径澄清：四格窗口Set/SDDL最多24，另初始parent/leaf配置8，总32/每变体8；GetSecurityInfo allocation及HANDLE关闭另计。该澄清SPEC后不同QUALITY均C0/I0/M0，新design SHA256 `ab8fc3b4701599f81970bf6ae76755c70acd02123d7349231e104a263eacf010`，旧design摘要仅历史。writer已10便携合同PASS，observer/窗口尚未实施；为root修前片e783 Windows测试平台假设、完整守护6118稳定，暂冻结两draft、只读预算研究。不是阶段完成/原生信用，root守护后恢复真实TDD。

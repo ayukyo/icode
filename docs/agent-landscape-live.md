@@ -2322,3 +2322,17 @@ ICODE 的真实 Linux 工程验收在 create 阶段暴露存储根与执行根�
 独立研究与root直接读取固定历史Codex `36650394c5b38c2990ccf2a3457165ca3e9d9726` 的 [denial.rs](https://github.com/openai/codex/blob/36650394c5b38c2990ccf2a3457165ca3e9d9726/codex-rs/sandboxing/src/denial.rs)、OpenHands SDK `d77ada7a030b3acaa82593d402632680361dfe42` 的 [CommandResult](https://github.com/OpenHands/software-agent-sdk/blob/d77ada7a030b3acaa82593d402632680361dfe42/openhands-sdk/openhands/sdk/workspace/models.py)，并分别核根LICENSE为Apache-2.0/MIT。前者是likely分类，后者承载退出码/输出/超时；两者都不认证Landlock拒绝来源。不声称当日HEAD/完整20名单或全依赖许可刷新，未运行/复制上游。
 
 **采纳（下一设计输入）**执行结果、观察来源、用户提示分层，复用现有有限schema与正负控；**暂缓**通用ptrace或ADDFD文件broker，先冻结真实生产合同差距，不以“大覆盖所有syscall”扩大原VR-1要求；**不适配**stderr/普通exit13猜OS DENY、USER_NOTIF读路径后CONTINUE猜事后文件结果、特权audit/BPF服务。收益为避免重复构建和错误放行，成本为后续真实CLI/MCP parity、允许/拒绝/普通失败及observer不完整矩阵；不新增依赖/权限或改当前生产代码。该只读研究不补Windows诊断原生门、完整生产策略或R2/R3验收信用。
+
+### 2026-10-11 17:01–17:05 UTC：私有 DACL 初始化与继承边界
+
+独立只读研究核对固定 [SRT self_protect.rs](https://github.com/anthropics/sandbox-runtime/blob/5507fb0e639c00f845554336ece62e27af5b1bb7/vendor/srt-win-src/src/self_protect.rs) 与 [Codex home.rs](https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/windows-sandbox-service/src/ipc/home.rs)，分别复核根 LICENSE 为 Apache-2.0；未刷新当前 HEAD 或完整20名单，不运行或复制上游。SRT 的 protected DACL/OWNER RIGHTS 是进程对象策略，不能直接当 NTFS 初始化排序证明；Codex 的祖先/目标权限与生命周期分账保留，其 service 身份不适配纯 pip 路线。
+
+root直接读取 Microsoft [自动传播](https://learn.microsoft.com/en-us/windows/win32/secauthz/automatic-propagation-of-inheritable-aces)及 [SetSecurityInfo](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setsecurityinfo)。**采纳（候选）**：先保护私有 leaf 再配置 parent，避免父更新影响未保护的子对象；复用现有权限/API/模板，保留真实准备、有限失败及 once 回收。**暂缓**：仅凭 `initial_leaf_open` 推断传播或空 DACL 为已证实根因，owner 隐式 READ_CONTROL/WRITE_DAC 是未排除边界；sibling、祖先政策、UAC另验。**不适配**：加继承 ACE/特权、复制进程 OWNER RIGHTS、API成功当实际效果、模型当原生证据。收益是消除夹具初始化对继承的依赖，成本为准备顺序/非传播失败/中断负控和新四格原生验收，无新依赖或生产修改。
+
+a6fd29c 四 Windows workspace 实际958/20skip/2F0E，guard13通过；两原生方法同为初始叶打开失败、零成功窗口。候选仅本机 TDD 进行中，不能报原生修复、安全隔离或 R2/R3 通过；[原始 job、准备链与结论上限](./nbl/plans/2026-10-11-windows-private-dacl-window.md)分账记录。
+
+### 同窗口：Linux 生产准入的最小后续输入
+
+独立只读追加核验后，root直接回读 `WorkspaceSession.policy`、workbench分层创建、`test_workspace`正控、`select_sandbox`、CLI真实选择器及 `execute_linux_leased_connect_candidate`：POSIX工单已启用 `isolate_git_metadata=True`，code 内没有 `.git`，不应为普通工单重复重构布局或改变旧 WorkspaceManager 默认。`select_sandbox` 当前不选择 Landlock，包存在和doctor成功不等于实际工单后端；网络候选只传代理 sender FD，尚未合流当前 DENY dispatch 的资源监督、USER_NOTIF和会话目录FD。原[§12.1/14.1](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md)的环境绑定回执与生产授权必须另外闭合。
+
+**采纳（设计输入）**：复用随包hash核验、真实session对象、现有评分/独立探针，先设计宿主拥有且按OS/helper/policy变化失效的有限准入回执；后续才接selector/executor及网络资源合流。**暂缓**：未完成这些合同前自动放行；**不适配**：直接将 `policy_contract_ready` 改为True、复用旧诊断字典当ready、审批后裸调网络candidate、重建quota或放弃保护路径。收益为收束真正产品缺口，成本为身份漂移/缺管理器/skipped/incomplete/未知cleanup负控及后续真实产品入口验收。沿同窗口实际核过的固定Codex/OpenHands分层机制，不声称再次刷新HEAD；无生产/权限/依赖修改，不授R2/R3信用。

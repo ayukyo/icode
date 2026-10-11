@@ -596,15 +596,45 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
                 fixture = ApiFixture(self.m)
                 api = fixture.api()
                 markers, reads = {True:0x80, False:0x80}, []
+                protected = {True:False, False:False}
+                leaf_accessible, preparation = [True], []
                 original_set = api.set_marker
-                def set_marker(handle, host, marker):
-                    status = original_set(handle, host, marker)
-                    if status == 0: markers[fixture.directories[handle]] = marker
-                    return status
-                api.set_marker = set_marker
+                original_convert = fixture.advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.action
+                converted_marker = [None]
+                def convert(text, *arguments):
+                    converted_marker[0] = 0x100 if '(A;;0x100;;;WD)' in text else 0x80
+                    return original_convert(text, *arguments)
+                fixture.advapi.ConvertStringSecurityDescriptorToSecurityDescriptorW.action = convert
+                def set_security(handle, kind, information, *arguments):
+                    directory = fixture.directories[handle]
+                    # A low-level preparation contract, not a claim that this
+                    # simulated denial reproduces the Windows failure cause.
+                    # Parent updates may affect a still-unprotected child.
+                    # This actor deliberately has no implicit-owner grant;
+                    # the double is not a complete Windows access evaluator.
+                    if directory and not protected[False]:
+                        leaf_accessible[0] = False
+                    protected[directory] = bool(information & 0x80000000)
+                    markers[directory] = converted_marker[0]
+                    preparation.append(('set', 'parent' if directory else 'leaf'))
+                    return fixture.set_result
+                fixture.advapi.SetSecurityInfo.action = set_security
+                def open_file(*arguments):
+                    if not arguments[5] & 0x2000000 and not leaf_accessible[0]:
+                        return self.m._INVALID
+                    return fixture.open(*arguments)
+                fixture.kernel.CreateFileW.action = open_file
+                def close_handle(handle):
+                    preparation.append(('close', 'parent' if fixture.directories[handle] else 'leaf'))
+                    return fixture.close(handle)
+                fixture.kernel.CloseHandle.action = close_handle
                 def security(handle):
-                    reads.append(handle)
-                    return raw_marker(markers[fixture.directories[handle]])
+                    directory = fixture.directories[handle]
+                    raw = raw_marker(markers[directory])
+                    if not protected[directory]:
+                        raw = raw[:2] + (0x8004).to_bytes(2, 'little') + raw[4:]
+                    reads.append((directory, markers[directory], protected[directory]))
+                    return raw
                 reader = SimpleNamespace(cleanup_unconfirmed=False, read=security)
                 class Pin:
                     _handles = [100,101]
@@ -622,9 +652,20 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
                      patch.object(self.m, 'WindowsStartupHostIdentity', return_value=SimpleNamespace(capture=lambda:HOST, cleanup_unconfirmed=False)), \
                      patch.object(self.m, 'WindowsStartupSecurityReader', return_value=reader), \
                      patch.object(self.m, '_local_components', return_value=('C:',['temp','parent','leaf'])), \
-                     patch.object(self.m, 'pin_startup_file', return_value=pin) as create_pin:
-                    wire = self.m._run_variant(target, opener)
+                     patch.object(self.m, 'pin_startup_file', return_value=pin) as create_pin, \
+                     patch.object(ctypes, 'get_last_error', create=True, return_value=5):
+                    try:
+                        wire = self.m._run_variant(target, opener)
+                    except RuntimeError as error:
+                        self.fail('private preparation did not protect leaf before parent: ' +
+                                  self.m.failure_message(error))
                 data = self.m.validate_wire(wire)
+                self.assertEqual(preparation[:4], [('set','leaf'),('close','leaf'),
+                                                   ('set','parent'),('close','parent')])
+                self.assertEqual(reads[:2], [(True,0x80,True),(False,0x80,True)])
+                self.assertTrue(all(value[2] for value in reads))
+                self.assertEqual([value[1] for value in reads[2:]],
+                                 [0x80,0x100,0x80,0x80,0x100,0x80,0x100])
                 self.assertTrue(all(event['effect'] == 'changed' for event in data['windows']))
                 self.assertEqual(len(fixture.advapi.SetSecurityInfo.calls), 8)
                 self.assertEqual(len(fixture.kernel.LocalFree.calls), 8)
@@ -634,8 +675,11 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
                 self.assertTrue(pin.close_confirmed)
                 path = create_pin.call_args.args[0]
                 self.assertFalse(os.path.exists(os.path.dirname(os.path.dirname(path))))
-                for role in ('parent', 'leaf'):
+                for role, kind in ((role, kind) for role in ('parent', 'leaf')
+                                   for kind in (RuntimeError, KeyboardInterrupt, SystemExit)):
                     roots = []
+                    original = kind('PRIVATE-VALUE-DO-NOT-OUTPUT')
+                    before_close = len(fixture.kernel.CloseHandle.calls)
                     real_create = self.m.tempfile.mkdtemp
                     def create(*args, **kwargs):
                         root = real_create(*args, **kwargs)
@@ -643,18 +687,46 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
                         return root
                     def fail_set(handle, host, marker):
                         if fixture.directories[handle] == (role == 'parent'):
-                            raise RuntimeError('PRIVATE-VALUE-DO-NOT-OUTPUT')
+                            raise original
                         return original_set(handle, host, marker)
                     with patch.object(self.m, '_Native', return_value=api), \
                          patch.object(self.m, 'WindowsStartupHostIdentity', return_value=SimpleNamespace(capture=lambda:HOST, cleanup_unconfirmed=False)), \
                          patch.object(self.m, '_local_components', return_value=('C:',['temp','parent','leaf'])), \
                          patch.object(self.m.tempfile, 'mkdtemp', side_effect=create), \
                          patch.object(api, 'set_marker', side_effect=fail_set):
-                        with self.assertRaises(RuntimeError) as caught:
+                        with self.assertRaises(kind) as caught:
                             self.m._run_variant(target, opener)
                     self.assertTrue(callable(getattr(self.m, 'failure_message', None)), 'finite diagnostic validator missing')
+                    if kind is RuntimeError:
+                        self.assertEqual(self.m.failure_message(caught.exception),
+                                         self.m._FAILURE + ':initial_' + role + '_set')
+                    else:
+                        self.assertIs(caught.exception, original)
+                    self.assertEqual(len(fixture.kernel.CloseHandle.calls) - before_close,
+                                     2 if role == 'parent' else 1)
+                    self.assertEqual(len(roots), 1)
+                    self.assertFalse(os.path.exists(roots[0]))
+                # An independent open denial must remain a finite failure,
+                # even after the new ordering has protected that object.
+                for role in ('leaf', 'parent'):
+                    roots = []
+                    before_set = len(fixture.advapi.SetSecurityInfo.calls)
+                    def deny_open(*arguments):
+                        if bool(arguments[5] & 0x2000000) == (role == 'parent'):
+                            return self.m._INVALID
+                        return fixture.open(*arguments)
+                    with patch.object(self.m, '_Native', return_value=api), \
+                         patch.object(self.m, 'WindowsStartupHostIdentity', return_value=SimpleNamespace(capture=lambda:HOST, cleanup_unconfirmed=False)), \
+                         patch.object(self.m, '_local_components', return_value=('C:',['temp','parent','leaf'])), \
+                         patch.object(self.m.tempfile, 'mkdtemp', side_effect=create), \
+                         patch.object(fixture.kernel.CreateFileW, 'action', deny_open), \
+                         patch.object(ctypes, 'get_last_error', create=True, return_value=5):
+                        with self.assertRaises(RuntimeError) as caught:
+                            self.m._run_variant(target, opener)
                     self.assertEqual(self.m.failure_message(caught.exception),
-                                     self.m._FAILURE + ':initial_' + role + '_set')
+                                     self.m._FAILURE + ':initial_' + role + '_open')
+                    self.assertEqual(len(fixture.advapi.SetSecurityInfo.calls) - before_set,
+                                     1 if role == 'parent' else 0)
                     self.assertEqual(len(roots), 1)
                     self.assertFalse(os.path.exists(roots[0]))
 
