@@ -187,6 +187,31 @@ static int close_inherited_descriptors(int first, int second) {
     return (int)syscall(SYS_close_range, (unsigned int)first + 1U, UINT_MAX, 0U);
 }
 
+static int close_inherited_descriptors_with_workspace(int first, int second, int workspace) {
+    if (workspace < 0) return close_inherited_descriptors(first, second);
+    int retained[3] = {first, second, workspace};
+    for (size_t i = 0; i < 3; ++i) {
+        for (size_t j = i + 1; j < 3; ++j) {
+            if (retained[j] < retained[i]) {
+                int swap = retained[i]; retained[i] = retained[j]; retained[j] = swap;
+            }
+        }
+    }
+    unsigned int start = 3U;
+    for (size_t i = 0; i < 3; ++i) {
+        if (retained[i] < 0) continue;
+        if (retained[i] < 3 || (i && retained[i] == retained[i - 1])) {
+            errno = EINVAL;
+            return -1;
+        }
+        unsigned int descriptor = (unsigned int)retained[i];
+        if (descriptor > start && syscall(SYS_close_range, start, descriptor - 1U, 0U) != 0)
+            return -1;
+        start = descriptor + 1U;
+    }
+    return (int)syscall(SYS_close_range, start, UINT_MAX, 0U);
+}
+
 static int validate_proxy_control_descriptor(int descriptor) {
     if (descriptor < 3) {
         errno = EINVAL;
@@ -1320,6 +1345,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         fprintf(stderr,
                 "usage: icode-landlock --workspace PATH --parent-pid PID "
                 "[--workspace-read-only] [--network-loopback-only] "
+                "[--workspace-fd FD] "
                 "[--proxy-control-fd FD | --violation-control-fd FD] "
                 "[--runtime-read PATH]... "
                 "[--metadata-read PATH DEVICE INODE]... "
@@ -1353,6 +1379,7 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     size_t metadata_root_count = 0;
     size_t execute_only_count = 0;
     int workspace_read_only = 0;
+    int workspace_descriptor = -1;
     int network_loopback_only = 0;
     int proxy_control_descriptor = -1;
     int violation_control_descriptor = -1;
@@ -1361,7 +1388,14 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
     uint64_t quota_limit = 0;
     int command_index = 5;
     while (command_index < argc && strcmp(argv[command_index], "--") != 0) {
-        if (strcmp(argv[command_index], "--resource-control-fd") == 0) {
+        if (strcmp(argv[command_index], "--workspace-fd") == 0) {
+            uint64_t descriptor;
+            if (workspace_descriptor >= 0 || command_index + 1 >= argc ||
+                parse_u64_decimal(argv[command_index + 1], &descriptor) != 0 ||
+                descriptor < 3 || descriptor > INT_MAX) goto invalid_task_quota;
+            workspace_descriptor = (int)descriptor;
+            command_index += 2;
+        } else if (strcmp(argv[command_index], "--resource-control-fd") == 0) {
             uint64_t descriptor;
             if (resource_control_descriptor >= 0 || command_index + 1 >= argc ||
                 parse_u64_decimal(argv[command_index + 1], &descriptor) != 0 ||
@@ -1507,6 +1541,10 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         }
     }
     if ((quota_unit != NULL) != (quota_limit != 0)) goto invalid_task_quota;
+    if (workspace_descriptor >= 0 && (!workspace_read_only ||
+        workspace_descriptor == proxy_control_descriptor ||
+        workspace_descriptor == violation_control_descriptor ||
+        workspace_descriptor == resource_control_descriptor)) goto invalid_task_quota;
     if (resource_control_descriptor >= 0 && (!quota_unit ||
         resource_control_descriptor == proxy_control_descriptor ||
         resource_control_descriptor == violation_control_descriptor)) goto invalid_task_quota;
@@ -1555,10 +1593,11 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         free(runtime_roots); free(metadata_roots); free(execute_only);
         return 1;
     }
-    /* Keep only the authenticated resource plus proxy/violation endpoints. */
+    /* Keep authenticated channels and the pinned read-only directory only. */
     int preserved_descriptor = proxy_control_descriptor >= 0
         ? proxy_control_descriptor : violation_control_descriptor;
-    if (close_inherited_descriptors(preserved_descriptor, resource_control_descriptor) != 0) {
+    if (close_inherited_descriptors_with_workspace(
+            preserved_descriptor, resource_control_descriptor, workspace_descriptor) != 0) {
         perror("close_range inherited descriptors");
         if (proxy_control_descriptor >= 0) close(proxy_control_descriptor);
         if (violation_control_descriptor >= 0) close(violation_control_descriptor);
@@ -1583,7 +1622,33 @@ static int run_helper(int argc, char **argv, const char *setgroups_path,
         free(execute_only);
         return 2;
     }
-    if (chdir(workspace) != 0) {
+    if (workspace_descriptor >= 0) {
+        struct stat pinned, current;
+        if (fstat(workspace_descriptor, &pinned) != 0 || !S_ISDIR(pinned.st_mode) ||
+            lstat(workspace, &current) != 0 || !S_ISDIR(current.st_mode) ||
+            pinned.st_dev != current.st_dev || pinned.st_ino != current.st_ino ||
+            fcntl(workspace_descriptor, F_SETFD, FD_CLOEXEC) != 0) {
+            fprintf(stderr, "workspace FD does not match directory object\n");
+            free(workspace); free(runtime_roots); free(metadata_roots); free(execute_only);
+            return 2;
+        }
+        /* Both cwd and the Landlock rule refer to this retained object, not a
+         * second lookup of a pathname that another actor could replace. The
+         * FD is closed on exec and never becomes a payload capability.
+         */
+        char descriptor_path[64];
+        int size = snprintf(descriptor_path, sizeof(descriptor_path),
+                            "/proc/self/fd/%d", workspace_descriptor);
+        char *pinned_path = size > 0 && (size_t)size < sizeof(descriptor_path)
+            ? strdup(descriptor_path) : NULL;
+        if (!pinned_path) {
+            free(workspace); free(runtime_roots); free(metadata_roots); free(execute_only);
+            return 1;
+        }
+        free(workspace);
+        workspace = pinned_path;
+    }
+    if ((workspace_descriptor >= 0 ? fchdir(workspace_descriptor) : chdir(workspace)) != 0) {
         perror("chdir workspace");
         free(workspace);
         free(runtime_roots);

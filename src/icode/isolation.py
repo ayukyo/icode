@@ -788,6 +788,21 @@ class PinnedWorkspaceRoot:
     fd: int
 
 
+def _pin_workspace_root(workspace: Path) -> PinnedWorkspaceRoot:
+    """Capture one directory object; the caller owns and closes its FD."""
+    path = Path(workspace).resolve(strict=True)
+    flags = (getattr(os, "O_PATH", os.O_RDONLY) | getattr(os, "O_DIRECTORY", 0)
+             | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, flags)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise ValueError("Reviewer 工作区必须是目录")
+    except BaseException:
+        os.close(fd)
+        raise
+    return PinnedWorkspaceRoot(path=path, fd=fd)
+
+
 class PreparedCommand(list[str]):
     """Command metadata required to preserve a sandbox's launch contract."""
 
@@ -920,6 +935,9 @@ class LandlockSandbox:
     @property
     def is_real_isolation(self) -> bool:
         return True
+
+    def pin_read_only_workspace(self, workspace: Path) -> PinnedWorkspaceRoot:
+        return _pin_workspace_root(workspace)
 
     @property
     def policy_contract_ready(self) -> bool:
@@ -1329,6 +1347,7 @@ class LandlockSandbox:
 
     def wrap_read_only(
         self, argv: Sequence[str], *, workspace: Path, network: bool = False,
+        workspace_fd: int | None = None,
     ) -> list[str]:
         """Wrap Reviewer commands with an OS-enforced read-only workspace."""
         if network:
@@ -1342,8 +1361,22 @@ class LandlockSandbox:
 
             if not verify_native_helper(helper, Path(self.manifest)):
                 raise RuntimeError("Landlock helper integrity check failed")
-        return self._wrap_with_metadata_roots(
+        wrapped = self._wrap_with_metadata_roots(
             argv, workspace=workspace, metadata_roots=(), workspace_read_only=True,
+        )
+        if workspace_fd is None:
+            return wrapped
+        if type(workspace_fd) is not int or workspace_fd < 3:
+            raise ValueError("Reviewer requires a valid directory FD")
+        pinned = os.fstat(workspace_fd)
+        current = os.stat(workspace, follow_symlinks=False)
+        if (not stat.S_ISDIR(pinned.st_mode)
+                or (pinned.st_dev, pinned.st_ino) != (current.st_dev, current.st_ino)):
+            raise ValueError("Reviewer directory object no longer matches its path")
+        index = wrapped.index("--")
+        return PreparedCommand(
+            [*wrapped[:index], "--workspace-fd", str(workspace_fd), *wrapped[index:]],
+            pass_fds=(workspace_fd,), cwd="/",
         )
 
     def _wrap_with_metadata_roots(
@@ -1411,21 +1444,7 @@ class BubblewrapSandbox:
 
     def pin_read_only_workspace(self, workspace: Path) -> PinnedWorkspaceRoot:
         """Pin a Reviewer root before model-controlled commands can run."""
-        path = Path(workspace).resolve(strict=True)
-        flags = (
-            getattr(os, "O_PATH", os.O_RDONLY)
-            | getattr(os, "O_DIRECTORY", 0)
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-        )
-        fd = os.open(path, flags)
-        try:
-            if not stat.S_ISDIR(os.fstat(fd).st_mode):
-                raise ValueError("Reviewer 工作区必须是目录")
-        except BaseException:
-            os.close(fd)
-            raise
-        return PinnedWorkspaceRoot(path=path, fd=fd)
+        return _pin_workspace_root(workspace)
 
     def wrap(self, argv: Sequence[str], *, workspace: Path, network: bool = False) -> list[str]:
         return self._wrap(argv, workspace=workspace, network=network, read_only=False)
