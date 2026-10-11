@@ -35,7 +35,7 @@ root独立重跑11模块346run=336PASS/10既有native平台skip/F0/E0，20轮真
 
 - [x] root全文回读全部源及上下游，独立全片SPEC→不同QUALITY零C/I/M；关联/20轮、完整preflight三道、文档/site/diff/秘密/固定vendor、七维真实范围报告。
 - [x] exact add/commit/push main并核remote；不带用户无关改动。
-- [ ] 新SHA Windows x64/ARM64×Python3.11/3.12读取完整安装原始回执，父validator再核；分别记录根拒绝和实际回收，不授默认兼容/叶负控/UAC/R2/R3。
+- [x] 新SHA Windows x64/ARM64×Python3.11/3.12读取完整安装原始回执，父validator再核；分别记录根拒绝和实际回收，不授默认兼容/叶负控/UAC/R2/R3。
 - [ ] 继续临时叶真实运输负控与卷根/加载操作合同工作，不能以本观测代替完成。
 
 ### root最终软件守护
@@ -51,6 +51,31 @@ rootWindows模拟（真实probe+固定实际版本/架构边界，消费者仅�
 2026-10-11 15:27 UTC，hotfix新完整preflight6118三道OK/exit0；测试及两draft摘要从守护前后均不变。双独立复核、关联/20轮、compile-j1、docs0疑似/site/diff通过。守护包含稳定的10项下一片draft合同但它们不纳本提交，不授该实验功能；功能交付仍仅一个输入负控测试。七维自检语法/依赖/逻辑/异常/关联/兼容/便携运行通过，新的实际Windows四格待新SHA，不声称跨平台完成。
 
 e783主CI窗口已终态37success/6failure/3conditional skip，四workspace均923run/20skip/同源3F，root实际读取四完整raw；fullPython3.11/3.12各2876run/81skip/2795PASS，root分别核原始日志658.671s/789.814s。Pages2/2success。e783签装目前三格新消费者raw经独立观察者真实validator核过；root另核x64/3.12原始wire且预期Windows版本取runnerOS 10.0.26100：baseline拒绝关闭信用null，实际观测两资源各13节点/26确认逆序close，仅helper/root一个owner_untrusted事件及2SD读/alloc/free，无未知。此为固定consumer拒绝与回收的组件证据，非e783全软件通过；最后格及hotfix新四格仍验，compatibility/launch/protected均false。
+
+### 15:30 UTC：e783组件原生窗口关闭，hotfix已发布
+
+hotfix actual3文件提交推送main `023a0c0c3f71170cb167011f1c997266406fb9e7` 并核remote同SHA；新CI38151421982、provenance38151421954、Pages38151421913启动，下一片已恢复TDD但不得修改这六个功能文件。旧e783最后签装亦success，provenance5/5。独立只读观察者及root各实际读取四完整source consumer原始wire并调用冻结validator exit0，预期Python按grid、Windows取各runnerOS记录而非仅wire自述。
+
+| e783原生组件 | job | 实际OS/Python | 结果 |
+| --- | --- | --- | --- |
+| x64/3.11 | 114504110619 | 10.0.26100 /3.11 | baseline rejected/null；consumer owner_untrusted |
+| x64/3.12 | 114504110653 | 10.0.26100 /3.12 | 同上 |
+| ARM64/3.11 | 114504110659 | 10.0.26200 /3.11 | 同上 |
+| ARM64/3.12 | 114504110633 | 10.0.26200 /3.12 | 同上 |
+
+每格helper/verifier各13真实取得/13确认关闭/0unknown，全局26精确逆序；仅helper/index0有一次owner_untrusted政策事件及2SD读取/2allocation/2确认LocalFree。四格总104确认CloseHandle、8读/8alloc/8free、零未知。不给baseline第一次拒绝回收（null）、其它节点/verifier SD政策、protected/compatibility/launch信用。e783主CI六失败仍保留，新023四格完整软件与相同原生另验；根兼容、叶操作/加载/UAC/R2/R3未过，不能以组件job success代整个阶段通过。
+
+### 023 Windows workspace复验：四格通过，签装另验
+
+root及独立只读观察者各读取新023四份完整raw：x64/3.11 job114505510757、x64/3.12 job114505510729、ARM64/3.11 job114505510726、ARM64/3.12 job114505510754。每格实际923run/20既定可选skip/903PASS、0F/E；拼接真实unittest进度恰923符号，probe33（669–701）与parent5（702–706）全部点，无ReaderThread或UnicodeDecodeError。输入负控平台修复在两架构/两解释器已实际复验；不回写e783失败。新签名安装四格、fullPython及主CI终态仍另验，旧网络Reviewer仍拒绝，不授默认兼容/加载/UAC/R2/R3整体通过。
+
+15:42 UTC再核新主CI46jobs均终态：41success/2旧Reviewer failure/3既定conditional skip。root读取Python3.11 job114505510380及3.12 job114505510661完整raw，各2876run/81既定skip/2795PASS、0F/E，实际535.896s/551.370s。新provenance validate114505510330已success，四签装仍执行；主CI不能称全绿，网络Reviewer原始拒绝保留，不以其它job通过代网络DENY或整体验收。
+
+### 023签装四格窗口关闭
+
+新provenance5/5、Pages2/2终态success，root再核三workflow完整head SHA为023a0c0；主CI仍failure，不改整体判定。root与独立只读观察者分别读取四新签装完整raw：x64/3.11 job114507981631、x64/3.12 job114507981695、ARM64/3.11 job114507981670、ARM64/3.12 job114507981646。各唯一原始canonical source wire实际调用冻结validator exit0，预期Python按grid，Windows取runnerOS x64 10.0.26100/ARM64 10.0.26200而非wire自述。
+
+新023每格同样baseline rejected/close=null，consumer owner_untrusted；两资源各13opened/13确认close，全局26精确逆序/0unknown；只有helper/index0一个policy事件，2SD读/alloc/LocalFree确认。四格总104实际确认close及8SD读/alloc/free，三个授权false。独立观察者另核旧chain104nodes=96pass+8root拒绝/376ACE/104确认close、旧19安装PASS与build-context1PASS，独立分账不代新consumer。固定consumer组件原生窗口已关闭；根政策兼容、其它节点政策/叶操作、加载/UAC及R2/R3整门仍开放。已进入下一片私有直接DACL实际窗口软件接线，不停在组件通过。
 
 2026-10-11 15:06 UTC，完整preflight session59265三道均OK、exit0；工具不打印全仓成功方法数，不估算。额外密钥扫描亦exit0，固定vendor `21566a589cbe98bd35372a04bbb6ca1c51d8eed2` 无改动。compileall-j1、git diff-check均通过；四文档一致性检查0疑似项，site两次通过HTML2/MD6/上游品牌3/social2，9个外部导航未fetch，不授可达性。六功能摘要与双审/20轮相同。下一片直接DACL临时实验仅草拟、未纳本片软件提交，不借实验信用。
 
