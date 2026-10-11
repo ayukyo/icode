@@ -212,6 +212,12 @@ def main() -> int:
                 cwd=root,
                 env=clean_env,
             )
+            _run(
+                "probe installed wheel session workspace object",
+                [str(python), "-I",
+                 str(repository / "scripts" / "probe_installed_linux_workspace_object.py")],
+                cwd=root, env=clean_env,
+            )
             cleanup_code = textwrap.dedent("""\
                 from icode.isolation import LandlockSandbox, probe_linux_process_tree_cleanup
 

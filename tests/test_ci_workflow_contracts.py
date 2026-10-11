@@ -805,6 +805,29 @@ class TestVerificationOutputLifecycleCi(unittest.TestCase):
 
 
 class TestLinuxInstalledWheelViolationReceiptCi(unittest.TestCase):
+    def test_session_fd_probe_rejects_source_checkout_import(self) -> None:
+        import subprocess
+        import sys
+        if not sys.platform.startswith("linux"):
+            self.skipTest("installed Linux helper probe; conformance_credit=none")
+        repository_root = Path(__file__).resolve().parents[1]
+        probe = repository_root / "scripts/probe_installed_linux_workspace_object.py"
+        code = (f"import sys,runpy; sys.path.insert(0,{str(repository_root / 'src')!r}); "
+                f"runpy.run_path({str(probe)!r},run_name='__main__')")
+        result = subprocess.run([sys.executable, "-I", "-c", code],
+                                capture_output=True, text=True, timeout=15)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout.strip(), "::error::package_not_installed")
+        self.assertEqual(result.stderr, "")
+
+    def test_installed_wheel_runner_executes_session_fd_probe_after_install(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        runner = (repository_root / "scripts/run_native_wheel_ci.py").read_text(encoding="utf-8")
+        stage = '"probe installed wheel session workspace object"'
+        self.assertIn(stage, runner)
+        self.assertIn('"probe_installed_linux_workspace_object.py"', runner)
+        self.assertLess(runner.index('_run("install wheel"'), runner.index(stage))
+
     def test_installed_wheel_runner_executes_native_receipt_probe_after_install(
         self,
     ) -> None:
