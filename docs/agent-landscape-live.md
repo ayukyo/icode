@@ -2358,3 +2358,17 @@ ICODE旧minimal probe的启动/超时None会被部分not success负向check折�
 **采纳（下一片设计输入）**：复用当前session、原policy、prepare、PreparedCommand及既有DENY资源/USER_NOTIF执行链，模型调用前校验宿主准入、实际dispatch再次核借用FD与policy。**暂缓**：网络合流留LA-3；未完成ELF/完整身份与生产验收前的自动选择放行。**不适配**：LA1 bindingTrue/旧评分直接授权，选择None或LocalWorkspace裸执行回退，删保护路径适配后端。收益是避免重复quota与编译器，成本为身份/策略/缺manager/未知cleanup矩阵及x64/ARM64真实产品入口验收。
 
 本工程workbench已有POSIX分层code，Landlock策略仍拒绝真实nested deny/运行时冲突；旧WorkspaceManager默认不变。root核对NativeChainExecutor已向内置run_chain传所有step的session，但chain只给code/deepcheck或获准Git状态路径继续传递，snapshot其它步骤会丢session。CLI step/chain没有创建同类会话，本仓也未检出实际ICODE MCP命令服务端；不能以单工作台正控写全部入口通过。上述是待设计/实现的缺口，不授生产准入、R2/R3或模型信用。
+
+### 2026-10-12：会话传播落地与助手对象绑定研究刷新
+
+LA-2a按上节分层机制修复真实chain传递，不把Git资格当会话传递资格：root磁盘旧源码两方法13断言RED/0ERROR，原四方法通过；最小补丁后11方法、70项关联回归通过，fresh CODE SPEC→不同QUALITY均零遗留。自定义资源policy仍传原对象，工程错对象仍交runner原门，Git默认等值限制、Reviewer只读wrapper与session owner不变；[实施记录](./nbl/plans/2026-10-12-chain-policy-session.md)的完整守护及main发布另行登记。此处采纳仅软件参数链，不关闭FD身份、Linux生产准入或CLI/MCP一致性。
+
+独立只读研究于2026-10-11 18:45 UTC通过官方main.atom取得当时提交，再读取固定源码与根许可：Codex `27065a91ccbf5ba8532844be3777fcf83b77820d`（[Apache-2.0](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/LICENSE)），OpenHands SDK `3934349da2db0433238621542173a00a8af7439c`（[MIT](https://github.com/OpenHands/software-agent-sdk/blob/3934349da2db0433238621542173a00a8af7439c/LICENSE)）。commits API403未改权限，未运行上游；只刷新两个相关项目，不称完整20项或依赖许可复核。root另完整读取固定Codex的下列两个文件及LICENSE。
+
+Codex [bundled_bwrap.rs](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/linux-sandbox/src/bundled_bwrap.rs)对打开的File核摘要，再经`/proc/self/fd`执行该对象；但摘要缺失/全零时跳过核验、普通打开可跟链接，所查组件未核ELF机器或密封内容。不能外推主helper、加载库或同UID防御。[fd_mount.rs](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/linux-sandbox/src/fd_mount.rs)核FD与目的目录dev/ino后立即关闭，是挂载身份而非helper认证。独立研究所查OpenHands [LocalWorkspace](https://github.com/OpenHands/software-agent-sdk/blob/3934349da2db0433238621542173a00a8af7439c/openhands-sdk/openhands/sdk/workspace/local.py)仍直接调用宿主命令，不能将结果字段或远程能力外推成本地对象认证。
+
+**采纳（后续设计输入）**：复用native_helper现有摘要/文件形态检查，分离ELF架构核验与执行授权；后续从同一个no-follow regular文件FD读头/摘要并交真实执行边界，明确prepare、当前session/policy及FD owner。**暂缓**：内容密封、缓存和完整publisher认证；未实现前selector/ready继续阻断。**不适配**：照搬可选摘要、路径fallback、前后hash相同或同dev/ino即内容恒定的说法。ELF规范仅作有限头字段依据，见官方[gABI](https://gabi.xinuos.com/elf.pdf)，不是完整loader验证。
+
+收益是避免混架构包与核验后pathname选错对象；成本为close责任、PreparedCommand/pass_fds及resource/USER_NOTIF通道传递兼容。现有workspace FD与quota不重建，无新权限/依赖、安装步骤或代码复制。最小验收须覆盖错machine/坏头/manifest、链接/hardlink、prepare后替换、FD失效/复用/碰撞、异常/信号回收、payload不继承helper FD，以及x64/ARM64安装包实际同对象启动；静态头通过、研究或diagnostic binding不能授这些信用。
+
+LA-1已发布`f648812412dd5ba53e24cb4bb5df058eb937a510`。该SHA [CI](https://github.com/ayukyo/icode/actions/runs/38163749850)终态46项=41成功/2Reviewer失败/3跳过，主Python各2934项/83跳过；[provenance](https://github.com/ayukyo/icode/actions/runs/38163749796)5/5、[Pages](https://github.com/ayukyo/icode/actions/runs/38163749803)2/2。root与独立observer分别取本SHA原logs：双Reviewer仍10035/wait_expired/denied=false且无WFP匹配事件；四签装密码学正负控通过，但consumer均owner_untrusted rejected，root用冻结validator及独立OS/架构/Python预期核验四wire，共104确认关闭/8确认free、授权false。四Windows workspace显式列表未选LA-1新23项，不能凭其成功补跨平台覆盖。当前开发环境root实际collector回执为helper_unavailable/incomplete、bindingFalse/cleanup unknown（未启动探针），不是安装包或生产准入验收。整体R2/R3未通过。

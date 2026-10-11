@@ -30,7 +30,7 @@ from .mcp_gates import record_step_gate_trace
 from .runner import StepReport, _runtime_budget, _snapshot, run_contract_step
 from .engineering_verification import VerificationPlan
 from .sandbox_policy import SandboxPolicy
-from .workspace import GitWorkspaceIdentity, WorkspaceSession
+from .workspace import WorkspaceSession
 
 # 各步骤的**额外交付要求**（步骤顺序不在这里，见 chain_steps）
 # 注意：这里**只描述内容要求，不写裸文件名**。
@@ -335,24 +335,18 @@ def run_chain(
     before = _snapshot(workspace)
 
     for name in order:
-        git_status_session = None
+        # Borrow the host session by policy identity; Git authorization is
+        # independently enforced by the tool registry and broker boundary.
+        policy_session = None
         if (
-            name != "review"
+            isinstance(policy, SandboxPolicy)
             and isinstance(workspace_session, WorkspaceSession)
-            and workspace_session.kind == "git_worktree"
-            and isinstance(workspace_session.git_status_identity, GitWorkspaceIdentity)
-            and isinstance(policy, SandboxPolicy)
             and workspace_session.ticket_id == ticket_id == policy.ticket_id
             and workspace_session.run_id == policy.run_id
-            and workspace_session.workspace_root == workspace
-            and workspace_session.git_status_identity.workspace_root == workspace
+            and workspace_session.workspace_root == policy.workspace_root == workspace
             and policy.step == name
         ):
-            try:
-                if policy == workspace_session.policy(name):
-                    git_status_session = workspace_session
-            except Exception:  # noqa: BLE001 - invalid session policy only disables the tool.
-                git_status_session = None
+            policy_session = workspace_session
         instructions = STEP_INSTRUCTIONS.get(name, "")
         post = None
         if name == "review":
@@ -393,7 +387,7 @@ def run_chain(
             sandbox=sandbox, policy=policy, out_dir=out_dir,
             verification_plan=verification_plan,
             workspace_session=(workspace_session if policy is not None and name in ("code", "deepcheck")
-                               else git_status_session),
+                               else policy_session),
             change_baseline=before if policy is not None else None,
             extra_instructions=instructions, post_write=post,
         )

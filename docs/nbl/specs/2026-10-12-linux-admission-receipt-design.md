@@ -1,6 +1,6 @@
 # Linux 运行保护准入回执：分阶段设计
 
-状态：LA-1软件门通过；实际实现经SPEC→不同QUALITY复审零遗留，23项定向通过，根代理完整preflight三道通过、关联127项116通过/11既有跳过，待阶段main提交。没有产品放行或installed原生信用。设计基线 main `8b1afd4d347173453252d3d22ba7ec5cdbd805f5`，实际执行见[实施记录](../plans/2026-10-12-linux-admission-diagnostic.md)。沿用用户“推荐方式自主推进”授权，不增加系统权限、服务或安装步骤；安全与独立验收门不变。原合同为 [R2 §12.1/14.1](./2026-09-23-r2-cross-platform-isolation-design.md)，研究见[持续对照](../../agent-landscape-live.md)。
+状态：LA-1软件门通过；实际实现经SPEC→不同QUALITY复审零遗留，23项定向通过，根代理完整preflight三道通过、关联127项116通过/11既有跳过，已发布main `f648812412dd5ba53e24cb4bb5df058eb937a510`。没有产品放行或installed原生信用。设计基线 main `8b1afd4d347173453252d3d22ba7ec5cdbd805f5`，实际执行见[实施记录](../plans/2026-10-12-linux-admission-diagnostic.md)。沿用用户“推荐方式自主推进”授权，不增加系统权限、服务或安装步骤；安全与独立验收门不变。原合同为 [R2 §12.1/14.1](./2026-09-23-r2-cross-platform-isolation-design.md)，研究见[持续对照](../../agent-landscape-live.md)。
 
 ## 1. 需求与现状
 
