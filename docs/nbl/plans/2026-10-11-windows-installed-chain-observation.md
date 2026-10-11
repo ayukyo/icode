@@ -384,10 +384,28 @@ Task2摘要：runwheel `32548a99501908cc874e86798de0e28f8b806b1d70a6782f2d67d227
 
 完整preflight session71764已结束exit0：密钥、固定子模块、全仓unittest三道均通过。完整测试成功正文由既有preflight捕获，不臆造本机全量方法数；295关联/4360轮次和32额外套件为root另跑的实际可见计数。上节“尚在运行/未授通过”保留启动窗口，以本条刷新为准。文档与站点最终两轮、exact staging及main推送另验；新Windows安装四格未跑，不授R2/R3总门。
 
+软件已实际发布main `37f100a0566e9225630e409b8077a1c06789b649`：10确切文件1479+/19-，commit/push成功、ls-remote同SHA、发布后工作区干净。最后四文档两轮0疑似、site两轮通过（9外链未fetch）、额外密钥扫描、cached diff与六冻结摘要均通过；源码产品策略/固定子模块/workflow权限不改。root七维自检仅授本片便携软件，原生安装另验。新[CI38142958343](https://github.com/ayukyo/icode/actions/runs/38142958343)、[provenance38142958337](https://github.com/ayukyo/icode/actions/runs/38142958337)、[Pages38142958335](https://github.com/ayukyo/icode/actions/runs/38142958335)已启动，以新SHA逐格日志为准；root仅词法重建候选Windows清单860唯一，不是实机执行。新41方法位置604–644、parent raw4为280–283、身份native653/654、校验fixture697/715供原生日志核对，不借旧815通过信用。
+
 - [x] root全文回读六文件及关联调用链，确认产品源/子模块/workflow权限不变，精确loader/真实负控、关联/20轮/compileall-j1/diff；阶段结束只读研究刷新固定取舍，不代native。
 - [x] 全片独立SPEC后不同QUALITY解决所有C/I/M；若修源测试须重新冻结、审查与必要全验，不能拿旧候选通过信用。
-- [ ] `CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 .venv/bin/python -u scripts/preflight.py`新完整三道exit0，site/doc两轮及七维真实报告；root exact add（ignored docs add-f）、commit/push main和lsremote确认，不上传KEY、不改无关用户文件。
-- [ ] 新SHA provenance installed x64/ARM64×3.11/3.12逐格实际有限JSON：resource/helper/verifier、chain全祖先、policy拒绝、budget与close全部确认；严格区分“观察完整”和“策略通过”。若query/parser/native失败查根因，不加skip或宽松readraw。workspace方法/fixture/subTest必需0skip也另验。Win10/普通host/protected/full窗口/生产consumer/UAC/模型90%及R2/R3仍未授信用；下一片以实际数据选择最小契约。
+- [x] `CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 .venv/bin/python -u scripts/preflight.py`新完整三道exit0，site/doc两轮及七维真实报告；root exact add（ignored docs add-f）、commit/push main和lsremote确认，不上传KEY、不改无关用户文件。
+- [x] 新SHA provenance installed x64/ARM64×3.11/3.12逐格实际有限JSON：resource/helper/verifier、chain全祖先、policy拒绝、budget与close全部确认；严格区分“观察完整”和“策略通过”。若query/parser/native失败查根因，不加skip或宽松readraw。workspace方法/fixture/subTest必需0skip也另验。Win10/普通host/protected/full窗口/生产consumer/UAC/模型90%及R2/R3仍未授信用；下一片以实际数据选择最小契约。
+
+### 新 SHA 原生窗口（2026-10-11 13:35 UTC）
+
+root 已独立取得四份完整 workspace 日志：x64/3.11 `114480393166`、x64/3.12 `114480393317`、ARM64/3.11 `114480393318`、ARM64/3.12 `114480393395`。每格实际860 run/20既定可选skip；新41方法、parent raw4、身份native2及两个必需fixture位置均为通过，无必需skip或reader异常；后续junction3、leased75亦通过。这关闭本片 workspace 接线门，不是安装链权限或启动证明。
+
+新 provenance validate `114480392559` 实际 success，四 installed 作业已开始：ARM64/3.11 `114483000698`、x64/3.12 `114483000706`、x64/3.11 `114483000723`、ARM64/3.12 `114483000727`，有限JSON与清理结果仍待。Pages validate/deploy `114480392568`/`114480415098`均实际success。主CI两格Reviewer网络门继续失败关闭；root核x64完整日志仍为10035、wait_expired、connect_denied=false，不授网络DENY。不得用其它作业成功抹去R2/R3缺口。
+
+### 本片最终原生结果（2026-10-11）
+
+四 installed 作业全部 success，root 已独立取得四份完整日志、各唯一有限JSON并以冻结 `validate_wire` 严格验证原wire、对应SHA与架构：x64/3.11 `114483000723`、x64/3.12 `114483000706`、ARM64/3.11 `114483000698`、ARM64/3.12 `114483000727`。两x64 Windows版本10.0.26100，两ARM版本10.0.26200；版本major=10不意味着Windows10，实际runner仍分别Server2025/Windows11，不授Win10格。
+
+每格 helper/verifier各13节点，各13 confirmed closes、0 unconfirmed，两轮ACE合计188≤512。各资源仅卷根 owner=other/policy=owner_untrusted，其余12节点pass；四格合计104节点、96pass/8拒绝、104确认关闭。四格 observation_complete=true，source_policy_all_passed=false；protected_observed/compatibility_accepted/launch_authorized均false，固定parent stage正确，既有19安装阶段保持。完整观察与安全回收门关闭；来源政策、默认安装兼容和启动门明确没有通过。
+
+主CI终态46 jobs=41success/2旧Reviewer failure/3既定skip；全量Python3.11/3.12各实际2813run/81skip，耗时555.080s/490.754s。provenance5/5、Pages2/2实际success。两Reviewer继续10035/wait_expired/connect_denied=false、positive-control91，不授网络DENY，R2/R3未完成。root七维软件报告与本片原生观察成立，但不能写整平台可运行性100%。
+
+下一片[内部来源owner设计](../specs/2026-10-11-windows-source-owner-design.md)只将原政策绑定live对象，仍拒绝不合格卷根；卷根owner先失败掩盖后续mutation拒绝，不能猜TrustedInstaller或直接跳过根。13:32–13:41 UTC只读研究详见新设计，未改部署/许可/权限，未执行UAC。
 
 计划自审：每项设计有Task1/2/3对应，定位、角色、三policy拒绝/reader失败、所有权、两轮预算和有限schema一致；无额外许可/依赖/权限。Task1较完整但只有两个新文件/一个职责，Task2依赖其冻结类与实际字段，Task3依赖全片；不能并行写。用户main/推荐自主要求覆盖默认worktree与逐步人工批准，其余TDD/审查/验收门保留。
 

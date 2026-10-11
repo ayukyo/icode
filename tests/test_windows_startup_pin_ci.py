@@ -30,13 +30,16 @@ PORTABLE_CLASSES = (
     "tests.test_windows_installed_chain.InstalledProbeTests",
     "tests.test_windows_installed_chain.InstalledWireTests",
     "tests.test_windows_installed_chain.InstalledCliTests",
+    "tests.test_windows_startup_source.SourceInterfaceTests",
+    "tests.test_windows_startup_source.SourceLocatorTests",
+    "tests.test_windows_startup_source.SourceOwnerTests",
 )
 NATIVE_CLASS = "tests.test_windows_startup_native.WindowsEnforcementTests"
 NATIVE_SECURITY_CLASS = "tests.test_windows_startup_native.WindowsSecurityQueryTests"
 NATIVE_IDENTITY_CLASS = "tests.test_windows_startup_host_identity.WindowsHostIdentityTests"
 NATIVE_CLASSES = (NATIVE_CLASS, NATIVE_SECURITY_CLASS, NATIVE_IDENTITY_CLASS)
 NATIVE_COUNTS = (6, 2, 2)
-PORTABLE_COUNTS = (1, 32, 30, 3, 2, 24, 17, 2, 2, 16, 1, 4, 32, 7, 1, 13, 7, 9, 4)
+PORTABLE_COUNTS = (1, 32, 30, 3, 2, 24, 17, 2, 2, 16, 1, 4, 32, 7, 1, 13, 7, 9, 4, 3, 3, 18)
 GUARD_MODULE = "tests.test_windows_startup_pin_ci"
 
 
@@ -92,11 +95,13 @@ class StartupPinCiTests(unittest.TestCase):
         selected = [test.id() for entry in ci.DEFAULT_MODULES
                     if entry.startswith(("tests.test_windows_startup_pin.", "tests.test_windows_startup_native.",
                                          "tests.test_windows_startup_security.", "tests.test_windows_startup_security_native.",
-                                         "tests.test_windows_startup_host_identity.", "tests.test_windows_installed_chain"))
+                                         "tests.test_windows_startup_host_identity.", "tests.test_windows_installed_chain",
+                                         "tests.test_windows_startup_source"))
                     for test in cases(unittest.defaultTestLoader.loadTestsFromName(entry))]
         self.assertCountEqual(selected, expected)
         self.assertEqual(ci.DEFAULT_MODULES.count(GUARD_MODULE), 1)
         self.assertEqual(ci.DEFAULT_MODULES.count("tests.test_windows_installed_chain"), 1)
+        self.assertEqual(ci.DEFAULT_MODULES.count("tests.test_windows_startup_source"), 1)
         guard_ids = [test.id() for entry in ci.DEFAULT_MODULES
                      if entry == GUARD_MODULE or entry.startswith(GUARD_MODULE + ".")
                      for test in cases(unittest.defaultTestLoader.loadTestsFromName(entry))]
@@ -169,7 +174,8 @@ class StartupPinCiTests(unittest.TestCase):
 
     def test_real_class_and_module_loader_cannot_hide_required_skip(self):
         for class_id, count in ((PORTABLE_CLASSES[0], 1),
-                                ("tests.test_windows_installed_chain.InstalledProbeTests", 7)):
+                                ("tests.test_windows_installed_chain.InstalledProbeTests", 7),
+                                ("tests.test_windows_startup_source.SourceOwnerTests", 18)):
             module_id, class_name = class_id.rsplit(".", 1)
             module = importlib.import_module(module_id)
             test_class = getattr(module, class_name)
@@ -184,7 +190,8 @@ class StartupPinCiTests(unittest.TestCase):
 
         for module_id in ("tests.test_windows_startup_pin", "tests.test_windows_startup_native",
                           "tests.test_windows_startup_security", "tests.test_windows_startup_security_native",
-                          "tests.test_windows_startup_host_identity", "tests.test_windows_installed_chain"):
+                          "tests.test_windows_startup_host_identity", "tests.test_windows_installed_chain",
+                          "tests.test_windows_startup_source"):
             module = importlib.import_module(module_id)
             with patch.object(module, "setUpModule", skip_fixture, create=True):
                 code, result = self.run_ci((module_id,))
@@ -198,7 +205,8 @@ class StartupPinCiTests(unittest.TestCase):
                                  ("tests.test_windows_startup_pin", 33),
                                  ("tests.test_windows_startup_security", 43),
                                  ("tests.test_windows_startup_security_native", 20),
-                                 ("tests.test_windows_installed_chain", 41)):
+                                 ("tests.test_windows_installed_chain", 41),
+                                 ("tests.test_windows_startup_source", 24)):
             with self.subTest(selection=selection):
                 code, result = self.run_ci((selection,))
                 self.assertEqual(code, 0)
