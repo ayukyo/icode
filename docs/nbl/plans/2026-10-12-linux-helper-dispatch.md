@@ -206,14 +206,14 @@ if (type(borrowed) is not tuple
 resource 的 `PreparedCommand(command, ...)` 和 `LinuxTaskScope.wrap` 的 `PreparedCommand(wrapped, ...)` 均增加 `helper_object=wrapped.helper_object` / `helper_object=helper.helper_object`。没有 workspace FD 时原 PreparedCommand 原样返回。未绑定旧 wrapper 不改路径核验；prepare_policy 本体不改。
 
 - [x] GREEN：`.venv/bin/python -m unittest tests.test_linux_helper_dispatch.TestHeldWrappers tests.test_isolation tests.test_git_broker tests.test_linux_helper_object -q`；期望无失败；native 环境 skip 逐项记录为未验收。
-- [ ] root 审查并阶段提交建议：`feat: preserve held Linux helper binding through wrappers`。只包含本 Task 路径；owner 工厂零修改。
+- [x] root 审查并阶段提交：`31f42aecc7e56d2a6f2eeac3a376d0c753657d7d`（`feat(linux): preserve held helper binding through wrappers`）。六个精确路径包含本 Task 源码及已审设计、计划、研究记录；owner 工厂零修改，远端仅 main。
 
 ## Task 2：唯一 broker owner、角色与最终启动核校
 
 **Dependencies:** Task 1
 **Parallelizable:** No (single observed core 生命周期；不可并写 broker)
 
-- [ ] 先在 `_execute_linux_observed_command` 签名添加 `helper_object_mode: bool = False`，方法入口为 True 时返回 `ExecutionResult(None, "", 0, "isolation_unavailable", False, True, None, violation_observer_status="incomplete", payload_started=False)`。添加下述私有 adapter；此骨架使新测试可收集。
+- [x] 先在 `_execute_linux_observed_command` 签名添加 `helper_object_mode: bool = False`，方法入口为 True 时返回 `ExecutionResult(None, "", 0, "isolation_unavailable", False, True, None, violation_observer_status="incomplete", payload_started=False)`。添加下述私有 adapter；此骨架使新测试可收集。
 
 Task2新增scope查询也先提供可收集的兼容骨架（在本Task内被实际查询实现替换，不独立交付）：
 
@@ -241,7 +241,7 @@ def _execute_linux_helper_observed_candidate(
     )
 ```
 
-- [ ] 在同一测试文件添加以下真实 FD、软件监督 fixture 和行为测试。`run` mock 仅调用最终核校并模拟既有 core 结果；不会运行 `/usr/bin/true` 冒充 Landlock。
+- [x] 在同一测试文件添加以下真实 FD、软件监督 fixture 和行为测试。`run` mock 仅调用最终核校并模拟既有 core 结果；不会运行 `/usr/bin/true` 冒充 Landlock。
 
 ```python
 class Monitor:
@@ -302,6 +302,7 @@ class TestDispatchOwner(unittest.TestCase):
                         self.attempts += 1
                         raise endpoint_fault  # Before real close: socket stays live.
                 host = UnknownHost(fileno=host.detach())
+                host.original_fd = host.fileno()
             answer = (host, sender)
             channels.extend(answer)
             return answer
@@ -552,15 +553,21 @@ class TestDispatchOwner(unittest.TestCase):
                         self.assertEqual(launches, [])
                         unknown = channels[0]
                         self.assertEqual(unknown.attempts, 1)
-                        self.assertGreaterEqual(unknown.fileno(), 3)
-                        self.assertTrue(os.fstat(unknown.fileno()), "before-close socket must still be live")
+                        self.assertGreaterEqual(unknown.original_fd, 3)
+                        self.assertEqual(unknown.fileno(), -1, "unknown socket must relinquish destructor close")
+                        self.assertTrue(os.fstat(unknown.original_fd), "before-close socket must still be live")
                         self.assertTrue(all(channel.fileno() == -1 for channel in channels[1:]))
                         self.assertEqual(self.last_scope.closed, 1)
                         self.assertEqual(closes, [owners[0][1]])
                         self.assert_closed(owners[0][1])
                     finally:
                         # Bypass the faulting override; do not give cleanup credit.
-                        for channel in channels: real_socket_close(channel)
+                        for channel in channels:
+                            real_socket_close(channel)
+                            descriptor = getattr(channel, "original_fd", None)
+                            if descriptor is not None:
+                                try: REAL_CLOSE(descriptor)
+                                except OSError: pass
 
     def test_owner_covers_actual_process_core_input_early_returns(self):
         for options, expected in (({"timeout": float("nan")}, "invalid_timeout"),
@@ -601,8 +608,8 @@ class TestDispatchOwner(unittest.TestCase):
                 self.assertEqual(closes, [owners[0][1]]); self.assert_closed(owners[0][1])
 ```
 
-- [ ] RED：`.venv/bin/python -m unittest tests.test_linux_helper_dispatch.TestDispatchOwner.test_candidate_owns_once_and_launches_held_descriptor -v`；期望 `result.error` 的 assertion FAIL，0 ERROR。
-- [ ] 删除 candidate 拒绝骨架。在 `execution_broker.py` 增加下列完整最终校验函数，纯内部 consumer，不对模型暴露：
+- [x] RED：`.venv/bin/python -m unittest tests.test_linux_helper_dispatch.TestDispatchOwner.test_candidate_owns_once_and_launches_held_descriptor -v`；期望 `result.error` 的 assertion FAIL，0 ERROR。
+- [x] 删除 candidate 拒绝骨架。在 `execution_broker.py` 增加下列完整最终校验函数，纯内部 consumer，不对模型暴露：
 
 ```python
 def _check_held_helper_launch(wrapped, owner, *, policy, helper_index,
@@ -658,7 +665,7 @@ def _check_held_helper_launch(wrapped, owner, *, policy, helper_index,
 
 校验错误只在调用点映射固定错误，不输出异常原文。若 flags 缺值产生 IndexError/解包错误，同样按启动合同拒绝；调用点统一捕获 `IndexError`、`OSError`、`RuntimeError`、`TypeError`、`ValueError`，不捕获信号。
 
-- [ ] 对原 `_execute_linux_observed_command` 做下面精确结构编辑。禁止复制原监督函数、新建第二套 run loop 或把 owner 放在 adapter/global/session：
+- [x] 对原 `_execute_linux_observed_command` 做下面精确结构编辑。禁止复制原监督函数、新建第二套 run loop 或把 owner 放在 adapter/global/session：
 
 1. 原 docstring 后加入 `owner = None`。将原整个函数体（从 Linux guard 至 `return outcome`）缩进到新增外层 `try`；外层唯一 `finally` 使用以下代码。type helper mode 在任何 filesystem/channel操作之前核为 bool，错误返回 `invalid_violation_scope`。
 
@@ -670,6 +677,11 @@ finally:
             owner.close()
         except BaseException as cleanup_error:
             from .linux_task_resource import _select_cleanup_error
+            from .linux_helper_object import LinuxHelperObjectError
+            if (isinstance(active_exception, Exception)
+                    and not isinstance(active_exception, LinuxHelperObjectError)
+                    and isinstance(cleanup_error, LinuxHelperObjectError)):
+                raise cleanup_error  # Unknown cleanup is not hidden by ordinary body failure.
             selected = _select_cleanup_error(active_exception, cleanup_error)
             if selected is not active_exception:
                 raise selected
@@ -796,7 +808,7 @@ def close_endpoints() -> None:
         raise cleanup_error
 ```
 
-- [ ] `_execute_policy_command` 签名新增 `before_spawn: Callable[[], None] | None = None`。原 launch `try` 中先计算环境，后核校，再立即 Popen；before_spawn拒绝不调用 Popen、返回 `isolation_unavailable` / incomplete / payload_started=False。公共普通入口拒绝 Unexpected binding。
+- [x] `_execute_policy_command` 签名新增 `before_spawn: Callable[[], None] | None = None`。原 launch `try` 中先计算环境，后核校，再立即 Popen；before_spawn拒绝不调用 Popen、返回 `isolation_unavailable` / incomplete / payload_started=False。公共普通入口拒绝 Unexpected binding。
 
 ```python
 # execute_policy_command: before delegating to _execute_policy_command
@@ -817,7 +829,7 @@ try:
     # Existing Popen follows immediately; replace its env expression with environment.
 ```
 
-- [ ] 添加 process core实际早返/final核校、dead/reused和会话独立测试（使用下列代码）。
+- [x] 添加 process core实际早返/final核校、dead/reused和会话独立测试（使用下列代码）。
 
 ```python
 @unittest.skipUnless(os.name == "posix", "POSIX process core launch contract")
@@ -874,7 +886,7 @@ class TestFinalLaunchContract(unittest.TestCase):
                     if foreign >= 0: REAL_CLOSE(foreign)
 ```
 
-- [ ] 增加真正 observed core→环境构造后篡改→最后hook的集成负控。原monitor对象保持 `_started=False`（没有Popen/ACK），验证错误不被observer映射覆盖；真实owner与socket全部实际关闭。加入 `TestDispatchOwner`：
+- [x] 增加真正 observed core→环境构造后篡改→最后hook的集成负控。原monitor对象保持 `_started=False`（没有Popen/ACK），验证错误不被observer映射覆盖；真实owner与socket全部实际关闭。加入 `TestDispatchOwner`：
 
 ```python
     def test_observed_final_hook_preserves_not_started_error_after_environment_mutation(self):
@@ -917,7 +929,7 @@ class TestFinalLaunchContract(unittest.TestCase):
                 self.assertTrue(all(endpoint.fileno() == -1 for endpoint in endpoints))
 ```
 
-- [ ] `linux_task_scope.py`增加最小只读 `cleanup_state`属性；旧`close()`签名和旧OSError吞处理不变，unknown记录不可消失、不重试已pop的FD。属性只回答本scope目录FD关闭证据，不等价于cgroup collected。构造器初始化 `_cleanup_unknown=False`；object.__new__旧fixture用getattr默认兼容。新增方法并替换 `_close_pins`：
+- [x] `linux_task_scope.py`增加最小只读 `cleanup_state`属性；旧`close()`签名和旧OSError吞处理不变，unknown记录不可消失、不重试已pop的FD。属性只回答本scope目录FD关闭证据，不等价于cgroup collected。构造器初始化 `_cleanup_unknown=False`；object.__new__旧fixture用getattr默认兼容。新增方法并替换 `_close_pins`：
 
 ```python
 @property
@@ -956,7 +968,7 @@ def _close_pins(self) -> None:
 
 `_configure_locked`的临时recheck descriptor `finally: os.close(descriptor)`改为 `finally: self._close_owned_descriptor(descriptor)`，配置失败路径已有 `_close_pins`也会记录unknown。锁忙close仍立即返回；candidate端点/组件全部attempt后查询unconfirmed固定失败，不能等待或假定callback日后会关好。callback释放锁后已有deferred close继续尝试未pop资源，unknown不能被重置为confirmed。
 
-- [ ] 真目录FD scope关闭负控（加本测试文件）；保持现有 `test_linux_product_task_quota` 的deferred/signal测试兼容：
+- [x] 真目录FD scope关闭负控（加本测试文件）；保持现有 `test_linux_product_task_quota` 的deferred/signal测试兼容：
 
 ```python
 class TestScopeCleanupEvidence(unittest.TestCase):
@@ -1048,8 +1060,14 @@ class TestScopeCleanupEvidence(unittest.TestCase):
             finally: REAL_CLOSE(fd)
 ```
 
-- [ ] GREEN focused：`.venv/bin/python -m unittest tests.test_linux_helper_dispatch tests.test_execution_broker tests.test_linux_product_task_quota tests.test_linux_task_resource tests.test_linux_violation_receipt tests.test_linux_helper_object -q`。须记录未执行native prerequisite，不能把skip算通过。
-- [ ] 结果/故障映射自审：factory/wrap/scope/role/monitor准备错误→固定 isolation_unavailable且明确未启动；timeout/output_limit/launch_failed/invalid_timeout/invalid_output_limit/invalid_handoff保留；observer/resource/scope终态仍原合同；owner.close错误→固定异常、unknown不可冒充收回；KeyboardInterrupt/SystemExit原对象在其余清理后抛出。
+实施前调用链补全（root，2026-10-12；不改变公共入口或原生硬门）：最终 hook 同时核 argv、绑定和实际启动所用 cwd/pass_fds 元数据快照。候选的 on_spawn 与最终 drain 共用对象级单次 endpoint close 记录；before-real-close 失败不可重试，未知结果固定拒绝、首 signal 对象不变，继续尝试其余资源。scope 的 configured/configure_locked/collected 收尾沿现有 selector 保留原 signal；collected 临时目录 FD 关闭也记录 sticky unknown，保留既有 OSError/return None 合同。以上均须真实 FD / socket 行为断言 RED 后 GREEN；不把软件夹具当作 ACK、镜像身份或 cgroup GC 实测。
+
+首轮源码 SPEC 补全（C0/I2/M0，尚未通过）：真实关闭 socket 及 raw-close 后目录 FD 复用负控证明，只有 argv 数字集合不足以核角色，且收尾可能误关 foreign FD。端点取得时须保存真实 fd/fstat 身份，启动初核/终核及关闭前均确认 live same-object；漂移记 unknown，不关闭或重试 foreign。owner 外层普通 body error 也不得隐藏固定 unknown 清理异常；首 KI/SystemExit 原对象及已有同级固定异常优先。上方 outer finally 示例已同步补全，此为已审资产的需求缺口，不将按旧示例实现归咎作者。修复须 RED→GREEN，再 fresh SPEC 复核通过后不同 QUALITY；不降低原生四格门。
+
+后续 SPEC 补全：ambiguous socket close 本身失败后也必须 detach，防止 Python 析构函数绕过 attempt 计数再次 raw close。detach 不提供关闭成功信用，实际未知 FD 仍 live，状态不得升级；测试保存原 fd 验证并自行 REAL_CLOSE，不能用 fileno=-1 冒充关闭完成。源作者取得真实 GC 行为断言 RED（1 test / 3 failures / 0 ERROR）后最小修复；第三轮 fresh SPEC 完整复核 C0/I0/M0，独立 177 focused / 29.305s / 0 skip，并独立验证三种信号/普通故障 GC 后原 FD 仍 live。随后不同 QUALITY 97 项 / 51.993s / 0 skip 和 16 项独立角色负控通过，C0/I0/M0；root 冻结后实际 177 focused / 29.314s / 0 skip 通过。完整软件 preflight 已启动，终态尚待观察，未发布。以上均为软件证据，不授原生信用。
+
+- [x] GREEN focused：`.venv/bin/python -m unittest tests.test_linux_helper_dispatch tests.test_execution_broker tests.test_linux_product_task_quota tests.test_linux_task_resource tests.test_linux_violation_receipt tests.test_linux_helper_object -q`。须记录未执行native prerequisite，不能把skip算通过。
+- [x] 结果/故障映射自审：factory/wrap/scope/role/monitor准备错误→固定 isolation_unavailable且明确未启动；timeout/output_limit/launch_failed/invalid_timeout/invalid_output_limit/invalid_handoff保留；observer/resource/scope终态仍原合同；owner.close错误→固定异常、unknown不可冒充收回；KeyboardInterrupt/SystemExit原对象在其余清理后抛出。
 - [ ] root 复审后阶段提交建议：`feat: own and validate Linux helper dispatch in observed broker`。普通与公共 observed selector仍未接候选。
 
 ## Task 3：实际包四格原生 identity/FD 探针
@@ -1801,4 +1819,14 @@ git diff --check
 
 计划保存后交root独立审查；本轮仅PLAN的显式范围覆盖writing-plans自动invoke执行建议，不由writer启动实施/reviewer。
 
-阶段进度（root本阶段报告，2026-10-12）：完整PLAN冻结858c235222716f5899c134af4fe431d21d68fe794ba6cebbc78a8f92028ccf2a已原SPEC→不同QUALITY双审C0/I0/M0。仅Task1软件已实现：source fresh SPEC→不同QUALITY均C0/I0/M0；root focused 148 passed/11 skipped，SPEC 71 passed/0 skipped，QUALITY 25 passed/0 skipped；root于21:21 UTC观察全量preflight 17109 exit 0、三道全PASS，site/governance/landscape/compileall-j1均PASS。Task1五个软件步骤已勾选，publication步骤仍未勾选，提交为root下一动作；跳过原生项不计原生信用。设计b5eedcd775bbd0e64a9584b6e14bc3475fd976a330a5ee76b2b1818fe4e0af00和2d32c1fd4fdf35a788c8b2b69822ceceaf8d2f06c7539e4f6e4092ef61371195保留历史参考，root后续设计更新仅状态元数据，1–7节原安全合同不变。Task2/3已审计划尚未实施、未跑native；fresh Task2 writer需按当前test上下文恢复实际使用的errno/broker/LinuxHelperObjectError imports，不把已审资产当成实现证据。本PLAN作者仅更新文档状态，未改源码、提交或运行full/native。
+阶段进度（root本阶段报告，2026-10-12）：完整PLAN冻结858c235222716f5899c134af4fe431d21d68fe794ba6cebbc78a8f92028ccf2a已原SPEC→不同QUALITY双审C0/I0/M0。Task1软件和publication已完成，main已提交推送31f42ae；root focused共148项（137通过、11跳过），21:21 UTC完整preflight三道全PASS，跳过项不计原生信用。Task2软件已实现并经修复后fresh SPEC→不同QUALITY均C0/I0/M0；root最终177项/29.314s/0 skip通过，2026-10-11 22:03 UTC观察完整preflight 75874 exit0、三道全PASS，compileall-j1/site/governance/landscape检查通过。Task2软件步骤已勾选，publication为下一操作。源码冻结broker 224612d605eea3784581e87682b2978982d516b8e21e4f3e32b75b9c03914d4e、scope 776ab721fec0e18e73e21fbdbdfdc75cf123c68e2b7868aa25a0dee03c5c8b69、test 751efb547dd925e1ca392502b14ac47447d14d130718f35339d7e1ebad55ac2e。设计历史摘要保留，第1–7节安全合同不变。Task3仅完成只读准备，未实施、未跑同对象native；不把已审资产或软件结果当成原生证据。
+
+【架构级自检报告】（Task2软件候选）
+
+- ✅ 语法/编译：compileall-j1、diff格式检查通过。
+- ✅ 依赖/调用链：唯一observed core与wrapper/scope/channel收尾经独立双审及177项focused验证。
+- ✅ 逻辑/边界：最终元数据/活对象拒绝、普通异常及首signal优先级、unknown不重试已测试。
+- ✅ 异常处理：准备、启动、监控、资源及关闭故障矩阵软件测试通过；未声称所有原生故障已验。
+- ✅ 关联模块：现有全量测试通过，ICODE-SKILL固定版本未改变。
+- ✅ 兼容安全：默认旧入口保持，未新增权限、政策例外或失败fallback。
+- ✅ 可运行性：完整软件preflight通过；实际安装包原生四格尚未执行，不报告整体100%。

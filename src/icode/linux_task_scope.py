@@ -121,6 +121,7 @@ class LinuxTaskScope:
             raise LinuxTaskScopeError()
         self._query_adapter = query
         self._fds: list[int] = []
+        self._cleanup_unknown = False
         self._path: Path | None = None
         self._pid: int | None = None
         self._identities: list[tuple[int, int]] = []
@@ -224,7 +225,13 @@ class LinuxTaskScope:
             # Also covers exceptional callbacks and requests arriving at the
             # lock-release boundary; no descriptor can be recycled mid-use.
             if self._close_requested.is_set():
-                self.close()
+                active_exception = sys.exc_info()[1]
+                try:
+                    self.close()
+                except BaseException as cleanup_error:
+                    selected = _select_cleanup_error(active_exception, cleanup_error)
+                    if selected is not active_exception:
+                        raise selected
 
     def _configure_locked(self, deadline: float) -> None:
         membership = self._membership()
@@ -258,14 +265,25 @@ class LinuxTaskScope:
                     if (status.st_dev, status.st_ino) != identity:
                         raise LinuxTaskScopeError()
                 finally:
-                    os.close(descriptor)
+                    active_exception = sys.exc_info()[1]
+                    try:
+                        self._close_owned_descriptor(descriptor)
+                    except BaseException as cleanup_error:
+                        selected = _select_cleanup_error(active_exception, cleanup_error)
+                        if selected is not active_exception:
+                            raise selected
             if time.monotonic() >= deadline:
                 raise LinuxTaskScopeError()
             self._path = path
             self._invocation = fields["InvocationID"]
             self._owned = True
-        except BaseException:
-            self._close_pins()
+        except BaseException as error:
+            try:
+                self._close_pins()
+            except BaseException as cleanup_error:
+                selected = _select_cleanup_error(error, cleanup_error)
+                if selected is not error:
+                    raise selected
             raise
 
     def collected(self, deadline: float) -> bool | None:
@@ -276,7 +294,13 @@ class LinuxTaskScope:
         finally:
             self._lifecycle.release()
             if self._close_requested.is_set():
-                self.close()
+                active_exception = sys.exc_info()[1]
+                try:
+                    self.close()
+                except BaseException as cleanup_error:
+                    selected = _select_cleanup_error(active_exception, cleanup_error)
+                    if selected is not active_exception:
+                        raise selected
 
     def _collect_locked(self, deadline: float) -> bool | None:
         if not self._owned or self._path is None:
@@ -289,13 +313,34 @@ class LinuxTaskScope:
                 except FileNotFoundError:
                     return fields["LoadState"] == "not-found" and not fields["ControlGroup"]
                 else:
-                    os.close(descriptor)
+                    self._close_owned_descriptor(descriptor)
                 if fields["LoadState"] == "loaded" and fields["InvocationID"] != self._invocation:
                     return False
                 time.sleep(min(_GC_POLL_SECONDS, max(0, deadline - time.monotonic())))
             except (OSError, ValueError, LinuxTaskScopeError):
                 return None
         return False
+
+    @property
+    def cleanup_state(self) -> str:
+        # This evidence concerns owned descriptors, independently of cgroup GC.
+        if getattr(self, "_cleanup_unknown", False):
+            return "unknown"
+        if not self._lifecycle.acquire(blocking=False):
+            return "unconfirmed"
+        try:
+            if getattr(self, "_cleanup_unknown", False):
+                return "unknown"
+            return "unconfirmed" if self._fds else "confirmed"
+        finally:
+            self._lifecycle.release()
+
+    def _close_owned_descriptor(self, descriptor: int) -> None:
+        try:
+            os.close(descriptor)
+        except BaseException:
+            self._cleanup_unknown = True
+            raise
 
     def close(self) -> None:
         self._close_requested.set()
@@ -311,7 +356,7 @@ class LinuxTaskScope:
         while self._fds:
             descriptor = self._fds.pop()
             try:
-                os.close(descriptor)
+                self._close_owned_descriptor(descriptor)
             except OSError:
                 pass
             except BaseException as error:

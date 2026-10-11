@@ -203,6 +203,8 @@ systemd-run 官方 latest/254 页面 root 获取均为 403；man-pages 此前超
 
 第 8 节保留起草时的自审状态，不作为当前验收。设计原候选 SHA256 `b5eedcd775bbd0e64a9584b6e14bc3475fd976a330a5ee76b2b1818fe4e0af00` 经独立 SPEC 补清运行身份窗口后、不同 QUALITY 零遗留；本次仅更新状态记录，不改变第 1–7 节安全合同。
 
-Task 1 包装层已实施，先取得有效 1 assertion FAIL / 0 ERROR，再进入 GREEN。root 实际 148 项 / 42.929s 通过，11 项跳过不计新原生验收；fresh 源码 SPEC 71 项 / 0 skip、不同 QUALITY 25 项 / 0 skip 通过，均 C0/I0/M0。仅 `PreparedCommand`、held wrapper、workspace 合并与 resource/scope 元数据传播；工厂、broker、selector、native 均未改。root 于 2026-10-11 21:21 UTC 观察本阶段完整 preflight 终态 exit0，密钥、子模块、完整测试三道全部通过；全仓 compileall-j1 与 site/governance/landscape 排期检查通过。提交推送为下一操作，尚未授新原生信用。
+Task 1 包装层已实施，先取得有效 1 assertion FAIL / 0 ERROR，再进入 GREEN。root 实际共 148 项 / 42.929s（137 通过、11 跳过），跳过项不计新原生验收；fresh 源码 SPEC 71 项 / 0 skip、不同 QUALITY 25 项 / 0 skip 通过，均 C0/I0/M0。仅 `PreparedCommand`、held wrapper、workspace 合并与 resource/scope 元数据传播；该片工厂、broker、selector、native 均未改。root 于 2026-10-11 21:21 UTC 观察本阶段完整 preflight 终态 exit0，密钥、子模块、完整测试三道全部通过；全仓 compileall-j1 与 site/governance/landscape 排期检查通过。已提交推送 main `31f42aecc7e56d2a6f2eeac3a376d0c753657d7d`，尚未授新原生信用。
 
-Task 2/3 计划正修订最后启动拒绝映射、新候选 workspace 与故障实证、scope 关闭未知及失败观察记录。私有 dispatch core、四格实际安装包同对象启动及生产合流仍未完成，不授新 native 或 R2/R3 readiness 信用。
+Task 2/3 计划已补清最后启动拒绝映射、新候选 workspace 与故障实证、scope 关闭未知及失败观察记录，并经独立双审零遗留。Task 2 私有 dispatch core 已实现，补齐最终元数据与 endpoint 活对象核对、单次 close/析构 disarm 和原 signal 优先；fresh SPEC 与不同 QUALITY 均 C0/I0/M0，root 实际 177 focused / 29.314s / 0 skip 通过，完整软件 preflight 终态尚待观察，未发布。详细记录见实施计划。四格实际安装包同对象启动及生产合流仍未完成，不授新 native 或 R2/R3 readiness 信用。
+
+后续软件门终态：root 于 2026-10-11 22:03 UTC 观察 Task2 完整 preflight exit0，密钥/子模块/全量测试三道通过；compileall-j1 与 site/governance/landscape 检查通过。Task2 源码冻结完成，准备阶段提交；Task3 仅完成只读准备，四格原生与公共合流仍未验收。
