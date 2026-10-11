@@ -2344,3 +2344,17 @@ a6fd29c 四 Windows workspace 实际958/20skip/2F0E，guard13通过；两原生�
 Linux[绑定诊断设计](./nbl/specs/2026-10-12-linux-admission-receipt-design.md)经SPEC→不同QUALITY修后C0/I0/M0：现有两个探针只有legacy summary，cleanup未完整观测，helper摘要函数没有ELF机器校验，故首片固定incomplete/summary-only/cleanup unknown；不重建探针或冒充ready。helper A→B/缺失清除跨helper绑定与摘要，正式准入、持久化及生产网络合流另片验收。收益为避免缓存身份漂移和错误授权，成本为有限schema/组合及真实安装包身份负控；上游来源延续本窗口固定历史核验，未声称刷新HEAD或完整20项，研究/设计不授R2/R3信用。
 
 同SHA随后provenance5/5闭合，root及独立observer逐份用冻结validator核验四签装原始source-consumer回执；先前“签装待验”保留为当时状态。四格仍root owner_untrusted、104全局逆序确认关闭、8SD读取/分配/释放及授权false，不授默认pip路径安全或UAC；详细job/独立OS绑定见上引原生分账。主CI两网络失败与整体未验收不变。
+
+### 2026-10-12：LA-1实施前的诊断来源复核
+
+独立只读研究与root再次实际读取固定Codex `36650394c5b38c2990ccf2a3457165ca3e9d9726` 的上引denial.rs及根Apache-2.0许可、固定OpenHands SDK `d77ada7a030b3acaa82593d402632680361dfe42` 的上引models.py及根MIT许可。Codex先做关键词likely分类，再排除2/126/127，因此126与含sandbox输出仍可被分类；它不是拒绝来源认证。OpenHands CommandResult只分离退出/输出/超时，不证明清理或执行完整性。未刷新HEAD、完整20名单或全依赖许可，不运行或复制源码。
+
+ICODE旧minimal probe的启动/超时None会被部分not success负向check折叠；protected probe异常路径也可executed=True。**采纳**严格ready/passed旧摘要、事实与来源分层，首片固定incomplete/summary-only/cleanup unknown；**暂缓**生产准入与执行对象固定；**不适配**从checks/detail/exit/关键词恢复内核拒绝或授权。helper前后摘要相同不能检测A→B→A，也不能证明已执行同一个FD；当前匹配仅诊断身份，不授执行信用。验收为exact13顶层键、严格bool、五组合、A→B/缺失清摘要、异常不启动后续probe及KI/SE原对象。无新权限/依赖/复制，收益为避免误放行，成本为有限schema和漂移负控；安装包x64/ARM64与R2/R3仍另账。
+
+### 同日：LA-2真实会话准入的调用链研究
+
+独立只读研究实际读取同一固定Codex的 [manager.rs](https://github.com/openai/codex/blob/36650394c5b38c2990ccf2a3457165ca3e9d9726/codex-rs/sandboxing/src/manager.rs)/landlock.rs，以及固定OpenHands SDK的models.py/base.py/[local.py](https://github.com/OpenHands/software-agent-sdk/blob/d77ada7a030b3acaa82593d402632680361dfe42/openhands-sdk/openhands/sdk/workspace/local.py)。root重新读取manager的需求/选择/transform部分、完整LocalWorkspace及两根LICENSE（Apache-2.0/MIT）。Codex分开should_sandbox与具体后端选择，transform保留政策/执行cwd和有效permission profile，Linux缺helper明确报错；OpenHands LocalWorkspace直接执行宿主命令，成功结果和上下文退出不构成隔离认证。固定历史机制观察，不是当前HEAD或20项全刷新；未复制、运行上游或新增依赖/权限。
+
+**采纳（下一片设计输入）**：复用当前session、原policy、prepare、PreparedCommand及既有DENY资源/USER_NOTIF执行链，模型调用前校验宿主准入、实际dispatch再次核借用FD与policy。**暂缓**：网络合流留LA-3；未完成ELF/完整身份与生产验收前的自动选择放行。**不适配**：LA1 bindingTrue/旧评分直接授权，选择None或LocalWorkspace裸执行回退，删保护路径适配后端。收益是避免重复quota与编译器，成本为身份/策略/缺manager/未知cleanup矩阵及x64/ARM64真实产品入口验收。
+
+本工程workbench已有POSIX分层code，Landlock策略仍拒绝真实nested deny/运行时冲突；旧WorkspaceManager默认不变。root核对NativeChainExecutor已向内置run_chain传所有step的session，但chain只给code/deepcheck或获准Git状态路径继续传递，snapshot其它步骤会丢session。CLI step/chain没有创建同类会话，本仓也未检出实际ICODE MCP命令服务端；不能以单工作台正控写全部入口通过。上述是待设计/实现的缺口，不授生产准入、R2/R3或模型信用。

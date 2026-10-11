@@ -1,6 +1,6 @@
 # Linux 运行保护准入回执：分阶段设计
 
-状态：LA-1诊断设计经SPEC→不同QUALITY复审零遗留后冻结，尚无实现或产品放行。基线 main `8b1afd4d347173453252d3d22ba7ec5cdbd805f5`。沿用用户“推荐方式自主推进”授权，不增加系统权限、服务或安装步骤；安全与独立验收门不变。原合同为 [R2 §12.1/14.1](./2026-09-23-r2-cross-platform-isolation-design.md)，研究见[持续对照](../../agent-landscape-live.md)。
+状态：LA-1软件门通过；实际实现经SPEC→不同QUALITY复审零遗留，23项定向通过，根代理完整preflight三道通过、关联127项116通过/11既有跳过，待阶段main提交。没有产品放行或installed原生信用。设计基线 main `8b1afd4d347173453252d3d22ba7ec5cdbd805f5`，实际执行见[实施记录](../plans/2026-10-12-linux-admission-diagnostic.md)。沿用用户“推荐方式自主推进”授权，不增加系统权限、服务或安装步骤；安全与独立验收门不变。原合同为 [R2 §12.1/14.1](./2026-09-23-r2-cross-platform-isolation-design.md)，研究见[持续对照](../../agent-landscape-live.md)。
 
 ## 1. 需求与现状
 
@@ -100,4 +100,4 @@ LA-1 TDD先对缺失/畸形/平台/OS/helper/policy漂移、旧诊断字典和�
 
 ## 7. 当前自检结论
 
-需求/现有实现/调用链已核；环境缓存与授权分离，原保护、评分与跨平台边界保留。首轮SPEC指出旧探针缺完整执行/cleanup、helper无ELF机器校验及历史评分混用风险；修后SPEC零遗留。不同QUALITY另指出跨helper摘要与reason组合不明，修后复审C0/I0/M0；五种组合、A→B/缺失全清绑定与摘要、异常不启动后续probe已明确。root实际sequential-thinking92–94，完整读原R2合同与相关实现、模板/规则，按Python范围而非Java框架生成此设计。LA-1进入详细实施计划，尚未开始编码；持久化/正式授权仍属后续片，无新运行或R2/R3验收信用。
+需求/现有实现/调用链已核；环境缓存与授权分离，原保护、评分与跨平台边界保留。首轮设计SPEC指出旧探针缺完整执行/cleanup、helper无ELF机器校验及历史评分混用风险；修后SPEC零遗留。不同设计QUALITY另指出跨helper摘要与reason组合不明，修后复审C0/I0/M0；五种组合、A→B/缺失全清绑定与摘要、异常不启动后续probe已明确。root实际sequential-thinking92–94，完整读原R2合同与相关实现、模板/规则，按Python范围而非Java框架生成此设计。当时进入详细实施计划、尚未编码；随后实际软件实现及系统时钟异常修复已完成独立SPEC→不同QUALITY复审，详见实施记录。持久化/正式授权仍属后续片，没有installed原生或R2/R3验收信用。
