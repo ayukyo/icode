@@ -175,6 +175,11 @@ def _verify_installed_verifier_binding(helper: Path, arch: str, *, cwd: Path, en
 def _observe_installed_chain(python: Path, source_sha: str, arch: str, *, cwd: Path, env: dict[str, str]) -> None:
     """Capture installed-source diagnostics, never compatibility or launch credit."""
     try:
+        # main creates this venv using this interpreter on this Windows host.
+        # Capture independent parent facts before starting the child.
+        expected_python = [sys.version_info.major, sys.version_info.minor]
+        version = sys.getwindowsversion()
+        expected_windows = [version.major, version.minor, version.build]
         # -I excludes checkout/PYTHONPATH imports, not normal installed site
         # packages. This is interpreter import isolation, not an OS sandbox.
         result = _run_unittest_with_bounded_output(
@@ -190,11 +195,12 @@ def _observe_installed_chain(python: Path, source_sha: str, arch: str, *, cwd: P
         if (type(code) is not int or code != 0 or type(stdout) is not bytes
                 or type(stderr) is not bytes or stderr):
             raise ValueError("invalid_capture_result")
-        data = validate_wire(stdout, source_sha, arch)
+        data = validate_wire(stdout, source_sha, arch,
+                             expected_python=expected_python, expected_windows=expected_windows)
         # Only the closed finite schema may reach CI logs. A supported policy
         # rejection remains an observation, and receives no acceptance credit.
         print(json.dumps(data, separators=(",", ":")))
-        print("installed-chain observation_complete=true compatibility_accepted=false launch_authorized=false")
+        print("installed-chain observation_complete=true compatibility_accepted=false launch_authorized=false protected_observed=false")
     except Exception:
         # Capture failures include timeout/limit/unknown pipe cleanup. Do not
         # retry, replace-decode, skip, or reveal the wire/exception's private data.

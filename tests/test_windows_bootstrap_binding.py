@@ -153,6 +153,45 @@ class InstalledSourceCaptureTests(unittest.TestCase):
             with self.subTest(error=type(failure)):
                 self.assert_rejected(None, failure)
 
+    def test_chain_runtime_is_parent_bound_and_three_authorities_false(self):
+        version = SimpleNamespace(major=10, minor=0, build=26100)
+        expected_python = [sys.version_info.major, sys.version_info.minor]
+        contract_data = receipt()
+        contract_data.update(python=expected_python, windows=[10, 0, 26100])
+        contract_wire = wire(contract_data)
+        # Isolate the real parent's call contract; this grants no wire-validation credit.
+        with patch.object(wheel_ci.sys, "getwindowsversion", return_value=version, create=True), patch.object(
+            wheel_ci, "_run_unittest_with_bounded_output", return_value=(0, contract_wire, b"")
+        ), patch.object(wheel_ci, "validate_wire", return_value=contract_data) as validator, redirect_stdout(io.StringIO()):
+            wheel_ci._observe_installed_chain(Path("python.exe"), "a" * 40, "x64", cwd=Path("work"), env={})
+        validator.assert_called_once()
+        self.assertEqual(validator.call_args.args, (contract_wire, "a" * 40, "x64"))
+        self.assertEqual(validator.call_args.kwargs,
+                         {"expected_python": expected_python, "expected_windows": [10, 0, 26100]},
+                         "parent must supply runtime expectations captured independently of child wire")
+        # Once parent wiring passes, separately exercise the real validator.
+        for field, value in ((None, None), ("python", [3, 12] if expected_python[1] == 11 else [3, 11]),
+                             ("windows", [10, 0, 26200]), ("windows", [10, 1, 26100])):
+            data = receipt()
+            data.update(python=expected_python, windows=[10, 0, 26100])
+            if field is not None:
+                data[field] = value
+            output = io.StringIO()
+            with self.subTest(field=field, value=value), patch.object(
+                wheel_ci.sys, "getwindowsversion", return_value=version, create=True
+            ), patch.object(wheel_ci, "_run_unittest_with_bounded_output", return_value=(0, wire(data), b"")) as run, redirect_stdout(output):
+                if field is None:
+                    wheel_ci._observe_installed_chain(Path("python.exe"), "a" * 40, "x64", cwd=Path("work"), env={})
+                    self.assertEqual(output.getvalue(), wire(data).decode("ascii")
+                        + "installed-chain observation_complete=true compatibility_accepted=false launch_authorized=false protected_observed=false\n")
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "^installed chain observation failed$") as caught:
+                        wheel_ci._observe_installed_chain(Path("python.exe"), "a" * 40, "x64", cwd=Path("work"), env={})
+                    self.assertIsNone(caught.exception.__cause__)
+                    self.assertTrue(caught.exception.__suppress_context__)
+                    self.assertEqual(output.getvalue(), "")
+                self.assertEqual(run.call_count, 1)
+
 
 class TestWindowsBootstrapBinding(unittest.TestCase):
     def installed_observer(self):
@@ -165,6 +204,7 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
         root, python, environment = Path("workspace"), Path("installed/python.exe"), {"FIXED": "value"}
         for arch, rejected in (("x64", False), ("x64", True), ("arm64", False), ("arm64", True)):
             data = receipt()
+            data["python"] = [sys.version_info.major, sys.version_info.minor]
             data["architecture"] = arch
             if rejected:
                 data["resources"][0]["chain"][0]["owner"] = "other"
@@ -172,6 +212,8 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
                 data["source_policy_all_passed"] = False
             output = io.StringIO()
             with self.subTest(architecture=arch, policy_rejected=rejected), patch.object(
+                wheel_ci.sys, "getwindowsversion", return_value=SimpleNamespace(major=10, minor=0, build=123), create=True
+            ), patch.object(
                 wheel_ci, "_run_unittest_with_bounded_output", return_value=(0, wire(data, b"\r\n"), b"")
             ) as run, redirect_stdout(output):
                 observer(python, "a" * 40, arch, cwd=root, env=environment)
@@ -180,12 +222,14 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
                  str(ROOT / "scripts/probe_windows_installed_chain.py"), "--source-sha", "a" * 40],
                 workspace=root, timeout=30, output_limit_bytes=256 * 1024, environment=environment)
             self.assertEqual(output.getvalue(), wire(data).decode("ascii")
-                + "installed-chain observation_complete=true compatibility_accepted=false launch_authorized=false\n")
+                + "installed-chain observation_complete=true compatibility_accepted=false launch_authorized=false protected_observed=false\n")
             self.assertIs(json.loads(output.getvalue().splitlines()[0])["launch_authorized"], False)
 
     def test_installed_chain_raw_types_and_exit_status_fail_without_private_output(self):
         observer = self.installed_observer()
-        valid = wire(receipt())
+        data = receipt()
+        data["python"] = [sys.version_info.major, sys.version_info.minor]
+        valid = wire(data)
         class TupleSubclass(tuple):
             pass
         class BytesSubclass(bytes):
@@ -200,6 +244,8 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
         for result in candidates:
             output = io.StringIO()
             with self.subTest(result_type=type(result), result=repr(result)[:40]), patch.object(
+                wheel_ci.sys, "getwindowsversion", return_value=SimpleNamespace(major=10, minor=0, build=123), create=True
+            ), patch.object(
                 wheel_ci, "_run_unittest_with_bounded_output", return_value=result
             ) as run, redirect_stdout(output):
                 with self.assertRaisesRegex(RuntimeError, "^installed chain observation failed$") as raised:
@@ -211,10 +257,12 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
 
     def test_installed_chain_invalid_wire_never_prints_unvalidated_private_data(self):
         observer = self.installed_observer()
-        valid = wire(receipt())
+        data = receipt()
+        data["python"] = [sys.version_info.major, sys.version_info.minor]
+        valid = wire(data)
         candidates = [b"\xff\n", b"PRIVATE unknown\n", valid + b"PRIVATE\n",
-                      valid.replace(b'"schema_version":1', b'"schema_version":1,"schema_version":1'),
-                      valid.replace(b'"schema_version":1,', b""),
+                      valid.replace(b'"schema_version":2', b'"schema_version":2,"schema_version":2'),
+                      valid.replace(b'"schema_version":2,', b""),
                       valid.replace(b'}\n', b',"PRIVATE":"PRIVATE"}\n'),
                       valid.replace(b'a' * 40, b'b' * 40),
                       valid.replace(b'"architecture":"x64"', b'"architecture":"arm64"'),
@@ -223,6 +271,8 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
         for output_wire in candidates:
             output = io.StringIO()
             with self.subTest(wire_prefix=output_wire[:30]), patch.object(
+                wheel_ci.sys, "getwindowsversion", return_value=SimpleNamespace(major=10, minor=0, build=123), create=True
+            ), patch.object(
                 wheel_ci, "_run_unittest_with_bounded_output", return_value=(0, output_wire, b"")
             ), redirect_stdout(output):
                 with self.assertRaisesRegex(RuntimeError, "^installed chain observation failed$"):
@@ -238,6 +288,8 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
                         ValueError("PRIVATE capture"), RuntimeError("PRIVATE unknown")):
             output = io.StringIO()
             with self.subTest(error=type(failure)), patch.object(
+                wheel_ci.sys, "getwindowsversion", return_value=SimpleNamespace(major=10, minor=0, build=123), create=True
+            ), patch.object(
                 wheel_ci, "_run_unittest_with_bounded_output", side_effect=failure
             ) as run, redirect_stdout(output):
                 with self.assertRaisesRegex(RuntimeError, "^installed chain observation failed$") as raised:
@@ -645,7 +697,10 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
                         self.assertEqual(kwargs["output_limit_bytes"], 256 * 1024)
                         self.assertNotIn("PYTHONPATH", kwargs["environment"])
                         if mode == "chain_failure": return (0, b"PRIVATE invalid receipt\n", b"")
-                        return (0, wire(receipt()), b"")
+                        data = receipt()
+                        data["python"] = [sys.version_info.major, sys.version_info.minor]
+                        data["windows"] = [10, 0, 26100]
+                        return (0, wire(data), b"")
                     stages.append("binding query")
                     self.assertIn("cryptographically verify installed CI artifact provenance", stages)
                     self.assertEqual(args, [str(helper), "--verifier-binding-json"])

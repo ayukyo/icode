@@ -71,6 +71,49 @@ def _policy_result(raw, host_sid, directory):
     return "pass"
 
 
+def _structural_roles(index, count):
+    roles = []
+    if index < count - 1:
+        roles.append("route_ancestor")
+    if index == 0:
+        roles.append("volume_root")
+    if index == count - 2:
+        roles.append("image_parent")
+    if index == count - 1:
+        roles.append("image_leaf")
+    return roles
+
+
+def _direct_candidates(entry, directory):
+    # Diagnostic operation names only; neither allow nor deny is AccessCheck.
+    if not entry["allowed"] or entry["flags"] & 0x08:
+        return []
+    choices = ([(0x2, "add_file"), (0x4, "add_subdirectory"), (0x40, "delete_child")]
+               if directory else [(0x2, "write_data"), (0x4, "append_data")])
+    choices += [(0x10, "write_ea"), (0x100, "write_attributes"),
+                (0x10000, "delete_object"), (0x40000, "write_dacl"),
+                (0x80000, "write_owner"), (0x40000000, "generic_write"),
+                (0x10000000, "generic_all")]
+    return [name for bit, name in choices if entry["mutation"] & bit]
+
+
+def _inheritance_edge(chain, index):
+    if index == len(chain) - 1:
+        return None
+    child = chain[index + 1]
+    flag = 0x02 if child["directory"] else 0x01
+    # This finite CI/OI formula is only a flag candidate observation. An OI-only
+    # ACE can propagate through directories as IO; no candidates here do not
+    # establish absence of inheritance risk or effective access.
+    candidates = [i for i, entry in enumerate(chain[index]["entries"]) if entry["flags"] & flag]
+    state = ("no_flag_candidates" if not candidates else
+             "flag_candidates_child_protected" if child["dacl_protected"] else
+             "flag_candidates_child_unprotected")
+    return {"next_index": index + 1, "target_kind": "directory" if child["directory"] else "file",
+            "child_dacl_protected": child["dacl_protected"],
+            "flag_candidate_indices": candidates, "state": state}
+
+
 def _observe_resource(resource, path, host_sid, budget):
     # Bound the lexical chain before acquiring any native object.
     if not 2 <= 1 + len(_local_components(str(path))[1]) <= _MAX_CHAIN_NODES:
@@ -102,14 +145,21 @@ def _observe_resource(resource, path, host_sid, budget):
             mask = _MUTATION_ACCESS_MASK | (_DELETE_CHILD if baseline.directory else 0)
             policy = _policy_result(raw_before, host_sid, baseline.directory)
             _finite_string(policy, {"pass", "owner_untrusted", "mutation_untrusted", "empty_dacl"})
+            entries = [{"allowed": entry.allowed, "flags": entry.flags,
+                        "mutation": entry.mask & mask,
+                        "trustee": _trustee_category(entry.sid, host_sid)} for entry in first.entries]
+            for entry in entries:
+                entry["direct_operation_candidates"] = _direct_candidates(entry, baseline.directory)
             chain.append({"index": index, "kind": "root" if index == 0 else "file" if index == count - 1 else "ancestor",
+                          "structural_roles": _structural_roles(index, count),
+                          "dacl_protected": bool(first.control & 0x1000), "inheritance_to_next": None,
                           "directory": baseline.directory, "metadata_observed_equal": True,
                           "descriptor_observed_equal": True, "parser_result": "supported",
                           "policy_result": policy,
                           "owner": _owner_category(first.owner_sid, host_sid),
-                          "entries": [{"allowed": entry.allowed, "flags": entry.flags,
-                                       "mutation": entry.mask & mask,
-                                       "trustee": _trustee_category(entry.sid, host_sid)} for entry in first.entries]})
+                          "entries": entries})
+        for index, node in enumerate(chain):
+            node["inheritance_to_next"] = _inheritance_edge(chain, index)
         owner.revalidate()
         result = {"resource": resource, "role": "source", "image_sha256": owner.sha256,
                   "chain": chain, "owned_handles": count, "confirmed_closes": count,
@@ -137,7 +187,7 @@ def probe(source_sha):
     budget = [0]
     observed = [_observe_resource(resource, path, host_sid, budget) for resource, path in resources]
     version = sys.getwindowsversion()
-    return {"schema_version": 1, "scope": "installed_source_chain_observation", "source_sha": source_sha,
+    return {"schema_version": 2, "scope": "installed_source_chain_observation", "source_sha": source_sha,
             "architecture": arch, "python": [sys.version_info.major, sys.version_info.minor],
             "windows": [version.major, version.minor, version.build], "observation_complete": True,
             "source_policy_all_passed": all(node["policy_result"] == "pass" for resource in observed for node in resource["chain"]),
@@ -150,8 +200,10 @@ _TOP_KEYS = {"schema_version", "scope", "source_sha", "architecture", "python", 
              "compatibility_accepted", "launch_authorized", "resources"}
 _RESOURCE_KEYS = {"resource", "role", "image_sha256", "chain", "owned_handles", "confirmed_closes", "unconfirmed_closes"}
 _NODE_KEYS = {"index", "kind", "directory", "metadata_observed_equal", "descriptor_observed_equal",
-              "parser_result", "policy_result", "owner", "entries"}
-_ENTRY_KEYS = {"allowed", "flags", "mutation", "trustee"}
+              "parser_result", "policy_result", "owner", "entries", "structural_roles",
+              "dacl_protected", "inheritance_to_next"}
+_ENTRY_KEYS = {"allowed", "flags", "mutation", "trustee", "direct_operation_candidates"}
+_EDGE_KEYS = {"next_index", "target_kind", "child_dacl_protected", "flag_candidate_indices", "state"}
 _OWNERS = {"admin", "system", "host", "other"}
 _TRUSTEES = _OWNERS | {"everyone", "authenticated_users", "builtin_users", "creator_owner", "owner_rights"}
 
@@ -181,6 +233,16 @@ def _exact_int(value, minimum, maximum):
     _require(type(value) is int and minimum <= value <= maximum)
 
 
+def _runtime(value, *, python):
+    _require(type(value) is list and len(value) == (2 if python else 3))
+    if python:
+        _exact_int(value[0], 3, 3)
+        _exact_int(value[1], 11, 12)
+    else:
+        for component in value:
+            _exact_int(component, 0, 2**32 - 1)
+
+
 def _receipt_policy(node):
     if node["owner"] == "other":
         return "owner_untrusted"
@@ -192,9 +254,11 @@ def _receipt_policy(node):
     return "pass"
 
 
-def validate_wire(wire, source_sha, arch):
+def validate_wire(wire, source_sha, arch, *, expected_python, expected_windows):
     """Check the finite receipt contract; this is not independent OS evidence."""
     try:
+        _runtime(expected_python, python=True)
+        _runtime(expected_windows, python=False)
         _require(type(source_sha) is str and re.fullmatch("[0-9a-f]{40}", source_sha) is not None)
         _finite_string(arch, {"x64", "arm64"})
         _require(type(wire) is bytes and 1 <= len(wire) <= _WIRE_LIMIT)
@@ -203,21 +267,16 @@ def validate_wire(wire, source_sha, arch):
         data = json.loads(wire.decode("utf-8", "strict"), object_pairs_hook=_unique_object)
         _require(json.dumps(data, separators=(",", ":")).encode("ascii") + ending == wire)
         _object(data, _TOP_KEYS)
-        _exact_int(data["schema_version"], 1, 1)
+        _exact_int(data["schema_version"], 2, 2)
         _finite_string(data["scope"], {"installed_source_chain_observation"})
         _require(type(data["source_sha"]) is str and data["source_sha"] == source_sha)
         _require(type(data["architecture"]) is str and data["architecture"] == arch)
         for key, expected in (("observation_complete", True), ("protected_observed", False),
                               ("compatibility_accepted", False), ("launch_authorized", False)):
             _require(data[key] is expected)
-        python = data["python"]
-        _require(type(python) is list and len(python) == 2)
-        _exact_int(python[0], 3, 3)
-        _exact_int(python[1], 11, 12)
-        windows = data["windows"]
-        _require(type(windows) is list and len(windows) == 3)
-        for value in windows:
-            _exact_int(value, 0, 2**32 - 1)
+        _runtime(data["python"], python=True)
+        _runtime(data["windows"], python=False)
+        _require(data["python"] == expected_python and data["windows"] == expected_windows)
         resources = data["resources"]
         _require(type(resources) is list and len(resources) == 2)
         ace_count = 0
@@ -240,6 +299,10 @@ def validate_wire(wire, source_sha, arch):
                 _require(node["directory"] is (index != len(chain) - 1))
                 _require(node["metadata_observed_equal"] is True and node["descriptor_observed_equal"] is True)
                 _finite_string(node["parser_result"], {"supported"})
+                roles = node["structural_roles"]
+                _require(type(roles) is list and all(type(role) is str for role in roles))
+                _require(roles == _structural_roles(index, len(chain)))
+                _require(type(node["dacl_protected"]) is bool)
                 _finite_string(node["owner"], _OWNERS)
                 entries = node["entries"]
                 _require(type(entries) is list)
@@ -253,9 +316,30 @@ def validate_wire(wire, source_sha, arch):
                     mutation = entry["mutation"]
                     _require(type(mutation) is int and mutation >= 0 and mutation & ~mask == 0)
                     _finite_string(entry["trustee"], _TRUSTEES)
+                    direct = entry["direct_operation_candidates"]
+                    _require(type(direct) is list and all(type(name) is str for name in direct))
+                    _require(direct == _direct_candidates(entry, node["directory"]))
                 expected_policy = _receipt_policy(node)
                 _finite_string(node["policy_result"], {expected_policy})
                 all_passed = all_passed and expected_policy == "pass"
+            # Derive edges only after every child and parent entry is validated.
+            for index, node in enumerate(chain):
+                expected_edge = _inheritance_edge(chain, index)
+                edge = node["inheritance_to_next"]
+                if expected_edge is None:
+                    _require(edge is None)
+                    continue
+                _object(edge, _EDGE_KEYS)
+                _exact_int(edge["next_index"], index + 1, index + 1)
+                _finite_string(edge["target_kind"], {expected_edge["target_kind"]})
+                _require(type(edge["child_dacl_protected"]) is bool and
+                         edge["child_dacl_protected"] is expected_edge["child_dacl_protected"])
+                indices = edge["flag_candidate_indices"]
+                _require(type(indices) is list and len(indices) <= len(node["entries"]))
+                for candidate in indices:
+                    _exact_int(candidate, 0, len(node["entries"]) - 1)
+                _require(indices == expected_edge["flag_candidate_indices"])
+                _finite_string(edge["state"], {expected_edge["state"]})
         _require(data["source_policy_all_passed"] is all_passed)
         return data
     except Exception:
@@ -270,7 +354,8 @@ def main(argv=None):
     try:
         data = probe(args.source_sha)
         wire = json.dumps(data, separators=(",", ":")).encode("ascii") + b"\n"
-        validate_wire(wire, args.source_sha, data["architecture"])
+        validate_wire(wire, args.source_sha, data["architecture"],
+                      expected_python=data["python"], expected_windows=data["windows"])
         # Probe has confirmed every token and file HANDLE close before output.
         sys.stdout.write(wire.decode("ascii"))
         return 0

@@ -94,10 +94,89 @@ jobs:
         with:
           persist-credentials: false
           submodules: recursive
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Require chain role diagnostic methods on this Windows signing cell
+        shell: pwsh
+        env:
+          PYTHONPATH: src
+        run: |
+          @'
+          import hashlib
+          import os
+          from pathlib import Path
+          from types import ModuleType
+          import unittest
+          from unittest.mock import patch
+          import scripts
+          from scripts import probe_windows_installed_chain as current
+          from scripts.run_workspace_ci import main
+          from tests.test_windows_startup_pin_ci import cases
+          from icode.runner import _run_unittest_with_bounded_output
+
+          def require(condition):
+              if not condition:
+                  raise RuntimeError('historical_chain_role_red_failed')
+
+          class HistoricalResult(unittest.TestResult):
+              def __init__(self):
+                  super().__init__()
+                  self.target_failures = []
+
+              def addFailure(self, test, error):
+                  message = error[1].args[0] if type(error[1]) is AssertionError and len(error[1].args) == 1 else None
+                  self.target_failures.append(
+                      test.id() == target and type(message) is str
+                      and message.startswith("'dacl_protected' not found in ")
+                      and message.endswith(' : actual held leaf observation must emit the descriptor protected bit'))
+                  super().addFailure(test, error)
+
+          target = 'tests.test_windows_startup_native.WindowsSecurityQueryTests.test_owned_file_protected_on_off_matches_actual_chain_descriptor'
+          source_ref = '1e2e4ab5d0101acf00d609af37add9893e4c57ef:scripts/probe_windows_installed_chain.py'
+          source_hash = '19a9c21e204d04675e3d2c46f410afc0d4836add11843d387cf960cc3a6a2b21'
+          try:
+              require(os.name == 'nt')
+              captured = _run_unittest_with_bounded_output(
+                  ['git', 'show', source_ref], workspace=Path.cwd(), timeout=10,
+                  output_limit_bytes=256 * 1024, environment=os.environ.copy())
+              require(type(captured) is tuple and len(captured) == 3)
+              code, raw, errors = captured
+              require(type(code) is int and code == 0 and type(raw) is bytes
+                      and type(errors) is bytes and not errors)
+              require(hashlib.sha256(raw).hexdigest() == source_hash)
+              historical = ModuleType('scripts._historical_chain_role_producer')
+              historical.__file__ = source_ref
+              historical.__package__ = 'scripts'
+              exec(compile(raw, source_ref, 'exec'), historical.__dict__)
+              suite = unittest.defaultTestLoader.loadTestsFromName(target)
+              require(suite.countTestCases() == 1)
+              result = HistoricalResult()
+              # Only the from-scripts producer attribute changes. Native backend/SD stay real.
+              with patch.object(scripts, 'probe_windows_installed_chain', historical):
+                  suite.run(result)
+              require(scripts.probe_windows_installed_chain is current)
+              require(result.testsRun == 1 and len(result.failures) == 1
+                      and result.target_failures == [True] and not result.errors
+                      and not result.skipped and not result.unexpectedSuccesses)
+          except BaseException:
+              raise SystemExit('historical_chain_role_red_failed') from None
+          print('historical-chain-role-red commit=1e2e4ab5d0101acf00d609af37add9893e4c57ef tests=1 failures=1 errors=0 skips=0 target=missing_dacl_protected')
+          selections = ('tests.test_windows_installed_chain',
+                        'tests.test_windows_bootstrap_binding.InstalledSourceCaptureTests',
+                        'tests.test_windows_startup_native.WindowsSecurityQueryTests',
+                        'tests.test_windows_startup_pin_ci')
+          suites = [unittest.defaultTestLoader.loadTestsFromName(name) for name in selections]
+          require(tuple(suite.countTestCases() for suite in suites) == (46, 6, 3, 14))
+          ids = [case.id() for suite in suites for case in cases(suite)]
+          require(len(ids) == 69 and len(set(ids)) == 69)
+          for test_id in ids:
+              print('chain-role-required-id=' + test_id)
+          raise SystemExit(main(selections))
+          '@ | python -B -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Set up build-only Go toolchain
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

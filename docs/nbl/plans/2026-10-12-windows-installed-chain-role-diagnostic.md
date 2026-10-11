@@ -39,7 +39,7 @@
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（可移植观察软件门；不是Windows原生）
 
 **Dependencies:** None
 **Parallelizable:** No（先冻结唯一派生定义，后续 validator 和 fixture 依赖此合同）
@@ -197,7 +197,7 @@ for index, node in enumerate(chain):
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（便携软件测试；父接线和原生安装验收仍属后续任务）
 
 **Dependencies:** Task 1
 **Parallelizable:** No（v2 schema 与 observation 同步）
@@ -446,7 +446,7 @@ validate_wire(wire, args.source_sha, data["architecture"],
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（独立父版本接线与便携回归；原生四格仍待验）
 
 **Dependencies:** Task 2
 **Parallelizable:** No（父期望必须消费冻结 v2）
@@ -529,7 +529,7 @@ PYTHONPATH=src .venv/bin/python -B -m unittest tests.test_windows_bootstrap_bind
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（软件、夹具实现及静态选择；Windows 原生实际结果仍待四格）
 
 **Dependencies:** Task 1, Task 2, Task 3
 **Parallelizable:** No（实机须消费最终软件；计数按最终方法集冻结）
@@ -797,3 +797,25 @@ root全文审查指出的Important已在本PLAN纠正：字段/有效v2测试先
 仅计划交付：等待root安排freshPLAN SPEC → 不同QUALITY与全文阅读；不自动调用执行skill或启动源码实施。
 
 后续 root 审查记录：完整797行冻结 `33731dac79813939785835818d0d1103a78d07ebe2860bf316c995c8eca203cb` 已 fresh SPEC→不同 QUALITY C0/I0/M0；root 回读完整资产及修订窗口，普通Python代码块和workflow内嵌Python AST均通过。原生仅有GitHub窗口的实际约束已经写成固定历史producer RED→恢复当前69 GREEN，不声称Ubuntu已执行。当前继续先完成Linux公共消费串行片，Windows本计划尚未实施或取得任何新的实际native/installed信用，不与Linux源writer并行修改。
+
+后续实施开始：Linux公共消费软件候选的原完整preflight三道通过，已提交推送main `1c44aa09f1660929d0b6b8e63bf1952deed6f6e3`，远端仅main；其四Linux新CI独立追踪。Windows fresh Task1 实施者先只读准备、在发布后才获root释放写入，唯一writer仅两限定路径。Task1已取得3 tests / 3目标assertion FAIL / 0 ERROR / 0 skip 的字段缺失RED，正实施最小派生；schema/validator/CLI尚未升级。原生/安装四格仍未取得新信用，不由Linux结果补授。
+
+Task1后续完成：仅两限定文件，私有派生/actual control/完整链后edge追加已GREEN，观察类16/16、0skip；实现者内建SPEC→QUALITY零遗留，root独立读全diff并实际复跑16 tests / 0.039s / OK。该中间版本probe `25eac2f5fa58078d43a238637d3df7ebfe545238e32bc8d9b480cdfaec13288c`、tests `65f95f3bd7bc61c6e7e49152d6933d9d3114651a2d51f09ffc45f2cfd4fe5569`，schema/validator/CLI仍v1按阶段保留，不授完整module/父runtime/native通过。Task2由fresh唯一writer串行继续严格v2及fixture同步。
+
+Task2后续完成：两个新方法以完整有效v2正控取得2目标assertion FAIL、0 ERROR/skip，再最小升级schema、必填期望与二阶段edge验证；实现者完整模块46 tests全通过。root独立完整回读生产探针并实际复跑46 tests / 0.079s / 0 skip / OK。两文件SHA256分别为 `5ea795fd49da8e5161fd7eb926dbcf07510d509db8ec2604f3f6c3670e4d3ae5`、`3587e2d55908762c0846db0b54081f4f7a439ae053355ec9fade71d729bd5a12`。外部父接线/guard尚未同步，未运行全仓preflight，不授Windows原生信用；Task3由fresh唯一writer继续。
+
+Task3后续完成：真实父调用kwargs合同取得1 assertion FAIL、0 ERROR/skip，再接独立父runtime；恢复真实validator另核有效匹配接受及三个支持范围内错版本拒绝，原捕获/隐私/顺序合同保留。root完整核两文件diff并独立执行required6＋optional22＝28 tests / 0.155s / 0 skip / OK。runner SHA256 `2ff75e5eff3bc66779facb552c41dec8d2546a52aadc764254a314d924c383ca`，binding测试 `01f31776cc9e38884c733eb72f6dd3979f16cb98959b6d4e0adcfca8cc469877`。Task4 fresh唯一writer继续原生夹具、严格计数与四签装step；未以便携结果代Windows实际安装或准入信用。
+
+Task4软件后续完成：旧计数守护实际3 tests/6 assertion FAIL/0 ERROR/skip，再同步后14 tests全绿。root独立核三文件diff及历史blob摘要，相关六选择151 tests / 2.443s / 0 skip / OK；loader静态46/6/3/14＝69唯一ID，不称原生执行。workflow内嵌Python AST、系统Python已有YAML解析、治理及compileall-j1/site检查通过；venv缺yaml的首验证命令失败保留，未新增包依赖。native/guard/workflow SHA256分别 `aaa42245565b58b8763b35d24322083200606f6735442ce003fd8d74f5536e61`、`1189265c9de646d957e7bfc0df7d039ac6d09919b392fb919419e12a3af42314`、`51b224139d84e81a953bdbd8a11a69dbc64d895d046fd73a11459a3645b6b2e3`。SOURCE7冻结并进入fresh全局SPEC，再由不同QUALITY审查；完整软件门与最终SHA原生四格仍待，不预授通过。
+
+Task5软件候选门后续实际完成（2026-10-11 23:57 UTC）：最终SOURCE7 fresh SPEC及不同QUALITY均C0/I0/M0，各自66 portable tests/0skip通过，冻结摘要与root一致。root完整核实际生产/父接线/fixture/guard/workflow及调用上下文，相关151 tests全绿；原完整preflight session89204实际exit0，密钥扫描、固定vendor完整性、全量unittest三道通过，仅运行一次原完整门。固定vendor仍 `21566a589cbe98bd35372a04bbb6ca1c51d8eed2` clean，未同步或写子仓库。准备按用户阶段授权发布main；Task5整体状态保留未完成，最终SHA四Windowsworkspace及四签装、native历史RED/当前69 GREEN和v2独立回执仍待实测。
+
+【架构级自检报告】（软件候选，不替代Windows原生或整体R2/R3）
+
+- ✅ 语法/编译：实际compileall-j1、Python AST、workflow YAML通过。
+- ✅ 依赖/调用链：probe/CLI/父observer/fixtures/required计数同步，真实引用已核。
+- ✅ 逻辑/边界：151相关便携测试、两独立66项及精确类型/预算负控通过。
+- ✅ 异常处理：原IO/drift/unknown/一次关闭/固定错误与隐私合同保留。
+- ✅ 关联模块：限定7SOURCE一致；原完整软件三道门通过。
+- ✅ 兼容安全：v1明确拒绝，旧政策及三authority=false不变，无新权限/依赖。
+- ✅ 可运行性：软件候选通过；Windows新增native/installed最终四格未验，不声明100%或ready。

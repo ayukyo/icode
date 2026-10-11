@@ -1,6 +1,7 @@
 """Portable observation contracts; not Windows integration evidence."""
 import importlib
 import importlib.util
+import sys
 import unittest
 from unittest.mock import patch
 from pathlib import PureWindowsPath
@@ -138,6 +139,81 @@ class ObservationBackend(FakeBackend):
 
 
 class InstalledObservationTests(unittest.TestCase):
+    def test_structural_roles_control_and_actual_child_edges(self):
+        for count in (2, 4, 32):
+            backend = ObservationBackend(count=count)
+            leaf = descriptor(control=0x9004)
+            backend.security_changes.update({(count, read): leaf for read in (1, 2)})
+            result = self.observe(backend)
+            for index, node in enumerate(result["chain"]):
+                self.assertIn("structural_roles", node)
+                self.assertIn("dacl_protected", node)
+                self.assertIn("inheritance_to_next", node)
+                expected = []
+                if index < count - 1:
+                    expected.append("route_ancestor")
+                if index == 0:
+                    expected.append("volume_root")
+                if index == count - 2:
+                    expected.append("image_parent")
+                if index == count - 1:
+                    expected.append("image_leaf")
+                self.assertEqual(node["structural_roles"], expected)
+                self.assertIs(node["dacl_protected"], index == count - 1)
+                edge = node["inheritance_to_next"]
+                if index == count - 1:
+                    self.assertIsNone(edge)
+                else:
+                    self.assertEqual(edge["next_index"], index + 1)
+                    self.assertIs(edge["child_dacl_protected"], index == count - 2)
+                    self.assertEqual(edge["target_kind"], "file" if index == count - 2 else "directory")
+                    self.assertEqual(edge["flag_candidate_indices"], [])
+                    self.assertEqual(edge["state"], "no_flag_candidates")
+            self.assertFalse(backend.live)
+            self.assertEqual(backend.closed, list(range(count, 0, -1)))
+
+    def test_direct_candidates_separate_directory_leaf_and_keep_io_policy(self):
+        mask = 2 | 4 | 0x40 | 0x10 | 0x100 | 0x10000 | 0x40000 | 0x80000 | 0x40000000 | 0x10000000
+        raw = descriptor(dacl=acl((ace(0, 0, mask, sid(1, (0,))),
+                                   ace(1, 0, mask, sid(1, (0,))),
+                                   ace(0, 8, mask, sid(1, (0,))))))
+        result = self.observe(ObservationBackend(security=raw))
+        common = ["write_ea", "write_attributes", "delete_object", "write_dacl",
+                  "write_owner", "generic_write", "generic_all"]
+        for node in result["chain"]:
+            entries = node["entries"]
+            self.assertIn("direct_operation_candidates", entries[0])
+            expected = (["add_file", "add_subdirectory", "delete_child"] if node["directory"]
+                        else ["write_data", "append_data"]) + common
+            self.assertEqual(entries[0]["direct_operation_candidates"], expected)
+            self.assertEqual(entries[1]["direct_operation_candidates"], [])
+            self.assertEqual(entries[2]["direct_operation_candidates"], [])
+            self.assertEqual(node["policy_result"], "mutation_untrusted")
+            self.assertEqual(entries[2]["mutation"], mask if node["directory"] else mask & ~0x40)
+
+    def test_single_edge_flags_include_deny_io_np_and_use_child_control(self):
+        flags = (0, 1, 2, 4, 8, 16, 1 | 4, 2 | 8, 1 | 2 | 4 | 8 | 16)
+        entries = tuple(ace(index % 2, value, 2) for index, value in enumerate(flags))
+        for protected in (False, True):
+            backend = ObservationBackend(security=descriptor(dacl=acl(entries)))
+            parent = descriptor(dacl=acl(entries), control=0x8004 if protected else 0x9004)
+            child = descriptor(dacl=acl(entries), control=0x9004 if protected else 0x8004)
+            backend.security_changes.update({(handle, read): raw
+                                             for handle, raw in ((3, parent), (4, child))
+                                             for read in (1, 2)})
+            result = self.observe(backend)
+            for index, bit, target in ((0, 2, "directory"), (2, 1, "file")):
+                self.assertIn("inheritance_to_next", result["chain"][index])
+                edge = result["chain"][index]["inheritance_to_next"]
+                self.assertEqual(edge["next_index"], index + 1)
+                self.assertEqual(edge["target_kind"], target)
+                self.assertEqual(edge["flag_candidate_indices"],
+                                 [i for i, value in enumerate(flags) if value & bit])
+            edge = result["chain"][2]["inheritance_to_next"]
+            self.assertIs(edge["child_dacl_protected"], protected)
+            self.assertEqual(edge["state"], "flag_candidates_child_protected" if protected
+                             else "flag_candidates_child_unprotected")
+
     def test_chain33_and_constructor_failure_zero_opens(self):
         m = module()
         with patch.object(m, "WindowsStartupPinBackend") as constructor:
@@ -370,7 +446,9 @@ class InstalledProbeTests(unittest.TestCase):
         raw = descriptor(owner=sid(5, (21, 7)), group=sid(5, (21, 987654321)), dacl=acl((ace(mask=2, trustee=sid(5, (21, 987654321))),)))
         data = self.run_probe([ObservationBackend(security=raw), ObservationBackend(security=raw)])
         encoded = wire(data)
-        self.assertEqual(module().validate_wire(encoded, SHA, "x64"), data)
+        self.assertEqual(module().validate_wire(encoded, SHA, "x64",
+                                              expected_python=[sys.version_info.major, sys.version_info.minor],
+                                              expected_windows=[10, 0, 123]), data)
         for private in (HOST.encode(), b"987654321", b"start.exe", b"file_id", b"HANDLE", b"PRIVATE"):
             self.assertNotIn(private, encoded)
 
@@ -382,11 +460,57 @@ class InstalledProbeTests(unittest.TestCase):
             self.assertEqual(backend.closed, [4, 3, 2, 1])
 
 
+def enrich_receipt(data):
+    # Independent fixture formulas: never reuse production derivation helpers.
+    for resource in data["resources"]:
+        chain = resource["chain"]
+        for i, node in enumerate(chain):
+            roles = []
+            if i < len(chain) - 1:
+                roles.append("route_ancestor")
+            if i == 0:
+                roles.append("volume_root")
+            if i == len(chain) - 2:
+                roles.append("image_parent")
+            if i == len(chain) - 1:
+                roles.append("image_leaf")
+            node["structural_roles"] = roles
+            node["dacl_protected"] = False
+            choices = ([(2, "add_file"), (4, "add_subdirectory"), (0x40, "delete_child")]
+                       if node["directory"] else [(2, "write_data"), (4, "append_data")])
+            choices += [(0x10, "write_ea"), (0x100, "write_attributes"),
+                        (0x10000, "delete_object"), (0x40000, "write_dacl"),
+                        (0x80000, "write_owner"), (0x40000000, "generic_write"),
+                        (0x10000000, "generic_all")]
+            for entry in node["entries"]:
+                entry["direct_operation_candidates"] = (
+                    [name for bit, name in choices if entry["mutation"] & bit]
+                    if entry["allowed"] and not entry["flags"] & 8 else [])
+        for i, node in enumerate(chain):
+            if i == len(chain) - 1:
+                node["inheritance_to_next"] = None
+                continue
+            child = chain[i + 1]
+            bit = 2 if child["directory"] else 1
+            indices = [j for j, entry in enumerate(node["entries"]) if entry["flags"] & bit]
+            node["inheritance_to_next"] = {
+                "next_index": i + 1, "target_kind": "directory" if child["directory"] else "file",
+                "child_dacl_protected": False, "flag_candidate_indices": indices,
+                "state": "flag_candidates_child_unprotected" if indices else "no_flag_candidates"}
+    return data
+
+
+def validate(value, source, arch):
+    return module().validate_wire(value, source, arch,
+                                  expected_python=[3, 11], expected_windows=[10, 0, 123])
+
+
 def receipt():
     node = {"index": 0, "kind": "root", "directory": True, "metadata_observed_equal": True, "descriptor_observed_equal": True, "parser_result": "supported", "policy_result": "pass", "owner": "admin", "entries": [{"allowed": True, "flags": 0, "mutation": 2, "trustee": "admin"}]}
     last = dict(copy.deepcopy(node), index=1, kind="file", directory=False)
     resources = [{"resource": r, "role": "source", "image_sha256": "b" * 64, "chain": copy.deepcopy([node, last]), "owned_handles": 2, "confirmed_closes": 2, "unconfirmed_closes": 0} for r in ("helper", "verifier")]
-    return {"schema_version": 1, "scope": "installed_source_chain_observation", "source_sha": SHA, "architecture": "x64", "python": [3, 11], "windows": [10, 0, 123], "observation_complete": True, "source_policy_all_passed": True, "protected_observed": False, "compatibility_accepted": False, "launch_authorized": False, "resources": resources}
+    data = {"schema_version": 2, "scope": "installed_source_chain_observation", "source_sha": SHA, "architecture": "x64", "python": [3, 11], "windows": [10, 0, 123], "observation_complete": True, "source_policy_all_passed": True, "protected_observed": False, "compatibility_accepted": False, "launch_authorized": False, "resources": resources}
+    return enrich_receipt(data)
 
 
 def wire(data, ending=b"\n"):
@@ -394,18 +518,90 @@ def wire(data, ending=b"\n"):
 
 
 class InstalledWireTests(unittest.TestCase):
+    def test_v2_derived_fields_and_edge_exact_types_are_recomputed(self):
+        original = receipt()
+        try:
+            accepted = validate(wire(original), SHA, "x64")
+        except ValueError:
+            self.fail("validator must accept the complete valid v2 role/control/edge receipt")
+        self.assertEqual(accepted, original)
+        node_path = ("resources", 0, "chain", 0)
+        edge_path = node_path + ("inheritance_to_next",)
+        entry_path = node_path + ("entries", 0)
+        changes = [(node_path, "structural_roles", value) for value in
+                   ([], ["image_leaf"], ["route_ancestor", "volume_root", "image_parent", "image_parent"])]
+        changes += [(node_path, "dacl_protected", 0), (node_path, "inheritance_to_next", None)]
+        changes += [(edge_path, key, value) for key, value in (
+            ("next_index", True), ("next_index", 0), ("target_kind", "directory"),
+            ("child_dacl_protected", True), ("child_dacl_protected", 0),
+            ("flag_candidate_indices", [True]), ("flag_candidate_indices", [0, 0]),
+            ("flag_candidate_indices", [0]), ("state", "flag_candidates_child_protected"))]
+        changes += [(entry_path, "direct_operation_candidates", value) for value in
+                    ([], ["write_data"], ["add_file", "add_file"], [True])]
+        changes.append((edge_path, "PRIVATE", "PRIVATE"))
+        for path, key, value in changes:
+            data = copy.deepcopy(original)
+            obj = data
+            for part in path:
+                obj = obj[part]
+            obj[key] = value
+            with self.subTest(path=path, key=key, value=value), self.assertRaises(ValueError):
+                validate(wire(data), SHA, "x64")
+        for path, key in [(node_path, field) for field in
+                          ("structural_roles", "dacl_protected", "inheritance_to_next")] + [(edge_path, "state")]:
+            data = copy.deepcopy(original)
+            obj = data
+            for part in path:
+                obj = obj[part]
+            del obj[key]
+            with self.subTest(missing=key), self.assertRaises(ValueError):
+                validate(wire(data), SHA, "x64")
+        self.assertEqual(set(original["resources"][0]["chain"][0]["inheritance_to_next"]),
+                         {"next_index", "target_kind", "child_dacl_protected", "flag_candidate_indices", "state"})
+
+    def test_v2_required_runtime_arguments_old_versions_and_wrong_supported_runtime(self):
+        original = receipt()
+        try:
+            accepted = validate(wire(original), SHA, "x64")
+        except ValueError:
+            self.fail("runtime contract requires an accepted complete v2 positive control first")
+        self.assertEqual(accepted, original)
+        with self.assertRaises(TypeError):
+            module().validate_wire(wire(original), SHA, "x64")
+        for python, windows in (([3, 12], [10, 0, 123]), ([3, 11], [10, 0, 124]),
+                                ([3, True], [10, 0, 123]), ((3, 11), [10, 0, 123]),
+                                ([3, 11], [10, 0, True]), ([3, 11], [10, 0, -1])):
+            with self.subTest(python=python, windows=windows), self.assertRaises(ValueError):
+                module().validate_wire(wire(original), SHA, "x64",
+                                       expected_python=python, expected_windows=windows)
+        for version in (0, 1, 3, True, 2.0):
+            data = copy.deepcopy(original)
+            data["schema_version"] = version
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                validate(wire(data), SHA, "x64")
+        old = copy.deepcopy(original)
+        old["schema_version"] = 1
+        for resource in old["resources"]:
+            for node in resource["chain"]:
+                for key in ("structural_roles", "dacl_protected", "inheritance_to_next"):
+                    del node[key]
+                for entry in node["entries"]:
+                    del entry["direct_operation_candidates"]
+        with self.assertRaises(ValueError):
+            validate(wire(old), SHA, "x64")
+
     def test_byte_limit_inclusive_and_actual_large_wire_refused(self):
         m = module()
         valid = wire(receipt())
         with patch.object(m, "_WIRE_LIMIT", len(valid)):
-            self.assertEqual(m.validate_wire(valid, SHA, "x64"), receipt())
+            self.assertEqual(validate(valid, SHA, "x64"), receipt())
         with patch.object(m, "_WIRE_LIMIT", len(valid) - 1):
             with self.assertRaises(ValueError):
-                m.validate_wire(valid, SHA, "x64")
+                validate(valid, SHA, "x64")
         self.assertEqual(m._WIRE_LIMIT, 256 * 1024)
         for count in (256 * 1024, 256 * 1024 + 1):
             with self.assertRaises(ValueError):
-                m.validate_wire(b" " * (count - 1) + b"\n", SHA, "x64")
+                validate(b" " * (count - 1) + b"\n", SHA, "x64")
 
     def test_chain32_33_and_ace512_514_wire_budgets(self):
         for count in (32, 33):
@@ -414,20 +610,22 @@ class InstalledWireTests(unittest.TestCase):
             template = resource["chain"][0]
             resource["chain"] = [dict(copy.deepcopy(template), index=i, kind="root" if i == 0 else "file" if i == count - 1 else "ancestor", directory=i != count - 1) for i in range(count)]
             resource.update(owned_handles=count, confirmed_closes=count)
+            enrich_receipt(data)
             if count == 32:
-                self.assertEqual(module().validate_wire(wire(data), SHA, "x64"), data)
+                self.assertEqual(validate(wire(data), SHA, "x64"), data)
             else:
                 with self.assertRaises(ValueError):
-                    module().validate_wire(wire(data), SHA, "x64")
+                    validate(wire(data), SHA, "x64")
         data = receipt()
         entry = data["resources"][0]["chain"][0]["entries"][0]
         for r in data["resources"]:
             for n in r["chain"]:
                 n["entries"] = [dict(entry) for _ in range(64)]
-        self.assertEqual(module().validate_wire(wire(data), SHA, "x64"), data)
+        enrich_receipt(data)
+        self.assertEqual(validate(wire(data), SHA, "x64"), data)
         data["resources"][1]["chain"][1]["entries"].append(dict(entry))
         with self.assertRaises(ValueError):
-            module().validate_wire(wire(data), SHA, "x64")
+            validate(wire(data), SHA, "x64")
 
     def test_each_boolean_integer_field_rejects_aliases_and_floats(self):
         for path in [("schema_version",), ("source_policy_all_passed",), ("observation_complete",), ("protected_observed",), ("compatibility_accepted",), ("launch_authorized",), ("python", 0), ("python", 1), ("windows", 0), ("windows", 1), ("windows", 2), ("resources", 0, "owned_handles"), ("resources", 0, "confirmed_closes"), ("resources", 0, "unconfirmed_closes"), ("resources", 0, "chain", 0, "index"), ("resources", 0, "chain", 0, "directory"), ("resources", 0, "chain", 0, "metadata_observed_equal"), ("resources", 0, "chain", 0, "descriptor_observed_equal"), ("resources", 0, "chain", 0, "entries", 0, "allowed"), ("resources", 0, "chain", 0, "entries", 0, "flags"), ("resources", 0, "chain", 0, "entries", 0, "mutation")]:
@@ -441,29 +639,29 @@ class InstalledWireTests(unittest.TestCase):
                 obj[path[-1]] = value
                 with self.subTest(path=path, value=value):
                     with self.assertRaises(ValueError):
-                        module().validate_wire(wire(data), SHA, "x64")
+                        validate(wire(data), SHA, "x64")
 
     def test_nested_duplicates_private_strings_and_nonfinite(self):
         valid = wire(receipt())
         for needle in (b'"role":"source"', b'"index":0', b'"allowed":true'):
             value = valid.replace(needle, needle + b"," + needle, 1)
             with self.assertRaises(ValueError) as raised:
-                module().validate_wire(value, SHA, "x64")
+                validate(value, SHA, "x64")
             self.assertEqual(str(raised.exception), "invalid_installed_chain_receipt")
             self.assertTrue(raised.exception.__suppress_context__)
         for value in (b"Infinity", b"-Infinity", b"NaN"):
             with self.assertRaises(ValueError):
-                module().validate_wire(valid.replace(b'"schema_version":1', b'"schema_version":' + value), SHA, "x64")
+                validate(valid.replace(b'"schema_version":2', b'"schema_version":' + value), SHA, "x64")
 
     def test_canonical_lf_and_crlf_receipts(self):
         for ending in (b"\n", b"\r\n"):
-            self.assertEqual(module().validate_wire(wire(receipt(), ending), SHA, "x64"), receipt())
+            self.assertEqual(validate(wire(receipt(), ending), SHA, "x64"), receipt())
 
     def test_invalid_encoding_duplicate_and_noncanonical(self):
         valid = wire(receipt())
-        for value in (b"", b"\xff\n", valid + b"\n", valid[:-1], b" " + valid, valid.replace(b'"schema_version":1', b'"schema_version":1,"schema_version":1'), valid.replace(b'"schema_version":1', b'"schema_version":NaN'), valid.replace(b'"schema_version":1', b'"schema_version":1.0'), bytearray(valid)):
+        for value in (b"", b"\xff\n", valid + b"\n", valid[:-1], b" " + valid, valid.replace(b'"schema_version":2', b'"schema_version":2,"schema_version":2'), valid.replace(b'"schema_version":2', b'"schema_version":NaN'), valid.replace(b'"schema_version":2', b'"schema_version":2.0'), bytearray(valid)):
             with self.assertRaisesRegex(ValueError, "^invalid_installed_chain_receipt$"):
-                module().validate_wire(value, SHA, "x64")
+                validate(value, SHA, "x64")
 
     def test_every_level_exact_fields_and_types(self):
         original = receipt()
@@ -481,31 +679,32 @@ class InstalledWireTests(unittest.TestCase):
                     key = next(iter(obj))
                     obj[key] = True if type(obj[key]) is int else 1
                 with self.assertRaisesRegex(ValueError, "^invalid_installed_chain_receipt$"):
-                    module().validate_wire(wire(data), SHA, "x64")
+                    validate(wire(data), SHA, "x64")
 
     def test_semantic_negative_matrix_and_expected_arguments(self):
-        for path, value in [(("schema_version",), 2), (("launch_authorized",), True), (("windows",), [10, 0, -1]), (("python",), [3, 10]), (("resources", 0, "resource"), "verifier"), (("resources", 0, "role"), "protected"), (("resources", 0, "image_sha256"), "A" * 64), (("resources", 0, "confirmed_closes"), 1), (("resources", 0, "chain", 0, "index"), 1), (("resources", 0, "chain", 0, "kind"), "file"), (("resources", 0, "chain", 0, "owner"), HOST), (("resources", 0, "chain", 0, "entries", 0, "flags"), 32), (("resources", 0, "chain", 0, "entries", 0, "mutation"), 8), (("resources", 0, "chain", 1, "directory"), True)]:
+        for path, value in [(("schema_version",), 3), (("launch_authorized",), True), (("windows",), [10, 0, -1]), (("python",), [3, 10]), (("resources", 0, "resource"), "verifier"), (("resources", 0, "role"), "protected"), (("resources", 0, "image_sha256"), "A" * 64), (("resources", 0, "confirmed_closes"), 1), (("resources", 0, "chain", 0, "index"), 1), (("resources", 0, "chain", 0, "kind"), "file"), (("resources", 0, "chain", 0, "owner"), HOST), (("resources", 0, "chain", 0, "entries", 0, "flags"), 32), (("resources", 0, "chain", 0, "entries", 0, "mutation"), 8), (("resources", 0, "chain", 1, "directory"), True)]:
             data = receipt()
             obj = data
             for key in path[:-1]:
                 obj = obj[key]
             obj[path[-1]] = value
             with self.assertRaises(ValueError):
-                module().validate_wire(wire(data), SHA, "x64")
+                validate(wire(data), SHA, "x64")
         for source, arch in (("b" * 40, "x64"), (SHA, "arm64"), (SHA.upper(), "x64"), (SHA, "PRIVATE"), (True, "x64")):
             with self.assertRaises(ValueError):
-                module().validate_wire(wire(receipt()), source, arch)
+                validate(wire(receipt()), source, arch)
 
     def test_policy_and_all_passed_are_recomputed(self):
         for owner, entries, result in (("other", [], "owner_untrusted"), ("admin", [], "empty_dacl"), ("host", [{"allowed": True, "flags": 8, "mutation": 2, "trustee": "everyone"}], "mutation_untrusted")):
             data = receipt()
             node = data["resources"][0]["chain"][0]
             node.update(owner=owner, entries=entries)
+            enrich_receipt(data)
             with self.assertRaises(ValueError):
-                module().validate_wire(wire(data), SHA, "x64")
+                validate(wire(data), SHA, "x64")
             node["policy_result"] = result
             data["source_policy_all_passed"] = False
-            self.assertEqual(module().validate_wire(wire(data), SHA, "x64"), data)
+            self.assertEqual(validate(wire(data), SHA, "x64"), data)
 
 
 class InstalledCliTests(unittest.TestCase):

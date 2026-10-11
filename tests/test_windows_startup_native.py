@@ -638,6 +638,80 @@ class WindowsSecurityQueryTests(unittest.TestCase):
         if errors:
             raise errors[0]
 
+    def test_owned_file_protected_on_off_matches_actual_chain_descriptor(self):
+        from pathlib import PureWindowsPath
+        from icode.windows_startup_host_identity import WindowsStartupHostIdentity
+        from icode.windows_startup_security import parse_startup_security
+        from icode.windows_startup_security_native import WindowsStartupSecurityReader
+        from tests.windows_private_dacl_fixture import _Native, _ConvertedDacl, _close_all
+        from scripts import probe_windows_installed_chain as probe
+        self.close_handles()
+        identity = WindowsStartupHostIdentity()
+        host_sid = identity.capture()
+        self.assertIs(identity.cleanup_unconfirmed, False)
+        api = _Native()
+        for information, protected in ((0x80000004, True), (0x20000004, False)):
+            writer, code = api.open(str(self.file), False)
+            self.assertEqual(code, 0, "owned fixture configuration open failed")
+            self.assertIsNotNone(writer)
+            converted = _ConvertedDacl(api)
+            try:
+                dacl = converted.acquire(host_sid, 0x80)
+                status = api.call(api.advapi.SetSecurityInfo, writer.value, 1, information,
+                                  None, None, dacl, None)
+                self.assertIs(type(status), int)
+                self.assertEqual(status, 0, "owned fixture DACL configuration failed")
+                reader = WindowsStartupSecurityReader()
+                configured = parse_startup_security(reader.read(writer.value))
+                self.assertIs(reader.cleanup_unconfirmed, False)
+                self.assertIs(bool(configured.control & 0x1000), protected)
+            finally:
+                _close_all([converted, writer])
+            # A separate actual backend reads the same owned object's SD twice.
+            backend = probe.WindowsStartupPinBackend()
+            owned = []
+            try:
+                handle = backend.open_root(self.file.drive)
+                owned.append(handle)
+                for part in self.file.parts[1:-1]:
+                    handle = backend.open_child(handle, part, directory=True)
+                    owned.append(handle)
+                handle = backend.open_child(handle, self.file.name, directory=False)
+                owned.append(handle)
+                before = backend.query(handle)
+                first = backend.query_security(handle)
+                second = backend.query_security(handle)
+                self.assertEqual(first, second)
+                snapshot = parse_startup_security(first)
+                self.assertIs(bool(snapshot.control & 0x1000), protected)
+                self.assertEqual(backend.query(handle), before)
+                self.assertEqual(backend.read(handle, 0, len(self.content)), self.content)
+            finally:
+                errors = []
+                for handle in reversed(owned):
+                    try:
+                        backend.close(handle)
+                    except BaseException as error:
+                        errors.append(error)
+                if errors:
+                    raise errors[0]
+            observed = probe._observe_resource("helper", PureWindowsPath(str(self.file)), host_sid, [0])
+            chain = observed["chain"]
+            self.assertIn("dacl_protected", chain[-1],
+                          "actual held leaf observation must emit the descriptor protected bit")
+            self.assertIn("inheritance_to_next", chain[-2],
+                          "actual held parent observation must emit its single child edge")
+            self.assertIs(chain[-1]["dacl_protected"], protected)
+            edge = chain[-2]["inheritance_to_next"]
+            self.assertIs(edge["child_dacl_protected"], protected)
+            candidates = [i for i, entry in enumerate(chain[-2]["entries"]) if entry["flags"] & 1]
+            self.assertTrue(candidates, "owned parent must expose actual OI candidates")
+            self.assertEqual(edge["flag_candidate_indices"], candidates)
+            self.assertEqual(edge["state"], "flag_candidates_child_protected" if protected else "flag_candidates_child_unprotected")
+            self.assertEqual(observed["owned_handles"], len(chain))
+            self.assertEqual(observed["confirmed_closes"], len(chain))
+            self.assertEqual(observed["unconfirmed_closes"], 0)
+
     def test_file_security_copy_repeated_query_identity_read_and_close(self):
         from icode.windows_startup_security import parse_startup_security
         handle = self.file_handle

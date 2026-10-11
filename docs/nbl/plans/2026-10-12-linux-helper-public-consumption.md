@@ -659,7 +659,7 @@ Task4 实施记录：publisher 原字段丢失 RED 为 1 assertion FAIL / 0 ERRO
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（软件门与最终 SHA 四 Linux 公共消费矩阵；不代表整体 R2/R3）
 
 **Dependencies:** Task 4
 **Parallelizable:** No（冻结候选后审查、测试、发布依次执行）
@@ -723,3 +723,5 @@ Task5 软件候选门（2026-10-11 23:29 UTC）：最终7个SOURCE已独立fresh
 - ✅ 关联模块：7SOURCE与批准文档成对审查；原完整三道门通过。
 - ✅ 兼容安全：None/privatelegacy保持，公开内部callback有意收紧，无新增权限或ready放宽。
 - ✅ 可运行性：本机实际安装包与完整软件门通过；最终SHA四CI、模型及整体R2/R3待验，不宣称100%。
+
+后续四格验收：main `1c44aa09f1660929d0b6b8e63bf1952deed6f6e3` 的 CI38184549150，四 Linux native job `114603966674`、`114603966803`、`114603966841`、`114603966864` 均实际 success。root与独立观察者分别取得原日志重算：每格84记录、两consumer各16正控/26故障/24身份PASS，合336记录/192身份观察；终态检查无异常，六条预设unknown每格仍拒绝且不计全回收。成功runner隐藏脚本stderr，不声称日志打印Ran10。四格最终SHA门通过，整体CI仍有Windows Reviewer失败及未终态任务，模型/准入/整体R2/R3不由此补授。具体平台、wheel/helper/manifest标识同步持续竞品台账。
