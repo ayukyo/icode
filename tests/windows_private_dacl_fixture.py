@@ -19,6 +19,46 @@ _MAX_NODES = 32
 _MAX_BYTES = 4096
 _MAX_SD = 128 * 1024
 _FAILURE = 'private_dacl_window_failed'
+_STAGES = frozenset((
+    'fixture', 'prepare',
+    'write_leaf', 'close_leaf', 'components',
+    'initial_parent_open', 'initial_parent_set', 'initial_parent_close',
+    'initial_leaf_open', 'initial_leaf_set', 'initial_leaf_close',
+    'observer_open_ntfs', 'initial_parent_sample', 'initial_leaf_sample',
+    'initial_parent_marker', 'initial_leaf_marker', 'initial_identity',
+    'preexisting_open', 'unpinned_reset', 'unpinned_before', 'unpinned_operate',
+    'unpinned_after', 'unpinned_effect', 'prepin_reset', 'prepin_sample',
+    'start_pin', 'pinned_before', 'pinned_identity', 'pinned_marker',
+    'pinned_operate', 'pinned_after', 'pinned_effect', 'release_pin',
+    'released_reset', 'released_before', 'released_operate', 'released_after',
+    'released_effect', 'cleanup', 'wire',
+))
+
+
+class _StageFailure(RuntimeError):
+    """CI-only finite diagnostic; never contains native values or exception text."""
+
+
+def failure_message(error):
+    # Reject subclasses before reading attributes: arbitrary errors are not a
+    # diagnostic channel, including hostile/custom args or stage properties.
+    if type(error) is _StageFailure:
+        arguments = error.args
+        if (type(arguments) is tuple and len(arguments) == 1
+                and type(arguments[0]) is str and arguments[0] in _STAGES):
+            return _FAILURE + ':' + arguments[0]
+    return _FAILURE
+
+
+def _at_stage(stage, function, *arguments):
+    if type(stage) is not str or stage not in _STAGES:
+        raise RuntimeError(_FAILURE)
+    try:
+        return function(*arguments)
+    except Exception as error:
+        if failure_message(error) != _FAILURE:
+            raise _StageFailure(error.args[0]) from None
+        raise _StageFailure(stage) from None
 
 
 def _require(condition):
@@ -44,7 +84,9 @@ def run_variant(target, opener):
         raise RuntimeError(_FAILURE)
     try:
         return _run_variant(target, opener)
-    except Exception:
+    except Exception as error:
+        if failure_message(error) != _FAILURE:
+            raise _StageFailure(error.args[0]) from None
         raise RuntimeError(_FAILURE) from None
 
 
@@ -329,25 +371,28 @@ def _event(target, phase, opened, status, before, after, host):
 
 def _windows(fixture, target):
     events = []
-    fixture.reset()
-    before = fixture.sample()
-    opened, status = fixture.operate()
-    events.append(_event(target, 'unpinned', opened, status, before, fixture.sample(), fixture.host))
+    _at_stage('unpinned_reset', fixture.reset)
+    before = _at_stage('unpinned_before', fixture.sample)
+    opened, status = _at_stage('unpinned_operate', fixture.operate)
+    after = _at_stage('unpinned_after', fixture.sample)
+    events.append(_at_stage('unpinned_effect', _event, target, 'unpinned', opened, status, before, after, fixture.host))
     # Reset BEFORE pinning, never while the restrictive owner is alive.
-    fixture.reset()
-    baseline = fixture.sample()
-    fixture.start_pin()
-    before = fixture.pinned_sample()
-    _stable(baseline, before)
-    _marker(before['raw'], fixture.host, 0x80)
-    opened, status = fixture.operate()
-    events.append(_event(target, 'pinned', opened, status, before, fixture.pinned_sample(), fixture.host))
-    _close_all([fixture.pin])
+    _at_stage('prepin_reset', fixture.reset)
+    baseline = _at_stage('prepin_sample', fixture.sample)
+    _at_stage('start_pin', fixture.start_pin)
+    before = _at_stage('pinned_before', fixture.pinned_sample)
+    _at_stage('pinned_identity', _stable, baseline, before)
+    _at_stage('pinned_marker', _marker, before['raw'], fixture.host, 0x80)
+    opened, status = _at_stage('pinned_operate', fixture.operate)
+    after = _at_stage('pinned_after', fixture.pinned_sample)
+    events.append(_at_stage('pinned_effect', _event, target, 'pinned', opened, status, before, after, fixture.host))
+    _at_stage('release_pin', _close_all, [fixture.pin])
     fixture.pin = None
-    fixture.reset()
-    before = fixture.sample()
-    opened, status = fixture.operate()
-    events.append(_event(target, 'released', opened, status, before, fixture.sample(), fixture.host))
+    _at_stage('released_reset', fixture.reset)
+    before = _at_stage('released_before', fixture.sample)
+    opened, status = _at_stage('released_operate', fixture.operate)
+    after = _at_stage('released_after', fixture.sample)
+    events.append(_at_stage('released_effect', _event, target, 'released', opened, status, before, after, fixture.host))
     return events
 
 
@@ -393,8 +438,10 @@ class _Fixture:
         try:
             stream = open(self.leaf, 'xb')
             self.leaf_created = True
-            if stream.write(_CONTENT) != len(_CONTENT):
-                raise RuntimeError(_FAILURE)
+            def write_content():
+                if stream.write(_CONTENT) != len(_CONTENT):
+                    raise RuntimeError(_FAILURE)
+            _at_stage('write_leaf', write_content)
         except BaseException:
             if stream is not None:
                 self.leaf_created = True
@@ -403,28 +450,34 @@ class _Fixture:
                 except BaseException:
                     pass
             raise
-        stream.close()
-        _, components = _local_components(self.leaf)
+        _at_stage('close_leaf', stream.close)
+        _, components = _at_stage('components', _local_components, self.leaf)
         if not 2 <= len(components) + 1 <= _MAX_NODES:
             raise RuntimeError(_FAILURE)
         for role in ('parent', 'leaf'):
-            code = self.acquire(role, 'pending')
-            if code != 0 or self.api.set_marker(self.pending.value, self.host, 0x80) != 0:
-                raise RuntimeError(_FAILURE)
-            _close_all([self.pending])
+            def configure():
+                if self.api.set_marker(self.pending.value, self.host, 0x80) != 0:
+                    raise RuntimeError(_FAILURE)
+            def acquire():
+                if self.acquire(role, 'pending') != 0:
+                    raise RuntimeError(_FAILURE)
+            _at_stage('initial_' + role + '_open', acquire)
+            _at_stage('initial_' + role + '_set', configure)
+            _at_stage('initial_' + role + '_close', _close_all, [self.pending])
             self.pending = None
-        self.start_observer()
+        _at_stage('observer_open_ntfs', self.start_observer)
         for role in ('parent', 'leaf'):
-            initial = self.observer.sample(role)
-            _marker(initial['raw'], self.host, 0x80)
-            _stable(initial, initial)
+            initial = _at_stage('initial_' + role + '_sample', self.observer.sample, role)
+            _at_stage('initial_' + role + '_marker', _marker, initial['raw'], self.host, 0x80)
+            _at_stage('initial_identity', _stable, initial, initial)
             if self.initial is not None:
-                _stable(self.initial, initial)
+                _at_stage('initial_identity', _stable, self.initial, initial)
             self.initial = initial
         if self.opener == 'preexisting':
-            code = self.acquire(self.target, 'writer')
-            if code != 0:
-                raise RuntimeError(_FAILURE)
+            def acquire_writer():
+                if self.acquire(self.target, 'writer') != 0:
+                    raise RuntimeError(_FAILURE)
+            _at_stage('preexisting_open', acquire_writer)
 
     def sample(self):
         value = self.observer.sample(self.target)
@@ -541,9 +594,9 @@ class _Fixture:
 
 
 def _run_variant(target, opener):
-    fixture = _Fixture(target, opener)
+    fixture = _at_stage('fixture', _Fixture, target, opener)
     try:
-        fixture.prepare()
+        _at_stage('prepare', fixture.prepare)
         windows = _windows(fixture, target)
     except BaseException:
         try:
@@ -551,14 +604,14 @@ def _run_variant(target, opener):
         except BaseException:
             pass
         raise
-    fixture.close()
+    _at_stage('cleanup', fixture.close)
     data = {'scope': 'private_dacl_window_observation', 'schema_version': 1,
             'target': target, 'opener': opener,
             'acquisition': {'phase': 'before_windows', 'result': 0} if opener == 'preexisting' else None,
             'windows': windows, 'cleanup_confirmed': True, 'consumer_ready': False,
             'compatibility_accepted': False, 'launch_authorized': False}
     wire = json.dumps(data, separators=(',', ':')).encode('ascii') + b'\n'
-    validate_wire(wire)
+    _at_stage('wire', validate_wire, wire)
     return wire
 
 

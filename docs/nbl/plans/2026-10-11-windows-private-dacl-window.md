@@ -49,9 +49,55 @@ Task2最终SPEC→不同QUALITY均C0/I0/M0；不同QUALITY独立6280便携轮次
 
 ## Task3：发布与原生窗口
 
-- [ ] exact scoped add/commit/push main核remote，与user无关改动分离。
+- [x] exact scoped add/commit/push main核remote，与user无关改动分离。
 - [ ] 新SHA Windows x64/ARM64×Python3.11/3.12四格完整raw日志核native两方法/各两变体三窗口实际回执；正控/cleanup/finite schema实际验证，不以job success顶替。
 - [ ] 根拒绝/网络Reviewer/DACL机制/installedconsumer分账；继续sibling/继承与加载合同，不自动policy放宽或授R2/R3。
+
+### 57e69e4 原生失败与最小诊断接续
+
+2026-10-11 16:08 UTC，八个范围内文件提交并推送 main `57e69e47948e88d6abeb2c5ff5630965b98f0233`，实际远端摘要一致、工作树干净。软件门不等于原生门。新 CI run `38154185334` 四个 Windows workspace job `114513634433 / 114513634475 / 114513634627 / 114513634596` 均实际958run、20既有可选skip、2F/1E；private native两个方法均失败、没有任何canonical窗口回执，因此不授12窗口或changed/blocked信用。独立观察者核四格完整raw，root另直接核x64/3.11完整raw。
+
+guard ERROR已由真实栈定位：`patch.object` 未设置 `create=True`，Windows上 `skipUnless(True)` 不创建 `__unittest_skip__` 属性。两个private native失败被既有外层脱敏，内部根因尚未知，不猜测DACL被阻断，也不以放宽策略修复。接续仅修该guard平台假设，并先增加代码常量白名单的有限阶段诊断；不得输出异常正文、路径、SID、HANDLE或SD。新候选独立验证后再推main取新原生窗口；sibling下一片暂缓，先闭环当前失败。生产、vendor、访问/权限策略及三个授权false保持不变。
+
+故障基线与结论上限：
+
+| 项目 | 已核事实 / 未知边界 |
+| --- | --- |
+| identity | GitHub ephemeral runner，以实际job绑定x64/ARM及Python网格；物理设备序列未知，不主张设备级验证。 |
+| time_window | root核x64/3.11原始终段为16:14:45 UTC；四格分别按job原始日志绑定，不拼接成同一次运行。 |
+| repo_matrix | runtime/analysis均57e69e4，vendor21566a5；verification为后续未发布候选，不能借旧SHA原生信用。 |
+| artifact_identity | workspace直接运行上述提交测试；无成功DACL wire，不主张随包或UAC绑定。 |
+| evidence_sources | 四完整raw由独立observer核，root直接核114513634433原始栈；每格958/20skip/2F/1E。 |
+| unresolved | `_observe`先preexisting，失败后new未必执行；prepare/API/效果/cleanup内部阶段未知，root负责有限诊断后新SHA复验。 |
+| conclusion_ceiling | guard仅平台测试根因有原始栈支持；DACL仅observation_only，禁止推断四变体都执行、blocked、清理成功或安全通过。 |
+
+| 声明 | 类型 / 来源 | 结论边界 / 状态 |
+| --- | --- | --- |
+| 57 guard缺skip属性导致ERROR | fact；四原始job栈，root逐份核对 | 已支持平台测试根因；不解释另外两个native FAIL。 |
+| 私有DACL操作被阻断或安全 | unobserved；四格零窗口wire | 未确认，禁止授该信用。 |
+| 已有句柄可能导致start_pin失败 | inference；只读调用链核对 | 未证实，仅候选诊断点；不改策略或常量。 |
+
+同SHA签名安装分账：provenance run `38154185331` validate及四格 `114516270103`（x64/3.11）、`114516270036`（x64/3.12）、`114516270094`（ARM/3.11）、`114516270040`（ARM/3.12）均success；root逐份读取新原始sourceconsumer wire并用冻结validator、固定job网格和独立runner OS版本验证，四份均通过解析。每格helper/verifier各13 opened/13 confirmed closes（合计26），2 SD read/alloc/free；四格共104关闭、8 SD allocation/free。baseline仍rejected/close_confirmed=null，consumer为owner_untrusted，仅helper index0事件；逆序关闭确认、compatibility/launch/protected全false。它们不补私有DACL窗口、叶策略或UAC门。Pages run `38154185365`成功；主CI `38154185334`失败，独立observer实际46job=37success/6failure/3条件skip（四workspace及两旧Reviewer）。两全仓Python job分别2911run/83skip由observer读取，不借为Windows原生通过。
+
+16:31 UTC有限诊断候选冻结：仅三个测试文件，无CI脚本/生产/vendor改动；单writer真实RED为guard缺属性1F/0E、最终五功能合同对内存57原fixture回放5F/0E（包含初始2F，不能相加）、新增包装资源窗口trace3F/0E、非法target诊断1F/0E；首次内存回放4F/1E因测试缺import断言，修后重新回放，不计错误轮。三处创建包装已撤回，保持直接取得与成功局部登记；KI/SE保持原对象，未知错误固定脱敏，真实stage仅精确私有类型与有限常量，native只附固定target/opener。成功wire及安全/API常量不变。
+
+writer45PASS、20轮900PASS/0skip/F/E、381run/369PASS/12native平台skip；root独立45PASS、同次381run/369PASS/12skip、compile-j1、site通过（9外部导航未fetch），20轮与完整preflight71746仍运行，独立SPEC后不同QUALITY待结束。32便携/2native/13guard方法数保持不变。冻结SHA256：fixture `838a2503d60f905e3e18282940d8cc58a181e4c24283390f392016a47553db6a`；private test `75ced021de03796cfb1be6b28cf45c241e81ef0c272ac1a5b1ca57e906f21cc9`；guard `b5a9a7e76111f2b155711e4bb0fb444cc19463be9b44573262488b3901a7520b`。该候选未发布/未授Windows原生，不能将诊断实现当根因修复。
+
+16:33 UTC，独立SPEC为C0/I1/M0，阻断上述候选：guard新无属性模拟采用嵌套patch和手动del，Windows原本无本地skip属性时外层退出再次del，实际内存模拟1run/1ERROR（不是有效TDD RED）。Linux45/381与root20轮900PASS仍只是该历史候选的便携结果，不能遮蔽I1；71746已启动但guard接续修订，不能作为最终冻结守护。writer仅修guard恢复边界，随后重新取断言RED、复审和新完整preflight；fixture/private test仍冻结，生产和安全门不变。
+
+16:39 UTC最终候选：guard SHA256改为 `67cef255a0517661525c6a8c11d5a22d6a184d28ed9b274999655e7dde0f5943`，fixture/private test摘要不变。guard真实无属性完整入口1F/0E、删除至try之间trace1F/0E，分别修后GREEN；先进入try才首次修改，单层patch及finally原值/无属性恢复。独立SPEC复审C0/I0/M0后不同QUALITY亦C0/I0/M0，各自行3种初态正常恢复、6种KI/SE trace、45及381关联验证；QUALITY独立20轮900PASS。root另实核3态及KI/SE边界、重跑同次381run/369PASS/12平台skip和最终20轮900PASS/0skip/F/E，三摘要前后一致。root还实际复现旧nestedpatch错误，并逐份取另外三Windows raw确认四格958/20skip/2F1E及零DACL wire。不授最终完整守护或原生，71746仅旧候选运行窗口。
+
+16:50 UTC，冻结最终三文件后新完整preflight10115三道全部通过/exit0，实际不打印方法总数，不估计。旧71746也exit0但跨越候选guard修订，仅保留历史，不借最终信用。三最终摘要不变，vendor21566a5干净，docs两文件0疑似、site/compile-j1/diff通过；待本片范围提交送新Windows原生窗口。同期只读Linux缺口研究独立记录在持续对照，未改生产评分/readiness；仓外模型凭据摘要未变，原401边界仍待有效凭据，未复制正文或重试API。
+
+【架构级自检报告：诊断修复最终软件范围】
+
+- 语法/编译：compileall-j1及冻结后新完整preflight三道通过。
+- 依赖/调用链：pin/native/reader/token/parser和CI选择器核对，独立SPEC后不同QUALITY零遗留。
+- 逻辑/边界：有限阶段、固定变体、skip缺属性与恢复矩阵、900轮及381关联通过。
+- 异常处理：真实KI/SE身份/状态恢复、创建登记trace、隐私负控与一次回收保持；未知仍失败。
+- 关联模块：旧测试ID/方法数与全仓回归保持，文档同步；12平台skip不授原生。
+- 兼容安全：生产/vendor/API/ACL/成功wire/三个授权false未变，无新增依赖/权限。
+- 可运行性：本机最终软件通过；Windows新SHA原生、DACL真实根因与R2/R3总验收仍待，不主张跨平台100%。
 
 设计SPEC两轮已定位并修复全sharing观察器/owner绑定、精确wire与先行生命周期，以及pin内reset抢先失败问题；最终C0/I0/M0，后续不同独立QUALITY亦C0/I0/M0，冻结design SHA256 `8ee8d8c4900fb38fb57a07c209f121319f32799f3b493fdfbdeb59a53db834d4`。ROOT实际sequential-thinking77–79分解真实缺口、复用与风险；Task1单writer已开始真实TDD，未授软件/原生信用。研究14:59–15:01 UTC仅机制借鉴，无复制源、新依赖/权限，不以研究代实验。
 

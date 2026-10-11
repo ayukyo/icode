@@ -429,6 +429,8 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
         self.m = importlib.import_module('tests.windows_private_dacl_fixture')
 
     def test_public_entry_validates_before_native_or_temp_and_sanitizes(self):
+        self.assertTrue(callable(getattr(self.m, '_at_stage', None)), 'finite stage wrapper missing')
+        self.assertTrue(callable(getattr(self.m, 'failure_message', None)), 'finite diagnostic validator missing')
         with patch.object(self.m, '_run_variant', return_value=b'finite') as run:
             with patch.object(self.m.os, 'name', 'nt'):
                 try:
@@ -447,6 +449,30 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt) as caught:
                 self.m.run_variant('leaf', 'preexisting')
             self.assertIs(caught.exception, original)
+        for stage in self.m._STAGES:
+            private = RuntimeError('PRIVATE-VALUE-DO-NOT-OUTPUT')
+            with self.assertRaises(RuntimeError) as caught:
+                self.m._at_stage(stage, lambda: (_ for _ in ()).throw(private))
+            expected = self.m._FAILURE + ':' + stage
+            self.assertEqual(self.m.failure_message(caught.exception), expected)
+            with patch.object(self.m.os, 'name', 'nt'), patch.object(
+                    self.m, '_run_variant', side_effect=caught.exception):
+                with self.assertRaises(RuntimeError) as outer:
+                    self.m.run_variant('parent', 'new')
+            self.assertEqual(self.m.failure_message(outer.exception), expected)
+        for kind in (KeyboardInterrupt, SystemExit):
+            original = kind('private interrupt')
+            with self.assertRaises(kind) as caught:
+                self.m._at_stage('prepare', lambda: (_ for _ in ()).throw(original))
+            self.assertIs(caught.exception, original)
+        class Hostile(RuntimeError):
+            def __getattribute__(self, name):
+                if name in ('args', 'stage', '__dict__'):
+                    raise AssertionError('arbitrary exception attribute read')
+                return super().__getattribute__(name)
+        for error in (private, Hostile('private'), self.m._StageFailure('private'),
+                      self.m._StageFailure('prepare', 'private')):
+            self.assertEqual(self.m.failure_message(error), self.m._FAILURE)
 
     def test_window_controller_has_real_order_and_pinned_borrowed_sampling(self):
         self.assertTrue(callable(getattr(self.m, '_windows', None)), 'window controller missing')
@@ -474,6 +500,30 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
                                        'borrow','operate','borrow','close-pin','reset','sample','operate','sample'])
                 self.assertIsNone(fixture.pin)
                 self.assertEqual(data[1]['effect'], 'blocked' if blocked else 'changed')
+        # Fail each real controller callback position, not a mocked controller.
+        sequence = ('unpinned_reset', 'unpinned_before', 'unpinned_operate', 'unpinned_after',
+                    'prepin_reset', 'prepin_sample', 'start_pin', 'pinned_before',
+                    'pinned_operate', 'pinned_after', 'release_pin', 'released_reset',
+                    'released_before', 'released_operate', 'released_after')
+        for failing, stage in enumerate(sequence):
+            count, marker = [0], [0x80]
+            def invoke(action):
+                ordinal = count[0]
+                count[0] += 1
+                if ordinal == failing:
+                    raise RuntimeError('PRIVATE-VALUE-DO-NOT-OUTPUT')
+                return action()
+            fixture = SimpleNamespace(host=HOST, pin=None)
+            owner = SimpleNamespace(close_confirmed=True, close=lambda: invoke(lambda: None))
+            fixture.reset = lambda: invoke(lambda: marker.__setitem__(0, 0x80))
+            fixture.sample = fixture.pinned_sample = lambda: invoke(lambda: snapshot(marker[0]))
+            fixture.start_pin = lambda: invoke(lambda: setattr(fixture, 'pin', owner))
+            fixture.operate = lambda: invoke(lambda: (marker.__setitem__(0, 0x100), (0, 0))[1])
+            with self.subTest(stage=stage), self.assertRaises(RuntimeError) as caught:
+                self.m._windows(fixture, 'parent')
+            self.assertTrue(callable(getattr(self.m, 'failure_message', None)), 'finite stage wrapper missing')
+            self.assertEqual(self.m.failure_message(caught.exception), self.m._FAILURE + ':' + stage)
+            self.assertEqual(count[0], failing + 1)
 
     def test_body_interrupt_stops_later_windows_and_cleanup_preserves_identity(self):
         self.assertTrue(callable(getattr(self.m, '_windows', None)))
@@ -519,8 +569,16 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
                 self.m._run_variant('leaf', 'new')
         self.assertIs(caught.exception, original)
         with patch.object(self.m, '_Fixture', return_value=fixture), patch.object(self.m, '_windows', return_value=windows):
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as caught:
                 self.m._run_variant('leaf', 'new')
+        self.assertTrue(callable(getattr(self.m, 'failure_message', None)), 'finite diagnostic validator missing')
+        self.assertEqual(self.m.failure_message(caught.exception), self.m._FAILURE + ':cleanup')
+        fixture.prepare = lambda: (_ for _ in ()).throw(RuntimeError('private prepare'))
+        with patch.object(self.m, '_Fixture', return_value=fixture), patch.object(self.m, '_windows') as windows_call:
+            with self.assertRaises(RuntimeError) as caught:
+                self.m._run_variant('leaf', 'new')
+        self.assertEqual(self.m.failure_message(caught.exception), self.m._FAILURE + ':prepare')
+        windows_call.assert_not_called()
 
     def test_initial_identity_stays_bound_across_all_windows(self):
         fixture = object.__new__(self.m._Fixture)
@@ -576,6 +634,29 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
                 self.assertTrue(pin.close_confirmed)
                 path = create_pin.call_args.args[0]
                 self.assertFalse(os.path.exists(os.path.dirname(os.path.dirname(path))))
+                for role in ('parent', 'leaf'):
+                    roots = []
+                    real_create = self.m.tempfile.mkdtemp
+                    def create(*args, **kwargs):
+                        root = real_create(*args, **kwargs)
+                        roots.append(root)
+                        return root
+                    def fail_set(handle, host, marker):
+                        if fixture.directories[handle] == (role == 'parent'):
+                            raise RuntimeError('PRIVATE-VALUE-DO-NOT-OUTPUT')
+                        return original_set(handle, host, marker)
+                    with patch.object(self.m, '_Native', return_value=api), \
+                         patch.object(self.m, 'WindowsStartupHostIdentity', return_value=SimpleNamespace(capture=lambda:HOST, cleanup_unconfirmed=False)), \
+                         patch.object(self.m, '_local_components', return_value=('C:',['temp','parent','leaf'])), \
+                         patch.object(self.m.tempfile, 'mkdtemp', side_effect=create), \
+                         patch.object(api, 'set_marker', side_effect=fail_set):
+                        with self.assertRaises(RuntimeError) as caught:
+                            self.m._run_variant(target, opener)
+                    self.assertTrue(callable(getattr(self.m, 'failure_message', None)), 'finite diagnostic validator missing')
+                    self.assertEqual(self.m.failure_message(caught.exception),
+                                     self.m._FAILURE + ':initial_' + role + '_set')
+                    self.assertEqual(len(roots), 1)
+                    self.assertFalse(os.path.exists(roots[0]))
 
     def test_registration_interrupt_retires_open_observer_and_pin_once(self):
         for slot in ('pending', 'observer', 'pin'):
@@ -630,6 +711,8 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
 
     def test_native_outer_boundary_never_leaks_private_exception(self):
         import traceback
+        self.assertTrue(callable(getattr(self.m, '_at_stage', None)), 'finite stage wrapper missing')
+        self.assertTrue(callable(getattr(self.m, 'failure_message', None)), 'finite diagnostic validator missing')
         private = RuntimeError('PRIVATE-VALUE-DO-NOT-OUTPUT')
         case = WindowsPrivateDaclWindowNativeTests('test_private_parent_dacl_three_windows')
         with patch.object(self.m,'run_variant',side_effect=private):
@@ -638,6 +721,20 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
         rendered = ''.join(traceback.format_exception(caught.exception))
         self.assertNotIn('PRIVATE-VALUE-DO-NOT-OUTPUT',rendered)
         self.assertEqual(caught.exception.args,('private_dacl_window_failed',))
+        with self.assertRaises(RuntimeError) as staged:
+            self.m._at_stage('initial_parent_set', lambda: (_ for _ in ()).throw(private))
+        with patch.object(self.m, 'run_variant', side_effect=staged.exception):
+            with self.assertRaises(AssertionError) as caught:
+                case._observe('parent')
+        rendered = ''.join(traceback.format_exception(caught.exception))
+        self.assertNotIn('PRIVATE-VALUE-DO-NOT-OUTPUT', rendered)
+        self.assertEqual(caught.exception.args,
+                         ('private_dacl_window_failed:initial_parent_set:parent:preexisting',))
+        for target in ('PRIVATE-VALUE-DO-NOT-OUTPUT', True):
+            with patch.object(self.m, 'run_variant', side_effect=staged.exception):
+                with self.assertRaises(AssertionError) as caught:
+                    case._observe(target)
+            self.assertEqual(caught.exception.args, (self.m._FAILURE,))
 
     def test_created_parent_leaf_registration_interrupt_removes_owned_tree(self):
         import builtins
@@ -687,6 +784,55 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
 
     def test_acquired_temp_root_registration_interrupt_removes_exact_owned_root(self):
         import os
+        import builtins
+        # A diagnostic wrapper must not introduce an unregistered-resource
+        # return window around mkdtemp/mkdir/exclusive open.
+        for phase in ('create_root', 'create_parent', 'create_leaf'):
+            original, roots, streams = KeyboardInterrupt('private wrapper return'), [], []
+            real_create, real_open = self.m.tempfile.mkdtemp, builtins.open
+            def create(*args, **kwargs):
+                root = real_create(*args, **kwargs)
+                roots.append(root)
+                return root
+            def tracked_open(*args, **kwargs):
+                stream = real_open(*args, **kwargs)
+                streams.append(stream)
+                return stream
+            def trace(frame, event, value):
+                if (frame.f_code is self.m._at_stage.__code__ and event == 'return'
+                        and frame.f_locals['stage'] == phase):
+                    raise original
+                return trace
+            identity = SimpleNamespace(capture=lambda:HOST, cleanup_unconfirmed=False)
+            with patch.object(self.m, 'WindowsStartupHostIdentity', return_value=identity), \
+                 patch.object(self.m, '_Native', return_value=SimpleNamespace()), \
+                 patch.object(self.m.tempfile, 'mkdtemp', side_effect=create), \
+                 patch.object(builtins, 'open', side_effect=tracked_open), \
+                 patch.object(self.m, '_local_components', side_effect=original):
+                fixture = self.m._Fixture('parent', 'new')
+                previous = sys.gettrace()
+                try:
+                    sys.settrace(trace)
+                    with self.assertRaises(KeyboardInterrupt) as caught:
+                        fixture.prepare()
+                finally:
+                    sys.settrace(previous)
+                self.assertIs(caught.exception, original)
+            try:
+                try:
+                    fixture.close()
+                except OSError:
+                    pass
+                with self.subTest(phase=phase):
+                    self.assertTrue(all(stream.closed for stream in streams))
+                    self.assertEqual(len(roots), 1)
+                    self.assertFalse(os.path.exists(roots[0]))
+            finally:
+                for stream in streams:
+                    stream.close()
+                if os.path.exists(fixture.leaf or ''): os.unlink(fixture.leaf)
+                if os.path.exists(fixture.parent or ''): os.rmdir(fixture.parent)
+                if roots and os.path.exists(roots[0]): os.rmdir(roots[0])
         for kind in (KeyboardInterrupt,SystemExit):
             original, roots = kind('private root'), []
             class Broken(self.m._Fixture):
@@ -715,13 +861,19 @@ class PrivateDaclLifecycleTests(unittest.TestCase):
 @unittest.skipUnless(sys.platform == 'win32', 'native Windows only')
 class WindowsPrivateDaclWindowNativeTests(unittest.TestCase):
     def _observe(self, target):
-        from tests.windows_private_dacl_fixture import run_variant, validate_wire
+        from tests.windows_private_dacl_fixture import run_variant, validate_wire, failure_message
         for opener in ('preexisting', 'new'):
             try:
                 wire = run_variant(target, opener)
                 validate_wire(wire)
-            except BaseException:
-                raise AssertionError('private_dacl_window_failed') from None
+            except BaseException as error:
+                message = failure_message(error)
+                if (message != 'private_dacl_window_failed'
+                        and type(target) is str and target in ('parent', 'leaf')):
+                    message += ':' + target + ':' + opener
+                else:
+                    message = 'private_dacl_window_failed'
+                raise AssertionError(message) from None
             print(wire.decode('ascii'), end='')
 
     def test_private_parent_dacl_three_windows(self):

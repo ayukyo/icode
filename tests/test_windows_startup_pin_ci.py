@@ -245,8 +245,21 @@ class StartupPinCiTests(unittest.TestCase):
     def test_private_dacl_module_platform_skip_never_receives_native_credit(self):
         module_id = "tests.test_windows_private_dacl_window"
         module = importlib.import_module(module_id)
-        with patch.object(module.WindowsPrivateDaclWindowNativeTests, "__unittest_skip__", True):
-            code, result = self.run_ci((module_id,))
+        native = module.WindowsPrivateDaclWindowNativeTests
+        # skipUnless returns the undecorated class on Windows: no skip attribute.
+        missing = object()
+        original = native.__dict__.get("__unittest_skip__", missing)
+        try:
+            if original is not missing:
+                del native.__unittest_skip__
+            with patch.object(native, "__unittest_skip__", True, create=True):
+                code, result = self.run_ci((module_id,))
+        finally:
+            if original is not missing:
+                native.__unittest_skip__ = original
+            elif "__unittest_skip__" in native.__dict__:
+                del native.__unittest_skip__
+        self.assertIs(native.__dict__.get("__unittest_skip__", missing), original)
         self.assertEqual(result.testsRun, 34)
         self.assertEqual(len(result.skipped), 2)
         self.assertEqual(result.errors, [])
