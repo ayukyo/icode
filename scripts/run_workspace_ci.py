@@ -160,6 +160,18 @@ POSIX_R3_TESTS = (
     *SESSION_GIT_PROJECTION_TESTS,
 )
 
+
+def startup_pin_tests(platform: str) -> tuple[str, ...]:
+    """Portable ownership/ABI contracts everywhere; OS enforcement on Windows."""
+    return (
+        "tests.test_windows_startup_pin.StartupPinInterfaceTests",
+        "tests.test_windows_startup_pin.StartupPinTests",
+        "tests.test_windows_startup_native.NativeTransportTests",
+        "tests.test_windows_startup_native.NativeModuleTests",
+        *(("tests.test_windows_startup_native.WindowsEnforcementTests",) if platform == "nt" else ()),
+    )
+
+
 DEFAULT_MODULES = (
     "tests.test_workspace",
     "tests.test_workspace_hook_contract",
@@ -180,6 +192,8 @@ DEFAULT_MODULES = (
     "tests.test_windows_pe_capture.TestWindowsPeCapture",
     "tests.test_windows_pe_reader",
     "tests.test_windows_pe_directories",
+    *startup_pin_tests(os.name),
+    "tests.test_windows_startup_pin_ci",
     *CONTRACT_ENGINEERING_TESTS,
     *OPERATION_ADMISSION_TESTS,
     *EXECUTION_BINDING_TESTS,
@@ -206,9 +220,27 @@ def _workflow_escape(value: str) -> str:
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
+def _leaf_test_ids(suite: unittest.TestSuite):
+    for test in suite:
+        if isinstance(test, unittest.TestSuite):
+            yield from _leaf_test_ids(test)
+        else:
+            yield test.id()
+
+
 def main(modules: tuple[str, ...] = DEFAULT_MODULES) -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     suite = unittest.defaultTestLoader.loadTestsFromNames(modules)
+    # Capture before unittest consumes the suite. Class/module/custom method
+    # selectors must not let required pin coverage silently become a skip.
+    selected_pin_ids = frozenset(
+        test_id for test_id in _leaf_test_ids(suite)
+        if test_id.startswith((
+            "tests.test_windows_startup_pin.",
+            "tests.test_windows_startup_native.",
+            "tests.test_windows_startup_pin_ci.",
+        ))
+    )
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     if os.environ.get("GITHUB_ACTIONS") == "true":
         for test, traceback in (*result.failures, *result.errors):
@@ -219,10 +251,10 @@ def main(modules: tuple[str, ...] = DEFAULT_MODULES) -> int:
     # Optional tests in the same class/module keep their historical semantics.
     required_test_ids = frozenset((
         *POSIX_R3_TESTS, *OPERATION_ADMISSION_TESTS, *EXECUTION_BINDING_TESTS,
-    )).intersection(modules)
+    )).intersection(modules) | selected_pin_ids
     selected_contract_ids = frozenset((
         *OPERATION_ADMISSION_TESTS, *EXECUTION_BINDING_TESTS,
-    )).intersection(modules)
+    )).intersection(modules) | selected_pin_ids
     selected_contract_classes = {test_id.rsplit(".", 1)[0] for test_id in selected_contract_ids}
     selected_contract_modules = {class_id.rsplit(".", 1)[0] for class_id in selected_contract_classes}
     selected_fixture_ids = {
@@ -238,6 +270,11 @@ def main(modules: tuple[str, ...] = DEFAULT_MODULES) -> int:
         test.id()
         for test, _reason in result.skipped
         if test.id() in required_test_ids or test.id() in selected_fixture_ids
+        # unittest records a subTest skip under its parameterized child ID.
+        # Follow the real parent object; never guess an ID from display text.
+        or (isinstance(test, unittest.case._SubTest)
+            and isinstance(test.test_case, unittest.TestCase)
+            and test.test_case.id() in selected_pin_ids)
     })
     if skipped_required_tests:
         print(

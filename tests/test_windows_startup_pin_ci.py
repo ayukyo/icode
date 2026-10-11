@@ -1,0 +1,233 @@
+"""CI selection and skip enforcement; no simulated Windows OS credit."""
+
+import importlib
+import io
+import os
+import unittest
+from contextlib import redirect_stderr
+from unittest.mock import patch
+
+from scripts import run_workspace_ci as ci
+
+
+PORTABLE_CLASSES = (
+    "tests.test_windows_startup_pin.StartupPinInterfaceTests",
+    "tests.test_windows_startup_pin.StartupPinTests",
+    "tests.test_windows_startup_native.NativeTransportTests",
+    "tests.test_windows_startup_native.NativeModuleTests",
+)
+NATIVE_CLASS = "tests.test_windows_startup_native.WindowsEnforcementTests"
+GUARD_MODULE = "tests.test_windows_startup_pin_ci"
+
+
+def cases(suite):
+    for test in suite:
+        if isinstance(test, unittest.TestSuite):
+            yield from cases(test)
+        else:
+            yield test
+
+
+class StartupPinCiTests(unittest.TestCase):
+    def run_ci(self, selections):
+        results = []
+
+        class ObservingRunner:
+            def run(self, suite):
+                result = unittest.TestResult()
+                suite.run(result)
+                results.append(result)
+                return result
+
+        with patch.object(ci.unittest, "TextTestRunner", return_value=ObservingRunner()), redirect_stderr(io.StringIO()):
+            code = ci.main(tuple(selections))
+        self.assertEqual(len(results), 1)
+        return code, results[0]
+
+    def test_default_selects_complete_pin_contract_once(self):
+        expected = []
+        for class_id, count in zip(PORTABLE_CLASSES, (1, 32, 25, 2)):
+            loaded = list(cases(unittest.defaultTestLoader.loadTestsFromName(class_id)))
+            self.assertEqual(len(loaded), count)
+            for test in loaded:
+                self.assertFalse(getattr(type(test), "__unittest_skip__", False))
+                self.assertFalse(getattr(getattr(test, test._testMethodName), "__unittest_skip__", False))
+            expected.extend(test.id() for test in loaded)
+        native = list(cases(unittest.defaultTestLoader.loadTestsFromName(NATIVE_CLASS)))
+        self.assertEqual(len(native), 6)
+        if os.name == "nt":
+            expected.extend(test.id() for test in native)
+        selected = [test.id() for entry in ci.DEFAULT_MODULES
+                    if entry.startswith(("tests.test_windows_startup_pin.", "tests.test_windows_startup_native."))
+                    for test in cases(unittest.defaultTestLoader.loadTestsFromName(entry))]
+        self.assertCountEqual(selected, expected)
+        self.assertEqual(ci.DEFAULT_MODULES.count(GUARD_MODULE), 1)
+        guard_ids = [test.id() for entry in ci.DEFAULT_MODULES
+                     if entry == GUARD_MODULE or entry.startswith(GUARD_MODULE + ".")
+                     for test in cases(unittest.defaultTestLoader.loadTestsFromName(entry))]
+        self.assertCountEqual(guard_ids, [test.id() for test in cases(
+            unittest.defaultTestLoader.loadTestsFromName(GUARD_MODULE))])
+
+    def test_platform_selection_loads_portable_and_windows_leaves_exactly_once(self):
+        select = getattr(ci, "startup_pin_tests", None)
+        self.assertTrue(callable(select), "missing platform startup pin selector")
+        portable = [test.id() for name in PORTABLE_CLASSES
+                    for test in cases(unittest.defaultTestLoader.loadTestsFromName(name))]
+        native = [test.id() for test in cases(unittest.defaultTestLoader.loadTestsFromName(NATIVE_CLASS))]
+        for platform in ("posix", "nt"):
+            selected = [test.id() for name in select(platform)
+                        for test in cases(unittest.defaultTestLoader.loadTestsFromName(name))]
+            self.assertCountEqual(selected, portable + (native if platform == "nt" else []))
+
+    def test_every_pin_method_body_skip_is_required(self):
+        for class_id in (*PORTABLE_CLASSES, NATIVE_CLASS, GUARD_MODULE + ".StartupPinCiTests"):
+            module_id, class_name = class_id.rsplit(".", 1)
+            test_class = getattr(importlib.import_module(module_id), class_name)
+            for method in unittest.defaultTestLoader.getTestCaseNames(test_class):
+                def skip_body(_case):
+                    raise unittest.SkipTest("required pin body unavailable")
+                with self.subTest(method=class_id + "." + method), patch.object(
+                    test_class, "__unittest_skip__", False, create=True
+                ), patch.object(test_class, "setUp", lambda _case: None), patch.object(test_class, method, skip_body):
+                    code, result = self.run_ci((class_id + "." + method,))
+                    self.assertEqual(code, 1)
+                    self.assertEqual(result.testsRun, 1)
+                    self.assertEqual(result.errors, [])
+                    self.assertEqual(result.failures, [])
+                    self.assertEqual(len(result.skipped), 1)
+
+    def test_pin_fixture_skips_fail_for_method_class_and_module_selections(self):
+        for class_id in (*PORTABLE_CLASSES, NATIVE_CLASS, GUARD_MODULE + ".StartupPinCiTests"):
+            module_id, class_name = class_id.rsplit(".", 1)
+            module = importlib.import_module(module_id)
+            test_class = getattr(module, class_name)
+            method = unittest.defaultTestLoader.getTestCaseNames(test_class)[0]
+            for selection in (class_id + "." + method, class_id, module_id):
+                for fixture in ("setUp", "tearDown", "setUpClass", "tearDownClass", "setUpModule", "tearDownModule"):
+                    def skip_fixture(*_args):
+                        raise unittest.SkipTest("required pin fixture unavailable")
+                    target = module if fixture.endswith("Module") else test_class
+                    replacement = classmethod(skip_fixture) if fixture.endswith("Class") else skip_fixture
+                    # Only fixture classification is under test; suppress bodies
+                    # and Windows setup so no Windows call is faked as native.
+                    with self.subTest(selection=selection, fixture=fixture), patch.object(
+                        test_class, "__unittest_skip__", False, create=True
+                    ), patch.object(test_class, "setUp", lambda _case: None), patch.object(
+                        target, fixture, replacement, create=True
+                    ):
+                        # Narrow the loaded suite to real class/method leaves;
+                        # retain the caller's class/module selector for required detection.
+                        suite = unittest.defaultTestLoader.loadTestsFromName(class_id + "." + method)
+                        with patch.object(test_class, method, lambda _case: None), patch.object(
+                            ci.unittest.defaultTestLoader, "loadTestsFromNames", return_value=suite
+                        ):
+                            code, result = self.run_ci((selection,))
+                        self.assertEqual(code, 1)
+                        self.assertEqual(result.errors, [])
+                        self.assertEqual(result.failures, [])
+                        self.assertEqual(len(result.skipped), 1)
+
+    def test_real_class_and_module_loader_cannot_hide_required_skip(self):
+        class_id = PORTABLE_CLASSES[0]
+        module_id, class_name = class_id.rsplit(".", 1)
+        module = importlib.import_module(module_id)
+        test_class = getattr(module, class_name)
+        with patch.object(test_class, "__unittest_skip__", True, create=True):
+            code, result = self.run_ci((class_id,))
+        self.assertEqual(code, 1)
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.skipped), 1)
+
+        def skip_fixture():
+            raise unittest.SkipTest("required module unavailable")
+
+        for module_id in ("tests.test_windows_startup_pin", "tests.test_windows_startup_native"):
+            module = importlib.import_module(module_id)
+            with patch.object(module, "setUpModule", skip_fixture, create=True):
+                code, result = self.run_ci((module_id,))
+            self.assertEqual(code, 1)
+            self.assertEqual(result.testsRun, 0)
+            self.assertEqual(len(result.skipped), 1)
+            self.assertEqual(result.errors, [])
+
+    def test_real_portable_class_and_module_selections_run_without_skip(self):
+        for selection, count in (*zip(PORTABLE_CLASSES, (1, 32, 25, 2)),
+                                 ("tests.test_windows_startup_pin", 33)):
+            with self.subTest(selection=selection):
+                code, result = self.run_ci((selection,))
+                self.assertEqual(code, 0)
+                self.assertEqual(result.testsRun, count)
+                self.assertEqual(result.skipped, [])
+                self.assertEqual(result.errors, [])
+                self.assertEqual(result.failures, [])
+
+    def test_missing_method_load_error_cannot_succeed(self):
+        code, result = self.run_ci((PORTABLE_CLASSES[0] + ".test_missing_required_pin",))
+        self.assertEqual(code, 1)
+        self.assertEqual(len(result.errors), 1)
+
+    def test_required_subtest_and_nested_subtest_skips_fail(self):
+        for class_id in (*PORTABLE_CLASSES, NATIVE_CLASS, GUARD_MODULE + ".StartupPinCiTests"):
+            module_id, class_name = class_id.rsplit(".", 1)
+            test_class = getattr(importlib.import_module(module_id), class_name)
+            method = unittest.defaultTestLoader.getTestCaseNames(test_class)[0]
+            parent_id = class_id + "." + method
+            for nested in (False, True):
+                def skip_subtest(case):
+                    with case.subTest(required_case="unavailable (x=y)", values=("a", "b")):
+                        if nested:
+                            with case.subTest(inner="(nested), key=value"):
+                                case.skipTest("required nested pin subtest unavailable")
+                        else:
+                            case.skipTest("required pin subtest unavailable")
+                with self.subTest(parent_id=parent_id, nested=nested), patch.object(
+                    test_class, "__unittest_skip__", False, create=True
+                ), patch.object(test_class, "setUp", lambda _case: None), patch.object(test_class, method, skip_subtest):
+                    code, result = self.run_ci((parent_id,))
+                    self.assertEqual(result.testsRun, 1)
+                    self.assertEqual(result.errors, [])
+                    self.assertEqual(result.failures, [])
+                    self.assertEqual(len(result.skipped), 1)
+                    skipped = result.skipped[0][0]
+                    self.assertNotEqual(skipped.id(), parent_id)
+                    self.assertIsInstance(skipped.test_case, unittest.TestCase)
+                    self.assertEqual(skipped.test_case.id(), parent_id)
+                    self.assertEqual(code, 1)
+
+    def test_optional_nested_subtest_skip_remains_successful(self):
+        module = importlib.import_module("tests.test_contract_engineering")
+        test_class = module.TestContractEngineering
+        method = "test_policy_code_missing_plan_refuses_before_control_write_and_model"
+        def skip_subtest(case):
+            with case.subTest(optional="(outer), x=y"):
+                with case.subTest(inner="unavailable", values=(1, 2)):
+                    case.skipTest("optional nested subtest unavailable")
+        with patch.object(test_class, "setUp", lambda _case: None), patch.object(test_class, method, skip_subtest):
+            code, result = self.run_ci(("tests.test_contract_engineering.TestContractEngineering." + method,))
+        self.assertEqual(code, 0)
+        self.assertEqual(result.testsRun, 1)
+        self.assertEqual(len(result.skipped), 1)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [])
+
+    def test_existing_optional_body_and_fixture_skip_remain_successful(self):
+        module = importlib.import_module("tests.test_contract_engineering")
+        test_class = module.TestContractEngineering
+        method = "test_policy_code_missing_plan_refuses_before_control_write_and_model"
+        selected = "tests.test_contract_engineering.TestContractEngineering." + method
+        def skip(*_args):
+            raise unittest.SkipTest("optional dependency unavailable")
+        for fixture in (None, "setUpClass", "tearDownClass", "setUpModule", "tearDownModule"):
+            with self.subTest(fixture=fixture), patch.object(test_class, "setUp", lambda _case: None), patch.object(
+                test_class, method, skip if fixture is None else lambda _case: None
+            ):
+                if fixture is None:
+                    code, result = self.run_ci((selected,))
+                else:
+                    target = test_class if fixture.endswith("Class") else module
+                    replacement = classmethod(skip) if fixture.endswith("Class") else skip
+                    with patch.object(target, fixture, replacement, create=True):
+                        code, result = self.run_ci((selected,))
+                self.assertEqual(code, 0)
+                self.assertEqual(len(result.skipped), 1)
+                self.assertEqual(result.errors, [])
