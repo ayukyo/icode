@@ -15,8 +15,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 from .sandbox_policy import SandboxPolicy
+
+if TYPE_CHECKING:
+    from .linux_helper_object import LinuxHelperObject
 
 _READ_CHUNK_BYTES = 64 * 1024
 _CLEANUP_TIMEOUT_SECONDS = 1
@@ -154,29 +158,43 @@ def execute_policy_command(
     )
 
 
+class _LinuxViolationCommandWrapper(Protocol):
+    def __call__(
+        self, argv: list[str], control_socket: socket.socket, *,
+        helper_object: LinuxHelperObject,
+    ) -> list[str]: ...
+
+
+class _LinuxResourceCommandWrapper(Protocol):
+    def __call__(
+        self, argv: list[str], control_socket: socket.socket,
+        resource_socket: socket.socket, unit: str, *, helper_object: LinuxHelperObject,
+    ) -> list[str]: ...
+
+
 def execute_linux_violation_observed_command(
     argv: list[str], *, cwd: Path, sandbox: object, policy: SandboxPolicy,
     timeout: int | float, output_limit_bytes: int | None = None,
-    command_wrapper: Callable[[list[str], socket.socket], list[str]],
+    command_wrapper: _LinuxViolationCommandWrapper,
 ) -> ExecutionResult:
     return _execute_linux_observed_command(
         argv, cwd=cwd, sandbox=sandbox, policy=policy, timeout=timeout,
         output_limit_bytes=output_limit_bytes, command_wrapper=command_wrapper,
-        resource_mode=False,
+        resource_mode=False, helper_object_mode=True,
     )
 
 
 def execute_linux_resource_observed_command(
     argv: list[str], *, cwd: Path, sandbox: object, policy: SandboxPolicy,
     timeout: int | float, output_limit_bytes: int | None = None,
-    command_wrapper: Callable[[list[str], socket.socket, socket.socket, str], list[str]],
+    command_wrapper: _LinuxResourceCommandWrapper,
     verification_cache_root: Path | None = None,
 ) -> ExecutionResult:
     """Actual policy-command quota chain; not an automatic-mode support grant."""
     return _execute_linux_observed_command(
         argv, cwd=cwd, sandbox=sandbox, policy=policy, timeout=timeout,
         output_limit_bytes=output_limit_bytes, command_wrapper=command_wrapper,
-        resource_mode=True,
+        resource_mode=True, helper_object_mode=True,
         verification_cache_root=verification_cache_root,
     )
 

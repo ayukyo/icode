@@ -25,6 +25,8 @@ from icode.linux_helper_object import LinuxHelperObject, open_linux_helper_objec
 from icode.linux_task_scope import LinuxTaskScope
 from icode.native_helper import linux_arch_from_machine, linux_elf_architecture
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
+from icode.tools.base import ToolContext
+from icode.workspace import WorkspaceManager
 
 @contextmanager
 def temp_workspace():
@@ -81,6 +83,40 @@ def descriptor_identity(fd):
     return status.st_dev, status.st_ino
 
 
+def probe_workspace(root, stack, consumer):
+    if consumer == "candidate":
+        workspace = root / "workspace"
+        workspace.mkdir()
+        fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        stack.callback(os.close, fd)
+        return workspace, fd, descriptor_identity(fd), None
+    if consumer != "context":
+        raise ValueError("unsupported probe consumer")
+    source = root / "source"
+    source.mkdir()
+    (source / "source.txt").write_text("probe\n", encoding="ascii")
+    for arguments in (["init", "-q"], ["add", "source.txt"],
+                      ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "base"]):
+        subprocess.run(["git", "-C", str(source), *arguments], check=True,
+                       capture_output=True, timeout=15)
+    session = stack.enter_context(WorkspaceManager(
+        source, root / "data", "installed-public", isolate_git_metadata=True,
+    ).open("public-ticket", "public-run"))
+    fd, identity = session.workspace_fd, session.workspace_fd_identity
+    if type(fd) is not int or identity is None or descriptor_identity(fd) != identity:
+        raise RuntimeError("live session workspace identity unavailable")
+    return session.workspace_root, fd, identity, session
+
+
+def observed_entry(resource_mode, consumer):
+    if consumer == "candidate":
+        return broker._execute_linux_helper_observed_candidate, {"resource_mode": resource_mode}
+    if consumer == "context":
+        return (broker.execute_linux_resource_observed_command if resource_mode
+                else broker.execute_linux_violation_observed_command), {}
+    raise ValueError("unsupported probe consumer")
+
+
 def cleanup_descriptor(fd, identity, real_close):
     """Clean a fixture residual only when it is still the captured object."""
     try:
@@ -126,7 +162,7 @@ def channels_confirmed_closed(endpoints, closed):
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux installed-package native gate")
 class TestInstalledHelperDispatch(unittest.TestCase):
-    def probe(self, resource_mode, mutation):
+    def probe(self, resource_mode, mutation, consumer="candidate"):
         installed = LandlockSandbox.from_bundle()
         if installed is None:
             self.skipTest("inconclusive: real installed helper package unavailable; no native credit")
@@ -139,11 +175,8 @@ class TestInstalledHelperDispatch(unittest.TestCase):
         if resource_mode and (os.getuid() == 0 or not Path(f"/run/user/{os.getuid()}/bus").exists()):
             self.skipTest("inconclusive: non-root user manager unavailable; no scope credit")
         with temp_workspace() as raw, ExitStack() as stack:
-            root = raw.resolve(); workspace = root / "workspace"; workspace.mkdir()
-            workspace_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-            stack.callback(os.close, workspace_fd)
-            workspace_status = os.fstat(workspace_fd)
-            workspace_identity = (workspace_status.st_dev, workspace_status.st_ino)
+            root = raw.resolve()
+            workspace, workspace_fd, workspace_identity, session = probe_workspace(root, stack, consumer)
             helper, manifest = root / "helper", root / "helper.sha256"
             shutil.copyfile(source, helper); helper.chmod(0o700)
             shutil.copyfile(manifest_source, manifest)
@@ -180,7 +213,10 @@ class TestInstalledHelperDispatch(unittest.TestCase):
             notify_channel = notify.create_seccomp_listener_handoff_channel
             resource_channel = resources.create_task_resource_channel
             expected = []
-            native_policy = replace(policy_for(workspace), process_limit=1)
+            native_policy = (session.policy("code", process_limit=1, wall_timeout_seconds=8, output_limit_bytes=2048)
+                             if session else replace(policy_for(workspace), process_limit=1))
+            ctx = ToolContext(workspace, sandbox=sandbox, policy=native_policy, workspace_session=session) if session else None
+            context_calls = []
             real_popen = subprocess.Popen
             def launch(argv, **kwargs):
                 process = real_popen(argv, **kwargs)
@@ -224,6 +260,15 @@ class TestInstalledHelperDispatch(unittest.TestCase):
                 command = [str(payload), str(helper_object.fileno()), str(status.st_dev), str(status.st_ino),
                            str(workspace_fd), str(workspace_identity[0]), str(workspace_identity[1]),
                            "HELD-PAYLOAD-SCOPE" if resource_mode else "HELD-PAYLOAD"]
+                if ctx is not None:
+                    context_calls.append(helper_object)
+                    prepared = (ctx.wrap_command_with_resource_receipt(
+                        command, control, resource_args[0], resource_args[1], helper_object=helper_object)
+                        if resource_args else ctx.wrap_command_with_violation_receipt(
+                            command, control, helper_object=helper_object))
+                    self.assertIs(prepared.helper_object, helper_object)
+                    self.assertIn(workspace_fd, prepared.pass_fds)
+                    return prepared
                 if resource_args:
                     return sandbox.wrap_policy_with_resource_receipt(command, policy=native_policy,
                         control_socket=control, resource_socket=resource_args[0], unit=resource_args[1],
@@ -263,10 +308,12 @@ class TestInstalledHelperDispatch(unittest.TestCase):
                 processes.clear(); procdirs.clear(); observations.clear(); owner_fds.clear(); expected.clear()
                 monitors.clear(); receivers.clear(); scopes.clear(); endpoints.clear(); owners.clear(); close_calls.clear()
                 channel_close_evidence.clear()
+                context_calls.clear()
+                entry, entry_options = observed_entry(resource_mode, consumer)
                 with ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(broker._execute_linux_helper_observed_candidate,
+                    future = pool.submit(entry,
                         [str(payload)], cwd=workspace, sandbox=sandbox, policy=native_policy,
-                        timeout=6, resource_mode=resource_mode, command_wrapper=wrap)
+                        timeout=6, command_wrapper=wrap, **entry_options)
                     try:
                         deadline = time.monotonic() + 3
                         while not (workspace / "ready").exists() and not future.done() and time.monotonic() < deadline:
@@ -288,6 +335,8 @@ class TestInstalledHelperDispatch(unittest.TestCase):
                 threads_stopped = all(value._thread is None or not value._thread.is_alive()
                                       for value in (*monitors, *receivers))
                 record = dict(architecture=architecture, kernel=platform.release(), topology="scope" if resource_mode else "no-scope",
+                              consumer=consumer, public_entry=("resource" if resource_mode else "violation") if ctx is not None else None,
+                              context_borrowed=ctx is not None,
                               workspace_live=workspace_live,
                               package_helper_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
                               manifest_sha256=hashlib.sha256(manifest_source.read_bytes()).hexdigest(),
@@ -298,6 +347,12 @@ class TestInstalledHelperDispatch(unittest.TestCase):
                               scope_states=[scope.cleanup_state for scope in scopes],
                               pids=[p.pid for p in processes], systemd=subprocess.run(["/usr/bin/systemd-run", "--version"],
                                   capture_output=True, check=False, timeout=2).stdout.decode(errors="replace").splitlines()[:1])
+                if ctx is not None:
+                    self.assertEqual(context_calls, owners)
+                    self.assertIs(ctx.workspace_session, session)
+                    self.assertIs(ctx.policy, native_policy)
+                    self.assertEqual(session.workspace_fd, workspace_fd)
+                    self.assertEqual(session.workspace_fd_identity, workspace_identity)
                 print(json.dumps(record, sort_keys=True), flush=True)
                 self.assertNotIn("DECOY-STARTED", answer.output)
                 self.assertEqual(len(processes), 1)
@@ -348,6 +403,14 @@ class TestInstalledHelperDispatch(unittest.TestCase):
         for mutation in ("none", "rename", "unlink", "replace"):
             with self.subTest(mutation=mutation): self.probe(True, mutation)
 
+    def test_public_context_no_scope_actual_package_identity_and_fd_boundary(self):
+        for mutation in ("none", "rename", "unlink", "replace"):
+            with self.subTest(mutation=mutation): self.probe(False, mutation, "context")
+
+    def test_public_context_scope_actual_package_identity_and_fd_boundary(self):
+        for mutation in ("none", "rename", "unlink", "replace"):
+            with self.subTest(mutation=mutation): self.probe(True, mutation, "context")
+
 
 class TestIdentityEvidence(unittest.TestCase):
     def test_channel_close_requires_observed_close_and_tolerates_later_fd_reuse(self):
@@ -397,7 +460,7 @@ class TestIdentityEvidence(unittest.TestCase):
             os.close(foreign); os.close(directory)
 
 class TestInstalledCandidateFaults(unittest.TestCase):
-    def run_fault(self, resource_mode, scenario):
+    def run_fault(self, resource_mode, scenario, consumer="candidate"):
         from icode import linux_seccomp_notify as notify
         from icode import linux_task_resource as resources
         import socket
@@ -429,16 +492,16 @@ class TestInstalledCandidateFaults(unittest.TestCase):
         endpoint_snapshots = []
         injected = KeyboardInterrupt() if scenario == "keyboardinterrupt" else SystemExit(47)
         with temp_workspace() as raw, ExitStack() as stack:
-            root = raw.resolve(); workspace = root / "workspace"; workspace.mkdir()
-            workspace_fd = os.open(workspace, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
-            stack.callback(real_close, workspace_fd)
-            workspace_status = os.fstat(workspace_fd)
-            identity = (workspace_status.st_dev, workspace_status.st_ino)
+            root = raw.resolve()
+            workspace, workspace_fd, identity, session = probe_workspace(root, stack, consumer)
             payload = workspace / "fault-payload"
             subprocess.run([compiler, "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",
                 str(Path(__file__).resolve().parents[1] / "tests/native/linux_helper_fd_probe.c"), "-o", str(payload)],
                 check=True, capture_output=True, timeout=30)
-            policy = replace(policy_for(workspace), process_limit=1, wall_timeout_seconds=6, output_limit_bytes=256)
+            policy = (session.policy("code", process_limit=1, wall_timeout_seconds=6, output_limit_bytes=256)
+                      if session else replace(policy_for(workspace), process_limit=1, wall_timeout_seconds=6, output_limit_bytes=256))
+            ctx = ToolContext(workspace, sandbox=sandbox, policy=policy, workspace_session=session) if session else None
+            context_calls = []
             def factory(*args):
                 owner = owner_factory(*args); owners.append((owner, owner.fileno())); return owner
             def close_owner(owner):
@@ -473,6 +536,14 @@ class TestInstalledCandidateFaults(unittest.TestCase):
                 if resource_mode: marker += "-SCOPE"
                 command = [str(payload), str(helper_object.fileno()), str(status.st_dev), str(status.st_ino),
                            str(workspace_fd), str(identity[0]), str(identity[1]), marker]
+                if ctx is not None:
+                    context_calls.append(helper_object)
+                    prepared = (ctx.wrap_command_with_resource_receipt(
+                        command, control, resource_args[0], resource_args[1], helper_object=helper_object)
+                        if resource_args else ctx.wrap_command_with_violation_receipt(
+                            command, control, helper_object=helper_object))
+                    self.assertIs(prepared.helper_object, helper_object)
+                    return prepared
                 options = dict(policy=policy, control_socket=control, helper_object=helper_object,
                                workspace_fd=workspace_fd, workspace_identity=identity)
                 if resource_args:
@@ -548,11 +619,12 @@ class TestInstalledCandidateFaults(unittest.TestCase):
             if scenario not in ("timeout", "bad_ack", "missing_ack", "observer_start", "resource_start", "resource_configured"):
                 (workspace / "release").touch()
             result, error = None, None
+            entry, entry_options = observed_entry(resource_mode, consumer)
             try:
                 try:
-                    result = broker._execute_linux_helper_observed_candidate([str(payload)], cwd=workspace,
+                    result = entry([str(payload)], cwd=workspace,
                         sandbox=sandbox, policy=policy, timeout=3 if scenario == "timeout" else 4,
-                        resource_mode=resource_mode, command_wrapper=wrap)
+                        command_wrapper=wrap, **entry_options)
                 except BaseException as exception:
                     error = exception
                 # Snapshot broker terminal evidence before any fixture self-cleanup.
@@ -569,6 +641,8 @@ class TestInstalledCandidateFaults(unittest.TestCase):
                 owned_scopes = [scope for scope in scopes if scope._path is not None]
                 scope_gc = all(not scope._path.exists() for scope in owned_scopes) if owned_scopes else None
                 print(json.dumps(dict(scenario=scenario, topology="scope" if resource_mode else "no-scope",
+                    consumer=consumer, public_entry=("resource" if resource_mode else "violation") if ctx is not None else None,
+                    context_borrowed=ctx is not None,
                     architecture=linux_arch_from_machine(platform.machine()), process_closed=process_closed,
                     channels_closed=channels_closed, threads_stopped=threads_stopped,
                     owner_states=owner_states, scope_states=scope_states, scope_cleanup_ok=scope_gc,
@@ -577,6 +651,8 @@ class TestInstalledCandidateFaults(unittest.TestCase):
                     package_helper_sha256=package_hash, manifest_sha256=manifest_hash,
                     error=result.error if result is not None else "raised", exception=type(error).__name__ if error is not None else None), sort_keys=True), flush=True)
                 self.assertEqual(len(owners), 1); self.assertTrue(process_closed)
+                if ctx is not None:
+                    self.assertEqual(context_calls, [owner for owner, _ in owners])
                 self.assertEqual(owner_close_calls, [owner for owner, _ in owners])
                 self.assertTrue(channels_closed); self.assertTrue(threads_stopped)
                 if scenario not in ("timeout", "output_limit"):
@@ -638,6 +714,17 @@ class TestInstalledCandidateFaults(unittest.TestCase):
                          "resource_start", "resource_configured", "resource_close", "scope_close_unknown",
                          "timeout", "output_limit", "launch_failed", "keyboardinterrupt", "systemexit", "helper_close_unknown"):
             with self.subTest(scenario=scenario): self.run_fault(True, scenario)
+
+    def test_real_public_context_faults_no_scope(self):
+        for scenario in ("bad_ack", "missing_ack", "observer_start", "observer_runtime", "observer_close",
+                         "timeout", "output_limit", "launch_failed", "keyboardinterrupt", "systemexit", "helper_close_unknown"):
+            with self.subTest(scenario=scenario): self.run_fault(False, scenario, "context")
+
+    def test_real_public_context_faults_scope(self):
+        for scenario in ("bad_ack", "missing_ack", "observer_start", "observer_runtime", "observer_close",
+                         "resource_start", "resource_configured", "resource_close", "scope_close_unknown",
+                         "timeout", "output_limit", "launch_failed", "keyboardinterrupt", "systemexit", "helper_close_unknown"):
+            with self.subTest(scenario=scenario): self.run_fault(True, scenario, "context")
 
 def main():
     suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])

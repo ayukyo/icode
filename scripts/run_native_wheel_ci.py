@@ -16,13 +16,14 @@ from pathlib import Path
 def _publish_helper_dispatch_records(output: str) -> None:
     enums = {
         "architecture": {"x86_64", "arm64"}, "topology": {"scope", "no-scope"},
+        "consumer": {"candidate", "context"}, "public_entry": {None, "violation", "resource"},
         "mutation": {"none", "rename", "unlink", "replace"},
         "scenario": {"bad_ack", "missing_ack", "observer_start", "observer_runtime", "observer_close",
                      "resource_start", "resource_configured", "resource_close", "scope_close_unknown",
                      "timeout", "output_limit", "launch_failed", "keyboardinterrupt", "systemexit", "helper_close_unknown"},
         "exception": {None, "LinuxHelperObjectError", "KeyboardInterrupt", "SystemExit"},
     }
-    booleans = {"cleanup_ok", "scope_cleanup_ok", "workspace_live", "process_closed", "channels_closed", "threads_stopped"}
+    booleans = {"cleanup_ok", "scope_cleanup_ok", "workspace_live", "process_closed", "channels_closed", "threads_stopped", "context_borrowed"}
     hashes = {"package_helper_sha256", "manifest_sha256"}
     errors = {None, "raised", "timeout", "output_limit", "launch_failed", "proxy_setup_failed", "read_failed",
               "violation_observer_failed", "resource_channel_failed", "scope_cleanup_failed", "resource_setup_failed",
@@ -255,10 +256,11 @@ def main() -> int:
                         network_mode=NetworkMode.DENY, allowed_domains=(), process_limit=1,
                         wall_timeout_seconds=10, output_limit_bytes=1024, protected_paths=(),
                     )
-                    def wrap(argv, control_socket, resource_socket, unit):
+                    def wrap(argv, control_socket, resource_socket, unit, *, helper_object):
                         return sandbox.wrap_policy_with_resource_receipt(
                             argv, policy=policy, control_socket=control_socket,
                             resource_socket=resource_socket, unit=unit,
+                            helper_object=helper_object,
                         )
                     child = (
                         "import errno, os\\n"

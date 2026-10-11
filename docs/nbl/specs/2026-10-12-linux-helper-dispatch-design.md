@@ -216,3 +216,5 @@ Task3 后续 fresh 源码 SPEC→不同 QUALITY 均 C0/I0/M0，SPEC 独立最终
 后续完整门实际发现旧 lease CI mock 的关联遗漏：3032 tests / 533.192s，2 failures、74 skipped，阻断发布。两处 wheel 内容夹具已最小同步，并以有效 assertion RED/0 ERROR 补清 lease 故障必须实际命中，41 focused/0 skip 与独立复审通过；生产校验未弱化。冻结变更期间的中间全量已中断、不计通过，最终冻结全量 32828 正在运行。另片 [Task4 公共消费设计](2026-10-12-linux-helper-public-consumption-design.md) 已 fresh SPEC→不同 QUALITY 零遗留，仍只是 DESIGN，公共实施前四新 CI 门不变。
 
 最终软件门已于 2026-10-11 22:40:50 UTC 由 root 实际观察 preflight 32828 exit0、三道全通过；源码冻结与关联检查通过，准备提交供四新 CI 安装验证。此前失败与中断记录保留，不伪装成成功。Task4 与 Windows 角色诊断仍仅设计，未实施、未授新 ready。
+
+Task3 后续提交推送 main `1e2e4ab5d0101acf00d609af37add9893e4c57ef`，同 SHA 四新 Linux 安装包探针均实际通过；root 和独立观察者分别取原日志，各格 16 唯一正控、26 故障、24 identity pass，三项预设 unknown 关闭保持拒绝而非回收成功。详见实施计划与持续对照的新台账。允许进入 Task4 精确公共消费计划审查，未实施 public mode/ToolContext 改动；不授内容封印、发布者/加载闭包、Windows 或整体 R2/R3 ready。

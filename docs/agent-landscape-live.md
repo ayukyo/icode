@@ -2468,3 +2468,37 @@ Task3 私有安装包探针随后实施，源码 fresh SPEC→不同 QUALITY 均
 Windows 角色研究已形成 [有限诊断 DESIGN](nbl/specs/2026-10-12-windows-installed-chain-role-diagnostic-design.md)，205 行冻结 9c233c11e75f0364184daea7eaeb8533fe6bf3ced4ae3c509a54fae05b52c038。fresh SPEC 与不同 QUALITY 的静态核对均未发现遗留，root 完整阅读并另实际读取固定 MicrosoftDocs [LICENSE](https://github.com/MicrosoftDocs/win32/blob/ca8274decead49403d70ceeed4af8d4ca74eaf11/LICENSE)。**采纳（设计）**结构角色并集、目录/leaf 直接操作与单父子边旗标候选、实际 child protected 位、父独立 runtime 必需精确绑定；原 IO mutation 政策保持，候选不模拟 AccessCheck。**暂缓**源码实施至精确计划/验证，不改 owner 或准入；**不适配**protected 位代安全认证、旧 v1 回执补新信用、系统 ACL 写及未知放行。本轮只设计，未执行新 Windows 测试或原生四格。
 
 Task3 最终软件门随后于 2026-10-11 22:40:50 UTC 实际通过，preflight 32828 exit0、三道全绿；新增旧 lease 夹具修复独立复审零遗留，格式/语法/站点/治理/五文档一致性通过。软件候选准备发布供四新 CI 安装实证，未授新跨平台或公共消费信用；Windows 角色精确 PLAN 只文档准备，与 Linux 四格独立推进。
+
+### Task3 已安装同对象新四格台账（2026-10-12）
+
+候选 `1e2e4ab5d0101acf00d609af37add9893e4c57ef` 已提交推送 main，远端仅 main。以下均为 [CI 38181446068](https://github.com/ayukyo/icode/actions/runs/38181446068) 的新 stage `probe installed Linux helper same-object dispatch`，不是旧 helper/bridge 成功。root 和独立观察者各自取得原日志并核记录及同 SHA job 终态，四格全部实际 PASS。
+
+| 实际 runner / 架构 | job | kernel / systemd | wheel SHA256 |
+| --- | --- | --- | --- |
+| ubuntu-22.04 / x86_64 | [114594685144](https://github.com/ayukyo/icode/actions/runs/38181446068/job/114594685144) | 6.8.0-1064-azure / 249 | `28eac867348cd4fb18372c7b226efefc2040e0f9cd172d2e2d5cdf6e571531c7` |
+| ubuntu-22.04-arm / arm64 | [114594685085](https://github.com/ayukyo/icode/actions/runs/38181446068/job/114594685085) | 6.8.0-1064-azure / 249 | `2c819bc6001dfc85b52830b2311c8e74ed70979842bdc4c1ff34e7461f6df91a` |
+| ubuntu-24.04-arm / arm64 | [114594685052](https://github.com/ayukyo/icode/actions/runs/38181446068/job/114594685052) | 6.17.0-1022-azure / 255 | `36fbd63d2c93689aa0a89a49309c61d4df73b83f9a8c9ae4e67554c0f36872b6` |
+| ubuntu-latest / x86_64 | [114594685151](https://github.com/ayukyo/icode/actions/runs/38181446068/job/114594685151) | 6.17.0-1022-azure / 255 | `478375dd05e67e7ec4293054131ff1867e6f3a2f29019f1dac4974ef7ab16d09` |
+
+各格 helper / manifest SHA256（同格实际安装资源）：
+
+- 22.04 x64：`f7dee11ab61d7b2605368625b0390304dd4fdca2dbb41a9deac22c835ff08ae6` / `200b1017becc5806e8c154a8aa33aaf94d067b5f04739889d8ecb9810be44cce`。
+- 22.04 ARM64：`cee8a99a3f8f178624b6e0031e878f759940ea0acbe47e6d3178f4990135dc4c` / `76277e8312d32f04284dc7a7dcbf50b607a71d6933563594cb237039ce8ef51a`。
+- 24.04 ARM64：`9203c66f9468b1794d5d4b34bd85c87d6f575614b49cf5beb862277afb2f75b7` / `d633a96595095818000228867b36cb2b8e24fa88d0de781a1f3aade8a34d8b62`。
+- latest x64：`89519dd56f55b0221d6dfb21a7d7310eb5cdccc07c5bd68fa36c6a85852534b3` / `0ce9f4edbbfdc884da726c161cc419d6980f3622dd86d10cc8af7e6a8d2c887c`。
+
+每格 42 条记录＝16 唯一 topology×mutation×dispatch 正控＋26 故障，24 identity pass；0 publisher rejection、0 正控 unknown/inconclusive/skip。所有记录的 process/channels/threads/workspace 终态正确，正控 owner closed/scope confirmed/cleanup true；仅预设两拓扑 helper_close_unknown 和 scope_close_unknown 保留 unknown 并正确 raised LinuxHelperObjectError，不冒充已回收。脚本 main 的六测试全部成功且无 skip 才 exit0，两类身份/端点观察负控由实际安装脚本执行。**采纳（实证）**既有持有对象/procfd/scope 双跳机制与严格终态；Task4 前置门已满足，精确公共消费 PLAN 自动开始。**暂缓**公共实施至新 PLAN 双审、旧 SHA 全量/签装信用仍分账；**不适配**从四格候选实证推导未改的公开 ToolContext、内容封印、publisher/加载闭包或 R2/R3 ready。
+
+`1e2e4ab` 全流程随后终态：root 直接取 jobs API，CI 46 项＝41 success、2 Windows Reviewer failure、3 retired skip；Python 3.11/3.12 原日志各 3032 tests、85 skip，分别 609.307s / 824.436s。[Windows provenance](https://github.com/ayukyo/icode/actions/runs/38181446010) validate 与四签装共5/5 success，[Pages](https://github.com/ayukyo/icode/actions/runs/38181446101) validate/deploy成功。root 重新取得四签装原日志，以固定 SHA/架构及独立 runner 的 Python/Windows 版本核当前 v1 chain validator 和两资源关闭数，四份均通过；x64 Windows10.0.26100、ARM64 10.0.26200，两 Python 格分别3.11/3.12。各 helper/verifier 13 owned/confirmed、0 unconfirmed，根节点仍 owner_untrusted，source_policy_all_passed/protected_observed/compatibility_accepted/launch_authorized 均 false。独立观察者另核八份 chain/consumer wire 与两次 SD allocation/free、逆序关闭记录；签装不是实际 runtime launch/UAC 或 Windows 准入通过。两个 Reviewer 的独立原日志仍 Win10035/wait_expired、connect_denied=false、WFP无匹配事件，保留失败关闭边界。
+
+下一片公共消费精确 PLAN 首轮 SPEC 发现三处测试证据缺口：publisher 缺字段会 KeyError、quota 原 assertRaises 抢先失败、ctx 签名错误会冒充透传 RED。仅修订计划为字段存在断言、先验 fault-hit 与首信号同引用、机械参数脚手架后真实 sandbox 同引用透传 RED；fresh SPEC 零遗留，不同 QUALITY 尚待。Windows 诊断 PLAN 的父调用合同 RED 已修正；原生历史 producer RED 的 Windows 获取路径仍由作者补齐，不把最终 GREEN 冒充当前实现前 RED。两计划均未授源码/原生通过信用，既有批准设计、政策及权限不变。
+
+2026-10-11 23:00–23:02 UTC，独立只读研究复取固定 Codex `27065a91ccbf5ba8532844be3777fcf83b77820d` 的 [bundled_bwrap.rs](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/linux-sandbox/src/bundled_bwrap.rs#L60-L91)、[exec_util.rs](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/linux-sandbox/src/exec_util.rs#L14-L35) 和 LICENSE（Apache-2.0）。**采纳（实施输入）**由唯一 owner 持有 File、下游以引用借用及 procfd 消费的职责分离，复用本工程已有 core；ctx 不取得或关闭 owner，None 维持旧 keyword 形状。**暂缓**其它入口、prepare 生命周期和加载闭包；**不适配**上游缺摘要跳过、TypeError legacy 重试、ctx 缓存/关闭对象及第一跳 FD 当第二跳身份。收益是接通真实公共消费者，成本为 callback 协议收紧与四格复验；无代码复制、新依赖或权限，不刷新 HEAD/20项。公共 PLAN 最终 fresh SPEC→不同 QUALITY C0/I0/M0，root AST24代码块通过；Task1 已进入串行 TDD，研究和静态计划均不授公共安装包通过信用。
+
+公共消费 Task1–4 后续软件/本机记录：两生产入口与 ToolContext 已最小接通，None旧形状/private legacy保留。旧 quota fixture 首轮130 tests有3 FAIL+1 ERROR，修正仅测试合同后实现者130 tests全绿；root再独立核四方法4/4及最终四模块131 tests / 56.005s / 0 skip / OK，helper-object/violation另37 tests / 8.626s / 0 skip / OK。Task4实际独立venv wheel10 tests / 77.970s / 0 skip / exit0，root取原stderr/84JSON独立重算，两consumer各16正控＋26故障、共48identity PASS、终态资源观测正确；六预设unknown仍拒绝，不算全回收。当前全局fresh SPEC零遗留，不同QUALITY/完整preflight/最终SHA四Linux格尚待；此处不由本机结果推导整体ready。
+
+Windows精确PLAN后续已获fresh SPEC→不同QUALITY C0/I0/M0，冻结797行版本 `33731dac79813939785835818d0d1103a78d07ebe2860bf316c995c8eca203cb`，root回读全部资产、普通与workflow内嵌Python AST通过。采纳有限角色/实际child protected位/父独立runtime v2，原生窗口用固定历史producer目标assertion RED→恢复当前69必需GREEN→另核installed四格；Ubuntu不冒充已跑Windows。仅批准后续串行实施，原owner/IO mutation/readiness/权限保持；待Linux软件候选发布后自动继续，不再询问已委托的常规方案。
+
+2026-10-11 23:20:37–23:21 UTC，下一Windows片的独立只读研究复取 MicrosoftDocs/win32 `ca8274decead49403d70ceeed4af8d4ca74eaf11` 的权限/control/[继承规则](https://github.com/MicrosoftDocs/win32/blob/ca8274decead49403d70ceeed4af8d4ca74eaf11/desktop-src/SecAuthZ/ace-inheritance-rules.md)及CC-BY-4.0 LICENSE，Codex `8c0f7011674145da7e10627769fb221c74fbf7a0` 的 [no_reparse_dir.rs](https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/windows-sandbox-rs/src/no_reparse_dir.rs)及Apache-2.0 LICENSE；此为研究者实际复取，不声称root本轮重新取得上游HEAD。**采纳（实施输入）**操作参数/对象持有职责分离、目录与leaf位语义、实际child control及ICODE相邻source observer父版本绑定；不声称Codex具备相同版本合同。特别保留有限公式边界：OI-only无NP也可能由目录继承为IO ACE，目录选CI/file选OI的`no_flag_candidates`仅表示该公式未命中，不能称“无继承或传播风险”；不模拟转换、多代继承或effective access。**暂缓**完整继承/AccessCheck、owner例外、UAC/加载闭包；**不适配**系统ACL写、unknown放行、child自取runtime期望及protected代安全认证。无代码复制、新依赖/API/权限；研究不授原生或R2/R3信用。
+
+公共消费软件候选于2026-10-11 23:29 UTC通过root原完整preflight session69494，exit0、三道全绿。最终7SOURCE fresh SPEC→不同QUALITY零遗留，compileall `-j1`、site/governance/AST/diff与相关168 tests通过，固定vendor clean。**采纳（软件/本机实证）**唯一owner与真实ctx借用；本机10tests/84records不替代四Linux新SHA信用。准备发布到main并自动接下一Windows批准片，WindowsReviewer/WFP unknown、UAC/加载及模型六步/90%边界仍未关闭。

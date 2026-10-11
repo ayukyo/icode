@@ -234,6 +234,12 @@ class TestScopeDescriptorOwnership(unittest.TestCase):
         baseline = len(os.listdir("/proc/self/fd"))
         for error in (KeyboardInterrupt(), SystemExit(23)):
             with self.subTest(error=type(error).__name__), temp_workspace() as root:
+                helper = root / "helper"
+                shutil.copyfile(Path("/usr/bin/true").resolve(), helper)
+                helper.chmod(0o700)
+                manifest = root / "helper.sha256"
+                manifest.write_text(hashlib.sha256(helper.read_bytes()).hexdigest() + "\n",
+                                    encoding="ascii")
                 host, sender = create_task_resource_channel()
                 class InterruptedSender(socket.socket):
                     def close(self):
@@ -243,18 +249,29 @@ class TestScopeDescriptorOwnership(unittest.TestCase):
                 pin, scope_closed = os.open("/dev/null", os.O_RDONLY | os.O_CLOEXEC), []
                 class OwnedScope:
                     environment = {}
+                    cleanup_state = "confirmed"
                     def close(self):
                         scope_closed.append(True)
                         os.close(pin)
                 policy = SandboxPolicy(1,"test","test","code",root,(root,),(root,),(),(),NetworkMode.DENY,(),1,8,1024,())
+                hits = []
+                def second_channel_failure():
+                    hits.append(True)
+                    raise RuntimeError("injected second channel failure")
                 try:
                     with mock.patch("icode.linux_task_scope.LinuxTaskScope", return_value=OwnedScope()), \
                          mock.patch("icode.linux_task_resource.create_task_resource_channel", return_value=(host, sender)), \
-                         mock.patch("icode.linux_seccomp_notify.create_seccomp_listener_handoff_channel", side_effect=RuntimeError("injected second channel failure")):
-                        with self.assertRaises(type(error)):
+                         mock.patch("icode.linux_seccomp_notify.create_seccomp_listener_handoff_channel", side_effect=second_channel_failure):
+                        caught = None
+                        try:
                             execution_broker.execute_linux_resource_observed_command(
                                 [sys.executable], cwd=root, policy=policy, timeout=2,
-                                sandbox=LandlockSandbox(helper="/not-executed-owned-fixture"), command_wrapper=lambda argv,*args:argv)
+                                sandbox=LandlockSandbox(helper=str(helper), manifest=str(manifest)),
+                                command_wrapper=lambda argv,*args,helper_object:argv)
+                        except BaseException as failure:
+                            caught = failure
+                    self.assertEqual(hits, [True], "second channel fault was not reached")
+                    self.assertIs(caught, error, "cleanup must preserve original first signal")
                     self.assertEqual(host.fileno(), -1, "broker interruption skipped resource host endpoint")
                     self.assertEqual(scope_closed, [True], "broker interruption skipped owned scope pin")
                     with self.assertRaises(OSError): os.fstat(pin)
@@ -674,20 +691,28 @@ class TestLinuxProductTaskQuota(unittest.TestCase):
                 context = self.context(root, limit=2147483648 if failure == "cap_range" else 1)
                 wrong_tool = root / "not-a-trusted-tool"
                 wrong_tool.write_text("test-only-untrusted-tool", encoding="ascii")
+                hits = []
                 def directory(path, **kwargs):
                     if failure == "no_bus" and path == Path(f"/run/user/{os.getuid()}"):
+                        hits.append("no_bus")
                         raise FileNotFoundError("injected missing current user bus")
                     return actual_directory(path, **kwargs)
                 def tool(path, uid):
+                    if failure == "wrong_tool":
+                        hits.append("wrong_tool")
                     return actual_tool(str(wrong_tool) if failure == "wrong_tool" else path, uid)
                 with mock.patch.object(linux_task_scope, "_open_directory", new=directory), \
                      mock.patch.object(linux_task_scope, "_trusted_tool", new=tool), \
+                     mock.patch.object(linux_task_scope, "LinuxTaskScope", wraps=linux_task_scope.LinuxTaskScope) as constructed, \
                      mock.patch.object(execution_broker.subprocess, "Popen", wraps=subprocess.Popen) as launch:
                     result = default_registry().invoke("run_command", context,
                         {"argv": [sys.executable, "-I", "-c", "open('bad-marker','w').close()"], "timeout": 8})
                     self.assertFalse(launch.called, "invalid setup started an actual process")
+                    constructed.assert_called_once_with(limit=context.policy.process_limit, query=mock.ANY)
+                self.assertEqual(hits, [] if failure == "cap_range" else [failure],
+                                 "requested scope setup fault was not reached")
                 self.assertFalse(result.ok)
-                self.assertEqual(result.meta["error"], "resource_setup_failed")
+                self.assertEqual(result.meta["error"], "isolation_unavailable")
                 self.assertIs(result.meta["payload_started"], False)
                 self.assertFalse((root / "bad-marker").exists())
 
@@ -1075,11 +1100,22 @@ class TestLinuxProductTaskQuota(unittest.TestCase):
 
     @require_user_manager
     def test_active_callback_keeps_owned_pins_until_worker_returns(self):
+        import errno
+        from icode import linux_helper_object
         from icode.linux_task_scope import LinuxTaskScope
         from icode.linux_task_resource import LinuxTaskResourceReceiver
         entered, release = threading.Event(), threading.Event()
-        pins, receivers = [], []
+        pins, receivers, scopes, owners = [], [], [], []
         actual_show, actual_start = LinuxTaskScope._show, LinuxTaskResourceReceiver.start
+        actual_init = LinuxTaskScope.__init__
+        actual_owner = linux_helper_object.open_linux_helper_object
+        def scope_init(scope, *args, **kwargs):
+            actual_init(scope, *args, **kwargs)
+            scopes.append(scope)
+        def owner_factory(*args, **kwargs):
+            owner = actual_owner(*args, **kwargs)
+            owners.append((owner, owner.fileno()))
+            return owner
         def held_show(scope, deadline):
             if scope._fds and not entered.is_set():
                 pins.extend(scope._fds)
@@ -1093,12 +1129,24 @@ class TestLinuxProductTaskQuota(unittest.TestCase):
         with temp_workspace() as root, ThreadPoolExecutor(max_workers=1) as pool:
             try:
                 with mock.patch.object(LinuxTaskScope, "_show", new=held_show), \
+                     mock.patch.object(LinuxTaskScope, "__init__", new=scope_init), \
+                     mock.patch.object(linux_helper_object, "open_linux_helper_object", side_effect=owner_factory) as acquired, \
                      mock.patch.object(LinuxTaskResourceReceiver, "start", new=start):
                     future = pool.submit(self.run_python, root, "print('must not execute')", timeout=0.2)
                     self.assertTrue(entered.wait(timeout=1))
                     result = future.result(timeout=4)
                     self.assertFalse(result.ok)
-                    self.assertIsNone(result.meta["payload_started"])
+                    self.assertEqual(result.meta, {"error": "tool_exception"})
+                    self.assertEqual(result.content,
+                                     "LinuxHelperObjectError: Linux helper object is unavailable")
+                    self.assertEqual(len(scopes), 1)
+                    self.assertEqual(scopes[0].cleanup_state, "unconfirmed")
+                    acquired.assert_called_once()
+                    self.assertEqual(len(owners), 1)
+                    owner, helper_fd = owners[0]
+                    self.assertEqual(owner._state, "closed")
+                    with self.assertRaises(OSError) as closed: os.fstat(helper_fd)
+                    self.assertEqual(closed.exception.errno, errno.EBADF)
                     self.assertTrue(receivers[0]._thread.is_alive())
                     self.assertEqual(len(pins), 3)
                     for descriptor in pins:
@@ -1112,6 +1160,9 @@ class TestLinuxProductTaskQuota(unittest.TestCase):
                     self.assertTrue(receiver.close())
                 for descriptor in pins:
                     with self.assertRaises(OSError): os.fstat(descriptor)
+                for scope in scopes:
+                    self.assertEqual(scope.cleanup_state, "confirmed")
+                    self.assertEqual(scope._fds, [])
 
     @require_user_manager
     def test_phase_four_is_fixed_failure_and_discards_payload_output(self) -> None:

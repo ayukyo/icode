@@ -1539,7 +1539,7 @@ _run("probe installed Linux helper same-object dispatch",
 
 `.github/workflows/ci.yml`现有 `native-probe`的4Linux runner为 `ubuntu-latest`、`ubuntu-24.04-arm`、`ubuntu-22.04`、`ubuntu-22.04-arm`，每个都执行 `Build and verify installed Linux wheel`→`python scripts/run_native_wheel_ci.py`。只重命名step为 `Build installed Linux wheel and verify same-object helper dispatch`，不增runner/服务/权限；该step新增调用是接线，不把旧resolver probe算新信用。运行 `.venv/bin/python -I scripts/probe_installed_linux_helper_object.py`为本机实际安装包诊断；CI由现有wheel临时venv调用。
 
-- [ ] 每格实际 x86_64或aarch64，不借QEMU/patch machine授对应真实宿主信用。root软件candidate发布后追同一新SHA这4jobs原始日志，提取上述新stage每种拓扑与四种路径变化观察，不仅看job绿色。保存stdout、候选SHA/源码hash、wheel/helper/manifesthash、发行版/内核/systemd版本、proc窗口/实际PopenPID、进程FD终态和回执。没有执行/77/缺字段皆未验收，保持私有候选。
+- [x] 每格实际 x86_64或aarch64，不借QEMU/patch machine授对应真实宿主信用。root软件candidate发布后追同一新SHA这4jobs原始日志，提取上述新stage每种拓扑与四种路径变化观察，不仅看job绿色。保存stdout、候选SHA/源码hash、wheel/helper/manifesthash、发行版/内核/systemd版本、proc窗口/实际PopenPID、进程FD终态和回执。没有执行/77/缺字段皆未验收，保持私有候选。后续 `1e2e4ab` 四格已实际通过，详见末尾与持续对照新台账；仍未实施公共合流。
 
 | 硬门 | 初始状态 | PASS条件 |
 | --- | --- | --- |
@@ -1777,7 +1777,7 @@ class TestInstalledCandidateFaults(unittest.TestCase):
 ```
 
 faultrunner沿正控同一安装包；fixture的timeout在真实ready/release等待中触发（须assert ready出现），缺ACK则没有ready。所有资源终态在测试自清理之前断言；故障残留unknown允许物理FD仍活但candidate必须失败，不写全部回收。安装CI新stage传入600秒，现有nativejob15分钟预算沿用，整个软件full不重复。
-- [ ] root fresh SPEC/QUALITY零遗留后提交建议：`test: verify installed Linux helper same-object dispatch`。某格缺环境时照实交付私有候选，保留以下Task4硬门，不能写“已完成合流”。
+- [x] root fresh SPEC/QUALITY零遗留及完整软件门后提交推送 main `1e2e4ab5d0101acf00d609af37add9893e4c57ef`（`test(linux): verify installed helper same-object dispatch`）；远端仅 main。仍交付私有候选，不能写“已完成合流”。
 
 ## Task 4：独立生产合流出口与完整门
 
@@ -1852,3 +1852,5 @@ Task4 提前 DESIGN 已保存为 [公共消费设计](../specs/2026-10-12-linux-
 - ✅ 关联模块：完整 preflight 三道通过；固定 ICODE-SKILL 不变，五份设计/计划/研究文档一致性通过。
 - ✅ 兼容安全：生产入口和 ready/selector 未变，旧 lease SKIP 无符合性信用，未新增权限或降级路径。
 - ✅ 可运行性：完整软件门通过，本机已安装探针通过；新 SHA 四 CI、公共合流与整体 R2/R3 尚未通过，不报告整体 100%。
+
+Task3 后续实际矩阵验收：main `1e2e4ab5d0101acf00d609af37add9893e4c57ef` 已推送，四新 Linux job 均终态 success。root 与独立观察者各直接取实际原日志：每格 42 条受控记录＝16 唯一 topology/mutation/dispatch 正控＋26 故障，24 identity pass，0 发布拒绝、0 正控 unknown/inconclusive/skip；正控 owner closed、scope confirmed、cleanup true，每条 process/channels/threads/workspace 正常。三项预设未知关闭故障各正确抛 LinuxHelperObjectError，不把 live FD 记为回收成功。完整平台/包摘要与 job 见 [持续对照最新四格台账](../../agent-landscape-live.md)。Task4 前置原生门已满足，root 自动启动其精确公共消费 PLAN；公开入口、ready/selector 尚未修改，Windows Reviewer unknown 与整体 R2/R3 缺口仍保留。

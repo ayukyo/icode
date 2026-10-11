@@ -23,6 +23,37 @@ REAL_CLOSE = os.close
 
 
 class TestInstalledProbeRecordPublishing(unittest.TestCase):
+    def test_public_context_labels_are_bounded_and_survive_publication(self):
+        import contextlib
+        import importlib.util
+        import io
+        import json
+        source = Path(__file__).resolve().parents[1] / 'scripts/run_native_wheel_ci.py'
+        spec = importlib.util.spec_from_file_location('native_wheel_ci_context_labels_test', source)
+        subject = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(subject)
+        raw = {'architecture': 'x86_64', 'topology': 'scope', 'consumer': 'context',
+               'public_entry': 'resource', 'context_borrowed': True}
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            subject._publish_helper_dispatch_records(json.dumps(raw))
+        prefix = 'helper-dispatch-record '
+        self.assertTrue(output.getvalue().startswith(prefix))
+        published = json.loads(output.getvalue()[len(prefix):])
+        for name in ('consumer', 'public_entry', 'context_borrowed'):
+            self.assertIn(name, published)
+        self.assertEqual(published['consumer'], 'context')
+        self.assertEqual(published['public_entry'], 'resource')
+        self.assertIs(published['context_borrowed'], True)
+        raw.update(consumer='PRIVATE-PATH', public_entry='PRIVATE-COMMAND', context_borrowed='true')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            subject._publish_helper_dispatch_records(json.dumps(raw))
+        self.assertNotIn('PRIVATE', output.getvalue())
+        published = json.loads(output.getvalue()[len(prefix):])
+        for name in ('consumer', 'public_entry', 'context_borrowed'):
+            self.assertNotIn(name, published)
+
     def test_new_stage_launch_error_has_fixed_diagnostic(self):
         import contextlib
         import importlib.util
@@ -219,11 +250,11 @@ class Resource:
 @unittest.skipUnless(sys.platform.startswith("linux"), "Linux real-FD broker software contract")
 class TestDispatchOwner(unittest.TestCase):
     def exercise(self, root, *, mutate=None, fault=None, timeout=1, close_fault=None,
-                 candidate=True, wrapper_fault=None, monitor_fault=None,
+                 wrapper_fault=None, monitor_fault=None,
                  resource_mode=False, scope_fault=None, receiver_fault=None, mutate_roles=None,
                  cleanup_stage=None, cleanup_fault=None, output_limit_bytes=None, workspace_fd=None,
                  endpoint_fault=None, scope_state="confirmed", on_spawn=False,
-                 scope_prefix_mutation=None, preparation_fault=None):
+                 scope_prefix_mutation=None, preparation_fault=None, public=False, legacy=False):
         binary, manifest = pair(root)
         owners, closes, launches, channels = [], [], [], []
         real_factory = open_linux_helper_object
@@ -346,11 +377,17 @@ class TestDispatchOwner(unittest.TestCase):
              mock.patch("icode.linux_task_resource.LinuxTaskResourceReceiver",
                         **({"side_effect": receiver_fault} if receiver_fault is not None else {"return_value": receiver})), \
              mock.patch.object(broker, "_execute_policy_command", side_effect=run):
-            entry = broker._execute_linux_helper_observed_candidate if candidate else broker.execute_linux_violation_observed_command
+            if legacy:
+                entry = broker._execute_linux_observed_command
+            elif public:
+                entry = (broker.execute_linux_resource_observed_command if resource_mode
+                         else broker.execute_linux_violation_observed_command)
+            else:
+                entry = broker._execute_linux_helper_observed_candidate
             arguments = dict(cwd=root, sandbox=LandlockSandbox(str(binary), manifest=str(manifest)),
                              policy=policy_for(root), timeout=timeout, command_wrapper=wrapper,
                              output_limit_bytes=output_limit_bytes)
-            if candidate:
+            if legacy or not public:
                 arguments["resource_mode"] = resource_mode
             result, error = capture(lambda: entry(["/usr/bin/true"], **arguments))
         self.last_scope, self.last_receiver = task_scope, receiver
@@ -360,6 +397,96 @@ class TestDispatchOwner(unittest.TestCase):
         with self.assertRaises(OSError) as caught:
             os.fstat(fd)
         self.assertEqual(caught.exception.errno, errno.EBADF)
+
+    def test_public_entries_own_and_launch_same_object(self):
+        for resource_mode in (False, True):
+            with self.subTest(resource_mode=resource_mode), temp_workspace() as raw:
+                result, error, owners, closes, launches, channels = self.exercise(
+                    raw.resolve(), resource_mode=resource_mode, public=True)
+                self.assertIsNone(error)
+                self.assertEqual(len(owners), 1)
+                owner, fd = owners[0]
+                self.assertIsNone(result.error)
+                self.assertEqual(closes, [fd])
+                self.assertEqual(len(launches), 1)
+                self.assertIn(f"/proc/self/fd/{fd}", launches[0][0])
+                self.assertIn(fd, launches[0][1])
+                self.assertEqual(owner._state, "closed")
+                self.assert_closed(fd)
+                self.assertTrue(all(channel.fileno() == -1 for channel in channels))
+
+    def test_public_first_signal_survives_owner_cleanup_fault(self):
+        for resource_mode in (False, True):
+            for first in (KeyboardInterrupt(), SystemExit(71)):
+                with self.subTest(resource_mode=resource_mode, signal=type(first).__name__), temp_workspace() as raw:
+                    result, error, owners, closes, launches, channels = self.exercise(
+                        raw.resolve(), resource_mode=resource_mode, public=True,
+                        fault=first, close_fault=LinuxHelperObjectError())
+                    self.assertEqual(len(owners), 1)
+                    self.assertIsNone(result)
+                    self.assertIs(error, first)
+                    self.assertEqual(closes, [owners[0][1]])
+                    self.assertEqual(len(launches), 1)
+                    self.assert_closed(owners[0][1])
+                    self.assertTrue(all(channel.fileno() == -1 for channel in channels))
+
+    def test_public_faults_and_binding_rejection_keep_owner_cleanup(self):
+        for resource_mode in (False, True):
+            for stage in ("wrapper_fault", "monitor_fault", "fault"):
+                for injected in (RuntimeError("fixed fault"), KeyboardInterrupt(), SystemExit(19)):
+                    with self.subTest(resource_mode=resource_mode, stage=stage,
+                                      fault=type(injected).__name__), temp_workspace() as raw:
+                        result, error, owners, closes, launches, channels = self.exercise(
+                            raw.resolve(), resource_mode=resource_mode, public=True, **{stage: injected})
+                        self.assertEqual(len(owners), 1)
+                        self.assertEqual(closes, [owners[0][1]])
+                        self.assert_closed(owners[0][1])
+                        self.assertEqual(len(launches), 1 if stage == "fault" else 0)
+                        self.assertTrue(all(channel.fileno() == -1 for channel in channels))
+                        if not isinstance(injected, Exception) or stage == "fault":
+                            self.assertIs(error, injected)
+                        else:
+                            self.assertIsNone(error)
+                            self.assertEqual(result.error, "isolation_unavailable")
+            def drop(prepared, owner): prepared.helper_object = None
+            def swap(prepared, owner): prepared.helper_object = object()
+            def duplicate(prepared, owner): prepared.pass_fds += prepared.pass_fds
+            for mutation in (drop, swap, duplicate):
+                with self.subTest(resource_mode=resource_mode, mutation=mutation.__name__), temp_workspace() as raw:
+                    result, error, owners, closes, launches, channels = self.exercise(
+                        raw.resolve(), resource_mode=resource_mode, public=True, mutate=mutation)
+                    self.assertIsNone(error)
+                    self.assertEqual(len(owners), 1)
+                    self.assertEqual(result.error, "isolation_unavailable")
+                    self.assertEqual(launches, [])
+                    self.assertEqual(closes, [owners[0][1]])
+                    self.assert_closed(owners[0][1])
+                    self.assertTrue(all(channel.fileno() == -1 for channel in channels))
+
+    def test_public_old_callback_never_retries_legacy_body(self):
+        for resource_mode in (False, True):
+            with self.subTest(resource_mode=resource_mode), temp_workspace() as raw:
+                root = raw.resolve()
+                binary, manifest = pair(root)
+                body = []
+                def old(argv, control, *resource_args):
+                    body.append(True)
+                    return argv
+                entry = (broker.execute_linux_resource_observed_command if resource_mode
+                         else broker.execute_linux_violation_observed_command)
+                with mock.patch("icode.linux_helper_object.open_linux_helper_object",
+                                wraps=open_linux_helper_object) as factory, \
+                     mock.patch.object(broker.subprocess, "Popen") as started, \
+                     mock.patch("icode.linux_task_scope.LinuxTaskScope", return_value=Scope()), \
+                     mock.patch("icode.linux_task_resource.LinuxTaskResourceReceiver", return_value=Resource()):
+                    result = entry(["/usr/bin/true"], cwd=root,
+                        sandbox=LandlockSandbox(str(binary), manifest=str(manifest)),
+                        policy=policy_for(root), timeout=1, command_wrapper=old)
+                factory.assert_called_once()
+                started.assert_not_called()
+                self.assertEqual(body, [])
+                self.assertEqual(result.error, "isolation_unavailable")
+                self.assertIs(result.payload_started, False)
 
     def test_candidate_owns_once_and_launches_held_descriptor(self):
         with temp_workspace() as raw:
@@ -523,9 +650,9 @@ class TestDispatchOwner(unittest.TestCase):
                 self.assert_closed(owners[0][1])
                 self.assertTrue(all(channel.fileno() == -1 for channel in channels))
 
-    def test_ordinary_observed_rejects_unexpected_binding_without_factory(self):
+    def test_private_legacy_observed_rejects_unexpected_binding_without_factory(self):
         with temp_workspace() as raw:
-            result, error, owners, closes, launches, channels = self.exercise(raw.resolve(), candidate=False)
+            result, error, owners, closes, launches, channels = self.exercise(raw.resolve(), legacy=True)
             self.assertIsNone(error)
             self.assertEqual(result.error, "isolation_unavailable")
             self.assertEqual((owners, closes, launches), ([], [], []))

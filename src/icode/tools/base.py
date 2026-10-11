@@ -12,12 +12,15 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from ..artifact_broker import ArtifactBroker
 from ..isolation import PreparedCommand
 from ..sandbox_policy import SandboxPolicy
 from ..workspace import WorkspaceSession
+
+if TYPE_CHECKING:
+    from ..linux_helper_object import LinuxHelperObject
 
 # 工具输出回灌模型时的字符上限（渐进披露原则：不要把大段正文塞回上下文）
 DEFAULT_OUTPUT_LIMIT = 8000
@@ -294,6 +297,7 @@ class ToolContext:
 
     def wrap_command_with_violation_receipt(
         self, argv: list[str], control_socket: object,
+        *, helper_object: LinuxHelperObject | None = None,
     ) -> list[str]:
         """Wrap a command for native receipts without bypassing context binding."""
         self._policy_command_wrapper()
@@ -301,9 +305,13 @@ class ToolContext:
         if not callable(wrap_receipt):
             raise IsolationUnavailable("原生违规回执通道不可用，命令已拒绝")
         try:
+            options = self._workspace_command_options()
+            # Borrow the supplied owner; None must preserve the exact legacy keywords.
+            if helper_object is not None:
+                options["helper_object"] = helper_object
             prepared = wrap_receipt(
                 argv, policy=self.policy, control_socket=control_socket,
-                **self._workspace_command_options(),
+                **options,
             )
             return prepared if isinstance(prepared, PreparedCommand) else list(prepared)
         except Exception:  # noqa: BLE001 - handoff 包装失败时拒绝执行
@@ -311,6 +319,7 @@ class ToolContext:
 
     def wrap_command_with_resource_receipt(
         self, argv: list[str], control_socket: object, resource_socket: object, unit: str,
+        *, helper_object: LinuxHelperObject | None = None,
     ) -> list[str]:
         """Preserve the complete ToolContext policy binding before dual handoff."""
         self._policy_command_wrapper()
@@ -318,9 +327,13 @@ class ToolContext:
         if not callable(wrap_receipt):
             raise IsolationUnavailable("原生资源回执通道不可用，命令已拒绝")
         try:
+            options = self._workspace_command_options()
+            # Borrow the supplied owner; None must preserve the exact legacy keywords.
+            if helper_object is not None:
+                options["helper_object"] = helper_object
             prepared = wrap_receipt(argv, policy=self.policy, control_socket=control_socket,
                                     resource_socket=resource_socket, unit=unit,
-                                    **self._workspace_command_options())
+                                    **options)
             return prepared if isinstance(prepared, PreparedCommand) else list(prepared)
         except Exception:
             raise IsolationUnavailable("工单隔离策略绑定失败，命令已拒绝") from None

@@ -6,13 +6,16 @@ import hashlib
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import unittest
 from dataclasses import replace
+from unittest import mock
 
 from icode.isolation import LandlockSandbox, PreparedCommand
+from icode.linux_helper_object import open_linux_helper_object
 from icode.tools import ToolContext
 from icode.tools.base import IsolationUnavailable
 from icode.workspace import WorkspaceManager
@@ -247,15 +250,128 @@ class TestLinuxWorkspaceFd(unittest.TestCase):
         with self.assertRaises(IsolationUnavailable):
             ctx.wrap_command(["/usr/bin/true"])
 
+    def test_context_borrows_helper_in_both_receipts_without_owning_it(self):
+        session = self.session()
+        ctx = ToolContext(session.workspace_root, sandbox=self.sandbox,
+                          policy=session.policy("code"), workspace_session=session)
+        workspace_fd = session.workspace_fd
+        workspace_identity = session.workspace_fd_identity
+        with open_linux_helper_object(self.helper, self.manifest) as owner:
+            helper_fd = owner.fileno()
+            for mode in ("violation", "resource"):
+                with self.subTest(mode=mode):
+                    control, peer = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                    resource, resource_peer = socket.socketpair(
+                        socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                    try:
+                        callback = f"wrap_policy_with_{mode}_receipt"
+                        original = getattr(self.sandbox, callback)
+                        failure = None
+                        with mock.patch.object(self.sandbox, callback, wraps=original) as called:
+                            try:
+                                if mode == "violation":
+                                    prepared = ctx.wrap_command_with_violation_receipt(
+                                        ["/usr/bin/true"], control, helper_object=owner)
+                                else:
+                                    prepared = ctx.wrap_command_with_resource_receipt(
+                                        ["/usr/bin/true"], control, resource,
+                                        "icode-task-0123456789abcdef0123456789abcdef.scope",
+                                        helper_object=owner)
+                            except Exception as error:
+                                failure = error
+                            self.assertIsNone(failure)
+                            called.assert_called_once()
+                            self.assertIs(called.call_args.kwargs.get("helper_object"), owner,
+                                          "context must forward the same borrowed owner")
+                            self.assertIs(called.call_args.kwargs["policy"], ctx.policy)
+                            self.assertEqual(called.call_args.kwargs["workspace_fd"], workspace_fd)
+                            self.assertEqual(called.call_args.kwargs["workspace_identity"],
+                                             workspace_identity)
+                        self.assertIsInstance(prepared, PreparedCommand)
+                        self.assertIs(prepared.helper_object, owner)
+                        self.assertIn(helper_fd, prepared.pass_fds)
+                        self.assertIn(workspace_fd, prepared.pass_fds)
+                        ctx.close()
+                        self.assertTrue(os.fstat(helper_fd))
+                        self.assertEqual(session.workspace_fd_identity, workspace_identity)
+                        self.assertTrue(os.fstat(workspace_fd))
+                    finally:
+                        for channel in (control, peer, resource, resource_peer):
+                            channel.close()
+
+    def test_none_helper_keeps_exact_old_sandbox_keyword_shape(self):
+        session = self.session()
+        ctx = ToolContext(session.workspace_root, sandbox=self.sandbox,
+                          policy=session.policy("code"), workspace_session=session)
+        seen = []
+
+        def violation(argv, *, policy, control_socket, workspace_fd, workspace_identity):
+            seen.append((policy, control_socket, workspace_fd, workspace_identity))
+            return list(argv)
+
+        def resource(argv, *, policy, control_socket, resource_socket, unit,
+                     workspace_fd, workspace_identity):
+            seen.append((policy, control_socket, workspace_fd, workspace_identity))
+            return list(argv)
+
+        control = object()
+        with mock.patch.object(self.sandbox, "wrap_policy_with_violation_receipt", new=violation), \
+                mock.patch.object(self.sandbox, "wrap_policy_with_resource_receipt", new=resource):
+            self.assertEqual(ctx.wrap_command_with_violation_receipt(["true"], control), ["true"])
+            self.assertEqual(ctx.wrap_command_with_resource_receipt(
+                ["true"], control, object(), "icode-fixture.scope"), ["true"])
+        self.assertEqual(len(seen), 2)
+        for policy, channel, fd, identity in seen:
+            self.assertIs(policy, ctx.policy)
+            self.assertIs(channel, control)
+            self.assertEqual(fd, session.workspace_fd)
+            self.assertEqual(identity, session.workspace_fd_identity)
+
+    def test_borrowed_helper_never_bypasses_context_policy_or_session(self):
+        session = self.session()
+        policy = session.policy("code")
+        cases = (
+            ("ticket", session.workspace_root, replace(policy, ticket_id="other-ticket"), False),
+            ("run", session.workspace_root, replace(policy, run_id="other-run"), False),
+            ("workspace", self.workspace, policy, False),
+            ("read-only", session.workspace_root, policy, True),
+        )
+        with open_linux_helper_object(self.helper, self.manifest) as owner:
+            helper_fd = owner.fileno()
+            for name, root, bound_policy, read_only in cases:
+                ctx = ToolContext(root, sandbox=self.sandbox, policy=bound_policy,
+                                  workspace_session=session, read_only_workspace=read_only)
+                with self.subTest(binding=name), \
+                        mock.patch.object(self.sandbox, "wrap_policy_with_violation_receipt") as violation, \
+                        mock.patch.object(self.sandbox, "wrap_policy_with_resource_receipt") as resource:
+                    with self.assertRaises(IsolationUnavailable):
+                        ctx.wrap_command_with_violation_receipt(
+                            ["/usr/bin/true"], object(), helper_object=owner)
+                    with self.assertRaises(IsolationUnavailable):
+                        ctx.wrap_command_with_resource_receipt(
+                            ["/usr/bin/true"], object(), object(),
+                            "icode-fixture.scope", helper_object=owner)
+                    violation.assert_not_called()
+                    resource.assert_not_called()
+                    self.assertTrue(os.fstat(helper_fd))
+
     def test_broker_rejects_channel_collision_before_payload(self):
         from icode.execution_broker import execute_linux_violation_observed_command
         session = self.session()
-        def collision(argv, channel):
-            return PreparedCommand(argv, pass_fds=(channel.fileno(),), cwd="/")
+        hits = []
+        def collision(argv, channel, *, helper_object):
+            hits.append(True)
+            command = self.sandbox.wrap_policy_with_violation_receipt(
+                argv, policy=session.policy("code"), control_socket=channel,
+                helper_object=helper_object, workspace_fd=session.workspace_fd,
+                workspace_identity=session.workspace_fd_identity)
+            command.pass_fds += (channel.fileno(),)
+            return command
         result = execute_linux_violation_observed_command(
             ["/usr/bin/touch", "created"], cwd=session.workspace_root,
             sandbox=self.sandbox, policy=session.policy("code"), timeout=3,
             command_wrapper=collision)
+        self.assertEqual(hits, [True], "channel collision callback was not reached")
         self.assertEqual(result.error, "isolation_unavailable")
         self.assertFalse((session.workspace_root / "created").exists())
         self.assertTrue(os.fstat(session.workspace_fd))
