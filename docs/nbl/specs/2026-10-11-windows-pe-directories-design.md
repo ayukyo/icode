@@ -48,6 +48,8 @@ RT_MANIFEST为数字type24，枚举其所有Name（数字/字符串）和Languag
 
 capture闭集schema升到2，增加 `static_directory_check`：固定scope=imports_delay_manifest、complete=true、绑定helper_sha256、ordinary/delay模块和符号数、resource/manifest计数、manifest原bytes摘要及全部level语义通过标志；不公开DLL/符号名、XML、资源路径或payload。旧schema1消费者明确处理，不隐式兼容混合字段。更新对应工作流/回执合同测试；不因本窄scope而解除生产三个false。
 
+实施冻结的新增闭集字段为 `scope`、`complete`、`helper_sha256`、`ordinary_module_count`、`ordinary_symbol_count`、`delay_module_count`、`delay_symbol_count`、`resource_count`、`manifest_count`、`manifest_sha256`、`all_manifests_as_invoker`、`all_manifests_ui_access_false`。计数为实际解析结果整数；摘要列表按全部manifest叶顺序保留重复项，不去重；两个语义标志只由已通过固定策略的叶取得。当前唯一消费为CI日志，新schema不变为生产准入。
+
 解析或预算失败停止该签名前检查，不生成成功capture；固定分类不泄漏payload。任意code错误不被“诊断只读”宽容接受。CLI输出与同SHA四格Windows实际消费才是成品静态证据；未接入capture的纯函数单测不能称阶段完成。
 
 ## 验证与实施顺序
@@ -60,6 +62,8 @@ capture闭集schema升到2，增加 `static_directory_check`：固定scope=impor
 
 ## 当前状态
 
-仅设计；尚无目录层源码、TDD或实际Windows新scope证据。独立SPEC首审C0/I1/M1：解析快照未直接绑定摘要、零payload偏移策略未定；已补同raw摘要比较、A→B→A负控及空区间策略，复审C0/I0/M0。不同QUALITY为C0/I0/M2、无阻断：字符串NUL/资源entry+leaf/先扣预算，以及manifest namespace/合法dependency/同值重复level需明确；现已具名纳入。可进入实施计划，不等于代码或Windows验收通过。
+设计审查履历：独立SPEC首审C0/I1/M1：解析快照未直接绑定摘要、零payload偏移策略未定；已补同raw摘要比较、A→B→A负控及空区间策略，复审C0/I0/M0。不同QUALITY为C0/I0/M2、无阻断：字符串NUL/资源entry+leaf/先扣预算，以及manifest namespace/合法dependency/同值重复level需明确；已具名纳入。
+
+实施进度：目录层已实现并通过独立SPEC/QUALITY各C0/I0/M0及62项本地回归；逐项读跨section漏洞和BOM-less UTF16再探测均经真实bytes RED→GREEN修复。capture schema2/同raw摘要绑定与DEFAULT接线已实现，主代理含工作流顺序合同138项通过0skip；全片SPEC/QUALITY各C0/I0/M0，独立115/103项通过。完整preflight于2026-10-11 06:53 UTC三道通过，进入九文件main发布与同SHA四Windows验收。尚无实际Windows新scope证据，不等于静态成品或整体通过。详见[实施计划](../plans/2026-10-11-windows-pe-directories.md)。
 
 独立只读研究2026-10-11核 pefile HEAD [`84b1100c3faeb96a64f2fca141bdf17706d4d6c2`](https://github.com/erocarrera/pefile/commit/84b1100c3faeb96a64f2fca141bdf17706d4d6c2)，提交时间2026-10-10 12:55:35 UTC，[LICENSE仍MIT](https://github.com/erocarrera/pefile/blob/84b1100c3faeb96a64f2fca141bdf17706d4d6c2/LICENSE)。[ordinary](https://github.com/erocarrera/pefile/blob/84b1100c3faeb96a64f2fca141bdf17706d4d6c2/pefile.py#L5849)、[delay](https://github.com/erocarrera/pefile/blob/84b1100c3faeb96a64f2fca141bdf17706d4d6c2/pefile.py#L5647)、[resource](https://github.com/erocarrera/pefile/blob/84b1100c3faeb96a64f2fca141bdf17706d4d6c2/pefile.py#L4604)保留某些warning/break后返回部分结果；只借鉴遍历与预算机制，不能直接用该容错结果授完整信用。2026-10-09旧固定只作历史，不能伪装当前HEAD；没有源码复制/新依赖。

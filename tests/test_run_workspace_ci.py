@@ -14,6 +14,35 @@ from scripts.run_workspace_ci import CROSS_PLATFORM_R3_TESTS, DEFAULT_MODULES
 
 
 class TestWorkspaceCiCoverage(unittest.TestCase):
+    def test_pe_directories_portable_contract_selected_once_completely_without_skips(self):
+        name = 'tests.test_windows_pe_directories'
+        self.assertEqual(DEFAULT_MODULES.count(name), 1)
+        module = importlib.import_module(name)
+        test_class = module.TestWindowsPeDirectories
+        methods = unittest.defaultTestLoader.getTestCaseNames(test_class)
+        self.assertTrue(methods)
+        self.assertFalse(getattr(test_class, '__unittest_skip__', False))
+        for method in methods:
+            self.assertFalse(getattr(getattr(test_class, method), '__unittest_skip__', False))
+
+        def cases(suite):
+            for test in suite:
+                if isinstance(test, unittest.TestSuite):
+                    yield from cases(test)
+                else:
+                    yield test
+
+        expected = {name + '.TestWindowsPeDirectories.' + method for method in methods}
+        actual = [test for entry in DEFAULT_MODULES
+                  if entry == name or entry.startswith(name + '.')
+                  for test in cases(unittest.defaultTestLoader.loadTestsFromName(entry))]
+        self.assertEqual({test.id() for test in actual}, expected)
+        self.assertEqual(len(actual), len(expected))
+        for test in actual:
+            self.assertIs(type(test), test_class)
+        self.assertEqual(DEFAULT_MODULES.count('tests.test_windows_pe_reader'), 1)
+        self.assertEqual(DEFAULT_MODULES.count('tests.test_windows_pe_capture.TestWindowsPeCapture'), 1)
+
     def test_execution_binding_methods_selected_once_and_required_with_fixture_holders(self):
         expected = {
             "tests.test_control.TestControlPlaneIntakeAdapter.test_bind_execution_root_uses_explicit_trusted_path_and_stable_request",

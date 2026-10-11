@@ -19,6 +19,7 @@ import xml.etree.ElementTree as ET
 
 from scripts.probe_windows_build_context import _read_regular as real_read_regular
 from icode.runner import _run_unittest_with_bounded_output as real_runner
+from tests.test_windows_pe_directories import Fixture, XML, valid_pe_bytes
 
 IMAGE_LIMIT = 8 * 1024 * 1024
 OUTPUT = b'\x80raw imports\r\n'
@@ -69,7 +70,7 @@ class TestWindowsPeCapture(unittest.TestCase):
             VCToolsInstallDir='C:\\工具\\VC\\', WindowsSdkDir='C:\\SDK\\',
             MSBuildToolsPath='C:\\Build Tools\\')
         self.target = self.root / 'Release' / f'icode-sandbox-windows-{arch}.exe'
-        self.target.write_bytes(self.image(arch))
+        self.target.write_bytes(valid_pe_bytes(arch))
         self.dumpbin = PureWindowsPath(self.context['VCToolsInstallDir']) / 'bin' / ('Host' + arch) / arch / 'dumpbin.exe'
         self.mt = PureWindowsPath(self.context['WindowsSdkDir']) / 'bin' / self.context['sdk_version'] / arch / 'mt.exe'
         self.tools = {}
@@ -126,14 +127,19 @@ class TestWindowsPeCapture(unittest.TestCase):
             with self.subTest(arch=arch):
                 self.configure(arch)
                 receipt, execution, probe = self.invoke()
-                digest = hashlib.sha256(self.image(arch)).hexdigest()
-                self.assertEqual(receipt, dict(schema_version=1, architecture=arch, build_context=self.context,
+                digest = hashlib.sha256(valid_pe_bytes(arch)).hexdigest()
+                self.assertEqual(receipt, dict(schema_version=2, architecture=arch, build_context=self.context,
                     helper_sha256=digest, dumpbin=dict(path=str(self.dumpbin),
                         sha256=hashlib.sha256(self.tools[self.dumpbin].read_bytes()).hexdigest()),
                     mt=dict(path=str(self.mt), sha256=hashlib.sha256(self.tools[self.mt].read_bytes()).hexdigest()),
                     dumpbin_stdout_base64=base64.b64encode(OUTPUT).decode('ascii'),
                     manifest_base64=base64.b64encode(MANIFEST).decode('ascii'), parse_complete=False,
-                    runtime_load_verified=False, source_launch_verified=False))
+                    runtime_load_verified=False, source_launch_verified=False,
+                    static_directory_check=dict(scope='imports_delay_manifest', complete=True,
+                        helper_sha256=digest, ordinary_module_count=0, ordinary_symbol_count=0,
+                        delay_module_count=0, delay_symbol_count=0, resource_count=1, manifest_count=1,
+                        manifest_sha256=[hashlib.sha256(XML).hexdigest()],
+                        all_manifests_as_invoker=True, all_manifests_ui_access_false=True)))
                 probe.assert_called_once_with(self.root, arch)
                 self.assertEqual(execution.call_count, 2)
                 first, second = self.calls
@@ -149,6 +155,62 @@ class TestWindowsPeCapture(unittest.TestCase):
                 self.assertFalse(owned.exists())
                 self.assertEqual(base64.b64decode(receipt['dumpbin_stdout_base64']), OUTPUT)
                 self.assertEqual(base64.b64decode(receipt['manifest_base64']), MANIFEST)
+
+    def test_static_directory_check_consumes_real_imports_delays_and_all_manifest_leaves(self):
+        other = XML.replace(b'><', b'> <', 1)
+        fixture = Fixture(manifests=[(1, 1033, XML), (1, 1031, XML), (2, 1033, other)],
+                          extra=[(10, 'PRIVATE_RESOURCE', 1033, b'PRIVATE_PAYLOAD')])
+        fixture.imports(symbols=('PRIVATE_SYMBOL', 7))
+        fixture.imports(delay=True, symbols=('PRIVATE_DELAY',), dll=b'private.dll')
+        raw = fixture.image()
+        self.target.write_bytes(raw)
+        receipt, _, _ = self.invoke()
+        self.assertEqual(receipt['schema_version'], 2)
+        self.assertEqual(receipt['static_directory_check'], dict(
+            scope='imports_delay_manifest', complete=True,
+            helper_sha256=hashlib.sha256(raw).hexdigest(),
+            ordinary_module_count=1, ordinary_symbol_count=2,
+            delay_module_count=1, delay_symbol_count=1, resource_count=4, manifest_count=3,
+            manifest_sha256=[hashlib.sha256(item).hexdigest() for item in (XML, XML, other)],
+            all_manifests_as_invoker=True, all_manifests_ui_access_false=True))
+        self.assertEqual(receipt['helper_sha256'], receipt['static_directory_check']['helper_sha256'])
+        check = receipt['static_directory_check']
+        for field in ('ordinary_module_count', 'ordinary_symbol_count', 'delay_module_count',
+                      'delay_symbol_count', 'resource_count', 'manifest_count'):
+            self.assertIs(type(check[field]), int)
+        for field in ('complete', 'all_manifests_as_invoker', 'all_manifests_ui_access_false'):
+            self.assertIs(type(check[field]), bool)
+        for value in ('PRIVATE_SYMBOL', 'PRIVATE_DELAY', 'private.dll', 'PRIVATE_RESOURCE',
+                      'PRIVATE_PAYLOAD', '<assembly'):
+            self.assertNotIn(value, json.dumps(receipt))
+
+    def test_middle_snapshot_a_to_b_to_a_rejects_before_tools_with_fixed_error(self):
+        original = self.target.read_bytes()
+        alternate = Fixture(manifests=[(1, 1033, XML.replace(b'><', b'> <', 1))]).image()
+        reads = []
+        def read(path, limit):
+            reads.append((path, limit))
+            if path == self.target and not self.calls and reads.count((path, limit)) == 2:
+                self.target.write_bytes(alternate)
+                try:
+                    return self.read_regular(path, limit)
+                finally:
+                    self.target.write_bytes(original)
+            return self.read_regular(path, limit)
+        with self.assertRaisesRegex(RuntimeError, '^PE bytes changed during capture$'):
+            self.invoke(read=read)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.target.read_bytes(), original)
+        self.assertEqual(len(reads), 4)
+        self.assertFalse(any(path.name.startswith('icode-pe-capture-') for path in self.root.iterdir()))
+
+    def test_invalid_second_manifest_or_directory_budget_refuses_before_tools(self):
+        for fixture in (Fixture(manifests=[(1, 1033, XML),
+                    (2, 1033, XML.replace(b'asInvoker', b'requireAdministrator'))]),
+                Fixture(manifests=[(1, 1033, b'x' * 4097)])):
+            with self.subTest(size=len(fixture.image())):
+                self.target.write_bytes(fixture.image())
+                self.invoke(bad=True, count=0)
 
     def test_platform_requested_and_python_compiled_architecture_reject_before_tools(self):
         for platform, compiled, requested in (('linux', 'win-amd64', 'x64'),
@@ -321,22 +383,24 @@ class TestWindowsPeCapture(unittest.TestCase):
                             selected.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
                         return result
                     try:
-                        self.invoke(read=read, runner=execute, bad=True, count=2)
+                        expected_calls = 0 if selected == self.target and kind == 'read-error' else 2
+                        self.invoke(read=read, runner=execute, bad=True, count=expected_calls)
                     finally:
                         selected.write_bytes(original)
 
     def test_success_rereads_all_three_original_images_after_owned_cleanup(self):
         reads = []
         def read(path, limit):
-            if len(reads) >= 4:
+            if len(reads) >= 5:
                 self.assertFalse(self.calls[0][1]['workspace'].exists())
             reads.append((path, limit))
             return self.read_regular(path, limit)
         self.invoke(read=read)
         image_reads = [(self.target, IMAGE_LIMIT), (Path(str(self.dumpbin)), IMAGE_LIMIT), (Path(str(self.mt)), IMAGE_LIMIT)]
         self.assertEqual(reads[:3], image_reads)
-        self.assertEqual(reads[3][1], 4096)
-        self.assertEqual(reads[4:], image_reads)
+        self.assertEqual(reads[3], (self.target, IMAGE_LIMIT))
+        self.assertEqual(reads[4][1], 4096)
+        self.assertEqual(reads[5:], image_reads)
 
     def test_context_runner_read_and_owned_cleanup_expected_exceptions_fail_closed(self):
         errors = (OSError('PRIVATE'), UnicodeError('PRIVATE'), ValueError('PRIVATE'), RuntimeError('PRIVATE'),
@@ -394,6 +458,22 @@ class TestWindowsPeCapture(unittest.TestCase):
         capture.assert_called_once_with(self.root, 'x64')
         self.assertTrue(output.isascii())
         self.assertEqual(json.loads(canonical), receipt)
+        decoded = json.loads(output.split('windows-pe-capture receipt=', 1)[1])
+        self.assertEqual(set(decoded), {'schema_version', 'architecture', 'build_context',
+            'helper_sha256', 'dumpbin', 'mt', 'dumpbin_stdout_base64', 'manifest_base64',
+            'parse_complete', 'runtime_load_verified', 'source_launch_verified',
+            'static_directory_check'})
+        self.assertIs(type(decoded['schema_version']), int)
+        self.assertEqual(decoded['schema_version'], 2)
+        check = decoded['static_directory_check']
+        self.assertEqual(set(check), {'scope', 'complete', 'helper_sha256',
+            'ordinary_module_count', 'ordinary_symbol_count', 'delay_module_count',
+            'delay_symbol_count', 'resource_count', 'manifest_count', 'manifest_sha256',
+            'all_manifests_as_invoker', 'all_manifests_ui_access_false'})
+        self.assertEqual(check['helper_sha256'], decoded['helper_sha256'])
+        self.assertEqual(check['scope'], 'imports_delay_manifest')
+        for field in ('parse_complete', 'runtime_load_verified', 'source_launch_verified'):
+            self.assertIs(decoded[field], False)
 
     def test_capture_canonical_json_total_budget_rejects_without_truncation(self):
         self.invoke(context=dict(self.context, generator='工具' * 6000), bad=True, count=2)

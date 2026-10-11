@@ -179,6 +179,7 @@ DEFAULT_MODULES = (
     "tests.test_windows_build_context.TestWindowsBuildContext",
     "tests.test_windows_pe_capture.TestWindowsPeCapture",
     "tests.test_windows_pe_reader",
+    "tests.test_windows_pe_directories",
     *CONTRACT_ENGINEERING_TESTS,
     *OPERATION_ADMISSION_TESTS,
     *EXECUTION_BINDING_TESTS,

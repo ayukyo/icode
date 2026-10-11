@@ -22,6 +22,7 @@ sys.path.insert(0, str(_REPOSITORY / 'src'))
 from icode.runner import _run_unittest_with_bounded_output  # noqa: E402
 from icode.native_helper import windows_arch_from_platform, windows_pe_architecture  # noqa: E402
 from scripts.probe_windows_build_context import probe as _probe_context, _read_regular  # noqa: E402
+from scripts.windows_pe_directories import inspect_directories  # noqa: E402
 
 _IMAGE_LIMIT = 8 * 1024 * 1024
 _OUTPUT_LIMIT = 16384
@@ -88,6 +89,12 @@ def capture(build_directory: Path, architecture: str) -> dict:
                   context['sdk_version'] / architecture / 'mt.exe'))
     helper = build_directory / 'Release' / f'icode-sandbox-windows-{architecture}.exe'
     digests = [_image_digest(path, architecture) for path in (helper, dumpbin, mt)]
+    raw = _read_regular(helper, _IMAGE_LIMIT)
+    # Bind the exact snapshot consumed by the directory parser to the initial
+    # digest; an end-of-capture re-read cannot detect an A -> B -> A transition.
+    if hashlib.sha256(raw).hexdigest() != digests[0]:
+        raise RuntimeError('PE bytes changed during capture')
+    directories = inspect_directories(raw, expected_arch=architecture)
     with tempfile.TemporaryDirectory(prefix='icode-pe-capture-', dir=build_directory) as directory:
         workspace = Path(directory)
         output = workspace / 'manifest.xml'
@@ -110,12 +117,21 @@ def capture(build_directory: Path, architecture: str) -> dict:
     for path, expected in zip((helper, dumpbin, mt), digests):
         if _image_digest(path, architecture) != expected:
             raise RuntimeError('PE bytes changed during capture')
-    receipt = dict(schema_version=1, architecture=architecture, build_context=context,
+    receipt = dict(schema_version=2, architecture=architecture, build_context=context,
         helper_sha256=digests[0], dumpbin=dict(path=str(dumpbin), sha256=digests[1]),
         mt=dict(path=str(mt), sha256=digests[2]),
         dumpbin_stdout_base64=base64.b64encode(imports).decode('ascii'),
         manifest_base64=base64.b64encode(manifest).decode('ascii'),
-        parse_complete=False, runtime_load_verified=False, source_launch_verified=False)
+        parse_complete=False, runtime_load_verified=False, source_launch_verified=False,
+        static_directory_check=dict(scope=directories.scope, complete=True,
+            helper_sha256=digests[0], ordinary_module_count=len(directories.ordinary_imports),
+            ordinary_symbol_count=sum(len(module.symbols) for module in directories.ordinary_imports),
+            delay_module_count=len(directories.delay_imports),
+            delay_symbol_count=sum(len(module.symbols) for module in directories.delay_imports),
+            resource_count=len(directories.resources), manifest_count=len(directories.manifests),
+            manifest_sha256=[manifest.sha256 for manifest in directories.manifests],
+            all_manifests_as_invoker=all(manifest.level == 'asInvoker' for manifest in directories.manifests),
+            all_manifests_ui_access_false=all(manifest.ui_access is False for manifest in directories.manifests)))
     # These public base64 samples are reversible raw bytes, not redaction or a
     # complete PE/manifest parse. Enforce the total budget without truncation.
     _encode(receipt)
