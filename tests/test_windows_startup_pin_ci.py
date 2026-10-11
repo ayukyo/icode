@@ -42,15 +42,18 @@ PORTABLE_CLASSES = (
     "tests.test_windows_private_dacl_window.PrivateDaclNativeApiTests",
     "tests.test_windows_private_dacl_window.PrivateDaclWindowContractTests",
     "tests.test_windows_private_dacl_window.PrivateDaclLifecycleTests",
+    "tests.test_windows_private_sibling_window.PrivateSiblingPortableTests",
 )
 NATIVE_CLASS = "tests.test_windows_startup_native.WindowsEnforcementTests"
 NATIVE_SECURITY_CLASS = "tests.test_windows_startup_native.WindowsSecurityQueryTests"
 NATIVE_IDENTITY_CLASS = "tests.test_windows_startup_host_identity.WindowsHostIdentityTests"
 NATIVE_DACL_CLASS = "tests.test_windows_private_dacl_window.WindowsPrivateDaclWindowNativeTests"
-NATIVE_CLASSES = (NATIVE_CLASS, NATIVE_SECURITY_CLASS, NATIVE_IDENTITY_CLASS, NATIVE_DACL_CLASS)
-NATIVE_COUNTS = (6, 2, 2, 2)
+NATIVE_SIBLING_CLASS = "tests.test_windows_private_sibling_window.WindowsPrivateSiblingWindowNativeTests"
+NATIVE_CLASSES = (NATIVE_CLASS, NATIVE_SECURITY_CLASS, NATIVE_IDENTITY_CLASS, NATIVE_DACL_CLASS,
+                  NATIVE_SIBLING_CLASS)
+NATIVE_COUNTS = (6, 2, 2, 2, 2)
 PORTABLE_COUNTS = (1, 32, 30, 3, 2, 24, 17, 2, 2, 16, 1, 4, 32, 7, 1, 13, 7, 9, 4, 3, 3, 18,
-                   1, 6, 21, 5, 5, 5, 11, 3, 13)
+                   1, 6, 21, 5, 5, 5, 11, 3, 13, 18)
 GUARD_MODULE = "tests.test_windows_startup_pin_ci"
 
 
@@ -110,6 +113,7 @@ class StartupPinCiTests(unittest.TestCase):
                                          "tests.test_windows_startup_source",
                                          "tests.test_windows_installed_source",
                                          "tests.test_windows_private_dacl_window.",
+                                         "tests.test_windows_private_sibling_window.",
                                          "tests.test_windows_bootstrap_binding.InstalledSourceCaptureTests"))
                     for test in cases(unittest.defaultTestLoader.loadTestsFromName(entry))]
         self.assertCountEqual(selected, expected)
@@ -194,8 +198,9 @@ class StartupPinCiTests(unittest.TestCase):
                                 ("tests.test_windows_startup_source.SourceOwnerTests", 18),
                                 ("tests.test_windows_installed_source.SourceConsumerObservationTests", 21),
                                 ("tests.test_windows_bootstrap_binding.InstalledSourceCaptureTests", 5),
-                                *zip(PORTABLE_CLASSES[-4:], PORTABLE_COUNTS[-4:]),
-                                (NATIVE_DACL_CLASS, 2)):
+                                *zip(PORTABLE_CLASSES[-5:-1], PORTABLE_COUNTS[-5:-1]),
+                                (PORTABLE_CLASSES[-1], 18),
+                                (NATIVE_DACL_CLASS, 2), (NATIVE_SIBLING_CLASS, 2)):
             module_id, class_name = class_id.rsplit(".", 1)
             module = importlib.import_module(module_id)
             test_class = getattr(module, class_name)
@@ -212,7 +217,8 @@ class StartupPinCiTests(unittest.TestCase):
                           "tests.test_windows_startup_security", "tests.test_windows_startup_security_native",
                           "tests.test_windows_startup_host_identity", "tests.test_windows_installed_chain",
                           "tests.test_windows_startup_source", "tests.test_windows_installed_source",
-                          "tests.test_windows_private_dacl_window"):
+                          "tests.test_windows_private_dacl_window",
+                          "tests.test_windows_private_sibling_window"):
             module = importlib.import_module(module_id)
             with patch.object(module, "setUpModule", skip_fixture, create=True):
                 code, result = self.run_ci((module_id,))
@@ -261,6 +267,29 @@ class StartupPinCiTests(unittest.TestCase):
                 del native.__unittest_skip__
         self.assertIs(native.__dict__.get("__unittest_skip__", missing), original)
         self.assertEqual(result.testsRun, 34)
+        self.assertEqual(len(result.skipped), 2)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [])
+        self.assertEqual(code, 1)
+
+    def test_private_sibling_module_platform_skip_never_receives_native_credit(self):
+        module_id = "tests.test_windows_private_sibling_window"
+        module = importlib.import_module(module_id)
+        native = module.WindowsPrivateSiblingWindowNativeTests
+        missing = object()
+        original = native.__dict__.get("__unittest_skip__", missing)
+        try:
+            if original is not missing:
+                del native.__unittest_skip__
+            with patch.object(native, "__unittest_skip__", True, create=True):
+                code, result = self.run_ci((module_id,))
+        finally:
+            if original is not missing:
+                native.__unittest_skip__ = original
+            elif "__unittest_skip__" in native.__dict__:
+                del native.__unittest_skip__
+        self.assertIs(native.__dict__.get("__unittest_skip__", missing), original)
+        self.assertEqual(result.testsRun, 20)
         self.assertEqual(len(result.skipped), 2)
         self.assertEqual(result.errors, [])
         self.assertEqual(result.failures, [])

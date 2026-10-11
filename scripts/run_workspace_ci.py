@@ -185,10 +185,12 @@ def startup_pin_tests(platform: str) -> tuple[str, ...]:
         "tests.test_windows_private_dacl_window.PrivateDaclNativeApiTests",
         "tests.test_windows_private_dacl_window.PrivateDaclWindowContractTests",
         "tests.test_windows_private_dacl_window.PrivateDaclLifecycleTests",
+        "tests.test_windows_private_sibling_window.PrivateSiblingPortableTests",
         *(("tests.test_windows_startup_native.WindowsEnforcementTests",
            "tests.test_windows_startup_native.WindowsSecurityQueryTests",
            "tests.test_windows_startup_host_identity.WindowsHostIdentityTests",
-           "tests.test_windows_private_dacl_window.WindowsPrivateDaclWindowNativeTests") if platform == "nt" else ()),
+           "tests.test_windows_private_dacl_window.WindowsPrivateDaclWindowNativeTests",
+           "tests.test_windows_private_sibling_window.WindowsPrivateSiblingWindowNativeTests") if platform == "nt" else ()),
     )
 
 
@@ -267,6 +269,7 @@ def main(modules: tuple[str, ...] = DEFAULT_MODULES) -> int:
             "tests.test_windows_installed_source.",
             "tests.test_windows_bootstrap_binding.InstalledSourceCaptureTests.",
             "tests.test_windows_private_dacl_window.",
+            "tests.test_windows_private_sibling_window.",
         ))
     )
     result = unittest.TextTestRunner(verbosity=1).run(suite)
