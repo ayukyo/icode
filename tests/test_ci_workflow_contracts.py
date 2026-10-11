@@ -693,15 +693,47 @@ class TestCrossPlatformWorkspaceEvidenceCi(unittest.TestCase):
             encoding="utf-8",
         )
         required_matrix = """  workspace-platforms:
-    name: R2.1 workspace (${{ matrix.os }})
+    name: R2.1 workspace (${{ matrix.os }}, Python ${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest, windows-11-arm]
+        include:
+          - os: ubuntu-latest
+            python-version: "3.11"
+          - os: macos-latest
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.11"
+          - os: windows-11-arm
+            python-version: "3.11"
+          - os: windows-latest
+            python-version: "3.12"
+          - os: windows-11-arm
+            python-version: "3.12"
 """
         self.assertIn(required_matrix, workflow)
+
+    def test_workspace_python_setup_consumes_matrix_and_preserves_required_steps(self) -> None:
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        job = workflow.split("  workspace-platforms:\n", 1)[1].split("\n  windows-runner-pipe:", 1)[0]
+        self.assertIn("""      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+""", job)
+        self.assertEqual(job.count("          - os:"), 6)
+        for required in (
+            "          persist-credentials: false\n          submodules: recursive\n",
+            "      PYTHONPATH: src\n      PYTHONIOENCODING: utf-8\n      PYTHONUTF8: \"1\"\n",
+            "      - name: Verify workspace and autonomous lifecycle\n        run: python scripts/run_workspace_ci.py\n",
+            "      - name: Verify Windows R3 snapshot rejects junctions\n        if: runner.os == 'Windows'\n        run: python -m unittest tests.test_r3_regression.TestWindowsSnapshotReparseSafety -v\n",
+            "      - name: Verify leased TCP socket lifecycle\n        run: python scripts/run_network_lease_ci.py\n",
+        ):
+            self.assertIn(required, job)
+        for forbidden in ("continue-on-error:", "\n    if:", "permissions:", "architecture:"):
+            self.assertNotIn(forbidden, job)
 
 
 class TestWindowsRunnerPipeNativeCi(unittest.TestCase):

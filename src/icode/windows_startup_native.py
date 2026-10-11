@@ -15,6 +15,7 @@ _DOS_UNITS = 32768
 _INVALID = ctypes.c_void_p(-1).value
 _FILE_READ_DATA_OR_LIST_DIRECTORY = 0x1
 _FILE_READ_ATTRIBUTES = 0x80
+_READ_CONTROL = 0x20000
 _SYNCHRONIZE = 0x100000
 _FILE_SHARE_READ = 0x1
 _FILE_OPEN = 0x1
@@ -72,6 +73,12 @@ _INFO_CLASSES = {0: _FILE_BASIC_INFO, 1: _FILE_STANDARD_INFO,
 
 
 class WindowsStartupPinBackend:
+    """Single actor: serialize all HANDLE use against close/open.
+
+    Ownership must remain exclusive from _require through each native read;
+    numeric registration alone does not provide thread-safe lifetime locking.
+    """
+
     def __init__(self):
         if os.name != 'nt':
             raise StartupPinError('native Windows startup pin backend unavailable')
@@ -144,7 +151,8 @@ class WindowsStartupPinBackend:
         ios = _IO_STATUS_BLOCK()
         # READ_DATA/LIST_DIRECTORY actually participates in the share boundary;
         # READ_ATTRIBUTES alone would not block a conflicting writer.
-        access = _FILE_READ_DATA_OR_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
+        access = (_FILE_READ_DATA_OR_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES
+                  | _READ_CONTROL | _SYNCHRONIZE)
         options = (_FILE_SYNCHRONOUS_IO_NONALERT | _FILE_OPEN_REPARSE_POINT
                    | (_FILE_DIRECTORY_FILE if directory else _FILE_NON_DIRECTORY_FILE))
         owned = False
@@ -240,6 +248,17 @@ class WindowsStartupPinBackend:
                                    bool(tag.FileAttributes & _FILE_ATTRIBUTE_REPARSE_POINT),
                                    bool(standard.DeletePending), 'disk', standard.NumberOfLinks,
                                    standard.EndOfFile, basic.ChangeTime)
+
+    def query_security(self, handle: int) -> bytes:
+        """Read this active object's descriptor without changing HANDLE ownership."""
+        self._require(handle)
+        if not hasattr(self, '_security_reader'):
+            try:
+                from .windows_startup_security_native import WindowsStartupSecurityReader
+                self._security_reader = WindowsStartupSecurityReader()
+            except Exception:
+                raise StartupPinError('native Windows startup security reader unavailable') from None
+        return self._security_reader.read(handle)
 
     def read(self, handle: int, offset: int, count: int) -> bytes:
         self._require(handle, False)

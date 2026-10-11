@@ -15,8 +15,17 @@ PORTABLE_CLASSES = (
     "tests.test_windows_startup_pin.StartupPinTests",
     "tests.test_windows_startup_native.NativeTransportTests",
     "tests.test_windows_startup_native.NativeModuleTests",
+    "tests.test_windows_startup_security.StartupSecurityInterfaceTests",
+    "tests.test_windows_startup_security.StartupSecurityParserTests",
+    "tests.test_windows_startup_security.StartupSecurityPolicyTests",
+    "tests.test_windows_startup_security_native.SecurityReaderConstructorTests",
+    "tests.test_windows_startup_security_native.SecurityReaderInterfaceTests",
+    "tests.test_windows_startup_security_native.SecurityReaderTransportTests",
 )
 NATIVE_CLASS = "tests.test_windows_startup_native.WindowsEnforcementTests"
+NATIVE_SECURITY_CLASS = "tests.test_windows_startup_native.WindowsSecurityQueryTests"
+NATIVE_CLASSES = (NATIVE_CLASS, NATIVE_SECURITY_CLASS)
+PORTABLE_COUNTS = (1, 32, 30, 3, 2, 24, 17, 2, 2, 16)
 GUARD_MODULE = "tests.test_windows_startup_pin_ci"
 
 
@@ -46,19 +55,22 @@ class StartupPinCiTests(unittest.TestCase):
 
     def test_default_selects_complete_pin_contract_once(self):
         expected = []
-        for class_id, count in zip(PORTABLE_CLASSES, (1, 32, 25, 2)):
+        self.assertEqual(len(PORTABLE_CLASSES), len(PORTABLE_COUNTS))
+        for class_id, count in zip(PORTABLE_CLASSES, PORTABLE_COUNTS):
             loaded = list(cases(unittest.defaultTestLoader.loadTestsFromName(class_id)))
             self.assertEqual(len(loaded), count)
             for test in loaded:
                 self.assertFalse(getattr(type(test), "__unittest_skip__", False))
                 self.assertFalse(getattr(getattr(test, test._testMethodName), "__unittest_skip__", False))
             expected.extend(test.id() for test in loaded)
-        native = list(cases(unittest.defaultTestLoader.loadTestsFromName(NATIVE_CLASS)))
-        self.assertEqual(len(native), 6)
-        if os.name == "nt":
-            expected.extend(test.id() for test in native)
+        for class_id, count in zip(NATIVE_CLASSES, (6, 2)):
+            native = list(cases(unittest.defaultTestLoader.loadTestsFromName(class_id)))
+            self.assertEqual(len(native), count)
+            if os.name == "nt":
+                expected.extend(test.id() for test in native)
         selected = [test.id() for entry in ci.DEFAULT_MODULES
-                    if entry.startswith(("tests.test_windows_startup_pin.", "tests.test_windows_startup_native."))
+                    if entry.startswith(("tests.test_windows_startup_pin.", "tests.test_windows_startup_native.",
+                                         "tests.test_windows_startup_security.", "tests.test_windows_startup_security_native."))
                     for test in cases(unittest.defaultTestLoader.loadTestsFromName(entry))]
         self.assertCountEqual(selected, expected)
         self.assertEqual(ci.DEFAULT_MODULES.count(GUARD_MODULE), 1)
@@ -73,14 +85,15 @@ class StartupPinCiTests(unittest.TestCase):
         self.assertTrue(callable(select), "missing platform startup pin selector")
         portable = [test.id() for name in PORTABLE_CLASSES
                     for test in cases(unittest.defaultTestLoader.loadTestsFromName(name))]
-        native = [test.id() for test in cases(unittest.defaultTestLoader.loadTestsFromName(NATIVE_CLASS))]
+        native = [test.id() for name in NATIVE_CLASSES
+                  for test in cases(unittest.defaultTestLoader.loadTestsFromName(name))]
         for platform in ("posix", "nt"):
             selected = [test.id() for name in select(platform)
                         for test in cases(unittest.defaultTestLoader.loadTestsFromName(name))]
             self.assertCountEqual(selected, portable + (native if platform == "nt" else []))
 
     def test_every_pin_method_body_skip_is_required(self):
-        for class_id in (*PORTABLE_CLASSES, NATIVE_CLASS, GUARD_MODULE + ".StartupPinCiTests"):
+        for class_id in (*PORTABLE_CLASSES, *NATIVE_CLASSES, GUARD_MODULE + ".StartupPinCiTests"):
             module_id, class_name = class_id.rsplit(".", 1)
             test_class = getattr(importlib.import_module(module_id), class_name)
             for method in unittest.defaultTestLoader.getTestCaseNames(test_class):
@@ -89,15 +102,18 @@ class StartupPinCiTests(unittest.TestCase):
                 with self.subTest(method=class_id + "." + method), patch.object(
                     test_class, "__unittest_skip__", False, create=True
                 ), patch.object(test_class, "setUp", lambda _case: None), patch.object(test_class, method, skip_body):
-                    code, result = self.run_ci((class_id + "." + method,))
-                    self.assertEqual(code, 1)
-                    self.assertEqual(result.testsRun, 1)
-                    self.assertEqual(result.errors, [])
-                    self.assertEqual(result.failures, [])
-                    self.assertEqual(len(result.skipped), 1)
+                    for selection in (class_id + "." + method, class_id, module_id):
+                        suite = unittest.defaultTestLoader.loadTestsFromName(class_id + "." + method)
+                        with patch.object(ci.unittest.defaultTestLoader, "loadTestsFromNames", return_value=suite):
+                            code, result = self.run_ci((selection,))
+                        self.assertEqual(code, 1)
+                        self.assertEqual(result.testsRun, 1)
+                        self.assertEqual(result.errors, [])
+                        self.assertEqual(result.failures, [])
+                        self.assertEqual(len(result.skipped), 1)
 
     def test_pin_fixture_skips_fail_for_method_class_and_module_selections(self):
-        for class_id in (*PORTABLE_CLASSES, NATIVE_CLASS, GUARD_MODULE + ".StartupPinCiTests"):
+        for class_id in (*PORTABLE_CLASSES, *NATIVE_CLASSES, GUARD_MODULE + ".StartupPinCiTests"):
             module_id, class_name = class_id.rsplit(".", 1)
             module = importlib.import_module(module_id)
             test_class = getattr(module, class_name)
@@ -141,7 +157,8 @@ class StartupPinCiTests(unittest.TestCase):
         def skip_fixture():
             raise unittest.SkipTest("required module unavailable")
 
-        for module_id in ("tests.test_windows_startup_pin", "tests.test_windows_startup_native"):
+        for module_id in ("tests.test_windows_startup_pin", "tests.test_windows_startup_native",
+                          "tests.test_windows_startup_security", "tests.test_windows_startup_security_native"):
             module = importlib.import_module(module_id)
             with patch.object(module, "setUpModule", skip_fixture, create=True):
                 code, result = self.run_ci((module_id,))
@@ -151,8 +168,10 @@ class StartupPinCiTests(unittest.TestCase):
             self.assertEqual(result.errors, [])
 
     def test_real_portable_class_and_module_selections_run_without_skip(self):
-        for selection, count in (*zip(PORTABLE_CLASSES, (1, 32, 25, 2)),
-                                 ("tests.test_windows_startup_pin", 33)):
+        for selection, count in (*zip(PORTABLE_CLASSES, PORTABLE_COUNTS),
+                                 ("tests.test_windows_startup_pin", 33),
+                                 ("tests.test_windows_startup_security", 43),
+                                 ("tests.test_windows_startup_security_native", 20)):
             with self.subTest(selection=selection):
                 code, result = self.run_ci((selection,))
                 self.assertEqual(code, 0)
@@ -167,7 +186,7 @@ class StartupPinCiTests(unittest.TestCase):
         self.assertEqual(len(result.errors), 1)
 
     def test_required_subtest_and_nested_subtest_skips_fail(self):
-        for class_id in (*PORTABLE_CLASSES, NATIVE_CLASS, GUARD_MODULE + ".StartupPinCiTests"):
+        for class_id in (*PORTABLE_CLASSES, *NATIVE_CLASSES, GUARD_MODULE + ".StartupPinCiTests"):
             module_id, class_name = class_id.rsplit(".", 1)
             test_class = getattr(importlib.import_module(module_id), class_name)
             method = unittest.defaultTestLoader.getTestCaseNames(test_class)[0]
@@ -183,16 +202,19 @@ class StartupPinCiTests(unittest.TestCase):
                 with self.subTest(parent_id=parent_id, nested=nested), patch.object(
                     test_class, "__unittest_skip__", False, create=True
                 ), patch.object(test_class, "setUp", lambda _case: None), patch.object(test_class, method, skip_subtest):
-                    code, result = self.run_ci((parent_id,))
-                    self.assertEqual(result.testsRun, 1)
-                    self.assertEqual(result.errors, [])
-                    self.assertEqual(result.failures, [])
-                    self.assertEqual(len(result.skipped), 1)
-                    skipped = result.skipped[0][0]
-                    self.assertNotEqual(skipped.id(), parent_id)
-                    self.assertIsInstance(skipped.test_case, unittest.TestCase)
-                    self.assertEqual(skipped.test_case.id(), parent_id)
-                    self.assertEqual(code, 1)
+                    for selection in (parent_id, class_id, module_id):
+                        suite = unittest.defaultTestLoader.loadTestsFromName(parent_id)
+                        with patch.object(ci.unittest.defaultTestLoader, "loadTestsFromNames", return_value=suite):
+                            code, result = self.run_ci((selection,))
+                        self.assertEqual(result.testsRun, 1)
+                        self.assertEqual(result.errors, [])
+                        self.assertEqual(result.failures, [])
+                        self.assertEqual(len(result.skipped), 1)
+                        skipped = result.skipped[0][0]
+                        self.assertNotEqual(skipped.id(), parent_id)
+                        self.assertIsInstance(skipped.test_case, unittest.TestCase)
+                        self.assertEqual(skipped.test_case.id(), parent_id)
+                        self.assertEqual(code, 1)
 
     def test_optional_nested_subtest_skip_remains_successful(self):
         module = importlib.import_module("tests.test_contract_engineering")

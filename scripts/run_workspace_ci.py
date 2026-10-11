@@ -168,7 +168,14 @@ def startup_pin_tests(platform: str) -> tuple[str, ...]:
         "tests.test_windows_startup_pin.StartupPinTests",
         "tests.test_windows_startup_native.NativeTransportTests",
         "tests.test_windows_startup_native.NativeModuleTests",
-        *(("tests.test_windows_startup_native.WindowsEnforcementTests",) if platform == "nt" else ()),
+        "tests.test_windows_startup_security.StartupSecurityInterfaceTests",
+        "tests.test_windows_startup_security.StartupSecurityParserTests",
+        "tests.test_windows_startup_security.StartupSecurityPolicyTests",
+        "tests.test_windows_startup_security_native.SecurityReaderConstructorTests",
+        "tests.test_windows_startup_security_native.SecurityReaderInterfaceTests",
+        "tests.test_windows_startup_security_native.SecurityReaderTransportTests",
+        *(("tests.test_windows_startup_native.WindowsEnforcementTests",
+           "tests.test_windows_startup_native.WindowsSecurityQueryTests") if platform == "nt" else ()),
     )
 
 
@@ -239,6 +246,8 @@ def main(modules: tuple[str, ...] = DEFAULT_MODULES) -> int:
             "tests.test_windows_startup_pin.",
             "tests.test_windows_startup_native.",
             "tests.test_windows_startup_pin_ci.",
+            "tests.test_windows_startup_security.",
+            "tests.test_windows_startup_security_native.",
         ))
     )
     result = unittest.TextTestRunner(verbosity=1).run(suite)

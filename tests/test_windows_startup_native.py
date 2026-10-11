@@ -89,6 +89,8 @@ class NativeTransportTests(unittest.TestCase):
         self.assertEqual(disposition, 1)
         self.assertEqual(attributes, 0x1040)
         self.assertTrue(access & 1)
+        self.assertTrue(access & 0x20000)
+        self.assertEqual(access, 0x120081)
         self.assertTrue(access & 0x100000)
         self.assertTrue(opts & 1)
 
@@ -438,7 +440,132 @@ class NativeTransportTests(unittest.TestCase):
             return 1
         self.k.ReadFile.impl = eof
         self.assertEqual(self.b.read(file, 3, 1), b'')
+
+    def _security_query(self):
+        query = getattr(self.b, 'query_security', None)
+        self.assertTrue(callable(query), 'query_security must be callable')
+        return query
+
+    def test_security_query_lazy_reader_uses_same_active_handle(self):
+        query = self._security_query()
+        module = importlib.import_module('icode.windows_startup_security_native')
+        from tests.test_windows_startup_security_native import NativeFixture
+        fixture = NativeFixture()
+        reader = fixture.reader(module)
+        root = self.b.open_root('C:')
+        file = self.b.open_child(root, 'x', directory=False)
+        before = len(self.n.NtCreateFile.calls)
+        with patch.object(module, 'WindowsStartupSecurityReader', return_value=reader) as factory:
+            for handle in (file, root, file):
+                metadata = self.b.query(handle)
+                self.assertEqual(query(handle), fixture.raw)
+                self.assertEqual(self.b.query(handle), metadata)
+            factory.assert_called_once_with()
+        self.assertEqual([args[0] for args in fixture.advapi.GetSecurityInfo.calls], [file, root, file])
+        self.assertEqual(len(self.n.NtCreateFile.calls), before)
+        self.assertEqual(len(fixture.kernel.LocalFree.calls), 3)
+        self.assertEqual(self.k.CloseHandle.calls, [])
+        self.assertEqual(self.b.read(file, 0, 3), b'abc')
+        self.b.close(file)
+        with self.assertRaises(StartupPinError):
+            query(file)
+        self.assertEqual(len(fixture.advapi.GetSecurityInfo.calls), 3)
+
+    def test_security_query_rejects_unowned_before_import_or_dll_load(self):
+        query = self._security_query()
+        root = self.b.open_root('C:')
+        self.b.close(root)
+        unknown = self.b.open_root('C:')
+        self.failure = 'close'
+        with self.assertRaises(StartupPinError):
+            self.b.close(unknown)
+        with patch('builtins.__import__', side_effect=AssertionError('unexpected lazy import')), patch.object(
+                self.m.ctypes, 'WinDLL', create=True, side_effect=AssertionError('unexpected DLL')):
+            for handle in (root, unknown, 999, None, True, 0, -1, self.m._INVALID, 10.0):
+                with self.subTest(handle=handle), self.assertRaises(StartupPinError):
+                    query(handle)
+
+    def test_security_reader_import_and_constructor_failure_are_fixed(self):
+        query = self._security_query()
+        root = self.b.open_root('C:')
+        module = importlib.import_module('icode.windows_startup_security_native')
+        for error in (OSError('private path'), ImportError('private path')):
+            with patch('builtins.__import__', side_effect=error), self.assertRaises(StartupPinError) as caught:
+                query(root)
+            self.assertNotIn('private path', str(caught.exception))
+            with patch.object(module, 'WindowsStartupSecurityReader', side_effect=error), self.assertRaises(StartupPinError) as caught:
+                query(root)
+            self.assertNotIn('private path', str(caught.exception))
+        for error in (KeyboardInterrupt(), SystemExit()):
+            with patch('builtins.__import__', side_effect=error), self.assertRaises(BaseException) as caught:
+                query(root)
+            self.assertIs(caught.exception, error)
+            with patch.object(module, 'WindowsStartupSecurityReader', side_effect=error), self.assertRaises(BaseException) as caught:
+                query(root)
+            self.assertIs(caught.exception, error)
+
+    def test_security_query_reader_failures_keep_handle_and_interrupt_identity(self):
+        self._security_query()
+        module = importlib.import_module('icode.windows_startup_security_native')
+        from tests.test_windows_startup_security_native import NativeFixture
+        for error in (OSError('private path'), KeyboardInterrupt(), SystemExit()):
+            with patch.object(self.m.os, 'name', 'nt'), patch.object(
+                    self.m.ctypes, 'WinDLL', side_effect=[self.k, self.n], create=True):
+                backend = self.m.WindowsStartupPinBackend()
+            fixture = NativeFixture()
+            fixture.query_error = error
+            reader = fixture.reader(module)
+            root = backend.open_root('C:')
+            with patch.object(module, 'WindowsStartupSecurityReader', return_value=reader):
+                with self.assertRaises(BaseException) as caught:
+                    backend.query_security(root)
+            if isinstance(error, OSError):
+                self.assertIsInstance(caught.exception, StartupPinError)
+                self.assertNotIn('private path', str(caught.exception))
+            else:
+                self.assertIs(caught.exception, error)
+            self.assertIn(root, backend._active)
+            self.assertEqual(len(fixture.kernel.LocalFree.calls), 1)
+            self.assertEqual(self.k.CloseHandle.calls, [])
+
+    def test_security_query_cleanup_unknown_keeps_reader_quarantine(self):
+        query = self._security_query()
+        module = importlib.import_module('icode.windows_startup_security_native')
+        from tests.test_windows_startup_security_native import NativeFixture
+        fixture = NativeFixture()
+        fixture.free_result = C.addressof(fixture.buffer)
+        reader = fixture.reader(module)
+        root = self.b.open_root('C:')
+        with patch.object(module, 'WindowsStartupSecurityReader', return_value=reader) as factory:
+            for _ in range(2):
+                with self.assertRaises(StartupPinError):
+                    query(root)
+            factory.assert_called_once_with()
+        self.assertTrue(reader.cleanup_unconfirmed)
+        self.assertEqual(len(fixture.advapi.GetSecurityInfo.calls), 1)
+        self.assertEqual(len(fixture.kernel.LocalFree.calls), 1)
+        self.assertIn(root, self.b._active)
+
 class NativeModuleTests(unittest.TestCase):
+    def test_inheritance_shape_check_rejects_equal_or_missing_flags(self):
+        import struct
+        from icode.windows_startup_security import parse_startup_security
+        from tests.test_windows_startup_security_native import descriptor
+        check = globals().get('_assert_distinct_inheritance_shapes')
+        self.assertTrue(callable(check), 'inheritance shape check must be callable')
+
+        def snapshot(flags):
+            # Real parser snapshots from bounded, owned synthetic bytes.
+            raw = descriptor()
+            owner = raw[20:32]
+            ace = struct.pack('<BBHI', 0, flags, 8 + len(owner), 1) + owner
+            return parse_startup_security(raw[:32] + struct.pack('<BBHHH', 2, 0, 8 + len(ace), 1, 0) + ace)
+
+        check(self, snapshot(0x13), snapshot(0x10))
+        for directory, file in ((0x13, 0x13), (0, 0x10), (0x13, 0)):
+            with self.subTest(directory=directory, file=file), self.assertRaises(AssertionError):
+                check(self, snapshot(directory), snapshot(file))
+
     def test_native_backend_exists(self):
         self.assertIsNotNone(importlib.util.find_spec('icode.windows_startup_native'))
 
@@ -449,6 +576,100 @@ class NativeModuleTests(unittest.TestCase):
             from icode.windows_startup_pin import StartupPinError
             with self.assertRaises(StartupPinError):
                 module.WindowsStartupPinBackend()
+
+
+def _assert_distinct_inheritance_shapes(test, directory, file):
+    # ACE_HEADER semantics: OBJECT_INHERIT=1, CONTAINER_INHERIT=2,
+    # INHERITED=16. Compare all five inheritance bits, independent of SID,
+    # ACE order/count, or access masks. Official contract:
+    # https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-ace_header
+    directory_flags = {entry.flags & 0x1f for entry in directory.entries}
+    file_flags = {entry.flags & 0x1f for entry in file.entries}
+    test.assertTrue(any(flags & 0x03 for flags in directory_flags),
+                    'default directory must retain child inheritance flags')
+    test.assertTrue(any(flags & 0x10 for flags in file_flags),
+                    'default child file must contain an inherited ACE')
+    test.assertNotEqual(directory_flags, file_flags,
+                        'directory and child file must expose distinct inheritance shapes')
+
+
+@unittest.skipUnless(os.name == 'nt', 'Windows security query unavailable on this host')
+class WindowsSecurityQueryTests(unittest.TestCase):
+    """Actual backend queries on fresh objects, with no host ACL changes.
+
+    Require actual directory/child file flags to show distinct inheritance
+    forms; a default fixture lacking them fails without changing host ACLs.
+    Unsupported descriptor formats and fixture/API errors fail on Windows.
+    The complete fixture HANDLE lifetime runs on one actor.
+    """
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from icode.windows_startup_native import WindowsStartupPinBackend
+        self.tmp = tempfile.TemporaryDirectory(prefix='icode-native-security-')
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.directory = self.base / 'ancestor'
+        self.directory.mkdir()
+        self.file = self.directory / 'startup.py'
+        self.content = b'print("security snapshot")\n'
+        self.file.write_bytes(self.content)
+        self.backend = WindowsStartupPinBackend()
+        self.handles = []
+        self.addCleanup(self.close_handles)
+        handle = self.backend.open_root(self.base.drive)
+        self.handles.append(handle)
+        for part in self.directory.parts[1:]:
+            handle = self.backend.open_child(handle, part, directory=True)
+            self.handles.append(handle)
+        self.directory_handle = handle
+        self.file_handle = self.backend.open_child(handle, self.file.name, directory=False)
+        self.handles.append(self.file_handle)
+
+    def close_handles(self):
+        # Try every owned close once, even if a preceding close fails.
+        errors = []
+        while self.handles:
+            try:
+                self.backend.close(self.handles.pop())
+            except BaseException as error:
+                errors.append(error)
+        if errors:
+            raise errors[0]
+
+    def test_file_security_copy_repeated_query_identity_read_and_close(self):
+        from icode.windows_startup_security import parse_startup_security
+        handle = self.file_handle
+        before = self.backend.query(handle)
+        raw = self.backend.query_security(handle)
+        self.assertIs(type(raw), bytes)
+        snapshot = parse_startup_security(raw)
+        self.assertEqual(snapshot.raw, raw)
+        self.assertEqual(self.backend.query_security(handle), raw)
+        self.assertEqual(self.backend.query(handle), before)
+        self.assertEqual(self.backend.read(handle, 0, len(self.content)), self.content)
+        self.handles.remove(handle)
+        self.backend.close(handle)
+        with self.assertRaises(StartupPinError):
+            self.backend.query_security(handle)
+        self.assertEqual(parse_startup_security(raw), snapshot)
+
+    def test_default_directory_and_child_inheritance_descriptors_parse(self):
+        from icode.windows_startup_security import parse_startup_security
+        snapshots = []
+        for handle, directory in ((self.directory_handle, True), (self.file_handle, False)):
+            with self.subTest(directory=directory):
+                before = self.backend.query(handle)
+                raw = self.backend.query_security(handle)
+                self.assertIs(type(raw), bytes)
+                snapshot = parse_startup_security(raw)
+                snapshots.append(snapshot)
+                self.assertTrue(snapshot.owner_sid.startswith('S-1-'))
+                self.assertEqual(self.backend.query_security(handle), raw)
+                self.assertEqual(self.backend.query(handle), before)
+                self.assertEqual(before.directory, directory)
+        _assert_distinct_inheritance_shapes(self, *snapshots)
 
 
 @unittest.skipUnless(os.name == 'nt', 'Windows OS enforcement unavailable on this host')

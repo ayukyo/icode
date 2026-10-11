@@ -75,7 +75,7 @@ Task2 实际接口 RED：26 tests/1 assertion FAIL，随后全政策 RED：43 te
 - [x] `.venv/bin/python -B -m unittest tests.test_windows_startup_security tests.test_windows_startup_pin tests.test_windows_startup_native tests.test_windows_startup_pin_ci tests.test_windows_provenance`，实际124项=118 PASS/6 Windows skip/0 F/E；新纯 parser/policy 43项无 skip。
 - [x] 新 suite 串行 20 轮，每轮43 run/0 skip/0 F/E，前后两文件摘要不变；compileall -q -j1 新源/测试通过，tracked及两新文件 no-index diff check 无格式诊断（后者exit1是新增差异本身，不是错误）。
 - [x] `CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 .venv/bin/python -u scripts/preflight.py` 新完整三守卫全部通过、exit0；站点2HTML/6MD/3品牌资产/2预览/9未抓取外链检查通过，四文档契约连续两轮0疑似项，独立全片双审C0/I0/M0，七维报告见下。
-- [ ] 研究结论同步 `docs/agent-landscape-live.md`，保留具体版本/日期与阶段边界；精确暂存源/测试及新 docs，主代理按用户授权 commit/push main，核远端 SHA。
+- [x] 研究结论同步 `docs/agent-landscape-live.md`，保留具体版本/日期与阶段边界；精确暂存六文件，主代理提交推送main `6216c420104097a03073ebdfecd5f30f5062c882`，再次核远端同SHA及提交后工作树clean。
 
 ## 原生运输下一片接口（本计划不提前报实现）
 
@@ -106,3 +106,9 @@ main `90370b1` 的 CI run `38132136078` 已终止为 failure：39 success/2 fail
 - ✅ 可运行性：本片43 PASS/0 skip；未接实际token/HANDLE查询、DLL/UAC，不报告完整WP0b或R2/R3/100%总验收。
 
 **Execution Mode:** serial
+
+发布后刷新：软件片已发布6216c42；上述“发布动作待”是11:03UTC提交前观察窗口。root立即开始下一片原生reader，独立单写者负责新运输源/测试；旧纯parser/policy继续冻结，R2/R3整体验收未通过。
+
+6216c42后续CI实证（11:19 UTC观察）：run38134223455已completed/failure，39 success/2 failure/3 skipped；Windows workspace x64 job114454674725、ARM64 job114454674761均success，各704 tests/20 skip（Python3.11），保持旧六项必需pin方法的这两台主机证据。新权限parser/policy尚未进入workspace选择器，不冒充其Windows原生查询已验；后片会补选。完整Python3.11/3.12 jobs114454674445/565均success，各2699 tests/77 skip。Reviewer job114454674700/600仍实际v4/v6 error10035、wait_expired=true、connect_denied=false且failure，整体仍阻断。来源run38134223407此时还在进行，不提前记为安装成功。
+
+随后来源作业刷新：run38134223407的validate及Windows x64/ARM64×3.11/3.12安装五个jobs全部success（114454674308、114456951077/126/149/169）。只有旧成品来源/安装检查信用，不代尚未发布的新reader、原生query或完整可信启动；原11:19“进行中”保留其历史窗口。
