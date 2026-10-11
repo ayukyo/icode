@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import platform
 import re
 import stat
 import struct
@@ -35,14 +36,63 @@ def verify_native_helper(binary: Path, manifest: Path) -> bool:
         return False
 
 
+_LINUX_ELF_HEADER_SIZE = 64
+_LINUX_ELF_MACHINE_ARCH = {62: "x86_64", 183: "arm64"}
+
+
+def linux_elf_architecture(image: bytes) -> str | None:
+    """Inspect a finite ELF64LE header, not loadability or launch identity."""
+    if type(image) is not bytes or len(image) < _LINUX_ELF_HEADER_SIZE:
+        return None
+    if image[:7] != b"\x7fELF\x02\x01\x01":
+        return None
+    object_type, machine, version = struct.unpack_from("<HHI", image, 16)
+    header_size = struct.unpack_from("<H", image, 52)[0]
+    if object_type not in (2, 3) or version != 1 or header_size != _LINUX_ELF_HEADER_SIZE:
+        return None
+    return _LINUX_ELF_MACHINE_ARCH.get(machine)
+
+
+def linux_arch_from_machine(machine: str) -> str:
+    """Map only the supported Linux host machine spellings."""
+    if type(machine) is not str:
+        raise ValueError("unsupported Linux architecture")
+    architecture = {"x86_64": "x86_64", "aarch64": "arm64", "arm64": "arm64"}.get(machine.lower())
+    if architecture is None:
+        raise ValueError("unsupported Linux architecture")
+    return architecture
+
+
+def verify_linux_helper(binary: Path, manifest: Path, *, expected_arch: str) -> bool:
+    """Check package shape, digest and a finite matching ELF header.
+
+    This path-based check is not publisher authentication, complete ELF
+    validation, immutable content, or a race-free launch grant.
+    """
+    if type(expected_arch) is not str or expected_arch not in ("x86_64", "arm64"):
+        return False
+    try:
+        if not verify_native_helper(binary, manifest):
+            return False
+        with binary.open("rb") as stream:
+            header = stream.read(_LINUX_ELF_HEADER_SIZE)
+        return linux_elf_architecture(header) == expected_arch
+    except (OSError, ValueError):
+        return False
+
+
 def bundled_linux_helper() -> Path | None:
-    """返回经过本地摘要检查的包内助手；其他平台或不完整 wheel 返回 None。"""
+    """Return a matching package candidate, never an execution grant."""
     if not sys.platform.startswith("linux"):
+        return None
+    try:
+        architecture = linux_arch_from_machine(platform.machine())
+    except Exception:  # Host detection has no effects; signals still propagate.
         return None
     directory = Path(__file__).resolve().parent / "native"
     binary = directory / "icode-landlock"
     manifest = directory / "icode-landlock.sha256"
-    return binary if verify_native_helper(binary, manifest) else None
+    return binary if verify_linux_helper(binary, manifest, expected_arch=architecture) else None
 
 
 def _windows_pe_architecture_from_headers(
