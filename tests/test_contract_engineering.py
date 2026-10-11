@@ -1253,10 +1253,14 @@ class TestContractEngineering(unittest.TestCase):
                 self.assertTrue(exported.ok, exported.render())
                 self.assertEqual(verify_pack(pack), [])
                 outside = self.enterContext(temp_workspace())
-                independent = subprocess.run([sys.executable, "-I", "-B", str(pack / "verify.py"), str(pack)],
-                    cwd=outside, capture_output=True, text=True, timeout=15)
+                independent = subprocess.run([sys.executable, "-I", "-B", "-X", "utf8", str(pack / "verify.py"), str(pack)],
+                    cwd=outside, capture_output=True, text=True, encoding="utf-8", timeout=15)
                 independent_detail = (independent.stdout or "") + (independent.stderr or "")
                 self.assertEqual(independent.returncode, 0, independent_detail)
+                self.assertIsInstance(independent.stdout, str)
+                self.assertIn("证据包校验通过", independent.stdout)
+                self.assertIn("工单：ENG-CONTRACT", independent.stdout)
+                self.assertIn("已核验", independent.stdout)
                 # Existing transition/MCP gates remain independent of this
                 # successful engineering/CP step receipt.
                 if step == "deepcheck":

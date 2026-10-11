@@ -38,10 +38,14 @@ class BindingPackTests(unittest.TestCase):
             code.rmdir()
             env = dict(os.environ)
             env.pop("PYTHONPATH", None)
-            proc = subprocess.run([sys.executable, "-I", "-B", str(pack / "verify.py"), str(pack)],
+            proc = subprocess.run([sys.executable, "-I", "-B", "-X", "utf8", str(pack / "verify.py"), str(pack)],
                                   cwd=root, env=env, capture_output=True,
                                   text=True, encoding="utf-8", timeout=15)
             self.assertEqual(proc.returncode, 0, (proc.stdout, proc.stderr))
+            self.assertIsInstance(proc.stdout, str)
+            self.assertIn("证据包校验通过", proc.stdout)
+            self.assertIn("工单：pack-bind", proc.stdout)
+            self.assertIn("已核验", proc.stdout)
 
     def test_self_consistent_hash_does_not_replace_binding_semantics(self):
         mirror_type = getattr(pack_verify, "ExecutionBindingMirror", None)

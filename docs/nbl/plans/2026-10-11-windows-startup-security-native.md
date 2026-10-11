@@ -65,7 +65,7 @@ root随后对冻结reader串行20轮×20方法=400 PASS/0 skip/F/E；compileall 
 - [x] 先在现 `tests/test_windows_startup_native.py` 补 RED：`self.assertTrue(access & 0x20000)`，新增 query_security callable 与 active/closed/unknown拒绝测试；实际命令 `.venv/bin/python -B -m unittest tests.test_windows_startup_native -v`。
 - [x] 最小实现 READ_CONTROL 与 query_security lazy接口，原metadata/读取/ownership路径不变；真实 backend open的相同数值HANDLE交给reader，禁止替换或按路径重开。
 - [x] 新 Windows-only class直接 backend开本次临时目录与文件，用 query_security拿bytes并parse，文件身份重核一致；返回后descriptor副本可用、fileHANDLE仍可读、close后query拒绝。测试重复查询及文件/目录；只处理自己创建对象，不修改宿主ACL/配置。非Windows明确平台skip，Windows夹具/API失败不得skip。此勾选指实现，实际Windows运行仍待Task3发布后。
-- [ ] 默认创建对象及不同继承状态的 native 描述符可解析性必须实际验证：官方 API 不承诺所有空闲/未引用字节为零，冻结 parser 的严格子集可能拒绝有效 OS 描述符。此时记录具体格式与兼容缺口，不以假 DLL零 padding通过冒充原生兼容，不自动放宽冻结 parser；128 KiB仅内部预算，不称 Windows所有描述符通用上限。
+- [x] 默认创建对象及不同继承状态的 native 描述符可解析性必须实际验证：官方 API 不承诺所有空闲/未引用字节为零，冻结 parser 的严格子集可能拒绝有效 OS 描述符。此时记录具体格式与兼容缺口，不以假 DLL零 padding通过冒充原生兼容，不自动放宽冻结 parser；128 KiB仅内部预算，不称 Windows所有描述符通用上限。本勾选仅授下面四台实际runner的默认fixture子集。
 - [x] 自审、主代理关联、独立双审；共享锁六项保留，本机按平台明确skip，Task3另做新SHA实机回归，本片实际原生新增门单独计数，不复用前SHA作通过。
 
 Task2 未发布观察：初次backend缺READ_CONTROL/query接口，38 run/6 assertion FAIL/6平台skip的RED→GREEN；backend仅20+/1-，总访问0x120081、share仍1。独立SPEC初 C0/I1/M0：两个对象的名称与查询成功不能证明不同继承形态。仅补测试helper（存在性1 assertion RED→GREEN），真实parsed合成bytes证明不同形态通过、相同/缺目录传播/缺文件继承位均拒绝；native直接消费实际两对象snapshots、缺形态FAIL、不改ACL。SPEC复核C0/I0/M0，不同QUALITY仍待。root回读当前差异、五模块142 run=134 PASS/8 nt skip、compileall -j1/diff check通过；backend SHA256 `75573a42212daaedb3ca570e975305ec772ee67c428dc9df29ec32283e9cd862`，测试 `8a520682dcb5fe54bd6c2c24c4ca1b35e8e0c05243950dcc3f700a4f26b66310`。NativeTransport30、NativeModule3、旧原生共享锁6、新query2；冻结reader/parser不变。所依据[Microsoft ACE继承规则](https://learn.microsoft.com/en-us/windows/win32/secauthz/ace-inheritance-rules)与ACE_HEADER已经主代理独立回读，但官方语义及Linux合成负控不算Windows实测。
@@ -86,8 +86,8 @@ CI片冻结SHA256：selector `fd2ad550b8c5754548ca1a2fbbeebeb11ba175524a611b9381
 - [x] 完整回读 `scripts/run_workspace_ci.py`、`tests/test_windows_startup_pin_ci.py` 与新 reader classes；给新安全parser/policy/reader便携类恰好一次选择、Windows native类仅nt，扩展 selected_pin_ids 前缀与对应 body/fixture/subTest拒绝门。旧可选skip语义保持；新选择器和必需skip测试实际 RED→GREEN。
 - [x] `.github/workflows/ci.yml` 的 workspace 最小加入 Windows Python3.12 两格，同步 `tests/test_ci_workflow_contracts.py` 的 `TestCrossPlatformWorkspaceEvidenceCi` 六格和setup实际消费版本合同，不只是把3.12写进job名。不新增CI权限、特权或用签名安装job代native query信用。Windows10/普通host仍另记缺口，不能用hostedWindowsServer替代。
 - [x] 主代理运行 `.venv/bin/python -B -m unittest tests.test_windows_startup_security tests.test_windows_startup_security_native tests.test_windows_startup_pin tests.test_windows_startup_native tests.test_windows_startup_pin_ci tests.test_windows_provenance tests.test_run_workspace_ci`；方法数/skip取实际输出。新便携类20轮无skip/F/E，冻结摘要不变。
-- [ ] compileall -q -j1 touched源/测试/selector、diff check、站点/文档两轮、全片独立SPEC→不同QUALITY、完整preflight三道均通过；据实七维报告，root精确暂存commit/push main及远端核SHA。
-- [ ] 新SHA Windows x64/ARM64×3.11/3.12 对实际选中原生query/共享锁方法逐格核作业与日志；失败继续阻断不回退。本片通过仍不闭合 owner权限窗口、publisher/DLL/UAC、WP0b/WP1/2或R2/R3。
+- [x] compileall -q -j1 touched源/测试/selector、diff check、站点/文档两轮、全片独立SPEC→不同QUALITY、完整preflight三道均通过；据实七维报告，root精确暂存commit/push main及远端核SHA。
+- [x] 新SHA Windows x64/ARM64×3.11/3.12 对实际选中原生query/共享锁方法逐格核作业与日志；失败继续阻断不回退。本片通过仍不闭合 owner权限窗口、publisher/DLL/UAC、WP0b/WP1/2或R2/R3。
 
 ## 研究取舍
 
@@ -116,3 +116,13 @@ CI片冻结SHA256：selector `fd2ad550b8c5754548ca1a2fbbeebeb11ba175524a611b9381
 - ✅ 关联模块：201 run=193 PASS/8平台skip；新完整preflight三道exit0；workflow/selector同步。
 - ✅ 兼容安全：共享模式仍1，旧optional skip语义及其它CI步骤/权限保持；实际Windows默认描述符兼容待四格验证。
 - ✅ 可运行性：Ubuntu软件合同可运行；原生共享锁6+query2未在本机执行，不报告Windows/Win10、完整WP0b或R2/R3通过。
+
+实际发布刷新：root已提交推送main `0d40c2577316bfa52e9c595dfcd4e388ecd8c28c`（11文件838+/49-），git ls-remote再次核远端同SHA，发布后工作树clean；此前“发布待”保留提交前窗口。新CI38136150544与来源38136150536已触发，原生四格尚无结果；下一步只按新SHA日志验收，不复用6216的旧测试信用。
+
+原生运输刷新（2026-10-11 11:45 UTC后）：同SHA [CI38136150544](https://github.com/ayukyo/icode/actions/runs/38136150544) 的 x64/3.11 job114460308562、x64/3.12 job114460308565、ARM64/3.11 job114460308547、ARM64/3.12 job114460308481 均completed/success，root逐份日志核 `python scripts/run_workspace_ci.py` 与实际775 tests/20 skips。当前selector实际加入新安全六便携类、旧共享锁6与新query2，全部必需method/fixture/subTest skip均阻断，因此这些skip仅为其它optional项目；默认对象及两种实际继承形态运输门关闭，不推广为任意Windows描述符兼容。随后junction3和leased lifecycle75均OK。四份日志另有既有 `_readerthread` UnicodeDecodeError（非本片query错误），保留为独立诊断待查，不据job success声称所有异常已消除。Linux/macOS workspace也success。完整CI仍在运行且Windows Reviewer另有失败，不能把本片四格success等同R2/R3总体通过；来源/安装及Win10/普通host信用分别追踪。下一身份只读子片可开始。
+
+同SHA Reviewer 原生日志另核：x64 job114460308676、ARM64 job114460308662 均failure；两族host control真、network attempted真、connected假、connect_denied假，error10035且wait_expired真、canary假；cap诊断exit91/ipv4_connect/credit=false，最终assert78!=0。observer订阅成功不能改此因果边界，继续fail-closed，不报告网络DENY或R2/R3通过。软件运输片保持自身完成范围，后续身份设计见[原宿主身份](../specs/2026-10-11-windows-host-identity-design.md)。
+
+11:53 UTC终态：CI38136150544 completed/failure，46 jobs=41success/2Reviewer failure/3skipped；Python3.11 job114460308507与3.12 job114460308529全仓各2728 tests/79 skips均OK。Public website38136150543 success，来源38136150536四install仍在跑。此前“完整CI仍在运行”保留早期窗口，最终状态不能以41success覆盖两个失败。
+
+随后来源38136150536的validate及四attest/install jobs114462667791（x64/3.11）、114462667788（x64/3.12）、114462667805（ARM64/3.11）、114462667786（ARM64/3.12）均completed/success；只授同SHA实际签名安装/静态scope信用，不等于新身份/UAC/完整启动。解码诊断见[独立报告](../windows-ci-verifier-encoding-diagnostic-2026-10-11.md)，修复与新Windows验证尚未发生。

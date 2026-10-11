@@ -21,11 +21,16 @@ PORTABLE_CLASSES = (
     "tests.test_windows_startup_security_native.SecurityReaderConstructorTests",
     "tests.test_windows_startup_security_native.SecurityReaderInterfaceTests",
     "tests.test_windows_startup_security_native.SecurityReaderTransportTests",
+    "tests.test_windows_startup_host_identity.HostIdentityInterfaceTests",
+    "tests.test_windows_startup_host_identity.HostIdentityConstructorTests",
+    "tests.test_windows_startup_host_identity.HostIdentityTransportTests",
 )
 NATIVE_CLASS = "tests.test_windows_startup_native.WindowsEnforcementTests"
 NATIVE_SECURITY_CLASS = "tests.test_windows_startup_native.WindowsSecurityQueryTests"
-NATIVE_CLASSES = (NATIVE_CLASS, NATIVE_SECURITY_CLASS)
-PORTABLE_COUNTS = (1, 32, 30, 3, 2, 24, 17, 2, 2, 16)
+NATIVE_IDENTITY_CLASS = "tests.test_windows_startup_host_identity.WindowsHostIdentityTests"
+NATIVE_CLASSES = (NATIVE_CLASS, NATIVE_SECURITY_CLASS, NATIVE_IDENTITY_CLASS)
+NATIVE_COUNTS = (6, 2, 2)
+PORTABLE_COUNTS = (1, 32, 30, 3, 2, 24, 17, 2, 2, 16, 1, 4, 32)
 GUARD_MODULE = "tests.test_windows_startup_pin_ci"
 
 
@@ -38,6 +43,15 @@ def cases(suite):
 
 
 class StartupPinCiTests(unittest.TestCase):
+    def test_native_host_identity_methods_exist(self):
+        module = importlib.import_module("tests.test_windows_startup_host_identity")
+        test_class = getattr(module, "WindowsHostIdentityTests", None)
+        self.assertTrue(isinstance(test_class, type), "missing native host identity class")
+        self.assertEqual(unittest.defaultTestLoader.getTestCaseNames(test_class), [
+            "test_capture_repeated_matches_independent_os_sid_and_closes",
+            "test_token_user_abi_matches_native_64_bit_layout",
+        ])
+
     def run_ci(self, selections):
         results = []
 
@@ -63,14 +77,16 @@ class StartupPinCiTests(unittest.TestCase):
                 self.assertFalse(getattr(type(test), "__unittest_skip__", False))
                 self.assertFalse(getattr(getattr(test, test._testMethodName), "__unittest_skip__", False))
             expected.extend(test.id() for test in loaded)
-        for class_id, count in zip(NATIVE_CLASSES, (6, 2)):
+        self.assertEqual(len(NATIVE_CLASSES), len(NATIVE_COUNTS))
+        for class_id, count in zip(NATIVE_CLASSES, NATIVE_COUNTS):
             native = list(cases(unittest.defaultTestLoader.loadTestsFromName(class_id)))
             self.assertEqual(len(native), count)
             if os.name == "nt":
                 expected.extend(test.id() for test in native)
         selected = [test.id() for entry in ci.DEFAULT_MODULES
                     if entry.startswith(("tests.test_windows_startup_pin.", "tests.test_windows_startup_native.",
-                                         "tests.test_windows_startup_security.", "tests.test_windows_startup_security_native."))
+                                         "tests.test_windows_startup_security.", "tests.test_windows_startup_security_native.",
+                                         "tests.test_windows_startup_host_identity."))
                     for test in cases(unittest.defaultTestLoader.loadTestsFromName(entry))]
         self.assertCountEqual(selected, expected)
         self.assertEqual(ci.DEFAULT_MODULES.count(GUARD_MODULE), 1)
@@ -91,6 +107,7 @@ class StartupPinCiTests(unittest.TestCase):
             selected = [test.id() for name in select(platform)
                         for test in cases(unittest.defaultTestLoader.loadTestsFromName(name))]
             self.assertCountEqual(selected, portable + (native if platform == "nt" else []))
+            self.assertEqual(len(selected), len(set(selected)))
 
     def test_every_pin_method_body_skip_is_required(self):
         for class_id in (*PORTABLE_CLASSES, *NATIVE_CLASSES, GUARD_MODULE + ".StartupPinCiTests"):
@@ -158,7 +175,8 @@ class StartupPinCiTests(unittest.TestCase):
             raise unittest.SkipTest("required module unavailable")
 
         for module_id in ("tests.test_windows_startup_pin", "tests.test_windows_startup_native",
-                          "tests.test_windows_startup_security", "tests.test_windows_startup_security_native"):
+                          "tests.test_windows_startup_security", "tests.test_windows_startup_security_native",
+                          "tests.test_windows_startup_host_identity"):
             module = importlib.import_module(module_id)
             with patch.object(module, "setUpModule", skip_fixture, create=True):
                 code, result = self.run_ci((module_id,))
