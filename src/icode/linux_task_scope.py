@@ -188,7 +188,8 @@ class LinuxTaskScope:
                 "--property=Delegate=pids", *flags, "--", *helper]
         # scope mode executes locally: preserve the helper's inherited objects.
         if isinstance(helper, PreparedCommand):
-            return PreparedCommand(wrapped, pass_fds=helper.pass_fds, cwd=helper.cwd)
+            return PreparedCommand(wrapped, pass_fds=helper.pass_fds, cwd=helper.cwd,
+                                   helper_object=helper.helper_object)
         return wrapped
 
     def bind_process(self, pid: int) -> None:

@@ -806,10 +806,12 @@ def _pin_workspace_root(workspace: Path) -> PinnedWorkspaceRoot:
 class PreparedCommand(list[str]):
     """Command metadata required to preserve a sandbox's launch contract."""
 
-    def __init__(self, argv: Sequence[str], *, pass_fds: Sequence[int], cwd: str):
+    def __init__(self, argv: Sequence[str], *, pass_fds: Sequence[int], cwd: str,
+                 helper_object: object | None = None):
         super().__init__(argv)
         self.pass_fds = tuple(pass_fds)
         self.cwd = cwd
+        self.helper_object = helper_object
 
 
 def _validated_read_only_exclusions(
@@ -1208,17 +1210,25 @@ class LandlockSandbox:
                 or (pinned.st_dev, pinned.st_ino) != identity
                 or (current.st_dev, current.st_ino) != identity):
             raise ValueError("workspace object identity changed")
+        borrowed = getattr(wrapped, "pass_fds", ())
+        if (type(borrowed) is not tuple
+                or any(type(value) is not int or value < 3 for value in borrowed)
+                or len(set(borrowed)) != len(borrowed)
+                or descriptor in borrowed):
+            raise ValueError("invalid workspace descriptor roles")
         index = wrapped.index("--")
         return PreparedCommand(
             [*wrapped[:index], "--workspace-object-fd", str(descriptor),
              str(identity[0]), str(identity[1]), *wrapped[index:]],
-            pass_fds=(descriptor,), cwd="/",
+            pass_fds=(*borrowed, descriptor), cwd="/",
+            helper_object=getattr(wrapped, "helper_object", None),
         )
 
     def wrap_policy_with_violation_receipt(
         self, argv: Sequence[str], *, policy: SandboxPolicy,
         control_socket: socket.socket,
         workspace_fd: int | None = None, workspace_identity: tuple[int, int] | None = None,
+        helper_object: object | None = None,
     ) -> list[str]:
         """Wrap one deny-only command with a private native receipt channel."""
         if (
@@ -1241,6 +1251,7 @@ class LandlockSandbox:
             policy=policy,
             metadata_roots=(),
             violation_control_descriptor=control_socket.fileno(),
+            helper_object=helper_object,
         )
         return self._with_workspace_object_fd(wrapped, policy.workspace_root,
                                               workspace_fd, workspace_identity)
@@ -1249,6 +1260,7 @@ class LandlockSandbox:
         self, argv: Sequence[str], *, policy: SandboxPolicy,
         control_socket: socket.socket, resource_socket: socket.socket, unit: str,
         workspace_fd: int | None = None, workspace_identity: tuple[int, int] | None = None,
+        helper_object: object | None = None,
     ) -> list[str]:
         """Private dual-endpoint policy wrapper; no model-selected resource flags."""
         if (not sys.platform.startswith("linux") or not isinstance(policy, SandboxPolicy)
@@ -1266,12 +1278,14 @@ class LandlockSandbox:
             raise ValueError("workspace FD aliases resource channel")
         wrapped = self.wrap_policy_with_violation_receipt(
             argv, policy=policy, control_socket=control_socket,
-            workspace_fd=workspace_fd, workspace_identity=workspace_identity)
+            workspace_fd=workspace_fd, workspace_identity=workspace_identity,
+            helper_object=helper_object)
         index = wrapped.index("--")
         command = [*wrapped[:index], "--task-quota-unit", unit,
                 "--task-quota-limit", str(policy.process_limit),
                 "--resource-control-fd", str(resource_socket.fileno()), *wrapped[index:]]
-        return (PreparedCommand(command, pass_fds=wrapped.pass_fds, cwd=wrapped.cwd)
+        return (PreparedCommand(command, pass_fds=wrapped.pass_fds, cwd=wrapped.cwd,
+                                helper_object=wrapped.helper_object)
                 if isinstance(wrapped, PreparedCommand) else command)
 
     def _wrap_policy_with_metadata_roots(
@@ -1281,6 +1295,7 @@ class LandlockSandbox:
         network_loopback_only: bool = False,
         proxy_control_descriptor: int | None = None,
         violation_control_descriptor: int | None = None,
+        helper_object: object | None = None,
     ) -> list[str]:
         """Wrap a trusted internal read-only query with extra file/directory roots.
 
@@ -1307,7 +1322,15 @@ class LandlockSandbox:
             raise ValueError("invalid trusted proxy handoff configuration")
         if workspace_read_only:
             self._validate_non_executable_workspace(policy.workspace_root)
-        self.prepare_policy(policy)
+        if helper_object is None:
+            self.prepare_policy(policy)
+        else:
+            from .linux_helper_object import LinuxHelperObject
+
+            if type(helper_object) is not LinuxHelperObject:
+                raise ValueError("invalid helper object binding")
+            helper_object.fileno()
+            self._checked_policy_workspace(policy)
         validated_roots = self._validated_metadata_roots(
             policy.workspace_root, metadata_roots,
         )
@@ -1321,6 +1344,7 @@ class LandlockSandbox:
             network_loopback_only=network_loopback_only,
             proxy_control_descriptor=proxy_control_descriptor,
             violation_control_descriptor=violation_control_descriptor,
+            helper_object=helper_object,
         )
 
     def wrap_leased_connect_candidate(
@@ -1426,17 +1450,30 @@ class LandlockSandbox:
         network_loopback_only: bool = False,
         proxy_control_descriptor: int | None = None,
         violation_control_descriptor: int | None = None,
+        helper_object: object | None = None,
     ) -> list[str]:
-        helper = Path(self.helper)
-        if not helper.is_file():
-            raise RuntimeError("Landlock helper is unavailable")
-        if self.manifest is not None:
-            from .native_helper import verify_native_helper
+        if helper_object is None:
+            helper = Path(self.helper)
+            if not helper.is_file():
+                raise RuntimeError("Landlock helper is unavailable")
+            if self.manifest is not None:
+                from .native_helper import verify_native_helper
 
-            if not verify_native_helper(helper, Path(self.manifest)):
-                raise RuntimeError("Landlock helper integrity check failed")
+                if not verify_native_helper(helper, Path(self.manifest)):
+                    raise RuntimeError("Landlock helper integrity check failed")
+            program = str(helper)
+        else:
+            from .linux_helper_object import LinuxHelperObject
+
+            if type(helper_object) is not LinuxHelperObject:
+                raise ValueError("invalid helper object binding")
+            descriptor = helper_object.fileno()
+            if type(descriptor) is not int or descriptor < 3:
+                raise ValueError("invalid helper object binding")
+            # Borrow the owner; command construction never transfers FD ownership.
+            program = f"/proc/self/fd/{descriptor}"
         wrapped = [
-            str(helper), "--workspace", str(Path(workspace).resolve()),
+            program, "--workspace", str(Path(workspace).resolve()),
             "--parent-pid", str(os.getpid()),
         ]
         if workspace_read_only:
@@ -1459,7 +1496,13 @@ class LandlockSandbox:
                     "--execute-only",
                     str(executable.path), str(executable.device), str(executable.inode),
                 ))
-        return [*wrapped, "--", *argv]
+        command = [*wrapped, "--", *argv]
+        if helper_object is not None:
+            return PreparedCommand(
+                command, pass_fds=(descriptor,), cwd=str(Path(workspace).resolve()),
+                helper_object=helper_object,
+            )
+        return command
 
     def describe(self) -> dict:
         return {
