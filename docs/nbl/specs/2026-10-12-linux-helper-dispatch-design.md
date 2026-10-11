@@ -208,3 +208,11 @@ Task 1 包装层已实施，先取得有效 1 assertion FAIL / 0 ERROR，再进�
 Task 2/3 计划已补清最后启动拒绝映射、新候选 workspace 与故障实证、scope 关闭未知及失败观察记录，并经独立双审零遗留。Task 2 私有 dispatch core 已实现，补齐最终元数据与 endpoint 活对象核对、单次 close/析构 disarm 和原 signal 优先；fresh SPEC 与不同 QUALITY 均 C0/I0/M0，root 实际 177 focused / 29.314s / 0 skip 通过，完整软件 preflight 终态尚待观察，未发布。详细记录见实施计划。四格实际安装包同对象启动及生产合流仍未完成，不授新 native 或 R2/R3 readiness 信用。
 
 后续软件门终态：root 于 2026-10-11 22:03 UTC 观察 Task2 完整 preflight exit0，密钥/子模块/全量测试三道通过；compileall-j1 与 site/governance/landscape 检查通过。Task2 源码冻结完成，准备阶段提交；Task3 仅完成只读准备，四格原生与公共合流仍未验收。
+
+Task2 随后已提交推送 main `574033a4df8311a569230bbd0522a0e1be717d8a`；Task3 已开始原生探针实施。其源码审查、完整软件门与新四格实际安装包验收仍待完成，公共合流门不变。
+
+Task3 后续 fresh 源码 SPEC→不同 QUALITY 均 C0/I0/M0，SPEC 独立最终 installed 脚本 6项/38.488s/0 skip、0 inconclusive，本机x86_64两拓扑16正控/26故障/24运行identity pass；root最终180 focused/29.188s/0 skip与C/语法/站点治理检查通过。完整软件preflight终态待观察，四新CI格尚未发布执行；Task4提前只读准备精确公共消费设计，不执行合流，不降低原门。
+
+后续完整门实际发现旧 lease CI mock 的关联遗漏：3032 tests / 533.192s，2 failures、74 skipped，阻断发布。两处 wheel 内容夹具已最小同步，并以有效 assertion RED/0 ERROR 补清 lease 故障必须实际命中，41 focused/0 skip 与独立复审通过；生产校验未弱化。冻结变更期间的中间全量已中断、不计通过，最终冻结全量 32828 正在运行。另片 [Task4 公共消费设计](2026-10-12-linux-helper-public-consumption-design.md) 已 fresh SPEC→不同 QUALITY 零遗留，仍只是 DESIGN，公共实施前四新 CI 门不变。
+
+最终软件门已于 2026-10-11 22:40:50 UTC 由 root 实际观察 preflight 32828 exit0、三道全通过；源码冻结与关联检查通过，准备提交供四新 CI 安装验证。此前失败与中断记录保留，不伪装成成功。Task4 与 Windows 角色诊断仍仅设计，未实施、未授新 ready。

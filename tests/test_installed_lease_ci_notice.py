@@ -29,6 +29,7 @@ class TestInstalledLeaseCiNotice(unittest.TestCase):
                 output = StringIO()
                 with mock.patch.object(runner.sys, "platform", "linux"), \
                      mock.patch.object(runner.Path, "glob", return_value=[Path("test.whl")]), \
+                     mock.patch.object(runner.Path, "read_bytes", return_value=b"fixture-wheel"), \
                      mock.patch.object(runner, "_run", side_effect=run) as execute, \
                      redirect_stdout(output):
                     self.assertEqual(runner.main(), 0)
@@ -47,8 +48,11 @@ class TestInstalledLeaseCiNotice(unittest.TestCase):
         output = StringIO()
         with mock.patch.object(runner.sys, "platform", "linux"), \
              mock.patch.object(runner.Path, "glob", return_value=[Path("test.whl")]), \
-             mock.patch.object(runner, "_run", side_effect=run), redirect_stdout(output):
+             mock.patch.object(runner.Path, "read_bytes", return_value=b"fixture-wheel"), \
+             mock.patch.object(runner, "_run", side_effect=run) as execute, redirect_stdout(output):
             self.assertEqual(runner.main(), 1)
+        self.assertTrue(any(call.args[0] == "probe installed wheel network lease expiry"
+                            for call in execute.call_args_list))
         self.assertNotIn("::notice::", output.getvalue())
         self.assertIn("::error::", output.getvalue())
 

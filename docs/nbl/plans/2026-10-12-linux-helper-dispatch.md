@@ -1068,14 +1068,14 @@ class TestScopeCleanupEvidence(unittest.TestCase):
 
 - [x] GREEN focused：`.venv/bin/python -m unittest tests.test_linux_helper_dispatch tests.test_execution_broker tests.test_linux_product_task_quota tests.test_linux_task_resource tests.test_linux_violation_receipt tests.test_linux_helper_object -q`。须记录未执行native prerequisite，不能把skip算通过。
 - [x] 结果/故障映射自审：factory/wrap/scope/role/monitor准备错误→固定 isolation_unavailable且明确未启动；timeout/output_limit/launch_failed/invalid_timeout/invalid_output_limit/invalid_handoff保留；observer/resource/scope终态仍原合同；owner.close错误→固定异常、unknown不可冒充收回；KeyboardInterrupt/SystemExit原对象在其余清理后抛出。
-- [ ] root 复审后阶段提交建议：`feat: own and validate Linux helper dispatch in observed broker`。普通与公共 observed selector仍未接候选。
+- [x] root 双审/完整软件门后已阶段提交推送 main `574033a4df8311a569230bbd0522a0e1be717d8a`（`feat(linux): own and validate held helper dispatch`），远端仅 main。普通与公共 observed selector仍未接候选。
 
 ## Task 3：实际包四格原生 identity/FD 探针
 
 **Dependencies:** Task 2
 **Parallelizable:** No (先固定软件候选hash；独立readonly研究由root并行，不是第二writer)
 
-- [ ] 固定 Task 2候选 SHA，root 完整软件门通过后，创建下列原生fixture。无需改生产 C；helper启动FD由现有 close_range 关闭，禁止增加保留角色。首个FD观察严格在payload自身open/枚举前；运行库启动复用若使此FD非EBADF就是该格负结果，不能改为晚些时候再测。
+- [x] 固定 Task 2候选 SHA，root 完整软件门通过后，创建下列原生fixture。无需改生产 C；helper启动FD由现有 close_range 关闭，禁止增加保留角色。首个FD观察严格在payload自身open/枚举前；运行库启动复用若使此FD非EBADF就是该格负结果，不能改为晚些时候再测。
 
 ```c
 #define _GNU_SOURCE
@@ -1141,7 +1141,7 @@ int main(int argc, char **argv) {
 }
 ```
 
-- [ ] 创建 `scripts/probe_installed_linux_helper_object.py`。固定以下运行身份算法，不新增生产pause/debug/权限：捕获实际Popen对象；立即 pin `/proc/PID`目录FD。无scope在完整observer握手和真实ready后、release前核 outer helper（`supervise_task`在waitpid保持该镜像）；scope在已认证CONFIGURED的 `LinuxTaskScope.configured`回调、既有ACK前核同一个Popen PID，并在ready后再次核第二跳。同一proc目录相对stat→exeFD fstat→stat核field22及状态、防PID复用；exe是内核magic link，允许跟随，不对它用O_NOFOLLOW。身份匹配是PASS必要条件而非单靠argv/owner证明。
+- [x] 创建 `scripts/probe_installed_linux_helper_object.py`。固定以下运行身份算法，不新增生产pause/debug/权限：捕获实际Popen对象；立即 pin `/proc/PID`目录FD。无scope在完整observer握手和真实ready后、release前核 outer helper（`supervise_task`在waitpid保持该镜像）；scope在已认证CONFIGURED的 `LinuxTaskScope.configured`回调、既有ACK前核同一个Popen PID，并在ready后再次核第二跳。同一proc目录相对stat→exeFD fstat→stat核field22及状态、防PID复用；exe是内核magic link，允许跟随，不对它用O_NOFOLLOW。身份匹配是PASS必要条件而非单靠argv/owner证明。
 
 ```python
 from __future__ import annotations
@@ -1385,7 +1385,7 @@ for dispatch_number in range(2):
 
 该测试patch只观测已有组件，不替换native helper、不patch宿主架构、不提供额外权限；probe复制实际安装包字节做路径变更，源包hash关联证据。`from_bundle`返回None属于package prerequisite未达，不得借source编译包替代安装包签字。观察proc目录由ExitStack全部关闭；真实进程仍由broker负责回收。payload无/proc read grant，首fstat后扫描完整当前FD编号范围（最多1M次fstat，不open），扫描耗时计入broker启动预算，ready/release的4s窗口从扫描后开始；慢宿主超时属于未通过，不能缩小扫描范围伪造通过。每个scope payload还实测cap=1 fork得到EAGAIN。故障测试自身保存真实清理方法，RED失败不得残留真实进程，也不得帮broker补清后授PASS。
 
-- [ ] 原生负控 RED：测试观测函数先以持有 `/usr/bin/true` owner的identity核本测试进程，完整stat/exe读取必须得到 `fail`；拒绝“只有match测试”。另外将观察deadline置过去必须 `inconclusive`。以下加入本文件：
+- [x] 原生负控 RED：测试观测函数先以持有 `/usr/bin/true` owner的identity核本测试进程，完整stat/exe读取必须得到 `fail`；拒绝“只有match测试”。另外将观察deadline置过去必须 `inconclusive`。以下加入本文件：
 
 ```python
 class TestIdentityEvidence(unittest.TestCase):
@@ -1405,7 +1405,7 @@ class TestIdentityEvidence(unittest.TestCase):
             os.close(foreign); os.close(directory)
 ```
 
-- [ ] 在同一probe末尾加入严格runner：skip/inconclusive返回77，失败返回1，只有全部实测成功返回0。安装CI不允许77转PASS。
+- [x] 在同一probe末尾加入严格runner：skip/inconclusive返回77，失败返回1，只有全部实测成功返回0。安装CI不允许77转PASS。
 
 ```python
 def main():
@@ -1419,7 +1419,7 @@ if __name__ == "__main__":
     raise SystemExit(main())
 ```
 
-- [ ] 在 `scripts/run_native_wheel_ci.py` 的 `_run`签名加入 `publish_output: bool = False, timeout_seconds: int = 180`，subprocess timeout使用timeout_seconds。仅新stage在处理returncode/skip之前解析发布受控JSON（失败也保留记录），其它stage输出合同不变。新增模块imports `hashlib,json,re`，并加入下列过滤器；不发布raw stdout、argv、payload、异常正文或绝对路径。仅新stage失败stderr输出固定受控摘要（长度与是否截断），其它stage沿原最多1800字符诊断，不扩大。
+- [x] 在 `scripts/run_native_wheel_ci.py` 的 `_run`签名加入 `publish_output: bool = False, timeout_seconds: int = 180`，subprocess timeout使用timeout_seconds。仅新stage在处理returncode/skip之前解析发布受控JSON（失败也保留记录），其它stage输出合同不变。新增模块imports `hashlib,json,re`，并加入下列过滤器；不发布raw stdout、argv、payload、异常正文或绝对路径。仅新stage失败stderr输出固定受控摘要（长度与是否截断），其它stage沿原最多1800字符诊断，不扩大。
 
 ```python
 def _publish_helper_dispatch_records(output: str) -> None:
@@ -1830,3 +1830,25 @@ git diff --check
 - ✅ 关联模块：现有全量测试通过，ICODE-SKILL固定版本未改变。
 - ✅ 兼容安全：默认旧入口保持，未新增权限、政策例外或失败fallback。
 - ✅ 可运行性：完整软件preflight通过；实际安装包原生四格尚未执行，不报告整体100%。
+
+后续 publication：Task2 六路径冻结已提交推送 main `574033a4df8311a569230bbd0522a0e1be717d8a`，root 核远端仅 main、发布后 clean。Task3 随后已开始实现五个批准路径；publisher 已取得有效 assertion RED/0 ERROR 后 GREEN，C fixture 实际单编译通过。此为实施中状态，未获源码双审、完整软件门或实际安装包原生四格信用，新 SHA CI 尚待终态。
+
+Task3 后续源码冻结：fresh SPEC→不同 QUALITY 均 C0/I0/M0。root 直接核原始工具记录中三个 publisher 的有效 assertion RED/0 ERROR 与后续 GREEN；源码冻结 C 78c4155ee2b3aa8b4bce4f50e1b5d5298a0d9dcae391a439ec0d30b64348af1f、probe ea820d044d485d469b06a92d2cee2dbc394fa211a12212f709ea3e2707ed3633、wheel runner 7b2034e2774baa076952f93f56681fb723d7b28724a728ee354ef2db2879cc94、CI 4a54af74b0e9f956fdde009d07dd77e14c656ef4a01f5a5a92a9bc4599c6095d、tests 053db749d1f361bdcdd9e19b8ab66b56eeae9626e8c0b6aa8ed62b59fe09b729。
+
+SPEC 独立最终 installed 脚本 6 tests / 38.488s / 0 skip、0 inconclusive；本机 x86_64/Ubuntu22/kernel6.8/systemd249 的两拓扑各四 mutation×两 dispatch，16 正控、26 故障、24 实际 identity pass。QUALITY 独立36 focused/0 skip、2实际identity/socket负控及额外恶意发布/unknown分支通过。root最终180 focused/29.188s/0 skip、真实C11/O2/Wall/Wextra/Werror单编译与compileall-j1/site/governance/landscape检查通过；完整preflight 28455正在运行，未预记终态。channel数字复用观察修正保存关闭前身份、真实socket.close正常返回与即时EBADF，再核终态失能；detach本身不授信用。四新CI格与Task3发布仍未完成，Task4仅只读调用链/设计准备，不实施合流。
+
+后续完整门纠错：28455 实际 exit1，3032 tests / 533.192s / 2 failures / 74 skipped，阻止发布；旧 lease 主流程夹具仅模拟虚假 wheel 路径，新 wheel 哈希读取令成功测试提前拒绝。root 最小同步 `tests/test_installed_lease_ci_notice.py` 两处读取夹具，并增加失败路径必须到达 lease 阶段的断言：先实际 1 test / 1 assertion FAIL / 0 ERROR，再修复后 41 tests / 0.172s / 0 skip 通过；独立复审 C0/I0/M0，生产读取、77/SKIP 和无符合性信用保持。新增文件冻结 e4888c1c4b49912a40fd790b9dc93461efbb6a3474d8d45a7d0df2e07f5ec558。中间全量 48741 在冻结变更后主动中断 exit130，不计通过；最终冻结全量 32828 已启动、尚待终态。
+
+Task4 提前 DESIGN 已保存为 [公共消费设计](../specs/2026-10-12-linux-helper-public-consumption-design.md)，187 行冻结 c504bd9033247e5d8556917079f4cd5b3f434b0fec07ff090605f8f02128b96b，fresh SPEC→不同 QUALITY 均 C0/I0/M0，root 完整阅读并核 session.policy 实际接口。只授设计信用；Task3 同 SHA 四新原生格实际通过前不实施公共合流。
+
+最终软件门：root 于 2026-10-11 22:40:50 UTC 实际观察最终冻结 preflight 32828 exit0，密钥/子模块/全量测试三道通过。六源冻结未漂移；关联 lease fixture 修复已独立复审，格式、语法、站点、治理与五文档一致性检查通过。Task3 软件候选可提交供新四格实际验证；并行 Windows 角色 DESIGN 已独立双审零遗留，仅授静态设计信用，精确计划准备另行进行。
+
+【架构级自检报告】（Task3 软件候选）
+
+- ✅ 语法/编译：Python compileall-j1、实际 C11/O2/Wall/Wextra/Werror 编译、格式检查通过。
+- ✅ 依赖/调用链：安装包私有 core 探针、CI runner/受控发布及旧 lease 夹具同步，独立审查零遗留。
+- ✅ 逻辑/边界：本机正控、真实身份与故障终态验证通过，数字 FD 复用与 detach 信用区分清楚。
+- ✅ 异常处理：受控失败/超时/启动异常与未知关闭拒绝经测试；未声称所有平台实测通过。
+- ✅ 关联模块：完整 preflight 三道通过；固定 ICODE-SKILL 不变，五份设计/计划/研究文档一致性通过。
+- ✅ 兼容安全：生产入口和 ready/selector 未变，旧 lease SKIP 无符合性信用，未新增权限或降级路径。
+- ✅ 可运行性：完整软件门通过，本机已安装探针通过；新 SHA 四 CI、公共合流与整体 R2/R3 尚未通过，不报告整体 100%。

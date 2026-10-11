@@ -22,6 +22,73 @@ from icode.sandbox_policy import NetworkMode, SandboxPolicy
 REAL_CLOSE = os.close
 
 
+class TestInstalledProbeRecordPublishing(unittest.TestCase):
+    def test_new_stage_launch_error_has_fixed_diagnostic(self):
+        import contextlib
+        import importlib.util
+        import io
+        source = Path(__file__).resolve().parents[1] / 'scripts/run_native_wheel_ci.py'
+        spec = importlib.util.spec_from_file_location('native_wheel_ci_dispatch_launch_test', source)
+        subject = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(subject)
+        output = io.StringIO()
+        with mock.patch.object(subject.subprocess, 'run', side_effect=OSError('PRIVATE-ERROR')), contextlib.redirect_stdout(output):
+            _, error = capture(lambda: subject._run('probe installed Linux helper same-object dispatch',
+                ['/PRIVATE-COMMAND'], cwd=Path('/'), publish_output=True))
+        self.assertIsInstance(error, RuntimeError)
+        self.assertNotIn('PRIVATE', output.getvalue() + str(error))
+        self.assertIn('helper_dispatch_probe_launch_failed', str(error))
+
+    def test_new_stage_timeout_publishes_partial_records_without_raw_command(self):
+        import contextlib
+        import importlib.util
+        import io
+        import json
+        import subprocess
+        source = Path(__file__).resolve().parents[1] / 'scripts/run_native_wheel_ci.py'
+        spec = importlib.util.spec_from_file_location('native_wheel_ci_dispatch_timeout_test', source)
+        subject = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(subject)
+        raw = json.dumps({'architecture': 'x86_64', 'topology': 'scope', 'error': 'timeout'})
+        failure = subprocess.TimeoutExpired(['/PRIVATE-COMMAND'], 600,
+            output=raw.encode(), stderr=b'PRIVATE-STDERR-SENTINEL')
+        output = io.StringIO()
+        with mock.patch.object(subject.subprocess, 'run', side_effect=failure), contextlib.redirect_stdout(output):
+            _, error = capture(lambda: subject._run('probe installed Linux helper same-object dispatch',
+                ['/PRIVATE-COMMAND'], cwd=Path('/'), publish_output=True, timeout_seconds=600))
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn('helper-dispatch-record', output.getvalue())
+        self.assertNotIn('PRIVATE', output.getvalue() + str(error))
+        self.assertIn('helper_dispatch_probe_timeout', str(error))
+
+    def test_failed_new_stage_publishes_safe_json_before_fixed_failure(self):
+        import contextlib
+        import importlib.util
+        import io
+        import json
+        import subprocess
+        source = Path(__file__).resolve().parents[1] / 'scripts/run_native_wheel_ci.py'
+        spec = importlib.util.spec_from_file_location('native_wheel_ci_dispatch_test', source)
+        subject = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(subject)
+        record = {'architecture': 'x86_64', 'topology': 'no-scope', 'mutation': 'none',
+                  'observations': [['payload-ready-before-release', 'fail']], 'error': None,
+                  'ignored_payload': 'PRIVATE-PAYLOAD-SENTINEL'}
+        completed = subprocess.CompletedProcess([], 1, stdout=json.dumps(record) + '\nPRIVATE-PAYLOAD-SENTINEL\n',
+                                                stderr='PRIVATE-STDERR-SENTINEL')
+        output = io.StringIO()
+        with mock.patch.object(subject.subprocess, 'run', return_value=completed), contextlib.redirect_stdout(output):
+            result, error = capture(lambda: subject._run('probe installed Linux helper same-object dispatch',
+                ['fixed-program'], cwd=Path('/'), publish_output=True))
+        self.assertIsNone(result)
+        self.assertIsInstance(error, RuntimeError)
+        self.assertIn('helper-dispatch-record', output.getvalue())
+        self.assertIn('"fail"', output.getvalue())
+        self.assertNotIn('PRIVATE-PAYLOAD-SENTINEL', output.getvalue() + str(error))
+        self.assertNotIn('PRIVATE-STDERR-SENTINEL', output.getvalue() + str(error))
+        self.assertIn('helper_dispatch_probe_failed', str(error))
+
+
 def policy_for(root):
     return SandboxPolicy(1, 'dispatch', 'dispatch', 'code', root, (root,), (root,), (), (), NetworkMode.DENY, (), 8, 8, 2048, ())
 

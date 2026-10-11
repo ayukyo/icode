@@ -515,7 +515,7 @@ jobs:
       - name: Verify launchd bootout known cleanup gap
         if: runner.os == 'macOS'
         run: python -m unittest tests.test_isolation.TestSandboxWrapping.test_launchd_独立作业仍未回收脱组后代 -v
-      - name: Build and verify installed Linux wheel
+      - name: Build installed Linux wheel and verify same-object helper dispatch
         if: runner.os == 'Linux'
         run: python scripts/run_native_wheel_ci.py
 

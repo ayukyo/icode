@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -10,14 +13,97 @@ import textwrap
 from pathlib import Path
 
 
+def _publish_helper_dispatch_records(output: str) -> None:
+    enums = {
+        "architecture": {"x86_64", "arm64"}, "topology": {"scope", "no-scope"},
+        "mutation": {"none", "rename", "unlink", "replace"},
+        "scenario": {"bad_ack", "missing_ack", "observer_start", "observer_runtime", "observer_close",
+                     "resource_start", "resource_configured", "resource_close", "scope_close_unknown",
+                     "timeout", "output_limit", "launch_failed", "keyboardinterrupt", "systemexit", "helper_close_unknown"},
+        "exception": {None, "LinuxHelperObjectError", "KeyboardInterrupt", "SystemExit"},
+    }
+    booleans = {"cleanup_ok", "scope_cleanup_ok", "workspace_live", "process_closed", "channels_closed", "threads_stopped"}
+    hashes = {"package_helper_sha256", "manifest_sha256"}
+    errors = {None, "raised", "timeout", "output_limit", "launch_failed", "proxy_setup_failed", "read_failed",
+              "violation_observer_failed", "resource_channel_failed", "scope_cleanup_failed", "resource_setup_failed",
+              "resource_cleanup_failed", "isolation_unavailable", "cleanup_failed"}
+    for line in output.splitlines():
+        if len(line) > 8192:
+            print("::notice::helper-dispatch-record rejected=oversized"); continue
+        try:
+            record = json.loads(line)
+        except (ValueError, TypeError, RecursionError):
+            print("::notice::helper-dispatch-record rejected=not-json"); continue
+        if type(record) is not dict:
+            print("::notice::helper-dispatch-record rejected=not-object"); continue
+        safe = {}
+        for name, allowed in enums.items():
+            value = record.get(name)
+            if name in record and (type(value) is str or value is None) and value in allowed:
+                safe[name] = value
+        for name in booleans:
+            value = record.get(name)
+            if name in record and (type(value) is bool or (name == "scope_cleanup_ok" and value is None)): safe[name] = value
+        for name in hashes:
+            value = record.get(name)
+            if type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value): safe[name] = value
+        value = record.get("error")
+        if (type(value) is str or value is None) and value in errors: safe["error"] = value
+        value = record.get("dispatch_number")
+        if type(value) is int and value in (0, 1): safe["dispatch_number"] = value
+        value = record.get("kernel")
+        if type(value) is str and re.fullmatch(r"[0-9A-Za-z.+_-]{1,128}", value): safe["kernel"] = value
+        value = record.get("pids")
+        if type(value) is list and len(value) <= 4 and all(type(pid) is int and 1 < pid <= 2147483647 for pid in value): safe["pids"] = value
+        for name in ("owner_states", "scope_states"):
+            value = record.get(name)
+            if type(value) is list and len(value) <= 4 and all(type(item) is str and item in
+                    ("active", "closed", "unknown", "confirmed", "unconfirmed") for item in value): safe[name] = value
+        value = record.get("observations")
+        if type(value) is list and len(value) <= 4 and all(type(pair) is list and len(pair) == 2 and
+                type(pair[0]) is str and type(pair[1]) is str and
+                pair[0] in ("configured-before-ack", "payload-ready-before-release") and
+                pair[1] in ("pass", "fail", "inconclusive") for pair in value): safe["observations"] = value
+        value = record.get("systemd")
+        if type(value) is list and len(value) == 1 and type(value[0]) is str:
+            match = re.match(r"systemd ([0-9]{1,6})(?:\s|$)", value[0])
+            if match: safe["systemd_version"] = int(match.group(1))
+        if safe.get("topology") in ("scope", "no-scope") and safe.get("architecture") in ("x86_64", "arm64"):
+            print("helper-dispatch-record " + json.dumps(safe, sort_keys=True))
+        else:
+            print("::notice::helper-dispatch-record rejected=missing-identity")
+
+
 def _run(
     stage: str, argv: list[str], *, cwd: Path, env: dict[str, str] | None = None,
     allow_environment_skip: bool = False,
+    publish_output: bool = False, timeout_seconds: int = 180,
 ) -> str:
-    result = subprocess.run(
-        argv, cwd=cwd, env=env, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", timeout=180, check=False,
-    )
+    try:
+        result = subprocess.run(
+            argv, cwd=cwd, env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout_seconds, check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        if not publish_output:
+            raise
+        output = error.stdout or ''
+        if isinstance(output, bytes):
+            output = output.decode('utf-8', errors='replace')
+        _publish_helper_dispatch_records(output)
+        print('::notice::helper-dispatch-stderr bounded_summary=true timeout=true')
+        raise RuntimeError(f'{stage}: helper_dispatch_probe_timeout') from None
+    except OSError:
+        if not publish_output:
+            raise
+        print('::notice::helper-dispatch-stderr bounded_summary=true launch_failed=true')
+        raise RuntimeError(f'{stage}: helper_dispatch_probe_launch_failed') from None
+    if publish_output:
+        _publish_helper_dispatch_records(result.stdout)
+        if result.returncode != 0:
+            print('::notice::helper-dispatch-stderr bytes=' + str(len(result.stderr.encode('utf-8', errors='replace')))
+                  + ' bounded_summary=true')
+            raise RuntimeError(f'{stage} exit={result.returncode}: helper_dispatch_probe_failed')
     if allow_environment_skip and result.returncode == 77:
         print(f"{stage}: SKIP (namespace/loopback unavailable; conformance_credit=none)")
         return "SKIP"
@@ -218,6 +304,10 @@ def main() -> int:
                  str(repository / "scripts" / "probe_installed_linux_workspace_object.py")],
                 cwd=root, env=clean_env,
             )
+            print('installed-linux-helper-dispatch wheel_sha256=' + hashlib.sha256(wheels[0].read_bytes()).hexdigest())
+            _run('probe installed Linux helper same-object dispatch',
+                 [str(python), '-I', str(repository / 'scripts/probe_installed_linux_helper_object.py')],
+                 cwd=root, env=clean_env, publish_output=True, timeout_seconds=600)
             cleanup_code = textwrap.dedent("""\
                 from icode.isolation import LandlockSandbox, probe_linux_process_tree_cleanup
 
