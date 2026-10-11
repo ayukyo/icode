@@ -182,10 +182,27 @@ self.assertIn('已核验', proc.stdout)
 
 - [x] root关联 `.venv/bin/python -B -m unittest tests.test_windows_startup_host_identity tests.test_windows_startup_security tests.test_windows_startup_security_native tests.test_windows_startup_pin tests.test_windows_startup_native tests.test_windows_startup_pin_ci tests.test_run_workspace_ci tests.test_ci_workflow_contracts -v`，便携20轮0skip/F/E、compileall -q -j1触及源/测试/selector、diff格式检查；旧源摘要不变。
 - [x] 全片独立SPEC后不同QUALITY均解决C/I/M；阶段结束独立只读研究刷新本片固定证据，记采纳/暂缓/不适配，research不代实现或Windows信用。
-- [ ] `CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 .venv/bin/python -u scripts/preflight.py`新完整三道exit0，站点/文档两轮和七维实际报告；root精确git add源码测试selector及相关docs（docs必要add-f），commit/push main并ls-remote确认，不由agent提交，不上传KEY或无关改动。
-- [ ] 新SHA四Windows workspace逐格核实际capture方法/fixture/subTest非skip与日志；失败先修根因，Win10/普通host未跑不授信用。发布前Linux只有portable信用，发布后原生证据另记；纯身份不授整链/UAC/R2/R3。
+- [x] `CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 .venv/bin/python -u scripts/preflight.py`新完整三道exit0，站点/文档两轮和七维实际报告；root精确git add源码测试selector及相关docs（docs必要add-f），commit/push main并ls-remote确认，不由agent提交，不上传KEY或无关改动。
+- [x] 新SHA四Windows workspace逐格核实际capture方法/fixture/subTest非skip与日志；失败先修根因，Win10/普通host未跑不授信用。发布前Linux只有portable信用，发布后原生证据另记；纯身份不授整链/UAC/R2/R3。
 
 **Execution Mode:** serial
+
+## main 发布与四格原生刷新
+
+后续同SHA provenance [38139112765](https://github.com/ayukyo/icode/actions/runs/38139112765) 已5/5success：validate114469093957；四安装x64/3.11=114471521040、x64/3.12=114471521064、ARM/3.11=114471521101、ARM/3.12=114471521089。root逐四日志核安装资源解析、密码学来源、verifier字节绑定/offline校验、实际密码学负控/direct-volume、元数据与setup/commands拒绝等实际PASS。下文“当时安装仍运行”为旧窗口；这些仅新SHA安装/来源/静态信用，不证明新整链观察（尚在开发）、UAC或R2/R3。
+
+main `90704b41439c025d7f5ff9f8689db3b7b208cc91` 已实际commit/push，ls-remote相同且发布后工作区干净。最后两轮六文档0疑似、site两轮通过（9外链未fetch）、密钥单道通过、cached格式通过及六冻结hash一致；完整三道见12:19记录。精确12文件1189+/12-，无KEY/子模块/权限/旧生产源变更；git add首次因全局docs忽略返回1，root核实际12 staged并对确切docs add-f后提交，未扩scope。
+
+[CI38139112777](https://github.com/ayukyo/icode/actions/runs/38139112777) 四Windows workspace全部实际success；root分别回读完整日志并独立按该SHA selector重建815唯一leaf，首段progress每格815=795 PASS/20 optional skip。新身份独立OS正控/ABI两方法1-based608/609都是`.`，两校验夹具652/670都是`.`；每格无required skip、ReaderThread/UnicodeDecodeError/_readerthread，随后junction3/leased75也通过。
+
+| 实际格 | job |
+| --- | --- |
+| x64/Python3.11 | 114469094582 |
+| x64/Python3.12 | 114469094615 |
+| ARM64/Python3.11 | 114469094699 |
+| ARM64/Python3.12 | 114469094644 |
+
+独立观察者确认整个CI46 completed=41success/2Reviewer failure/3既有skip；Reviewer两格仍10035/wait_expired、deny=false/credit=false，不视network-DENY或R2/R3通过。宿主身份与输出夹具本片hosted runner限定门已过；Win10/普通host、整链、protected/加载/UAC与模型一致性不因本片关闭。provenance新SHA安装四格当时仍运行，不能沿用0d40 credit。
 
 ## 全片冻结观察（软件检查完成，发布和原生核对另记）
 

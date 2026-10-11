@@ -28,6 +28,7 @@ from icode.native_helper import windows_arch_from_platform, windows_pe_architect
 from scripts.check_windows_wheel import check as check_windows_wheel  # noqa: E402
 from scripts.windows_wheel import read_provenance_bundle  # noqa: E402
 from scripts.windows_bootstrap_binding import read_verifier_image  # noqa: E402
+from scripts.probe_windows_installed_chain import validate_wire  # noqa: E402
 from icode.runner import _run_unittest_with_bounded_output  # noqa: E402
 
 _HELPER_ENV = "ICODE_WINDOWS_SANDBOX_HELPER"
@@ -37,6 +38,8 @@ _SOURCE_ENV = "ICODE_WINDOWS_PROVENANCE_SOURCE_SHA"
 _NOTICES_ENV = "ICODE_WINDOWS_PROVENANCE_NOTICES"
 _BINDING_OUTPUT_LIMIT_BYTES = 512
 _BINDING_TIMEOUT_SECONDS = 5
+_CHAIN_OUTPUT_LIMIT_BYTES = 256 * 1024
+_CHAIN_TIMEOUT_SECONDS = 30
 
 
 def _provenance_verify_argv(helper: Path, bundle: Path, source_sha: str) -> list[str]:
@@ -164,6 +167,35 @@ def _verify_installed_verifier_binding(helper: Path, arch: str, *, cwd: Path, en
     if hashlib.sha256(image).hexdigest() != binding["verifier_sha256"]:
         raise RuntimeError("installed verifier bytes do not match verified bootstrap binding")
     print("verify installed bootstrap verifier byte binding: PASS")
+
+
+def _observe_installed_chain(python: Path, source_sha: str, arch: str, *, cwd: Path, env: dict[str, str]) -> None:
+    """Capture installed-source diagnostics, never compatibility or launch credit."""
+    try:
+        # -I excludes checkout/PYTHONPATH imports, not normal installed site
+        # packages. This is interpreter import isolation, not an OS sandbox.
+        result = _run_unittest_with_bounded_output(
+            [str(python), "-I", "-B", "-X", "utf8",
+             str(_REPOSITORY / "scripts/probe_windows_installed_chain.py"),
+             "--source-sha", source_sha],
+            workspace=cwd, timeout=_CHAIN_TIMEOUT_SECONDS,
+            output_limit_bytes=_CHAIN_OUTPUT_LIMIT_BYTES, environment=env,
+        )
+        if type(result) is not tuple or len(result) != 3:
+            raise ValueError("invalid_capture_shape")
+        code, stdout, stderr = result
+        if (type(code) is not int or code != 0 or type(stdout) is not bytes
+                or type(stderr) is not bytes or stderr):
+            raise ValueError("invalid_capture_result")
+        data = validate_wire(stdout, source_sha, arch)
+        # Only the closed finite schema may reach CI logs. A supported policy
+        # rejection remains an observation, and receives no acceptance credit.
+        print(json.dumps(data, separators=(",", ":")))
+        print("installed-chain observation_complete=true compatibility_accepted=false launch_authorized=false")
+    except Exception:
+        # Capture failures include timeout/limit/unknown pipe cleanup. Do not
+        # retry, replace-decode, skip, or reveal the wire/exception's private data.
+        raise RuntimeError("installed chain observation failed") from None
 
 
 def main() -> int:
@@ -350,6 +382,10 @@ def main() -> int:
                          [str(python), "-I", str(_REPOSITORY / "scripts" /
                           "probe_windows_direct_volume.py"),
                           "--source-sha", env["GITHUB_SHA"]], cwd=root, env=clean_env)
+                    # Earlier pathname provenance does not bind the newly held
+                    # image bytes. This subsequent stage is observation only.
+                    _observe_installed_chain(python, env["GITHUB_SHA"], arch,
+                                             cwd=root, env=clean_env)
 
             if args.native_helper is not None:
                 # CI executes only the artifact explicitly built from this job's

@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import stat
 
 from scripts import run_windows_wheel_ci as wheel_ci
+from tests.test_windows_installed_chain import receipt, wire
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "native/windows/icode_windows_bootstrap.c"
@@ -53,6 +54,98 @@ def binding_output(arch="x64", digest="a" * 64):
 
 
 class TestWindowsBootstrapBinding(unittest.TestCase):
+    def installed_observer(self):
+        observer = getattr(wheel_ci, "_observe_installed_chain", None)
+        self.assertTrue(callable(observer), "bounded installed-chain observation is missing")
+        return observer
+
+    def test_installed_chain_raw_capture_is_isolated_bounded_and_non_authorizing(self):
+        observer = self.installed_observer()
+        root, python, environment = Path("workspace"), Path("installed/python.exe"), {"FIXED": "value"}
+        for arch, rejected in (("x64", False), ("x64", True), ("arm64", False), ("arm64", True)):
+            data = receipt()
+            data["architecture"] = arch
+            if rejected:
+                data["resources"][0]["chain"][0]["owner"] = "other"
+                data["resources"][0]["chain"][0]["policy_result"] = "owner_untrusted"
+                data["source_policy_all_passed"] = False
+            output = io.StringIO()
+            with self.subTest(architecture=arch, policy_rejected=rejected), patch.object(
+                wheel_ci, "_run_unittest_with_bounded_output", return_value=(0, wire(data, b"\r\n"), b"")
+            ) as run, redirect_stdout(output):
+                observer(python, "a" * 40, arch, cwd=root, env=environment)
+            run.assert_called_once_with(
+                [str(python), "-I", "-B", "-X", "utf8",
+                 str(ROOT / "scripts/probe_windows_installed_chain.py"), "--source-sha", "a" * 40],
+                workspace=root, timeout=30, output_limit_bytes=256 * 1024, environment=environment)
+            self.assertEqual(output.getvalue(), wire(data).decode("ascii")
+                + "installed-chain observation_complete=true compatibility_accepted=false launch_authorized=false\n")
+            self.assertIs(json.loads(output.getvalue().splitlines()[0])["launch_authorized"], False)
+
+    def test_installed_chain_raw_types_and_exit_status_fail_without_private_output(self):
+        observer = self.installed_observer()
+        valid = wire(receipt())
+        class TupleSubclass(tuple):
+            pass
+        class BytesSubclass(bytes):
+            pass
+        candidates = [None, [0, valid, b""], (), (0, valid), (0, valid, b"", "PRIVATE"),
+                      TupleSubclass((0, valid, b"")),
+                      (False, valid, b""), (True, valid, b""), (1, valid, b""),
+                      (0.0, valid, b""), (0, valid.decode(), b""),
+                      (0, bytearray(valid), b""), (0, BytesSubclass(valid), b""), (0, valid, ""),
+                      (0, valid, BytesSubclass()),
+                      (0, valid, bytearray()), (0, valid, b"PRIVATE warning")]
+        for result in candidates:
+            output = io.StringIO()
+            with self.subTest(result_type=type(result), result=repr(result)[:40]), patch.object(
+                wheel_ci, "_run_unittest_with_bounded_output", return_value=result
+            ) as run, redirect_stdout(output):
+                with self.assertRaisesRegex(RuntimeError, "^installed chain observation failed$") as raised:
+                    observer(Path("python.exe"), "a" * 40, "x64", cwd=Path("work"), env={})
+            self.assertIsNone(raised.exception.__cause__)
+            self.assertTrue(raised.exception.__suppress_context__)
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(run.call_count, 1)
+
+    def test_installed_chain_invalid_wire_never_prints_unvalidated_private_data(self):
+        observer = self.installed_observer()
+        valid = wire(receipt())
+        candidates = [b"\xff\n", b"PRIVATE unknown\n", valid + b"PRIVATE\n",
+                      valid.replace(b'"schema_version":1', b'"schema_version":1,"schema_version":1'),
+                      valid.replace(b'"schema_version":1,', b""),
+                      valid.replace(b'}\n', b',"PRIVATE":"PRIVATE"}\n'),
+                      valid.replace(b'a' * 40, b'b' * 40),
+                      valid.replace(b'"architecture":"x64"', b'"architecture":"arm64"'),
+                      valid.replace(b'"launch_authorized":false', b'"launch_authorized":true'),
+                      b"x" * (256 * 1024 + 1)]
+        for output_wire in candidates:
+            output = io.StringIO()
+            with self.subTest(wire_prefix=output_wire[:30]), patch.object(
+                wheel_ci, "_run_unittest_with_bounded_output", return_value=(0, output_wire, b"")
+            ), redirect_stdout(output):
+                with self.assertRaisesRegex(RuntimeError, "^installed chain observation failed$"):
+                    observer(Path("python.exe"), "a" * 40, "x64", cwd=Path("work"), env={})
+            self.assertEqual(output.getvalue(), "")
+
+    def test_installed_chain_capture_timeout_limit_and_unknown_cleanup_are_fixed_failures(self):
+        from icode.runner import VerificationOutputCaptureError, VerificationOutputLimitError
+        observer = self.installed_observer()
+        for failure in (subprocess.TimeoutExpired("PRIVATE", 30, output=b"PRIVATE"),
+                        OSError("PRIVATE path"), VerificationOutputLimitError(256 * 1024, return_code=0),
+                        VerificationOutputCaptureError("PRIVATE cleanup_unconfirmed", return_code=0),
+                        ValueError("PRIVATE capture"), RuntimeError("PRIVATE unknown")):
+            output = io.StringIO()
+            with self.subTest(error=type(failure)), patch.object(
+                wheel_ci, "_run_unittest_with_bounded_output", side_effect=failure
+            ) as run, redirect_stdout(output):
+                with self.assertRaisesRegex(RuntimeError, "^installed chain observation failed$") as raised:
+                    observer(Path("python.exe"), "a" * 40, "x64", cwd=Path("work"), env={})
+            self.assertIsNone(raised.exception.__cause__)
+            self.assertTrue(raised.exception.__suppress_context__)
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(run.call_count, 1)
+
     def generator(self):
         source = ROOT / "scripts/windows_bootstrap_binding.py"
         self.assertTrue(source.is_file(), "same-bytes binding generator is missing")
@@ -380,7 +473,7 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
     def test_signed_install_order_and_failure_gates_preserve_no_go_proof_only(self):
         # Mock only external build/install/gh/Go commands; retain real main,
         # query validation, installed raw byte hashing and export filesystem.
-        for mode in ("valid", "gh_failure", "c_drift", "binding_failure", "go_failure", "direct_volume_failure", "proof_only", "unsigned"):
+        for mode in ("valid", "gh_failure", "c_drift", "binding_failure", "go_failure", "direct_volume_failure", "chain_failure", "proof_only", "unsigned"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as raw:
                 root = Path(raw)
                 helper = root / "icode-sandbox-windows-x64.exe"
@@ -428,23 +521,42 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
                     return ""
 
                 def raw_query(args, **kwargs):
+                    if "--source-sha" in args:
+                        stages.append("chain observation")
+                        self.assertIn("installed verifier accepts direct-volume paths", stages)
+                        self.assertEqual(args, [str(Path(kwargs["workspace"]) / "venv/Scripts/python.exe"),
+                            "-I", "-B", "-X", "utf8", str(ROOT / "scripts/probe_windows_installed_chain.py"),
+                            "--source-sha", "a" * 40])
+                        self.assertEqual(kwargs["timeout"], 30)
+                        self.assertEqual(kwargs["output_limit_bytes"], 256 * 1024)
+                        self.assertNotIn("PYTHONPATH", kwargs["environment"])
+                        if mode == "chain_failure": return (0, b"PRIVATE invalid receipt\n", b"")
+                        return (0, wire(receipt()), b"")
                     stages.append("binding query")
                     self.assertIn("cryptographically verify installed CI artifact provenance", stages)
                     self.assertEqual(args, [str(helper), "--verifier-binding-json"])
                     digest = "0" * 64 if mode == "binding_failure" else hashlib.sha256(verifier.read_bytes()).hexdigest()
                     return (0, binding_output(digest=digest), b"")
 
+                logged = io.StringIO()
                 with patch.object(sys, "argv", argv), patch.object(wheel_ci.sys, "platform", "win32"), \
                      patch.object(wheel_ci.sysconfig, "get_platform", return_value="win-amd64"), \
                      patch.dict(os.environ, {"GITHUB_SHA": "a" * 40}), \
                      patch.object(wheel_ci, "_run", side_effect=external), \
                      patch.object(wheel_ci, "check_windows_wheel", return_value=[]), \
-                     patch.object(wheel_ci, "_run_unittest_with_bounded_output", side_effect=raw_query), redirect_stdout(io.StringIO()):
+                     patch.object(wheel_ci, "_run_unittest_with_bounded_output", side_effect=raw_query), redirect_stdout(logged):
                     result = wheel_ci.main()
-                if mode in ("gh_failure", "c_drift", "binding_failure", "go_failure", "direct_volume_failure"):
+                self.assertNotIn("PRIVATE", logged.getvalue())
+                if mode in ("valid", "chain_failure"):
+                    self.assertEqual(stages.count("chain observation"), 1)
+                if mode in ("gh_failure", "c_drift", "binding_failure", "go_failure", "direct_volume_failure", "chain_failure"):
                     self.assertEqual(result, 1)
                     self.assertFalse(output.exists(), "failure exported a signed wheel")
+                    self.assertNotIn("run installed native bootstrap metadata", stages)
+                    self.assertNotIn("fail closed when bundled helper is missing", stages)
                 else: self.assertEqual(result, 0)
+                if mode in ("gh_failure", "c_drift", "binding_failure", "go_failure", "direct_volume_failure", "proof_only", "unsigned"):
+                    self.assertNotIn("chain observation", stages)
                 if mode in ("gh_failure", "c_drift", "proof_only", "unsigned"):
                     self.assertNotIn("binding query", stages)
                 if mode in ("gh_failure", "c_drift", "binding_failure", "proof_only", "unsigned"):
@@ -455,7 +567,7 @@ class TestWindowsBootstrapBinding(unittest.TestCase):
                     ordered = ["cryptographically verify installed CI artifact provenance", "binding query",
                                "verify installed wheel using its offline verifier",
                                "installed verifier rejects actual cryptographic negative controls",
-                               "installed verifier accepts direct-volume paths", "run installed native bootstrap metadata"]
+                               "installed verifier accepts direct-volume paths", "chain observation", "run installed native bootstrap metadata"]
                     for stage in ordered:
                         self.assertIn(stage, stages)
                     self.assertEqual([stages.index(x) for x in ordered], sorted(stages.index(x) for x in ordered))
