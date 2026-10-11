@@ -2336,3 +2336,11 @@ a6fd29c 四 Windows workspace 实际958/20skip/2F0E，guard13通过；两原生�
 独立只读追加核验后，root直接回读 `WorkspaceSession.policy`、workbench分层创建、`test_workspace`正控、`select_sandbox`、CLI真实选择器及 `execute_linux_leased_connect_candidate`：POSIX工单已启用 `isolate_git_metadata=True`，code 内没有 `.git`，不应为普通工单重复重构布局或改变旧 WorkspaceManager 默认。`select_sandbox` 当前不选择 Landlock，包存在和doctor成功不等于实际工单后端；网络候选只传代理 sender FD，尚未合流当前 DENY dispatch 的资源监督、USER_NOTIF和会话目录FD。原[§12.1/14.1](./nbl/specs/2026-09-23-r2-cross-platform-isolation-design.md)的环境绑定回执与生产授权必须另外闭合。
 
 **采纳（设计输入）**：复用随包hash核验、真实session对象、现有评分/独立探针，先设计宿主拥有且按OS/helper/policy变化失效的有限准入回执；后续才接selector/executor及网络资源合流。**暂缓**：未完成这些合同前自动放行；**不适配**：直接将 `policy_contract_ready` 改为True、复用旧诊断字典当ready、审批后裸调网络candidate、重建quota或放弃保护路径。收益为收束真正产品缺口，成本为身份漂移/缺管理器/skipped/incomplete/未知cleanup负控及后续真实产品入口验收。沿同窗口实际核过的固定Codex/OpenHands分层机制，不声称再次刷新HEAD；无生产/权限/依赖修改，不授R2/R3信用。
+
+### 2026-10-12 北京时间：私有DACL观察门结束与Linux设计冻结
+
+8b1afd4新四Windows workspace各958/20skip/无F/E，root与独立observer各逐份校验16份原始wire、48窗口。pinned操作SD均确变，确认只读共享HANDLE不阻止同host WRITE_DAC；不把观察PASS写安全通过，也不倒推旧初始化根因。[原生分账](./nbl/plans/2026-10-11-windows-private-dacl-window.md)保留主CI两旧网络失败、签装待验及三个授权false。沿固定主源机制，采纳新的实际效果证据、暂缓政策/加载/UAC，不新增权限或复制源码。
+
+Linux[绑定诊断设计](./nbl/specs/2026-10-12-linux-admission-receipt-design.md)经SPEC→不同QUALITY修后C0/I0/M0：现有两个探针只有legacy summary，cleanup未完整观测，helper摘要函数没有ELF机器校验，故首片固定incomplete/summary-only/cleanup unknown；不重建探针或冒充ready。helper A→B/缺失清除跨helper绑定与摘要，正式准入、持久化及生产网络合流另片验收。收益为避免缓存身份漂移和错误授权，成本为有限schema/组合及真实安装包身份负控；上游来源延续本窗口固定历史核验，未声称刷新HEAD或完整20项，研究/设计不授R2/R3信用。
+
+同SHA随后provenance5/5闭合，root及独立observer逐份用冻结validator核验四签装原始source-consumer回执；先前“签装待验”保留为当时状态。四格仍root owner_untrusted、104全局逆序确认关闭、8SD读取/分配/释放及授权false，不授默认pip路径安全或UAC；详细job/独立OS绑定见上引原生分账。主CI两网络失败与整体未验收不变。
