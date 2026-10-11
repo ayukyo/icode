@@ -29,6 +29,7 @@ from scripts.check_windows_wheel import check as check_windows_wheel  # noqa: E4
 from scripts.windows_wheel import read_provenance_bundle  # noqa: E402
 from scripts.windows_bootstrap_binding import read_verifier_image  # noqa: E402
 from scripts.probe_windows_installed_chain import validate_wire  # noqa: E402
+from scripts.probe_windows_installed_source import validate_wire as validate_source_wire  # noqa: E402
 from icode.runner import _run_unittest_with_bounded_output  # noqa: E402
 
 _HELPER_ENV = "ICODE_WINDOWS_SANDBOX_HELPER"
@@ -40,6 +41,8 @@ _BINDING_OUTPUT_LIMIT_BYTES = 512
 _BINDING_TIMEOUT_SECONDS = 5
 _CHAIN_OUTPUT_LIMIT_BYTES = 256 * 1024
 _CHAIN_TIMEOUT_SECONDS = 30
+_SOURCE_OUTPUT_LIMIT_BYTES = 32 * 1024
+_SOURCE_TIMEOUT_SECONDS = 30
 
 
 def _provenance_verify_argv(helper: Path, bundle: Path, source_sha: str) -> list[str]:
@@ -196,6 +199,36 @@ def _observe_installed_chain(python: Path, source_sha: str, arch: str, *, cwd: P
         # Capture failures include timeout/limit/unknown pipe cleanup. Do not
         # retry, replace-decode, skip, or reveal the wire/exception's private data.
         raise RuntimeError("installed chain observation failed") from None
+
+
+def _observe_installed_source(python: Path, source_sha: str, arch: str, *, cwd: Path, env: dict[str, str]) -> None:
+    """Observe the installed consumer without awarding compatibility or launch."""
+    try:
+        # main creates this venv using sys.executable, on this Windows host.
+        # Bind the child's versions to those facts, not merely supported ranges.
+        expected_python = [sys.version_info.major, sys.version_info.minor]
+        version = sys.getwindowsversion()
+        expected_windows = [version.major, version.minor, version.build]
+        result = _run_unittest_with_bounded_output(
+            [str(python), "-I", "-B", "-X", "utf8",
+             str(_REPOSITORY / "scripts/probe_windows_installed_source.py"),
+             "--source-sha", source_sha],
+            workspace=cwd, timeout=_SOURCE_TIMEOUT_SECONDS,
+            output_limit_bytes=_SOURCE_OUTPUT_LIMIT_BYTES, environment=env,
+        )
+        if type(result) is not tuple or len(result) != 3:
+            raise ValueError("invalid_capture_shape")
+        code, stdout, stderr = result
+        if (type(code) is not int or code != 0 or type(stdout) is not bytes
+                or type(stderr) is not bytes or stderr):
+            raise ValueError("invalid_capture_result")
+        data = validate_source_wire(stdout, source_sha, arch,
+                                    expected_python=expected_python, expected_windows=expected_windows)
+        print(json.dumps(data, separators=(",", ":")))
+        print("installed-source observation_complete=true compatibility_accepted=false launch_authorized=false protected_observed=false")
+    except Exception:
+        # Never reveal unvalidated wire, native details, or private capture errors.
+        raise RuntimeError("installed source observation failed") from None
 
 
 def main() -> int:
@@ -386,6 +419,8 @@ def main() -> int:
                     # image bytes. This subsequent stage is observation only.
                     _observe_installed_chain(python, env["GITHUB_SHA"], arch,
                                              cwd=root, env=clean_env)
+                    _observe_installed_source(python, env["GITHUB_SHA"], arch,
+                                              cwd=root, env=clean_env)
 
             if args.native_helper is not None:
                 # CI executes only the artifact explicitly built from this job's

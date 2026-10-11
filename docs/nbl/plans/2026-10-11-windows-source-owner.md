@@ -274,7 +274,7 @@ Task2 SHA256：CI `074a747e28f9e3b4f9ee58f423c78e42ca9ad7d488df6cd351a516a2cf5cb
 
 - [x] root全文回读四功能及上下游，独立SPEC→不同QUALITY所有C/I/M解决后重新核冻结/关联/20轮。任何产品源改动需重新冻结和审查；研究不能替代测试。
 - [x] 完整 `CMAKE_BUILD_PARALLEL_LEVEL=1 MAKEFLAGS=-j1 .venv/bin/python -u scripts/preflight.py` 三道exit0；四新/关联文档check_consistency、site两轮、diff/秘密/子模块检查。七维报告仅真实通过范围，不报Windows/整体100%。
-- [ ] root exact add四功能及关联文档（ignored新docs需add-f确切路径）、commit/push main与lsremote；每阶段软件通过才发布，不混用户改动。原生CI对新source便携方法/fixture必需执行，既有安装观察仍独立；新consumer Windows正控/叶负控及普通host安装兼容未证明就保留缺口，继续下一原生/卷根合同片，不止于软件。
+- [x] root exact add四功能及关联文档（ignored新docs需add-f确切路径）、commit/push main与lsremote；每阶段软件通过才发布，不混用户改动。原生CI对新source便携方法/fixture必需执行，既有安装观察仍独立；新consumer Windows正控/叶负控及普通host安装兼容未证明就保留缺口，继续下一原生/卷根合同片，不止于软件。
 
 自审：接口、定位、identity、双owner、同对象政策、budget、异常/close、copy/pickle分别落Task1；真实选择和不可skip落Task2；双审/全验/main发布与原生分账落Task3。根兼容和publisher/UAC未塞进软件通过。
 
@@ -283,6 +283,18 @@ Task2 SHA256：CI `074a747e28f9e3b4f9ee58f423c78e42ca9ad7d488df6cd351a516a2cf5cb
 不同全片QUALITY已完成，C0/I0/M0；独立实际279 run=269 PASS/10既定平台skip、20轮4840 PASS/0skip/F/E，另核parser中断与关闭未知的异常身份、全局逆序一次回收和不重试。SPEC与QUALITY为不同审查者，均未修改冻结文件。root额外bootstrap/packaged-skill32项PASS/0skip；四功能及设计摘要与上述冻结一致。
 
 root完整preflight session39952已结束exit0，密钥、固定子模块、全仓unittest三道均通过。预检成功路径没有公开全仓测试数量，因此不猜计数。上文“QUALITY进行/全仓运行”为历史窗口。软件通过不授Windows新consumer原生执行、普通安装兼容、publisher/加载边界、首UAC或R2/R3整体通过。
+
+已实际commit/push main `34c8bc66b4f91d2d3bc063d35fe22c634bd6a621`，ls-remote相同，工作区提交后clean。Pages38146448423两任务成功；CI38146448479与provenance38146448570开始执行，未完成格不授信用。已自主开始[固定消费者原生安装观测](./2026-10-11-windows-source-owner-native.md)，没有等待新的用户命令。
+
+### Windows workspace实际复验（34c8bc6）
+
+四格完整raw日志由独立观察者及root各取核验：x64/Python3.11 job114490703371、x64/3.12 job114490703508、ARM64/3.11 job114490703350、ARM64/3.12 job114490703379。每格实际884 tests、20既定optional skip、864 PASS；884位progress中新source24（645–668位）均24点，四格合计96次契约方法执行，不是固定安装consumer的原生API观测。各格另junction3与leased75通过；无ReaderThread/UnicodeDecodeError。签名安装及全仓任务尚待其窗口完成，不提前授信用。
+
+全仓任务已实际结束：Python3.11 job114490703235、3.12 job114490703404，各2837 tests/81既定skip/2756 PASS，独立观察者与root各完整raw核过。主CI38146448479最终46 jobs=41success/2旧Reviewer failure/3既定条件skip；旧Reviewer仍10035/wait_expired、connect_denied=false、privateNetwork control exit91与78!=0，不是网络DENY或本片回归。签名安装四格仍另记，不能用全仓或workspace替代。
+
+### 签名安装整链窗口关闭（34c8bc6）
+
+provenance38146448570最终5/5成功。x64/3.11 job114493233205、x64/3.12 job114493233220、ARM64/3.11 job114493233186、ARM64/3.12 job114493233381完整raw中各唯一规范wire已由独立观察者与root分别实际调用当前validate_wire核过，每资源13节点/13确认关闭/0unknown，每格双SD计188ACE；仅两个root owner_untrusted，其余24节点pass。四格104节点=96政策pass+8root拒绝，104确认关闭。原生版本x64为[10,0,26100]、ARM为[10,0,26200]，不按major10冒称Win10。19既有安装stage各通过；总scope仍旧整链观察，新固定consumer没有在这一SHA的安装stage调用，不能给它借原生信用。所有protected/compatibility/launch=false。三workflow窗口已结束；上面“签名安装尚待”为历史。软件子片关闭，当前继续新的consumer原生观测，而非宣布R2/R3完成。
 
 【架构级自检报告】（仅本软件候选范围）
 
