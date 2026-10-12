@@ -176,11 +176,15 @@ def execute_linux_violation_observed_command(
     argv: list[str], *, cwd: Path, sandbox: object, policy: SandboxPolicy,
     timeout: int | float, output_limit_bytes: int | None = None,
     command_wrapper: _LinuxViolationCommandWrapper,
+    prepared_step=None, workspace_session=None, prepared_attempt=None,
 ) -> ExecutionResult:
+    borrowing_keywords = (dict(prepared_step=prepared_step,
+        workspace_session=workspace_session, prepared_attempt=prepared_attempt)
+        if prepared_step is not None else {})
     return _execute_linux_observed_command(
         argv, cwd=cwd, sandbox=sandbox, policy=policy, timeout=timeout,
         output_limit_bytes=output_limit_bytes, command_wrapper=command_wrapper,
-        resource_mode=False, helper_object_mode=True,
+        resource_mode=False, helper_object_mode=True, **borrowing_keywords,
     )
 
 
@@ -189,13 +193,17 @@ def execute_linux_resource_observed_command(
     timeout: int | float, output_limit_bytes: int | None = None,
     command_wrapper: _LinuxResourceCommandWrapper,
     verification_cache_root: Path | None = None,
+    prepared_step=None, workspace_session=None, prepared_attempt=None,
 ) -> ExecutionResult:
     """Actual policy-command quota chain; not an automatic-mode support grant."""
+    borrowing_keywords = (dict(prepared_step=prepared_step,
+        workspace_session=workspace_session, prepared_attempt=prepared_attempt)
+        if prepared_step is not None else {})
     return _execute_linux_observed_command(
         argv, cwd=cwd, sandbox=sandbox, policy=policy, timeout=timeout,
         output_limit_bytes=output_limit_bytes, command_wrapper=command_wrapper,
         resource_mode=True, helper_object_mode=True,
-        verification_cache_root=verification_cache_root,
+        verification_cache_root=verification_cache_root, **borrowing_keywords,
     )
 
 
@@ -272,6 +280,7 @@ def _execute_linux_observed_command(
     command_wrapper: Callable[..., list[str]], resource_mode: bool,
     verification_cache_root: Path | None = None,
     helper_object_mode: bool = False,
+    prepared_step=None, workspace_session=None, prepared_attempt=None,
 ) -> ExecutionResult:
     """Run a Linux deny-only command with a pre-exec USER_NOTIF observer.
 
@@ -280,7 +289,26 @@ def _execute_linux_observed_command(
     prevents payload execution and never degrades to an unobserved command.
     """
     owner = None
+    borrow_context = None
+    borrowing = False
+    cleanup_unknown = False
+    construction_failed = False
+    def note_cleanup_unknown():
+        nonlocal cleanup_unknown
+        cleanup_unknown = True
+    def construct(factory, *args, **kwargs):
+        nonlocal construction_failed
+        try:
+            return factory(*args, **kwargs)
+        except BaseException:
+            # Failure before return is opaque; do not claim internal cleanup.
+            construction_failed = True
+            raise
     try:
+        if prepared_step is not None and (not sys.platform.startswith("linux")
+                or helper_object_mode is not True):
+            return ExecutionResult(None, "", 0, "isolation_unavailable", False, True, None,
+                violation_observer_status="incomplete", payload_started=False)
         if type(helper_object_mode) is not bool:
             return ExecutionResult(None, "", 0, "invalid_violation_scope", False, True, None)
         if not sys.platform.startswith("linux"):
@@ -300,6 +328,9 @@ def _execute_linux_observed_command(
             or policy.network_mode is not NetworkMode.DENY
             or policy.allowed_domains
         ):
+            if prepared_step is not None:
+                return ExecutionResult(None, "", 0, "isolation_unavailable", False, True, None,
+                    violation_observer_status="incomplete", payload_started=False)
             return ExecutionResult(None, "", 0, "invalid_violation_scope", False, True, None)
 
         if verification_cache_root is not None:
@@ -372,9 +403,13 @@ def _execute_linux_observed_command(
             if remaining <= 0:
                 raise LinuxTaskScopeError()
             query_policy = replace(policy, output_limit_bytes=_MANAGER_STDOUT_LIMIT_BYTES, wall_timeout_seconds=1)
+            cleanup_keywords = ({"on_cleanup_unknown": note_cleanup_unknown}
+                                if borrowing else {})
             answer = _execute_policy_command(command, cwd=working_directory, policy=query_policy,
                                              timeout=remaining, output_limit_bytes=_MANAGER_STDOUT_LIMIT_BYTES,
-                                             launch_env=environment, manager_stderr=True)
+                                             launch_env=environment, manager_stderr=True, **cleanup_keywords)
+            if borrowing and answer.cleanup_ok is not True:
+                note_cleanup_unknown()
             if answer.error is not None or answer.exit_code != 0:
                 raise LinuxTaskScopeError()
             return answer.raw_output
@@ -389,9 +424,14 @@ def _execute_linux_observed_command(
                             resource.wait(timeout_seconds=0.2)
                         elif operation == "resource_close" and resource is not None:
                             resource_closed = resource.close()
+                            if resource_closed is not True:
+                                note_cleanup_unknown()
                         elif operation == "monitor_close" and monitor is not None:
                             monitor_closed = monitor.close()
+                            if monitor_closed is not True:
+                                note_cleanup_unknown()
                     except BaseException as error:
+                        note_cleanup_unknown()
                         cleanup_error = _select_cleanup_error(cleanup_error, error)
             return cleanup_error
 
@@ -411,6 +451,7 @@ def _execute_linux_observed_command(
                     return
                 endpoint.close()
             except BaseException as error:
+                note_cleanup_unknown()
                 # Disarm both stale identities and ambiguous close outcomes.
                 # Detach never closes a numeric FD or supplies cleanup credit;
                 # it prevents __del__ from making an unsafe second close.
@@ -444,6 +485,7 @@ def _execute_linux_observed_command(
                         from .linux_task_scope import LinuxTaskScopeError
                         raise LinuxTaskScopeError()
                 except BaseException as error:
+                    note_cleanup_unknown()
                     cleanup_error = _select_cleanup_error(cleanup_error, error)
             if helper_object_mode:
                 if cleanup_error is None:
@@ -471,7 +513,21 @@ def _execute_linux_observed_command(
                 or not argv[0]
             ):
                 raise ValueError("invalid argv")
-            if helper_object_mode:
+            if prepared_step is not None:
+                from .linux_prepared_step import _LinuxStepAttachment, LinuxPreparedStepError
+                if not helper_object_mode or type(prepared_step) is not _LinuxStepAttachment:
+                    raise LinuxPreparedStepError()
+                try:
+                    same_sandbox = prepared_step._current()._sandbox is sandbox
+                except AttributeError:
+                    raise LinuxPreparedStepError() from None
+                if not same_sandbox:
+                    raise LinuxPreparedStepError()
+                borrow_context = prepared_step.borrow(policy=policy,
+                    workspace_session=workspace_session, attempt=prepared_attempt)
+                owner = borrow_context.__enter__()
+                borrowing = True
+            elif helper_object_mode:
                 from .linux_helper_object import open_linux_helper_object
                 if sandbox.manifest is None:
                     raise RuntimeError("helper manifest is unavailable")
@@ -479,10 +535,13 @@ def _execute_linux_observed_command(
             if resource_mode:
                 from .linux_task_scope import LinuxTaskScope
                 from .linux_task_resource import create_task_resource_channel
-                task_scope = LinuxTaskScope(limit=policy.process_limit, query=manager_query)
-                resource_host, resource_sender = create_task_resource_channel()
+                task_scope = (construct(LinuxTaskScope, limit=policy.process_limit, query=manager_query)
+                              if borrowing else LinuxTaskScope(limit=policy.process_limit, query=manager_query))
+                resource_host, resource_sender = (construct(create_task_resource_channel)
+                                                 if borrowing else create_task_resource_channel())
                 snapshot_endpoints(resource_host, resource_sender)
-            host_control, sender_control = create_seccomp_listener_handoff_channel()
+            host_control, sender_control = (construct(create_seccomp_listener_handoff_channel)
+                                            if borrowing else create_seccomp_listener_handoff_channel())
             snapshot_endpoints(host_control, sender_control)
         except (IndexError, OSError, RuntimeError, TypeError, ValueError):
             close_endpoints()
@@ -529,8 +588,10 @@ def _execute_linux_observed_command(
                 def configured(deadline: float) -> None:
                     task_scope.configured(min(deadline, launch_start + _RESOURCE_CONFIGURE_TIMEOUT_SECONDS))
 
-                resource = LinuxTaskResourceReceiver(resource_host, unit=task_scope.unit,
-                                                     limit=policy.process_limit, on_configured=configured)
+                resource = (construct(LinuxTaskResourceReceiver, resource_host, unit=task_scope.unit,
+                                      limit=policy.process_limit, on_configured=configured)
+                            if borrowing else LinuxTaskResourceReceiver(resource_host, unit=task_scope.unit,
+                                                                         limit=policy.process_limit, on_configured=configured))
             else:
                 wrapped = command_wrapper(argv, sender_control, **wrapper_keywords)
                 helper_index, scope_prefix = 0, ()
@@ -561,7 +622,8 @@ def _execute_linux_observed_command(
                                          launch_fds=launch_fds, argv_snapshot=argv_snapshot)
             if helper_object_mode:
                 before_spawn()
-            monitor = LinuxSeccompViolationMonitor(host_control)
+            monitor = (construct(LinuxSeccompViolationMonitor, host_control)
+                       if borrowing else LinuxSeccompViolationMonitor(host_control))
         except (IndexError, OSError, RuntimeError, TypeError, ValueError):
             close_endpoints()
             return ExecutionResult(
@@ -600,6 +662,8 @@ def _execute_linux_observed_command(
                 launch_env = _policy_environment(policy.workspace_root, verification_cache_root=verification_cache_root)
                 for key in ("XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
                     launch_env[key] = task_scope.environment[key]
+            cleanup_keywords = ({"on_cleanup_unknown": note_cleanup_unknown}
+                                if borrowing else {})
             result = _execute_policy_command(
                 wrapped,
                 cwd=working_directory,
@@ -612,7 +676,10 @@ def _execute_linux_observed_command(
                 launch_env=launch_env,
                 manager_stderr=resource_mode,
                 before_spawn=before_spawn if helper_object_mode else None,
+                **cleanup_keywords,
             )
+            if result.cleanup_ok is not True:
+                note_cleanup_unknown()
             if helper_object_mode and result.error == "invalid_handoff":
                 result = replace(result, payload_started=False)
         finally:
@@ -620,7 +687,10 @@ def _execute_linux_observed_command(
             try:
                 if task_scope is not None:
                     scope_cleanup_ok = task_scope.collected(time.monotonic() + 1)
+                    if scope_cleanup_ok is not True:
+                        note_cleanup_unknown()
             except BaseException as exception:
+                note_cleanup_unknown()
                 cleanup_error = _select_cleanup_error(cleanup_error, exception)
             finally:
                 try:
@@ -667,6 +737,8 @@ def _execute_linux_observed_command(
             outcome = replace(outcome, resource_receipt=resource_receipt,
                               scope_cleanup_ok=scope_cleanup_ok, payload_started=started)
             terminal = resource_receipt["terminal"] if complete else None
+            if terminal == "cleanup_failed":
+                note_cleanup_unknown()
             if terminal in ("preexec_failed", "cleanup_failed"):
                 outcome = replace(outcome, error="resource_setup_failed" if terminal == "preexec_failed"
                                   else "resource_cleanup_failed")
@@ -674,7 +746,7 @@ def _execute_linux_observed_command(
                 outcome = replace(outcome, output="", raw_output=b"", output_bytes=0)
         return outcome
     finally:
-        if owner is not None:
+        if owner is not None and not borrowing:
             active_exception = sys.exc_info()[1]
             try:
                 owner.close()
@@ -689,6 +761,22 @@ def _execute_linux_observed_command(
                     selected = _select_cleanup_error(active_exception, cleanup_error)
                 if selected is not active_exception:
                     raise selected
+        if borrowing:
+            active_exception = sys.exc_info()[1]
+            try:
+                if cleanup_unknown or construction_failed:
+                    prepared_step._mark_faulted()
+                if cleanup_unknown and isinstance(active_exception, Exception):
+                    from .linux_helper_object import LinuxHelperObjectError
+                    if not isinstance(active_exception, LinuxHelperObjectError):
+                        raise LinuxHelperObjectError() from None
+            except BaseException as cleanup_error:
+                selected = (active_exception if active_exception is not None
+                    and not isinstance(active_exception, Exception) else cleanup_error)
+                if selected is not active_exception:
+                    raise selected
+            finally:
+                borrow_context.__exit__(None, None, None)
 
 
 def _execute_policy_command(
@@ -700,6 +788,7 @@ def _execute_policy_command(
     launch_env: dict[str, str] | None = None,
     manager_stderr: bool = False,
     before_spawn: Callable[[], None] | None = None,
+    on_cleanup_unknown: Callable[[], None] | None = None,
 ) -> ExecutionResult:
     """Private process core with a narrowly scoped trusted-launch hook."""
     if os.name != "posix":
@@ -830,21 +919,33 @@ def _execute_policy_command(
         from .linux_task_resource import _select_cleanup_error
         active_exception = sys.exc_info()[1]
         cleanup_error = active_exception
+        def notify_cleanup_unknown():
+            nonlocal cleanup_error
+            if on_cleanup_unknown is not None:
+                try:
+                    on_cleanup_unknown()
+                except BaseException as exception:
+                    cleanup_error = _select_cleanup_error(cleanup_error, exception)
         try:
             if selector is not None:
                 selector.close()
         except BaseException as exception:
             cleanup_error = _select_cleanup_error(cleanup_error, exception)
+            notify_cleanup_unknown()
         try:
             cleanup_ok, cleanup_errno = _stop_group(process)
+            if cleanup_ok is not True:
+                notify_cleanup_unknown()
         except BaseException as exception:
             cleanup_error = _select_cleanup_error(cleanup_error, exception)
+            notify_cleanup_unknown()
         for stream in (process.stdout, process.stderr):
             try:
                 if stream is not None:
                     stream.close()
             except BaseException as exception:
                 cleanup_error = _select_cleanup_error(cleanup_error, exception)
+                notify_cleanup_unknown()
         if cleanup_error is not None and cleanup_error is not active_exception:
             raise cleanup_error
 

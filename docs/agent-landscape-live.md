@@ -2605,3 +2605,67 @@ S1b随后完成作者/root四有效assertion RED，再由不同作者最小GREEN
 S1c独立只读研究03:31:29–03:32:12 UTC实际重取固定Codex27065a91的process_manager/bundled_bwrap/[process.rs终止分账](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/core/src/unified_exec/process.rs#L228-L253)、[Drop](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/core/src/unified_exec/process.rs#L652-L655)，OpenHandsSDK3934349 base/local和两LICENSE，未刷新HEAD/20名单。**采纳（计划验收输入）**借用先核原对象再创建命令资源，窗口覆盖所有cleanup；unknown在归还前sticky faulted但共享owner仍active，创建者最后唯一close，复用ICODE唯一core与首signal优先。收益为避免结果/资源混账，成本为真实attachment/FD与逐资源故障矩阵、默认None兼容验证。**暂缓**真实CP/runner/tool接线和installed/自动模式；**不适配**Codex普通异步terminate/Drop/返回Ok或OpenHands结果callback授confirmed cleanup、typed对象授认证、unknown FD重试。只借机制，无复制、新依赖/权限；S1c尚未实施。
 
 S1b原完整守护唯一session74699现exit0，root03:40:05 UTC取得三门OK，两冻结SOURCE摘要未变；密钥/vendor单门复核亦exit0。**采纳（完整软件子项实证）**有限内部生命周期；生产broker、真实CP接线、installed和自动准入仍独立验收。最终文档与精确四路径提交核对在进行，不提前写发布SHA或R2/R3完成。
+
+S1b随后实际发布main `cfd14b3f86124232bc3f1ee4736961d37c200f72`：root精确四路径index/冻结工作树字节一致、commit/push成功，03:41:23 UTC核工作树clean。原preflight footer03:39:49 UTC exit0，最终两文档再连续两轮原scanner均raw0/真实遗留0。新CI独立只读观察，未授本片跨平台/installed/自动准入；S1c仅精确PLAN编写。远端main已同SHA，但同时新出现两个Dependabot自动更新分支（attest-4.2.2、upload-artifact-7.0.2），只读核其PR/兼容性，未声称远端仅main，也未删除未经核验更新。
+
+S1c精确PLAN首轮独立SPEC为C0/I1/M0：RAM投影实际manager_query收到process cleanup_ok=False/error cleanup_failed，构造版本查询在task_scope赋值前返回isolation_unavailable，attachment却仍attached_bound/active/inflightFalse；期望faulted目标1assertion FAIL/0error/skip（0.088s）。**采纳（返修输入）**查询也属于借用窗口内独立进程清理，新增事实通知及返回cleanup状态门、构造目标/首signal/旧None形状矩阵；**不适配**将普通查询失败猜unknown或以原15软件GREEN抵消遗漏。原PLANfreeze撤销，尚无SOURCE实施，原失败保留；修订先再独立SPEC→不同QUALITY，新增目标须在query修复前有效RED。S1b已发布软件信用不扩大。
+
+root03:54:03 UTC用同一17-hunk RAM投影（`f8ffcf83736a56af6cfe90fc3757c7a0e1074ae4a7dacd0f98ed3cbe65875693`）独立复现上述I1：通知keyword absent、实际cleanup_ok=False、目标attached_bound≠faulted，1assertion FAIL/0error/skip（0.095s），磁盘SOURCE未改。harness exit0仅表示缺陷复现检查成立，不能当GREEN或正式Task2目标RED信用；修订计划仍需实际可达阶段测试先行。
+
+#### 生命周期回放审计：S1c 借用窗口（2026-10-12，有限软件范围）
+
+scope：一次公共observed命令进入；round为原attachment与caller的本次attempt，helper由step创建者持有，命令自身拥有process/selector/pipe/channel/monitor/resource/scope。借用不新增持久认证数据；helper/session不能靠下一命令补清理。此审计使用state-lifecycle-replay-audit技能，补充记录而非新增源码或准入条件。
+
+| state_inventory | 生命周期/owner | 写入、读取与归还责任 | 不变量 |
+| --- | --- | --- | --- |
+| attachment消费状态 | 本次runner调用/step创建者 | S1b attach/bind；broker借用并可fault；未来runner finish | spent/faulted不可恢复，原引用与attempt绑定 |
+| inflight | 单命令/borrow context | borrow进入置True，命令全部收尾后归还False | 活跃借用期间不得第二借用或close helper |
+| helper owner | 单步/创建者 | broker只读使用；创建者唯一close | 命令故障不冒记helper已closed或unknown |
+| 每命令独立资源 | 单命令/各现有组件 | core及工厂取得/收尾；unknown通知只记事实 | 不重试未知FD，不能靠返回结果证明回收 |
+
+| transition_matrix | guard/round检查 | 补偿及期望终态 | 证据与状态 |
+| --- | --- | --- | --- |
+| bound→借用 | 原session/policy/attempt/FD及source | 独立命令资源收尾后归还，helper仍active | S1b软件矩阵已证；S1c仅RAM规划 |
+| 命令清理unknown | 同一活跃attachment | 先faulted再归还，创建者最后唯一close | manager遗漏原RAM有效FAIL；修订待正式TDD |
+| 工厂未返回且内部清理unknown | 外层尚无资源引用 | 不允许下一借用补偿本轮泄漏 | QUALITY/root真实socket及Scope临时FD两目标FAIL；待正式返修 |
+
+| replay_matrix | 刺激与期望 | 当前观察/cleanup | 状态 |
+| --- | --- | --- | --- |
+| immediate | 失败后立即核消费/owner/inflight及真实FD | manager有实际FAIL；root另确认真实socket及Scope临时FD仍活而attachment仍bound | fail，不用21项RAM GREEN覆盖 |
+| converged | 不发新命令，等待已有收尾 | S1b同步借用归还已测；新工厂unknown未取得确认 | unobserved，不等于下一命令恢复 |
+| restart | 进程重启后查持久副作用/lease | 本片未执行重启验收 | unobserved，留安装包/产品链验收 |
+| replay | 顺序命令、重复attach、失效后再借 | S1b拒绝重复attach已证；S1c修订RAM顺序借用，工厂泄漏后仍能借为反例 | fail，正式新测试仍待 |
+| rollback | 各资源收尾失败及首signal | 原矩阵和manager RAM诊断已测；未返回工厂资源边界缺口 | fail，不授全部资源确认 |
+| failure | 各边界注入故障且owner分账 | 21项仅RAM可行性；新增真实socket反例 | fail，完整SOURCE尚未实施 |
+
+leaks_and_conflicts：原manager查询轮可能让后续命令消费仍bound对象；第二轮QUALITY另观察工厂socket关闭unknown但下一borrow成功，原创建者仍持helper。修复责任为下一S1c精确PLAN，不把unknown归成helperowner、不启动新请求补救。verdict：当前fail；禁止宣称完整生命周期、restart、installed或R2/R3通过。下一判别为root复现真实工厂反例，再比较保守结束未返回资源的消费资格与显式通知两种范围，不自行扩大权限/文件或猜所有body异常。
+
+root随后独立运行修订PLAN35e63的内存投影，两项真实socket/Scope构造临时FD目标均在attached_bound≠faulted处有效assertion FAIL，2FAIL/0error/skip（0.147s）；实际fstat仍存活、再次borrow获准的前置事实通过。测试最后自行释放真实资源不供应broker清理信用，诊断harness exit0不当正式TDD GREEN。第二缺口记作hidden-factory-I2，与已补入PLAN的manager-I1区分。新增独立构造边界DESIGN：**采纳（设计输入，未实施）**有效借用后不透明资源创建未返回即撤销消费资格，独立construction_failed事实而非猜普通body为unknown；**暂缓但保留整体验收债务**各工厂内部所有权/未知close处置修复。A不能证明内部FD清理，不删除B债务；成功构造后的普通body、前借拒绝和旧None边界保持，五路径范围明示，待独立DESIGN双审和PLAN返修。
+
+main候选cfd三个工作流已由root04:06:05 UTC实际jobs API核终态：CI38200739756=41success/2Reviewerfailure/3skip，provenance38200739745=5success，Pages38200739726=2success，active0。独立观察者取两Python日志各3130tests/86skip；非Linux选定模块未执行新S1b模块，不授其24项目跨平台信用。四Linux旧dispatch各84记录，不授S1b installed；双Reviewer仍105/IPv4 timeout、IPv6未尝试，签装不替UAC/launch。
+
+另有Dependabot PR#3（仅签装workflow upload-artifact SHA更新）[run38199888483的Linux24ARM失败](https://github.com/ayukyo/icode/actions/runs/38199888483/job/114650734328)：root实际取原日志84记录，context/scope/timeout为resource_channel_failed而其它三timeout为timeout；失败行exit=-9、payload_ready=true、payload_started=null、configured=true、channel=incomplete、terminal=null，process_closed/scope_cleanup_ok均true。kernel6.17.0-1022-azure/systemd255、helper9203c66/manifestd633a965为实际日志观察。改动的签装action不用于该主CI，不能归因为action升级；main绿色格也不能证明间歇故障修复，粗粒度C fixture计时仅待判别假设。两个bot分支未合并验证，不删除未验收更新，未宣称线上仅main。
+
+timeout独立研究随后提出共享deadline竞争输入，root也实际复现RAM诊断（0.211s）：真实host Python进程关闭两输出pipe但仍活，真实selector EOF前置成立；人为延迟到真实deadline之后，再调用真实receiver._fail并kill/wait=-9；现有process core返回error=None/exit=-9/cleanup_ok=True且pipes已关闭。期望timeout的1目标assertion FAIL/0error/skip（0.000s）；harness exit0仅核缺陷序列。receiver以__new__构造最小_fail字段，不包含真实_receive/configured/native scope，调度延迟是注入，不是原CI复现。**采纳（未来判别输入，未修复）**监督退出前deadline采样与observer abort来源分账；**暂缓**原生CI因果证明和独立SOURCE设计；**不适配**仅凭exit-9推断receiver、EOF即超时或粗秒fixture为根因，不放宽deadline/预期错误，不将此未来修复混入S1c。
+
+独立timeout研究本轮实际复取固定Codex27065a91 [wait/expiration分账](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/core/src/exec.rs#L955-L980)及CPython v3.11.15 [select后deadline检查](https://github.com/python/cpython/blob/v3.11.15/Lib/subprocess.py#L1928-L1938)，root04:21:57 UTC收取结果，不采纳报告中未核定的研究起止时间。许可Apache-2.0/PSF-2.0，未刷新HEAD/二十名单。**采纳（独立设计输入）**结束原因独立于exit/EOF/cleanup、评估select-return采样；收益是避免timeout竞争漏记，成本为完成观察口径、deadline内正常退出/异常kill/EOF活进程对照及新原生格。观察者无注入真实EOF活进程对照0.204s正确timeout，因此EOF本身不构成缺陷。C粗秒等待约(3,4]s，起点晚于宿主三秒deadline，不能独立解释deadline前自然退出；原CI kill来源仍未证明。**暂缓**C timer或生产时限改动、原生因果信用；**不适配**所有晚观察退出一概猜timeout、非零exit/ready/回收授完整transcript。仅借机制，无复制或新依赖/权限。
+
+S1c补充DESIGN79badff6与最终PLAN eb13c06各经独立SPEC→不同QUALITY C0/I0/M0后，正式Task1仅落完整26方法测试：作者/root public目标实际均2assertFAIL/0E/skip、exit1（0.100s/0.106s），命中原public未传view，SOURCE未改。不同fresh Task2随后仅原17hunk实际接线，作者/root16方法GREEN（1.201s/1.245s）；manager目标作者/root仍1assertFAIL/0E/skip、exit1（0.090s/0.055s），真实query清理unknown后仍bound。保留有效磁盘TDD失败，不以计划RAM信用替代；query配对及A门由不同作者依序实现，未完整预检/发布，未授B内部清理或整体完成。
+
+不同fresh Task2R随后仅query单hunk，实际SOURCE04508782/test58a4d137不变；作者/root非construction20方法GREEN（1.430s/1.420s），作者3manager目标GREEN0.209s。两个真实construction目标作者/root均2assertFAIL/0E/skip、exit1（均0.142s），live socket/Scope临时FD前置通过后仍bound；不是提前写A再删门的回放。不同fresh Task2A现接手最小五创建门，尚未给最终GREEN/双审/原完整守护信用。
+
+不同fresh Task2A随后仅五hunk完成SOURCE3212f070/test58a4d137，作者26/1.803s、两目标2/0.138s及旧六模块163/21.114s均无F/E/skip。root全文读取最终源码/测试，实际新26/1.807s、两真实目标2/0.098s、旧163/21.105s均无F/E/skip；compileall-j1/site/governance/diff通过。fresh实际SOURCE SPEC C0/I0/M0，独立26/1.906s无skip；不同QUALITY进行中。**采纳（有限软件实证）**借用/归还、query unknown通知及五构造fail-closed消费门；**暂缓且不授**B工厂内部FD/析构/内部signal、真实CP/S2/S3/ready。ExecutionResult.cleanup_ok不能扩成未返回工厂内部确认，原timeout竞争未修复；原完整守护/发布仍待。
+
+不同 SOURCE QUALITY 随后报告 C0/I1/M0：returned-receiver-I3 为已经返回的实际接收器内部 FD 关闭未知遗漏，不属于未返回工厂 B。实际 worker 收 SCM_RIGHTS，关闭故障一次且 FIFO FD 仍活；receiver.close=True、receipt=incomplete、attachment 仍 bound，下次实际 borrow 获准。作者目标 1assertFAIL/0E/skip、0.055s，root 独立同目标 0.054s exit1。独立 QUALITY 另以实际 selector FD 留存反例得到 1assertFAIL/0E/skip、0.091s exit1。**采纳（返修输入）**接收器线程终态与自有 FD 清理分账，经现有 close 布尔接口通知 broker；不猜普通协议失败为未知。原五路径 freeze 撤销，尚未启动 fullguard；新独立 receiver-cleanup DESIGN 明确八路径、无权限/依赖扩展，先设计双审再正式新 TDD。生命周期审计仍为 fail，不以先前 26 GREEN 抵消此反例，也不授整体信用。
+
+I3 并行只读研究实际窗口 04:52:14–04:52:54 UTC：固定 CPython v3.11.15（PSF-2.0）的 [selector退出](https://github.com/python/cpython/blob/v3.11.15/Lib/selectors.py#L202-L203)、[epoll关闭](https://github.com/python/cpython/blob/v3.11.15/Lib/selectors.py#L483-L485)、[os.close不重试EINTR](https://github.com/python/cpython/blob/v3.11.15/Modules/posixmodule.c#L9418-L9433)及固定 Codex27065a91 process.rs 与 LICENSE 均实际 GET；源码锚另用 raw 核定，未刷新 HEAD/二十名单。**采纳（组件设计输入）**停止与确认分账，每个独立 FD 一次关闭、失败 sticky unknown、仍继续其它 FD；收益是阻断未知清理后复用，成本为局部 receiver 状态及真实 FD/selector 负控和普通协议兼容正控。**暂缓**通用资源框架、公开错误字段与线程异常传播扩展；**不适配**重复关闭、凭 EBADF/done/Drop 授释放信用。只借机制，无复制、依赖或权限新增，不授原生验收。
+
+receiver-cleanup DESIGN4298d189 经不同独立 SPEC/QUALITY C0/I0/M0后，正式新增测试 c95280d2：作者/root7方法6有效assertFAIL/0E/skip（0.360s/0.383s）先于SOURCE。不同作者随后仅 receiver3f2317f3，作者7/0.358s+26/1.734s+旧163/21.069s全过；root33/2.182s+旧163/21.105s全过，均0F/E/skip，compileall-j1/site/governance通过。fresh实际 SOURCE SPEC C0/I0/M0，独立33/2.155s全过；不同QUALITY进行中。**采纳（有限软件实证）**已返回receiver自有FD/selector确认经原close接口撤销消费，普通协议失败保留借用资格；**暂缓且不授**工厂B内部资源、原生deadline因果、真实CP/S2/S3与整体信用。原完整预检未启动、八路径未发布。
+
+不同 fresh SOURCE QUALITY 随后正式 C0/I0/M0，独立33/2.076s无F/E/skip；root 原唯一 fullguard session21171、日志 `/tmp/icode-s1c-preflight.tyNlsR/typescript` 于05:03:56 UTC已观察启动，编译并发j1，目前密钥/子模块通过、全量测试进行中。源码/测试四冻结不变，尚未发布。
+
+下一 B1 只读盘点与 RAM 可达性独立进行，不改当前冻结源码。seccomp工厂初始化抛原KI/SE后，sender.close抛RuntimeError时只尝试sender、两个真实socket FD仍活、原signal对象被覆盖；作者/root四有效assertFAIL/0E/skip，均0.002s exit1。task工厂独立对照两PASS/0E/skip、0.001s能继续host并保留原signal，但sender清理未知仍不授确认。**采纳（下一设计输入，未修复）**先处理两个socket工厂各端点独立一次清理、防析构重试及内部signal分账；收益是避免跳清理/覆盖中断，成本为真实留存和FD数字重用负控及默认None兼容。**暂缓**scope临时FD、monitor parser/listener与opaque selector内部构造的独立片；这些仍是整体验收债务。**不适配**将S1c消费faulted当B内部已回收或把测试卫生saved-close算生产成功。不是S1c正式新RED，不授权改当前八路径冻结，也不授R2/R3整体信用。
+
+生命周期回放审计的当前有限更新：源码3212f070/3f2317f3与新33正式目标已证明 immediate 的消费失效/owneractive/inflight归还、replay 的失效后拒绝和普通错误后可继续、rollback 的已返回receiver多FD继续且不重试；历史失败表保留为发生时记录，不当当前同一故障仍未修复。B工厂内部未返回资源/自动终结、原生scope与真实runner、restart及installed仍未取得确认，因此不把有限软件子项推广为完整生命周期 verdict PASS；fullguard亦仍待返回。
+
+S1c原完整 preflight唯一session21171现exit0，日志footer05:13:12 UTC，root05:13:38 UTC取得密钥/子模块/全量测试三门OK；原入口成功不输出测试数量，不猜总数。fresh单门复核已通过，最终文档最后修订后再原scanner两轮及密钥/子模块单门，并核八路径index/工作字节后才发布main。**采纳（本片完整软件门）**有限borrow/query/创建fail-closed与已返回receiver确认；B、deadline、真实CP/S2/S3/installed、跨平台和R2/R3整体验收继续独立，不供自动模式信用。

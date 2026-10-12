@@ -97,6 +97,7 @@ class LinuxTaskResourceReceiver:
         self._configured = False
         self._terminal: int | None = None
         self._complete = False
+        self._cleanup_unknown = False
         self._on_configured = on_configured
 
     def bind(self, *, expected_pid: int, expected_uid: int, expected_gid: int) -> None:
@@ -193,12 +194,22 @@ class LinuxTaskResourceReceiver:
                         descriptor = struct.unpack_from("=i", raw, offset)[0]
                         try:
                             os.close(descriptor)
-                        except OSError:
-                            pass
+                        except BaseException:
+                            # Never retry an ambiguous numeric FD: it may
+                            # already have been reused. Drain the other FDs.
+                            with self._lock:
+                                self._cleanup_unknown = True
 
     def _receive(self, deadline: float, configured_deadline: float) -> None:
         try:
-            with selectors.DefaultSelector() as selector:
+            try:
+                selector = selectors.DefaultSelector()
+            except BaseException:
+                # A failed factory has not transferred cleanup ownership.
+                with self._lock:
+                    self._cleanup_unknown = True
+                raise
+            try:
                 selector.register(self._control, selectors.EVENT_READ)
                 count = 0
                 while not self._stop.is_set():
@@ -241,6 +252,13 @@ class LinuxTaskResourceReceiver:
                         raise LinuxTaskResourceError(_ERROR)
                     count += 1
                 raise LinuxTaskResourceError(_ERROR)
+            finally:
+                try:
+                    selector.close()
+                except BaseException:
+                    with self._lock:
+                        self._cleanup_unknown = True
+                    raise
         except BaseException:
             self._fail()
         finally:
@@ -257,10 +275,12 @@ class LinuxTaskResourceReceiver:
     def close(self) -> bool:
         self._stop.set()
         worker = self._thread
+        completed = True
         if worker is not None and worker.ident is not None:
             worker.join(timeout=2)
-            return self._done.is_set()
-        return True
+            completed = self._done.is_set()
+        with self._lock:
+            return completed and not self._cleanup_unknown
 
     def receipt(self) -> dict[str, object]:
         with self._lock:
