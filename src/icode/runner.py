@@ -2178,8 +2178,13 @@ def _make_ctx(
     deny_read_roots: tuple[Path, ...] = (),
     allowed_read_files: tuple[Path, ...] | None = None,
     workspace_session: WorkspaceSession | None = None,
+    prepared_step: object | None = None,
+    prepared_attempt: str | None = None,
 ) -> ToolContext:
     """构造工具上下文；未显式指定时按本机实测能力自动选隔离后端。"""
+    options = {}
+    if prepared_step is not None or prepared_attempt is not None:
+        options = {"prepared_step": prepared_step, "prepared_attempt": prepared_attempt}
     return ToolContext(
         root=workspace, sandbox=sandbox if sandbox is not None else select_sandbox(),
         policy=policy, artifact_broker=artifact_broker,
@@ -2188,6 +2193,7 @@ def _make_ctx(
         deny_read_roots=deny_read_roots,
         allowed_read_files=allowed_read_files,
         workspace_session=workspace_session,
+        **options,
     )
 
 

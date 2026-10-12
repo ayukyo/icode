@@ -21,6 +21,7 @@ from ..workspace import WorkspaceSession
 
 if TYPE_CHECKING:
     from ..linux_helper_object import LinuxHelperObject
+    from ..linux_prepared_step import _LinuxStepAttachment
 
 # 工具输出回灌模型时的字符上限（渐进披露原则：不要把大段正文塞回上下文）
 DEFAULT_OUTPUT_LIMIT = 8000
@@ -94,6 +95,12 @@ class ToolContext:
     # None preserves ordinary workspace/policy behavior; an empty tuple denies
     # every file read.
     allowed_read_files: tuple[Path, ...] | None = None
+    prepared_step: _LinuxStepAttachment | None = field(
+        default=None, kw_only=True, repr=False,
+    )
+    prepared_attempt: str | None = field(
+        default=None, kw_only=True, repr=False,
+    )
     _pinned_read_only_workspace: object | None = field(
         default=None, init=False, repr=False,
     )

@@ -746,6 +746,24 @@ def _controlled_dispatch(
     except (OSError, RuntimeError, TypeError, ValueError):
         raise IsolationUnavailable("工单执行目录与策略绑定不一致") from None
     resource_dispatch = _uses_resource_dispatch(ctx)
+    # Only shape is checked here; the existing broker is the sole borrower.
+    prepared_options = {}
+    if ctx.prepared_step is not None or ctx.prepared_attempt is not None:
+        if not resource_dispatch or ctx.read_only_workspace:
+            raise IsolationUnavailable("准备对象工具上下文不可用") from None
+        from ..linux_prepared_step import _LinuxStepAttachment
+
+        attempt = ctx.prepared_attempt
+        if (not isinstance(ctx.prepared_step, _LinuxStepAttachment)
+                or not isinstance(ctx.workspace_session, WorkspaceSession)
+                or type(attempt) is not str or not attempt.strip()
+                or any(ord(char) < 32 or ord(char) == 127 for char in attempt)):
+            raise IsolationUnavailable("准备对象工具上下文不可用") from None
+        prepared_options = {
+            "prepared_step": ctx.prepared_step,
+            "workspace_session": ctx.workspace_session,
+            "prepared_attempt": attempt,
+        }
     if require_resource and (ctx.read_only_workspace or not resource_dispatch):
         raise IsolationUnavailable("当前边界未提供宿主工程检查所需的单任务资源回执")
     if verification_cache_root is not None and not resource_dispatch:
@@ -764,7 +782,7 @@ def _controlled_dispatch(
         return execute_linux_resource_observed_command(
             argv, cwd=workdir, sandbox=ctx.sandbox, policy=ctx.policy,
             timeout=timeout, command_wrapper=ctx.wrap_command_with_resource_receipt,
-            **options,
+            **options, **prepared_options,
         )
     try:
         prepared = ctx.wrap_command(argv)
