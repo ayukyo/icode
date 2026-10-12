@@ -68,6 +68,30 @@ def _private_network_capability_sid_mismatch_exit_code(sid_text):
     return 99
 """
 
+_PRIVATE_NETWORK_CONNECT_CLASSIFIER_CODE = """\
+def _private_network_connect_failure_exit_code(connect_failure_exit_code, error):
+    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+        raise error
+    if type(connect_failure_exit_code) is not int or connect_failure_exit_code not in (91, 93):
+        return 91
+    offset = 0 if connect_failure_exit_code == 91 else 7
+    if isinstance(error, TimeoutError):
+        return 105 + offset
+    if not isinstance(error, OSError):
+        return connect_failure_exit_code
+    try:
+        winerror = getattr(error, 'winerror', None)
+        if winerror is not None:
+            # A present Windows code is authoritative, even when unrecognized.
+            code = {10013: 106, 10035: 107, 10060: 108}.get(winerror) if type(winerror) is int else None
+        else:
+            errno = getattr(error, 'errno', None)
+            code = {10013: 109, 10035: 110, 10060: 111}.get(errno) if type(errno) is int else None
+    except Exception:
+        return connect_failure_exit_code
+    return connect_failure_exit_code if code is None else code + offset
+"""
+
 _PRIVATE_NETWORK_CAPABILITY_PROBE_CODE = (
     """\
 import sys
@@ -82,6 +106,7 @@ from ctypes import wintypes
 """
     + _TOKEN_GROUPS_CAPABILITY_PARSER_CODE
     + _TOKEN_CAPABILITY_SID_CLASSIFIER_CODE
+    + _PRIVATE_NETWORK_CONNECT_CLASSIFIER_CODE
     + """\
 kernel = ctypes.WinDLL('kernel32', use_last_error=True)
 advapi = ctypes.WinDLL('advapi32', use_last_error=True)
@@ -181,11 +206,21 @@ for family, address, port, connect_failure_exit_code, send_failure_exit_code in 
     (socket.AF_INET6, '::1', int(sys.argv[2]), 93, 94),
 ):
     _failure_exit_code = connect_failure_exit_code
+    classified_connect_exit = None
     with socket.socket(family, socket.SOCK_STREAM) as connection:
         connection.settimeout(3)
-        connection.connect((address, port))
-        _failure_exit_code = send_failure_exit_code
-        connection.sendall(payload)
+        try:
+            connection.connect((address, port))
+        except Exception as error:
+            classified_connect_exit = _private_network_connect_failure_exit_code(
+                connect_failure_exit_code, error,
+            )
+        if classified_connect_exit is None:
+            _failure_exit_code = send_failure_exit_code
+            connection.sendall(payload)
+    # Preserve the original stage hook if socket cleanup itself fails.
+    if classified_connect_exit is not None:
+        raise SystemExit(classified_connect_exit)
 """
 )
 
@@ -216,6 +251,20 @@ _PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES = {
     102: "token_capability_payload",
     103: "token_handle_close",
     104: "network_probe_setup",
+    105: "ipv4_connect_timeout",
+    106: "ipv4_connect_winerror_10013",
+    107: "ipv4_connect_winerror_10035",
+    108: "ipv4_connect_winerror_10060",
+    109: "ipv4_connect_errno_10013",
+    110: "ipv4_connect_errno_10035",
+    111: "ipv4_connect_errno_10060",
+    112: "ipv6_connect_timeout",
+    113: "ipv6_connect_winerror_10013",
+    114: "ipv6_connect_winerror_10035",
+    115: "ipv6_connect_winerror_10060",
+    116: "ipv6_connect_errno_10013",
+    117: "ipv6_connect_errno_10035",
+    118: "ipv6_connect_errno_10060",
 }
 
 

@@ -3035,7 +3035,7 @@ class TestWindowsAppContainer(unittest.TestCase):
             "ran": False, "exit": 0xFFFFFFFF,
             "stage": max(
                 (windows_job_module._private_network_capability_exit_stage(code)
-                 for code in range(105)), key=len,
+                 for code in windows_job_module._PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES), key=len,
             ),
             "clean": False, "v4": False, "v6": False, "credit": False,
         }
