@@ -183,14 +183,20 @@ class ControlPlane:
     # ---- 步骤端口 ----
 
     def step_start(self, out_dir: Path | str, step: str, *, ticket_id: str, request: str | None = None) -> str:
-        result = self.run(
-            "step", "--dir", str(out_dir), "--step", step, "--phase", "start",
-            "--request", request or make_request(ticket_id, f"step-{step}-start"),
-        )
+        result = self._step_start_result(out_dir, step, ticket_id=ticket_id, request=request)
         attempt = result.data.get("attempt")
         if not attempt:
             raise ControlError(f"step start 未返回 attempt：{result.data}")
         return str(attempt)
+
+    def _step_start_result(
+        self, out_dir: Path | str, step: str, *, ticket_id: str, request: str | None = None,
+    ) -> ControlResult:
+        """Private raw receipt; public step_start retains its historical semantics."""
+        return self.run(
+            "step", "--dir", str(out_dir), "--step", step, "--phase", "start",
+            "--request", request or make_request(ticket_id, f"step-{step}-start"),
+        )
 
     def step_check(
         self,
