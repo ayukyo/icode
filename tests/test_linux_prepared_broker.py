@@ -435,7 +435,7 @@ class PreparedBrokerTests(unittest.TestCase):
         scope = self.prepare()
         view = self.bind(self.attach(scope))
         self.precheck_fixture()
-        held, attempts = [], []
+        held, attempts, host_fds = [], [], []
         actual_pair = seccomp.socket.socketpair
         actual_set_inheritable = seccomp.os.set_inheritable
         class UnknownHost(seccomp.socket.socket):
@@ -445,6 +445,7 @@ class PreparedBrokerTests(unittest.TestCase):
         def pair(*args, **kwargs):
             host, sender = actual_pair(*args, **kwargs)
             host = UnknownHost(fileno=host.detach())
+            host_fds.append(host.fileno())
             held.extend((host, sender))
             return host, sender
         def inheritable(descriptor, value):
@@ -462,7 +463,7 @@ class PreparedBrokerTests(unittest.TestCase):
             self.assertIsNone(error)
             self.assertEqual(answer.error, 'isolation_unavailable')
             self.assertEqual(len(held), 2)
-            descriptor = held[0].fileno()
+            descriptor = host_fds[0]
             self.assertEqual(attempts, [descriptor])
             self.assertTrue(stat.S_ISSOCK(os.fstat(descriptor).st_mode))
             self.assertFalse(scope._inflight)
@@ -474,9 +475,13 @@ class PreparedBrokerTests(unittest.TestCase):
                 with self.borrow(view):
                     pass
         finally:
-            # Test hygiene only; A does not recover this unreturned socket.
-            for endpoint in held:
-                seccomp.socket.socket.close(endpoint)
+            # Before-close injection guarantees this saved FD remains live.
+            # Test hygiene only: detach is not production release credit.
+            if held:
+                seccomp.socket.socket.detach(held[0])
+                os.close(host_fds[0])
+            if len(held) == 2:
+                seccomp.socket.socket.close(held[1])
 
     def test_construction_scope_real_unreturned_tool_fd_target(self):
         scope = self.prepare()

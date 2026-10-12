@@ -55,6 +55,11 @@ def create_task_resource_channel() -> tuple[socket.socket, socket.socket]:
                     endpoint.close()
                 except BaseException as cleanup_error:
                     selected = _select_cleanup_error(selected, cleanup_error)
+                    try:
+                        # Disarm automatic owning; an unknown FD must not be retried.
+                        socket.socket.detach(endpoint)
+                    except BaseException as detach_error:
+                        selected = _select_cleanup_error(selected, detach_error)
         if selected is not error:
             raise selected
         if isinstance(error, OSError):

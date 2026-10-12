@@ -20,6 +20,8 @@ import sys
 import threading
 import time
 
+from .linux_task_resource import _select_cleanup_error
+
 _HANDOFF_MESSAGE = b"ICODE_SECCOMP_LISTENER_V1"
 _HANDOFF_ACK = b"ICODE_SECCOMP_LISTENER_ACK_V1"
 _MAX_RECEIVED_FDS = 4
@@ -57,12 +59,20 @@ def create_seccomp_listener_handoff_channel() -> tuple[socket.socket, socket.soc
         os.set_inheritable(sender_control.fileno(), False)
         return host_control, sender_control
     except BaseException as exc:
+        selected = exc
         for endpoint in (sender_control, host_control):
             if endpoint is not None:
                 try:
                     endpoint.close()
-                except OSError:
-                    pass
+                except BaseException as cleanup_error:
+                    selected = _select_cleanup_error(selected, cleanup_error)
+                    try:
+                        # Disarm automatic owning; an unknown FD must not be retried.
+                        socket.socket.detach(endpoint)
+                    except BaseException as detach_error:
+                        selected = _select_cleanup_error(selected, detach_error)
+        if selected is not exc:
+            raise selected
         if isinstance(exc, OSError):
             raise LinuxSeccompNotificationError(
                 "Linux seccomp notifications unavailable",
