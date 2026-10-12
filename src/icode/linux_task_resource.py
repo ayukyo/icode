@@ -103,6 +103,7 @@ class LinuxTaskResourceReceiver:
         self._terminal: int | None = None
         self._complete = False
         self._cleanup_unknown = False
+        self._runtime_expired = False
         self._on_configured = on_configured
 
     def bind(self, *, expected_pid: int, expected_uid: int, expected_gid: int) -> None:
@@ -145,7 +146,8 @@ class LinuxTaskResourceReceiver:
         try:
             worker.start()
         except BaseException:
-            self._stop.set()
+            with self._lock:
+                self._stop.set()
             self._fail()
             raise
 
@@ -220,6 +222,11 @@ class LinuxTaskResourceReceiver:
                 while not self._stop.is_set():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
+                        # Linearize expiry against every explicit stop writer.
+                        # Keep kill and worker joins outside the shared lock.
+                        with self._lock:
+                            if not self._stop.is_set():
+                                self._runtime_expired = True
                         raise LinuxTaskResourceError(_ERROR)
                     if not selector.select(min(remaining, 0.05)):
                         continue
@@ -269,6 +276,12 @@ class LinuxTaskResourceReceiver:
         finally:
             self._done.set()
 
+    @property
+    def _runtime_deadline_expired(self) -> bool:
+        """Host-observed runtime expiry, independent of transcript/cleanup."""
+        with self._lock:
+            return self._runtime_expired
+
     def wait(self, *, timeout_seconds: float) -> bool:
         if (
             isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
@@ -278,7 +291,8 @@ class LinuxTaskResourceReceiver:
         return self._done.wait(timeout_seconds)
 
     def close(self) -> bool:
-        self._stop.set()
+        with self._lock:
+            self._stop.set()
         worker = self._thread
         completed = True
         if worker is not None and worker.ident is not None:

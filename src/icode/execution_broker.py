@@ -713,6 +713,9 @@ def _execute_linux_observed_command(
         observer_ok = monitor_closed and monitor._started and not monitor.failed
         receipt = monitor.receipt() if observer_ok else None
         error = result.error
+        if error is None and getattr(resource, "_runtime_deadline_expired", False) is True:
+            # Preserve only a worker-confirmed cause; EOF/exit code are not proof.
+            error = "timeout"
         preserved_errors = ("timeout", "output_limit", "cleanup_failed", "invalid_timeout",
                             "invalid_output_limit", "launch_failed")
         candidate_not_started = (helper_object_mode and result.payload_started is False
