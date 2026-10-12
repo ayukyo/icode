@@ -33,10 +33,12 @@ class LinuxTaskScopeError(RuntimeError):
         super().__init__("Linux task scope is unavailable")
 
 
-def _open_directory(path: Path, *, uid: int, cgroup: bool = False) -> int:
+def _open_directory(path: Path, *, uid: int, cgroup: bool = False,
+                    close_descriptor: Callable[[int], None] | None = None) -> int:
     """Walk pinned non-link ancestors, accepting only root/current-UID owners."""
     if not path.is_absolute() or any(part in ("", ".", "..") for part in path.parts[1:]):
         raise LinuxTaskScopeError()
+    close = os.close if close_descriptor is None else close_descriptor
     current = os.open("/", _DIRECTORY_FLAGS)
     try:
         device = None
@@ -44,7 +46,7 @@ def _open_directory(path: Path, *, uid: int, cgroup: bool = False) -> int:
             following = os.open(component, _DIRECTORY_FLAGS, dir_fd=current)
             previous = current
             current = following
-            os.close(previous)
+            close(previous)
             status = os.fstat(current)
             if status.st_uid not in (0, uid) or status.st_mode & 0o022:
                 raise LinuxTaskScopeError()
@@ -55,7 +57,7 @@ def _open_directory(path: Path, *, uid: int, cgroup: bool = False) -> int:
         return current
     except BaseException as error:
         try:
-            os.close(current)
+            close(current)
         except BaseException as cleanup_error:
             selected = _select_cleanup_error(error, cleanup_error)
             if selected is not error:
@@ -90,7 +92,8 @@ def _trusted_tool(path: str, uid: int) -> None:
                 raise selected
 
 
-def _read_at(directory: int, name: str, limit: int = _CGROUP_READ_LIMIT_BYTES) -> bytes:
+def _read_at(directory: int, name: str, limit: int = _CGROUP_READ_LIMIT_BYTES, *,
+             close_descriptor: Callable[[int], None] | None = None) -> bytes:
     descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
     try:
         result = bytearray()
@@ -101,7 +104,13 @@ def _read_at(directory: int, name: str, limit: int = _CGROUP_READ_LIMIT_BYTES) -
             result.extend(chunk)
         raise LinuxTaskScopeError()
     finally:
-        os.close(descriptor)
+        active_exception = sys.exc_info()[1]
+        try:
+            (os.close if close_descriptor is None else close_descriptor)(descriptor)
+        except BaseException as cleanup_error:
+            selected = _select_cleanup_error(active_exception, cleanup_error)
+            if selected is not active_exception:
+                raise selected
 
 
 class LinuxTaskScope:
@@ -132,21 +141,42 @@ class LinuxTaskScope:
         for path in ("/usr/bin/systemd-run", "/usr/bin/systemctl"):
             _trusted_tool(path, self.uid)
         runtime = Path(f"/run/user/{self.uid}")
-        parent = _open_directory(runtime, uid=self.uid)
+        parent = _open_directory(runtime, uid=self.uid,
+                                 close_descriptor=self._close_owned_descriptor)
+        probe = None
         try:
             status = os.fstat(parent)
             bus = os.stat("bus", dir_fd=parent, follow_symlinks=False)
             if (status.st_uid != self.uid or stat.S_IMODE(status.st_mode) != 0o700
                     or not stat.S_ISSOCK(bus.st_mode) or bus.st_uid != self.uid):
                 raise LinuxTaskScopeError()
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-                probe.settimeout(_BUS_CONNECT_TIMEOUT_SECONDS)
-                probe.connect(str(runtime / "bus"))
-                _pid, peer_uid, _gid = struct.unpack("3i", probe.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-                if peer_uid != self.uid:
-                    raise LinuxTaskScopeError()
+            probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            probe.settimeout(_BUS_CONNECT_TIMEOUT_SECONDS)
+            probe.connect(str(runtime / "bus"))
+            _pid, peer_uid, _gid = struct.unpack("3i", probe.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+            if peer_uid != self.uid:
+                raise LinuxTaskScopeError()
         finally:
-            os.close(parent)
+            active_exception = sys.exc_info()[1]
+            close_error = None
+            if probe is not None:
+                try:
+                    probe.close()
+                except BaseException as error:
+                    self._cleanup_unknown = True
+                    close_error = _select_cleanup_error(close_error, error)
+                    try:
+                        socket.socket.detach(probe)
+                    except BaseException as cleanup_error:
+                        close_error = _select_cleanup_error(close_error, cleanup_error)
+            try:
+                self._close_owned_descriptor(parent)
+            except BaseException as error:
+                close_error = _select_cleanup_error(close_error, error)
+            if close_error is not None:
+                selected = _select_cleanup_error(active_exception, close_error)
+                if selected is not active_exception:
+                    raise selected
         self.environment = {"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C",
                             "XDG_RUNTIME_DIR": str(runtime),
                             "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime / 'bus'}"}
@@ -239,7 +269,8 @@ class LinuxTaskScope:
         path = _CGROUP / group.lstrip("/")
         try:
             for candidate in (path, path / "supervisor", path / "payload"):
-                descriptor = _open_directory(candidate, uid=self.uid, cgroup=True)
+                descriptor = _open_directory(candidate, uid=self.uid, cgroup=True,
+                                             close_descriptor=self._close_owned_descriptor)
                 self._fds.append(descriptor)
                 status = os.fstat(descriptor)
                 if status.st_uid != self.uid:
@@ -250,16 +281,22 @@ class LinuxTaskScope:
                     or fields["Transient"] != "yes" or not _INVOCATION.fullmatch(fields["InvocationID"])
                     or fields["ControlGroup"] != group):
                 raise LinuxTaskScopeError()
-            if (_read_at(self._fds[0], "cgroup.procs").strip()
-                    or _read_at(self._fds[1], "cgroup.procs").strip() != str(self._pid).encode("ascii")
-                    or _read_at(self._fds[2], "cgroup.procs").strip()
-                    or _read_at(self._fds[2], "pids.current").strip() != b"0"
-                    or _read_at(self._fds[2], "pids.max").strip() != str(self.limit).encode("ascii")):
+            if (_read_at(self._fds[0], "cgroup.procs",
+                            close_descriptor=self._close_owned_descriptor).strip()
+                    or _read_at(self._fds[1], "cgroup.procs",
+                            close_descriptor=self._close_owned_descriptor).strip() != str(self._pid).encode("ascii")
+                    or _read_at(self._fds[2], "cgroup.procs",
+                            close_descriptor=self._close_owned_descriptor).strip()
+                    or _read_at(self._fds[2], "pids.current",
+                            close_descriptor=self._close_owned_descriptor).strip() != b"0"
+                    or _read_at(self._fds[2], "pids.max",
+                            close_descriptor=self._close_owned_descriptor).strip() != str(self.limit).encode("ascii")):
                 raise LinuxTaskScopeError()
             if self._membership() != membership:
                 raise LinuxTaskScopeError()
             for candidate, identity in zip((path, path / "supervisor", path / "payload"), self._identities, strict=True):
-                descriptor = _open_directory(candidate, uid=self.uid, cgroup=True)
+                descriptor = _open_directory(candidate, uid=self.uid, cgroup=True,
+                                             close_descriptor=self._close_owned_descriptor)
                 try:
                     status = os.fstat(descriptor)
                     if (status.st_dev, status.st_ino) != identity:
@@ -309,7 +346,8 @@ class LinuxTaskScope:
             try:
                 fields = self._show(deadline)
                 try:
-                    descriptor = _open_directory(self._path, uid=self.uid, cgroup=True)
+                    descriptor = _open_directory(self._path, uid=self.uid, cgroup=True,
+                                                 close_descriptor=self._close_owned_descriptor)
                 except FileNotFoundError:
                     return fields["LoadState"] == "not-found" and not fields["ControlGroup"]
                 else:

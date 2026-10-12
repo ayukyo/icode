@@ -2693,3 +2693,21 @@ B1不同实际SOURCE QUALITY随后C0/I0/M0，独立41/2.436s全过。root唯一�
 S2真实接线另有独立只读盘点：生产chain/runner/ToolContext尚未接prepared，broker现有三keyword包含prepared_attempt。**采纳（后续计划输入）**复用一次attach/真实CP attempt/finish，普通补救与工程ctx同引用，旧None/custom runner和Reviewer不扩散；不能漏第三keyword或以truthy step_start代真实trace确认。固定OpenHands SDK3934349d LocalWorkspace及MIT LICENSE实际GET窗口05:47:02–05:47:10 UTC；[共享utility与context分账](https://github.com/OpenHands/software-agent-sdk/blob/3934349da2db0433238621542173a00a8af7439c/openhands-sdk/openhands/sdk/workspace/local.py)仅借机制。**暂缓**callback自动汇报；**不适配**直接宿主bash或结构化结果授隔离。未实施、未改母设计/broker/控制面，原动态source工程fixture不授静态包内S2/installed；无复制/依赖/权限新增。
 
 B1最终三文档原scanner两轮各raw0/exit0，fresh secret/submodule单门各通过；记录补入后再核最终文档两轮与单门。当前仍未提交，七路径cached/工作byte及冻结校验待root执行；下一B2 DOCS预备不在此发布范围。
+
+B1随后真实七路径提交推送main `80f36ec25ca0ecb17bb3817f932f3babd1d7d66a`：最终文档再两轮原scanner各raw0、fresh secret/submodule通过；七路径index/工作bytes与四freeze一致、cached diff检查通过，commit/push均exit0，root05:58:27 UTC取HEAD/clean并核远端同SHA。仅本片软件门，不预授线上或整体验收；新三workflow独立只读观察。B2 DESIGN703dc274已双审零遗留，完整PLAN编写中，scope源码未改。
+
+WP0b独立只读盘点继续，不与B2冻结混写源码。2026-10-12 06:01:12 UTC实际GET固定Codex8c0f7011的 [无重解析目录句柄](https://github.com/openai/codex/blob/8c0f7011674145da7e10627769fb221c74fbf7a0/codex-rs/windows-sandbox/src/no_reparse_dir.rs)及Apache-2.0 LICENSE、[Microsoft SHELLEXECUTEINFOW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow)。**采纳（后续设计输入）**相对打开和整个核验窗口保持guards；**暂缓**首次UAC完成、受保护晋升及跨管理员/父进程死亡证明；**不适配**把路径lpFile/hProcess输出当镜像HANDLE输入或父进程死亡取消保证。现有消费者仅核helper/verifier，尚未绑定proof/release及PE加载边界，bootstrap无生产UAC入口；签装/source-policy观察不能代替此链。收益是复用已存在pin/ACL读取，成本为受持有字节的实际消费者与原生负控；不引入服务、MSIX、token特权或复制依赖。
+
+该盘点另核Windows异常契约：已批准source-owner设计/计划明确保留原body异常，包括普通body与cleanup KI/SE；现有source/pin软件RAM八组合PASS、原选定三方法0.105s通过。此规则与Linux选择不同，但不是当前Windows合同违反或有效RED，不为统一外观盲改。**采纳**保持原body身份和逆序独立关闭；**暂缓**跨平台统一异常契约（需要另行设计和测试）；**不适配**把fake backend的软件异常对照授原生UAC/OS回收信用。下一WP0b仍按用户批准的稳定路径/全窗口核验方案推进，非必要不重复征询。
+
+B1同SHA三workflow现全终态，独立观察者06:17:11 UTC取得完整结果，root随后实际GET重核：CI38210302944完整46=41success/2Reviewerfailure/3skip；provenance38210302917=5/5success；Pages38210302910=2/2success。root实际收双Python原footer各3171tests/86skip（3.11 735.199s，3.12 666.363s）。双Reviewer仍positive105/ipv4_connect_timeout与candidate双协议10035/wait_expiredtrue/connect_deniedfalse，不授DENY。四签装原日志仍owner_untrusted、protected/compatibility/launchfalse，四Linux旧installed各84不授B1/B2新矩阵或timeout因果修复；没有取消未收终态流程。下一提交仍须本片完整验证达标。
+
+B2完整PLAN e01f34b2经fresh独立SPEC和不同QUALITY均C0/I0/M0；两者独立RAM严格9hunk投影、新13methods基线26有效assertFAIL/0E/skip和投影GREEN，仅资产诊断。root独立模拟win32在宿主stdlib/support预加载后13skip/0F/E、fcntl尝试0；首次未预加载的宿主模拟走缺失_overlapped，不计产品失败或正式RED。fixture卫生仅适于受控测试，不推广历史FD数字关闭至并发执行。已授权fresh TEST ONLY落盘完整资产ef8e45a7、正式原SOURCE RED；scope基线仍776ab721，尚未修复。
+
+B2 Task1已正式落盘420行TEST ef8e45a7，作者13方法0.112s、root独立0.149s均26有效assertFAIL/0E/skip、exit1，原scope776ab721未改；root全文实际测试并核真实FD/其余pins/锁释放、broker owneractive/inflight归还前置。next-borrow等失败后截断断言不预授信用。**采纳（正式返修输入）**临时close unknown归属和首signal保护；不同fresh SOURCE作者现仅实施scope九hunk，不改tests/旧fixture/权限/deadline。RAM不是本次正式RED替代，manager/payload/receiver前提仍属软件seams，不授native/installed或整体验收。
+
+不同B2作者现只完成scope7de59a7a，TEST ef8e45a7保持：作者13/0.115s、41/2.328s、163/21.415s、quota46/10.239s；root独立13/0.102s、41/2.552s、163/21.388s、quota46/10.301s均0F/E/skip，compileall-j1/site/governance/diff通过。实际下一borrow拒绝已执行、helper/session仍活、unknown sticky；**采纳（有限软件实证）**临时FD归属及runtime首signal/drain。quota无skip如实记录，不扩成新四格安装或完整原生矩阵；**暂缓且保留**opaque/monitor/parser、deadline、S2/S3与整体门。fresh独立 SOURCE SPEC进行中，原完整guard/五路径发布待验，不以作者双自审代独立审查。
+
+B2 fresh实际SOURCE SPEC与之后不同QUALITY均C0/I0/M0，各自54方法2.340s/2.508s、0F/E/skip；实际源码/测试7de59a7a/ef8e45a7不变。root唯一原完整guard session96748、日志 `/tmp/icode-b2-preflight.6l2e9d/typescript`，06:28:48 UTC已观察启动、j1，结果仍待，不提前授预检/发布或整体信用。下一S2a只读盘点建议context keyword-only借用字段与三keyword薄适配、None旧shape、Reviewer/非resource/孤立attempt前置拒绝，不双重borrow、不把ctx.close变ownerclose；只作下一设计输入，不改本片冻结。
+
+B2原唯一guard现实际exit0、footer06:39:05 UTC，root06:39:15 UTC取得完整三门PASS、两freeze不变；没有全量数量就不猜。**采纳（本片完整软件门）**临时FD unknown归属与首signal保护；五路径发布仍待最终两轮原scanner/fresh单门/index字节。下一S2a DESIGN原SPEC发现入口覆盖I1，root最小澄清dispatch表仅实际进入该入口，policy=None的run_command/engineering legacy不授阻断或准备信用、S2b须真实前门及工具/工程/Reviewer/resume/漂移负控；修订1f6405a2经独立SPEC和不同QUALITY均C0/I0/M0，DOCS ONLY PLAN预备，不混入本片五路径，不授完整S2或ready。
