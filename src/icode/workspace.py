@@ -331,6 +331,19 @@ class TicketLease:
             _close_quietly(stream)
             raise WorkspaceError(f"无法获取工单租约：{exc}") from exc
 
+    def _validate_active(self) -> None:
+        """只读核验已有租约对象；不重新加锁或转移释放责任。"""
+        try:
+            stream = self._stream
+            if stream is None or stream.closed:
+                raise WorkspaceError("工单租约不可用")
+            descriptor = stream.fileno()
+            if type(descriptor) is not int or descriptor < 3:
+                raise WorkspaceError("工单租约不可用")
+            _validate_lock_file_identity(self.path, descriptor)
+        except Exception:
+            raise WorkspaceError("工单租约不可用") from None
+
     def release(self) -> None:
         """释放租约；重复调用不产生副作用。"""
         stream = self._stream
