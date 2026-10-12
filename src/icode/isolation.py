@@ -958,10 +958,17 @@ class LandlockSandbox:
         return cls(helper=str(helper), manifest=str(helper.parent / "icode-landlock.sha256"))
 
     @staticmethod
-    def _validated_runtime_roots(prefixes: Sequence[Path]) -> tuple[Path, ...]:
-        """仅授权 Python 安装前缀，不把用户主目录当作运行时。"""
-        home = Path.home().resolve()
-        roots = tuple(sorted({path.resolve() for path in prefixes}, key=str))
+    def _validated_runtime_roots(
+        prefixes: Sequence[Path], *, strict: bool = False,
+    ) -> tuple[Path, ...]:
+        """仅授权 Python 安装前缀；source观察可显式要求严格解析。"""
+        if strict:
+            home = Path.home().resolve(strict=True)
+            roots = tuple(sorted({path.resolve(strict=True) for path in prefixes}, key=str))
+        else:
+            # Preserve legacy Path.resolve invocation shape and behavior.
+            home = Path.home().resolve()
+            roots = tuple(sorted({path.resolve() for path in prefixes}, key=str))
         broad = {Path("/"), Path("/tmp"), Path("/var"), Path("/home")}
         for root in roots:
             if (
@@ -971,12 +978,15 @@ class LandlockSandbox:
                 raise RuntimeError("Python 运行时前缀过宽或不可用")
         return roots
 
-    def _runtime_read_roots(self) -> tuple[Path, ...]:
-        return self._validated_runtime_roots(
-            (Path(sys.prefix), Path(sys.base_prefix))
-        )
+    def _runtime_read_roots(self, *, strict: bool = False) -> tuple[Path, ...]:
+        prefixes = (Path(sys.prefix), Path(sys.base_prefix))
+        if strict:
+            return self._validated_runtime_roots(prefixes, strict=True)
+        return self._validated_runtime_roots(prefixes)
 
-    def _checked_policy_workspace(self, policy: SandboxPolicy) -> Path:
+    def _checked_policy_workspace(
+        self, policy: SandboxPolicy, *, strict_runtime: bool = False,
+    ) -> Path:
         """仅核对当前助手能表达的文件/网络子集；不是完整策略绑定。"""
         workspace = policy.workspace_root
 
@@ -1000,7 +1010,11 @@ class LandlockSandbox:
             "/etc/ld.so.cache", "/etc/passwd", "/etc/nsswitch.conf",
             "/dev/urandom", "/dev/null",
         )
-        runtime_paths = tuple(map(Path, runtime_read)) + self._runtime_read_roots()
+        if strict_runtime:
+            runtime_roots = self._runtime_read_roots(strict=True)
+        else:
+            runtime_roots = self._runtime_read_roots()
+        runtime_paths = tuple(map(Path, runtime_read)) + runtime_roots
         if any(
             intersects(denied, allowed)
             for denied in policy.deny_read_roots

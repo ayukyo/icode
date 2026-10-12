@@ -142,6 +142,8 @@ scope 和一个任意 `helper_object` 不能同时当外部输入；公共参数
 1. 对 factory 已持的同一 FD 有界解析 ELF64LE program-header 表：沿当前64 MiB文件限额；本片收紧为随包 ET_EXEC、条目尺寸56字节、计数1–1024。拒绝越界、扩展计数、截断或读取漂移；要求无 PT_INTERP、无 PT_DYNAMIC。这是当前 `-static` 包产物的更窄合同，不是泛ELF静态认证；静态PIE也可能有PT_DYNAMIC，暂不支持该格式，不能因其“可能静态”放行。
 2. 实际包内 helper/manifest 的规范来源不得与 policy write_roots 相交；有限检查来源自身及祖先链接/目录身份，确保路径映射没有把安装包目录带入项目可写边界。来源可以位于合法运行时只读映射（包括正常pipx包目录），但须核既有实际映射不会给其写权；不将可写工作区内venv当安全来源。显式此类安装保持旧候选行为但拒绝新scope。准备及首次/每次借用重核来源边界和同FD身份，不重开替代镜像。
 
+**严格runtime解析契约补充（2026-10-12，S0b Task2R设计返审，未实施/未验收）：** S0b本机故障矩阵实测非严格 `Path.resolve()` 的home/prefix/baseprefix辅助解析吞9个OSError，来源wrapper未能固定拒绝。最小修复仅为 `LandlockSandbox._validated_runtime_roots(prefixes, *, strict=False)`、`_runtime_read_roots(*, strict=False)`、`_checked_policy_workspace(policy, *, strict_runtime=False)` 新增默认False私有模式。新source明确opt-in严格True，home与两个Python prefix使用 `resolve(strict=True)`；异常继续向source原固定错误/首信号包装传播。默认分支保持原无keyword调用形状与行为，不复制policy gate、不全局猴补Path、不重试旧callback、不改变ready或运行时read roots授权。此项只闭合新来源观察的解析unknown拒绝，source canonical路径预算不扩成runtime完整遍历预算；不授多用户宿主安全、installed或LA-2信用。具体有效assertion RED、两个旧默认callback测试、逐lstat故障与实际失败基线见 [S0b PLAN](../plans/2026-10-12-linux-helper-source-boundary.md)；修订先独立SPEC→不同QUALITY再实施，原9失败保留，不降预期。
+
 有限读取用同 FD 的显式 offset读取（如 `os.pread`），不移动共享 file offset；缺机制拒绝，不并行修改 owner 状态。
 解析前后 fstat 核 dev/ino、size、mtime_ns/ctime_ns；同时按原64 KiB块限再次核全文摘要等于owner.sha256，避免factory结束与解析开始之间漂移未被绑定。
 header/table读取总量不超过64 KiB+64字节，全文摘要读取不超过64 MiB+1字节；整数offset/length先核落在真实文件长度内，不接受bool、溢出或短读完成。
@@ -227,3 +229,5 @@ OpenHands [LocalWorkspace](https://github.com/OpenHands/software-agent-sdk/blob/
 - 关联模块：不改变CP状态机/vendor/Git资格，来源和lease最小核验需后续精确计划。
 - 兼容安全：无新权限/服务/依赖，旧后端参数不扩散；新scope内部合同必须成对接线。
 - 可运行性：仅设计与静态自审，未实施/测试/CI，不报告100%或LA-2完成。
+
+实施进度（2026-10-12 01:37:38 UTC）：S0b来源观察及三私有strict配对修复取得fresh SPEC→不同QUALITY零遗留、125关联测试和531故障通过；root原完整预检三道exit0。此为有限软件子项，不改本设计的S1–S3、installed/ready及LA-2整体验收门；历史“未实施”自审描述保留其设计时点。

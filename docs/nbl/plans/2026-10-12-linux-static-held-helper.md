@@ -10,7 +10,7 @@
 
 ---
 
-状态：Task1/Task2软件候选、最终独立双审及Task3完整软件守护通过；本记录时尚未提交/推送，发布将另核远端实际SHA。冻结源码为 main `206057e`，不是母设计记录的历史源码 SHA。母设计为 [Linux 单步准备对象设计](../specs/2026-10-12-linux-prepared-step-scope-design.md)，其修订正文独立 SPEC 与不同 QUALITY 均 C0/I0/M0；设计信用不代软件或原生验收。
+状态：S0a软件分片完整守护后已提交/推送main `d10cd46dc7220a8cc5c87d46e0d1dd41a547f11c`，远端仅main同SHA；新CI另行观察，不授整体R2/R3。实施前冻结源码为 main `206057e`，不是母设计记录的历史源码 SHA。母设计为 [Linux 单步准备对象设计](../specs/2026-10-12-linux-prepared-step-scope-design.md)，其修订正文独立 SPEC 与不同 QUALITY 均 C0/I0/M0；设计信用不代软件或原生验收。
 
 这是 S0 的 **S0a 静态加载子项**，不覆盖整个 S0，更不覆盖 S1/S2/S3 或 LA-2。来源可写边界、祖先/映射核验、lease、scope、attachment、broker、runner、selector、ready、环境构造、FD 关闭均不修改；相应后续独立 PLAN 必须再审。本片仅新增两个源码/测试路径，不修改 `linux_helper_object.py`、`native_helper.py`、旧测试、旧 docs、vendor、KEY 或 CI。
 
@@ -535,7 +535,7 @@ git diff -- src/icode/linux_helper_object.py src/icode/native_helper.py tests/te
 ### Task 3: 独立审查、root守护与软件分片交付
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成（仅S0a软件分片，提交与远端SHA已核）
 
 **Dependencies:** Task 2
 **Parallelizable:** No (同一候选冻结后顺序 SPEC→不同 QUALITY→root验收)
@@ -600,7 +600,7 @@ PY
 
 若输出NOT_RUN，记录“未运行：未定位旧installed artifact”，不试猜路径、不从checkout补替身、不授PASS。这里以新源码检查器核旧installed字节，明确不是新检查器已经installed，也不是完整安装消费链。实验只属于该旧artifact加载子项；母设计中旧readelf观察不是新实现实测。完整同候选SHA四Linux runner实际build/install、来源/内部consume及终态分账继续待S3，本片软件通过不能关闭这些门。
 
-- [ ] **Step 4: root精确暂存/提交，推送等206057e四Windows gate终态**
+- [x] **Step 4: root精确暂存/提交，推送等206057e四Windows gate终态**
 
 先由root记录七维实际自检。提交前沿现有流程fresh secrets/submodule守护；stage只列确切路径，两份新docs受ignore时仅这两路径add-f。母DESIGN尚未发布，是本片关联的新文档，不属于禁止改动的已发布旧docs。此PLAN author阶段不执行Git写操作。
 
@@ -672,3 +672,5 @@ root完整读取修复，独立相关111方法/5.722s/0F/E/skip；此前未修�
 - 关联模块：新SOURCE2与母设计/计划/研究及旧Windows终态记录同步，无vendor修改。
 - 兼容安全：旧ET_DYN/header-only工厂合同保留；无新权限、依赖、ready/selector变化。
 - 可运行性：本片软件门通过；旧installed观察仅该产物子项，不授新四runner、来源、S0整体、LA-2或R2/R3。
+
+最终交付实际：最后编辑后四关联文档连续两轮一致性0疑似，fresh secrets/vendor各exit0；六精确stage经index字节逐文件核等工作树。普通git add因docs ignore提示exit1，root改为四文档精确add-f后重核成功，不扩大目录范围。提交`d10cd46`与push实际exit0，远端仅main同完整SHA，新CI独立观察不补旧信用。此发布收尾记录随下一来源分片的精确关联文档清单提交，不再立即推一份纯记录取消正在运行的d10cd46原生实证。
