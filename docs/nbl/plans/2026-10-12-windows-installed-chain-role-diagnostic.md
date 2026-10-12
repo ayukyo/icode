@@ -10,7 +10,7 @@
 
 ---
 
-日期：2026-10-12。状态：**PLAN ONLY，未实施、未运行任何测试或编译。** 本文新增是本轮唯一文件写入；不写 Git、不读 KEY、不改 Linux Task3 的六个源码候选。writing-plans 的自动实施、工作树创建和提交步骤受本轮明确范围覆盖；本文通过 fresh SPEC → 不同 QUALITY 并由 root 全文阅读后才可进入后续实施阶段，本文不自行委托评审或开始实现。
+日期：2026-10-12。当前状态：**本诊断片的软件、原生夹具及同 SHA 四格安装门已通过，提交 main `206057e`；不表示生产准入或 R2/R3 整体通过。** 初版为 PLAN ONLY、未实施/测试，原任务代码与下方历史记录保留当时范围；当前实际结果见末尾。初版作者只写本文、不写 Git/KEY/Linux源码，其委派范围不限制后续已授权实施。
 
 设计依据：[冻结 DESIGN](../specs/2026-10-12-windows-installed-chain-role-diagnostic-design.md)，205 行，SHA-256 `9c233c11e75f0364184daea7eaeb8533fe6bf3ced4ae3c509a54fae05b52c038`；已完成 fresh SPEC → 不同 QUALITY C0/I0/M0、root 全文阅读。DESIGN历史源码观察基线为 `574033a4df8311a569230bbd0522a0e1be717d8a`；本PLAN冻结基线更新为root刚完成发布的 `1e2e4ab5d0101acf00d609af37add9893e4c57ef`，不改历史DESIGN。vendor/icode-skill 固定 `21566a5`，不是本片修改目标。实施前重新核当时实际候选及脏工作树，不将旧基线或旧 v1 回执补授 v2 信用；本文未跟踪新文档不被“trackedstatus空”描述掩盖。
 
@@ -446,7 +446,7 @@ validate_wire(wire, args.source_sha, data["architecture"],
 
 **状态**
 
-- [x] 任务完成（独立父版本接线与便携回归；原生四格仍待验）
+- [x] 任务完成（独立父版本接线与便携回归；原生四格后续补验通过，见末尾）
 
 **Dependencies:** Task 2
 **Parallelizable:** No（父期望必须消费冻结 v2）
@@ -529,7 +529,7 @@ PYTHONPATH=src .venv/bin/python -B -m unittest tests.test_windows_bootstrap_bind
 
 **状态**
 
-- [x] 任务完成（软件、夹具实现及静态选择；Windows 原生实际结果仍待四格）
+- [x] 任务完成（软件、夹具实现及静态选择；Windows 原生四格后续通过，见末尾）
 
 **Dependencies:** Task 1, Task 2, Task 3
 **Parallelizable:** No（实机须消费最终软件；计数按最终方法集冻结）
@@ -727,7 +727,7 @@ python -B -c "from scripts.run_workspace_ci import main; raise SystemExit(main((
 
 **状态**
 
-- [ ] 任务完成
+- [x] 任务完成（仅本诊断片的软件/原生/四格安装门；工程整体失败边界保留）
 
 **Dependencies:** Task 1, Task 2, Task 3, Task 4
 **Parallelizable:** No（必须对最终冻结候选验收；四Windows格可由现有CI矩阵并发）
@@ -819,3 +819,20 @@ Task5软件候选门后续实际完成（2026-10-11 23:57 UTC）：最终SOURCE7
 - ✅ 关联模块：限定7SOURCE一致；原完整软件三道门通过。
 - ✅ 兼容安全：v1明确拒绝，旧政策及三authority=false不变，无新权限/依赖。
 - ✅ 可运行性：软件候选通过；Windows新增native/installed最终四格未验，不声明100%或ready。
+
+## 最终提交四格实际补验（2026-10-12）
+
+上述“未验/待四格”为发布前历史。最终提交 `206057e53e1a3e0cbfae5f1feabbb1379e19d379` 的 [Windows provenance 38186298997](https://github.com/ayukyo/icode/actions/runs/38186298997) 已终态5/5 success；root与独立观察者分别获取原日志并真实调用固定提交的chain/source validators。期望Python取setup-python，Windows取runner OS，不从wire反取。
+
+| 实际 cell | job | 历史目标 RED | 当前必测 GREEN |
+| --- | --- | --- | --- |
+| x64 / Python3.11.9 / Windows10.0.26100 | [114611820919](https://github.com/ayukyo/icode/actions/runs/38186298997/job/114611820919) | 1 test / 1指定failure / 0 error、skip | 69 / 6.665s / OK |
+| x64 / Python3.12.10 / Windows10.0.26100 | [114611821005](https://github.com/ayukyo/icode/actions/runs/38186298997/job/114611821005) | 同上 | 69 / 5.303s / OK |
+| ARM64 / Python3.11.9 / Windows10.0.26200 | [114611820899](https://github.com/ayukyo/icode/actions/runs/38186298997/job/114611820899) | 同上 | 69 / 5.677s / OK |
+| ARM64 / Python3.12.10 / Windows10.0.26200 | [114611820931](https://github.com/ayukyo/icode/actions/runs/38186298997/job/114611820931) | 同上 | 69 / 5.976s / OK |
+
+四格69唯一ID均与最终源码46+6+3+14相符；历史producer固定`1e2e4ab`原blob摘要`19a9c21e204d04675e3d2c46f410afc0d4836add11843d387cf960cc3a6a2b21`，指定缺dacl_protected断言命中，不把环境故障当RED。每份v2 canonical wire的结构角色、actual control、direct候选与有限edge经过固定原validator核验；helper/verifier各13 owned=13 confirmed、0 unknown，全局双SD ACE188≤512。source consumer仍root owner_untrusted，实际两次SD读/分配/释放、26逆序关闭；三authority始终false，不授root信任。
+
+root首份日志再校验曾漏补日志运输移除的尾LF，validator正确拒绝；补回canonical LF后实际通过，未修改payload或生产validator。其余三份按同规则通过；独立观察者另按固定源码定义真实校验。原签装、proof/crypto/offline negatives、directvolume、bootstrap拒绝及export顺序均保留。四Windowsworkspace也终态success。
+
+[主CI38186299003](https://github.com/ayukyo/icode/actions/runs/38186299003) 终态46项=41success/2既有Reviewerfailure/3明确退役skip；Python3.11/3.12各3047tests、86skipped。Reviewer仍exit78，IPv4/6 Win10035/wait_expired、connect_denied=false、WFP无匹配drop及archive_member_missing；不是网络DENY。UAC、加载/publisher、生产consume、模型六步/90%及整体R2/R3门未关闭。
