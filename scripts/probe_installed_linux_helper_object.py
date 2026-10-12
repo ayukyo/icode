@@ -649,6 +649,15 @@ class TestInstalledCandidateFaults(unittest.TestCase):
                     workspace_live=workspace_live, pids=[process.pid for process in processes],
                     kernel=platform.release(), systemd=systemd,
                     package_helper_sha256=package_hash, manifest_sha256=manifest_hash,
+                    exit_code=result.exit_code if result is not None else None,
+                    payload_started=result.payload_started if result is not None else None,
+                    payload_ready=(workspace / "ready").exists(),
+                    resource_configured=(getattr(result, "resource_receipt", None).get("configured")
+                        if type(getattr(result, "resource_receipt", None)) is dict else None),
+                    resource_channel_status=(getattr(result, "resource_receipt", None).get("channel_status")
+                        if type(getattr(result, "resource_receipt", None)) is dict else None),
+                    resource_terminal=(getattr(result, "resource_receipt", None).get("terminal")
+                        if type(getattr(result, "resource_receipt", None)) is dict else None),
                     error=result.error if result is not None else "raised", exception=type(error).__name__ if error is not None else None), sort_keys=True), flush=True)
                 self.assertEqual(len(owners), 1); self.assertTrue(process_closed)
                 if ctx is not None:

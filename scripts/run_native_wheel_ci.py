@@ -22,6 +22,8 @@ def _publish_helper_dispatch_records(output: str) -> None:
                      "resource_start", "resource_configured", "resource_close", "scope_close_unknown",
                      "timeout", "output_limit", "launch_failed", "keyboardinterrupt", "systemexit", "helper_close_unknown"},
         "exception": {None, "LinuxHelperObjectError", "KeyboardInterrupt", "SystemExit"},
+        "resource_channel_status": {None, "complete", "incomplete"},
+        "resource_terminal": {None, "preexec_failed", "finished", "cleanup_failed"},
     }
     booleans = {"cleanup_ok", "scope_cleanup_ok", "workspace_live", "process_closed", "channels_closed", "threads_stopped", "context_borrowed"}
     hashes = {"package_helper_sha256", "manifest_sha256"}
@@ -45,6 +47,13 @@ def _publish_helper_dispatch_records(output: str) -> None:
         for name in booleans:
             value = record.get(name)
             if name in record and (type(value) is bool or (name == "scope_cleanup_ok" and value is None)): safe[name] = value
+        for name in ("payload_started", "resource_configured", "payload_ready"):
+            value = record.get(name)
+            if name in record and (type(value) is bool or (name != "payload_ready" and value is None)):
+                safe[name] = value
+        value = record.get("exit_code")
+        if "exit_code" in record and (value is None or (type(value) is int and -255 <= value <= 255)):
+            safe["exit_code"] = value
         for name in hashes:
             value = record.get(name)
             if type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value): safe[name] = value

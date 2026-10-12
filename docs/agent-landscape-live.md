@@ -2575,3 +2575,21 @@ S1a精确四路径已实际发布main `74163aa59affa406bed230679ac29ec638c0c979`
 上述Windows SOURCE双审现已C0/I0/M0；两独立审查者各新11无skip、旧99有13skip、0F/E，并RAM-only复现原stub/原probe两有效target。root原完整preflight唯一session86008在运行，冻结源码摘要未变，不预授全量完成。741三个前流程随后全终态，root02:35 UTC实际jobs API核46=40success/3failure/3skip、Windows provenance5/5、Pages2/2、running0。独立观察者实际四签装共8原payload通过固定提交validator、各69required无skip与历史目标RED；expected版本来自独立setup/runner。root本轮仅核jobs及原ARM日志，不冒称又跑8validator；owner_untrusted/三authority=false、原ARM与双Reviewer失败不变，签装不是UAC/launch或整体通过。
 
 Windows有限分类软件候选原完整preflight随后exit0，root02:38:58 UTC取得唯一session86008三道OK，三个冻结源码摘要保持；compileall-j1/site/governance/diff、独立双审和有效RED→GREEN均通过。**采纳（有限软件实证）**真实connect普通失败分类、正常close后发有限exit、原notice枚举同步；**暂缓**新SHA原生四格与正控观察；**不适配**分类改善当网络DENY/ready或R2/R3完成。main精确发布结果在随后阶段实际记录，不提前生成SHA。优先补ARM六字段有限诊断，其设计/PLAN已独立SPEC→不同QUALITY零遗留但尚未实施，不能以计划或重跑撤销741原失败。
+
+### Linux 有限故障观察开始（2026-10-12）
+
+Windows 分类已实际发布 main `d05a23832d7c5c494743abfb63a3ca9a8b1d8a27`，root 02:45 UTC核 clean 工作树；新CI另验，未授网络通过。Linux 六字段唯一writer先写实际producer/publisher测试，保持原timeout/quota/断言、隐藏stderr与旧记录兼容。
+
+独立只读研究于02:45:54–02:46:29 UTC实际GET固定Codex `27065a91ccbf5ba8532844be3777fcf83b77820d` 官方源码及Apache-2.0 LICENSE，未刷新HEAD或20名单。**采纳**[payload-free类别](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/protocol/src/error.rs#L83-L90)与[wait/expiry分账](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/core/src/exec.rs#L1027-L1041)机制，复用ICODE现有result/ready/receipt和白名单；收益为缩小原ARM负控unknown，成本为六字段配对、实际AST/publisher边界测试与新SHA四格原日志。**暂缓**新资源遥测、根因归因与策略调整；**不适配**公开[含stdout/stderr的Display](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/protocol/src/error.rs#L43-L51)、移植[timeout重写exit124](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/core/src/exec.rs#L805-L825)解释本地故障，或单项ready/terminal授认证/回收/原生通过。无源码复制、新依赖、权限或安装步骤；原741失败保留，不以软件GREEN或重跑覆盖。
+
+Linux诊断Task1作者/root两个有效assertion RED后，不同fresh作者最小配对GREEN；root实际新8/0.593s、旧dispatch41/0.261s均0F/E/skip，两个单目标及compileall-j1/site/governance通过，生产仅两脚本各+9行。fresh SOURCE SPEC C0/I0/M0、独立新8/0.644s及旧41/0.294s无skip；不同QUALITY及原完整守护仍待。**采纳（有限软件观察）**已有事实白名单投影，不能授原生/根因修复。
+
+前候选d05 [CI38196699811](https://github.com/ayukyo/icode/actions/runs/38196699811)随后终态failure，root实际jobs API核46=41success/2Reviewerfailure/3skip。独立观察者取原日志两Python各3098tests/86skip（680.306s/576.953s）；四Linux各84记录/32正控/52故障。root另取[ubuntu22.04-arm114640846206](https://github.com/ayukyo/icode/actions/runs/38196699811/job/114640846206)原日志，四条timeout均error=timeout/exception=null，本次未重现741 mismatch；纯Windows诊断变动不能解释为ARM修复，旧失败保留且新六字段尚未安装验收。观察者报告ubuntu24.04-arm lease expiry SKIP(namespace/loopback unavailable; conformance_credit=none)，job成功不能替代该项通过。双Reviewer新有限分类均105/ipv4_connect_timeout，仍inconclusive/readiness=false，candidate78、10035/wait_expired、无匹配WFP证据，不授DENY。Pages2/2success，provenance四签装仍在途，不预授终态。
+
+Linux诊断不同fresh QUALITY随后C0/I0/M0，新8/0.590s与旧41/0.277s均无skip；RAM-only原HEAD两核心目标实际2assertFAIL/0error/skip，确认观察鉴别。冻结SOURCE摘要未变，root唯一原完整preflight session60796已启动，密钥和固定vendor两门OK，全量仍在运行，不提前计完整软件/发布或新SHA安装通过。
+
+d05三个前工作流随后全部终态，root03:00 UTC实际jobs API重核running0：CI46=41success/2failure/3skip、Windows provenance5/5success、Pages2/2success。签装成功不替UAC/launch或网络准入；本Linux候选仍待原完整守护与精确发布，不能把先前CI绿色子项授予新字段。
+
+Windows下一判别的独立只读研究窗口03:00–03:03 UTC，实际核d05相关源码、Microsoft [WSAEnumNetworkEvents](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-wsaenumnetworkevents)/connect/WSAEventSelect和[loopback范围](https://learn.microsoft.com/en-us/windows/apps/develop/communication/interprocess-communication#loopback)，复取固定Codex7f892275的smoke及Apache-2.0 LICENSE。确认正控IPv4失败即105退出，IPv6未尝试，不将双canary=false写成双族timeout；候选已先注册事件再connect，未找到注册顺序根因。现宿主正控blocking、事件链便携mock不替原生校准。**采纳（未来设计输入，未实施）**复用同staged Python/普通用户/双栈listener的同事件函数宿主正控及bound-not-listening端口10061负控，分别记录直接终态、实际pending后event终态或unknown；收益为判别substrate缺口，成本为有限诊断与原生格。立即结果不能授wait/Enum分支信用，10061不替10013 DENY。**暂缓**容器loopback政策A/B、外部目标/后端/WFP动态过滤；**不适配**packaged官方范围直接外推unpackaged profile、短timeout/非零rc或SO_ERROR0授DENY。exemption/服务/MSIX/token特权仍属单独授权门，未执行；无代码复制或新依赖，不授本片或整体验收。
+
+Linux有限诊断原完整preflight随后exit0，唯一session60796日志footer03:06:46 UTC三门OK，SOURCE冻结摘要保持。**采纳（有限软件实证）**六事实投影和白名单、actual AST/真实publisher、旧兼容/隐私矩阵；**暂缓**新SHA四格安装观察和根因修复；**不适配**软件/签装/单字段成功当整体通过。此记录时精确main发布仍待，不提前生成SHA。
