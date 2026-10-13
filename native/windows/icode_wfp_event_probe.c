@@ -106,9 +106,16 @@ typedef struct WfpHistoryQueryResult {
     DWORD api_code;
     UINT32 returned_count;
     UINT32 matched_count;
+    BOOL attribution_present;
+    BOOL attribution_mixed;
+    UINT64 filter_id;
+    UINT16 layer_id;
+    BOOL is_loopback;
+    FWPM_APPC_NETWORK_CAPABILITY_TYPE network_capability_id;
 } WfpHistoryQueryResult;
 
 typedef struct WfpHistoryDiagnostics {
+    BOOL requested;
     BOOL time_window_known;
     BOOL time_window_valid;
     WfpHistoryQueryResult capability;
@@ -393,6 +400,178 @@ static const char *history_stage_name(enum WfpHistoryApiStage stage) {
     }
 }
 
+enum WfpHistoryMatch {
+    HISTORY_OUTSIDE_SCOPE, HISTORY_NONMATCH, HISTORY_MATCHED, HISTORY_INVALID_DATA
+};
+
+static enum WfpHistoryMatch history_event_result(
+    const FWPM_NET_EVENT3 *event, const WfpProbeContext *context,
+    const FILETIME *start_time, const FILETIME *end_time, BOOL classify_drop
+) {
+    if (event == NULL || context == NULL || start_time == NULL || end_time == NULL ||
+        filetime_value(end_time) < filetime_value(start_time)) {
+        return HISTORY_OUTSIDE_SCOPE;
+    }
+    if ((classify_drop && event->type != FWPM_NET_EVENT_TYPE_CLASSIFY_DROP) ||
+        (!classify_drop && event->type != FWPM_NET_EVENT_TYPE_CAPABILITY_DROP) ||
+        filetime_value(&event->header.timeStamp) < filetime_value(start_time) ||
+        filetime_value(&event->header.timeStamp) > filetime_value(end_time) ||
+        !event_header_matches_target(event, context)) {
+        return HISTORY_OUTSIDE_SCOPE;
+    }
+    if ((classify_drop && event->classifyDrop == NULL) ||
+        (!classify_drop && event->capabilityDrop == NULL)) {
+        return HISTORY_INVALID_DATA;
+    }
+    if ((classify_drop && event->classifyDrop->isLoopback != FALSE &&
+            event->classifyDrop->isLoopback != TRUE) ||
+        (!classify_drop && event->capabilityDrop->isLoopback != FALSE &&
+            event->capabilityDrop->isLoopback != TRUE) ||
+        (!classify_drop &&
+            (event->capabilityDrop->networkCapabilityId < FWPM_APPC_NETWORK_CAPABILITY_INTERNET_CLIENT ||
+             event->capabilityDrop->networkCapabilityId > FWPM_APPC_NETWORK_CAPABILITY_INTERNET_PRIVATE_NETWORK))) {
+        return HISTORY_INVALID_DATA;
+    }
+    if ((classify_drop && event->classifyDrop->isLoopback != context->expected_loopback) ||
+        (!classify_drop && event->capabilityDrop->isLoopback != context->expected_loopback)) {
+        return HISTORY_NONMATCH;
+    }
+    return HISTORY_MATCHED;
+}
+
+static void record_history_attribution(
+    WfpHistoryQueryResult *result, const FWPM_NET_EVENT3 *event, BOOL classify_drop
+) {
+    UINT64 filter_id = classify_drop ? event->classifyDrop->filterId : event->capabilityDrop->filterId;
+    UINT16 layer_id = classify_drop ? event->classifyDrop->layerId : 0;
+    BOOL is_loopback = classify_drop ? event->classifyDrop->isLoopback : event->capabilityDrop->isLoopback;
+    FWPM_APPC_NETWORK_CAPABILITY_TYPE capability = classify_drop
+        ? FWPM_APPC_NETWORK_CAPABILITY_INTERNET_CLIENT : event->capabilityDrop->networkCapabilityId;
+    if (result->attribution_present) {
+        if (result->filter_id != filter_id || result->layer_id != layer_id ||
+            result->is_loopback != is_loopback || result->network_capability_id != capability) {
+            result->attribution_mixed = TRUE;
+        }
+    } else {
+        result->attribution_present = TRUE;
+        result->filter_id = filter_id;
+        result->layer_id = layer_id;
+        result->is_loopback = is_loopback;
+        result->network_capability_id = capability;
+    }
+}
+
+static BOOL format_history_attribution(
+    char *out, size_t capacity, const WfpHistoryQueryResult *result, BOOL classify_drop
+) {
+    const char *status = "unavailable";
+    char filter_id[24] = "null";
+    char layer_id[8] = "null";
+    char capability_id[8] = "null";
+    const char *loopback = "null";
+    int written;
+    if (result->status == WFP_HISTORY_NOT_ATTEMPTED) {
+        status = "not_attempted";
+    } else if (result->status == WFP_HISTORY_COMPLETE && result->matched_count == 0) {
+        status = "no_match";
+    } else if (result->status == WFP_HISTORY_COMPLETE && result->attribution_present) {
+        status = result->attribution_mixed ? "mixed" : "consistent";
+        if (!result->attribution_mixed) {
+            if (_snprintf_s(filter_id, sizeof(filter_id), _TRUNCATE, "\"%llu\"",
+                    (unsigned long long)result->filter_id) < 0) { return FALSE; }
+            if (classify_drop) {
+                if (_snprintf_s(layer_id, sizeof(layer_id), _TRUNCATE, "%u",
+                        (unsigned int)result->layer_id) < 0) { return FALSE; }
+            } else {
+                if (_snprintf_s(capability_id, sizeof(capability_id), _TRUNCATE, "%u",
+                        (unsigned int)result->network_capability_id) < 0) { return FALSE; }
+            }
+            loopback = result->is_loopback ? "true" : "false";
+        }
+    }
+    written = _snprintf_s(out, capacity, _TRUNCATE,
+        "{\"status\":\"%s\",\"filter_id\":%s,\"layer_id\":%s,\"is_loopback\":%s,\"network_capability_id\":%s}",
+        status, filter_id, layer_id, loopback, capability_id);
+    return written > 0 && (size_t)written < capacity;
+}
+
+static BOOL history_scalar_self_test(void) {
+    BYTE sid_buffer[SECURITY_MAX_SID_SIZE];
+    DWORD sid_size = sizeof(sid_buffer);
+    WfpProbeContext context = {0};
+    FWPM_NET_EVENT3 event = {0};
+    FWPM_NET_EVENT_CAPABILITY_DROP0 capability = {0};
+    FWPM_NET_EVENT_CLASSIFY_DROP2 classify = {0};
+    FILETIME start = {100, 0}, end = {200, 0};
+    WfpHistoryQueryResult result = {0};
+    char formatted[256];
+    if (!CreateWellKnownSid(WinWorldSid, NULL, sid_buffer, &sid_size)) { return FALSE; }
+    context.expected_package_sid = sid_buffer;
+    context.expected_ip_version = FWP_IP_VERSION_V6;
+    context.expected_loopback = TRUE;
+    context.expected_remote_address_v6[15] = 1;
+    context.expected_remote_port = 43210;
+    event.header.flags = FWPM_NET_EVENT_FLAG_IP_VERSION_SET | FWPM_NET_EVENT_FLAG_IP_PROTOCOL_SET |
+        FWPM_NET_EVENT_FLAG_REMOTE_ADDR_SET | FWPM_NET_EVENT_FLAG_REMOTE_PORT_SET | FWPM_NET_EVENT_FLAG_PACKAGE_ID_SET;
+    event.header.packageSid = sid_buffer;
+    event.header.ipVersion = FWP_IP_VERSION_V6;
+    event.header.ipProtocol = IPPROTO_TCP;
+    event.header.remoteAddrV6.byteArray16[15] = 1;
+    event.header.remotePort = context.expected_remote_port;
+    event.header.timeStamp = start;
+    event.type = FWPM_NET_EVENT_TYPE_CAPABILITY_DROP;
+    event.capabilityDrop = &capability;
+    capability.isLoopback = 2;
+    if (history_event_result(&event, &context, &start, &end, FALSE) != HISTORY_INVALID_DATA) { return FALSE; }
+    event.header.remotePort++;
+    if (history_event_result(&event, &context, &start, &end, FALSE) != HISTORY_OUTSIDE_SCOPE) { return FALSE; }
+    event.header.remotePort--;
+    capability.isLoopback = FALSE;
+    if (history_event_result(&event, &context, &start, &end, FALSE) != HISTORY_NONMATCH) { return FALSE; }
+    capability.isLoopback = TRUE;
+    capability.networkCapabilityId = (FWPM_APPC_NETWORK_CAPABILITY_TYPE)3;
+    if (history_event_result(&event, &context, &start, &end, FALSE) != HISTORY_INVALID_DATA) { return FALSE; }
+    capability.networkCapabilityId = FWPM_APPC_NETWORK_CAPABILITY_INTERNET_PRIVATE_NETWORK;
+    capability.filterId = ~(UINT64)0;
+    if (history_event_result(&event, &context, &start, &end, FALSE) != HISTORY_MATCHED) { return FALSE; }
+    event.header.timeStamp.dwLowDateTime = 99;
+    if (history_event_result(&event, &context, &start, &end, FALSE) != HISTORY_OUTSIDE_SCOPE) { return FALSE; }
+    event.header.timeStamp = end;
+    if (history_event_result(&event, &context, &start, &end, FALSE) != HISTORY_MATCHED) { return FALSE; }
+    event.header.timeStamp.dwLowDateTime++;
+    if (history_event_result(&event, &context, &start, &end, FALSE) != HISTORY_OUTSIDE_SCOPE) { return FALSE; }
+    event.header.timeStamp = start;
+    event.capabilityDrop = NULL;
+    if (history_event_result(&event, &context, &start, &end, FALSE) != HISTORY_INVALID_DATA) { return FALSE; }
+    event.capabilityDrop = &capability;
+    result.status = WFP_HISTORY_COMPLETE;
+    result.matched_count = 1;
+    record_history_attribution(&result, &event, FALSE);
+    if (!format_history_attribution(formatted, sizeof(formatted), &result, FALSE) ||
+        strstr(formatted, "\"18446744073709551615\"") == NULL) { return FALSE; }
+    capability.filterId--;
+    record_history_attribution(&result, &event, FALSE);
+    if (!result.attribution_mixed) { return FALSE; }
+    result.status = WFP_HISTORY_LIMIT_REACHED;
+    if (!format_history_attribution(formatted, sizeof(formatted), &result, FALSE) ||
+        strstr(formatted, "\"status\":\"unavailable\"") == NULL) { return FALSE; }
+    result.status = WFP_HISTORY_COMPLETE;
+    result.matched_count = 0;
+    if (!format_history_attribution(formatted, sizeof(formatted), &result, FALSE) ||
+        strstr(formatted, "\"status\":\"no_match\"") == NULL) { return FALSE; }
+    result.status = WFP_HISTORY_NOT_ATTEMPTED;
+    if (!format_history_attribution(formatted, sizeof(formatted), &result, FALSE) ||
+        strstr(formatted, "\"status\":\"not_attempted\"") == NULL) { return FALSE; }
+    event.type = FWPM_NET_EVENT_TYPE_CLASSIFY_DROP;
+    event.classifyDrop = &classify;
+    classify.isLoopback = -1;
+    if (history_event_result(&event, &context, &start, &end, TRUE) != HISTORY_INVALID_DATA) { return FALSE; }
+    classify.isLoopback = TRUE;
+    classify.layerId = 65535;
+    if (history_event_result(&event, &context, &start, &end, TRUE) != HISTORY_MATCHED) { return FALSE; }
+    return TRUE;
+}
+
 static void run_historical_event_query(
     HANDLE engine,
     FWPM_NET_EVENT_ENUM_TEMPLATE0 *event_template,
@@ -406,6 +585,7 @@ static void run_historical_event_query(
     FWPM_NET_EVENT3 **entries = NULL;
     UINT32 returned_count = 0;
     UINT32 index;
+    enum WfpHistoryMatch match;
     DWORD api_result;
     enum WfpHistoryApiStage failed_api_stage = WFP_HISTORY_STAGE_NONE;
 
@@ -461,10 +641,14 @@ static void run_historical_event_query(
                 result->status = WFP_HISTORY_INVALID_DATA;
                 break;
             }
-            if (history_event_matches_target(
-                    entries[index], context, start_time, end_time,
-                    classify_drop)) {
+            match = history_event_result(entries[index], context, start_time, end_time, classify_drop);
+            if (match == HISTORY_INVALID_DATA) {
+                result->status = WFP_HISTORY_INVALID_DATA;
+                break;
+            }
+            if (match == HISTORY_MATCHED) {
                 ++result->matched_count;
+                record_history_attribution(result, entries[index], classify_drop);
             }
         }
         if (result->status != WFP_HISTORY_INVALID_DATA) {
@@ -807,7 +991,9 @@ static BOOL write_result(
     BOOL network_capability_id_consistent,
     const WfpHistoryDiagnostics *history
 ) {
-    char json[2048];
+    char json[4096];
+    char capability_attribution[256];
+    char classify_attribution[256];
     char capability_id_text[16];
     char subscription_code_text[16];
     char capability_subscription_code_text[16];
@@ -883,9 +1069,13 @@ static BOOL write_result(
             sizeof(history_classify_code_text), "null");
     }
     if (ipv6_loopback) {
+        if (!format_history_attribution(capability_attribution, sizeof(capability_attribution),
+                &history_values->capability, FALSE) ||
+            !format_history_attribution(classify_attribution, sizeof(classify_attribution),
+                &history_values->classify, TRUE)) { return FALSE; }
         written = _snprintf_s(
             json, sizeof(json), _TRUNCATE,
-            "{\"schema_version\":8,\"target_ip_version\":6,"
+            "{\"schema_version\":9,\"target_ip_version\":6,"
             "\"target_is_loopback\":true,\"subscription_attempted\":%s,"
             "\"subscription_return_code\":%s,"
             "\"subscription_handle_present\":%s,\"subscription_ok\":%s,"
@@ -918,7 +1108,10 @@ static BOOL write_result(
             "\"history_classify_api_stage\":\"%s\","
             "\"history_classify_api_code\":%s,"
             "\"history_classify_returned_count\":%lu,"
-            "\"history_classify_matched_count\":%lu}\n",
+            "\"history_classify_matched_count\":%lu,"
+            "\"history_requested\":%s,"
+            "\"history_capability_attribution\":%s,"
+            "\"history_classify_attribution\":%s}\n",
             subscription_attempted ? "true" : "false",
             subscription_code_text,
             subscription_handle_present ? "true" : "false",
@@ -956,7 +1149,9 @@ static BOOL write_result(
             history_stage_name(history_values->classify.api_stage),
             history_classify_code_text,
             (unsigned long)history_values->classify.returned_count,
-            (unsigned long)history_values->classify.matched_count
+            (unsigned long)history_values->classify.matched_count,
+            history_values->requested ? "true" : "false",
+            capability_attribution, classify_attribution
         );
     } else {
         written = _snprintf_s(
@@ -1471,6 +1666,7 @@ static int run_collector(
     BOOL network_capability_id_consistent = FALSE;
     int exit_code = 1;
 
+    history_diagnostics.requested = enumerate_history;
     history_diagnostics.capability.status = enumerate_history
         ? WFP_HISTORY_UNAVAILABLE
         : WFP_HISTORY_NOT_ATTEMPTED;
@@ -1689,6 +1885,15 @@ cleanup:
         close_result = FwpmEngineClose0(engine);
         engine = NULL;
     }
+    if (enumerate_history && close_result != ERROR_SUCCESS) {
+        /* Preserve earlier API stage/code; complete queries lose cleanup credit. */
+        if (history_diagnostics.capability.status == WFP_HISTORY_COMPLETE) {
+            history_diagnostics.capability.status = WFP_HISTORY_UNAVAILABLE;
+        }
+        if (history_diagnostics.classify.status == WFP_HISTORY_COMPLETE) {
+            history_diagnostics.classify.status = WFP_HISTORY_UNAVAILABLE;
+        }
+    }
     if (expected_sid != NULL) {
         FreeSid(expected_sid);
         expected_sid = NULL;
@@ -1731,7 +1936,10 @@ cleanup:
         &history_diagnostics
     );
     if (result_written && ready_written && close_result == ERROR_SUCCESS &&
-        (!subscription_ok || (stop_seen && unsubscribe_ok))) {
+        (!subscription_ok || (stop_seen && unsubscribe_ok)) &&
+        (!enumerate_history ||
+         (history_diagnostics.capability.status == WFP_HISTORY_COMPLETE &&
+          history_diagnostics.classify.status == WFP_HISTORY_COMPLETE))) {
         exit_code = 0;
     }
     return exit_code;
@@ -1798,7 +2006,7 @@ int wmain(int argc, wchar_t **argv) {
     enum ProbePathValidation path_status;
 
     if (argc == 2 && wcscmp(argv[1], L"--self-test") == 0) {
-        return classifier_self_test() ? 0 : 1;
+        return classifier_self_test() && history_scalar_self_test() ? 0 : 1;
     }
     if (argc >= 2 && wcscmp(argv[1], L"--probe-runner-subscription") == 0) {
         if (argc != 7) {
@@ -1888,7 +2096,7 @@ int wmain(int argc, wchar_t **argv) {
             return COLLECTOR_PREFLIGHT_INVALID_PATHS;
         }
         return run_collector(
-            argv[2], 0, remote_port, TRUE, TRUE, TRUE, FALSE,
+            argv[2], 0, remote_port, TRUE, TRUE, TRUE, TRUE,
             argv[4], argv[5], argv[6]
         );
     }

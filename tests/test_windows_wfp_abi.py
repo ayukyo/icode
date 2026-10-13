@@ -38,6 +38,10 @@ _EXPECTED_64BIT_WINDOWS_LAYOUT = {
     "capability_drop.network_capability_id": 0,
     "capability_drop.filter_id": 8,
     "capability_drop.is_loopback": 16,
+    "classify_drop.size": 56,
+    "classify_drop.filter_id": 0,
+    "classify_drop.layer_id": 8,
+    "classify_drop.is_loopback": 28,
 }
 
 
@@ -155,7 +159,7 @@ class TestWindowsWfpAbi(unittest.TestCase):
         self.assertIn(r'\"subscription_attempted\":%s', source)
         self.assertIn(r'\"subscription_return_code\":%s', source)
         self.assertIn(r'\"subscription_handle_present\":%s', source)
-        self.assertIn(r'\"schema_version\":8', source)
+        self.assertIn(r'\"schema_version\":9', source)
         self.assertIn(r'\"schema_version\":6', source)
 
     def test_runner_permission_probe_creates_and_removes_only_its_profile(self) -> None:

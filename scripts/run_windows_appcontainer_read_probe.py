@@ -255,6 +255,138 @@ def _classify_wfp_target_drop_receipt(
     return "evidence_unavailable"
 
 
+def _wfp_history_receipt_valid(receipt: object) -> bool:
+    if not isinstance(receipt, dict) or type(receipt.get("schema_version")) is not int or receipt["schema_version"] != 9:
+        return False
+    base_keys = {
+        "schema_version", "target_ip_version", "target_is_loopback", "subscription_attempted",
+        "subscription_return_code", "subscription_handle_present", "subscription_ok", "unsubscribe_ok",
+        "network_events_collected", "event_callback_count", "capability_drop_event_count",
+        "classify_drop_event_count", "matched_capability_drop_count", "matched_classify_drop_count",
+        "matched_network_capability_id", "network_capability_id_consistent"}
+    for kind in ("capability", "classify"):
+        base_keys.update(kind + "_subscription_" + name for name in
+                         ("attempted", "return_code", "handle_present", "ok"))
+        base_keys.add(kind + "_unsubscribe_ok")
+    history_keys = {"history_requested", "history_time_window_valid"}
+    history_keys.update("history_" + kind + "_" + name for kind in ("capability", "classify")
+                        for name in ("status", "api_stage", "api_code", "returned_count", "matched_count", "attribution"))
+    if set(receipt) != base_keys | history_keys:
+        return False
+    requested = receipt.get("history_requested")
+    window = receipt.get("history_time_window_valid")
+    if type(requested) is not bool or (window is not None and type(window) is not bool):
+        return False
+    for kind in ("capability", "classify"):
+        p = "history_" + kind + "_"
+        status, stage, code = (receipt.get(p + name) for name in ("status", "api_stage", "api_code"))
+        returned, matched = (receipt.get(p + name) for name in ("returned_count", "matched_count"))
+        attr = receipt.get(p + "attribution")
+        if status not in ("not_attempted", "complete", "limit_reached", "api_error", "invalid_data",
+                          "invalid_window", "collection_disabled", "unavailable"):
+            return False
+        if stage not in ("none", "create", "enumerate", "destroy"):
+            return False
+        if type(returned) is not int or not 0 <= returned <= 64 or type(matched) is not int or not 0 <= matched <= returned:
+            return False
+        if status == "api_error":
+            if stage == "none" or type(code) is not int or not 1 <= code <= 0xFFFFFFFF:
+                return False
+            if stage in ("create", "enumerate") and (returned or matched):
+                return False
+        elif stage != "none" or code is not None:
+            return False
+        if status == "complete" and (not requested or window is not True or returned == 64):
+            return False
+        if status == "limit_reached" and (not requested or window is not True or returned != 64):
+            return False
+        if status == "invalid_window" and window is not False:
+            return False
+        if not requested and (status != "not_attempted" or returned != 0 or matched != 0 or window is not None):
+            return False
+        if requested and status == "not_attempted":
+            return False
+        if status in ("not_attempted", "invalid_window", "collection_disabled") and (returned or matched):
+            return False
+        if type(attr) is not dict or set(attr) != {"status", "filter_id", "layer_id", "is_loopback", "network_capability_id"}:
+            return False
+        expected = "not_attempted" if not requested else "unavailable"
+        if status == "complete":
+            expected = "no_match" if matched == 0 else attr["status"]
+            if matched and expected not in ("consistent", "mixed"):
+                return False
+        if attr["status"] != expected:
+            return False
+        if expected != "consistent":
+            if any(attr[k] is not None for k in ("filter_id", "layer_id", "is_loopback", "network_capability_id")):
+                return False
+        else:
+            filter_id = attr["filter_id"]
+            if type(filter_id) is not str or not re.fullmatch(r"(?:0|[1-9][0-9]{0,19})", filter_id) or int(filter_id) > 0xFFFFFFFFFFFFFFFF:
+                return False
+            if attr["is_loopback"] is not True:
+                return False
+            if kind == "capability":
+                if attr["layer_id"] is not None or type(attr["network_capability_id"]) is not int or attr["network_capability_id"] not in (0, 1, 2):
+                    return False
+            elif attr["network_capability_id"] is not None or type(attr["layer_id"]) is not int or not 0 <= attr["layer_id"] <= 65535:
+                return False
+    return True
+
+def _wfp_history_projection(receipt: object, scope: str) -> tuple[str, ...]:
+    if scope not in ("subscription_probe", "reviewer_payload") or not _wfp_history_receipt_valid(receipt):
+        return ("wfp_history receipt_invalid",)
+    def scalar(value):
+        if value is None:
+            return "null"
+        if type(value) is bool:
+            return "true" if value else "false"
+        return str(value)
+    lines = []
+    for kind in ("capability", "classify"):
+        prefix = "history_" + kind + "_"
+        fields = [("scope", scope), ("kind", kind), ("requested", receipt["history_requested"]),
+                  ("window", receipt["history_time_window_valid"])]
+        fields.extend((name, receipt[prefix + name]) for name in
+                      ("status", "api_stage", "api_code", "returned_count", "matched_count"))
+        fields.extend(("attribution_" + name if name == "status" else name, receipt[prefix + "attribution"][name])
+                      for name in ("status", "filter_id", "layer_id", "is_loopback", "network_capability_id"))
+        line = "wfp_history " + " ".join(key + "=" + scalar(value) for key, value in fields)
+        if len(line.encode("ascii")) > 1024:
+            return ("wfp_history projection_failed",)
+        lines.append(line)
+    return tuple(lines)
+
+def _wfp_history_no_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate_key")
+        result[key] = value
+    return result
+
+def _wfp_history_cli(path: Path, scope: str) -> int:
+    try:
+        if scope not in ("subscription_probe", "reviewer_payload"):
+            raise ValueError("scope")
+        with path.open("rb") as source:
+            raw = source.read(4097)
+        if len(raw) > 4096:
+            raise ValueError("oversize")
+        receipt = json.loads(raw.decode("ascii"), object_pairs_hook=_wfp_history_no_duplicates)
+        lines = _wfp_history_projection(receipt, scope)
+        if lines == ("wfp_history receipt_invalid",) or lines == ("wfp_history projection_failed",):
+            for line in lines:
+                print(line)
+            return 1
+        for line in lines:
+            print(line)
+        return 0
+    except (OSError, ValueError, UnicodeError, TypeError, RecursionError):
+        print("wfp_history receipt_invalid")
+        return 1
+
+
 def _classify_wfp_ipv6_loopback_receipt(
     receipt: object, *, collector_exit_code: int | None,
 ) -> str:
@@ -264,7 +396,7 @@ def _classify_wfp_ipv6_loopback_receipt(
         or collector_exit_code != 0
         or not isinstance(receipt, dict)
         or type(receipt.get("schema_version")) is not int
-        or receipt.get("schema_version") not in (6, 7, 8)
+        or receipt.get("schema_version") not in (6, 7, 8, 9)
         or type(receipt.get("target_ip_version")) is not int
         or receipt.get("target_ip_version") != 6
         or receipt.get("target_is_loopback") is not True
@@ -275,7 +407,11 @@ def _classify_wfp_ipv6_loopback_receipt(
         return "evidence_unavailable"
 
     schema_version = receipt["schema_version"]
-    if schema_version == 8:
+    if schema_version == 9 and (not _wfp_history_receipt_valid(receipt) or
+            (receipt["history_requested"] and any(receipt["history_" + kind + "_status"] != "complete"
+                 for kind in ("capability", "classify")))):
+        return "evidence_unavailable"
+    if schema_version in (8, 9):
         aggregate_receipt_valid = (
             receipt.get("subscription_attempted") is True
             and receipt.get("subscription_return_code") == 0
@@ -318,7 +454,7 @@ def _classify_wfp_ipv6_loopback_receipt(
     capability_id = receipt.get("matched_network_capability_id")
     capability_id_consistent = receipt.get("network_capability_id_consistent")
     matched_classify_count = counts["matched_classify_drop_count"]
-    if schema_version == 8:
+    if schema_version in (8, 9):
         if (
             callback_count == 0
             or capability_count + classify_count != callback_count
@@ -484,6 +620,12 @@ def _wfp_observer_diagnostic_summary(
             if type(capability_id_consistent) is bool
             else None
         ),
+        **({"history_requested": receipt_dict["history_requested"],
+            "history_time_window_valid": receipt_dict["history_time_window_valid"],
+            **{"history_" + kind + "_" + name: receipt_dict["history_" + kind + "_" + name]
+               for kind in ("capability", "classify")
+               for name in ("status", "api_stage", "api_code", "returned_count", "matched_count")}}
+           if _wfp_history_receipt_valid(receipt_dict) else {}),
     }
 
 
@@ -1432,6 +1574,8 @@ def _run(probe_executable: Path, wfp_probe_executable: Path) -> int:
 
 
 def main() -> int:
+    if len(sys.argv) == 4 and sys.argv[1] == "--history-receipt":
+        return _wfp_history_cli(Path(sys.argv[2]), sys.argv[3])
     if len(sys.argv) != 3:
         print("usage: run_windows_appcontainer_read_probe.py <probe-exe> <wfp-probe-exe>")
         return 2

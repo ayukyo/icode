@@ -53,5 +53,9 @@ int main(void) {
                   filterId);
     REPORT_OFFSET("capability_drop.is_loopback", FWPM_NET_EVENT_CAPABILITY_DROP0,
                   isLoopback);
+    REPORT_SIZE("classify_drop.size", FWPM_NET_EVENT_CLASSIFY_DROP2);
+    REPORT_OFFSET("classify_drop.filter_id", FWPM_NET_EVENT_CLASSIFY_DROP2, filterId);
+    REPORT_OFFSET("classify_drop.layer_id", FWPM_NET_EVENT_CLASSIFY_DROP2, layerId);
+    REPORT_OFFSET("classify_drop.is_loopback", FWPM_NET_EVENT_CLASSIFY_DROP2, isLoopback);
     return 0;
 }

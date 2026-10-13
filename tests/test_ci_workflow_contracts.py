@@ -544,7 +544,7 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         )[0]
 
         for required_contract in (
-            "$observerSchema -eq 8",
+            "$observerSchema -eq 9",
             "$observerCallbackCount -eq ($observerCapabilityCount + $observerClassifyCount)",
             "$observerMatchedClassifyCount -le $observerClassifyCount",
             "$observerReceipt.capability_subscription_ok",
@@ -560,7 +560,7 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         self.assertNotIn("$observerClassifyCount -eq 0", candidate_step)
         self.assertNotIn("$observerMatchedClassifyCount -eq 0", candidate_step)
 
-        self.assertIn("$schemaVersion -eq 8", identity_step)
+        self.assertIn("$schemaVersion -eq 9", identity_step)
         for receipt_field in (
             "$observerReceipt.capability_subscription_attempted",
             "$observerReceipt.capability_subscription_return_code",

@@ -728,6 +728,8 @@ jobs:
               try {
                 $observerReceipt = [IO.File]::ReadAllText($observerResultPath) |
                   ConvertFrom-Json -ErrorAction Stop
+                & python scripts/run_windows_appcontainer_read_probe.py --history-receipt $observerResultPath subscription_probe
+                $historyProjectionValid = $LASTEXITCODE -eq 0
                 $schemaVersion = $observerReceipt.schema_version
                 $ipVersion = $observerReceipt.target_ip_version
                 $attempted = $observerReceipt.subscription_attempted
@@ -786,7 +788,7 @@ jobs:
                     $classifySubscriptionOk -is [bool] -and -not $classifySubscriptionOk) {
                   $expectedReturnCode = $classifyReturnCode
                 }
-                if ($schemaVersion -eq 8 -and $ipVersion -eq 6 -and
+                if ($schemaVersion -eq 9 -and $ipVersion -eq 6 -and $historyProjectionValid -and
                     $attempted -is [bool] -and $attempted -and
                     ($returnCode -is [int] -or $returnCode -is [long]) -and
                     $returnCode -ge 0 -and $returnCode -le 4294967295 -and
@@ -1647,9 +1649,6 @@ jobs:
                 } elseif ($runnerWfpObserverProcessState -eq 'running') {
                   $runnerWfpReceiptState = 'process_running'
                   $runnerWfpCandidateEvent = 'receipt_unavailable'
-                } elseif ($runnerWfpObserverProcessState -ne 'exit_zero') {
-                  $runnerWfpReceiptState = 'helper_nonzero'
-                  $runnerWfpCandidateEvent = 'receipt_unavailable'
                 } elseif ($runnerWfpCleanupState -ne 'passed') {
                   $runnerWfpReceiptState = 'cleanup_failed'
                   $runnerWfpCandidateEvent = 'receipt_unavailable'
@@ -1657,6 +1656,8 @@ jobs:
                   $observerReceiptText = $null
                   try {
                     $observerReceiptText = [IO.File]::ReadAllText($runnerWfpObserverResultPath)
+                    & python scripts/run_windows_appcontainer_read_probe.py --history-receipt $runnerWfpObserverResultPath reviewer_payload
+                    $runnerHistoryProjectionValid = $LASTEXITCODE -eq 0
                   } catch {
                     $runnerWfpReceiptState = 'read_failed'
                   }
@@ -1684,8 +1685,8 @@ jobs:
                       $observerCapabilityId = $observerReceipt.matched_network_capability_id
                       $observerHistoryWindowValid = $observerReceipt.history_time_window_valid
                       $observerHistoryFieldsValid = (
-                        $null -eq $observerHistoryWindowValid -or
-                        $observerHistoryWindowValid -is [bool]
+                        $runnerHistoryProjectionValid -and $observerReceipt.history_requested -eq $true -and
+                        ($null -eq $observerHistoryWindowValid -or $observerHistoryWindowValid -is [bool])
                       )
                       $observerHistoryStatuses = @(
                         'not_attempted', 'complete', 'limit_reached', 'api_error',
@@ -1788,7 +1789,7 @@ jobs:
                         $observerReceipt.classify_unsubscribe_ok
                       )
                       $observerTargetValid = (
-                        $observerSchema -eq 8 -and $observerIpVersion -eq 6 -and
+                        $observerSchema -eq 9 -and $observerIpVersion -eq 6 -and
                         $observerReceipt.target_is_loopback -is [bool] -and
                         $observerReceipt.target_is_loopback
                       )
@@ -1810,6 +1811,7 @@ jobs:
                       }
                       if ($observerSubscriptionValid -and $observerTargetValid -and
                           $observerMatchesValid -and $observerHistoryFieldsValid -and
+                          $runnerWfpObserverProcessState -eq 'exit_zero' -and
                           ($null -eq $observerNetworkEventsCollected -or
                            $observerNetworkEventsCollected -is [bool])) {
                         $runnerWfpReceiptState = 'valid'

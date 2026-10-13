@@ -255,7 +255,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
             with self.subTest(api=api):
                 self.assertIn(api, history_query)
         self.assertEqual(history_query.count("FwpmNetEventEnum3("), 1)
-        self.assertIn("history_event_matches_target(", history_query)
+        self.assertIn("history_event_result(", history_query)
         self.assertIn("MAX_WFP_HISTORY_PAGE_SIZE", history_query)
         self.assertIn("returned_count == MAX_WFP_HISTORY_PAGE_SIZE", history_query)
         self.assertIn("event->header.timeStamp", source)

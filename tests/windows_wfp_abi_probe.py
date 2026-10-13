@@ -106,6 +106,16 @@ class _FwpmNetEventCapabilityDrop0(ctypes.Structure):
     ]
 
 
+class _FwpmNetEventClassifyDrop2(ctypes.Structure):
+    _fields_ = [
+        ("filter_id", ctypes.c_uint64), ("layer_id", ctypes.c_uint16),
+        ("reauth_reason", ctypes.c_uint32), ("original_profile", ctypes.c_uint32),
+        ("current_profile", ctypes.c_uint32), ("direction", ctypes.c_uint32),
+        ("is_loopback", ctypes.c_int32), ("vswitch_id", _FwpByteBlob),
+        ("vswitch_source_port", ctypes.c_uint32), ("vswitch_destination_port", ctypes.c_uint32),
+    ]
+
+
 def _classify_windows_sdk_compile_failure(compiler_output: str, return_code: int) -> str:
     """Return a bounded reason token without exposing SDK or runner output."""
     if return_code == _VS_DEVCMD_SETUP_FAILED_EXIT_CODE:
@@ -198,6 +208,10 @@ def ctypes_layout_snapshot() -> dict[str, int]:
         ),
         "capability_drop.filter_id": _FwpmNetEventCapabilityDrop0.filter_id.offset,
         "capability_drop.is_loopback": _FwpmNetEventCapabilityDrop0.is_loopback.offset,
+        "classify_drop.size": ctypes.sizeof(_FwpmNetEventClassifyDrop2),
+        "classify_drop.filter_id": _FwpmNetEventClassifyDrop2.filter_id.offset,
+        "classify_drop.layer_id": _FwpmNetEventClassifyDrop2.layer_id.offset,
+        "classify_drop.is_loopback": _FwpmNetEventClassifyDrop2.is_loopback.offset,
     }
 
 
