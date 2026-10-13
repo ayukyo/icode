@@ -6,6 +6,10 @@
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 
+- 最新已推送候选为`e54ec8de3d0fd2dd76d1aac7d765ab1d742e2f7d`：Windows准确dot误拒最小修复及新native CI收集，精确八路径提交862b14、推送4ae780实际exit0。[CI38404554032](https://github.com/ayukyo/icode/actions/runs/38404554032)已终态：46 job为40成功、2 Windows Reviewer失败、1 Python3.12取消、3退役条件skip；[provenance38404554151](https://github.com/ayukyo/icode/actions/runs/38404554151)5/5成功，[Pages38404553952](https://github.com/ayukyo/icode/actions/runs/38404553952)2/2成功。源码候选、签装拒绝/回收及网站部署分账，不能授整体验收。
+- 同SHA Windows目录job115320642194（x64）和115320642635（ARM64）各实际57 tests / 0失败、错误，包含新模块10方法及两个native正控。Python3.11 job115320641465实际3253 / 761.039s / OK(skip88)，compile/full suite/secret/submodule全部成功；3.12 job115320641589在15m14s取消，无完成footer，后续secret/submodule跳过。全量作业时限不足是最强解释而非API确认原因；下一机械候选只将test job预算15→25分钟，测试/任务/安全预算不变，见[执行记录](nbl/plans/2026-10-13-full-suite-ci-budget.md)。本机新增合同测试有效RED3项1断言失败，GREEN25项无失败、错误或skip，不默认本机全量。
+- WSL曾停止并报HCS/ERROR_NO_SYSTEM_RESOURCES，权威UNC不可访问。2026-10-13用户明确授权新增`C:\Users\orbbec\.wslconfig`：memory=4GB、processors=6、swap=2GB。启动exit0后实际3918 MiB内存、6核、2048 MiB swap；HEAD e54ec8d及固定vendor21566a5不变，原有两份文档改动保留。未重启Windows、关闭应用、清理数据或改用旧D副本。该限额是开发环境资源配置，不是产品任务配额或验收结果；线上优先不变。
+- 当前e54所有工作流均已终态，下一候选可按原授权提交推送，不取消旧验收。并行S2c DESIGN已fresh SPEC→不同QUALITY C0/I0/M0，初版PLAN被fresh SPEC检出I4，正在修订，未获实施放行；不混入本次CI预算候选。自动准入、S3四installed矩阵与R2/R3仍开放。
 - GitHub CI优先承担全量测试、跨平台及原生阶段验收，减少用户本机资源占用。Windows/WSL只做密钥、固定子仓完整性、针对性回归，以及线上无法完成的必要诊断；不默认重跑本机整套测试。
 - 本机轻量门和独立审查通过后，允许将**待验收候选**提交推送main触发线上验证。推送不等于阶段完成，不创建其它分支或版本标签，不手动发布产品版本。
 - 线上原日志绑定真实候选SHA/workflow/job/平台/退出状态；同SHA全量单测、secret/submodule和本片必要验收项通过后，才确认阶段完成并继续下一阶段。失败/skip/inconclusive不能当PASS，不取消或反复重跑隐藏失败。
@@ -13,7 +17,7 @@
 - WSL环境包已按用户授权安装：仅dbus-user-session1.12.20-2ubuntu4.1，0升级/0删除（27bcdc）；仅reload用户unit定义并启动标准dbus.socket，原Windows及产品依赖不改。原 `TestProbe` 实际21 / 20.215s / 0 FAIL、ERROR / skip2 / exit0；原日志 `/home/orbbec/icode-s2b2-evidence.Y3xrfh/native-probe-with-user-bus.log`，SHA256 `ddac53139cc8f175af6d4b37308233278d0b7e0b257f39df8bcb23cf72c836a9`。先前缺bus导致拒绝的用例现在实际通过，2skip为bwrap/mac平台条件；不授全部原生能力或R2/R3。
 - 两原单门secret/submodule已在新根再次PASS（d15bdd、a3abfd）；包18项通过与源码双审/22项双份GREEN/254项回归仍有效。候选已推送，线上结果待收齐，不因这些局部结果宣称全量通过。
 
-### 当前候选与线上观察
+### 上一候选0a980e0线上观察（历史）
 
 - 实际候选：`0a980e0130873020881a6892d88715948af909a7`，八路径索引及逐字节核对通过后提交（ac266a），已推送main（be25b8）；随后ls-remote确认线上main为同SHA（f7151d）。未新增分支、标签或产品发布。
 - 同SHA的push工作流：[CI](https://github.com/ayukyo/icode/actions/runs/38398777877)、[Windows helper provenance](https://github.com/ayukyo/icode/actions/runs/38398777497)、[Public website](https://github.com/ayukyo/icode/actions/runs/38398777702)。首次实际API观察为queued / in_progress / queued，均无终态结论；不得据此勾选阶段完成。
@@ -105,7 +109,7 @@
 
 ## 当前结论
 
-**R2 / R3 尚未整体验收。** 最近一次已推送生产代码候选为 `0a980e0130873020881a6892d88715948af909a7`，同SHA线上已收齐，S2b2软件门通过、CI整体仍因两个Reviewer网络门失败。Windows dot下一候选已实施及本机定点验证，尚未推送；`1754cca`是前一片历史生产基线。仅文档记录不能替代生产代码验收。
+**R2 / R3 尚未整体验收。** 最新已推送候选`e54ec8de3d0fd2dd76d1aac7d765ab1d742e2f7d`的Windows dot线上双架构通过，3.12全量取消，两个Reviewer网络门仍失败。下一CI预算候选待发布和线上验证；仅文档记录不能替代生产代码验收。
 
 | 阶段 | 当前状态 | 下一步 |
 | --- | --- | --- |
@@ -248,6 +252,7 @@ uv 安装片验收要求：保留系统解释器；独立、受维护且版本�
 - Linux 后续 S2c / S3 的实际安装候选消费、四 Linux 新 prepared 矩阵；LA-2 自动准入、LA-3 网络、LA-4 持久回执 / doctor / UI。
 - Windows WP0b 的实际来源 / proof / release / 加载边界、稳定路径首次 UAC、受保护晋升、跨管理员与父进程死亡证明；双 Reviewer 网络 DENY 仍未证明。
 - macOS 单任务配额仍不合格。已按用户同意的 Codex 式边界验收文件 / 网络沙箱继承与同组清理，不承诺主动脱组后代零残留；不得用用户级限额替代。
+- 2026-10-13用户已明确允许设计与验证“一次管理员初始化＋任务专用隔离身份＋受控启动器”，保留mac配额硬指标；Python包提供入口，未验收不启用。此前授权等待已解除，但不代表可信安装、UID排他、继承硬限、残留身份隔离或原生兼容已证明。独立设计正在核实际XNU UID计数、不可提高的hard NPROC及权限/凭据/工作区边界；其它Linux/Windows/R3独立工作继续，mac hard gate和ready=false不放宽。
 - R3 真实模型六步链及至少 90% 能力一致性仍未验收。历史 plan → review → merge 三步成功不能替代 code → deepcheck → audit。当前阶段未读取或使用仓外模型凭据，不把凭据内容写入文档或 Git。
 
 ## 原接力约束历史（不作为当前执行指令）
