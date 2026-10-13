@@ -1217,6 +1217,7 @@ def run_contract_step(
     out_dir: Path | None = None,
     extra_instructions: str = "",
     post_write: "Callable[[Path, str, str], None] | None" = None,
+    prepared_scope: object | None = None,
 ) -> StepReport:
     """按契约执行一个步骤，模型通过工具循环完成该步骤的产物。
 
@@ -1238,8 +1239,48 @@ def run_contract_step(
         if error:
             return StepReport(step=step, ok=False, out_dir=str(out_dir or ""), error=error)
     engineering = policy is not None and step in ("code", "deepcheck")
+    owned_scope, view, prepared_options = None, None, {}
+    internally_owned, cleanup_attempted, cleanup_error, body_signal = False, False, None, None
     cp = ControlPlane(settings)
     report = StepReport(step=step, ok=False, out_dir="")
+
+    def finish_prepared():
+        nonlocal cleanup_attempted, cleanup_error
+        if owned_scope is None:
+            return True
+        if not cleanup_attempted:
+            cleanup_attempted = True
+            errors = []
+            if owned_scope._consume_state == "faulted":
+                errors.append(RuntimeError("prepared_cleanup_unconfirmed"))
+            if view is not None:
+                try:
+                    view.finish()
+                    if owned_scope._consume_state != "spent":
+                        errors.append(RuntimeError("prepared_cleanup_unconfirmed"))
+                except BaseException as error:
+                    errors.append(error)
+            if internally_owned:
+                try:
+                    owned_scope.close()
+                except BaseException as error:
+                    errors.append(error)
+            if (owned_scope._consume_state == "faulted"
+                    or owned_scope._owner_state != ("closed" if internally_owned else "active")):
+                errors.append(RuntimeError("prepared_cleanup_unconfirmed"))
+            # Preserve the first KI/SE; ordinary failures cannot hide unknown cleanup.
+            cleanup_error = next((error for error in errors
+                                  if not isinstance(error, Exception)), errors[0] if errors else None)
+        if body_signal is not None:
+            return False
+        if cleanup_error is not None:
+            if not isinstance(cleanup_error, Exception):
+                raise cleanup_error
+            report.ok = False
+            report.error = "prepared_cleanup_unconfirmed"
+            report.add("准备资源收尾确认", False, report.error)
+            return False
+        return True
 
     # `step-run --step review` does not go through chain.py's post hook.  Keep
     # the same machine-owned manifest contract for that public entry point:
@@ -1316,13 +1357,21 @@ def run_contract_step(
                     report.error = "中间状态流转未通过，未启动步骤"
                     return report
 
-        attempt = cp.step_start(
-            out_dir, step, ticket_id=ticket_id,
-            request=_step_start_request(
-                cp, out_dir, step, ticket_id,
-                trace_result=(state if in_prog else None),
-            ),
-        )
+        owned_scope, internally_owned = _prepared_scope_for_call(
+            workspace, step, ticket_id, sandbox, policy, workspace_session, prepared_scope)
+        request = _step_start_request(cp, out_dir, step, ticket_id,
+                                      trace_result=(state if in_prog else None))
+        if owned_scope is None:
+            attempt = cp.step_start(out_dir, step, ticket_id=ticket_id, request=request)
+        else:
+            from .linux_prepared_control import _prepared_control_attempt_binding
+
+            view = owned_scope._attach(policy=policy, workspace_session=workspace_session)
+            raw = cp._step_start_result(out_dir, step, ticket_id=ticket_id, request=request)
+            attempt, observer = _prepared_control_attempt_binding(
+                cp, out_dir=out_dir, ticket_id=ticket_id, step=step, start_result=raw)
+            view._bind_attempt(attempt, validate_attempt=observer)
+            prepared_options = {"prepared_step": view, "prepared_attempt": attempt}
         report.add("step start", bool(attempt), f"attempt={attempt}")
 
         # 检查点：让中断后可恢复（不保存模型正文）
@@ -1366,9 +1415,12 @@ def run_contract_step(
                     change_baseline=change_baseline,
                     inspection_runner=_bound_inspection_runner(
                         cp, out_dir, ticket_id, step, attempt),
+                    **prepared_options,
                 )
                 report.loop = loop
                 if loop.stop_reason == "budget_exceeded":
+                    if not finish_prepared():
+                        return report
                     return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
                 if not loop.ok:
                     # 由**证据**判定成败，而不是由循环的停止原因判定：
@@ -1450,9 +1502,12 @@ def run_contract_step(
                             cp, out_dir, ticket_id, step, attempt),
                         extra_instructions=repair_instructions,
                         operations=step_ops,
+                        **prepared_options,
                     )
                     report.loop = repair
                     if repair.stop_reason == "budget_exceeded":
+                        if not finish_prepared():
+                            return report
                         return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
                     if post_write is not None:
                         post_write(out_dir, step, attempt)
@@ -1494,15 +1549,22 @@ def run_contract_step(
                     workspace=workspace, baseline=engineering_baseline,
                     git_baseline=engineering_git_baseline, operations=step_ops,
                     backend=backend, requirement=requirement or DEFAULT_TASK,
-                    loop_config=loop_config, budget_tracker=budget_tracker):
+                    loop_config=loop_config, budget_tracker=budget_tracker,
+                    **prepared_options):
                 if report.error == "budget_exceeded":
+                    if not finish_prepared():
+                        return report
                     return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
+                if not finish_prepared():
+                    return report
                 _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
                 return report
 
         deliberation = _prepare_deliberation(settings, backend, step, report,
                                              requirement or DEFAULT_TASK, budget_tracker)
         if getattr(deliberation, "budget_exceeded", False):
+            if not finish_prepared():
+                return report
             return _stop_contract_for_budget(cp, out_dir, step, attempt, ticket_id, report)
         _record_deliberation(settings, out_dir, step, ticket_id, report, deliberation)
         if engineering:
@@ -1512,6 +1574,11 @@ def run_contract_step(
             if error:
                 report.error = error
                 report.add("终结前工程绑定重核", False, error)
+        if view is not None:
+            _make_prepared_ctx(workspace, sandbox, policy, workspace_session=workspace_session,
+                               **prepared_options)
+        if not finish_prepared():
+            return report
         _finish_step(cp, out_dir, step, attempt, ticket_id, report, missing)
         if report.finish_outcome == "success":
             ckpt.clear()  # 步骤已干净终结，检查点不再需要
@@ -1520,8 +1587,15 @@ def run_contract_step(
         return report
 
     except Exception as exc:  # noqa: BLE001
-        report.error = "engineering_execution_unconfirmed" if engineering else f"{type(exc).__name__}: {exc}"
+        report.error = ("prepared_execution_unconfirmed" if owned_scope is not None or prepared_scope is not None
+                        else "engineering_execution_unconfirmed" if engineering else f"{type(exc).__name__}: {exc}")
         return report
+
+    except BaseException as signal_error:
+        body_signal = signal_error
+        raise
+    finally:
+        finish_prepared()
 
 
 def _contract_plan_error(plan, workspace, step, ticket_id, policy, sandbox, session) -> str:
@@ -1792,6 +1866,7 @@ def _contract_engineering_gate(
     *, cp, out_dir, ticket_id, step, attempt, report, plan, policy, sandbox,
     workspace_session, workspace, baseline, git_baseline, operations, backend,
     requirement, loop_config, budget_tracker,
+    prepared_step=None, prepared_attempt=None,
 ) -> bool:
     """One final host window after all writes, followed by a separate code Reviewer."""
     from .evidence import save_verification_receipt
@@ -1806,7 +1881,10 @@ def _contract_engineering_gate(
         report.error = "budget_exceeded"
         return False
     plan_digest = plan.digest
-    ctx = _make_ctx(workspace, sandbox, policy, workspace_session=workspace_session)
+    ctx = (_make_ctx(workspace, sandbox, policy, workspace_session=workspace_session)
+           if prepared_step is None else _make_prepared_ctx(
+               workspace, sandbox, policy, workspace_session=workspace_session,
+               prepared_step=prepared_step, prepared_attempt=prepared_attempt))
     # An operation attempt is distinct from the CP step attempt. Its name binds
     # the latter so a later CP attempt cannot replay an earlier managed action.
     operation_name = "engineering-" + _sha256_text(step + "|" + attempt)
@@ -2169,6 +2247,95 @@ def _finish_step(
         report.add("step finish（被门禁拒绝，如实上报）", False, detail[:160])
 
 
+def _prepared_scope_for_call(workspace, step, ticket_id, sandbox, policy, session, supplied):
+    """Classify source before prepare; failed candidates never become legacy."""
+    from .isolation import LandlockSandbox
+    from .linux_prepared_step import LinuxPreparedStep, LinuxPreparedStepError, prepare_linux_step
+    from .linux_helper_source import _source_paths
+    from . import native_helper
+
+    if supplied is not None:
+        if (not isinstance(supplied, LinuxPreparedStep) or step == "review"
+                or supplied._sandbox is not sandbox or supplied._policy is not policy
+                or supplied._session is not session or policy is None
+                or policy.workspace_root != workspace or policy.step != step
+                or policy.ticket_id != ticket_id or supplied._consume_state != "prepared"):
+            raise LinuxPreparedStepError()
+        supplied._check(policy=policy, workspace_session=session)
+        return supplied, False
+    if (not sys.platform.startswith("linux") or not isinstance(sandbox, LandlockSandbox)
+            or session is None or policy is None or step == "review"):
+        return None, False
+    try:
+        # Resolve failures are unknown candidates, never evidence of legacy source.
+        module = Path(native_helper.__file__).resolve(strict=True)
+        native = module.parent / "native"
+        helper = Path(sandbox.helper).resolve(strict=True)
+        manifest = (Path(sandbox.manifest).resolve(strict=True)
+                    if sandbox.manifest is not None else None)
+        if helper != native / "icode-landlock" and manifest != native / "icode-landlock.sha256":
+            return None, False
+        _source_paths(sandbox)
+        scope = prepare_linux_step(sandbox, policy=policy, workspace_session=session)
+        return scope, True
+    except Exception:
+        raise LinuxPreparedStepError() from None
+
+
+class _PreparedToolContext(ToolContext):
+    """Trusted runner stack binding survives mutations of public context fields."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._prepared_binding = (self.prepared_step, self.prepared_attempt, self.policy,
+                                  self.workspace_session, self.sandbox, self.root)
+        self._check_prepared_binding()
+
+    def _check_prepared_binding(self):
+        from .linux_prepared_step import _LinuxStepAttachment
+        from .tools.base import IsolationUnavailable
+
+        try:
+            view, attempt, policy, session, sandbox, root = self._prepared_binding
+            if (not isinstance(view, _LinuxStepAttachment)
+                    or self.prepared_step is not view or self.prepared_attempt != attempt
+                    or type(self.prepared_attempt) is not str or self.policy is not policy
+                    or self.workspace_session is not session or self.sandbox is not sandbox
+                    or self.root is not root or self.read_only_workspace):
+                raise ValueError("binding")
+            scope = view._current()
+            if (scope._consume_state != "attached_bound" or scope._sandbox is not sandbox
+                    or policy is None or policy.workspace_root != root):
+                raise ValueError("binding")
+            scope._check(policy=policy, workspace_session=session)
+            view._validate_attempt(attempt)
+        except Exception:
+            raise IsolationUnavailable("准备对象工具上下文不可用") from None
+
+    def _policy_command_wrapper(self):
+        self._check_prepared_binding()
+        return super()._policy_command_wrapper()
+
+    def wrap_command(self, argv, *, network=False):
+        from .tools.base import IsolationUnavailable
+
+        # Policy=None legacy consumption cannot erase the captured prepared binding.
+        raise IsolationUnavailable("准备对象工具上下文不可用") from None
+
+
+def _make_prepared_ctx(
+    workspace, sandbox, policy, artifact_broker=None, change_baseline=None,
+    *, workspace_session, prepared_step, prepared_attempt, read_only_workspace=False,
+    deny_read_roots=(),
+):
+    return _PreparedToolContext(
+        root=workspace, sandbox=sandbox, policy=policy, artifact_broker=artifact_broker,
+        change_baseline=change_baseline, workspace_session=workspace_session,
+        prepared_step=prepared_step, prepared_attempt=prepared_attempt,
+        read_only_workspace=read_only_workspace, deny_read_roots=deny_read_roots,
+    )
+
+
 def _make_ctx(
     workspace: Path, sandbox: Sandbox | None, policy: SandboxPolicy | None = None,
     artifact_broker: ArtifactBroker | None = None,
@@ -2408,6 +2575,7 @@ def _run_agent(
     budget_tracker: BudgetTracker | None = None,
     workspace_session: WorkspaceSession | None = None,
     inspection_runner=None,
+    prepared_step=None, prepared_attempt=None,
 ) -> LoopResult:
     read_only_workspace = step == "review"
     deny_read_roots = list(policy.deny_read_roots if policy is not None else ())
@@ -2442,11 +2610,15 @@ def _run_agent(
         deny_write_roots=policy.deny_write_roots if policy is not None else (),
     )
     guard = Guard(scope)
-    ctx = _make_ctx(
+    context_factory = _make_ctx if prepared_step is None else _make_prepared_ctx
+    context_options = {} if prepared_step is None else {
+        "prepared_step": prepared_step, "prepared_attempt": prepared_attempt}
+    ctx = context_factory(
         workspace, sandbox, policy, artifact_broker, change_baseline,
         read_only_workspace=read_only_workspace,
         deny_read_roots=tuple(deny_read_roots),
         workspace_session=workspace_session,
+        **context_options,
     )
     registry = default_registry(
         include_artifacts=artifact_broker is not None,

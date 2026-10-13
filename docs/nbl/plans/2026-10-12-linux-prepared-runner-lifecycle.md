@@ -10,15 +10,17 @@
 
 ---
 
-当前仅文档资产。初稿观察 main 为 `667c92af7b338b9983c9829251a0f70128dd1d8e`，当时 S2b1 未发布，RAM 测试因此等待。root 后续正式发布 S2b1 main `1754ccafcd568f5771c342ec9223c307513cee2c`：commit 工具 91aaca、push 工具 39f2c5 均 exit0，09:34:06 UTC 核 HEAD=remote/tracked clean；本作者随后只读复核当前 main 与原 SOURCE/TEST bytes。vendor 为 `21566a589cbe98bd35372a04bbb6ca1c51d8eed2`。root 的完整门 74867 于 09:20:00 UTC footer exit0、09:20:20 UTC 取得三门 PASS，属于已发布 S2b1，不是本片未来完整门。本片私人 RAM 诊断经实际发布后允许，SOURCE/TEST 不落盘，任何 RAM 结果均不算正式 TDD。
+初稿时仅文档资产（历史）。当前SOURCE/TEST已按批准资产正式实施；交付顺序按Task3及AGENTS的2026-10-13线上优先授权，不执行历史中的“仅文档/本机全量先于推送”。初稿观察main为 `667c92af7b338b9983c9829251a0f70128dd1d8e`，当时S2b1未发布，RAM测试因此等待。后续S2b1 main `1754ccafcd568f5771c342ec9223c307513cee2c` 的commit91aaca/push39f2c5均exit0，09:34:06 UTC核HEAD=remote/tracked clean，vendor固定21566a5；完整门74867于09:20:00 UTC exit0、09:20:20 UTC三门PASS，仅属于S2b1。该时期SOURCE/TEST未落盘、私人RAM不算正式TDD；后续正式证据另列。
 
 批准 [DESIGN](../specs/2026-10-12-linux-prepared-runner-lifecycle-design.md) SHA-256 `ff78553d7fa5ce74fdb955464b253a0bb9567763f87e92ea8d0d04669d0410bf`；批准 DESIGN 的 fresh SPEC→不同 QUALITY 均 C0/I0/M0。历史 5ddc0aec 与 f08c75bf 两个 I 修正均保留：本计划完全保留原 `_make_ctx` 的 constructor kwargs/None/空串语义，且将 guard 放在实际普通工具与工程消费入口。母合同：[S1](../specs/2026-10-12-linux-prepared-step-scope-design.md)、[S2a](../specs/2026-10-12-linux-prepared-tool-context-design.md)、[S2b1](../specs/2026-10-12-linux-prepared-control-attempt-design.md)。
 
 三问已确认：当前真实 runner 没有持有准备生命周期；scope/attachment/CP 机制已有；所有普通/补救/工程/终结调用链及独立 Reviewer、resume 分界已盘点。本片不实现新 owner、权限、用户参数、token、模型缓存、自动准入或 CP schema。
 
+本次文档修订针对上一版 PLAN `75b1776e84e7726305171a400b39e1747bab3dd39909cc7a258a4824b3576643` 的独立 QUALITY C0/I1/M0：其局部收尾门仅核内部 owner closed，外部真实 close 失败后 unknown 可在 view.finish 已 spent 时漏过。采纳批准 DESIGN 的现有 owner 分账合同，终结必须内部 closed、外部 active；任何其他 owner 状态均固定 `prepared_cleanup_unconfirmed`，优先于 ordinary body 的 `prepared_execution_unconfirmed`。runner 只 finish 外部 view，不 close/retry 外部 owner；cleanup_attempted 先置、finish 与内部 close 独立尝试、first KI/SE 对象优先和旧共享函数保持原合同。不是新增机制或发布范围。
+
 ## 文件与所有权
 
-精确六发布范围为 `src/icode/runner.py`、`src/icode/chain.py`、新 `tests/test_linux_prepared_runner_lifecycle.py`、批准 DESIGN、本 PLAN、`docs/agent-landscape-live.md`。本 PLAN 作者仅写本文件；root 唯一维护 DESIGN/live/index，正式 TEST 与 SOURCE 必须不同作者。
+原六功能范围为 `src/icode/runner.py`、`src/icode/chain.py`、新 `tests/test_linux_prepared_runner_lifecycle.py`、批准DESIGN、本PLAN、`docs/agent-landscape-live.md`。2026-10-13用户明确要求同步AGENTS.md及development-handoff.md两份流程文档，当前候选精确八路径，不扩功能源码。原PLAN作者仅写本文件；root维护流程文档/index，正式TEST与SOURCE仍不同作者。
 
 原 runner SHA-256 `56abe98e31f02cc96327a364c52ace9aef5b7c60e6594025058e2de48f15a63d`；chain `28244144023c85548ca0e9bcb68235a935d648d53b8367ae80cde67f746508de`。S2b1 control `ffdaec53c10a23deed7b4383415fe48e1b54af706bee908a4f80fdece127c5ff`、新适配 `875635c99689a7e95c6c5d48670727f1453ef3fa05fa6ebf714440747d3596a0`、TEST `20868a62bff6138ce3f1ff8d25faf25ed14b57a69fb6f92c22503d5606d22f80` 已 frozen GREEN、独立 SOURCE 双审及实际发布。root 正式证据追加后的 S2b1 DESIGN SHA-256 `815fdb9c648ba22b79b55acaa8e9725396a26168da101d1ad63c4b1f84934342`、PLAN `5693c064cc8c44c8a32ece98566e2e1aaccdd087161b59384d58c54ae8d63f62`，未改变本片批准 DESIGN。实施前仍重核实际 main 与这些 bytes；发生漂移停止，不猜未来 SHA。
 
@@ -33,7 +35,7 @@ root 的独立只读研究已另在 [live](../../agent-landscape-live.md) 记录
 ## Task 1: 固定发布基线与正式 TEST ONLY RED
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成（正式作者/root RED及冻结，证据见文末2026-10-13执行记录）
 
 **Dependencies:** None
 **Parallelizable:** No (必须先有 S2b1 实际发布及本 PLAN 独立双审)
@@ -415,9 +417,11 @@ class PreparedRunnerTests(unittest.TestCase):
         self.owner_closed()
         self.no_terminal()
 
-    def terminal_case(self, branch, *, unknown=False):
+    def terminal_case(self, branch, *, unknown=False, external_unknown=False):
         if branch in ("engineering_budget", "engineering_failure"):
             self.make_ticket("code")
+        supplied = self.resources.prepare() if external_unknown else None
+        descriptor = supplied._owner.fileno() if supplied is not None else None
         backend = self.script(commands=0)
         with ExitStack() as stack:
             if branch == "ordinary_budget":
@@ -443,12 +447,25 @@ class PreparedRunnerTests(unittest.TestCase):
                 finish_calls.append(view)
                 if unknown:
                     raise OSError("private finish body")
+                if external_unknown:
+                    # Caller-owned close races with its actual view finish; no field injection.
+                    with self.assertRaises(prepared.LinuxPreparedStepError):
+                        supplied.close()
                 return original_finish(view)
             def close(scope):
                 close_calls.append(scope)
                 return original_close(scope)
             stack.enter_context(patch.object(prepared._LinuxStepAttachment, "finish", new=finish))
             stack.enter_context(patch.object(prepared.LinuxPreparedStep, "close", new=close))
+            owner_closes = []
+            if external_unknown:
+                real_owner_close = fixture.factory.LinuxHelperObject.close
+                def failed_owner_close(owner):
+                    owner_closes.append(owner)
+                    real_owner_close(owner)
+                    raise OSError("external owner close confirmation failed")
+                stack.enter_context(patch.object(fixture.factory.LinuxHelperObject, "close",
+                    new=failed_owner_close))
             original_terminal = ControlPlane.step_finish
             terminal_calls = []
             def terminal(control, *args, **kwargs):
@@ -456,10 +473,12 @@ class PreparedRunnerTests(unittest.TestCase):
                 expected = ("_stop_contract_for_budget" if branch.endswith("budget")
                     else "_finish_step")
                 self.assertEqual(caller, expected)
-                self.assertEqual(len(finish_calls), 1)
-                self.assertEqual(len(close_calls), 1)
-                self.assertEqual(self.views[0]._scope._consume_state, "spent")
-                self.owner_closed()
+                if not external_unknown:
+                    self.assertEqual(len(finish_calls), 1)
+                    self.assertEqual(len(close_calls), 1)
+                    self.assertEqual(self.views[0]._scope._consume_state, "spent")
+                    self.owner_closed()
+                # An external regression must reach actual CP; the spy never blocks it.
                 result = original_terminal(control, *args, **kwargs)
                 terminal_calls.append(result)
                 return result
@@ -473,11 +492,24 @@ class PreparedRunnerTests(unittest.TestCase):
             clearing = stack.enter_context(patch.object(runner.Checkpointer, "clear",
                 autospec=True, side_effect=original_clear))
             with self.transport():
-                report = self.invoke(backend)
+                report = self.invoke(backend, **({"prepared_scope": supplied}
+                    if external_unknown else {}))
         self.assertEqual(len(finish_calls), 1)
         self.assertEqual(len(close_calls), 1)
-        self.owner_closed()
-        if unknown:
+        if external_unknown:
+            self.assertEqual(close_calls, [supplied])
+            self.assertEqual(owner_closes, [supplied._owner])
+            self.assertEqual(supplied._owner_state, "unknown")
+            self.assertEqual(supplied._consume_state, "spent")
+            self.assertEqual(self.opened, [])
+            with self.assertRaises(OSError) as caught:
+                os.fstat(descriptor)
+            self.assertEqual(caught.exception.errno, errno.EBADF)
+            self.session.lease._validate_active()
+            os.fstat(self.session.workspace_fd)
+        else:
+            self.owner_closed()
+        if unknown or external_unknown:
             self.assertEqual(terminal_calls, [])
             self.assertEqual(report.error, "prepared_cleanup_unconfirmed")
             self.no_terminal()
@@ -489,6 +521,7 @@ class PreparedRunnerTests(unittest.TestCase):
         else:
             self.assertTrue(terminal_calls, (branch, report.error))
         print("software-terminal-fixture " + json.dumps(dict(branch=branch, unknown=unknown,
+            external_unknown=external_unknown,
             terminal_calls=len(terminal_calls), actual_finish_events=len(self.events("step_finished")),
             status=self.cp.trace(self.out).data["status"],
             finish_attempts=len(finish_calls), close_attempts=len(close_calls)), sort_keys=True))
@@ -506,6 +539,57 @@ class PreparedRunnerTests(unittest.TestCase):
                         case.terminal_case(branch, unknown=unknown)
                     finally:
                         case.doCleanups()
+
+    def test_external_real_close_unknown_blocks_all_six_terminals_and_checkpoint_clear(self):
+        for branch in ("ordinary_budget", "repair_budget", "engineering_budget",
+                "engineering_failure", "deliberation_budget", "normal"):
+            with self.subTest(branch=branch):
+                case = type(self)(methodName="runTest")
+                case.setUp()
+                try:
+                    case.terminal_case(branch, external_unknown=True)
+                finally:
+                    case.doCleanups()
+
+    def test_external_real_close_unknown_overrides_ordinary_body_error_without_runner_retry(self):
+        scope = self.resources.prepare()
+        descriptor = scope._owner.fileno()
+        owner_closes = []
+        real_owner_close = fixture.factory.LinuxHelperObject.close
+        def failed_owner_close(owner):
+            owner_closes.append(owner)
+            real_owner_close(owner)
+            raise OSError("external owner close confirmation failed")
+        def post(*args):
+            with self.assertRaises(prepared.LinuxPreparedStepError):
+                scope.close()
+            raise OSError("ordinary post body")
+        original_finish = prepared._LinuxStepAttachment.finish
+        with self.transport(), patch.object(fixture.factory.LinuxHelperObject, "close",
+                new=failed_owner_close), patch.object(scope, "close", wraps=scope.close) as closing, \
+                patch.object(prepared._LinuxStepAttachment, "finish", autospec=True,
+                    side_effect=original_finish) as finishing, \
+                patch.object(ControlPlane, "step_finish", wraps=ControlPlane.step_finish) as terminal, \
+                patch.object(runner.Checkpointer, "clear") as clearing:
+            report = self.invoke(self.script(commands=0), prepared_scope=scope, post_write=post)
+        self.assertEqual(report.error, "prepared_cleanup_unconfirmed")
+        closing.assert_called_once_with()
+        finishing.assert_called_once_with(self.views[0])
+        self.assertEqual(owner_closes, [scope._owner])
+        self.assertEqual(scope._owner_state, "unknown")
+        self.assertEqual(scope._consume_state, "spent")
+        terminal.assert_not_called()
+        clearing.assert_not_called()
+        self.no_terminal()
+        from icode.checkpoint import CHECKPOINT_NAME
+        saved = json.loads((self.out / CHECKPOINT_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(saved["attempt"], self.opened_attempt())
+        self.assertEqual(saved["step"], self.step)
+        with self.assertRaises(OSError) as caught:
+            os.fstat(descriptor)
+        self.assertEqual(caught.exception.errno, errno.EBADF)
+        self.session.lease._validate_active()
+        os.fstat(self.session.workspace_fd)
 
     def test_faulted_finish_silent_does_not_grant_health_or_cp_terminal(self):
         def post(*args):
@@ -803,7 +887,7 @@ if __name__ == "__main__":
 ## Task 2: 仅两 SOURCE 差分及作者/root GREEN
 
 **状态**
-- [ ] 任务完成
+- [x] 任务完成（两 SOURCE、双方GREEN/限定回归、fresh双审；发布门另列Task3）
 
 **Dependencies:** Task 1
 **Parallelizable:** No (正式有效 RED 后由不同 SOURCE 作者执行)
@@ -864,7 +948,7 @@ if __name__ == "__main__":
 +                except BaseException as error:
 +                    errors.append(error)
 +            if (owned_scope._consume_state == "faulted"
-+                    or internally_owned and owned_scope._owner_state != "closed"):
++                    or owned_scope._owner_state != ("closed" if internally_owned else "active")):
 +                errors.append(RuntimeError("prepared_cleanup_unconfirmed"))
 +            # Preserve the first KI/SE; ordinary failures cannot hide unknown cleanup.
 +            cleanup_error = next((error for error in errors
@@ -1177,7 +1261,7 @@ if __name__ == "__main__":
          out_dir = Path(step_report.out_dir) if step_report.out_dir else out_dir
 ```
 
-## Task 3: 最终全门、文档与一次发布
+## Task 3: 线上优先验收、文档与候选交付
 
 **状态**
 - [ ] 任务完成
@@ -1185,7 +1269,7 @@ if __name__ == "__main__":
 **Dependencies:** Task 2
 **Parallelizable:** No (frozen SOURCE/TEST 与独立双审之后)
 
-- [ ] **Step 1:** root 唯一按现有原完整 `scripts/preflight.py` 契约启动 j1 原命令，记录 session、日志与 UTC start；其他作者不另启动完整门/native/installed/model。运行期间冻结 SOURCE/TEST、低扰动观察；原 footer exit0 与三门 PASS 到齐才进入文档收尾。
+- [x] **Step 1:** 按2026-10-13用户明确确认的线上优先顺序，本机只运行原secret/submodule单门和必要针对性回归，不再默认全量。SOURCE/TEST冻结、编译默认j1；原全量失败历史保留，不因环境准备或局部正控通过改写。21项Probe（skip2）及18项包测试均实际exit0，两单门PASS；线上全量仍待。
 - [ ] **Step 2:** root 在 DESIGN/live 只追加实际软件证据、实际 SHA/各层信用/未授边界；本 PLAN 写实际证据足迹。观察名单沿固定上游；不增加远端刷新，不宣称模型六步/90%、自动ready、R2/R3或 installed 完成。
 - [ ] **Step 3:** 使用原 scanner，不改脚本、不忽略诊断，分别两轮：
 
@@ -1193,8 +1277,8 @@ if __name__ == "__main__":
 .venv/bin/python /home/orbbec/.agents/skills/doc-contract-consistency-audit/scripts/check_consistency.py docs/nbl/specs/2026-10-12-linux-prepared-runner-lifecycle-design.md docs/nbl/plans/2026-10-12-linux-prepared-runner-lifecycle.md docs/agent-landscape-live.md
 ```
 
-两轮原 stdout 必须共0条疑似项。计数/状态/字段/标题四项人工核：六 scope 文件、六 terminal 位置、prepared→pending→bound→spent 与 sticky faulted、公开两字段与私有捕获绑定、Task依赖/所有资产路径相同；不把已完成前片历史状态改成现在。
-- [ ] **Step 4:** root fresh secret/submodule/integrity、精确六 path index 与 diff 核验，确认 TEST/SOURCE 未漂移后才按既有用户授权一次 main 发布。作者不 commit/worktree/push/自动 handoff。发布后记录实际 main SHA、原 guard footer、原 scanner 两轮0及精确资产摘要，再 STOP。
+两轮原 stdout 必须共0条疑似项；同期纳入AGENTS.md与development-handoff.md两流程文档。计数/状态/字段/标题人工核：原六功能范围加两文档共八候选路径、六terminal、prepared→pending→bound→spent及sticky faulted、公开字段/私有绑定、Task依赖和资产一致；历史结果不洗白。
+- [ ] **Step 4:** root fresh secret/submodule、精确八路径index与diff核验，确认TEST/SOURCE未漂移后推送main待验收候选，记录真实SHA；不创建分支/版本标签。GitHub同SHA的全量单测、secret/submodule及本片必要门真实通过后才勾Task3完成，继续下一阶段；其它R2/R3未通过项单列，不能外推整体完成。作者不commit/push，root不取消或反复重跑掩盖失败。
 
 ## 测试覆盖与验收边界
 
@@ -1202,11 +1286,15 @@ if __name__ == "__main__":
 
 异常分账覆盖 pending start坏值、attach失败、postwrite ordinary异常、first KI/SE body与cleanup组合、finish失败仍独立close、helper close unknown不重试及 silent faulted/silent bound finish。外部 owner 只结束消费资格保持active，内部闭合 FD实际 EBADF、session FD/lease活。公开字段同时抹除、policy=None/换等值引用、session/sandbox/root/view/attempt/readonly漂移逐一命中实际 run_command 与 _execute_check，不仅构造/dispatch。
 
+本次新增外部 owner 负控使用真实 `scope.close()`：底层 helper 原 close 成功后抛出确认错误，scope 真实先置 unknown 且不恢复 active；不直接赋 `_owner_state`。六 terminal 子分支及 ordinary postwrite body 分别断言真实 finish 一次、外部创建者 close 一次且底层 close 一次、runner 无重试、owner unknown/consume spent、实际 CP 无 step_finished/state_changed、attempt 仍 open、真实 checkpoint attempt/step 保留且 clear 未调用。OS descriptor 实际 EBADF，session FD/lease仍活；每个独立 fixture 单独回收自己的资源，unknown FD 不重试。旧内部矩阵仍为12子分支，本次外部矩阵新增6子分支，方法总数22，不混算 assertion 数。
+
 None/no-session/明确非包内来源保留旧shape/旧报告，无prepared kwargs、额外factory或新模型设置；_make_ctx None/空attempt精确kwargs不变。模拟 darwin/win32 分类执行真实 runner legacy 入口（并非只 skip TEST），确认无 prepared kwargs/factory。包内来源 strict resolve 未知与实际 prepare 工厂失败均真实 runner 负控：未 public/raw start、未 backend/ordinary legacy 消费、未 fallback/replacement owner；采纳为 DESIGN 来源分类的必需证据，而不是新增机制。pureadmission无claim；实际resume读取真实CP/checkpoint旧路径、不start或还原attachment；实际automatic policy_contract_ready=False 阻断 provider/model/start/payload；Reviewer派生只读策略不接RW view/attempt。旧tests保持原字节；发现兼容冲突不得降低旧负控。
 
 六 terminal matrix 各已建立实际 CP attempt 与 Checkpointer；fixture 明示保存一个真实初始 checkpoint，unknown 后逐支断言文件仍在、attempt/step 对应、clear 未调用，并核真实终结调用的 caller 是原 `_stop_contract_for_budget` 或 `_finish_step`。健康侧每支实际 step_finished=1、finish/close 各尝试1；unknown 每支 step_finished=0、terminal调用0、finish/close 各尝试1。普通/补救/工程 budget、工程 failure、deliberation budget 的正常预算停止不会等同健康业务成功；仅 normal 的健康侧实际 status=plan_done，其他 init_in_progress/code_in_progress，符合原 CP 状态转换。attachfailed 无 established checkpoint，故不泛化强加 checkpoint 断言。
 
 ## 两阶段内置自审记录
+
+以下原20方法/37 BASE assertion 和09:44自审、scanner结果均为上一版历史证据；本次修订的新资产和实测另记，旧 C0/I0/M0 自审不能覆盖随后独立 QUALITY 发现的外部 owner I1。
 
 SPEC 自审先逐节比 DESIGN 三问/来源分类/CP绑定/上下文/六terminal/异常/旧shape/信用边界，再另一次 QUALITY 核代码资产与真实符号。私人 RAM 诊断不替代正式作者/root RED/GREEN、独立审查或完整门；不能把 AST parse 当 GREEN。
 
@@ -1228,7 +1316,7 @@ SPEC 自审先逐节比 DESIGN 三问/来源分类/CP绑定/上下文/六termina
 
 原始 doc-contract-consistency scanner 未修改、不忽略项：初 PLAN 两轮44cd4d/ed30c1均 raw0；最终 DESIGN/PLAN/live 原命令两轮71f671/f59f3b，均 stdout `检查 3 个文件`、`共 0 条疑似项`，exit0。人工计数/状态/字段/段名四核通过：六发布路径与六真实terminal独立计数；20测试方法不是37 assertion子用例或12terminal子分支；prepared→pending→bound→spent/closed 与sticky faulted没有靠mark修健康；公开两字段/私有实refs、Task依赖/文件名、历史片发布与本片待实施边界一致。该脚本只审文档结构，不授实际执行能力。
 
-【架构级自检报告】（仅 PLAN 与 RAM 资产）
+【架构级自检报告】（上一版历史，仅 PLAN 与 RAM 资产）
 
 - 语法/编译：通过 RAM 两 SOURCE/新 TEST AST parse、严格 old/new diff 重放；实际 SOURCE/TEST 未实施。
 - 依赖/调用链：通过生产普通/补救/工程/链/六terminal、真实 CP API 与旧 _make_ctx shape 的 RAM 软件验证。
@@ -1238,7 +1326,48 @@ SPEC 自审先逐节比 DESIGN 三问/来源分类/CP绑定/上下文/六termina
 - 兼容安全：通过None/custom旧keyword shape、非Linux legacy调用、scope创建者责任；无用户参数/权限/token/缓存扩展。
 - 可运行性：通过私人 RAM 软件诊断；正式 TDD/回归/完整guard尚未实施，native/installed/真实模型未验证，不宣称100%。
 
+### 外部 owner I1 修订的当前资产与实测
+
+runner 完整 diff 仍13 hunks，chain 仍3 hunks；runner 仅局部收尾 owner 条件改为内部 closed/外部 active，hunk old/new 行数及后续起点不变。严格重放逐hunk核 old/new counts、完整原上下文和 new 起点，全部通过；候选 compile/AST 通过，五个旧共享函数全文未改，chain diff/候选字节完全未变。当前 runner diff SHA-256 `20d0cffed984daddf5fce4253577f03157fa662dc83835f756e0a29b68f3229c`，候选 runner `91e5e6cc6fb0c1c12f9c769bd30aea5b9e95d7dcd3dc01bea6027d6d6074869b`；chain diff `4c221ca86df3ec3b46eacca4810892535f91e261fc3a8e47d9573c83e6a84197`，候选 chain `16c23c505724cb9a23f25eb27d77e21919146dd0dbc3adde752de2c863f10acd`。完整新 TEST 为47065 UTF-8 bytes、22方法，SHA-256 `20a1339e369c56617738e8938e4965ec68efebf44dea7e160c3f717121191b73`；这是文档候选资产 hash，不是未来正式落盘或发布 SHA。
+
+本次历史继续保留：一次说明文字 apply_patch 因末段上下文不匹配拒绝，未改变文件；初 TEST `4d786ba27d681fe18d814f45b90e6c7eca675c8e8f5a2ca83c7089826d95ae2d`（46963 bytes）D/9p RAM BASE cell8为22方法/44 assertion FAIL/0 ERROR/0 skip、45.730s、exit1。初投影跨REPL调用采集只取得前6方法和进程exit0而无原footer，不授PASS。随后修正 external terminal spy，使旧门漏过时仍调用真实 CP而非被内部owner断言挡住；TEST `5f2be01b0b81fec4091ea3cbbe7900e721d92a2999812c79f59fa339f538c689`（47108 bytes）D/9p投影 cell20完整22方法/0 FAIL/0 ERROR/0 skip、194.916s、exit0，18条实际事件输出。此版在agent返回时关闭外部owner，旧门mutation首轮2方法/7 FAIL/0 ERROR/0 skip、11.955s，其中engineering/normal先在上下文重核被挡，因此不能单独证明六terminal漏门；保留历史但不授完整六出口定位信用。
+
+最终 TEST 把外部创建者真实 close 失败定位到原 `view.finish()` 前，再调用原 finish；无直接赋owner状态，ordinary body独立负控仍在真实postwrite。冻结原生FS副本 `/home/orbbec/icode-linux-validation.UV7vPA/repo` 仅为root建立的只读软件诊断基线，原SOURCE与vendor已核相等；不是worktree或新branch，不能用副本clean代D工作区完整性。解释器 `/home/orbbec/icode-r2r3-env.DL2JQJ/bin/python`，`env PYTHONPATH=src ... -B -`；从D本 PLAN读取当前fence、SOURCE和真实vendor CP从副本加载，SOURCE/TEST只在RAM compile/import，不写入任何文件。fixtures只在自身隔离临时目录创建资源和CP工单，未知FD不重试，各自回收；不启动native/fullguard/install/KEY/model。
+
+最终旧门mutation只在RAM将单一owner条件还原上一版，新 TEST断言不改。首轮2方法/7 assertion FAIL/0 ERROR/0 skip、14.124s、exit1；随后加诊断print重核实际CP事件，14.030s、同统计、原footer `RAM_FOOTER OLD_PROJECTED methods 2 FAIL 7 ERROR 0 skip 0 exit 1`。六分支逐支真实 terminal_calls=1、原CP回执ok=True、实际step_finished=1/state_changed=0；“1”是调用/回执数量，不是returncode。ordinary body则错误保留prepared_execution_unconfirmed，负控要求prepared_cleanup_unconfirmed而FAIL。实际事件证明spy未通过AssertionError伪挡旧漏门；没有强改CP门或将原回执伪造成成功。
+
+最终相同20a TEST fence两次严格13+3重放后的完整RAM诊断 cell25：BASE22方法、44 assertion FAIL、0 ERROR、0 skip、20.717s，原footer `RAM_FOOTER BASE methods 22 FAIL 44 ERROR 0 skip 0 exit 1`；投影22方法、0 FAIL、0 ERROR、0 skip、94.814s，原footer `RAM_FOOTER PROJECTED methods 22 FAIL 0 ERROR 0 skip 0 exit 0`。原日志保留在诊断进程REPL内存；44条失败均为API feature assertion（40 signature、3 private factory、1 chain signature），不是ImportError/TypeError。投影原stdout18条matrix：旧内部健康6条实际step_finished=1、内部unknown6条=0，新增外部unknown6条terminal_calls=0/step_finished=0；其state_changed=0、open attempt、checkpoint attempt/step原值和clear零调用逐支真实断言通过。ordinary body固定错误优先级、finish一次、caller close一次、底层close一次、无runner重试、EBADF和live session/lease均通过。以上均是私人RAM软件诊断，不是正式作者/root RED/GREEN，不授原生副本或新解释器native/installed/R2R3整体信用。
+
+本次内置 SPEC 自审（先逐条核批准DESIGN，C0/I0/M0）：三问/六范围、候选分类与原身份、raw start/claim/freshCP、普通补救工程同view及真实消费guard、六terminal/finally、内closed/外active与unknown拒绝、sticky faulted、第一KI/SE、ordinary错误优先、None/Reviewer/resume/ready分界均保留。新增6外部terminal及ordinarybody真实失败补全I1，无需修改scope/CP/工具或扩大发布范围。
+
+随后本次内置 QUALITY 自审（独立再核完整候选资产，C0/I0/M0）：cleanup_attempted先置，view.finish失败仍独立尝试内部close，外部由创建者关闭且runner不close/retry；真实state机unknown没有用字段写入或重试修健康。strict13+3 hunks/源码compile、旧5函数全文、network签名、None构造kwargs、chain资产不变、fixture资源回收、mutation真实事件与最终同fenceBASE/投影、历史证据分账均已核。作者自审不代root fresh SPEC→不同QUALITY批准；正式TDD/独立SOURCE双审/完整门仍待，不自动handoff。
+
+【架构级自检报告】（本次仅 PLAN 与 RAM 资产）
+
+- 语法/编译：通过当前两SOURCE/TEST RAM compile/AST及严格13+3 hunks old/new完整重放；未落盘实施。
+- 依赖/调用链：通过22方法软件诊断，真实普通/补救/工程/chain及CP六terminal；旧共享5函数全文不变。
+- 逻辑/边界：通过内部closed/外部active分账、外部unknown六出口和ordinarybody负控；旧None/恢复/Reviewer/ready合同保持。
+- 异常处理：通过先置cleanup_attempted、独立finish/内部close、unknown不重试、first KI/SE对象及固定错误优先级。
+- 关联模块：仅本PLAN落盘，SOURCE/TEST均RAM；DESIGN/live/handoff/vendor/index及既有修改保留，六发布范围不变。
+- 兼容安全：通过当前全部既有候选资产软件断言，chain不变；无新依赖/机制/权限/token/缓存或用户参数。
+- 可运行性：当前22方法RAM投影exit0且0 FAIL/ERROR/skip；正式TDD/回归/完整guard、native/installed/真实模型尚未授信，不宣称100%。
+
+## 2026-10-13 正式执行与原生工作区接力
+
+本节保留线上优先获授权前的本机守护/迁移历史。“本机完整门通过才提交”的原要求已由Task3新顺序替换；所有原失败仍真实保留，不执行过时的停止/交付条件。
+
+本节为执行证据，不改批准DESIGN或任何Python/diff围栏资产。原批准PLAN SHA256 `836b276a167d17d29b57a3ac30a89ec76325d13d62876e085eec983dd80be174`，fresh PLAN SPEC→不同QUALITY均C0/I0/M0；上文Step复选框保留原操作模板，Task1/Task2实际各Step已满足如下证据。Task3发布未完成。
+
+- 正式新TEST实际47065bytes/22方法/SHA256 `20a1339e369c56617738e8938e4965ec68efebf44dea7e160c3f717121191b73`。原SOURCE作者RED22/44有效AssertionError/0ERROR、skip/45.119s/exit1；root独立RED22/44/0ERROR、skip/45.750s/exit1，完整日志 `/home/orbbec/icode-s2b2-evidence.Y3xrfh/root-formal-red.log`，SHA256 `9fc96fb312a0db93878ad2dbc262bccdce1ad52fe4dce07539fb22fe351669e7`。缺API用assert而非收集失败，TEST作者内置双审完成后停止，root核摘要并冻结，才放行不同SOURCE作者。
+- 两SOURCE实际严格批准13+3 hunks：runner `91e5e6cc6fb0c1c12f9c769bd30aea5b9e95d7dcd3dc01bea6027d6d6074869b`，chain `16c23c505724cb9a23f25eb27d77e21919146dd0dbc3adde752de2c863f10acd`；五共享函数全文不变。作者GREEN22/188.874s/0FAIL、ERROR、skip/exit0，日志 `/home/orbbec/icode-s2b2-source-green-20261013-1910.log`，SHA256 `b1688bfb4e24e3034510f67e18ec7c534eb4f4c31d13f7e15234685661618fb8`；rootGREEN22/183.293s/0FAIL、ERROR、skip/exit0，日志 `/home/orbbec/icode-s2b2-evidence.Y3xrfh/root-formal-green.log`，SHA256 `adfd03c75d2ae9bb67c98dc7e8727ec2faa07a5734b94a17c55c6eb99f7867aa`。
+- 指定10模块作者254/403.696s、root254/394.392s，均0FAIL、ERROR/skip6/exit0；原日志分别 `/home/orbbec/icode-s2b2-source-regression-20261013-1915.log`（`f0fe39bcccdf66d0d36ef144e693e6bc5989499ff7a362e132719c6ba23df525`）、`/home/orbbec/icode-s2b2-evidence.Y3xrfh/root-regression.log`（`ef5b2fc7c15bbd0d7167bc9934fec62c938df1a905fd44a6a44594a0d01e1cf2`）。6项既有平台skip不授原生信用。root补8模块工具/工程/目录对象/预算回归200/93.289s/0FAIL、ERROR/skip3/exit0，日志 `/home/orbbec/icode-s2b2-evidence.Y3xrfh/root-callchain-regression.log`（`e4427635c77e26d98e8b171186575e8bb782c58887309f70af714acc5e2e89b4`）；缺Go及两用户总线条件不授通过。
+- 作者内置SPEC→QUALITY完成；fresh实际SOURCE SPEC→不同QUALITY均C0/I0/M0。各自实际核当前字节/调用链，未把作者日志复核称为独立执行；root已核全部上述原footer与摘要。SOURCE/TEST继续冻结。
+- root原D完整守护按原脚本j1实际结束：2026-10-13 11:22:41–11:45:07 UTC，日志 `/home/orbbec/icode-s2b2-evidence.Y3xrfh/root-full-preflight.log`，SHA256 `2091db207939670b0690d39a3013ec8918871d96a76ed59200f7a39d115ca66f`。3216/1323.887s/FAIL2、ERROR1/skip165/exit1；密钥PASS、子仓与测试FAIL，禁止发布。原脚本只保留失败尾15行，已见子仓污染与Landlock策略绑定拒绝，ERROR1具体栈未被该脚本保留，不猜测。
+- 用户明确授权保留Windows67个Junction、迁WSL原生工作区验收发布。新 `/home/orbbec/projects/icode` 从同本机main HEAD7aad及固定vendor21566a5本地Git对象克隆，初始两仓clean、仅main；不是历史诊断副本/worktree，不清原D改动，不新增线上分支或改子仓固定版本。迁移先逐字节核当前候选，重新捕获原生完整测试输出及原完整守护，未通过前不提交推送。迁移前实际sequentialthinking3步骤已完成（a10f77），不以配置存在代替调用成功。
+
+Windows另片诊断保持独立：旧/新34项同2FAIL2ERROR，root自有空目录实测`..`零ID被原parser先拒绝；只读RAM移动真实子项身份校验后三个快照相关用例通过，仍有Path期待格式FAIL。无物理SOURCE/TEST修改，不授正式修复或Windows整体验收；完整证据及信用边界见 [接力记录](../../development-handoff.md)。
+
 ---
 **Execution Mode:** serial
 
-本片按用户/root限定停在文档交付，覆盖 writing-plans 的自动 handoff、worktree、commit与模型覆盖建议；不自动调用执行技能或落盘未来SOURCE/TEST。
+原文档作者交付时仅停在文档、未落盘SOURCE/TEST（历史），覆盖当时writing-plans自动handoff/worktree/commit建议。当前SOURCE/TEST已正式实施并冻结，root按用户main-only、线上优先的Task3推进候选与验收，不再停在文档交付。

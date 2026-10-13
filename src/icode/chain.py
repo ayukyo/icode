@@ -304,6 +304,7 @@ def run_chain(
     workspace_session: WorkspaceSession | None = None,
     on_step=None,
     out_dir: Path | None = None,
+    prepared_scope: object | None = None,
 ) -> ChainReport:
     """串起完整链路。**任一步骤被门禁拒绝即停步**，并如实报告。"""
     budget_tracker = _runtime_budget(budget, budget_tracker)
@@ -330,6 +331,15 @@ def run_chain(
         or policy.workspace_root != workspace or policy.ticket_id != ticket_id
     ):
         raise ValueError("隔离策略与当前单步链路身份不匹配")
+    prepared_options = {}
+    if prepared_scope is not None:
+        from .runner import _prepared_scope_for_call
+
+        if len(order) != 1 or policy is None:
+            raise ValueError("准备对象与当前单步链路身份不匹配")
+        _prepared_scope_for_call(workspace, order[0], ticket_id, sandbox, policy,
+                                 workspace_session, prepared_scope)
+        prepared_options = {"prepared_scope": prepared_scope}
     report.notes.append("链路顺序（由状态机派生）：" + " → ".join(order))
 
     before = _snapshot(workspace)
@@ -390,6 +400,7 @@ def run_chain(
                                else policy_session),
             change_baseline=before if policy is not None else None,
             extra_instructions=instructions, post_write=post,
+            **prepared_options,
         )
         report.steps.append(step_report)
         out_dir = Path(step_report.out_dir) if step_report.out_dir else out_dir

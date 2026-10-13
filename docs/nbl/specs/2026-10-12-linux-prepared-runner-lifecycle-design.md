@@ -1,6 +1,6 @@
 # Linux S2b2：真实 runner 调用内的准备资源生命周期
 
-状态：独立 DESIGN，未实施、未测试、未发布。只准备下一片文档；S2b1 发布前不生成本片 SOURCE/TEST。
+当前状态（2026-10-13）：两SOURCE和新TEST已按批准资产实施、双份RED/GREEN与限定回归通过，实际SOURCE双审零遗留；待验收候选尚未提交，线上阶段验收未完成。下文设计时点的“拟/未实施”及原自检保留为历史，不代表当前实现状态。
 观察基线：main `667c92af7b338b9983c9829251a0f70128dd1d8e`；前置为 S2b1 的原始回执与新鲜 CP observer 正式发布。
 母合同：[单步准备与消费](./2026-10-12-linux-prepared-step-scope-design.md)、[S2a上下文](./2026-10-12-linux-prepared-tool-context-design.md)、[S2b1控制面](./2026-10-12-linux-prepared-control-attempt-design.md)。
 
@@ -11,6 +11,7 @@
 调用链已核：run_chain→run_contract_step→普通/补救/工程 ctx→既有 controlled dispatch；纯 admission、只读 Reviewer、恢复及自动 ready 门分别保留边界。三问确认后限定本片。
 
 拟六发布路径：runner.py、chain.py、新 tests/test_linux_prepared_runner_lifecycle.py、本 DESIGN、对应 PLAN、agent-landscape-live.md。scope/control/S2b1适配/tools/engineering实现/autonomy/native/vendor/CI/旧tests只读；后续若事实要求扩大范围，先修订设计和独立审查，不孤立扩源码。
+2026-10-13用户明确要求持久记录线上优先流程，同期增加AGENTS.md和development-handoff.md两份纯流程/接力文档，候选索引白名单为八路径；功能源码仍限定原两SOURCE及新TEST，不扩展vendor/CI/旧tests或权限。
 无新用户设置、模型参数、依赖、权限、HTTP/SQL/MQ；技术设计技能的职责/接口/流程适用，Java模板不适配。
 
 ## 2. 选择与准入
@@ -64,7 +65,7 @@ scope faulted在finish前后独立核为不健康：finish不抛且保持faulted
 
 ## 5. 有效验收与阶段顺序
 
-DESIGN fresh SPEC→不同QUALITY，完整PLAN同双审；S2b1真实发布后才正式不同TEST作者/root RED→SOURCE作者/root GREEN及限定回归→SOURCE fresh双审→root唯一原完整guard-j1→最终文档/scanner/precise六index→main一次发布。
+DESIGN fresh SPEC→不同QUALITY，完整PLAN同双审；S2b1真实发布后才正式不同TEST作者/root RED→SOURCE作者/root GREEN及限定回归→SOURCE fresh双审。2026-10-13用户已明确把全量门迁至线上：本机密钥/固定子仓/针对性回归及文档检查→精确八路径index→main待验收候选推送→同SHA GitHub全量单测与对应阶段必要门通过→才确认阶段完成。新顺序替代本机先完整guard的旧执行要求，不减少验收项，不新增分支/版本标签，不以推送成功授通过。
 至少验证真实资源fixture与生产runner入口（模型double信用独立）：prepare/attach早于实际raw start和backend；同owner/view贯穿两次普通命令、补救及两次工程核查；无额外factory；实际CPbind和每次borrow；旧ctx spent/faulted后不能再用。
 外部owner第二次相同坐标runner在第二CPstart/模型前拒绝，owner仍外部active；内部owner所有出口EBADF、lease/session仍原创建者持有。wrong引用、source漂移、closedCP/badchain、pending失败均在payload前阻断。
 必须直接命中真实run_command和工程_execute_check，而不只调用构造器/dispatch：构造后policy=None、policy合法但换引用、session/sandbox/root/view/attempt漂移、readonly变更、以及同时抹除公开prepared_step/prepared_attempt均拒绝，wrapper/backend/payload与新factory零触达；捕获绑定不能随公开字段抹除而消失。健康实际resource路径仍消费同owner，None legacy ctx原wrap行为不变。子类只是runner内防御，不承诺任意外部自造base ToolContext具备此新合同。
