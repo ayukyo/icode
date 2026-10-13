@@ -11,11 +11,33 @@
 - 线上原日志绑定真实候选SHA/workflow/job/平台/退出状态；同SHA全量单测、secret/submodule和本片必要验收项通过后，才确认阶段完成并继续下一阶段。失败/skip/inconclusive不能当PASS，不取消或反复重跑隐藏失败。
 - 此明确授权替换旧“本机全量通过后才推送”顺序。旧完整guard失败仍保留为历史；本轮不再启动新本机全量。当前两SOURCE/new TEST保持批准摘要，加入AGENTS及本接力两份流程文档后候选索引白名单为八路径。
 - WSL环境包已按用户授权安装：仅dbus-user-session1.12.20-2ubuntu4.1，0升级/0删除（27bcdc）；仅reload用户unit定义并启动标准dbus.socket，原Windows及产品依赖不改。原 `TestProbe` 实际21 / 20.215s / 0 FAIL、ERROR / skip2 / exit0；原日志 `/home/orbbec/icode-s2b2-evidence.Y3xrfh/native-probe-with-user-bus.log`，SHA256 `ddac53139cc8f175af6d4b37308233278d0b7e0b257f39df8bcb23cf72c836a9`。先前缺bus导致拒绝的用例现在实际通过，2skip为bwrap/mac平台条件；不授全部原生能力或R2/R3。
-- 两原单门secret/submodule已在新根再次PASS（d15bdd）；包18项通过与源码双审/22项双份GREEN/254项回归仍有效。本候选尚未推送，线上结果待收齐，不因这些局部结果宣称全量通过。
+- 两原单门secret/submodule已在新根再次PASS（d15bdd、a3abfd）；包18项通过与源码双审/22项双份GREEN/254项回归仍有效。候选已推送，线上结果待收齐，不因这些局部结果宣称全量通过。
+
+### 当前候选与线上观察
+
+- 实际候选：`0a980e0130873020881a6892d88715948af909a7`，八路径索引及逐字节核对通过后提交（ac266a），已推送main（be25b8）；随后ls-remote确认线上main为同SHA（f7151d）。未新增分支、标签或产品发布。
+- 同SHA的push工作流：[CI](https://github.com/ayukyo/icode/actions/runs/38398777877)、[Windows helper provenance](https://github.com/ayukyo/icode/actions/runs/38398777497)、[Public website](https://github.com/ayukyo/icode/actions/runs/38398777702)。首次实际API观察为queued / in_progress / queued，均无终态结论；不得据此勾选阶段完成。
+- 五份相关文档的原一致性scanner最终两轮均0疑似项、exit0（d7d827）；首次在WSL引用不存在的skill脚本路径失败（698352），改用Windows已有原脚本复核，未修改scanner或忽略诊断。独立文档复审C0/I0/M0。
+- 本节是候选推送后的接力记录，暂留本机；等待当前CI终态再随后续文档提交，避免新push取消正在运行的同SHA验收。
+- 在途已确认失败：Windows Reviewer [x64 job115300703337](https://github.com/ayukyo/icode/actions/runs/38398777877/job/115300703337) 与 [ARM64 job115300703411](https://github.com/ayukyo/icode/actions/runs/38398777877/job/115300703411) 均在temporary standard-user probe断言exit78不等于0，1项测试分别45.824s、47.166s / F1。双栈Win10035等待超时不是DENY，WFP订阅error5且无matching event，privateNetwork正控exit105/ipv4_connect_timeout为inconclusive。7aad的同名两个job也存在相同机制失败（run38233104888），这是既有未通过门继续失败，不据此声称S2b2引入回归或已排除全部影响。
+- x64原日志SHA256为`9eeee886167cf803b07274810769f3d43f566c4f0d30f7d21814e3ae662b7357`；完整日志含checkout认证header和机器路径，未直接写盘。安全原文失败摘录为仓外`/home/orbbec/icode-s2b2-evidence.Y3xrfh/ci-0a980e0-windows-x64-reviewer-failure-excerpt.md`，摘录SHA256 `6cf2aa4f403878488e0d229549bb1503a8edf1f06f9af4a8ab6d1ef8d7d6c5ca`，不把摘录哈希冒充完整原日志哈希。
+- CI38398777877已终态failure，完整46/46为41 success、2 Reviewer failure、3 retired条件skip；两Python job的compile/full suite/secret/submodule全部success。root实际取回两原日志再次核footer：[3.11 job115300703101](https://github.com/ayukyo/icode/actions/runs/38398777877/job/115300703101)为3243 / 831.418s / OK(skip86)，[3.12 job115300702938](https://github.com/ayukyo/icode/actions/runs/38398777877/job/115300702938)为3243 / 659.383s / OK(skip86)。仅授S2b2同SHA软件门，不授skip项、新prepared installed矩阵或R2/R3整体；provenance动态新增四签装job仍待收齐，下一候选不提前push取消它们。
+- ARM64安全失败摘录为仓外`/home/orbbec/icode-s2b2-evidence.Y3xrfh/ci-0a980e0-windows-arm64-reviewer-failure-excerpt.md`，摘录SHA256 `99eb2449d0539f4c5d830a840ce5fe57b2edab92df7705ec097c4581b588c96d`，原日志SHA256 `a2d6dc5905658cbef24f6d8369c3d20571ce6e540cb6ad7c9655be58b0fdcd80`，完整原日志与摘录分账。
+- 该SHA所有工作流终态已收齐：provenance38398777497 success / 5 jobs（validate115300700744，签装ARM3.11 115307030947、x64/3.12 115307030999、x64/3.11 115307031099、ARM3.12 115307031282）；Pages38398777702 success / 2 jobs。四consumer原wire均observation_complete=true，helper/verifier根节点owner_untrusted导致consumer拒绝，source_policy_all_passed/compatibility_accepted/launch_authorized/protected_observed均false；两resource各13句柄确认关闭，unconfirmed0。不能以密码学/签装绿授首次UAC或受保护晋升；此条更新取代上条在途等待描述，不取消/重跑原失败。
+
+### 下一片执行中：Windows 准确 dot 伪项
+
+- 批准[DESIGN](nbl/specs/2026-10-13-windows-dot-entry-identity-design.md) SHA256 `e6a6ebfb734c02c6a87293140dba13a319fc38d9f1ae75e9fbaed7527df0c22b`；批准[PLAN](nbl/plans/2026-10-13-windows-dot-entry-identity.md) SHA256 `bcde3dcc144922404f555149fa5fbccaff3901e8ca5b39278cca02e7ee8d26da`。fresh SPEC与不同QUALITY均C0/I0/M0；root已完整读资产、实际调用链及真实sequentialthinking三步（9c225a）。随后已正式TEST→SOURCE实施，当前PLAN的进度和原日志追加改变文档摘要，五个代码/差分围栏逐字不变；仓外原批准bytes`windows-dotentry-plan-approved.md`已核同bcde摘要，不把原批准当当前同对象摘要。
+- 新测试资产8494 bytes / SHA256 `68aacc4ebd38237ce809965c31b643d5ef690514649d7662bd5e32a1aa535c1e`，8 portable + 2 Windows native；正式RED要同时打中准确dot误拒与CI漏收集两个缺口，ROOT独立重复后才改两SOURCE。不放宽真实子项零/FF身份或任何结构/UTF16/offset/trailing边界。
+- 当前候选发布白名单为本片两SOURCE、两个TEST、两新docs、live/handoff共八路径；S2c独立DESIGN仅并行技术准备，不混入此候选。原Windows链接/vendor、test_control的路径断言、ready/权限/workflow均不在本片修改范围。
+- 正式TEST已由唯一作者落盘：新TEST保持批准68aacc摘要，既有safe runner TEST仅同步loader有序两模块期待，SHA256 `93c61cd3f21cfa8435dcfbe02b0f7e2282d580b0eac2da0d8724a62550215d1c`。作者与root各2方法 / 0.002s / 5有效AssertionError / 0 ERROR、skip / exit1，原日志分别`windows-dotentry-author-red.log`、`windows-dotentry-root-red.log`（仓外同证据目录），两次实际输出恰好同bytes，SHA256均`a426476f6c2fa13aef619a60cb5a228c9f4bcfc9eb5366dd2dfa5737921d71bc`。root首次捕获在exec返回运行session时误按完成解析，未保存其结果，不授RED信用；bed896实际重验与25d7cb日志才为root有效证据。
+- RED时两SOURCE保持原56cdd444/04db3893，保护windows_worktree保持2fe8702b。独立确认后不同SOURCE作者仅实施两冻结差分：当前parser SHA256 `7d9826d66a5e4a045a8b304ff5eb3c09fba230fc7c5eaffa045f8826bc2cdcc3`，safe runner SHA256 `7cbe2f234362e96378a48e0feffc406e74d8cbd69784f440989a47ad54c92a5d`；两TEST和保护windows_worktree不变。作者25/0.010s、root25/0.004s定点GREEN均0 FAIL、ERROR、skip/exit0；rootWin10.0.19045/AMD64/CPython3.11.4实际新模块10/0.129s/0 FAIL、ERROR、skip/exit0，含两native API正控。仅授窄parser/walker兼容，不代Windows隔离或新SHA CI。
+- 实际SOURCE fresh SPEC→不同QUALITY均C0/I0/M0：原27个非parser函数全文不变，safe runner仅tuple条目，真实TEST等完整批准fence；仅候选新SHA线上门仍待。仓外author/root GREEN日志SHA分别`8f9a5ba56970824404985487e6f17c94db772c4461c0ad9f692d6ef5361b550b`、`88a52ac490b914859dfc84601719894224a7e80dc732b4cfc1d7900cd189a49f`，root-native原日志SHA `fc06c95e3862c3d01579134c264b6bf3cf64425668155d13774968993a14f28d`；具体日志名及未授边界见PLAN执行记录。
 
 ## 原生工作区来源与执行基线
 
 本节对应多仓库来源核验，仅记录源代码迁移和软件验证，不是产品包安装或部署验收。
+以下矩阵保留迁移时7aad基线及当时工作树状态；当前候选提交和线上状态以本节之前的“当前候选与线上观察”为准。
 
 ### vendor_package_matrix
 
@@ -83,16 +105,16 @@
 
 ## 当前结论
 
-**R2 / R3 尚未整体验收。** 最近一次生产代码提交为 `1754ccafcd568f5771c342ec9223c307513cee2c`，已推送 `main`，本地与远端一致。接力文档的后续提交不是新的生产代码验收候选。
+**R2 / R3 尚未整体验收。** 最近一次已推送生产代码候选为 `0a980e0130873020881a6892d88715948af909a7`，同SHA线上已收齐，S2b2软件门通过、CI整体仍因两个Reviewer网络门失败。Windows dot下一候选已实施及本机定点验证，尚未推送；`1754cca`是前一片历史生产基线。仅文档记录不能替代生产代码验收。
 
 | 阶段 | 当前状态 | 下一步 |
 | --- | --- | --- |
 | Linux S2a 上下文薄适配 | 已发布 `01e22a4` | 不重复实施 |
 | Linux receiver 截止原因分账 | 已发布 `667c92a` | 不外推历史 ARM 根因或原生因果证明 |
 | Linux S2b1 控制面适配 | 已发布 `1754cca` | 不重复实施 |
-| Linux S2b2 Runner 生命周期 | 正式 RED/GREEN、254项回归、实际 SOURCE 双审通过；WSL前置已补齐 | 按线上优先流程推送main待验收候选，等待同SHA必要CI门 |
+| Linux S2b2 Runner 生命周期 | 正式 RED/GREEN、254项回归、实际 SOURCE 双审及0a980e0同SHA软件门通过 | 继续S2c真实内部组合及S3 installed矩阵；不借旧dispatch或软件门授完整R2/R3 |
 
-S2b2 的生产 `runner.py`、`chain.py` 和新测试已在工作区实施，尚未提交或发布。当前冻结 runner `91e5e6cc6fb0c1c12f9c769bd30aea5b9e95d7dcd3dc01bea6027d6d6074869b`、chain `16c23c505724cb9a23f25eb27d77e21919146dd0dbc3adde752de2c863f10acd`、TEST `20a1339e369c56617738e8938e4965ec68efebf44dea7e160c3f717121191b73`；原批准 PLAN 为836b。下文“未落盘”等文字是早期诊断历史，不代表当前状态。
+S2b2 的生产 `runner.py`、`chain.py` 和新测试已随0a980e0提交推送，线上必要门仍待，不是产品发布。当前冻结 runner `91e5e6cc6fb0c1c12f9c769bd30aea5b9e95d7dcd3dc01bea6027d6d6074869b`、chain `16c23c505724cb9a23f25eb27d77e21919146dd0dbc3adde752de2c863f10acd`、TEST `20a1339e369c56617738e8938e4965ec68efebf44dea7e160c3f717121191b73`；原批准 PLAN 为836b。下文“未落盘”等文字是早期诊断历史，不代表当前状态。
 
 ### 正式实施与迁移历史（2026-10-13，旧本机交付顺序已由当前线上优先约定替换）
 

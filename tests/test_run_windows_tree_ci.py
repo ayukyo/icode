@@ -42,7 +42,10 @@ class TestWindowsTreeCiFailureAnnotations(unittest.TestCase):
         self.assertIsInstance(suite, unittest.TestSuite)
         self.assertEqual(
             loader.loaded,
-            ["tests.test_windows_worktree_tree_oid"],
+            [
+                "tests.test_windows_worktree_tree_oid",
+                "tests.test_windows_dot_entry_identity",
+            ],
         )
 
     def test_failure_and_error_annotations_expose_safe_ids_only(self) -> None:

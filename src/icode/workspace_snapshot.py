@@ -112,7 +112,6 @@ def _parse_windows_directory_entries(
             or name_length > remaining - _WINDOWS_EXTD_DIRECTORY_ENTRY_HEADER_SIZE
             or change_time < 0
             or end_of_file < 0
-            or file_id in (bytes(16), bytes([0xFF]) * 16)
         ):
             raise WorktreeTreeUnavailable("windows_directory_record_invalid")
 
@@ -135,6 +134,9 @@ def _parse_windows_directory_entries(
                 raise WorktreeTreeUnavailable("windows_directory_name_invalid")
 
         if name:
+            # Exact dot records never produce child handles or child identities.
+            if file_id in (bytes(16), bytes([0xFF]) * 16):
+                raise WorktreeTreeUnavailable("windows_directory_record_invalid")
             if name in names:
                 raise WorktreeTreeUnavailable("windows_directory_name_duplicate")
             names.add(name)

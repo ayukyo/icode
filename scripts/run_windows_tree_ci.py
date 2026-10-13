@@ -17,6 +17,7 @@ _SAFE_TEST_ID_CHARACTERS = frozenset(
 )
 _WINDOWS_TREE_TEST_MODULES = (
     "tests.test_windows_worktree_tree_oid",
+    "tests.test_windows_dot_entry_identity",
 )
 _SAFE_EXCEPTION_TYPES = frozenset({
     "AssertionError",
