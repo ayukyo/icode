@@ -10,6 +10,19 @@
 
 #### 本轮验收基线与接续（阶段仍未通过）
 
+- B1最新同SHA线上终态：`8d81c40ebc23fb5d31a513f875d06a1b42b97a23` 的 candidate `38568678237`／inspection `38568678532`／site `38568678425` 全部completed success、push／attempt1，共2＋4＋3＝9job成功。root实际API另核三run SHA及终态，并读Windows最后162／350.85s原日志；独立观察员收齐其它原日志。B1严格9项双平台通过、None兼容与旧门保持，只关闭B1软件小片，不代表C1b全部、真实宿主准入、整pin或R2/R3；下列“在途”均为之前观察，B2继续计划，vendor仍21566a5。
+- Agent db47最新全部55job已终态，root另逐run核同SHA／attempt1及完整48＋5＋2元数据：主CI43成功／2Reviewer失败／3退役skip，provenance5成功，Pages2成功。四consumer各69＋9软件测试通过，实际均owner_untrusted拒绝、compatibility／launch／protected为false，helper／verifier各13打开13确认关闭0unknown；只授来源拒绝及回收观察，不授WP0b或网络DENY。下列“全量／签装在途”保留历史窗口；本候选没有取消或重跑，R2/R3仍未通过。
+
+- 最新接续：Agent `db47b1299bfa2016adfc88cd7d23c51da919afa3` 已发布，包含父 `153fab77` 的四份批准计划，先前缺失链接已补齐。CI `38566753418` 两 Mac job `115861273271 / 115861273402` 均实际完成 baseline 唯一 quota 断言 RED，再完成 SOURCE protocol5＋native5 GREEN；root另读取两份原日志，独立观察员核同 SHA 两份原始 artifact。只授 cap1 小片，不授 cap2、完整配额、安装或 R2/R3；全量与 provenance 尚未全部终态，两个 Reviewer 仍失败。
+- Skill `d59998f8` 的 candidate `38566262992` 双平台已通过：Linux107实际运行＋独立strict2；Windows103实际通过／4精确POSIX专项skip＋独立strict2，skip不授对应原语信用。inspection `38566263110` 四job成功；site `38566263130` 因远端 main 已前进而被发布保护拒绝，保留失败、不重跑。外部 `6cbc8c666b72dba9008af4bf119a8d7ed90472b5` 仅改同步脚本有限 PermissionError 重试和 DOCX Windows venv 解释器路径，已核父链及两文件后 ff-only 接收；其 renderer／site 成功，但未触发 candidate／inspection，不借 d599 结果补绿。
+- 用户已允许受保护 Git 上下文最小契约修复。B1批准PLAN为558行 `1da45c07`；实际新增冻结TEST257行／9方法 `0f85d363`，作者及root分别正式跑旧源码，均7个失败方法产生9条Assertion记录、另2方法通过、0ERROR／skip（1.107s／1.193s）；独立TEST SPEC零遗留。不同SOURCE作者继续实现显式上下文传递，完成前不授GREEN或更新vendor；B2历史／业务、B3写入与最终门、C2私有通道、C3交付及C4整pin／模型六步／90%仍开放。
+- B1后续已实施并发布为 Skill `8d81c40ebc23fb5d31a513f875d06a1b42b97a23`（父6cbc；8dc836提交／d5fcb3推送／6d40f8核远端均exit0）。精确四路径365增16删，CP `bd9e8c3b`、evidence `8deeb7a8`、CI `6aea3fa4` 与冻结TEST均匹配批准投影；作者9／1.108s、root9／1.073s及相关28／3.929s全通过，实际fresh SPEC→不同QUALITY零遗留。8eb496已在提交前核父、精确路径、索引字节、100644和cached whitespace。复用Agent扫描器扫Skill的原36acba返回1，命中两份未改测试；5d056e逐字核其等HEAD并确认三处均为合成夹具字面量，无新增命中，不把原扫描改称PASS。新candidate `38568678237`、inspection `38568678532`、site `38568678425`／attempt1已触发，双平台与完整旧门仍在途，不更新Agent pin。
+- B2仅进入完整资产计划：root `f76b85` 实际sequential-thinking三步成功，复用独立只读研究。重点是 C1a 可把query失败折为 `commit_equivalence_unproven`，即使context仍健康也不能经doc／origin备用证明放行；计划须一起接D08–D13、历史回放、手工source_context与debt，不能仅移除B1 pending。没有生产B2改动或完整配额信用。
+- 最新线上补充：8d81 的 candidate 双job均success；root与观察员分别核 Windows `115867822223` strict9逐名5.903s／strict2为3.951s、107收集后103通过／4精确POSIX skip／3 subtests（235.28s），Linux `115867822880` strict9逐名1.112s／strict2为1.828s、107通过／5 subtests（110.64s）；wire3／provider20／trigger3及Linux shell17保留通过。site三job成功，inspection仍余Windows162在途。Agent db47主CI完整48已43S／2ReviewerF／3退役skip，Py3.11为3300／871.968s／skip93，3.12为3300／898.257s／skip93；provenance已动态形成validate成功＋四consumer运行，未到全部55终态，不推下一Agent候选。
+- macOS M0a2目前仅设计：root `17c5f5` 实际三步结构化思考完成，原§2.3／§3／§4的剩余故障、cap2、refork、并发32轮、线程及身份逃逸边界均保留。未修改cap1-only SOURCE、原profile或任何权限；M0b仍为M1前置阻断，不将cap1原生通过称为完整配额。
+
+以下三条保留上述最新接续前的发布快照，不代替当前状态。
+
 - Skill最新待验候选 `d59998f8ba63507e8f06d0cb0f96efdf9a5ff80d` 已e2ca81提交/6415bd推送main/exit0，父1002；精确五路径128增6删/100644/索引与审查字节一致、secret/AST/whitespace通过。不同实际审者均C0/I0/M0：第一规格/资产审回包标题写QUALITY但覆盖完整frozen/inverse/原门，最后不同QUALITY再核同资产；新strict2实际均通过。candidate38566262992、inspection38566263110、site38566263130/attempt1已触发，尚待新SHA原107＋独立2及精确4专项skip/全旧门，不能提前称平台片绿。
 - Agent232全部55job现已终态，root独立API逐个重核48＋5＋2且headSHA一致：CI43S/2ReviewerF/3退役skip；provenance5S、Pages2S。Py3.11为3300/857.425s/OK(skip93)，3.12为3300/901.066s/OK(skip93)；跳过不授信用。四签装各69＋9软件项成功，实际compatibility/launch/protected仍false、source owner_untrusted，13资源13打开13确认关闭0unknown仅授观察。本轮没有取消或重跑隐去失败；允许下一SOURCE候选推送，但整体验收仍未过。
 - 下一Agent候选只新增原受审cap1原语及更新handoff/live；其父本机153fab77含先前遗漏的四批准PLAN，推送后可补齐232的计划链接。SOURCE16行实际双审与17项OS替身证据已具备，新的双Mac baseline RED＋SOURCE GREEN、同SHA所有W0/W1/7case仍须在线实跑，不借232的W1证据替代新候选。

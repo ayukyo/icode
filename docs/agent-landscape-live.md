@@ -1,8 +1,18 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
-- **2026-10-14：最新已核结果。**沿下述固定主源、不刷新20名单：Agent23209fb的Intel/ARM已在同候选完成W0双target公共接口绑定、W1实际单组/双组/同PIDexec及原七case唯一quota语义RED；root另纯RAM核两平台各15源码摘要、28raw摘要及实际binary/ledger。只授W1，不授配额GREEN。原受审cap1-only原语507b26a2现16行已落地且实际双审零遗留、Linux17项OS替身断言通过，下一候选仍须双原生SOURCE GREEN。Skill1002d72完整Windows105的4失败/101通过保留，新增reuse问题已在该SHA通过；平台分片d59998f现已推送，当前107与独立strict2、精确4项POSIX专项skip须同SHA线上验证，不追改旧失败或把skip当原语通过。采纳“原判据不变、机制与运行证据分账”；暂缓完整M0/安装/宿主Git及整pin；不适配软件成功代替原生与跨SHA补绿，无新依赖/权限或第三方代码复制。
+最新终态：Skill `8d81c40` 三run／9job均completed success、同SHA／attempt1，root与独立观察员核原日志；B1软件小片通过，B2计划继续。以下两条及“补充同候选结果”保留当时在途窗口，其余旧快照位于历史说明后；不据软件通过授真实宿主、整pin或R2/R3信用。
 
-以下保留本轮较早实施时点，最新结果以上条与接力文档为准。
+Agent `db47b12` 最新55job亦全部终态：CI43成功／2Reviewer失败／3退役skip，provenance5成功，Pages2成功。双Mac仅授cap1必要小片；四签装仍owner_untrusted拒绝、三个授权／观测false及13资源确认回收，不授完整配额、网络DENY或受保护晋升。下列“在途”均为历史时点，当前总体仍未通过。
+
+- **2026-10-14：cap1 与受保护 Git 接续。**复用下方固定 Apple／Codex 主源，未刷新上游 HEAD 或20项名单。Agent `db47b12` 双 Mac 已实际完成 baseline 唯一 quota RED 后 SOURCE protocol5＋native5 GREEN，只关闭 cap1 原语小片，不代表完整配额或产品准入；全量仍在途。Skill `d59998f8` 原107合同及独立strict2双平台通过，Windows仅4项明确POSIX专项skip；旧站点候选被 main 前进保护拒绝，失败保留。B1实际冻结9方法已取得有效旧源码断言RED并经独立TEST审查，显式上下文 SOURCE 正在实施；**采纳：**canonical API 所有权、错误与内容差异分层，收益是防止失联后 raw Git／备用证明误通过，成本为完整业务传播与正负控。**暂缓：**B2／B3、真实私有通道／epoch／attrs／清理、交付和整pin；**不适配：**模型provider身份、暴露 `.git`、软件或跨SHA绿冒充原生／整体验收。无第三方源码复制、新依赖或权限变更。
+
+- **同日B1更新：**Skill `8d81c40` 已发布待验候选，实际9项与相关28项定点通过、fresh双审零遗留，线上candidate／inspection／site仍在途。独立B2只读预研核D08–D13及debt：C1a的 `commit_equivalence_unproven` 不能被doc／origin fallback当作普通内容差异；context前后检查本身不足以证明query成功。沿固定Codex `27065a91ccbf5ba8532844be3777fcf83b77820d` 的 [Git错误转业务错误](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/app-server/src/request_processors/git_processor.rs#L17-L31)采纳错误分层；其 [informational查询空值回退](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/git-utils/src/info.rs#L282-L306)不适配授权证明。Apache-2.0，仅借机制，B2完整PLAN在准备，历史／业务传播与真实宿主入口未授信用，无源码复制或新依赖权限。
+
+补充同候选结果：8d81 candidate现双job成功，B1严格9项双平台逐名通过；Linux旧107实际通过，Windows103通过及4精确POSIX专项skip，独立strict2及原门保留。inspection尚余Windows162在途，site三job成功，仍不授C1b整体或R2/R3。db47主CI终态为43成功／2Reviewer失败／3退役skip，四签装consumer仍运行；完整状态以接力文档为准。
+
+以下保留本轮较早实施时点，最新结果以上面两条及补充结果与接力文档为准。
+
+- **2026-10-14：此前已核快照。**沿下述固定主源、不刷新20名单：Agent23209fb的Intel/ARM已在同候选完成W0双target公共接口绑定、W1实际单组/双组/同PIDexec及原七case唯一quota语义RED；root另纯RAM核两平台各15源码摘要、28raw摘要及实际binary/ledger。只授W1，不授配额GREEN。原受审cap1-only原语507b26a2现16行已落地且实际双审零遗留、Linux17项OS替身断言通过，下一候选仍须双原生SOURCE GREEN。Skill1002d72完整Windows105的4失败/101通过保留，新增reuse问题已在该SHA通过；平台分片d59998f现已推送，当前107与独立strict2、精确4项POSIX专项skip须同SHA线上验证，不追改旧失败或把skip当原语通过。采纳“原判据不变、机制与运行证据分账”；暂缓完整M0/安装/宿主Git及整pin；不适配软件成功代替原生与跨SHA补绿，无新依赖/权限或第三方代码复制。
 
 - **2026-10-14：本轮接续结果（优先于下方实施中快照）。**复用下述固定Apple/Codex主源，不刷新上游HEAD或20项名单。**采纳验证：**W0在Agent67cf60e的Intel/ARM均取得ordinary `_getgroups`实际SDK/object/final绑定及原七case唯一quota语义RED；仅关闭接口修正门，不授quotaGREEN。W1[完整计划](nbl/plans/2026-10-14-macos-process-groups-w1.md)与实际源码已各独立双审零遗留，落地Linux28定点通过，含真实runner50和reservation7软件场景；同新SHA双架构的双组反例、exec继承及原七case重跑仍待。收益是将接口正确性和原生凭据事实分开验收，成本为独立固定TEST及审计，不加产品依赖或权限。**暂缓：**quota SOURCE、宿主Git C1b–C4和整pin。**不适配：**借软件或旧SHA的成功替代同候选原生结果。
 - **2026-10-14：Windows字节边界接续。**Skill3fb9cce的新standalone UTF-8三测试双平台通过，原物理失败校验及四consumer目标通过；inspection四job成功，但完整Windows105仍9失败。e3f91dd仅修fixture canonical根、局部LF和真实`.exe`路径，线上两工作流已终态：Linux105通过，Windows5失败/100通过，site三job成功；两个路径/产物目标及三个same-content节点通过，不追认其历史根因。新增文档复用失败已实采初始LF与恢复后CRLF不相等；两行明确换行后Windows/WSL单项通过，产品拒绝门保持，新SHA线上未验。采纳严格UTF-8和同一产物路径贯穿receipt/hash机制；暂缓原始A/B、FIFO/mode/换行文件名平台分片，拒绝全局locale、吞解码或整套Windows跳过。机制来自既有Python/Git及本仓先例，无第三方代码复制、新权限或许可变化。
