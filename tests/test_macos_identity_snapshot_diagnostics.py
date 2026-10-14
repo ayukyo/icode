@@ -35,6 +35,7 @@ def program(source):
     return PRELUDE+actual+TRAILER
 
 PRELUDE=r'''
+#define _DARWIN_C_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <fcntl.h>
@@ -282,6 +283,9 @@ class TestIdentitySnapshotDiagnostics(unittest.TestCase):
                 self.assertEqual(actual.returncode,status)
                 self.assertEqual(actual.stdout,b"")
     def test_all_real_emitter_paths_are_after_existing_sigpipe_ignore(self):
+        # Match the native observers' Darwin header opt-in before including headers.
+        self.assertIn("#define _DARWIN_C_SOURCE 1\n",PRELUDE)
+        self.assertLess(PRELUDE.index("#define _DARWIN_C_SOURCE 1\n"),PRELUDE.index("#include"))
         driver=(ROOT/"native/mac/tests/icode_m0a1_driver.c").read_text()
         groups=(ROOT/"native/mac/tests/icode_m0a1_process_groups_native.c").read_text()
         vectors=(ROOT/"native/mac/tests/icode_m0a2_vectors.c").read_text()

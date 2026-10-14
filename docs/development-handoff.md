@@ -6,6 +6,26 @@
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 
+### 2026-10-15 ce4 全部终态；四行Darwin probe修复准备下一候选
+
+root再次核同ce4、push／attempt1三run及56个唯一job全部终态：CI `38615603979` 49项为41成功／4失败／4占位skip，provenance `38615603974` 五成功，Pages `38615604045` 两成功；合计48成功／4失败／4跳过、无取消，不重跑隐藏失败。双full原log root亲读：3.11.17 `116029774056` 3359／854.124s，3.12.15 `116029774023` 3359／692.436s，均0FAILURE／ERROR、99skip；已发布299行snapshot TEST各12方法在Linux实际通过，后置secret／pin门成功，不授Darwin通过。
+
+四个失败明确是双Mac A新strict首门O_NOFOLLOW编译ERROR（ARM2.800s／Intel2.355s、Ran0），以及双Windows Reviewer原网络门（ARM47.118s／x6451.558s，各1FAILURE、零ERRORskip，candidate78／正控105 IPv4 timeout）。双Mac未进入A18／W1／manifest19，B仅依赖占位 `116029990976` skip；CI artifact实际0，不能授native／quota RED或真实快照API原因。双Windows配置三JSON406／407／37字节完整，但仍非DENY。签装四消费者各69＋9方法和crypto／负控／direct-volume／拒命令通过，receipt仍owner_untrusted拒绝、helper／verifier各13确认关闭／2alloc2free，不授protected晋升。Pages精确ce4部署成功。下一同仓候选可推；R2/R3仍未整体验收。
+
+下一Agent候选范围仅303行snapshot TEST四行小修及两份进度文档，共三路径。B3d／WFP两份新PLAN均未发布、不纳入此候选；vendor不更新，原源码、CI及安全准入保持。
+
+**ce4新增失败及未提交小修：**双Mac A新strict snapshot12在setUpClass编译ERROR、Ran0，`O_NOFOLLOW`不可见；Intel原log root亲读25175字符，错在probe PRELUDE只设严格POSIX宏，而三条真实native入口首行均已设 `_DARWIN_C_SOURCE 1`。未进入A／W1原生，B仅依赖占位skip，没有manifest19／native原件，不能算quota RED。独立只读研究与root核固定Apple [fcntl.h](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/sys/fcntl.h)和[cdefs.h](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/sys/cdefs.h)的feature可见性规则，非runner SDK逐字节证明；只借机制，不复制APSL／历史BSD源码。root在原有方法加namespace顺序回归，`c6f93a` strict12为11绿＋1Assertion／零ERRORskip、exit1；随后仅补同native的Darwin opt-in一行，`24c331` strict12／0.135s全绿。实际TEST303行／`cb122e84`，总4行新增，12方法／严格C编译／真实O_NOFOLLOW flag／全部旧断言保持，`a17754` raw diff-check0。actual SPEC `4edfe2`／独立strict12 `9d1e15`与不同QUALITY `c3815d`均零，未提交；Linux绿不替代下一同SHA双Darwin验证。本批其它run已收齐，终态见上，无取消或重跑。
+
+**后续B3d正式SOURCE：**本机未发布的 `docs/nbl/plans/2026-10-15-protected-git-b3d-port-primitives.md` 冻结764行／51520字节／`68fa6e5d`。root全文初版与修订增量已读；I1在真实循环链接复现target／metadata两处RuntimeError泄漏，计划已补最小catch与同一方法两条负控。fresh SPEC `4f031b`／`f51cfa`与不同QUALITY `cef7f6`均零：匿名旧21为17红父／74Assertion、零ERRORskip，投影21全绿；`bc66a3`移除catch负控两Assertion。不同作者已正式仅在Skill main b583新增 `tests/test_candidate_port_provider_unit.py`，386行／19241字节／`88d8f491`；正式strict21／3.362s为17红父／74Assertion＋4正控、零ERRORskip，exit1。actual TEST SPEC零，独立21／3.205s同形，不同QUALITY `5f2ded`零；74记录是52 rawGit tripwire、20未拒绝ControlError、2循环解析窄捕self.fail，不是74个独立缺陷。Task1结束时index空、原CP／CI及11输入不变，仅该TEST未跟踪；已授权不同作者仅实施B3d SOURCE，仍待实际SOURCE双审／CI／提交和新同SHA线上门。不开放step／outputs／宿主，不纳当前Mac小修候选。
+
+B3d SOURCE已按附录B三hunk落盘，CP6630行／`8340d3d9`；新strict21、原五组60及execution-model shell通过。批准的三个pytest节点最初因专用环境缺pytest未运行；root仅在专用测试环境补齐与CI一致的pytest9.0.3及四项工具依赖后，`94d5a0`实际三个节点全部通过／2.71s／exit0，不增加产品依赖。实际SOURCE独立双审、CI接线和新SHA线上验收仍待，不授宿主inspection或整体完成。
+
+另有本机未发布的 `docs/nbl/plans/2026-10-15-windows-wfp-cab-observation.md` 唯一PLAN591行／`3aa51d8a`，root全文已读；fresh SPEC为C0／I1／M0：新增nested五键要求精确大小写，但PowerShell消费者用`-notcontains`，真实抽取片段接受`Target`。仅修订PLAN中的新增键检查为`-cnotcontains`并补既有方法断言，随后重审，不改旧顶层兼容。root三步 `7aaef7`及独立同ce4原日志／官方合同研究已完成。不新增审计、豁免、peer或放宽DENY，不纳当前三路径候选。
+
+Agent最新本地／远端 `ce4a53098938af6767e6c33f4a756fb566b1731d`，父a35。精确10路径1878增5删：Mac诊断六实现、Mac／B3c两份已审PLAN和两份进度文档；没有vendor更新、B3d PLAN或原生quota／准入调整。global SPEC `d5b460`＋两段文档更新补核 `ced96f`／`60fae9`，不同global QUALITY `39e3f5`均零；`d3d6b6`／`dcdeca`核父／main／exact10、index字节及100644。全cached whitespace原始exit2恰五处合法Markdown／diff空白，非PLAN八路径原始0，不冒全路径raw0。密钥／固定子仓 `09202f`明确exit0，`75bccd`提交、`0d0553`核父／十路径／普通status为空、`41a56f`推送exit0、`55f55c`远端同SHA。普通status为空不代表未审ignored规划已发布。
+
+**ce4发布当时的历史快照（已由上文终态与B3d实际进展覆盖）：**新push／attempt1：CI `38615603979`、provenance `38615603974`、Pages `38615604045` 已触发，实际job数尚待动态展开；新snapshot软件12、双Mac及完整原生结果必须绑定此SHA，不借a35 full或旧Mac成功。不同只读观察员继续收日志，未取消或重跑；下一同仓候选仍须等本批所有run／job终态。R2/R3未整体验收，Agentpin仍21566；Skill b583九job全成功仅关闭B3c软件片。后续B3d只读port原语正在编写唯一PLAN，root实际三步 `1a03a7`、独立实际调用链及固定Codex源码研究已完成，未开放step／outputs／其它writer或宿主能力。
+
 ### 2026-10-15 a35 全部终态；Mac snapshot 诊断六路径已审，准备下一候选
 
 root再次核同a35、push／attempt1三run全部终态，实际49＋5＋2共56个唯一job：49成功、2失败、1平台取消、4跳过。CI `38611591068` 为42S／2F／1cancel／4skip；provenance `38611590841` 五成功，Pages `38611591188` 两成功，没有取消或重跑掩盖失败。
