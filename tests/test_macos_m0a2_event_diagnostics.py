@@ -174,6 +174,8 @@ static char send_event(unsigned kind,unsigned slot,unsigned other,unsigned op,in
 }
 #define kill model_kill
 #define _exit model_exit
+#undef sigemptyset
+#undef sigaddset
 #define sigemptyset model_sigemptyset
 #define sigaddset model_sigaddset
 #define sigprocmask model_sigprocmask
@@ -296,6 +298,20 @@ class TestM0a2EventDiagnostics(unittest.TestCase):
                     f"M0A2_LAUNCH case=7 slot=0 child_slot=2 stage={name} saved_errno={error} exit=85 cleanup=unknown\n".encode(),
                     "M0A2_DIAGNOSTIC_LAUNCH_REQUIRED")
     def test_launch_setup_keeps_fd8_marker_ack_and_api_paths(self):
+        program=probe_source(CFILE.read_text(encoding="utf-8"),HELPER.read_text(encoding="utf-8"))
+        marker="#define kill model_kill\n"
+        self.assertEqual(program.count(marker),1)
+        # System headers may expose POSIX signal operations as function-like macros.
+        program=program.replace(marker,
+            "#undef sigemptyset\n#undef sigaddset\n"
+            "#define sigemptyset(set) (sigemptyset)(set)\n"
+            "#define sigaddset(set,signum) (sigaddset)((set),(signum))\n"+marker,1)
+        built=subprocess.run([shutil.which("cc"),"-std=c11","-Wall","-Wextra","-Werror",
+                              "-Wno-unused-function","-x","c","-","-o",
+                              str(Path(self.temporary.name)/"macro-probe")],
+                             input=program.encode("ascii"),capture_output=True,timeout=30)
+        self.assertEqual(built.returncode,0,built.stderr.decode("utf-8","replace"))
+        self.assertEqual(built.stderr,b"")
         for scenario,forks,spawns in (("launch",1,0),("launch_spawn",0,1),("launch_reserved8",1,0)):
             with self.subTest(scenario=scenario):
                 actual=self.run_probe(scenario)

@@ -7,10 +7,12 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
-import test_windows_loopback_config_observation as original
+from tests import test_windows_loopback_config_observation as original
 
 ROOT = Path(__file__).resolve().parents[1]
 REVIEWER = ROOT / "tests/test_windows_appcontainer.py"
@@ -133,6 +135,13 @@ class TestPositiveLoopbackNoticeBudget(unittest.TestCase):
                     self.assertEqual(len(frames), 3)
 
     def test_actual_notice_guard_and_actions_escaping_remain_enforced(self):
+        package_import=subprocess.run([sys.executable,"-I","-B","-c",
+            "import sys;sys.path[:0]="+repr([str(ROOT),str(ROOT/"src")])+
+            ";import tests.test_windows_loopback_notice_budget"],
+            cwd=ROOT,capture_output=True,timeout=10)
+        self.assertEqual(package_import.returncode,0,package_import.stderr.decode("utf-8","replace"))
+        self.assertEqual(package_import.stdout,b"")
+        self.assertEqual(package_import.stderr,b"")
         output = io.StringIO()
         with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
                 contextlib.redirect_stdout(output):

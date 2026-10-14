@@ -6,6 +6,24 @@
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 
+### 2026-10-15 35e 全部终态；两个窄测试覆盖缺口已修软件，准备下一候选
+
+root 重新逐 run／job API 核同 `35e07bcdc79475cd5bb4d7c9c46af7661bc8a847`、push／attempt1：CI `38607765925` 实际50项（41成功、6失败、3占位跳过），provenance `38607765946` 实际2项（1失败、1消费者占位跳过），Pages `38607765929` 两成功；54个唯一job全部终态，合计43成功、7失败、4跳过。没有取消或重跑，下一候选不再受本批在途约束。
+
+- 双full原日志为3.11／3345／776.897s与3.12／3345／690.234s，均0FAILURE、1ERROR、99skip、exit1；唯一ERROR是新notice TEST裸import不能在根目录package discovery下加载。其前strict3与原strict12均实际通过，说明窄discover绿不能替代包级入口；后置密钥／pin门均skip。provenance validate同源3345／863.545s／1ERROR／99skip，signed fixture9通过不等于后续四消费者已运行，实际四消费者未展开。
+- 双Reviewer仍各1方法／1FAILURE／0ERRORskip，ARM49.405s、x6445.908s，candidate exit78；新配置日志406／407／37字节完整发布，原865预算失败已不再是首门。pre／post查询成功且空名单、目标未匹配、回收和清理确认；正控exit105／IPv4超时仍inconclusive。root另亲读x64原log并重算三JSON长度，不授DENY／WFP丢包或唯一网络根因。
+- 独立观察员核双Mac A同候选原件，各18个owned-root实例及W0/W1小片通过、原件／源码／binary摘要匹配；只授既有窄边界，不抹b233的快照未知。双B严格软件probe在Darwin已有 `sigemptyset`／`sigaddset` 宏上重定义，被Werror拒绝，均setUpClass ERROR／Ran0，native与formal实际0，无B原件；不能记quota RED或native跳过。
+
+两个紧急单文件小修均先取得真实Assertion RED再改最小实现，未改production/native／CI／full入口，也未降低Werror或测试计数：Mac事件TEST由364到380行／`8cfbe010`，`85c00e` strict12为11P+1宏编译Assertion／0ERRORskip，随后仅两#undef使 `b85016` strict12全绿；actual SPEC `a36fed`→不同QUALITY `5d23c0`均零。Windows预算TEST由159到168行／`a4bb0bcb`，`c516bb` 隔离解释器package import回归取得1Assertion／0ERRORskip，再改规范package import后 `86d4f7` 窄3及 `ebaffd` package3均全绿；actual SPEC `36ed0f`→不同QUALITY `8e9683`均零。以上仅本机必要软件验证，新的线上full／Darwin仍待；根目录全量发现、strict3／12、500／九槽及全部旧断言保持。
+
+网络前提继续只读核查：官方 [GetConfig合同](https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-networkisolationgetappcontainerconfig)描述可发loopback的配置名单，[Windows防火墙排障](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/troubleshooting-uwp-firewall)要求对应同机UWP场景另启loopback。结合空名单只能质疑“私网cap本身足够”的正控前提，不能从packaged文档直接推定本工程裸AppContainer实际packet根因。root已实际三步思考 `ca7c43`，独立只读源码／官方合同研究继续；不改豁免、cap、系统策略、外部目标或硬验收。
+
+### 35e 发布时快照（历史，终态以上节为准）
+
+当前最新发布的 Agent main 为 `35e07bcdc79475cd5bb4d7c9c46af7661bc8a847`，父 `b233b66431984aed78266d294a88653586b8caec`。仅9路径：六个已批准实现／TEST／CI路径、notice PLAN和两份进度文档。不同作者正式RED→SOURCE、逐任务双审后，全片 global SPEC `16a7c3`→不同 QUALITY `9bcaa5` 均零；root `4fdf2d` 前守护、`b911ac` 核9个index字节／100644／AST／原始cached whitespace0／父与main，密钥 `cd4406` 和子仓 `74a6e0` 各明确exit0；`a8197b`提交、`999371`核父／9路径／普通status为空、`b8906b`推送exit0、`b8d7cb`远端同SHA。普通status为空不等于ignored规划均已发布；Mac快照和Skill B3c两份未审PLAN明确未纳此提交，vendor仍21566。
+
+新 push／attempt1 的三条工作流已触发：CI `38607765925`、provenance `38607765946`、Pages `38607765929`；job仍可能动态展开，不能预填总数或借旧SHA通过。独立只读观察继续核原始footer、双Windows三个完整普通日志和原门、双Mac实际A／B、签装消费者，未取消或重跑。下一Agent候选推送前必须等本候选所有run／job终态；等待线上期间继续审定与实施其余独立小片，不把本次提交／软件绿报告为R2/R3通过。
+
 ### 2026-10-15 接续：b233 / 970 全部终态，阶段仍未通过
 
 以下新快照优先于后面的 5ad / 740 历史记录。
