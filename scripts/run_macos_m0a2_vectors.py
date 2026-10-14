@@ -276,6 +276,8 @@ def main():
             "tests/test_macos_task_quota_probe.py","tests/test_macos_process_groups_native.py",
             "tests/test_macos_process_groups.py","tests/test_macos_m0a2_vectors.py",
             "tests/test_macos_m0a2_event_diagnostics.py",
+            "tests/test_macos_identity_snapshot_diagnostics.py",
+            "docs/nbl/plans/2026-10-15-macos-identity-snapshot-diagnostics.md",
             "docs/nbl/plans/2026-10-14-macos-m0a2-event-diagnostics.md",
             "scripts/run_macos_m0_ci.py","scripts/run_macos_m0a2_vectors.py",
             "native/mac/CMakeLists.txt",".github/workflows/ci.yml",

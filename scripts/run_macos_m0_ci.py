@@ -297,6 +297,8 @@ def main():
             "native/mac/tests/icode_m0a1_unused_identity.inc",
             "native/mac/tests/icode_m0a1_process_groups_native.c",
             "tests/test_macos_process_groups_native.py",
+            "tests/test_macos_identity_snapshot_diagnostics.py",
+            "docs/nbl/plans/2026-10-15-macos-identity-snapshot-diagnostics.md",
             "tests/test_macos_process_groups.py",
             "tests/test_macos_task_quota_probe.py",
             "native/mac/CMakeLists.txt",

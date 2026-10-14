@@ -187,6 +187,49 @@ class TestW1MechanicalLeaseExtraction(unittest.TestCase):
         if marker in content:
             self.assertEqual(content.count(marker),1)
             lease=(driver.parent/"icode_m0a1_identity_lease.inc").read_bytes()
+            if b"/* IDENTITY_SNAPSHOT_DIAGNOSTIC_BEGIN */\n" in lease:
+                self.assertEqual(hashlib.sha256(lease).hexdigest(),
+                    "3c8e74cffa0dfda2fc8e7cf91e67cd6db99c7a5c88167ab9c95925887356ada5")
+                # Strip only the reviewed diagnostic projection; keep the original hash below.
+                diagnostic=rb"/\* IDENTITY_SNAPSHOT_DIAGNOSTIC_BEGIN \*/\n.*?/\* IDENTITY_SNAPSHOT_DIAGNOSTIC_END \*/\n"
+                algorithm=rb"/\* IDENTITY_SNAPSHOT_ALGORITHM_BEGIN \*/\n.*?/\* IDENTITY_SNAPSHOT_ALGORITHM_END \*/\n"
+                self.assertEqual(len(re.findall(diagnostic,lease,re.S)),1)
+                self.assertEqual(len(re.findall(algorithm,lease,re.S)),1)
+                original_count=b"""static int process_count(uid_t uid) {
+    pid_t pids[MAX_PIDS]; int n=proc_listallpids(pids,sizeof(pids)),count=0;
+    if(n<=0 || n>=MAX_PIDS) return -1;
+    for(int i=0;i<n;i++) {
+        if(pids[i]<=0) continue;
+        struct proc_bsdinfo b;
+        int r=proc_pidinfo(pids[i],PROC_PIDTBSDINFO,0,&b,sizeof(b));
+        if(r!=(int)sizeof(b)) {
+            errno=0;
+            if(kill(pids[i],0)<0 && errno==ESRCH) continue;
+            return -1;
+        }
+        if(b.pbi_ruid==uid || b.pbi_uid==uid || b.pbi_svuid==uid ||
+           b.pbi_rgid==uid || b.pbi_gid==uid || b.pbi_svgid==uid) count++;
+    }
+    return count;
+}
+"""
+                lease=re.sub(diagnostic,b"",lease,count=1,flags=re.S)
+                lease=re.sub(algorithm,lambda _:original_count,lease,count=1,flags=re.S)
+                lease=lease.replace(
+                    b"uid_t uid=UID_FIRST+i; struct process_snapshot before_snapshot;\n"
+                    b"        int before=process_count_snapshot(uid,&before_snapshot);",
+                    b"uid_t uid=UID_FIRST+i; int before=process_count(uid);",1)
+                lease=lease.replace(
+                    b'if(before<0) {\n'
+                    b'            emit_process_snapshot("reserve-process-snapshot",uid,&before_snapshot);\n'
+                    b'            die("reserve-process-snapshot");\n'
+                    b'        }',b'if(before<0) die("reserve-process-snapshot");',1)
+                lease=lease.replace(
+                    b"struct process_snapshot after_snapshot;\n"
+                    b"        int after=process_count_snapshot(uid,&after_snapshot);\n"
+                    b'        if(after<0) emit_process_snapshot("reserve-contaminated",uid,&after_snapshot);\n'
+                    b'        if(after!=0) die("reserve-contaminated");',
+                    b'if(process_count(uid)!=0) die("reserve-contaminated");',1)
             content=content.replace(marker,lease,1)
         self.assertEqual(hashlib.sha256(content).hexdigest(),
             "a65f067ec9c6b32eb3bb7cc7afd803fe465d02273b5484561b237db59c31f673")

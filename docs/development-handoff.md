@@ -6,6 +6,29 @@
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 
+### 2026-10-15 a35 全部终态；Mac snapshot 诊断六路径已审，准备下一候选
+
+root再次核同a35、push／attempt1三run全部终态，实际49＋5＋2共56个唯一job：49成功、2失败、1平台取消、4跳过。CI `38611591068` 为42S／2F／1cancel／4skip；provenance `38611590841` 五成功，Pages `38611591188` 两成功，没有取消或重跑掩盖失败。
+
+- 双full原日志root亲读：Python3.11.17 `116016033986`，3347／853.760s；Python3.12.15 `116016034042`，3347／913.659s，均0FAILURE／ERROR、99skip、exit0，后置密钥与pin门实际通过。新notice三方法在package入口实际执行通过；已发布旧 `test_macos_m0a2_event_diagnostics` 十二项也通过，**未提交的新snapshot十二项不在a35中**。
+- 双Windows Reviewer仍各1方法／1FAILURE、0ERRORskip，x64 44.889s、ARM50.126s，candidate78，正控105／IPv4超时。三配置JSON各406／407／37字节完整，预算盲点已闭但原网络门未通过，不能授DENY／唯一WFP原因。两平台ABI各10通过。
+- ARM Mac A原件17／18source、binary／binding／audit／W1与18owned-root封账吻合；Intel A `116016034006` 在checkout fetch挂起后由平台取消，未到Python／build／native，无A原件；依赖B仅占位 `116020947417` 跳过，无steps，不能授signal宏的Darwin通过、native或quota RED。不是本代理取消，保留原结果。
+- provenance validate及四个真实签装消费者均成功；消费者各69方法与signed fixture9通过，crypto／真实负控／direct-volume／拒setup和命令门保持。同a35安装观察仍owner_untrusted被拒，helper与verifier各13 opened／13 confirmed-close／0未确认，不授受保护晋升能力。Pages精确a35部署成功。下一候选可推，但R2/R3仍未整体验收。
+
+下文为a35发布及后续工作树记录。下一Agent候选仅Mac诊断六实现、两份已审PLAN及两份进度文档；不得纳入正在设计的B3d PLAN，不升级vendor。两份已审PLAN的5处行尾空白是Markdown硬换行3处与冻结统一diff空上下文2处，保留原资产字节，需在最终raw whitespace检查中逐项分类，不能称全路径raw0；生产／TEST／CI路径仍须原始零诊断。
+
+Agent main／远端已核为 `a35bdc250dbae1a98d976a02c3438fcfef6e8cc6`，父35e，仅下节说明的两个TEST小修和两份进度文档，共四路径、48增1删。整体 actual SPEC `ec12eb`／`8d2242` 与不同 QUALITY `7ce118` 均零；root strict12／3实际全绿无跳过（`d1ce0c`），密钥／固定子仓守护各exit0（`c36cf8`／`05b520`）；`18b2c0`与`52937e`核精确工作树／index字节、100644、空无关差异和原始whitespace0。提交 `cd4bf9`、推送 `901363` exit0，`ad5bb4`核远端同SHA。此前35e所有run和54项job再次核终态，没有取消或重跑。
+
+同SHA push新工作流：CI `38611591068`、provenance `38611590841`、Pages `38611591188`。发布时均尚未验收，job数量等待动态展开；不得把本机绿、提交或旧SHA绿写成full／Darwin／R2/R3通过。vendor继续固定21566，发布时Skill B3c和Mac快照诊断尚未实施，后续工作树进展如下；不等于已发布或配额问题已修复。
+
+**Skill B3c待验候选已发布：**正式TEST432行／`c6f3f59a`已取得14红父／28Assertion、None1绿、零ERROR／skip；原45绿，actual TEST SPEC／QUALITY均零。不同SOURCE作者仅按八hunks修改CP至6570行／`50dcf826`，新15、原45及批准7节点共67通过且零skip（作者`61bd8f`等）；实际 SOURCE SPEC `8b6876`／`d5f343`与不同QUALITY `12112b`均零。root随后只按批准C给candidate-provider CI加两行，80行／`546397d4`（`d2c99a`），三路径整体SPEC `0cb9a2`／`235367`与不同QUALITY `e2f3bd`均零。`b43bc8`／`8d76e1`核精确三路径、父main970、索引字节／100644及cached whitespace0；`535851`提交、`9d1906`推送exit0、`f41633`远端同SHA：`b58395d04ba1decf0dd28df76406d6567b21c32f`，3路径472增10删，普通status为空。父970全部三run／九job另核终态成功，无取消重跑。密钥原扫描仍raw1：两份未改、已跟踪的合成测试命中（`cd7f2d`），不能写成原扫描全绿。
+
+Skill新candidate `38613418610`、inspection `38613418634`、site `38613418846` 均绑定b583、push／attempt1，root再次核三run及2＋4＋3共9job全部终态成功，独立观察收齐九份原log。新strict15在Linux3.10.22为15／4.285s、Windows3.10.11为15／32.417s，均零skip；旧candidate Linux107通过，Windows103通过、4项精准POSIX skip／3subtests，root另亲读86290字符Win原log和418.50s footer。双inspection各162通过、generic原有2／3skip保留，site三job成功。**仅关闭B3c软件片**，不授C1b整体／C2／宿主inspection或R2/R3通过。Agent vendor仍21566，不因子仓软件片绿提前升级。
+
+Mac snapshot正式TEST A299行／`ec4c4c55`、C528行／`c8735448`已落，strict新12为5红父／10Assertion＋7绿、零ERROR／skip，旧groups13／event12通过；实际 TEST SPEC `f2aaf3`／`d3cc85`与不同QUALITY `d31c69`均零。不同SOURCE作者仅实施B/D/E：lease117行／`3c8e74cf`、A controller431行／`d6bceacd`、B controller330行／`ff21e16c`；strict新12、groups13、event12均绿。vectors默认9绿6skip，opt-in9绿、既有cap2 API一条Assertion失败、5skip，均不授native信用。root实读SOURCE完整diff `687d7b`，实际SOURCE SPEC `fce74c`与不同QUALITY `f7f39f`零；root `c29221`只加F三行，CI2511／`c331b436`保留notice D，F独立SPEC `c44579`／`2493c3`及不同QUALITY `319b7b`均零。仍未提交，必须同时纳入controllers绑定的新TEST和Mac PLAN。原cap1／M0A2_SOURCE0、配额、arg0／8192／ESRCH／扫描次数保持；只补首个实际消费拒绝的诊断，未声称根因或配额修复。
+
+后续步骤入口尚仅只读分析；root `1a03a7`已实际执行sequential-thinking三步，独立调研核 `resolve_port`多根HEAD、event-only start与metadata事务、不同Inspection/Candidate ABC，不能混用或无声忽略多根。Agent尚无已实现的两类provider宿主适配器，不能把设计中的名字当实际调用链；step/check/finish及其它writer／finalgate保持未开放。
+
 ### 2026-10-15 35e 全部终态；两个窄测试覆盖缺口已修软件，准备下一候选
 
 root 重新逐 run／job API 核同 `35e07bcdc79475cd5bb4d7c9c46af7661bc8a847`、push／attempt1：CI `38607765925` 实际50项（41成功、6失败、3占位跳过），provenance `38607765946` 实际2项（1失败、1消费者占位跳过），Pages `38607765929` 两成功；54个唯一job全部终态，合计43成功、7失败、4跳过。没有取消或重跑，下一候选不再受本批在途约束。
