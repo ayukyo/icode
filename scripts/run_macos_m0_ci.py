@@ -293,6 +293,8 @@ def main():
             "native/mac/icode_m0a1_process_groups.h",
             "native/mac/icode_m0a1_process_groups.c",
             "native/mac/tests/icode_m0a1_identity_lease.inc",
+            "native/mac/tests/icode_m0a1_fixed_helpers.inc",
+            "native/mac/tests/icode_m0a1_unused_identity.inc",
             "native/mac/tests/icode_m0a1_process_groups_native.c",
             "tests/test_macos_process_groups_native.py",
             "tests/test_macos_process_groups.py",

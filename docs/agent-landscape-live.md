@@ -1,5 +1,19 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
+最新候选：Skill `74063de8` 只四路径发布B3a candidate-only接线，正式RED→不同SOURCE定点33＋原28全绿→实际双审／CI审0，现等待同SHA线上，未更新Agent pin或授C1b整体。借鉴Codex显式invocation、错误分层和接纳边界已形成软件检查点，但末检查至append原子性／C2epoch仍未证。Mac新15局部绿之后，root旧13关联回归查出include抽取漏迁移，保留11PASS2FAIL历史；最小两方法13行适配、原hash／7modes不变，实际双审及旧13全绿后才准备TEST-only候选，不删断言／跳过或将辅助软件RED冒称双Mac真实RED。下文历史“在途”各绑定旧时点。
+
+2026-10-14 Windows只读观测研究：独立核对MicrosoftDocs/sdk-api固定 `656e9656bfaef34dd29cd7ee9e1146aec17e924c` 的 [GetAppContainerConfig合同](https://github.com/MicrosoftDocs/sdk-api/blob/656e9656bfaef34dd29cd7ee9e1146aec17e924c/sdk-api-src/content/networkisolation/nf-networkisolation-networkisolationgetappcontainerconfig.md)（文档CC-BY-4.0／示例MIT，仅借合同、不复制代码）。项目尚未实现该API；已有DiagnoseConnectFailureAndGetInfo不是它。采纳方向是独立、有界helper仅观察内部正控profile的loopback豁免成员关系，收益为补配置盲点，成本为ABI／逐SID及数组HeapFree唯一所有权／可信DLL／退出回收和双架构负控。API无timeout参数且返回前分配不能靠输出条数预先限额，失败／结构异常／清理未知均不得当空名单；前后相同也不证明期间稳定或有效WFP允许。暂缓公网／internetClient／修改豁免／根因结论，不适配线程watchdog伪硬时限或查询未匹配即DENY。验项应绑定同SHA、匹配／未匹配／合法空集／错误／超时／漂移／清理及原Reviewer门保持；当前DESIGN仅静态审查通过，完整PLAN在编；未实现、未执行新探测或系统修改，未增加权限。
+
+当前 Agent `58bc31be` 实际53job全终态：CI43成功／2 Reviewer失败／3退役skip，provenance5成功，无Pages。双Python各3305测试完整通过（各93skip），新诊断实际输出且未改25分钟预算；旧挂起根因仍未证明。四签装的job成功仍只证明签装流程，实际owner_untrusted拒绝、受保护启动未授权；双网络Reviewer超时不是DENY。Mac vectors已修订creation contract与113删除负控，当前PLAN `21cbb485` fresh审查中，尚无native实施。下文为按候选绑定的历史快照，不能用旧绿覆盖当前未通过项。
+
+最新软件终态：Skill `456b3236` 三run／9job同SHA push／attempt1全部成功，B2历史／适用性／debt传播片通过；root另核API及Windows原件，Linux107P、Windows103P＋4明确POSIX skip与独立strict12/9/2分别记账，不授原生或C1b整体／pin。B3a计划复用本轮独立实读的固定Codex27065a91三官方文件：显式invocation所有权、Git错误分层可采纳，但posthook拒绝结果不会回滚已执行工具，不适配writer发布前原子门；无代码复制或新许可依赖。Mac vectors计划发现创建正控可空跑的oracle缺口，退回补基数／因果负控，不能把模型绿当原生通过。
+
+最新接续：Skill `456b323` 已发布B2待验候选，必要字段回归正式RED→guard五行修复→实际双审及CI接线审均通过；candidate／inspection／site线上在途，不授C1b整体或更新pin。Agent `fdcab59` 实际52job终态，两个full完整3305且120秒栈实际输出，但三个旧CI字面合同漏迁移导致2F1E；保留本轮关联审查遗漏，不能叫全绿或旧挂起已修。仅三行合同同步、16定点及独立审查后已发布 `58bc31b` 待验候选，两个自动run已触发，后续结果须绑定新SHA。
+
+最新候选：Agent `fdcab59` 精确四路径已提交推送，CI诊断实际双审零遗留、strict5通过；新增逐方法输出与120秒线程栈，保留默认发现、退出语义、导入路径、25分钟及安全门。三自动run `38579016557 / 38579016849 / 38579016365` 刚触发，不能视为旧挂起修复。B2实际21绿后QUALITY发现缺reasons的provider context会在三个入口泄漏KeyError，CI冻结并补最小回归，不把局部GREEN或计划通过当完整契约通过。
+
+接续观察：Agent `8273cba` 只发布两份进度文档，新CI48为42成功／2Reviewer失败／1个Python3.12取消／3退役skip；签装5与Pages2成功。3.12没有完整测试结尾，不用旧SHA补绿或直接延时；Docker孤儿不是已证根因。B2最终PLAN `b4c1404a` 已补later-negative、真实链端点不符及坏reason类型负控，经fresh双审后正式TEST ONLY：新12为11红方法／13断言记录＋None1绿，迁移9为2红7绿，作者与root独立一致、0ERROR／skip；实际TEST审查零遗留，正在由不同作者实施SOURCE，尚无GREEN或线上信用。CI诊断PLAN `53457188` 的SPEC发现script额外导入路径I1，退回补真实启动可见性对照，不把观察改动当挂起修复。M0a2设计双审通过，仅进入vectors完整计划，仍不授M0a2／M0b／M1或R2/R3信用。以下终态与在途描述各绑定其历史候选。
+
 最新终态：Skill `8d81c40` 三run／9job均completed success、同SHA／attempt1，root与独立观察员核原日志；B1软件小片通过，B2计划继续。以下两条及“补充同候选结果”保留当时在途窗口，其余旧快照位于历史说明后；不据软件通过授真实宿主、整pin或R2/R3信用。
 
 Agent `db47b12` 最新55job亦全部终态：CI43成功／2Reviewer失败／3退役skip，provenance5成功，Pages2成功。双Mac仅授cap1必要小片；四签装仍owner_untrusted拒绝、三个授权／观测false及13资源确认回收，不授完整配额、网络DENY或受保护晋升。下列“在途”均为历史时点，当前总体仍未通过。

@@ -2444,3 +2444,53 @@ jobs:
             ${{ runner.temp }}/icode-m0a1-source-build.log
             ${{ runner.temp }}/icode-m0a1-build/icode_m0a1_baseline
             ${{ runner.temp }}/icode-m0a1-build/icode_m0a1_source
+
+  macos-m0a2-vectors:
+    name: M0a2 fixed vectors and genuine cap2 RED (${{ matrix.os }})
+    needs: macos-m0a1-finite
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      M0A2_SOURCE: "0"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Set up nonroot Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+      - name: Targeted SOURCE software contract
+        if: env.M0A2_SOURCE == '1'
+        shell: bash
+        run: ICODE_M0A2_LIMIT_SOFTWARE=1 python -m unittest discover -s tests -p test_macos_m0a2_vectors.py -v
+      - name: Shared B deadline and strict native oracle
+        shell: bash
+        run: >-
+          python -m scripts.run_macos_m0a2_vectors
+          --build-dir "$RUNNER_TEMP/icode-m0a2-build"
+          --output-root "$RUNNER_TEMP/icode-m0a2-vectors"
+          --phase "${{ env.M0A2_SOURCE == '1' && 'both' || 'red' }}"
+          --expected-arch "${{ matrix.arch }}"
+      - name: Preserve bounded candidate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m0a2-vectors-${{ github.sha }}-${{ matrix.arch }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/icode-m0a2-vectors/

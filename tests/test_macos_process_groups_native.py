@@ -174,6 +174,15 @@ class TestW1MechanicalLeaseExtraction(unittest.TestCase):
     def test_driver_inverse_is_exact_original(self):
         driver=ROOT/"native/mac/tests/icode_m0a1_driver.c"
         content=driver.read_bytes()
+        marker=b'#include "icode_m0a1_fixed_helpers.inc"\n'
+        if marker in content:
+            self.assertEqual(content.count(marker),1)
+            common=(driver.parent/"icode_m0a1_fixed_helpers.inc").read_bytes()
+            self.assertEqual(common.count(b"static int canaries("),1)
+            self.assertEqual(content.count(b"static void gate("),1)
+            split=common.index(b"static int canaries(")
+            content=content.replace(marker,common[:split],1)
+            content=content.replace(b"static void gate(",common[split:]+b"static void gate(",1)
         marker=b'#include "icode_m0a1_identity_lease.inc"\n'
         if marker in content:
             self.assertEqual(content.count(marker),1)
@@ -188,6 +197,10 @@ class TestW1LeaseSnapshotSoftware(unittest.TestCase):
         native=ROOT/"native/mac/tests/icode_m0a1_process_groups_native.c"
         self.assertTrue(native.is_file(),"native TEST asset absent is infrastructure, not RED")
         source=native.read_text(encoding="utf-8")
+        marker='#include "icode_m0a1_unused_identity.inc"\n'
+        if marker in source:
+            self.assertEqual(source.count(marker),1)
+            source=source.replace(marker,(native.parent/"icode_m0a1_unused_identity.inc").read_text(encoding="utf-8"),1)
         found=re.findall(r"static uid_t reserve_unused_id\(int leases\) \{.*?\n\}",source,re.S)
         self.assertEqual(len(found),1,"actual reservation function must be extracted unambiguously")
         cc=shutil.which("cc")
