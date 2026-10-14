@@ -295,6 +295,12 @@ class TestPrivateConnectDiagnostic(unittest.TestCase):
         import inspect
         source = inspect.getsource(method)
         self.assertIn("for code in windows_job_module._PRIVATE_NETWORK_CAPABILITY_EXIT_STAGES", source)
+        for label in (
+            "positive_loopback_config_pre",
+            "positive_loopback_config_post",
+            "positive_loopback_config_comparison",
+        ):
+            self.assertIn(label, source)
         case = app_tests.TestWindowsAppContainer(method.__name__)
         result = unittest.TestResult()
         case.run(result)

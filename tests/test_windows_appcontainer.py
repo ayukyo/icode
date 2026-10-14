@@ -2141,6 +2141,15 @@ class TestWindowsAppContainer(unittest.TestCase):
             len(encoded), 500,
             f"R2.3 JSON notice {name!r} would be silently truncated",
         )
+        loopback_logs = {
+            "Windows positive loopback configuration pre": "positive_loopback_config_pre=",
+            "Windows positive loopback configuration post": "positive_loopback_config_post=",
+            "Windows positive loopback configuration comparison": "positive_loopback_config_comparison=",
+        }
+        if name in loopback_logs:
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                print(loopback_logs[name] + encoded, flush=True)
+            return
         self._workflow_notice(name, encoded)
 
     def test_Reviewer宿主普通用户校验在非Windows上返回固定原因码(self) -> None:
@@ -2623,16 +2632,14 @@ class TestWindowsAppContainer(unittest.TestCase):
             def assertIs(self, *_args: object, **_kwargs: object) -> None:
                 return None
 
-            def _workflow_json_notice(
-                self, name: str, detail: dict[str, object],
-            ) -> None:
-                encoded = json.dumps(detail, ensure_ascii=True, separators=(",", ":"))
-                if len(encoded) > 500:
-                    raise AssertionError(
-                        f"native Reviewer probe notice exceeds GitHub limit: "
-                        f"{name} ({len(encoded)} bytes)",
-                    )
+            def assertLessEqual(self, first: object, second: object, msg: str = "") -> None:
+                unittest.TestCase().assertLessEqual(first, second, msg)
+
+            def _workflow_notice(self, name: str, encoded: str) -> None:
+                TestWindowsAppContainer._workflow_notice(self, name, encoded)
                 captured_notices.append((name, encoded))
+
+            _workflow_json_notice = TestWindowsAppContainer._workflow_json_notice
 
         with tempfile.TemporaryDirectory(prefix="icode-reviewer-probe-script-") as raw:
             runner_temp_root = Path(raw) / "runner-temp"
@@ -2733,6 +2740,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "ICODE_DIAGNOSTIC_STANDARD_USER_SID": "S-1-5-21-1-2-3-1001",
                         "GITHUB_ACTIONS": "true",
                         "RUNNER_OS": "Windows",
+                        "ICODE_DIAGNOSTIC_WFP_PROBE_PATH": "",
                         "RUNNER_TEMP": str(runner_temp_root),
                         "ICODE_DIAGNOSTIC_WFP_RUNNER_TARGET_FILE": str(runner_target_path),
                         "ICODE_DIAGNOSTIC_WFP_RUNNER_READY_FILE": str(runner_ready_path),
@@ -2788,6 +2796,21 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("Windows Reviewer IPv4 connect stages", notice_names)
         self.assertIn("Windows Reviewer IPv6 connect stages", notice_names)
         self.assertIn("Windows Reviewer write canary fingerprints", notice_names)
+        loopback_lines = [
+            line for line in wfp_output.getvalue().splitlines()
+            if line.startswith("positive_loopback_config_")
+        ]
+        self.assertTrue(all(len(line.split("=", 1)[1]) <= 500 for line in loopback_lines))
+        self.assertEqual([
+            (line.split("=", 1)[0], json.loads(line.split("=", 1)[1]))
+            for line in loopback_lines
+        ], [
+            ("positive_loopback_config_pre",
+             _positive_loopback_unknown("pre", "not_attempted")),
+            ("positive_loopback_config_post",
+             _positive_loopback_unknown("post", "not_attempted")),
+            ("positive_loopback_config_comparison", {"comparison": "unknown"}),
+        ])
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
         access_notice = json.loads(next(
             encoded
@@ -8264,11 +8287,17 @@ class TestWindowsAppContainer(unittest.TestCase):
                     loopback_helper, loopback_profile, "pre",
                 )
                 if loopback_pre_unreaped:
-                    self._workflow_json_notice("Windows positive loopback configuration", {
-                        "pre": loopback_pre,
-                        "post": _positive_loopback_unknown("post", "not_attempted"),
-                        "comparison": "unknown",
-                    })
+                    self._workflow_json_notice(
+                        "Windows positive loopback configuration pre", loopback_pre,
+                    )
+                    self._workflow_json_notice(
+                        "Windows positive loopback configuration post",
+                        _positive_loopback_unknown("post", "not_attempted"),
+                    )
+                    self._workflow_json_notice(
+                        "Windows positive loopback configuration comparison",
+                        {"comparison": "unknown"},
+                    )
                     self.fail("positive loopback pre helper was not reaped; original experiment not run")
                 try:
                     capability_control = run_windows_appcontainer(
@@ -8290,12 +8319,18 @@ class TestWindowsAppContainer(unittest.TestCase):
                         loopback_helper, loopback_profile, "post",
                     )
                 self._workflow_json_notice(
-                    "Windows positive loopback configuration",
-                    _positive_loopback_comparison(
+                    "Windows positive loopback configuration pre", loopback_pre,
+                )
+                self._workflow_json_notice(
+                    "Windows positive loopback configuration post", loopback_post,
+                )
+                self._workflow_json_notice(
+                    "Windows positive loopback configuration comparison",
+                    {"comparison": _positive_loopback_comparison(
                         loopback_pre, loopback_post,
                         same_parent_profile=(loopback_profile == capability_profile_name),
                         token_receipt=capability_control.child_token_receipt,
-                    ),
+                    )["comparison"]},
                 )
                 if not capability_control.cleanup_ok:
                     self.fail(

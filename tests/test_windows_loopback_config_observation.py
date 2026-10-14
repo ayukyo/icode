@@ -191,7 +191,8 @@ def c_body(source, marker):
 
 
 class TestPositiveLoopbackConfig(unittest.TestCase):
-    def execute_positive(self, *, pre_stop=False, post_stop=False, clean=True, launch_error=False):
+    def execute_positive(self, *, pre_stop=False, post_stop=False, clean=True, launch_error=False,
+                         json_notice=None, comparison=None, unknown=None):
         source = REVIEWER.read_text(encoding="utf-8")
         start_marker = "                loopback_profile = capability_profile_name"
         if start_marker not in source:
@@ -219,10 +220,13 @@ class TestPositiveLoopbackConfig(unittest.TestCase):
             capability_profile_name=PROFILE, capability_argv=("fixed-positive-argv",),
             scratch=Path("fixed-scratch"),staged_runtime=Path("fixed-runtime"),
             _observe_positive_loopback_config=observe,
-            _positive_loopback_unknown=lambda phase,status:dict(sample(phase),status=status),
-            _positive_loopback_comparison=lambda pre,post,**kwargs:{"comparison":"unknown"},
+            _positive_loopback_unknown=(unknown if unknown is not None else
+                lambda phase,status:dict(sample(phase),status=status)),
+            _positive_loopback_comparison=(comparison if comparison is not None else
+                lambda pre,post,**kwargs:{"comparison":"unknown"}),
             run_windows_appcontainer=launch,WindowsJobResult=failed_result,
-            self=N(_workflow_json_notice=lambda *args:notices.append(args),fail=self.fail))
+            self=N(_workflow_json_notice=(json_notice if json_notice is not None else
+                lambda *args:notices.append(args)),fail=self.fail))
         failure = None
         try:
             exec(compile(block, str(REVIEWER), "exec"), namespace)

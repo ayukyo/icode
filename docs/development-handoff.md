@@ -6,7 +6,24 @@
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 
-### 2026-10-15 接续：全部线上终态，阶段仍未通过
+### 2026-10-15 接续：b233 / 970 全部终态，阶段仍未通过
+
+以下新快照优先于后面的 5ad / 740 历史记录。
+
+- Agent 当前 main 为 `b233b66431984aed78266d294a88653586b8caec`，父 `5ad08dd9708ad36c495f1ad719dbc14ac7f298a8`；14 路径候选已提交推送，固定 vendor 仍为 `21566a589cbe98bd35372a04bbb6ca1c51d8eed2`。提交前精确范围、资产字节、模式、AST、密钥和 pin 已核。原始 cached whitespace 返回2，严格限定为已冻结 PLAN 内5条 unified-diff 空 context，不冒称原始检查返回0；代码及其余实质内容检查通过。原 Windows 工作树及 Junction 未动。
+- root 本轮重新独立核 GitHub API：b233 push／attempt1 的 CI `38600577901` 为49 job（40成功、5失败、4跳过），provenance `38600577856` 为2 job（1失败、1未展开消费者占位跳过），Pages `38600578491` 为2成功；合计53项全部终态，42成功、6失败、5跳过。没有取消或重跑。不能借上一候选的 provenance 消费者成功授本候选信用。
+- Linux Python3.11／3.12 全量均3344方法、3失败、99跳过、0ERROR，分别624.227s／827.163s。三个失败为 CI 必需命令清单漏迁移，以及 Reviewer 实际配置输出882字节超500限制的两个关联见证。provenance validate 另有3344／878.552s／3失败／99跳过，日志尾部只明确展开 notice 失败，不声称其逐一展开其余失败名。full 后的密钥与 pin 步骤被跳过；本机先前检查不替代它们。
+- Windows x64／ARM Reviewer 首失败均为真实配置 notice 865字节超过500；完整 pre/post 未发布，不授配对 query／release／reap 或网络 DENY 信用。新软件 strict12 双 Python 通过，却未覆盖真实 serializer 的合并预算，正在补真实输出路径测试。修订方案为固定三条各不超过500字节的普通有界日志，保持原 Actions 通知9槽上限及全部旧标签，不提高限制、不截断证明字段；计划尚待冻结与独立审查，不能称已修复。
+- macOS ARM A 同候选18实例及 W0/W1原件通过；Intel A baseline正常，SOURCE前三 case 后在 `reserve-process-snapshot` 拒绝，native2、cleanup未知，无 SOURCE formal 账本。即时 errno 未保存，末尾100不能证明实际失败 syscall 或唯一根因。B 因 A 依赖失败只出现 skipped 占位，实际新 B native／formal为0，不能授新 DATA／LAUNCH 原生诊断、quota RED 或 cap2。正在设计仅拒绝消费时输出的有界快照诊断，不重试、不跳过未知、不放宽配额。
+- Skill 当前 main 为 `970cd359944624a6403f757997bae6d0020a5473`，父 `74063de85cb40b4873bf2414b98846507fe04c1a`；B3b build-start provider 传播与返回前 freshness 最小片已提交推送，精确5路径。root 独立核 candidate `38602476989`、inspection `38602476983`、site `38602477375` 同 SHA push／attempt1，实际2+4+3共9 job全部终态成功。独立观察原日志：B3b严格12在 Linux／Windows 均零跳过通过；旧 candidate Linux107通过，Windows103通过、4个明确POSIX专属跳过；inspection 软件各162通过，generic另有2／3平台跳过单列保留。仅关闭 B3b 软件小片，不关闭其余 writer／finalgate、C1b整体、C2/C3/C4 或 R2/R3，也不提前更新 Agent vendor。子仓本机扫描原始返回1的两份未改合成测试命中仍按既有范围记录，不称原始扫描全绿。
+
+本轮后续执行快照（优先于上面尚待冻结的描述）：Windows notice PLAN `139a6503`／485行已全文及 fresh SPEC→不同 QUALITY 全零。不同作者正式落盘五TEST资产后，root `d5c42f` 核五输出与CI原字节、`161f20` 全文实际diff；`9b276b` 实际 strict3 为3方法／6条真实500预算Assertion（2红父方法、1绿）、0ERROR／skip、0.307s／exit1，完整6769字符留RAM。旧12由作者及独立SPEC实际通过；原三关联仍为两次882及清单缺D的显式RED。实际TEST fresh SPEC→不同 QUALITY 全零后，已派不同SOURCE作者仅改冻结C三hunk，CI尚不改。Intel快照PLAN初稿主审另发现旧inverse会整体吞掉marker内算法变动，已退回补批准lease完整hash与篡改负控；不能把原a65 hash保留本身当作未弱化证明。Mac共享CI步骤由root与noticeD统一组合、另审，不让两作者覆盖同一CI。
+
+Windows notice 后续软件结果：不同SOURCE仅C三hunk已实际落地为 Reviewer9459行／`e5b421b9`，root `c44f48` 核精确字节／AST／三处唯一逆回TEST阶段；`cfef1f` 独立实际strict3／0.417s全绿0ERROR／skip。actual SPEC `6a9934`→不同 QUALITY `bee7d9` 均零，另各实际新3通过、SPEC原12通过。root随后仅落独立noticeD，`dbd380` CI2508行／`8045df80`，MacF仍未落；`883e45` 原三关联3／5.207s全绿0ERROR／skip。actualCI SPEC `69ccf6` 核原19jobs／旧steps／权限预算保持及D唯一逆回原，最终全片审查与本机必要检查后准备独立待验候选，不能称线上预算或双Windows已通过。
+
+下一步：先发布已审定的 Windows notice 小片进行同 SHA 线上验证，同时继续审定 Intel 快照诊断及下一 `record-verification` 写入口的受保护 Git 契约；不等待无关规划才启动已明确小片的线上观察。MacF仍只由root在该片实际SOURCE双审后加入，并保留noticeD；两个CI增量的静态双顺序投影2511行／`c331b436`及逆还原已由 `9b89ff`核对，实际组合尚未落。新Agent候选全部线上终态前不再推同仓下一候选，不取消或重跑隐藏失败。`record-verification` 范围已只读核实并实际三步思考 `799459`，尚仅编写PLAN，不把 step／inspection／final gate 一并放开。任何跳过、旧 SHA 绿或仅软件投影通过均不算整体验收。
+
+### 上一候选终态历史（5ad / 740）
 
 - Agent `5ad08dd9708ad36c495f1ad719dbc14ac7f298a8` 的 push／attempt1 三条工作流全部终态，root 另逐 `total_count` 核对完整 job：CI `38590561344` 为50项（43成功、4失败、3退役跳过），provenance `38590561256` 五成功，Pages `38590561393` 两成功，合计57项。没有取消或重跑。Linux Python3.11／3.12 原日志分别为3320／834.352s、3320／758.546s，均 `OK (skipped=99)`；跳过不授对应原生能力信用。
 - 双 Mac B（ARM `115944828995`／Intel `115944828636`）均构建成功，但 native exit2，只有聚合 `data-event-contract errno=22 cleanup=unknown`，没有 manifest／audit／formal。正式 native 方法实际为0，不是5skip，也不是配额断言RED；不能从残留errno推定根因。cap1／CIenv0保留，cap2 SOURCE继续禁止。旧A双架构的同候选原件通过，只授各18个owned-root实例及W0/W1小片，不授整树或完整配额。5ad观察时尚无最小有界诊断代码；当前实现状态见下方“本轮实现与待验范围”，新候选双Mac仍待验。
