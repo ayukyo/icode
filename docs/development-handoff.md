@@ -1,15 +1,34 @@
 # R2 / R3 开发接力
 
-更新：2026-10-14（北京时间）。已在 Windows / WSL2 接力续跑；下列历史发布及线上结果只授其实际候选证据，不作为本轮新增能力验收。
+更新：2026-10-15（北京时间）。已在 Windows / WSL2 接力续跑；下列历史发布及线上结果只授其实际候选证据，不作为本轮新增能力验收。
 
 当前权威工作区：`/home/orbbec/projects/icode`（Windows可读 `\\wsl.localhost\Ubuntu-22.04\home\orbbec\projects\icode`）。用户已授权将开发工作区迁到此WSL原生目录，原 `D:\Projects\icode` 及其67个Junction保留不清理。以下旧日志只授其实际结果；当前交付顺序以本节线上优先约定为准，不借旧诊断副本的clean替代检查。
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 
+### 2026-10-15 接续：全部线上终态，阶段仍未通过
+
+- Agent `5ad08dd9708ad36c495f1ad719dbc14ac7f298a8` 的 push／attempt1 三条工作流全部终态，root 另逐 `total_count` 核对完整 job：CI `38590561344` 为50项（43成功、4失败、3退役跳过），provenance `38590561256` 五成功，Pages `38590561393` 两成功，合计57项。没有取消或重跑。Linux Python3.11／3.12 原日志分别为3320／834.352s、3320／758.546s，均 `OK (skipped=99)`；跳过不授对应原生能力信用。
+- 双 Mac B（ARM `115944828995`／Intel `115944828636`）均构建成功，但 native exit2，只有聚合 `data-event-contract errno=22 cleanup=unknown`，没有 manifest／audit／formal。正式 native 方法实际为0，不是5skip，也不是配额断言RED；不能从残留errno推定根因。cap1／CIenv0保留，cap2 SOURCE继续禁止。旧A双架构的同候选原件通过，只授各18个owned-root实例及W0/W1小片，不授整树或完整配额。5ad观察时尚无最小有界诊断代码；当前实现状态见下方“本轮实现与待验范围”，新候选双Mac仍待验。
+- Windows 双 Reviewer 仍失败：x64 `115943996801`／ARM `115943997072`，正控105／超时、IPv4和IPv6 deny=false，不当DENY或根因。四 provenance 消费者虽job成功，实际 `owner_untrusted` 拒绝，protected／launch／compatibility全false；13句柄确认关闭只授观察，不授受保护启动。5ad观察时GetConfig尚未实现；当前软件实现见下方本轮范围，仍不修改网络能力、主机豁免或外部目标。
+- Skill `74063de85cb40b4873bf2414b98846507fe04c1a` 的 candidate `38589921663`／inspection `38589922084`／site `38589922039` 同SHA、push／attempt1共9项全部成功，root另核三run及原Windows日志。B3a严格12项双平台通过；B1九项、B2十二项及旧门保持。Windows旧107项为103通过／4个明确POSIX专项skip，Linux107通过；两个inspection软件162项均通过。仅关闭B3a candidate软件片，未关闭全部writer／final-linter、C1b整体、C2/C3/C4或R2/R3。下一片准备build-start传播与幂等返回前freshness，Agent固定子仓仍 `21566a589cbe98bd35372a04bbb6ca1c51d8eed2`，不提前升级。
+
+下方“在途／准备／未推送”是各自历史窗口，以本节终态为准。继续采用线上优先、main-only；不为补文档重复本机全量或读取模型密钥。
+
+本轮实现与待验范围：
+
+- Windows观察PLAN `022d5dd2`（1222行）fresh双审均零；独立553行TEST `45fa5f07` 正式取得12条同一缺接线Assertion RED、0ERROR/skip（root `1f5e25`／0.031s／exit1）后，不同SOURCE精确实施B–E四路径。root `6ff53b` 核六hunk逆向／冻结字节，`34e1cc` strict12／0.826s全绿；actualSPEC→不同QUALITY均零，独立strict12分别0.918／0.864s全绿。未授Windows原生API或网络根因信用。
+- Mac诊断原PLAN的真实断管SIGPIPE反例为-13而非85；root `192e89` 三步结构化思考后，仅终止路径局部mask与真实断管负控修为673行PLAN `29216b9c`，fresh双审均零。独立364行TEST `a3998456` 取得root `aea124` strict12／0.164s、10红方法／27Assertion＋2绿／0ERRORskip；完整29227字符存RAM `Mac-event-root-formal12-red`。actualTEST审零后，不同SOURCE仅实施B/C两路径，root `a48048` 精确逆向／冻结核，`f5a24b` strict12／0.140s全绿；actualSPEC→不同QUALITY均零、各另strict12全绿。原15默认9P6skip、opt-in9P唯一API assertionFAIL5native skip、旧groups13P0skip保持；cap1／profile不变，仍不授双Mac真实RED、根因或cleanup信用。
+- CI组合已实际落地2506行 `29a7b8f8`，root `9514d1` 核字节／`8edd61` whitespace通过；actualSPEC `73edfc` →不同actualQUALITY `90bb86` 均零。仅原WindowsF＋MacD四hunk共10新增行，19个原jobs／旧steps及权限预算保持，两个strict均12且拒skip，Macenv仍0；待候选线上，不是阶段通过。
+- Skill B3b完整707行PLAN `43c3a042` 已root全文／`b393a9` 五资产与四投影逆向核、fresh双审均零。正式独立TEST A/B/C三路径已落；root `0e93e6` 新12／3.843s为11红父方法26Assertion＋None1绿、0ERRORskip／exit1，完整59018字符存RAM `B3b-root-formal12-red`；迁移B1九／B3a十二由root `bba14b`／`f4d593` 各全绿。actualTEST审在途，CP仍74063de8的6522行原字节，CI未接B3b，不提前授SOURCE或整体验收；Agent pin仍21566a5。
+
+执行分工补充：Mac诊断Task2的SOURCE作者仅实施原B/C两路径；原D机械CI接线由root在两片actualSOURCE双审全零后，与Windows原F统一落地并另审。不是修改资产或放宽验收。root `188bc3` 与独立静态SPEC `069dd4/c7d713` →不同QUALITY `7e9f12/3efa15` 先核四hunk双顺序一致、唯一可逆、YAML及原门保持，后按上条实际落地并双审；组合CI完整SHA256为 `29a7b8f8062c209388a7601126459f2aff4a3c23ecb777eac12f86760206fb68`，原输入25ce已不再是当前文件，不提前授线上或原生信用。
+
 ### 2026-10-14 最新终态与接续（优先于下方在途历史）
 
 #### 本轮验收基线与接续（阶段仍未通过）
 
+- 当前 Agent 待验候选 `5ad08dd9708ad36c495f1ad719dbc14ac7f298a8` 已f7cb6a提交／06b09f推送／4e1e2b核远端，父58bc；提交后f43c59普通Git status为空（其余ignored设计草稿不在已发布范围，不称全部文档已发布）。d0d0b1在提交前核精确15路径／全部冻结字节／100644／父／AST／cached whitespace、cap1与固定vendor215；secrets f29fb2及pin c45e5b通过。scope为原十Mac TEST设施＋旧TEST兼容13行＋批准MacPLAN/DESIGN与两进度文档，TEST-only／CIenv0。CI `38590561344`、provenance `38590561256`、Pages `38590561393` 同SHA push／attempt1已触发，job数动态展开，尚无双Mac真实RED；原58bc全部53终态后才推，无取消重跑。以下“准备／未推送”保留提交前窗口，R2/R3仍未通过；下次Agent推送前等待本候选全部线上任务终态。
 - 最新待验 Skill `74063de85cb40b4873bf2414b98846507fe04c1a` 已8aa763提交／7cda7a推送／ff3b80核远端，e18630工作树干净，父456b323。8293ee提交前核精确四路径／冻结字节／100644／父／cached whitespace；B3a不同SOURCE后strict12／9／12全绿，root9bd98d／a96535／2741f5分别2.997／1.052／5.986s、0F/E/skip，原28 b1b281／4.188s全绿；actualSPEC→不同QUALITY及CI单插入审均0。CI现76行 `f820c7b7`，全部旧门／权限／预算保持。7d12b4复用原scanner仍raw1两份未改合成测试命中，核等HEAD、无新增，不改称扫描PASS。原456三run又核completed success／attempt1后才推；740同SHA线上正在观察，未授B3a线上、C1b整体／C2／pin或R2/R3。
 - Mac关联I1已实际修复并经fresh actualSPEC→不同QUALITY均0：仅旧TEST两方法13行，485行 `78e30df5`；root11a335严格旧13／5.806s全绿0skip，独立QUALITY旧13／7.456s亦全绿。root再次新15默认9PASS6skip／1.909s、optin9PASS1个API assertionFAIL5native skip／1.907s，0ERROR；此RED仍仅辅助软件。原十Task2目标及12资产／limit cap1 `507b26a2`／CIenv0均保持。当前准备原十设施＋旧TEST修订及批准文档的TEST-only候选，未推送；双Mac真实RED、cap2 SOURCE与C/D/E/M0b/M1仍待验，不升级阶段信用。下列旧13失败及“在途”均保留当时事实。
 - B3a正式Task1已完成：实际独立TEST审C0/I0/M0后，新359行／12方法 `f43aa687` 和B1迁移261行／9方法 `91b18993` 正式落盘；作者12为11红方法／20条AssertionError＋None1绿，0ERROR／skip（2.500s），迁移9／1.245s及原B2十二／6.138s全绿。root正式同三strict：新12／3.122s结果完全一致，完整49437字符raw保存在functions RAM `B3a-root-formal12-red`（未截断）；B1九／1.181s、B2十二／6.321s均通过。不同SOURCE作者仅CP七hunk在途，不提前授GREEN／CI／pin或C1b完成。

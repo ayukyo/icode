@@ -148,13 +148,31 @@ static void wait_child(pid_t child,unsigned slot,unsigned child_slot) {
  if(result!=child || !WIFEXITED(status) || WEXITSTATUS(status)) _exit(84);
  require_ack(send_event(REAPED,slot,child_slot,0,child,0,status),'A');
 }
+static int block_diagnostic_sigpipe(void) {
+ sigset_t blocked;
+ return sigemptyset(&blocked)==0 && sigaddset(&blocked,SIGPIPE)==0 &&
+        sigprocmask(SIG_BLOCK,&blocked,NULL)==0;
+}
+static _Noreturn void launch_failure(int index,unsigned slot,unsigned child_slot,
+                                     const char *stage,int saved_errno) {
+ if(!block_diagnostic_sigpipe()) _exit(85);
+ char line[192];
+ int n=snprintf(line,sizeof(line),
+  "M0A2_LAUNCH case=%d slot=%u child_slot=%u stage=%s saved_errno=%d exit=85 cleanup=unknown\n",
+  index,slot,child_slot,stage,saved_errno);
+ if(n>0 && n<(int)sizeof(line)) (void)write(2,line,(size_t)n);
+ _exit(85);
+}
 static pid_t launch_child(int index,unsigned slot,unsigned child_slot,int spawning) {
  int marker[2];
  int reserved=open("/dev/null",O_RDWR|O_CLOEXEC);
- if(reserved<0 || (reserved!=8 && dup2(reserved,8)<0)) _exit(85);
- if(reserved!=8 && close(reserved)<0) _exit(85);
- if(fcntl(8,F_SETFD,FD_CLOEXEC)<0 || pipe(marker)<0 ||
-    fcntl(marker[0],F_SETFD,FD_CLOEXEC)<0 || fcntl(marker[1],F_SETFD,FD_CLOEXEC)<0) _exit(85);
+ if(reserved<0) launch_failure(index,slot,child_slot,"open",errno);
+ if(reserved!=8 && dup2(reserved,8)<0) launch_failure(index,slot,child_slot,"dup2",errno);
+ if(reserved!=8 && close(reserved)<0) launch_failure(index,slot,child_slot,"close",errno);
+ if(fcntl(8,F_SETFD,FD_CLOEXEC)<0) launch_failure(index,slot,child_slot,"fcntl8",errno);
+ if(pipe(marker)<0) launch_failure(index,slot,child_slot,"pipe",errno);
+ if(fcntl(marker[0],F_SETFD,FD_CLOEXEC)<0) launch_failure(index,slot,child_slot,"fcntl_read",errno);
+ if(fcntl(marker[1],F_SETFD,FD_CLOEXEC)<0) launch_failure(index,slot,child_slot,"fcntl_write",errno);
  char idx[16],target[16],parent[16];
  snprintf(idx,sizeof(idx),"%d",index);snprintf(target,sizeof(target),"%u",child_slot);
  snprintf(parent,sizeof(parent),"%u",slot);
@@ -336,6 +354,49 @@ static int packet_valid(const struct event *e) {
  return e->magic==VMAGIC && e->version==1 && e->length==sizeof(*e) && e->slot<8;
 }
 struct member { pid_t pid;uint64_t sec,usec;uid_t uid;int parent,started,held,finished,reaped,completed; };
+static int read_data_record(int fd,void *buf,size_t n,size_t *received) {
+ *received=0;
+ struct pollfd p={.fd=fd,.events=POLLIN};int r;
+ do { r=poll(&p,1,11000); } while(r<0 && errno==EINTR);
+ if(r<=0) return r==0 ? ETIMEDOUT : errno;
+ unsigned char *bytes=buf;
+ while(*received<n) {
+  ssize_t amount=read(fd,bytes+*received,n-*received);
+  if(amount<0 && errno==EINTR) continue;
+  if(amount<=0) return amount==0 ? EPIPE : errno;
+  *received+=(size_t)amount;
+ }
+ return 0;
+}
+static _Noreturn void reject_data_event(unsigned index,unsigned event_count,const char *reason,
+                                       int read_result,size_t received,int last_kind,int last_slot) {
+ if(!block_diagnostic_sigpipe()) {
+  for(unsigned i=0;i<2;i++) if(owned[i]>0) (void)kill((pid_t)owned[i],SIGKILL);
+  _exit(2);
+ }
+ char line[256];
+ int n=snprintf(line,sizeof(line),
+  "M0A2_DATA case=%u event_count=%u reason=%s read_result=%d received=%zu last_kind=%d last_slot=%d cleanup=unknown\n",
+  index,event_count,reason,read_result,received,last_kind,last_slot);
+ if(n>0 && n<(int)sizeof(line)) (void)write(2,line,(size_t)n);
+ errno=read_result>0 ? read_result : EPROTO;
+ die("data-event-contract");_exit(2);
+}
+static void next_data_event(int fd,struct event *e,struct member members[8],unsigned index,
+                            unsigned *event_count,int last_kind,int last_slot) {
+ size_t received=0;
+ if(++*event_count>64) reject_data_event(index,*event_count,"count",-1,0,last_kind,last_slot);
+ int result=read_data_record(fd,e,sizeof(*e),&received);
+ if(result) reject_data_event(index,*event_count,"read",result,received,last_kind,last_slot);
+ /* No field access above: an incomplete packet is never interpreted. */
+ if(!packet_valid(e))
+  reject_data_event(index,*event_count,e->slot>=8 ? "slot" : "packet",0,received,last_kind,last_slot);
+ if(e->kind<START || e->kind>DONE)
+  reject_data_event(index,*event_count,"kind",0,received,last_kind,last_slot);
+ /* packet_valid has proved slot<8; only now may members be indexed. */
+ if(!members[e->slot].pid)
+  reject_data_event(index,*event_count,"member",0,received,last_kind,last_slot);
+}
 static void identify(struct member *m,pid_t pid,uid_t uid,int parent) {
  struct proc_bsdinfo b;
  if(proc_pidinfo(pid,PROC_PIDTBSDINFO,0,&b,sizeof(b))!=(int)sizeof(b) ||
@@ -513,12 +574,12 @@ static void run_case(int index,int ledger,int leases,const char *os,const char *
  }
  close(data[1]);for(unsigned i=0;i<8;i++) close(ack[i][0]);
  unsigned root_started=0,finished_count=0,done=0;
- int all_finished=0;unsigned event_count=0;
+ int all_finished=0;unsigned event_count=0;int last_kind=-1,last_slot=-1;
  while(done<(unsigned)c.roots) {
   struct event e;
-  if(++event_count>64 || read_record(data[0],&e,sizeof(e)) || !packet_valid(&e) ||
-     e.kind<START || e.kind>DONE || !members[e.slot].pid) die("data-event-contract");
+  next_data_event(data[0],&e,members,(unsigned)index,&event_count,last_kind,last_slot);
   record_event(ledger,&e,members,&c,(unsigned)index);
+  last_kind=(int)e.kind;last_slot=(int)e.slot;
   if(e.kind==FORKED) {
    if(e.other>=8 || members[e.other].pid || e.rc<=0 || e.rc>INT_MAX || e.error || e.aux!=1) die("fork-registration");
    identify(&members[e.other],(pid_t)e.rc,members[e.slot].uid,e.pid);

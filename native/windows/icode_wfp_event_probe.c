@@ -139,6 +139,8 @@ static BOOL is_generated_profile_name(const wchar_t *value) {
     return TRUE;
 }
 
+#include "icode_positive_loopback_config.inc"
+
 static BOOL parse_port(const wchar_t *value, UINT16 *port_out) {
     wchar_t *end = NULL;
     unsigned long parsed;
@@ -2005,6 +2007,10 @@ int wmain(int argc, wchar_t **argv) {
     UINT16 remote_port;
     enum ProbePathValidation path_status;
 
+    if (argc >= 2 && wcscmp(argv[1], L"--observe-positive-loopback-config") == 0) {
+        if (argc != 3 || !is_generated_profile_name(argv[2])) return 2;
+        return observe_positive_loopback_config(argv[2]);
+    }
     if (argc == 2 && wcscmp(argv[1], L"--self-test") == 0) {
         return classifier_self_test() && history_scalar_self_test() ? 0 : 1;
     }

@@ -32,6 +32,9 @@ from urllib.parse import urlsplit
 import icode.windows_appcontainer as windows_appcontainer
 import icode.windows_job as windows_job_module
 from scripts.run_windows_appcontainer_read_probe import (
+    _observe_positive_loopback_config,
+    _positive_loopback_comparison,
+    _positive_loopback_unknown,
     _classify_wfp_ipv6_loopback_receipt,
     _print_wfp_observer_diagnostics,
     _publish_wfp_ipv6_loopback_target,
@@ -8248,6 +8251,25 @@ class TestWindowsAppContainer(unittest.TestCase):
                     str(staged_executable), ipv4_loopback_port, ipv6_loopback_port,
                     capability_nonce, capability_package_sid,
                 )
+                loopback_profile = capability_profile_name
+                loopback_helper = None
+                loopback_helper_value = os.environ.get("ICODE_DIAGNOSTIC_WFP_PROBE_PATH", "")
+                if (
+                    os.environ.get("GITHUB_ACTIONS") == "true"
+                    and os.environ.get("RUNNER_OS") == "Windows"
+                    and loopback_helper_value
+                ):
+                    loopback_helper = Path(loopback_helper_value)
+                loopback_pre, loopback_pre_unreaped = _observe_positive_loopback_config(
+                    loopback_helper, loopback_profile, "pre",
+                )
+                if loopback_pre_unreaped:
+                    self._workflow_json_notice("Windows positive loopback configuration", {
+                        "pre": loopback_pre,
+                        "post": _positive_loopback_unknown("post", "not_attempted"),
+                        "comparison": "unknown",
+                    })
+                    self.fail("positive loopback pre helper was not reaped; original experiment not run")
                 try:
                     capability_control = run_windows_appcontainer(
                         capability_argv, cwd=scratch, timeout_seconds=12,
@@ -8261,11 +8283,32 @@ class TestWindowsAppContainer(unittest.TestCase):
                         False, None, "diagnostic_exception", False,
                         type(exc).__name__,
                     )
+                loopback_post = _positive_loopback_unknown("post", "not_attempted")
+                loopback_post_unreaped = False
+                if capability_control.cleanup_ok:
+                    loopback_post, loopback_post_unreaped = _observe_positive_loopback_config(
+                        loopback_helper, loopback_profile, "post",
+                    )
+                self._workflow_json_notice(
+                    "Windows positive loopback configuration",
+                    _positive_loopback_comparison(
+                        loopback_pre, loopback_post,
+                        same_parent_profile=(loopback_profile == capability_profile_name),
+                        token_receipt=capability_control.child_token_receipt,
+                    ),
+                )
                 if not capability_control.cleanup_ok:
                     self.fail(
                         "private-network positive-control Job/profile/ACL cleanup did not verify: "
                         f"{capability_control.detail}"
                     )
+                if loopback_post_unreaped:
+                    self._workflow_json_notice("Windows private-network first result preserved", {
+                        "executed": capability_control.executed,
+                        "exit": capability_control.exit_code,
+                        "cleanup": capability_control.cleanup_ok,
+                    })
+                    self.fail("positive loopback post helper was not reaped; candidate not run")
                 expected_capability_payload = json.dumps(
                     {
                         "nonce": capability_nonce,

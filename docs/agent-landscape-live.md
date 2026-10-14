@@ -1,5 +1,13 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
+## 2026-10-15 接续观察（优先于下方历史窗口）
+
+Agent `5ad08dd` 同SHA三run共57项已全部终态（50成功、4失败、3跳过）；两Linux全量各Ran 3320，OK（其中99skip），双Mac B在正式断言前基础设施退出2，双Windows Reviewer仍超时失败。正式native方法0不能充quota RED，签装owner拒绝也不能充受保护启动。Skill `74063de8` 三run共9项成功，仅关闭B3a软件片，Agent固定子仓仍21566a5。完整候选绑定及原件边界见[接力文档](development-handoff.md)。
+
+本次独立只读研究重新实读固定Codex `27065a91ccbf5ba8532844be3777fcf83b77820d` 的 [exec完成与超时分账](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/core/src/exec.rs#L1017-L1081)、[leader退出与输出drain](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/core/src/exec.rs#L1126-L1164)和根LICENSE（Apache-2.0）；未刷新HEAD或全20名单。**采纳：**消费前重核、错误与完成分账；ICODE build-start当前幂等早返回在live capture之前，下一B3b片复用B3a已有事务guard／before_publish，不另造框架。收益为失效上下文或真实CODE漂移不能借旧receipt成功；成本为显式参数传播、一次有界重捕获及幂等／rollback负控。**暂缓：**其它writer、final-linter超时改造、C2私有通道／epoch及整pin。**不适配：**工具完成等同事务原子性、事后拒绝等同撤销已append事务、向任务暴露Git身份。仅借机制，不复制源码、新增依赖或权限；验收须覆盖真实非Git CODE、raw Git零调用、健康重放不追加、漂移重放拒绝、发布前失败恢复及已append异常原语义。现已进入正式独立TEST，SOURCE仍未实施，未授B3b功能完成信用。
+
+Mac有界诊断PLAN的独立审查另复现真实stderr断管触发SIGPIPE（-13而非原exit85），说明模拟EPIPE返回不足以覆盖信号行为。采纳真实管道负控、仅终止诊断路径局部屏蔽；成功信号／ACK／profile／quota不变。此为本项目软件反例，不是上游事实或Mac配额根因；现正式独立TEST取得27条断言RED后，不同SOURCE使12项软件检查全绿，actual双审均零。Windows只读配置观测亦正式RED→不同SOURCE十二项全绿／actual双审零；两片CI组合仅追加原四hunk，待同SHA线上，软件结果不替原生。B3b build-start目前仅正式TEST，源码仍74063de8；不据计划或软件绿授完整C1b、pin或R2/R3。
+
 最新候选：Skill `74063de8` 只四路径发布B3a candidate-only接线，正式RED→不同SOURCE定点33＋原28全绿→实际双审／CI审0，现等待同SHA线上，未更新Agent pin或授C1b整体。借鉴Codex显式invocation、错误分层和接纳边界已形成软件检查点，但末检查至append原子性／C2epoch仍未证。Mac新15局部绿之后，root旧13关联回归查出include抽取漏迁移，保留11PASS2FAIL历史；最小两方法13行适配、原hash／7modes不变，实际双审及旧13全绿后才准备TEST-only候选，不删断言／跳过或将辅助软件RED冒称双Mac真实RED。下文历史“在途”各绑定旧时点。
 
 2026-10-14 Windows只读观测研究：独立核对MicrosoftDocs/sdk-api固定 `656e9656bfaef34dd29cd7ee9e1146aec17e924c` 的 [GetAppContainerConfig合同](https://github.com/MicrosoftDocs/sdk-api/blob/656e9656bfaef34dd29cd7ee9e1146aec17e924c/sdk-api-src/content/networkisolation/nf-networkisolation-networkisolationgetappcontainerconfig.md)（文档CC-BY-4.0／示例MIT，仅借合同、不复制代码）。项目尚未实现该API；已有DiagnoseConnectFailureAndGetInfo不是它。采纳方向是独立、有界helper仅观察内部正控profile的loopback豁免成员关系，收益为补配置盲点，成本为ABI／逐SID及数组HeapFree唯一所有权／可信DLL／退出回收和双架构负控。API无timeout参数且返回前分配不能靠输出条数预先限额，失败／结构异常／清理未知均不得当空名单；前后相同也不证明期间稳定或有效WFP允许。暂缓公网／internetClient／修改豁免／根因结论，不适配线程watchdog伪硬时限或查询未匹配即DENY。验项应绑定同SHA、匹配／未匹配／合法空集／错误／超时／漂移／清理及原Reviewer门保持；当前DESIGN仅静态审查通过，完整PLAN在编；未实现、未执行新探测或系统修改，未增加权限。

@@ -58,6 +58,238 @@ _DISPOSABLE_WORKSPACE_PREFIX = "icode-appcontainer-read-handle-"
 _SID_PATTERN = re.compile(r"(?i)(?<![A-Z0-9])S-\d+(?:-\d+)+(?![A-Z0-9])")
 
 
+# Positive-only diagnostic seam; never used as a Reviewer acceptance gate.
+def _positive_loopback_unknown(phase: str, status: str) -> dict[str, object]:
+    return {"schema_version": 1, "scope": "positive_loopback_config_sample",
+            "status": status, "api_stage": "none", "api_code": None, "entry_count": None,
+            "target_match": None, "target_attributes": None,
+            "sid_frees_attempted": 0, "sid_frees_confirmed": 0,
+            "array_release": "not_acquired", "derived_sid_release": "not_acquired",
+            "library_release": "not_acquired", "phase": phase, "process_reaped": False,
+            "cleanup": "unknown", "observation_complete": False}
+
+
+def _positive_loopback_cleanup(receipt: dict[str, object]) -> str:
+    releases = [receipt[key] for key in
+                ("array_release", "derived_sid_release", "library_release")]
+    if "failed" in releases or receipt["sid_frees_confirmed"] < receipt["sid_frees_attempted"]:
+        return "failed"
+    if "unknown" in releases:
+        return "unknown"
+    if receipt["entry_count"] is not None and receipt["sid_frees_attempted"] != receipt["entry_count"]:
+        return "unknown"
+    return "confirmed"
+
+
+def _positive_loopback_parse(raw: bytes) -> dict[str, object]:
+    if type(raw) is not bytes or not 0 < len(raw) <= 4096 or not raw.endswith(b"\n"):
+        raise ValueError("loopback receipt bounds")
+    line = raw[:-2] if raw.endswith(b"\r\n") else raw[:-1]
+    if b"\n" in line or b"\r" in line:
+        raise ValueError("loopback receipt must be one line")
+    text = raw.decode("ascii", "strict")
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("loopback duplicate key")
+            result[key] = value
+        return result
+    value = json.loads(text, object_pairs_hook=unique)
+    expected = set(_positive_loopback_unknown("pre", "not_attempted")) - {
+        "phase", "process_reaped", "cleanup", "observation_complete"}
+    if type(value) is not dict or set(value) != expected:
+        raise ValueError("loopback receipt shape")
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1 or \
+            value["scope"] != "positive_loopback_config_sample":
+        raise ValueError("loopback receipt version")
+    if type(value["status"]) is not str or value["status"] not in {
+            "complete", "unsupported", "load_failed", "api_error", "invalid_data", "limit_reached"}:
+        raise ValueError("loopback receipt status")
+    if type(value["api_stage"]) is not str or value["api_stage"] not in {"none", "load", "export", "derive", "query", "validate", "release"}:
+        raise ValueError("loopback receipt stage")
+    for key, maximum in (("api_code", 0xFFFFFFFF), ("entry_count", 4096),
+                         ("target_attributes", 0xFFFFFFFF)):
+        if value[key] is not None and (type(value[key]) is not int or not 0 <= value[key] <= maximum):
+            raise ValueError("loopback receipt integer")
+    for key in ("sid_frees_attempted", "sid_frees_confirmed"):
+        if type(value[key]) is not int or not 0 <= value[key] <= 4096:
+            raise ValueError("loopback release count")
+    if value["sid_frees_confirmed"] > value["sid_frees_attempted"]:
+        raise ValueError("loopback release accounting")
+    for key in ("array_release", "derived_sid_release", "library_release"):
+        if type(value[key]) is not str or value[key] not in {"not_acquired", "confirmed", "failed", "unknown"}:
+            raise ValueError("loopback release state")
+    if value["target_match"] is not None and type(value["target_match"]) is not bool:
+        raise ValueError("loopback match type")
+    if value["status"] == "complete" and (value["api_stage"] != "query" or value["api_code"] != 0 or
+            type(value["entry_count"]) is not int or value["target_match"] is True and value["entry_count"] == 0):
+        raise ValueError("loopback query completion")
+    clean = _positive_loopback_cleanup(value)
+    if value["status"] != "complete" or clean != "confirmed":
+        if value["target_match"] is not None or value["target_attributes"] is not None:
+            raise ValueError("loopback incomplete match")
+    else:
+        if type(value["entry_count"]) is not int or type(value["target_match"]) is not bool or \
+                value["derived_sid_release"] != "confirmed" or value["library_release"] != "confirmed":
+            raise ValueError("loopback complete ownership")
+        if value["entry_count"] and value["array_release"] != "confirmed":
+            raise ValueError("loopback array ownership")
+        if value["target_match"] and type(value["target_attributes"]) is not int or \
+                not value["target_match"] and value["target_attributes"] is not None:
+            raise ValueError("loopback attributes")
+    return value
+
+
+def _positive_loopback_pipe_chunk(stream: object, capacity: int) -> tuple[bytes, bool]:
+    """Peek before a bounded read; no reader thread or communicate/capture buffer."""
+    import msvcrt
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.PeekNamedPipe.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+        ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+    ]
+    kernel.PeekNamedPipe.restype = wintypes.BOOL
+    available = wintypes.DWORD()
+    handle = msvcrt.get_osfhandle(stream.fileno())
+    if not kernel.PeekNamedPipe(handle, None, 0, None, ctypes.byref(available), None):
+        if ctypes.get_last_error() in (109, 232):
+            return b"", True
+        raise OSError("loopback pipe peek failed")
+    if not available.value:
+        return b"", False
+    return os.read(stream.fileno(), min(capacity, int(available.value))), False
+
+
+def _positive_loopback_reap(process: subprocess.Popen[bytes]) -> bool:
+    """Only actual wait completion grants reaped; terminate/kill requests do not."""
+    for action in ("terminate", "kill"):
+        try:
+            getattr(process, action)()
+        except Exception:
+            pass
+        try:
+            process.wait(timeout=2.0)
+            return True
+        except Exception:
+            pass
+    return False
+
+
+def _observe_positive_loopback_config(
+    executable: Path | None, profile_name: str, phase: str,
+) -> tuple[dict[str, object], bool]:
+    """Return a public sample plus private stop flag for an actually unreaped child."""
+    sample = _positive_loopback_unknown(phase, "not_attempted")
+    if phase not in ("pre", "post") or type(profile_name) is not str or re.fullmatch(r"icode-[0-9a-f]{32}", profile_name) is None:
+        return sample, False
+    if executable is None:
+        return sample, False
+    try:
+        executable = executable.resolve(strict=True)
+        if not executable.is_file() or executable.name.casefold() != "icode-wfp-event-probe.exe":
+            return sample, False
+    except OSError:
+        return sample, False
+    process = None
+    reaped = False
+    reason = None
+    stdout = bytearray()
+    stderr_seen = False
+    eof = [False, False]
+    start = time.monotonic()
+    try:
+        process = subprocess.Popen(
+            [str(executable), "--observe-positive-loopback-config", profile_name],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), shell=False,
+        )
+        while not all(eof):
+            remaining = 2.0 - (time.monotonic() - start)
+            if remaining <= 0:
+                reason = "timed_out"
+                break
+            for index, stream in enumerate((process.stdout, process.stderr)):
+                if eof[index]:
+                    continue
+                chunk, eof[index] = _positive_loopback_pipe_chunk(
+                    stream, max(1, 4097 - len(stdout)) if index == 0 else 1)
+                if index == 0:
+                    stdout.extend(chunk)
+                    if len(stdout) > 4096:
+                        reason = "protocol_error"
+                elif chunk:
+                    stderr_seen = True
+                    reason = "protocol_error"
+                if reason:
+                    break
+            if reason:
+                break
+            if not all(eof):
+                time.sleep(min(0.01, max(0.0, remaining)))
+        if reason is None:
+            try:
+                process.wait(timeout=max(0.0, 2.0 - (time.monotonic() - start)))
+                reaped = True
+            except (subprocess.TimeoutExpired, OSError):
+                reason = "timed_out"
+        if reason is None and time.monotonic() - start > 2.0:
+            reason = "timed_out"
+        if reason is None and (process.returncode != 0 or stderr_seen):
+            reason = "protocol_error"
+        if reason is None:
+            receipt = _positive_loopback_parse(bytes(stdout))
+            sample.update(receipt)
+            sample["cleanup"] = _positive_loopback_cleanup(receipt)
+            sample["observation_complete"] = (
+                receipt["status"] == "complete" and sample["cleanup"] == "confirmed")
+    except OSError:
+        reason = "launch_failed" if process is None else "protocol_error"
+    except Exception:
+        reason = "protocol_error"
+    finally:
+        if process is not None:
+            if not reaped:
+                reaped = _positive_loopback_reap(process)
+            for stream in (process.stdout, process.stderr):
+                try:
+                    stream.close()
+                except Exception:
+                    sample["cleanup"] = "unknown"
+                    sample["observation_complete"] = False
+            sample["process_reaped"] = reaped
+            if not reaped:
+                sample["cleanup"] = "unknown"
+                sample["observation_complete"] = False
+        if sample["cleanup"] != "confirmed" or sample["process_reaped"] is not True:
+            sample.update(target_match=None, target_attributes=None, observation_complete=False)
+        if reason is not None:
+            sample.update(status=reason, target_match=None, target_attributes=None,
+                          observation_complete=False)
+    return sample, process is not None and not reaped
+
+
+def _positive_loopback_comparison(
+    pre: dict[str, object], post: dict[str, object], *,
+    same_parent_profile: bool, token_receipt: object,
+) -> dict[str, object]:
+    comparison = "unknown"
+    try:
+        bound = same_parent_profile is True and token_receipt is not None and \
+            getattr(token_receipt, "verified", None) is True and \
+            getattr(token_receipt, "package_sid_match", None) is True
+    except Exception:
+        bound = False
+    if bound and all(sample.get("phase") == phase and sample.get("status") == "complete" and
+                     sample.get("process_reaped") is True and
+                     sample.get("cleanup") == "confirmed" and
+                     sample.get("observation_complete") is True
+                     for sample, phase in ((pre, "pre"), (post, "post"))):
+        keys = ("target_match", "target_attributes", "entry_count")
+        comparison = "consistent_endpoints" if all(pre[k] == post[k] for k in keys) else "observed_drift"
+    return {"pre": pre, "post": post, "comparison": comparison}
+
+
 def _file_digest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:

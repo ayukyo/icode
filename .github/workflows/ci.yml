@@ -60,6 +60,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Install the declared build backend for package tests
         run: python -m pip install "setuptools>=80"
+      - name: Strict positive loopback configuration software contract
+        run: python -B -c "import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_windows_loopback_config_observation.py'); assert s.countTestCases()==12, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))"
       - name: Compile Python sources
         run: python -m compileall -q src tests scripts
       - name: Run the full unit test suite
@@ -595,6 +597,7 @@ jobs:
           $wfpProbe = Join-Path $buildDirectory 'Release/icode-wfp-event-probe.exe'
           & $wfpProbe --self-test
           if ($LASTEXITCODE -ne 0) { throw "IPv6 WFP observer self-test failed: $LASTEXITCODE" }
+          Write-Host ("positive-loopback-helper-sha256=" + (Get-FileHash -LiteralPath $wfpProbe -Algorithm SHA256).Hash.ToLowerInvariant())
           Add-Content -Path $env:GITHUB_ENV `
             -Value "ICODE_DIAGNOSTIC_WFP_PROBE_BUILD=$wfpProbe" -Encoding utf8
       - name: Cross-check Windows SDK WFP ABI (x64/ARM64)
@@ -1269,6 +1272,10 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "reviewer_probe_root_acl_failed exit=$LASTEXITCODE" }
             Copy-Item -LiteralPath $env:ICODE_DIAGNOSTIC_WFP_PROBE_BUILD `
               -Destination $wfpProbeForUser -ErrorAction Stop
+            $positiveLoopbackBuildHash = (Get-FileHash -LiteralPath $env:ICODE_DIAGNOSTIC_WFP_PROBE_BUILD -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+            $positiveLoopbackStagedHash = (Get-FileHash -LiteralPath $wfpProbeForUser -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+            if ($positiveLoopbackStagedHash -cne $positiveLoopbackBuildHash) { throw 'positive_loopback_staged_helper_hash_mismatch' }
+            Write-Host ("positive-loopback-staged-helper-sha256=" + $positiveLoopbackStagedHash)
 
             $profileBootstrap = Start-Process `
               -FilePath (Join-Path $env:SystemRoot 'System32/cmd.exe') `
@@ -2473,6 +2480,9 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: "3.11"
+      - name: Diagnostic-only C software contract
+        shell: bash
+        run: python -B -c "import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_macos_m0a2_event_diagnostics.py'); assert s.countTestCases()==12, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))"
       - name: Targeted SOURCE software contract
         if: env.M0A2_SOURCE == '1'
         shell: bash

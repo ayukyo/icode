@@ -275,6 +275,8 @@ def main():
             "native/mac/icode_m0a1_process_groups.h","native/mac/icode_m0a1_process_groups.c",
             "tests/test_macos_task_quota_probe.py","tests/test_macos_process_groups_native.py",
             "tests/test_macos_process_groups.py","tests/test_macos_m0a2_vectors.py",
+            "tests/test_macos_m0a2_event_diagnostics.py",
+            "docs/nbl/plans/2026-10-14-macos-m0a2-event-diagnostics.md",
             "scripts/run_macos_m0_ci.py","scripts/run_macos_m0a2_vectors.py",
             "native/mac/CMakeLists.txt",".github/workflows/ci.yml",
             "docs/nbl/specs/2026-10-13-macos-task-identity-quota-design.md",
