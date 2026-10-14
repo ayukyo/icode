@@ -1,5 +1,9 @@
 # 开源 AI Agent 持续对照与借鉴记录
 
+- **2026-10-14：最新已核结果。**沿下述固定主源、不刷新20名单：Agent23209fb的Intel/ARM已在同候选完成W0双target公共接口绑定、W1实际单组/双组/同PIDexec及原七case唯一quota语义RED；root另纯RAM核两平台各15源码摘要、28raw摘要及实际binary/ledger。只授W1，不授配额GREEN。原受审cap1-only原语507b26a2现16行已落地且实际双审零遗留、Linux17项OS替身断言通过，下一候选仍须双原生SOURCE GREEN。Skill1002d72完整Windows105的4失败/101通过保留，新增reuse问题已在该SHA通过；平台分片d59998f现已推送，当前107与独立strict2、精确4项POSIX专项skip须同SHA线上验证，不追改旧失败或把skip当原语通过。采纳“原判据不变、机制与运行证据分账”；暂缓完整M0/安装/宿主Git及整pin；不适配软件成功代替原生与跨SHA补绿，无新依赖/权限或第三方代码复制。
+
+以下保留本轮较早实施时点，最新结果以上条与接力文档为准。
+
 - **2026-10-14：本轮接续结果（优先于下方实施中快照）。**复用下述固定Apple/Codex主源，不刷新上游HEAD或20项名单。**采纳验证：**W0在Agent67cf60e的Intel/ARM均取得ordinary `_getgroups`实际SDK/object/final绑定及原七case唯一quota语义RED；仅关闭接口修正门，不授quotaGREEN。W1[完整计划](nbl/plans/2026-10-14-macos-process-groups-w1.md)与实际源码已各独立双审零遗留，落地Linux28定点通过，含真实runner50和reservation7软件场景；同新SHA双架构的双组反例、exec继承及原七case重跑仍待。收益是将接口正确性和原生凭据事实分开验收，成本为独立固定TEST及审计，不加产品依赖或权限。**暂缓：**quota SOURCE、宿主Git C1b–C4和整pin。**不适配：**借软件或旧SHA的成功替代同候选原生结果。
 - **2026-10-14：Windows字节边界接续。**Skill3fb9cce的新standalone UTF-8三测试双平台通过，原物理失败校验及四consumer目标通过；inspection四job成功，但完整Windows105仍9失败。e3f91dd仅修fixture canonical根、局部LF和真实`.exe`路径，线上两工作流已终态：Linux105通过，Windows5失败/100通过，site三job成功；两个路径/产物目标及三个same-content节点通过，不追认其历史根因。新增文档复用失败已实采初始LF与恢复后CRLF不相等；两行明确换行后Windows/WSL单项通过，产品拒绝门保持，新SHA线上未验。采纳严格UTF-8和同一产物路径贯穿receipt/hash机制；暂缓原始A/B、FIFO/mode/换行文件名平台分片，拒绝全局locale、吞解码或整套Windows跳过。机制来自既有Python/Git及本仓先例，无第三方代码复制、新权限或许可变化。
 
