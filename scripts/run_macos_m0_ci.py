@@ -7,6 +7,10 @@ import os
 from pathlib import Path
 import platform
 import re
+import selectors
+import shlex
+import signal
+import time
 import stat
 import subprocess
 import sys
@@ -30,6 +34,120 @@ def run_suite(suite, path):
     path.write_text(report, encoding="utf-8")
     print(report, end="")
     return result
+
+def process_groups_binding(repo, build, binary, variant, output):
+    def collect(name, argv, cwd, bound):
+        buffers = [bytearray(), bytearray()]
+        p = subprocess.Popen(argv, cwd=cwd, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, start_new_session=True)
+        failure = None
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(p.stdout, selectors.EVENT_READ, 0)
+                selector.register(p.stderr, selectors.EVENT_READ, 1)
+                deadline = time.monotonic() + 15
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        failure = "timeout"
+                        break
+                    for key, _ in selector.select(min(remaining, 0.1)):
+                        room = bound - len(buffers[0]) - len(buffers[1])
+                        chunk = os.read(key.fileobj.fileno(), min(4096, room + 1))
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                        elif len(chunk) > room:
+                            buffers[key.data].extend(chunk[:room])
+                            failure = "output exceeded"
+                            break
+                        else:
+                            buffers[key.data].extend(chunk)
+                    if failure:
+                        break
+                if not failure:
+                    try:
+                        p.wait(timeout=max(0.001, deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired:
+                        failure = "timeout"
+        finally:
+            if failure or p.poll() is None:
+                try:
+                    os.killpg(p.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            p.wait(timeout=2)
+            p.stdout.close()
+            p.stderr.close()
+            for suffix, data in zip(("stdout", "stderr"), buffers):
+                (output / (name + "." + suffix)).write_bytes(data)
+        if failure or p.returncode:
+            raise RuntimeError("process groups binding " + (failure or "command failed") + ": " + name)
+        return (buffers[0].decode("utf-8", "strict"),
+                buffers[1].decode("utf-8", "strict"))
+
+    commands_path = build / "compile_commands.json"
+    raw = commands_path.read_bytes()
+    if not 0 < len(raw) <= 1048576:
+        raise RuntimeError("compile commands size invalid")
+    commands = json.loads(raw)
+    helper = (repo / "native/mac/icode_m0a1_process_groups.c").resolve(strict=True)
+    selected = []
+    for entry in commands:
+        cwd = Path(entry["directory"]).resolve(strict=True)
+        source = Path(entry["file"])
+        source = source if source.is_absolute() else cwd / source
+        argv = entry.get("arguments") or shlex.split(entry["command"])
+        if source.resolve(strict=True) == helper and "-o" in argv:
+            target_object = Path(argv[argv.index("-o") + 1])
+            target_object = target_object if target_object.is_absolute() else cwd / target_object
+            if "CMakeFiles/icode_m0a1_" + variant + ".dir/" in target_object.as_posix():
+                selected.append((cwd, argv, target_object.resolve(strict=True)))
+    if len(selected) != 1:
+        raise RuntimeError("helper compile command identity ambiguous")
+    cwd, argv, obj = selected[0]
+    if cwd != build or build not in obj.parents or argv.count("-o") != 1 or argv.count("-c") != 1:
+        raise RuntimeError("helper compiler/object escaped expected build")
+    compiler = Path(argv[0]).resolve(strict=True)
+    if not compiler.is_file() or not os.access(compiler, os.X_OK):
+        raise RuntimeError("actual compiler unavailable")
+    version, version_err = collect("groups-compiler", [str(compiler), "--version"], cwd, 65536)
+    sdk_text, sdk_err = collect("groups-sdk-path", ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-path"], cwd, 65536)
+    sdk_version, sdk_version_err = collect("groups-sdk-version", ["/usr/bin/xcrun", "--sdk", "macosx", "--show-sdk-version"], cwd, 65536)
+    sdk = Path(sdk_text.strip()).resolve(strict=True)
+    if not sdk.is_dir() or sdk_err or sdk_version_err or version_err:
+        raise RuntimeError("unexpected SDK/compiler metadata")
+    _, trace = collect("groups-compiler-trace", argv + ["-###"], cwd, 65536)
+    trace_args = shlex.split(trace)
+    roots = [trace_args[i + 1] for i, value in enumerate(trace_args[:-1]) if value == "-isysroot"]
+    if len(roots) != 1 or Path(roots[0]).resolve(strict=True) != sdk:
+        raise RuntimeError("actual compiler SDK differs or is unknown")
+    expanded = list(argv)
+    expanded[expanded.index("-c")] = "-E"
+    expanded[expanded.index("-o") + 1] = "-"
+    headers, header_err = collect("groups-expanded", expanded, cwd, 2097152)
+    declarations = re.findall(r"(?m)^[ \t]*(?:extern[ \t]+)?int[ \t]+getgroups\s*\([^;]+;", headers)
+    if header_err or len(declarations) != 1 or "DARWIN_EXTSN" in declarations[0]:
+        raise RuntimeError("actual SDK getgroups declaration is unknown or extended")
+    symbols = {}
+    for name, image in (("groups-object-nm", obj), ("groups-final-nm", binary)):
+        text, diagnostic = collect(name, ["/usr/bin/nm", "-u", str(image)], cwd, 262144)
+        groups = [line.split()[-1] for line in text.splitlines() if "getgroups" in line]
+        if diagnostic or groups != ["_getgroups"]:
+            raise RuntimeError("ordinary public getgroups binding required: " + name)
+        symbols[name] = groups
+    record = {
+        "version": 1, "compiler": str(compiler), "compiler_version": version,
+        "sdk": str(sdk), "sdk_version": sdk_version.strip(), "directory": str(cwd),
+        "compile_argv": argv, "helper_object": str(obj),
+        "helper_object_sha256": hashlib.sha256(obj.read_bytes()).hexdigest(),
+        "final_sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        "compile_commands_sha256": hashlib.sha256(raw).hexdigest(),
+        "getgroups_declaration": declarations[0], "symbols": symbols,
+        "raw_sha256": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                       for p in sorted(output.glob("groups-*.stdout")) + sorted(output.glob("groups-*.stderr"))},
+    }
+    write_json(output / "process-groups-binding.json", record)
+    return hashlib.sha256((output / "process-groups-binding.json").read_bytes()).hexdigest()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -72,6 +190,9 @@ def main():
             "native/mac/icode_m0a1_limit.h",
             "native/mac/tests/icode_m0a1_baseline.c",
             "native/mac/tests/icode_m0a1_driver.c",
+            "native/mac/icode_m0a1_process_groups.h",
+            "native/mac/icode_m0a1_process_groups.c",
+            "tests/test_macos_process_groups.py",
             "tests/test_macos_task_quota_probe.py",
             "native/mac/CMakeLists.txt",
             "scripts/run_macos_m0_ci.py",
@@ -94,6 +215,8 @@ def main():
         })
         if arch == "x86_64" and metadata["os_version"].split(".")[0] != "15":
             raise RuntimeError("Intel target is explicitly macOS 15")
+        metadata["process_groups_binding_sha256"] = process_groups_binding(
+            repo, build, binary, variant, output)
         write_json(output / "metadata.json", metadata)
         argv = ["/usr/bin/sudo", "-n", "--", "/usr/bin/env", "-i",
                 "PATH=/usr/bin:/bin", str(binary), sha, digest]

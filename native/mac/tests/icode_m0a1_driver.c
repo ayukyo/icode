@@ -1,5 +1,6 @@
 #define _DARWIN_C_SOURCE 1
 #include "icode_m0a1_limit.h"
+#include "icode_m0a1_process_groups.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -334,17 +335,11 @@ static uid_t reserve_uid(int dir,const char *sha) {
     }
     errno=ENOSPC; die("reserve-exhausted"); return 0;
 }
-static int credentials(uid_t uid) {
-    gid_t g=0;
-    if(getuid()!=uid || geteuid()!=uid || getgid()!=uid || getegid()!=uid ||
-       getgroups(0,NULL)!=1 || getgroups(1,&g)!=1 || g!=uid) return EPERM;
-    return 0;
-}
 static void send_gate(unsigned phase,int error) {
     struct gate_record r; memset(&r,0,sizeof(r));
     r.magic=MAGIC; r.version=1; r.length=sizeof(r); r.phase=phase;
     r.error=error; r.pid=getpid(); r.uid=getuid(); r.euid=geteuid();
-    r.gid=getgid(); r.egid=getegid(); gid_t g=0; int n=getgroups(1,&g);
+    r.gid=getgid(); r.egid=getegid(); gid_t g=0; int n=m0_process_getgroups(1,&g);
     r.groups=n<0 ? UINT32_MAX : (uint32_t)n; r.group=g;
     struct rlimit l;
     if(getrlimit(RLIMIT_NPROC,&l)<0) { r.phase=FAILED; r.error=errno; }
@@ -413,7 +408,7 @@ static void trampoline(unsigned index,uid_t uid,const char *hash) {
     int e=m0_apply_limit(1,c->quota);
     if(e) worker_fail(e);
     if(setgroups(1,&gid)<0 || setgid(gid)<0 || setuid(uid)<0) worker_fail(errno);
-    e=credentials(uid);
+    e=m0_process_credentials(uid);
     if(e) worker_fail(e);
     e=m0_check_limit(1,c->quota);
     if(e) worker_fail(e);
@@ -450,7 +445,7 @@ static int canaries(int sandbox) {
 static void gate(unsigned index,uid_t uid,const char *hash) {
     const struct case_def *c=&cases[index]; int e=protected_image(hash);
     if(e) worker_fail(e);
-    e=credentials(uid);
+    e=m0_process_credentials(uid);
     if(e) worker_fail(e);
     e=m0_check_limit(1,c->quota);
     if(e) worker_fail(e);
@@ -472,12 +467,12 @@ static void gate(unsigned index,uid_t uid,const char *hash) {
     worker_fail(errno);
 }
 static void payload(unsigned index,uid_t uid,const char *hash) {
-    if(protected_image(hash) || credentials(uid)) _exit(95);
+    if(protected_image(hash) || m0_process_credentials(uid)) _exit(95);
     if(canaries(cases[index].sandbox)) _exit(113);
     struct payload_record r; memset(&r,0,sizeof(r)); struct rlimit l;
     r.magic=MAGIC; r.version=1; r.length=sizeof(r); r.pid=getpid(); r.entered=1;
     r.uid=getuid(); r.euid=geteuid(); r.gid=getgid(); r.egid=getegid();
-    gid_t g=0; r.groups=getgroups(1,&g); r.group=(int32_t)g;
+    gid_t g=0; r.groups=m0_process_getgroups(1,&g); r.group=(int32_t)g;
     errno=0;
     if(write(3,"X",1)<0) r.fd3_errno=errno;
     errno=0;

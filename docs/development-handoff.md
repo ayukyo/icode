@@ -8,6 +8,34 @@
 
 ### 2026-10-14 最新终态与接续（优先于下方在途历史）
 
+#### 最新已推送：Agent2c59304 / Skilla3999a2（阶段仍未通过）
+
+- Skill最小两行fixture修正已经不同SPEC→QUALITY均C0/I0/M0及AST/精确逆差分审查后，提交ea6509并推送35c1ed/exit0为 `a3999a2cfa1050fc3f189f59c9a04e4f67fbbc0c`，父02f419d；精确两路径/mode100644/字节一致及定点密钥模式检查通过。只规范临时根，不改生产/断言/权限，不安装本机缺失依赖，真实新Windows结果待CI。02三个run现全终态：inspection双平台162通过但Windows generic2失败；candidate Windows旧16失败；site3成功。旧失败保留，最终pin仍不更新。
+
+- Mac W0实际SOURCE已实施且fresh SPEC→不同QUALITY均C0/I0/M0：新TEST632c251a由独立作者冻结，root e8200e正式旧predicate单项/.129s唯一AssertionRED、0ERRORskip；root不同SOURCE随后精确新TU/h、driver迁移、共同CMake，bba976实际20/2.445sGREEN。controller改前565a47两个AssertionRED，改后ed7ef0完整22/2.646s/OK，SPEC/QUALITY又各22/2.746s及2.766s、0skip。实际helper b0a75c2c、driver a65f067e、CMake30968de9、controller9cbf4260；formal/CI/vendor未改，limit.c无。当前未提交，实际Apple SDK/Mach-O与双原生RED仍待新候选；W1不可跳过。
+- root独立API复核02f419d三run全部job清单：site38554148568已3/3成功（安装23/3.991s），Linux candidate provider3＋20、旧105及shell17通过，inspection Linux162通过；Windows generic115818992984明确2failed/131passed/3skip，另两Windows旧套仍在途。timeout旧偶发断言本次不失败不能称修复。两项路径fixture仅在setUp把临时根resolve(strict=True)，生产MCP不动，当前未提交/未CI验；root实际MCP19f361三步已做。Windows/WSL现有解释器缺mcp.server，未安装依赖或伪造本机测试通过，下一同SHA线上为必要门。
+
+- 最新Skill待验候选为 `02f419d449f3ba9ba87717a928f740b6ce17e327`：root精确四路径暂存字节/mode100644、定点密钥模式及diff检查通过，commit283b68/push6e2a2e均exit0，父96b8979；工作树clean。实际fresh SPEC→不同QUALITY均C0/I0/M0。新配置三方法root d1f0cf真实3 AssertionError/0ERRORskip→2fb47b三GREEN/.005s；原provider20由57895c实跑20/1.724s/0skip，两workflow逆消除3ebc28逐字节等HEAD、SOURCE/providerTEST原样。site一行仅补预期资源，单项真实RED→完整23GREEN证据见下条。
+- 同02f419d三自动push运行：inspection38554148379、candidate38554148462、site38554148568，首次均in_progress/attempt1；原门终于在同SHA触发，但全部终态待收。Windows旧16失败和generic3失败尚未修复，不能称兼容片通过；不取消/重跑隐去失败、vendor仍215不更新。
+##### 实施过程历史快照（以下保留当时状态，以上最新状态优先）
+
+- Mac W0旧PLAN9d4af7e8的QUALITY C0/I2/M0保留：REAL负常量触发glibc access/Werror、Darwin临时目录未canonicalize。root仅修嵌入TEST三处，新PLAN18d76185共625行，fresh SPEC→不同QUALITY均C0/I0/M0；独立TEST作者开始仅新增测试和正式旧predicate软件RED。生产TU/driver/CMake/controller尚未修改，W1真实双组/exec和quotaSOURCE禁令仍完整。
+
+- 接续刷新：Skill candidate run38551938879已终态失败：Linux成功（provider20、legacy105＋5subtests、shell17），Windows provider20成功但legacy16failed/92passed/5warnings、exit1。Windows旧套无同选择父基线，三项same-content失败仍未归因；cp1252真实reader-thread解码错误及POSIX FIFO/文件名fixture不适配分别保留，不以吞stdout None或跳过旧门补绿。固定vendor不更新。
+- Site两候选同一失败已定位为分发fixture新增资源而unsafe预期集合漏项。root实际20592d复现单项AssertionError（多references/wsl_build.md、references/mcp_path_access.md），仅在tests/test_skill_installation.py预期集合补这两项，d1ca47实际完整23/4.533s/OK；checker、断言相等及安全策略未改，修改尚未提交及独立审查。
+- CI覆盖PLAN37e79750已fresh SPEC→不同QUALITY均C0/I0/M0，独立TEST作者正在落地三方法及运行旧配置真实RED，尚未收结果，后续不同作者才改两workflow。Mac W0完整PLAN9d4af7e8共624行已root全文b08a95读取，fresh SPEC在途；W1及quotaSOURCE硬门继续保留。
+
+- 2c59304三个run现55/55全终态：主CI38549105737为41success/4failure/3退役skip，Python3.11实际3287/836.711s/OK(skip93)，3.12实际3287/904.092s/OK(skip93)；provenance38549105687五success、Pages38549105505两success。四signed consumer验签通过但compatibility/launch/protected仍false、source owner_untrusted；每resource13open/13confirmedclose/0unconfirmed不等于受保护晋升。下文首次queued记录保留历史，不是当前在途。
+- Mac新原生两格仍nativeexit2/ERROR/cleanupunknown，非正式RED。独立线上观察员读取ARM artifact11885278722/job115802400524、Intel11884984876/job115802400557：七个第一gate均phase3/error1、uid/euid/gid/egid=各自专用60000–60006，但groups=4294967295、group_observed0；第二slot未接收，不填零。实际Mach-O的唯一getgroups导入均为 `_getgroups$DARWIN_EXTSN`，binary ARM3c382f2e、Intelf6a2db29与metadata相符。root独立核Apple Libc宏/目录查询源码：当前driver的Darwin宏选择目录扩展，和无目录UID的进程凭据需求不符；原每次立即errno仍未观测，不能说唯一原始失败syscall已证。POSIX TU修正DESIGN8fb4484d已fresh SPEC→不同QUALITY零遗留，W0完整资产PLAN在写，W1真实双组负控仍硬门，绝不提前quota SOURCE。真实MCP fe4453三步已记录。
+- Windows Reviewer两格115802400728/115802400852仍exit78/cleanuptrue/receipt缺失、history完整0/0；无匹配/timeout不授DENY。所有原生、installed、R3六步与≥90%门继续开放。
+- Skill已推送 `96b89798d4aa45f2fb03d6dd9c27982e26a625b7`（ad4234/exit0），先精确3文件提交8b3d678，随后常规merge保留远端b9696c6的44文件；双父分别8b3d678/b9696c6、共祖5be9dee。root rawdiff与独立ls-tree整合审计均证明3+44=47、零重叠、每路径mode/blob精确保留双方；无force/reset/rebase、branch/tag。上游44功能不因合并授验收。新SOURCE12542f3b、TESTab598698、CId9792f35与原批准资产一致；SOURCE实际fresh SPEC→不同QUALITY及独立整合均零问题。
+- C1a实际TDD：原生产全20运行13F/44CandidateError前置阻断，原日志保留而不把ERROR计RED；root独立正式三方法取得2真实AssertionError、0ERROR/skip且None正控通过（8e9dc7/.224s）。不同SOURCE后root全20/1.489s、合并后20/1.660s均0F/E/skip；root Windows只七路径/类型/None/CODE定点10.226s全过（73f8ee+9c2155），不是本机Windows全套。外部仍17直接调用＋2freshness包装未接provider；C1b/C2/C3/C4、HEAD刷新/LFS/最终pin全开放，vendor215不变。
+- Skill同96的新candidate run38551938879在途，site38551938914已失败；父b969的site38544864719与inspection38544864637也失败，已有独立只读原日志诊断，暂不定因。原inspection路径不包含本片三资产，不会由96自动触发；新[CI覆盖计划](nbl/plans/2026-10-14-candidate-inspection-ci-coverage.md)37e79750仅补四路径与严格三方法runner、仍PLAN审查中，未改workflow。真实MCP04cb4f三步已做，不用旧SHA绿代同SHA兼容门；不取消旧运行。
+
+- 实际候选 `2c593046e5a9aa4d0c36e04ae7b6bbb26c6625a5` 已在权威WSL main提交4c6a1f，并通过Windows Git推送a4b1a2/exit0；精确5路径、暂存与实际逐字节相等、模式100644、父1421197及cached whitespace通过。首次add提示全局忽略docs，随后显式tracked add-u及只对批准新PLAN的add-f完成，非force push；没有加入C1a草稿/补充设计、branch/tag或limit.c。
+- 同SHA [CI38549105737](https://github.com/ayukyo/icode/actions/runs/38549105737)、[provenance38549105687](https://github.com/ayukyo/icode/actions/runs/38549105687)、[Pages38549105505](https://github.com/ayukyo/icode/actions/runs/38549105505) 已触发，首次分别queued/in_progress/queued。全部原142的55job已由root独立API确认终态，无旧active；没有新push取消旧运行。当前尚无新SHA终态，不能借旧结果代验收。
+- 同候选前必要检查：密钥/固定子仓原单门f8dce0、site/governance bb893e均通过；三文档scanner连续两轮raw0（c3330a/98f851）、DOC修订后C0/I0/M0。当前进度记录暂留本机，下一Agent push等本候选全部job终态；Skill契约PLAN与研究独立继续，不等用户命令。原native/Reviewer/installed/模型等R2/R3门仍开放。
+
 #### 接续刷新：1421197 / 5be9dee（以下旧在途记录保留历史）
 
 - 下一 Agent 候选为最小 [gate观察补丁](nbl/plans/2026-10-14-macos-m0a1-gate-observation.md)：原PLAN8153545与实际SOURCE分别fresh SPEC→不同QUALITY均C0/I0/M0；只追加TEST130行、driver37行两hunk。作者与root各自取得正式软件10方法/8assert RED，再各15项GREEN；root10/1.320s+5/.001s零失败/错误/跳过，driver1fe2b712、TEST8d953ccc，原child/wire/release/formal/controller/CI/pin逐字保留，limit.c仍无。秘密/固定子仓原单门通过；当前尚待精确索引提交及新SHA原生结果，不授quota或阶段通过。C1a另已修falsey数组类型到20方法，fresh SPEC又检出Windows `.git` 大小写别名遗漏，仍仅修PLAN，不混入本候选。
