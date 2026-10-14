@@ -352,6 +352,25 @@ static void send_gate(unsigned phase,int error) {
     r.canary_errno=canary_errno; r.canary_allowed=canary_allowed;
     if(all_write(3,&r,sizeof(r))) _exit(93);
 }
+/* M0A1_DIAGNOSTIC_EMITTER_BEGIN */
+static void emit_diagnostic(unsigned index,unsigned stage,int error,int detail,int result) {
+    int saved=errno;
+    char row[192];
+    int n=snprintf(row,sizeof(row),
+        "M0A1_DIAG version=1 case_index=%u stage=%u error=%d detail=%d result=%d\n",
+        index,stage,error,detail,result);
+    if(n>0 && (size_t)n<sizeof(row)) (void)fwrite(row,1,(size_t)n,stderr);
+    errno=saved;
+}
+static void setup_fail(unsigned index,unsigned stage,int error,int detail,int code) {
+    sigset_t blocked;
+    /* This path must exit: never restore a mask that could deliver pending SIGPIPE. */
+    if(sigemptyset(&blocked)==0 && sigaddset(&blocked,SIGPIPE)==0 &&
+       sigprocmask(SIG_BLOCK,&blocked,NULL)==0)
+        emit_diagnostic(index,stage,error,detail,code);
+    _exit(code);
+}
+/* M0A1_DIAGNOSTIC_EMITTER_END */
 static void worker_fail(int error) { send_gate(FAILED,error); _exit(94); }
 static void trampoline(unsigned index,uid_t uid,const char *hash) {
     if(getuid()!=0 || protected_image(hash)) worker_fail(EPERM);
@@ -481,35 +500,41 @@ static void run_case(unsigned index,uid_t uid,int ledger,const char *sha,const c
     if(pid==0) {
         alarm(10); owned_child=0;
         struct rlimit cpu={2,2},files={65536,65536};
-        if(setrlimit(RLIMIT_CPU,&cpu)<0 || setrlimit(RLIMIT_FSIZE,&files)<0) _exit(104);
+        if(setrlimit(RLIMIT_CPU,&cpu)<0) setup_fail(index,1,errno,RLIMIT_CPU,104);
+        if(setrlimit(RLIMIT_FSIZE,&files)<0) setup_fail(index,2,errno,RLIMIT_FSIZE,104);
         struct rlimit actual;
-        if(getrlimit(RLIMIT_CPU,&actual)<0 || actual.rlim_cur!=2 || actual.rlim_max!=2 ||
-           getrlimit(RLIMIT_FSIZE,&actual)<0 || actual.rlim_cur!=65536 || actual.rlim_max!=65536)
-            _exit(116);
+        if(getrlimit(RLIMIT_CPU,&actual)<0) setup_fail(index,3,errno,RLIMIT_CPU,116);
+        if(actual.rlim_cur!=2 || actual.rlim_max!=2) setup_fail(index,4,0,RLIMIT_CPU,116);
+        if(getrlimit(RLIMIT_FSIZE,&actual)<0) setup_fail(index,5,errno,RLIMIT_FSIZE,116);
+        if(actual.rlim_cur!=65536 || actual.rlim_max!=65536) setup_fail(index,6,0,RLIMIT_FSIZE,116);
         int limit=getdtablesize();
-        if(limit<6 || limit>65536) _exit(105);
-        if(dup2(status_pipe[1],3)<0 || dup2(release_pipe[0],4)<0 || dup2(data_pipe[1],5)<0) _exit(106);
+        if(limit<6 || limit>65536) setup_fail(index,7,limit<0 ? errno : 0,limit,105);
+        if(dup2(status_pipe[1],3)<0) setup_fail(index,8,errno,3,106);
+        if(dup2(release_pipe[0],4)<0) setup_fail(index,8,errno,4,106);
+        if(dup2(data_pipe[1],5)<0) setup_fail(index,8,errno,5,106);
         for(int f=6;f<limit;f++) {
-            if(close(f)<0 && errno!=EBADF) _exit(114);
+            if(close(f)<0 && errno!=EBADF) setup_fail(index,9,errno,f,114);
         }
         int null=open("/dev/null",O_RDWR);
-        if(null<0) _exit(107);
+        if(null<0) setup_fail(index,10,errno,0,107);
         /* Preserve bounded fixed-tool stderr as raw evidence, never as a receipt. */
-        for(int f=0;f<2;f++) if(dup2(null,f)<0) _exit(108);
+        for(int f=0;f<2;f++) if(dup2(null,f)<0) setup_fail(index,11,errno,f,108);
         if(null>5) close(null);
         for(int s=1;s<NSIG;s++) {
-            if(s!=SIGKILL && s!=SIGSTOP && signal(s,SIG_DFL)==SIG_ERR) _exit(115);
+            if(s!=SIGKILL && s!=SIGSTOP && signal(s,SIG_DFL)==SIG_ERR)
+                setup_fail(index,12,errno,s,115);
         }
         sigset_t empty; sigemptyset(&empty);
-        if(sigprocmask(SIG_SETMASK,&empty,NULL)<0) _exit(109);
-        if(chdir(directory)<0) _exit(110);
+        if(sigprocmask(SIG_SETMASK,&empty,NULL)<0) setup_fail(index,13,errno,0,109);
+        if(chdir(directory)<0) setup_fail(index,14,errno,0,110);
         char start=0;
-        if(all_read(4,&start,1) || start!='A') _exit(111);
+        int start_error=all_read(4,&start,1);
+        if(start_error || start!='A') setup_fail(index,15,start_error,(unsigned char)start,111);
         char idx[16],id[16];
         snprintf(idx,sizeof(idx),"%u",index); snprintf(id,sizeof(id),"%u",uid);
         char *args[]={image,"T",idx,id,binary_hash,NULL};
         char *env[]={"PATH=/usr/bin:/bin",NULL};
-        execve(image,args,env); _exit(112);
+        execve(image,args,env); setup_fail(index,16,errno,0,112);
     }
     owned_child=pid;
     close(status_pipe[1]); close(release_pipe[0]); close(data_pipe[1]);
@@ -517,11 +542,17 @@ static void run_case(unsigned index,uid_t uid,int ledger,const char *sha,const c
     if(proc_pidinfo(pid,PROC_PIDTBSDINFO,0,&initial,sizeof(initial))!=(int)sizeof(initial))
         die("start-identity");
     if(all_write(release_pipe[1],"A",1)) die("start-release");
-    struct gate_record configured,ready,late; memset(&ready,0,sizeof(ready));
+    struct gate_record configured,ready,late;
+    memset(&configured,0,sizeof(configured)); memset(&ready,0,sizeof(ready));
     ready.canary_errno=-1;
     int e=read_record(status_pipe[0],&configured,sizeof(configured));
+    int configured_read_errno=e,ready_attempted=0,ready_read_errno=-1;
     int configured_ok=!e && valid_gate(&configured,pid,uid,CONFIGURED);
-    if(configured_ok) e=read_record(status_pipe[0],&ready,sizeof(ready));
+    if(configured_ok) {
+        ready_attempted=1;
+        e=read_record(status_pipe[0],&ready,sizeof(ready));
+        ready_read_errno=e;
+    }
     int ready_ok=configured_ok && !e && valid_gate(&ready,pid,uid,SANDBOXED);
     int count=-1,cred_ok=0,kq=-1,registered=0,released=0,exec_seen=0,exec_error=0;
     if(ready_ok) {
@@ -552,7 +583,10 @@ static void run_case(unsigned index,uid_t uid,int ledger,const char *sha,const c
         "{\"kind\":\"launch\",\"version\":1,\"case\":\"%s\",\"released\":%d}\n",c->name,released);
     if(launch_n<=0 || launch_n>=(int)sizeof(launch) ||
        all_write(STDOUT_FILENO,launch,(size_t)launch_n)) die("delivery-launch");
-    if(!released && c->fault!=1 && c->fault!=2) (void)kill(pid,SIGKILL);
+    int observer_kill_sent=0;
+    if(!released && c->fault!=1 && c->fault!=2) {
+        (void)kill(pid,SIGKILL); observer_kill_sent=1;
+    }
     if(released) {
         struct kevent event; struct timespec timeout={11,0}; int exited=0;
         while(!exited) {
@@ -562,10 +596,22 @@ static void run_case(unsigned index,uid_t uid,int ledger,const char *sha,const c
             if(event.fflags&NOTE_EXEC) exec_seen=1;
             if(event.fflags&NOTE_EXIT) exited=1;
         }
-        if(!exited) (void)kill(pid,SIGKILL);
+        if(!exited) { (void)kill(pid,SIGKILL); observer_kill_sent=1; }
     }
     int status=0;
     if(wait_owned(pid,&status)<0) die("owned-waitpid");
+    emit_diagnostic(index,101,configured_read_errno,
+        configured_read_errno ? -1 : (int)configured.phase,
+        configured_read_errno ? -1 : configured.error);
+    emit_diagnostic(index,102,0,configured_read_errno ? -1 : configured.pid,configured_ok);
+    emit_diagnostic(index,103,ready_read_errno,
+        ready_read_errno ? -1 : (int)ready.phase,ready_read_errno ? -1 : ready.error);
+    emit_diagnostic(index,104,0,ready_attempted,ready_ok);
+    emit_diagnostic(index,105,0,observer_kill_sent,status);
+    emit_diagnostic(index,106,0,WIFEXITED(status) ? WEXITSTATUS(status) : -1,
+        WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+    emit_diagnostic(index,107,0,registered,released);
+    emit_diagnostic(index,108,0,configured_ok,ready_ok);
     if(kq>=0) close(kq);
     unsigned char raw[sizeof(late)+1]; size_t used=0;
     for(;;) {
