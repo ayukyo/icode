@@ -43,7 +43,7 @@ static int process_count_snapshot(uid_t uid,struct process_snapshot *s) {
     for(int i=0;i<n;i++) {
         if(pids[i]<=0) continue;
         struct proc_bsdinfo b;
-        int r=proc_pidinfo(pids[i],PROC_PIDTBSDINFO,0,&b,sizeof(b));
+        int r=proc_pidinfo(pids[i],PROC_PIDTBSDINFO,1,&b,sizeof(b)); /* Include listed zombies in this identity census. */
         int info_errno=errno;
         if(r!=(int)sizeof(b)) {
             errno=0;

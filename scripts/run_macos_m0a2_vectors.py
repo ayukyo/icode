@@ -277,6 +277,8 @@ def main():
             "tests/test_macos_process_groups.py","tests/test_macos_m0a2_vectors.py",
             "tests/test_macos_m0a2_event_diagnostics.py",
             "tests/test_macos_identity_snapshot_diagnostics.py",
+            "tests/test_macos_identity_zombie_native.py",
+            "docs/nbl/plans/2026-10-15-macos-identity-zombie-snapshot.md",
             "docs/nbl/plans/2026-10-15-macos-vector-fd8-reservation.md",
             "docs/nbl/plans/2026-10-15-macos-identity-snapshot-diagnostics.md",
             "docs/nbl/plans/2026-10-14-macos-m0a2-event-diagnostics.md",

@@ -2439,6 +2439,12 @@ jobs:
       - name: Identity snapshot diagnostic software contract
         shell: bash
         run: python -B -c "import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_macos_identity_snapshot_diagnostics.py'); assert s.countTestCases()==12, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))"
+      - name: Native owned-child identity zombie query compatibility
+        shell: bash
+        env:
+          ICODE_RUN_IDENTITY_ZOMBIE_NATIVE: "1"
+          ICODE_ZOMBIE_EXPECTED_ARCH: ${{ matrix.arch }}
+        run: python -B -c "import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_macos_identity_zombie_native.py'); assert s.countTestCases()==1, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))"
       - name: Build the TESTOnly wrong baseline without SOURCE
         shell: bash
         run: |
@@ -2476,6 +2482,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           path: |
+            ${{ runner.temp }}/icode-identity-zombie-native/
             ${{ runner.temp }}/icode-m0a1-red/
             ${{ runner.temp }}/icode-m0a1-green/
             ${{ runner.temp }}/icode-m0a1-configure.log

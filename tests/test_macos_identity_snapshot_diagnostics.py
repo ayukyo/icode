@@ -72,22 +72,23 @@ static int fake_list(void *buffer,int bytes) {
  if(is("near_cap")) {
   memset(buffer,0,(size_t)bytes);p[MAX_PIDS-2]=101;return MAX_PIDS-1;
  }
- if(is("six_fields")) {for(int i=0;i<6;i++)p[i]=101+i;return 6;}
+ if(is("six_fields") || is("zombie_six_fields")) {for(int i=0;i<6;i++)p[i]=101+i;return 6;}
  p[0]=101;return 1;
 }
 static int fake_info(int pid,int flavor,unsigned long long arg,void *buffer,int bytes) {
- if(pid<101 || pid>106 || flavor!=PROC_PIDTBSDINFO || arg ||
+ if(pid<101 || pid>106 || flavor!=PROC_PIDTBSDINFO || arg>1 ||
     bytes!=(int)sizeof(struct proc_bsdinfo)) _exit(201);
  infos++;errno=EACCES;
+ if(is("zombie_unknown") || (!arg && (!strncmp(scenario,"zombie_",7)))) {errno=ESRCH;return 0;}
  if(is("info_zero") || is("info_chain") || is("info_esrch")) return 0;
  if(is("info_short")) {errno=EIO;return bytes-1;}
  if(is("info_negative")) {errno=EBADF;return -1;}
  struct proc_bsdinfo *p=buffer;memset(p,0,sizeof(*p));
- if(is("six_fields")) {
+ if(is("six_fields") || is("zombie_six_fields")) {
   uid_t *fields[]={&p->pbi_ruid,&p->pbi_uid,&p->pbi_svuid,&p->pbi_rgid,&p->pbi_gid,&p->pbi_svgid};
   *fields[pid-101]=UID_FIRST;
  }
- if((is("collision") && scans==1) || (is("post_positive") && scans==2)) p->pbi_svuid=UID_FIRST;
+ if((is("collision") && scans==1) || (is("post_positive") && scans==2) || is("zombie_collision")) p->pbi_svuid=UID_FIRST;
  return bytes;
 }
 static int fake_kill(pid_t pid,int sig) {
@@ -199,7 +200,8 @@ class TestIdentitySnapshotDiagnostics(unittest.TestCase):
                 self.assertIn(b"scans=1 infos=0 kills=0 lookups=2 leases=0 errno=100",actual.stderr)
     def test_info_result_and_independent_kill_result_are_retained(self):
         for case,result,info_error,kill_result,kill_error in (
-            ("info_zero",0,errno.EACCES,0,0),("info_short",23,errno.EIO,-1,errno.EPERM),
+            ("info_zero",0,errno.EACCES,0,0),("zombie_unknown",0,errno.ESRCH,0,0),
+            ("info_short",23,errno.EIO,-1,errno.EPERM),
             ("info_negative",-1,errno.EBADF,-1,errno.EINVAL)):
             with self.subTest(case=case):
                 fields,actual=self.rejection(case)
@@ -233,6 +235,7 @@ class TestIdentitySnapshotDiagnostics(unittest.TestCase):
         self.assertIn(b"REFUSAL stage=uid-directory-lookup",actual.stderr)
     def test_normal_collision_and_full_positive_count_stay_silent(self):
         for case,uid,scans,infos in (("valid",60000,2,2),("collision",60001,3,3),
+                                    ("zombie_collision",60001,3,3),
                                     ("lease_collision",60001,3,3),("near_cap",60000,2,2),
                                     ("nonpositive",60000,2,2)):
             with self.subTest(case=case):
@@ -250,6 +253,13 @@ class TestIdentitySnapshotDiagnostics(unittest.TestCase):
         self.assertEqual(actual.returncode,0,actual.stderr)
         self.assertEqual(actual.stderr,b"")
         self.assertEqual(actual.stdout,b"uid=60000 scans=2 infos=2 kills=2 lookups=2 leases=1\n")
+        for case,count,infos in (("zombie_six_fields",6,6),("zombie_foreign",0,1)):
+            with self.subTest(zombie_case=case):
+                observed=self.probe("direct_"+case)
+                self.assertEqual(observed.returncode,0,observed.stderr)
+                self.assertEqual(observed.stderr,b"")
+                self.assertEqual(observed.stdout,
+                    f"count={count} scans=1 infos={infos} kills=0 errno={errno.EACCES}\n".encode())
         actual=self.probe("direct_six_fields")
         self.assertEqual(actual.returncode,0,actual.stderr)
         self.assertEqual(actual.stderr,b"")

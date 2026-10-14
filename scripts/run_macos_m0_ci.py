@@ -298,6 +298,8 @@ def main():
             "native/mac/tests/icode_m0a1_process_groups_native.c",
             "tests/test_macos_process_groups_native.py",
             "tests/test_macos_identity_snapshot_diagnostics.py",
+            "tests/test_macos_identity_zombie_native.py",
+            "docs/nbl/plans/2026-10-15-macos-identity-zombie-snapshot.md",
             "docs/nbl/plans/2026-10-15-macos-identity-snapshot-diagnostics.md",
             "tests/test_macos_process_groups.py",
             "tests/test_macos_task_quota_probe.py",

@@ -187,6 +187,13 @@ class TestW1MechanicalLeaseExtraction(unittest.TestCase):
         if marker in content:
             self.assertEqual(content.count(marker),1)
             lease=(driver.parent/"icode_m0a1_identity_lease.inc").read_bytes()
+            # Reverse only the reviewed zombie-query semantic projection, then prove the old full hash.
+            zombie_query=b"proc_pidinfo(pids[i],PROC_PIDTBSDINFO,1,&b,sizeof(b)); /* Include listed zombies in this identity census. */"
+            original_query=b"proc_pidinfo(pids[i],PROC_PIDTBSDINFO,0,&b,sizeof(b));"
+            if zombie_query in lease:
+                self.assertEqual(lease.count(zombie_query),1)
+                lease=lease.replace(zombie_query,original_query,1)
+            self.assertEqual(lease.count(original_query),1)
             if b"/* IDENTITY_SNAPSHOT_DIAGNOSTIC_BEGIN */\n" in lease:
                 self.assertEqual(hashlib.sha256(lease).hexdigest(),
                     "3c8e74cffa0dfda2fc8e7cf91e67cd6db99c7a5c88167ab9c95925887356ada5")

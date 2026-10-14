@@ -6,7 +6,17 @@
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 
-### 2026-10-15 WFP候选已推，Mac FD修复进入全片审查
+### 2026-10-15 cap2候选线上验收，B3e软件片通过
+
+最新接续：Mac cap2四路径actual全片SPEC与不同QUALITY均C0/I0/M0；092cdb限定4项软件回归及secret/submodule守护均通过，46a655核四索引字节/100644/rawcached0并提交，46709d推main且远端同SHA：`436751cf590c3d49b9506cf9b538e6419ddd7c0f`，父6dbc，14增2删，提交后status空。新同SHA/push/attempt1：CI38635386846、provenance38635386804、Pages38635386731已全终态，56唯一job=49成功/3失败/4skip。失败为Intel Mac A和双Windows Reviewer网络正控；Mac B占位skip未运行。双full3.11/3.12各3369通过/99原skip，不证明旧139根因已解决。同仓推送前全终态条件已满足，阶段仍未验收。
+
+436751 Intel A job116097089480失败，root已亲取37850字符原log，原件artifact11928305869为112053字节/ZIP SHA256 `fb10c11bb1e625d4ae22b620552637f26ee441aeac2edea44033eaaffc3c4e9d`。独立观察核baseline真RED通过；SOURCE完成case0..4后reserve新UID60018时，snapshot报告PID2045的info_result0/expected136/info_errno3(ESRCH)，kill_result0/errno0，native_exit2/cleanup unknown，保留身份目录。没有green formal footer，不能当quota RED、PID污染已证或cap2已通过。root实际三步MCP e25744完成；只读研究公开XNU/libproc zombie/退出窗口语义，尚未改快照SOURCE/TEST，不跳unknown、重试刷绿或归因最后errno。
+
+快照修复当前候选：PLAN d4504b8e全文双审零后，root正式TEST A/B/C取得12方法两失败父/3有效Assertion/0ERRORskip，机械逆向1P；actualTEST双审零。不同SOURCE作者仅落D/E/F：聚合PROC_PIDTBSDINFO arg0→1，两controller只补TEST/PLAN来源。实测12P、机械1P、groups13P、event12P、optin10P/5原native skip；SOURCE独立SPEC与不同QUALITY均C0/I0/M0。root落G仅增双Mac A中的非root真实子进程live/zombie/reap兼容门及always artifact，f20582严格13P。native仅AST，未本机编译运行；不证明PID2045根因、全机可观察性、SDK兼容或配额验收。等待全片双审/守护后推main待验候选；旧436所有run已终态。
+
+Skill B3e `42f5556745bccb7fb0ee083e755007ffc95118c6`三run/九唯一job已全部成功，无取消重跑，root逐job API复核并亲取双candidate原log。Windows新22/16.148s与Linux22/4.165s均零skip，新四消费者各4通过，旧三各3通过；legacy Windows103通过/4原POSIX skip、Linux107通过，双inspection162通过；generic原2/3skip保留，site三成功。仅关闭B3e软件片，不授host/升级vendor/R2R3。下一B3f以完整CODE工作清单回合被既有freshness接受为终点，root实际MCP8b5a57三步accepted后，唯一新PLAN在编写，实际实现未授权。
+
+Windows只读定位已核：正控是同机127.0.0.1/::1，并非外部私网；IPv4先超时exit105后IPv6未执行，原WFP observer针对另一Reviewer SID/IPv6且晚于正控，不得用其零匹配解释正控。已异步询问是否允许**仅GitHub临时runner的独立正控SID**临时loopback豁免、精确恢复并验证，产品Reviewer SID与本机不改；截至本记录未获回复，未实施，不把“通常按推荐”扩大成已授权系统豁免。
 
 接续进展（未授整体验收）：6dbc双Mac B现已到正式baseline：Intel第三进程rc4957、ARM rc1944，各formal五项仅`M0A2_CAP2_REJECTION`断言失败，4P/1F/0ERROR/skip；观察员核两ZIP的27份来源及binary/binding/ledger/stdout/stderr摘要一致。此前open EPERM不再出现，只建立真实quota RED，不授SOURCE cap2或完整清理。root亲取双full原log：3.11 job116084282346为800525字符、3369/755.638s；3.12 job116084282119为806845字符、3369/950.236s，均零FAILURE/ERROR、99既有skip及后置secret/pin通过。root亲核三run同SHA/push/attempt1全部completed，CI50为45成功/2失败/3跳过，provenance五项与Pages两项成功，57唯一job合计52成功/2失败/3跳过；失败仍双Windows Reviewer，无取消重跑，下一候选等待条件解除。不反推026的139根因或将诊断enable称为修复。
 

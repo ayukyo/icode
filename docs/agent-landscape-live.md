@@ -2,6 +2,8 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+最新状态：cap2最小四路径双审零后推Agent待验436751c，三run已终态，56job=49成功/3失败/4skip，双full各3369通过/99原skip，Mac B占位未运行；Intel A在SOURCE reserve新UID阶段因proc_pidinfo返回0/ESRCH而kill仍成功，快照unknown失败，未到完整green formal，不授quota通过或认定PID污染。只读复核公开XNU“列举zombproc但TBSDINFO arg0不查zombie”的机制，仍待匹配平台合同和正式测试，不跳未知/改配额/重跑刷绿。Skill B3e42f三run九job现全部成功，双平台新22及新旧消费者通过；仅关闭action-policy软件片，原skip保留，inspection整链/host/vendor仍未验收。此前“动态/待全片”均为历史窗口。 快照新候选现已完成正式TEST语义RED及不同SOURCE修复为聚合arg1，TEST/SOURCE各自双审零，13窄回归通过；已接真实live/zombie/reap原生门，待全片双审及同SHA双Mac验证，尚未授原生或配额信用。
+
 Mac描述符/ACK修复及fatal诊断最小片已双审零后发布6dbc8b5，三run57项现全部终态52成功/2失败/3占位skip；双full各3369项通过，双Mac B已到唯一cap2真实baseline RED，剩余失败仍双Windows网络正控。不反推026的139根因，不授SOURCE配额或整体验收。受保护Git B3e action-policy的正式TEST取得17红父/44Assertion/零ERRORskip并actual双审零，不同SOURCE只改两个函数；业务21、原端口21及旧消费者4通过，root接CI后22全绿，全片双审零后推待验main42f5556。candidate38634827865/inspection38634827863/site38634827894仍动态，Agent pin未改。下方“仅PLAN／未实施”是历史窗口。
 
 2026-10-15并行只读复核Apple固定`xnu-12377.1.9`的[fork计数](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/kern_fork.c)、[资源限额](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/kern_resource.c)和[UID迁移](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/kern_prot.c)。**采纳、已落待审候选：**quota TU仅一行扩cap1/2，实际17检查先RED后GREEN，cap1/disabled/非法cap/errno/精确读回保持；actualSOURCE双审零后只切CI phase1，仍待全片及新SHA双Mac A18+B26。收益是验证现有V1–V11，成本仅源码一行及CI phase一行，无新权限依赖、未复制APSL代码。**暂缓：**cap4/race、C/D/E、M0b身份逃逸和M1受保护安装；**不适配：**共享UID、额外root迁入、轮询终止冒单任务硬上限。固定源码不等于本次runner内核二进制；controller已另绑定green的真实quota源码hash及fresh build/binary/candidate，研究不替代实际配额验收。
