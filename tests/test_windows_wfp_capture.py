@@ -626,7 +626,7 @@ class TestWindowsWfpCapture(unittest.TestCase):
             prefix_count_receipt,
             job.index("wfpdiag_xml_members=$wfpArchiveWfpdiagXmlMemberCount"),
         )
-        self.assertIn("$cabinetMemberSummary.schema_version -eq 3", job)
+        self.assertIn("$cabinetMemberSummary.schema_version -eq 4", job)
 
     def test_workflow_rejects_malformed_or_unbounded_cabinet_probe_receipts(self) -> None:
         repository_root = Path(__file__).resolve().parents[1]

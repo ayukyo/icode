@@ -16,6 +16,7 @@ _MAX_CABINET_MEMBERS = 4096
 _TARGET_BASENAME = "wfpdiag.xml"
 _WFPDIAG_BASENAME_PREFIX = "wfpdiag"
 _XML_SUFFIX = ".xml"
+_CATEGORY_KEYS = ("target", "state", "etl", "other", "unknown")
 
 _SPFILENOTIFY_CABINETINFO = 0x10
 _SPFILENOTIFY_FILEINCABINET = 0x11
@@ -85,6 +86,25 @@ def _cabinet_member_basename(member_name: object) -> str | None:
     if not basename.isascii() or not basename:
         return None
     return basename
+
+
+def _member_category(member_name: object) -> str:
+    """Metadata labels only; never authorize extraction or retain member names."""
+    basename = _cabinet_member_basename(member_name)
+    if basename is None:
+        return "unknown"
+    # Preserve the original exact-target contract, including nested CAB paths.
+    if is_target_cabinet_member(member_name):
+        return "target"
+    if len(member_name) > 4096 or not member_name.isascii() or any(
+        ord(char) < 32 or ord(char) == 127 for char in member_name
+    ):
+        return "unknown"
+    if basename.lower() == "wfpstate.xml":
+        return "state"
+    if basename.lower().endswith(".etl"):
+        return "etl"
+    return "other"
 
 
 def _safe_summary(
@@ -160,6 +180,11 @@ def _handle_setupapi_notification(
                 int(state["wfpdiag_prefixed_xml_member_count"]) + 1
             )
 
+        categories = state.get("_category_counts")
+        if isinstance(categories, dict):
+            category = _member_category(info.NameInCabinet)
+            categories[category] += 1
+
         # Enumeration is intentionally non-extracting for every member.
         return _FILEOP_SKIP
 
@@ -173,7 +198,7 @@ def _handle_setupapi_notification(
     return _ERROR_NOT_SUPPORTED
 
 
-def _enumerate_windows_cabinet(archive_path: Path) -> dict[str, int | str | None]:
+def _enumerate_windows_cabinet(archive_path: Path, *, category_counts=None) -> dict[str, int | str | None]:
     try:
         setupapi = ctypes.WinDLL("setupapi.dll", use_last_error=True)
         setup_iterate_cabinet = setupapi.SetupIterateCabinetW
@@ -186,6 +211,9 @@ def _enumerate_windows_cabinet(archive_path: Path) -> dict[str, int | str | None
         "xml_member_count": 0,
         "wfpdiag_prefixed_xml_member_count": 0,
     }
+
+    if category_counts is not None:
+        state["_category_counts"] = category_counts
 
     callback_type = ctypes.WINFUNCTYPE(
         wintypes.UINT,
@@ -233,7 +261,7 @@ def _enumerate_windows_cabinet(archive_path: Path) -> dict[str, int | str | None
     )
 
 
-def inspect_cabinet_members(archive: str | Path) -> dict[str, int | str | None]:
+def _inspect_cabinet_members(archive: str | Path, *, category_counts=None) -> dict[str, int | str | None]:
     """Enumerate a bounded cabinet and return only a fixed, privacy-safe receipt."""
     try:
         archive_path = Path(archive)
@@ -248,17 +276,31 @@ def inspect_cabinet_members(archive: str | Path) -> dict[str, int | str | None]:
     if os.name != "nt":
         return _safe_summary("unsupported_platform")
     try:
-        return _enumerate_windows_cabinet(archive_path)
+        return _enumerate_windows_cabinet(archive_path, category_counts=category_counts)
     except Exception:
         # Native errors remain a fixed category; do not echo exception text or paths.
         return _safe_summary("api_failed")
 
 
+def inspect_cabinet_members(archive: str | Path, *, observe_categories=False) -> dict:
+    counts = dict.fromkeys(_CATEGORY_KEYS, 0) if observe_categories else None
+    result = _inspect_cabinet_members(archive, category_counts=counts)
+    if not observe_categories:
+        return result
+    # An API/member/budget failure is unavailable, never a complete zero count.
+    observed = result["status"] == "listed"
+    return dict(result, schema_version=4, member_categories={
+        key: counts[key] if observed else None for key in _CATEGORY_KEYS
+    })
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True, help="local CAB file to enumerate")
+    parser.add_argument("--observe-categories", action="store_true",
+                        help="emit fixed metadata category counts, never member names")
     args = parser.parse_args(argv)
-    result = inspect_cabinet_members(args.archive)
+    result = inspect_cabinet_members(args.archive, observe_categories=args.observe_categories)
     print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0 if result["status"] == "listed" else 1
 

@@ -6,6 +6,44 @@
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 
+### 2026-10-15 5bde 全部终态，后续片继续推进
+
+最新补审阻断与修复：八路径fresh QUALITY在真实WinPS5.1发现exit0且失败status带完整数字时仍发布类别日志（提取仍拒绝），记I1而非沿用59绿授完整通过。不同TEST作者只在原方法补四行紧邻精确listed门断言，168行／90c7d8ab；197850正式10为9绿＋新断言唯一Assertion、零ERRORskip，actual TEST独立SPEC→不同QUALITY均零。root随后仅将类别赋值条件加status -ceq 'listed'，CI2539行／289b2193；420e90关联59／1.527s全绿，原失败状态分支／exact提取／helper保持。PLAN追加Asset F保留历史批准资产；SOURCE及全片实际双审仍待，不提前发布。Mac618／f82账本的共享CI已由c3e再次漂移，正式实施前必须重核。
+
+Skill6e现已由独立观察员收齐两个run／五唯一job全部成功（candidate38625842998两项、site38625843852三项），同SHA／push／attempt1，无取消重跑。Windows原log92470字符：strict21／20.940s零skip，三个pytest消费者3通过／4.84s，syntax通过，旧107收集后103通过／4原POSIX专属skip／3subtests／367.31s；Linux21／2.981s、三个消费者3通过／3.46s、旧107通过／108.80s及三个shell通过。原cp1252两个collection错误在本次实际Windows节点消失，四skip不授相应POSIX能力。只关闭本片软件及消费者门；本次inspection未触发，不借旧SHA授新inspection，更不授C1b整体／宿主／vendor升级或R2/R3通过。
+
+最新终态：root重新逐API核同5bde／push／attempt1三run及全部57唯一job，CI `38620537823` 50＝43成功／4失败／3占位skip，provenance `38620537682` 五成功、Pages `38620537306` 两成功；合计50成功／4失败／3跳过，无取消或重跑，下一同仓候选可推但R2/R3未通过。root另亲读两full原log：3.11 `116046601735` 787718字符、3359／575.532s，3.12 `116046601720` 799287字符、3359／917.108s，均零FAILURE／ERROR、99skip及后置密钥／pin门通过。双Mac A新snapshot12实际通过，manifest red19／green20已由独立观察员逐项核同候选；只授M0a1有限cap1／owned-root，不授全树。双B基础设施失败及双Windows正控超时仍开放。四签装消费者各69＋9绿、crypto／负控／direct-volume／拒命令通过，但owner_untrusted仍拒绝、helper／verifier各13确认关闭，不授protected晋升。下文“动态观察中”为发布当时快照，已由本段覆盖。
+
+Agent main／远端为 `5bde45676dbedc7942c52993cd0bfffbe028e57c`，父ce4，仅下节所述snapshot TEST四行与两份进度文档，三路径28增0删。global SPEC补审及不同global QUALITY均C0／I0／M0，后者另实际12／0.188s全绿。`8ea1e4`密钥与`76fa35`固定子仓均exit0；`c49a6e`核exact3、main、父、AST及pin21566／clean vendor。初次普通add因docs忽略规则exit1保留，`c34e7d`随后仅三精确路径force-add、核索引字节／100644／raw cached whitespace0并提交，父与普通status核通过；`a0cde1`推送exit0，`c4ab57`核远端同SHA。两个新PLAN均未发布，vendor未更新。
+
+新push／attempt1：CI `38620537823`、provenance `38620537682`、Pages `38620537306` 已触发，实际matrix动态观察中，不能预填job总数或授双Darwin／Windows原门通过。下一同仓候选须等待本批所有run／job终态；无取消或重跑。Skill B3d actualSOURCE SPEC及不同QUALITY均零后，root仅按已审附录C接线CI89行／`9244aad5`；全片actual SPEC零、不同global QUALITY待结论，尚未提交，不提前更新Agent vendor。
+
+后续Skill发布：B3d全片global SPEC与不同QUALITY均C0／I0／M0，后者另strict21／9.032s及trigger3均全绿。`c84551`核exact3/main/b583父/空索引/AST/冻结字节/原始whitespace0，`41dfce`三候选路径密钥扫描零命中；`291a3b`全仓原扫描仍exit1，两份旧合成测试命中由`cade56`核与HEAD逐字相同，不冒称原扫描全绿。`dbf6fc`核三索引字节／100644／raw cached check0并提交，`16f3df`推main成功：`c5a6a8661c294ab54f7694077439a06f57f9d323`，父b583，三路径459增4删，普通status为空。candidate `38621055236`、inspection `38621055337`、site `38621055339` 均push／attempt1、动态观察中；仅待验候选，不授两个原语线上或宿主通过，不升级Agent pin。
+
+5bde双Mac新snapshot strict12均通过，A成功只授M0a1有限证据；B均在正式quota断言前基础设施失败。root亲读Intel B `116047032764`原log28663字符及artifact `11922016931`：37061字节／ZIP SHA256 `0d2e7952cdd093052031b13833a3a914319b316f313518b9bacf6665411fdc57`，有界RAM核26成员、不落盘、不执行产物；metadata精确5bde／attempt1／x86_64／mac15.7.9／24G830，native2／complete true／cleanup unknown，无formal或manifest。293字节stderr首条是case0／slot0／child_slot2／stage=open／saved_errno1／exit85，随后DATA read32／received0，不能倒因为snapshot API失败或把末尾EPIPE当首因。真实vectors launch_child重开`/dev/null`而现profile不授权；root实际三步`9b0ee2`完成，独立只读评估复用既有FD，尚未修改。首次stdio helper因node不在子进程PATH退出1保留，修正仅helper环境后实际三步accepted／exit0；不是产品测试失败。
+
+WFP PLAN的I1最小修订已完成并fresh SPEC→不同QUALITY均零：596行／41942字节／`148425c7`，A164行／`864f450d`、D93行／`dae33696`，B/C保持原字节。root已读全文及全部修订；两独立审者均实际核正逆16hunks、旧10为9Assertion＋1绿、最终41项全绿且零ERRORskip，WinPS5.1抽取真实消费者规范键接受／五种单键大写拒绝。仅PLAN/RAM信用，正式独立TEST尚未落，不授完整CI7／SetupAPI／网络拒绝；14处合法diff空白context保留，不报告原始whitespace全零。仍不纳5bde或提前更新pin。
+
+后续正式WFP Task1已仅落A/C两TEST，正式新10为9父9Assertion＋默认v3正控1绿／零ERRORskip；旧7全绿，迁移旧24仅schema4一条Assertion红／23绿。actual TEST独立SPEC与不同QUALITY均C0／I0／M0，helper／CI／parser／Reviewer保持冻结、index空；不同SOURCE尚未实施。先前“尚未落”是该段审计划时快照，不覆盖本段实际进展。
+
+Skill c5a6三个run／实际9job已全部终态8成功1失败，无取消重跑。Ubuntu新21、批准3pytest、107旧collect／107通过＋5subtests及execution-model shell通过；Windows `116048364876` strict21／32.629s为4FAILURE、零ERRORskip，后续pytest／syntax／旧门跳过。root亲读77536字符日志，失败同时包含TEST的None路径预期错误与provider根标签／digest的真实不兼容：Git为`C:/…`而`str(Path)`为`C:\…`。双inspection各162通过；generic原2／3skip分别保留，site三job成功，仅B3d软件片未通过，不授阶段验收。
+
+最小兼容修复按TDD进行：root只把TEST五处根标签expected改用`Path.as_posix()`，386行／`28a692bf`，不改实际值或摘要比较、不增加skip。Windows定点正式`1738ce`五方法／21.570s为None单／多根2绿、providerhead／dedup两Assertion及capture required两Assertion，共3红父／4Assertion、零ERRORskip／exit1；CP仍原`8340d3d9`。已授权不同SOURCE作者仅把provider输出根标签改同表示，旧None算法、identity／metadata路径校验及其它契约保持；实际GREEN／双审／新SHA线上仍待，不提前改pin。
+
+该兼容修复SOURCE已随后仅落一行，CP6630行／`e70474c8`。不同作者先独立Windows五定点复取相同RED／22.047s，再改为`workspace.as_posix()`，Windows五项／20.032s、Linux严格21／3.097s、Windows严格21／93.349s均零FAILURE／ERROR／skip、exit0；`0638b2`收齐最后完整footer。selfSPEC→selfQUALITY零，旧legacy及其它函数字节不变，CI仍`9244aad5`；`b951f2`核精确两路径、父main c5a6、空索引、AST／候选密钥／冻结字节／原始whitespace0。实际全片独立SPEC→不同QUALITY及提交推送尚待，不以本机绿授新SHA线上通过。
+
+后续该两路径修复actual SPEC与不同QUALITY均C0／I0／M0；`750c50`核两索引字节／100644／raw cached check0并提交，父c5a6及普通status核通过，`da05f3`推main、`2ce092`核远端一致：`1af222a2b85a430dd3b241cdb9c84f1676767583`，两路径6增6删。candidate `38623556014`、inspection `38623555893`、site `38623556040` 同SHA／push／attempt1动态观察中，不能预填job总数或授线上通过。
+
+WFP不同SOURCE已仅落helper309行／11198字节／`e68d7048`，root `b78cbd`实读完整diff；作者source8全绿，新10只CI2Assertion红、旧7全绿、迁移24只schema4一条Assertion红，全部零ERRORskip。actual SOURCE双审进行中，CI仍2511行／`c331b436`，不提前接线。Mac FD8／合法后代ACK生命周期唯一PLAN612行／36852字节／`2a65f403`，root `2c5499`全文亲读，fresh SPEC进行中；未来仅TEST／vectors／controller绑定，当前三份实际文件均未改，未纳候选，不放宽profile或quota指标。
+
+后续WFP actualSOURCE独立SPEC与不同QUALITY均零；root才按冻结D八hunks接CI为2539行／`c3e42761`（`64fdbc`）。`112ae5`实际新10＋旧7＋迁移24共41全绿，附加原notice3／配置12亦全绿，共56、零FAILURE／ERROR／skip，未跑本机full/native。下一Agent候选明确只纳这四实现路径、已审WFP PLAN及两份进度文档，共七路径；不纳B3d／Mac两份新PLAN、不改vendor／原生／权限，准备全片actual双审。Mac PLAN612／`2a65f403`自身fresh SPEC与不同QUALITY均零，但未实施；WFP批准CI增量使其冻结CI／原26输入摘要发生已知漂移，先做仅输入账本修订重审，不能覆盖CI或冒称仍c331。
+
+截至本候选文档冻结，root又逐API核1af三run／九job全部终态8成功1失败，失败仍Windows三个旧pytest节点collection两ERROR；新strict21双平台分别3.172s／23.615s全绿。root亲读Windows原log75758字符：两个模块默认cp1252读取catalog失败于byte0x90／position68；这不是B3d功能断言失败，也不能授后置pytest／syntax／legacy通过。只在Skill两TEST的CATALOG读取各补`encoding="utf-8"`，其余字节不改，未提交；`386bba`以实际AST语句／真实catalog在cp1252默认I/O模型复现错误（本机LF原件offset66，不冒CI逐字），`d40d21`修后同模型解析值与UTF-8参考完全相等；`309927`Linux批准3节点3通过／2.72s。Windows本机无pytest、locale cp936，未安装，完整Windows节点留新SHA线上，不用模型冒真实pytest。两测试SHA为`be5ad7dc`／`49309302`，后续独立审查及发布另行完成；不混当前Agent七路径。Mac仅输入账本修订现618行／`f82cb8d7`，A/B/C资产不变，待DOCS复核，实际Mac文件未改。
+
+发布前关联补查记录：root `4296b0`运行旧CI总门3方法，发现test_full_suite_ci_budget精确命令清单未纳新strict10，2绿／1Assertion、零ERRORskip，原七路径双审及56定点未覆盖此关联，故暂缓发布。只在原TEST清单补一条精确新命令（42行／`24b97186`），保留整列assertEqual、一次／顺序／25分钟／矩阵；`3caea4`三项全绿，`fa84e6`59项关联全绿／1.333s／零FAILURE／ERROR／skip。WFP PLAN仅追加该执行缺口与Asset E，现616行／`1f50c833`，原596行／`148425c7`及A/B/C/D字节完整保留。候选范围更新为五实现＋WFP PLAN＋两进度文档共八路径，旧“七路径”是补查前快照；需对这一行TEST及PLAN／DOCS增量独立补审、不同QUALITY后才推，不借原七路径零缺陷结论遮盖遗漏。
+
+Skill两TEST编码修复的独立SPEC及不同QUALITY均零；额外`078184`在RAM仅对缺省subprocess文本decoder模拟cp1252，实际CLI子进程的三个Linux节点也3通过／2.60s，15次默认decoder调用；不是Windows pytest信用。`af585b`核精确两索引／100644／AST／候选密钥零命中／CP与CI不变／raw cached check0并提交，父1af及普通status核通过，`bdb406`推main成功：`6e546b0ec438b794dc7d5fc1d737572662ba64c8`，两路径2增2删。新SHA线上仍待；前面“未提交”是修复当时快照，不授本次新Windows节点或B3d整体验收。Mac账本618／`f82cb8d7`的增量DOCS SPEC及不同QUALITY也已零，正式TEST仍未实施且不纳本次八路径候选。
+
 ### 2026-10-15 ce4 全部终态；四行Darwin probe修复准备下一候选
 
 root再次核同ce4、push／attempt1三run及56个唯一job全部终态：CI `38615603979` 49项为41成功／4失败／4占位skip，provenance `38615603974` 五成功，Pages `38615604045` 两成功；合计48成功／4失败／4跳过、无取消，不重跑隐藏失败。双full原log root亲读：3.11.17 `116029774056` 3359／854.124s，3.12.15 `116029774023` 3359／692.436s，均0FAILURE／ERROR、99skip；已发布299行snapshot TEST各12方法在Linux实际通过，后置secret／pin门成功，不授Darwin通过。

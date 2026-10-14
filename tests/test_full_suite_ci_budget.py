@@ -25,6 +25,7 @@ class TestFullSuiteCiBudget(unittest.TestCase):
             'python -m pip install "setuptools>=80"',
             "python -B -c \"import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_windows_loopback_config_observation.py'); assert s.countTestCases()==12, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))\"",
             "python -B -c \"import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_windows_loopback_notice_budget.py'); assert s.countTestCases()==3, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))\"",
+            "python -B -c \"import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_windows_wfp_cab_observation.py'); assert s.countTestCases()==10, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))\"",
             "python -m compileall -q src tests scripts",
             "python -u scripts/run_full_suite_ci.py",
             "python scripts/preflight.py --only secrets",

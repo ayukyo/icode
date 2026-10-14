@@ -64,6 +64,8 @@ jobs:
         run: python -B -c "import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_windows_loopback_config_observation.py'); assert s.countTestCases()==12, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))"
       - name: Strict positive loopback notice budget software contract
         run: python -B -c "import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_windows_loopback_notice_budget.py'); assert s.countTestCases()==3, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))"
+      - name: Strict WFP CAB metadata observation software contract
+        run: python -B -c "import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_windows_wfp_cab_observation.py'); assert s.countTestCases()==10, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))"
       - name: Compile Python sources
         run: python -m compileall -q src tests scripts
       - name: Run the full unit test suite
@@ -845,6 +847,8 @@ jobs:
             }
           }
           Write-Output "::notice title=WFP observer identity control::runner_admin_token=$runnerAdminToken runner_wfp_observer_permission_probe=$observerPermissionState runner_wfp_observer_setup=$observerSetupStage runner_wfp_observer_helper_exit_code=$observerHelperExitCode runner_wfp_network_events_collected=$observerNetworkEventsState subscription_return_code=$observerReturnCode"
+      - name: Strict WFP CAB metadata observation software contract
+        run: python -B -c "import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_windows_wfp_cab_observation.py'); assert s.countTestCases()==10, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))"
       - name: Run Reviewer snapshot probe as temporary standard user
         shell: pwsh
         run: |
@@ -881,6 +885,7 @@ jobs:
           $wfpArchiveMemberMatchCount = 'not_checked'
           $wfpArchiveXmlMemberCount = 'not_checked'
           $wfpArchiveWfpdiagXmlMemberCount = 'not_checked'
+          $wfpArchiveCategoryCounts = 'unavailable'
           $wfpExactDropCount = 0
           $wfpExtractExitCode = 'not_run'
           $wfpMemberSelfTestStage = 'prepare'
@@ -1917,7 +1922,7 @@ jobs:
                       $wfpXmlCandidates = @()
                       $memberListResult = Invoke-BoundedDiagnosticCommand `
                         -Path $python -Arguments @(
-                          $cabinetMemberProbe, '--archive', $wfpCaptureArchive
+                          $cabinetMemberProbe, '--archive', $wfpCaptureArchive, '--observe-categories'
                         ) -TimeoutMilliseconds 5000 -CaptureStdout
                       if ($memberListResult.TimedOut) {
                         $wfpArchiveMemberStatus = 'list_timeout'
@@ -1934,7 +1939,7 @@ jobs:
                           )
                           $expectedSummaryPropertyNames = @(
                             'member_count', 'schema_version', 'status', 'target_match_count',
-                            'xml_member_count', 'wfpdiag_prefixed_xml_member_count'
+                            'xml_member_count', 'wfpdiag_prefixed_xml_member_count', 'member_categories'
                           )
                           $cabinetSummaryValid = (
                             $summaryPropertyNames.Count -eq $expectedSummaryPropertyNames.Count
@@ -1946,7 +1951,7 @@ jobs:
                           }
                           if ($cabinetSummaryValid) {
                             $cabinetSummaryValid = (
-                              $cabinetMemberSummary.schema_version -eq 3 -and
+                              $cabinetMemberSummary.schema_version -eq 4 -and
                               ($cabinetMemberSummary.member_count -is [int] -or
                                $cabinetMemberSummary.member_count -is [long]) -and
                               $cabinetMemberSummary.member_count -ge 0 -and
@@ -1973,6 +1978,28 @@ jobs:
                           $cabinetSummaryValid = $false
                         }
                         if ($cabinetSummaryValid) {
+                          $categoryKeys = @('target', 'state', 'etl', 'other', 'unknown')
+                          $categories = $cabinetMemberSummary.member_categories
+                          $categoryNames = @($categories.PSObject.Properties.Name)
+                          $categoryTotal = 0
+                          $cabinetSummaryValid = $categoryNames.Count -eq $categoryKeys.Count
+                          foreach ($key in $categoryKeys) {
+                            $value = $categories.$key
+                            if ($categoryNames -cnotcontains $key -or
+                                ($value -isnot [int] -and $value -isnot [long]) -or
+                                $value -lt 0 -or $value -gt 4096) {
+                              $cabinetSummaryValid = $false
+                            } else {
+                              $categoryTotal += $value
+                            }
+                          }
+                          $cabinetSummaryValid = $cabinetSummaryValid -and
+                            ($categoryTotal -eq $cabinetMemberSummary.member_count) -and
+                            ($categories.target -eq $cabinetMemberSummary.target_match_count)
+                        }
+                        if ($cabinetSummaryValid -and $cabinetMemberSummary.status -ceq 'listed') {
+                          $wfpArchiveCategoryCounts = ('target:{0},state:{1},etl:{2},other:{3},unknown:{4}' -f
+                            $categories.target, $categories.state, $categories.etl, $categories.other, $categories.unknown)
                           $wfpArchiveMemberCount = [string]$cabinetMemberSummary.member_count
                           $wfpArchiveXmlMemberCount = [string]$cabinetMemberSummary.xml_member_count
                           $wfpArchiveWfpdiagXmlMemberCount = [string]$cabinetMemberSummary.wfpdiag_prefixed_xml_member_count
@@ -2096,6 +2123,7 @@ jobs:
             }
             Write-Output '::group::Windows WFP supplemental capture states'
             Write-Output "observer_preflight=$runnerWfpObserverPreflightState capture_preflight=$wfpCapturePreflight archive_member_match_count=$wfpArchiveMemberMatchCount"
+            Write-Output "cab_categories=$wfpArchiveCategoryCounts"
             Write-Output "observer_matched_classify_drops=$runnerWfpMatchedClassifyDropCount matched_capability_drops=$runnerWfpMatchedCapabilityDropCount history_capability=$runnerWfpHistoryCapability history_classify=$runnerWfpHistoryClassify"
             Write-Output "capture_status=$wfpCaptureStatus exact_classify_drop_count=$wfpExactDropCount extract_exit_code=$wfpExtractExitCode cab_status=$wfpArchiveMemberStatus cab_members=$wfpArchiveMemberCount xml_members=$wfpArchiveXmlMemberCount wfpdiag_xml_members=$wfpArchiveWfpdiagXmlMemberCount"
             Write-Output '::endgroup::'
