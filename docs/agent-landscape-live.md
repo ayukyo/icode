@@ -2,6 +2,10 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+Mac描述符/ACK修复及fatal诊断最小片已双审零后发布6dbc8b5，三run57项现全部终态52成功/2失败/3占位skip；双full各3369项通过，双Mac B已到唯一cap2真实baseline RED，剩余失败仍双Windows网络正控。不反推026的139根因，不授SOURCE配额或整体验收。受保护Git B3e action-policy的正式TEST取得17红父/44Assertion/零ERRORskip并actual双审零，不同SOURCE只改两个函数；业务21、原端口21及旧消费者4通过，root接CI后22全绿，全片双审零后推待验main42f5556。candidate38634827865/inspection38634827863/site38634827894仍动态，Agent pin未改。下方“仅PLAN／未实施”是历史窗口。
+
+2026-10-15并行只读复核Apple固定`xnu-12377.1.9`的[fork计数](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/kern_fork.c)、[资源限额](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/kern_resource.c)和[UID迁移](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/kern/kern_prot.c)。**采纳、已落待审候选：**quota TU仅一行扩cap1/2，实际17检查先RED后GREEN，cap1/disabled/非法cap/errno/精确读回保持；actualSOURCE双审零后只切CI phase1，仍待全片及新SHA双Mac A18+B26。收益是验证现有V1–V11，成本仅源码一行及CI phase一行，无新权限依赖、未复制APSL代码。**暂缓：**cap4/race、C/D/E、M0b身份逃逸和M1受保护安装；**不适配：**共享UID、额外root迁入、轮询终止冒单任务硬上限。固定源码不等于本次runner内核二进制；controller已另绑定green的真实quota源码hash及fresh build/binary/candidate，研究不替代实际配额验收。
+
 026终态新增Python3.11全套SIGSEGV，3.12虽3369通过也不能覆盖。2026-10-15独立只读研究并由root亲读[CPython v3.11.17 faulthandler.c](https://github.com/python/cpython/blob/v3.11.17/Modules/faulthandler.c)、[3.11官方说明](https://docs.python.org/3.11/library/faulthandler.html)：周期watchdog与fatal-handler enable独立；前者全局每120s采样不是单测超时，也不能据最后emit帧归根因。**采纳：**复用stdlib，先真实TEST三Assertion RED，再CI runner仅一行显式enable，五项局部GREEN；无新依赖权限或源码复制。**暂缓：**SIGSEGV归因／修复信用，待新SHA原始fatal证据；**不适配：**加超时、skip、取消重跑刷绿或把诊断增强当根因修复。单collector本机未复现只授该次软件结果；与开源Agent结果分账原则一致，不刷新20名单。
 
 WFP已发布待验026932cf；真实双Windows新strict10通过并给出固定ETL/other计数，原IPv4正控仍超时，不把观察补全授网络隔离通过。Mac FD方案正式TDD已落：12方法先取得3红父／16Assertion，独立双审后不同SOURCE仅checked dup2与两处窄ACK传承；实际12＋13＋12软件项绿、原cap2 APIAssertion保持，SOURCE双审零但未同SHA双Darwin验收。**采纳：**复用既有描述符和既有ACK，机制与固定Apple研究一致；**暂缓：**Darwin策略/配额/清理信用；**不适配：**放宽profile、宽留ACK或以软件GREEN替原生。无依赖／权限／许可变化，不复制上游代码。

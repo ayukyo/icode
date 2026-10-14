@@ -8,6 +8,14 @@
 
 ### 2026-10-15 WFP候选已推，Mac FD修复进入全片审查
 
+接续进展（未授整体验收）：6dbc双Mac B现已到正式baseline：Intel第三进程rc4957、ARM rc1944，各formal五项仅`M0A2_CAP2_REJECTION`断言失败，4P/1F/0ERROR/skip；观察员核两ZIP的27份来源及binary/binding/ledger/stdout/stderr摘要一致。此前open EPERM不再出现，只建立真实quota RED，不授SOURCE cap2或完整清理。root亲取双full原log：3.11 job116084282346为800525字符、3369/755.638s；3.12 job116084282119为806845字符、3369/950.236s，均零FAILURE/ERROR、99既有skip及后置secret/pin通过。root亲核三run同SHA/push/attempt1全部completed，CI50为45成功/2失败/3跳过，provenance五项与Pages两项成功，57唯一job合计52成功/2失败/3跳过；失败仍双Windows Reviewer，无取消重跑，下一候选等待条件解除。不反推026的139根因或将诊断enable称为修复。
+
+Skill B3e正式TEST先落在6e基线：`tests/test_candidate_action_policy_provider_unit.py`，427行/21952字节，SHA256 `0ecec1ac299a147f666e97603c3078167eba557589e174da75f316e6b9927429`，精确等已双审PLAN Asset A。正式22取得17红父/44有效Assertion/5绿、零ERROR/skip，actualTEST独立双审零后，不同SOURCE作者仅落批准B；业务21、原端口21及旧消费者4通过，SOURCE实际双审零后root接C，新严格22全绿。全片独立SPEC与不同QUALITY均零，286c55核精确三文件/两AST/其余12输入/旧22→24门顺序次数/候选密钥0；868f7d提交、3398ac推main并核远端：`42f5556745bccb7fb0ee083e755007ffc95118c6`，父6e，三路径472增5删，status空。新同SHA/push/attempt1：candidate38634827865、inspection38634827863、site38634827894动态待验；仅action-policy只读传播，不开放inspection/writer，不更新Agent固定子仓。
+
+Mac已按原vectors PLAN Task3由不同SOURCE作者仅扩cap1/2：limit16行/629字节/`a5fb47b059c9a877089d46284fe938ae6131198e9b5b3c24e8522b6e43daf001`，唯一正逆回507b26。作者先得单软件Assertion42 RED，再17检查全绿；opt-in为10软件通过/5原native skip，event12及snapshot12通过；actualSOURCE独立SPEC和不同QUALITY各复核17检查且零遗留。root随后仅切CI M0A2_SOURCE为1（整体SHA `c154dbb7a1b0625a8a2b869f4e58bcae82cceb136fd303f03fbce922178a2030`），不覆盖后续诊断。下一候选只纳limit/CI/两进度DOCS四路径，尚待全片双审；同新SHA双Mac A18+B26之前不授SOURCE原生GREEN，cap4/C/D/E/M0b/M1仍开放。
+
+**最新发布接续：**八路径最终actual SOURCE/global SPEC与不同global QUALITY均C0/I0/M0后，732f3c核main父026／精确八索引字节／100644／AST／密钥与pin守护并提交：6dbc8b50571c2f4c5891e21ef3788eb8000be5a2，八路径892增18删。七个非PLAN路径raw cached whitespace0；全cached raw exit2仅Mac PLAN162/265两处冻结diff空context及630继承EOF空行，未冒全路径raw0。9bcb8f推main明确exit0，031801核远端同SHA。新同SHA／push／attempt1：CI38631580720、provenance38631580691、Pages38631580711，实际矩阵动态展开中，不预填最终job数。下方“未提交／待全片双审”为发布前快照，当前仅待验候选，不授Darwin/配额/清理或139根因修复；下一同仓push仍须等本批全部run/job终态。vendor21566未更新，B3d与正在起草的B3e PLAN均未纳入这次提交。
+
 最新终态由root逐API亲核：026三run全部completed、同SHA／push／attempt1，实际57job＝49成功／5失败／3占位skip（CI50为42／5／3，provenance5与Pages2成功），没有取消重跑；下一候选现在可发布，但R2/R3仍未通过。root亲读3.12原log794058字符：3369／590.157s、零FAILURE／ERROR、99既有skip，后置两guard通过；3.11原log409438字符为exit139、无fullfooter且后置guard跳过，不能借3.12或签装成功覆盖。
 
 #### Python3.11 exit139：故障基线与结论上限

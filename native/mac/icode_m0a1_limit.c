@@ -8,7 +8,7 @@ int m0_check_limit(rlim_t cap,int enabled) {
 }
 int m0_apply_limit(rlim_t cap,int enabled) {
     if(!enabled) return 0;
-    if(cap!=1) return EINVAL; /* Explicitly a cap1-only slice. */
+    if(cap!=1 && cap!=2) return EINVAL; /* cap1/cap2 only; cap4 awaits race RED. */
     struct rlimit target={.rlim_cur=cap,.rlim_max=cap};
     if(setrlimit(RLIMIT_NPROC,&target)<0) return errno;
     return m0_check_limit(cap,1);

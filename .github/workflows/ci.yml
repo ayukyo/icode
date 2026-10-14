@@ -2494,7 +2494,7 @@ jobs:
     permissions:
       contents: read
     env:
-      M0A2_SOURCE: "0"
+      M0A2_SOURCE: "1"
     strategy:
       fail-fast: false
       matrix:
