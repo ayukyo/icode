@@ -2373,3 +2373,74 @@ jobs:
         run: python scripts/check_governance.py
       - name: Remind about open-source Agent research freshness
         run: python scripts/check_agent_landscape.py --warn-only
+
+  macos-m0a1-finite:
+    name: M0a1 finite native RED and SOURCE (${{ matrix.os }})
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+    steps:
+      - name: Check out exact candidate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - name: Set up nonroot controller Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+      - name: Build the TESTOnly wrong baseline without SOURCE
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S native/mac -B "$RUNNER_TEMP/icode-m0a1-build" -DM0_BUILD_SOURCE=OFF 2>&1 | tee "$RUNNER_TEMP/icode-m0a1-configure.log"
+          cmake --build "$RUNNER_TEMP/icode-m0a1-build" --parallel 1 2>&1 | tee "$RUNNER_TEMP/icode-m0a1-build.log"
+      - name: Prove formal native semantic RED, positive controls and protocol
+        shell: bash
+        run: >-
+          python scripts/run_macos_m0_ci.py
+          --build-dir "$RUNNER_TEMP/icode-m0a1-build"
+          --output "$RUNNER_TEMP/icode-m0a1-red"
+          --phase red --expected-arch "${{ matrix.arch }}"
+      - name: Build the independently reviewed SOURCE if present
+        if: hashFiles('native/mac/icode_m0a1_limit.c') != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          git ls-files --error-unmatch native/mac/icode_m0a1_limit.c
+          cmake -S native/mac -B "$RUNNER_TEMP/icode-m0a1-build" -DM0_BUILD_SOURCE=ON 2>&1 | tee "$RUNNER_TEMP/icode-m0a1-source-configure.log"
+          cmake --build "$RUNNER_TEMP/icode-m0a1-build" --parallel 1 2>&1 | tee "$RUNNER_TEMP/icode-m0a1-source-build.log"
+      - name: Require formal SOURCE native GREEN if present
+        if: hashFiles('native/mac/icode_m0a1_limit.c') != ''
+        shell: bash
+        run: >-
+          python scripts/run_macos_m0_ci.py
+          --build-dir "$RUNNER_TEMP/icode-m0a1-build"
+          --output "$RUNNER_TEMP/icode-m0a1-green"
+          --phase green --expected-arch "${{ matrix.arch }}"
+      - name: Preserve bounded exact-candidate native evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: m0a1-${{ github.sha }}-${{ matrix.arch }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            ${{ runner.temp }}/icode-m0a1-red/
+            ${{ runner.temp }}/icode-m0a1-green/
+            ${{ runner.temp }}/icode-m0a1-configure.log
+            ${{ runner.temp }}/icode-m0a1-build.log
+            ${{ runner.temp }}/icode-m0a1-source-configure.log
+            ${{ runner.temp }}/icode-m0a1-source-build.log
+            ${{ runner.temp }}/icode-m0a1-build/icode_m0a1_baseline
+            ${{ runner.temp }}/icode-m0a1-build/icode_m0a1_source

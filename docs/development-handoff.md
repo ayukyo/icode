@@ -6,6 +6,31 @@
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 
+### 2026-10-14 最新终态与接续（优先于下方在途历史）
+
+- Agent `53dc58ec1241495f4701662d01a530a17336c898` 三个工作流均已终态。CI [38444724409](https://github.com/ayukyo/icode/actions/runs/38444724409) 为 41 成功、2 Windows Reviewer 失败、3 退役条件跳过；Pages [38444724198](https://github.com/ayukyo/icode/actions/runs/38444724198) 成功；provenance [38444724218](https://github.com/ayukyo/icode/actions/runs/38444724218) 为 validate 取消、签装模板跳过，取消原因未知。本轮未取消或重跑以掩盖失败。
+- 同 SHA 全量 Python 3.11 job `115460007396`：3264 / 834.206s / OK(skip88)；3.12 job `115460007528`：3264 / 611.860s / OK(skip88)，compile/full/secrets/pin 均成功。macOS 既有 lifecycle Intel `115460007395`、ARM `115460007464` 成功；均不是新增 M0 配额或安装验收。
+- Windows Reviewer x64 `115460007402`、ARM `115460007624`：SDK ABI 各 10 项通过；管理员实际 payload 的历史采集 `status=complete / returned=0 / matched=0 / attribution=no_match`，helper/进程退出与清理成功。普通用户独立订阅仍 API5。候选连接仍 `10035 / wait_expired=true / connect_denied=false`，正控 `105 / ipv4_connect_timeout / inconclusive`。只证明新增观察链运行，不能把无匹配事件或超时当 DENY。provenance `115460006093` 仅 signed fixtures 9 项通过，后续验证取消，四动态 consumer 未执行，不能借旧候选的签装结果。
+- Skill `4d9b07616f3f8c7e3d39e73b6da3494b44799392` 软件 CI 已失败终态：Linux 旧 162 项通过、crosscheck shell 缺 rg；Windows 74 fail / 88 pass。当前最小兼容修复及 7 旧 fixture 保留在原生子仓工作树，root 实际新 7 项 / 1.955s 与 provider 9 项 / .123s 均零失败、错误、跳过；fresh 实际源码审查与线上回归未完成。CI 补 Linux ripgrep、7 项 stdlib、旧 162 收集清单及有界 Windows 启动/路径诊断，不先猜 SystemRoot 或放宽身份校验。固定 vendor 仍 `21566a5`，尚不更新。
+- macOS TESTOnly 六资产及新增双架构 CI 已接线，root portable 5 项 / .001s / 零失败、错误、跳过；最终只读审查在途。`native/mac/icode_m0a1_limit.c` 仍不存在。下一候选先在线证明 Intel 与 ARM 正控及真正配额断言 RED，编译错误、ERROR 或 skip 不算 RED；双格 RED 前不实施 SOURCE，TESTOnly job 通过也不算配额通过。
+- 受保护 Git 上下文最小契约修复已有用户明确授权。后续 candidate/delivery 补充 DESIGN 当前 `5abe4a463800be6f21c0d931035abb3adebd18c847dbfc86c746dd896bdf8550` 正在 fresh 审查：不开放 .git，不任意执行 Git 命令，不用 legacy/None 绕过，不擅改 host revision；不支持的过滤属性及待合法身份刷新链仍须在整体 90% 验收前解决。
+- 本机一次进程启动异常后，轻量检查实际可用内存约 4.1 GiB、可用提交约 6.2 GiB，WSL 两仓可读且专项可运行；原因未确认。未重启、关闭用户应用或更改资源配置。继续线上优先，原 D 盘与链接保留。
+
+【架构级自检报告】（本次接续，非 R2/R3 整体验收）
+
+- 语法/编译：上述软件专项通过；新增 macOS C 编译须线上实证。
+- 依赖/调用链：旧测试入口保留，固定子仓未升级，受保护上下文尚未接通。
+- 逻辑/边界：区分 payload、管理员探针和普通订阅；无事件不等于 DENY。
+- 异常处理：保留失败、取消和未知原因，不用跳过补绿。
+- 关联模块：主仓 TESTOnly 与 Skill 兼容片分开交付；原 Windows 工作区不动。
+- 兼容安全：不改配额硬门槛、身份校验或产品权限，不读取模型密钥。
+- 可运行性：局部软件通过；原生双架构配额、Windows Reviewer、完整安装与 R3 六步仍开放，不报告 100%。
+
+### 先前在途记录（状态已由上节更新，保留审计历史）
+
+- **最新 Agent 已推送候选：** `53dc58ec1241495f4701662d01a530a17336c898` 已原生提交242e92、Win Git推送0c4f10 exit0；18路径索引字节/固定vendor/CI源摘要及cached diff-check逐项通过。实际触发 [CI38444724409](https://github.com/ayukyo/icode/actions/runs/38444724409)、[provenance38444724218](https://github.com/ayukyo/icode/actions/runs/38444724218)、[Pages38444724198](https://github.com/ayukyo/icode/actions/runs/38444724198)，首次queued/in_progress/in_progress，终态与原生footer待收。未创建branch/tag，不把push叫阶段完成；不取消旧运行。
+- **下一 Mac TESTOnly片：** 六新文件已逐字匹配PLAN37e485，实际SPEC→不同QUALITY各C0/I0/M0；portable协议5PASS/0skip，native类5skip未credit，SOURCE limit.c不存在，CI尚未接Mac。证据`/home/orbbec/icode-m0a1-testonly.s9qq3b29/portable-protocol.log` SHA`a248b0b7ccc2b8558bfea6c6af309b09ea21f525c526f5057f9944687562ab08`；复杂实施前root真实sequential三步19c59d。六文件明确未进入53dc候选，待独立CI接线审查、53dc所有jobs终态后另一main候选双格真正RED；正式SOURCE须两格语义RED之后。
+- **后续设计与兼容片：** Skill Windows完整PLAN初版`1a654583…`已root4块全文读1205行并交fresh SPEC，不提前SOURCE；原生Windows74失败分类、已证明产品/fixture及未证实startup/binding分账。whole-pin candidate/delivery新DESIGN独立作者正起草，父真实sequential三步797c92，接现95199私有typed context/对象快照，不使用任意argv、fake.git或legacy tracking绕过。固定vendor仍21566a5，53dc没有产品Gitcontext新接线。
 - **下一 Agent 待发布候选：** Windows history 九实现路径已通过实际源码 fresh SPEC→不同 QUALITY零问题，root另95/.427s/0F/E/1Linux SDK skip、源三摘要与冻结资产一致。仅本片实现和已审设计/计划/进度文档入提交；新Mac TESTOnly六文件保留工作树不入本片，CI仍只含Windows变化。秘密/固定vendor原单门通过；文档5疑似已逐一确认为T0 Python调用语法（da5df5），不是实际断链。候选尚未提交推送，不授线上SDK/native或R2/R3验收。
 - **索引文档守护：** 首次18路径cached diff-check拦截P1内嵌diff的26个单空格context行；root只改文档空行表示，独立DOC审查C0/I0/M0，恢复context prefix后26hunk实际RAM重建原helper`23a42a22…`、TEST/CI未变。新P1文档`3a56ef20…`，原038审批摘要保留历史，不冒称新bytes相同。root重新秘密/固定vendor原单门均通过（8b262d/c253f7），待最终索引守护再提交。
 - **最新跨仓软件候选（2026-10-14）：** Skill `4d9b07616f3f8c7e3d39e73b6da3494b44799392` 已在原生权威目录 main 提交并推送（3b5303/d51938），父 `52cb6b3`，只涉及 helper/新 TEST/新软件 CI 三路径，索引逐字节及 100644 模式核过、定向秘密规则零命中、diff-check 通过。最终 helper `c7ad6c9a…` / TEST `1efaab01…` / CI `5fd95bcd…`；3 行类型检查的 28 边界 RED→GREEN 已实跑，Linux 9/.115s、Windows 9/1.796s、零失败错误跳过，实际源码 fresh SPEC→另一 QUALITY 均 C0/I0/M0。线上 [software38441664572](https://github.com/ayukyo/icode-skill/actions/runs/38441664572) 双平台正在旧 inspection 回归，新 provider 与 syntax 两步已 success；尚未收终态/raw footer，不授片完成。Agent main 仍 `6e893f0`、vendor `21566a5`，未升级固定版本或开放宿主绑定。
