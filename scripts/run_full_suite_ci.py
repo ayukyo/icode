@@ -14,6 +14,7 @@ def main():
         import faulthandler
         import runpy
 
+        faulthandler.enable(file=sys.stderr, all_threads=True)
         faulthandler.dump_traceback_later(
             TRACE_INTERVAL_SECONDS, repeat=True, file=sys.stderr, exit=False
         )

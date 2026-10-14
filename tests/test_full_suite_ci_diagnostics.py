@@ -50,6 +50,13 @@ class FullSuiteDiagnosticsTests(unittest.TestCase):
             return [sys.executable, "-u", str(ROOT / "scripts/run_full_suite_ci.py")]
         bootstrap = (
             "import faulthandler,json,runpy,sys\n"
+            "faulthandler.disable()\n"
+            "real_enable=faulthandler.enable\n"
+            "def enable(file=None,all_threads=True):\n"
+            " real_enable(file=file,all_threads=all_threads)\n"
+            " print('FATAL:'+json.dumps([file is sys.stderr,all_threads,faulthandler.is_enabled()]),"
+            "file=sys.stderr,flush=True)\n"
+            "faulthandler.enable=enable\n"
             "real_arm=faulthandler.dump_traceback_later\n"
             "def arm(timeout,repeat=False,file=None,exit=False):\n"
             " print('ARM:'+json.dumps([timeout,repeat,file is sys.stderr,exit]),"
@@ -155,6 +162,8 @@ class FullSuiteDiagnosticsTests(unittest.TestCase):
                 self.fixture(root, outcome)
                 result = self.run_tiny(root, self.command("record"))
                 self.assertEqual(result.returncode, code, result.stderr)
+                self.assertEqual(result.stderr.count("FATAL:[true, true, true]"), 1)
+                self.assertLess(result.stderr.index("FATAL:"), result.stderr.index("ARM:"))
                 self.assertEqual(result.stderr.count("ARM:[120, true, true, false]"), 1)
                 self.assertEqual(result.stderr.count("CANCEL"), 1)
                 self.assertLess(result.stderr.index("ARM:"), result.stderr.index("Ran 2 tests"))

@@ -1,4 +1,4 @@
-"""M0a2 diagnostic-only software contract; no Darwin/root/fork execution."""
+"""M0a2 software contracts; extracted C probes only, no Darwin/root workload."""
 import errno
 import os
 from pathlib import Path
@@ -45,6 +45,12 @@ def probe_source(source,shared):
         actual+=function(source,"read_data_record")+function(source,"reject_data_event")+function(source,"next_data_event")
     if "static _Noreturn void launch_failure(" in source:
         actual+=function(source,"launch_failure")
+    if "static int leaf_ack_fd(" in source:
+        definitions=re.search(r"^struct definition .*?(?=^struct event )",source,re.M|re.S)
+        if definitions is None:
+            raise AssertionError("actual case definitions unavailable")
+        actual+='static const char *m0_variant(void) {return "source";}\n'
+        actual+=definitions[0]+function(source,"definition_at")+function(source,"leaf_ack_fd")
     actual+=function(source,"require_ack")+function(source,"launch_child")
     return PRELUDE+actual+TRAILER.replace("ACTUAL_GUARD",guard[1]).replace("ACTUAL_ACCEPTED_UPDATE",guard[2] or "")
 
@@ -84,22 +90,22 @@ typedef int posix_spawn_file_actions_t;
 static int model_open(const char *path,int flags) {
  opens++;
  if(strcmp(path,"/dev/null") || flags!=(O_RDWR|O_CLOEXEC)) _exit(202);
- if(fail_stage==1) {errno=EACCES;return -1;}
- if(reserved_eight) fd8_ready=1;
- return reserved_eight ? 8 : 6;
+ errno=EPERM;return -1; /* New path opens are forbidden by this fixture. */
 }
 static int model_dup2(int oldfd,int newfd) {
  dups++;
- if(oldfd!=6 || newfd!=8) _exit(203);
+ if(oldfd!=2 || newfd!=8) _exit(203);
+ if(fail_stage==1) {errno=EACCES;return -1;}
  if(fail_stage==2) {errno=EMFILE;return -1;}
+ if(fail_stage==3) {errno=EBADF;return -1;}
+ if(fail_stage==8) {errno=EIO;return -1;}
  fd8_ready=1;return 8;
 }
 static int model_close(int fd) {
  closes++;
- if(fd==6 && fail_stage==3) {errno=EIO;return -1;}
  if(fd==10) marker_read_closed=1;
  if(fd==11) marker_write_closed=1;
- if(fd!=6 && fd!=10 && fd!=11) _exit(204);
+ if(fd!=10 && fd!=11) _exit(204);
  return 0;
 }
 static int model_fcntl(int fd,int command,int flags) {
@@ -231,8 +237,9 @@ int main(int argc,char **argv) {
  if(!strncmp(scenario,"launch",6)) {
   launch_mode=1;fail_stage=atoi(argv[2]);spawning_mode=!strcmp(scenario,"launch_spawn");
   reserved_eight=!strcmp(scenario,"launch_reserved8");
+  fd8_ready=reserved_eight; /* dup2 must replace an already occupied target too. */
   pid_t result=launch_child(7,0,2,spawning_mode);
-  if(result!=-1 || opens!=1 || dups!=(reserved_eight ? 0 : 1) || fcntls!=3 || pipes!=1 ||
+  if(result!=-1 || opens!=0 || dups!=1 || fcntls!=3 || pipes!=1 ||
      forks!=(spawning_mode ? 0 : 1) || spawns!=(spawning_mode ? 1 : 0) || acks!=1) return 218;
   printf("launch_ok fd8=1 marker_closed=2 ack=1 fork=%d spawn=%d\n",forks,spawns);
   return 0;
@@ -268,6 +275,27 @@ class TestM0a2EventDiagnostics(unittest.TestCase):
                              capture_output=True,timeout=30)
         if built.returncode or built.stdout or len(built.stderr)>65536:
             raise AssertionError("C diagnostic probe infrastructure: "+built.stderr.decode("utf-8","replace"))
+        cls.build_descriptor_probe()
+    @classmethod
+    def build_descriptor_probe(cls):
+        cc=shutil.which("cc")
+        if cc is None:
+            raise AssertionError("C compiler unavailable; infrastructure, not semantic RED")
+        cls.fdtemporary=tempfile.TemporaryDirectory(prefix="m0a2-fd8-software-")
+        cls.addClassCleanup(cls.fdtemporary.cleanup)
+        cls.fd_binary=Path(cls.fdtemporary.name)/"fd-probe"
+        program=descriptor_probe_source(CFILE.read_text(encoding="utf-8"))
+        built=subprocess.run([cc,"-std=c11","-Wall","-Wextra","-Werror","-Wno-unused-function",
+                              "-x","c","-","-o",str(cls.fd_binary)],input=program.encode("ascii"),
+                             capture_output=True,timeout=30)
+        if built.returncode or built.stdout or built.stderr:
+            raise AssertionError("C FD probe infrastructure: "+built.stderr.decode("utf-8","replace"))
+    def descriptor_case(self,mode,launches=1):
+        result=subprocess.run([str(self.fd_binary),str(mode)],capture_output=True,timeout=10)
+        self.assertLessEqual(len(result.stdout)+len(result.stderr),4096)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stderr,b"")
+        self.assertEqual(result.stdout,f"fd8_ok mode={mode} launches={launches}\n".encode())
     def run_probe(self,scenario,stage=0):
         result=subprocess.run([str(self.binary),scenario,str(stage)],capture_output=True,timeout=5)
         self.assertLessEqual(len(result.stdout)+len(result.stderr),4096)
@@ -280,16 +308,16 @@ class TestM0a2EventDiagnostics(unittest.TestCase):
               f"received={received} last_kind={last[0]} last_slot={last[1]} cleanup=unknown\n").encode()
         self.assertIn(line,actual.stderr,"M0A2_DIAGNOSTIC_DATA_REQUIRED")
         self.assertIn(b"M0A2 stage=data-event-contract",actual.stderr)
-    def test_launch_open_refusal_has_saved_errno_without_creation(self):
+    def test_launch_reservation_refusal_has_saved_errno_without_creation(self):
         actual=self.run_probe("launch",1)
         self.assertEqual(actual.returncode,85)
         self.assertEqual(actual.stdout,b"")
         self.assertEqual(actual.stderr,
-            f"M0A2_LAUNCH case=7 slot=0 child_slot=2 stage=open saved_errno={errno.EACCES} exit=85 cleanup=unknown\n".encode(),
+            f"M0A2_LAUNCH case=7 slot=0 child_slot=2 stage=dup2 saved_errno={errno.EACCES} exit=85 cleanup=unknown\n".encode(),
             "M0A2_DIAGNOSTIC_LAUNCH_REQUIRED")
     def test_launch_other_setup_failures_are_exact_stages(self):
-        for stage,name,error in ((2,"dup2",errno.EMFILE),(3,"close",errno.EIO),(4,"fcntl8",errno.EBADF),
-                                 (5,"pipe",errno.ENFILE),(6,"fcntl_read",errno.EBADF),(7,"fcntl_write",errno.EBADF)):
+        for stage,name,error in ((2,"dup2",errno.EMFILE),(3,"dup2",errno.EBADF),(4,"fcntl8",errno.EBADF),
+                                 (5,"pipe",errno.ENFILE),(6,"fcntl_read",errno.EBADF),(7,"fcntl_write",errno.EBADF),(8,"dup2",errno.EIO)):
             with self.subTest(stage=stage):
                 actual=self.run_probe("launch",stage)
                 self.assertEqual(actual.returncode,85)
@@ -319,6 +347,9 @@ class TestM0a2EventDiagnostics(unittest.TestCase):
                 self.assertEqual(actual.stderr,b"")
                 self.assertEqual(actual.stdout,
                     f"launch_ok fd8=1 marker_closed=2 ack=1 fork={forks} spawn={spawns}\n".encode())
+        for mode,launches in ((0,1),(1,1),(2,2),(3,1),(4,1)):
+            with self.subTest(real_descriptor_mode=mode):
+                self.descriptor_case(mode,launches)
     def test_eof_reports_read_result_not_stale_errno(self):
         self.data_rejection("eof","read",errno.EPIPE,0)
     def test_partial_read_reports_actual_byte_count(self):
@@ -375,6 +406,163 @@ class TestM0a2EventDiagnostics(unittest.TestCase):
                 self.assertEqual(actual.stdout,b"")
     def test_second_failure_retains_last_accepted_header(self):
         self.data_rejection("after","read",errno.EPIPE,0,last=(1,0),count=2)
+
+
+# This is a Linux/POSIX descriptor mechanism probe, not the Darwin vectors binary.
+# Source launch_child and the L/S entry branch are extracted unchanged at build time.
+FD_PRELUDE=r'''
+#define _POSIX_C_SOURCE 200809L
+#include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <spawn.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+static char *image,binary_hash[65];
+enum { FORKED=3,OP=2,SPAWN_OP=2,FORK_OP=1 };
+static int reservations,marker_pipes,events;
+static int all_read(int fd,void *buffer,size_t amount) {
+ unsigned char *p=buffer;
+ while(amount) {
+  ssize_t n=read(fd,p,amount);
+  if(n<0 && errno==EINTR) continue;
+  if(n<=0) return 1;
+  p+=n;amount-=(size_t)n;
+ }
+ return 0;
+}
+static int forbidden_open(const char *path,int flags) {
+ (void)path;(void)flags;errno=EPERM;return -1;
+}
+static int reserve_dup(int from,int to) {
+ if(from!=2 || to!=8) _exit(201);
+ int result=dup2(from,to);
+ if(result==8) reservations++;
+ return result;
+}
+static int marker_pipe(int pair[2]) {
+ struct stat a,b;
+ if(fstat(2,&a)<0 || fstat(8,&b)<0 || a.st_dev!=b.st_dev || a.st_ino!=b.st_ino ||
+    fcntl(8,F_GETFD)!=FD_CLOEXEC) _exit(202);
+ int expected[2],found=0;
+ for(int fd=0;fd<64 && found<2;fd++)
+  if(fcntl(fd,F_GETFD)<0 && errno==EBADF) expected[found++]=fd;
+ if(found!=2 || pipe(pair)<0) _exit(203);
+ if(pair[0]!=expected[0] || pair[1]!=expected[1] || pair[0]==8 || pair[1]==8) _exit(204);
+ marker_pipes++;return 0;
+}
+static char send_event(unsigned kind,unsigned slot,unsigned other,unsigned op,
+                       int64_t rc,int error,int aux) {
+ if(kind!=FORKED || (slot!=0 && slot!=2) || (other!=2 && other!=4) ||
+    (op!=FORK_OP && op!=SPAWN_OP) || rc<=0 || error || aux!=1) _exit(205);
+ events++;return 'A'; /* Isolated observer: actual marker and ACK pipes are real. */
+}
+static _Noreturn void die(const char *stage) {(void)stage;_exit(227);}
+static int numeric(const char *value,int low,int high) {
+ char *end=NULL;long n=strtol(value,&end,10);
+ if(!end || *end || n<low || n>high) _exit(206);
+ return (int)n;
+}
+static const char *m0_variant(void) {return "source";}
+static int hex_string(const char *value,size_t n) {
+ return strlen(value)==n && strspn(value,"0123456789abcdef")==n;
+}
+static void finished(unsigned slot,pid_t *children,unsigned *slots,unsigned count);
+static void leaf(int index,unsigned slot,unsigned parent);
+#define open(path,flags) forbidden_open(path,flags)
+#define dup2(from,to) reserve_dup(from,to)
+#define pipe(pair) marker_pipe(pair)
+'''
+FD_TRAILER=r'''
+#undef open
+#undef dup2
+#undef pipe
+static void wait_success(pid_t pid) {
+ int status=0;pid_t got;
+ do {got=waitpid(pid,&status,0);} while(got<0 && errno==EINTR);
+ if(got!=pid || !WIFEXITED(status) || WEXITSTATUS(status)) _exit(207);
+}
+static void prepare_ack(int fd,int copies) {
+ int p[2];if(pipe(p)<0) _exit(208);
+ if(dup2(p[0],fd)!=fd) _exit(209);
+ if(close(p[0])<0) _exit(210);
+ for(int i=0;i<copies;i++) if(write(p[1],"C",1)!=1) _exit(211);
+ if(close(p[1])<0) _exit(212);
+}
+static void finished(unsigned slot,pid_t *children,unsigned *slots,unsigned count) {
+ if(slot!=2 || count!=1 || slots[0]!=4) _exit(217);
+ wait_success(children[0]);
+ if(write(5,"L",1)!=1) _exit(218);
+ _exit(0);
+}
+static void leaf(int index,unsigned slot,unsigned parent) {
+ if(parent!=(slot==2 ? 0u : 2u)) _exit(213);
+ for(int fd=0;fd<=8;fd++) {
+  int flags=fcntl(fd,F_GETFD);
+  if(fd==2 || fd==5) {if(flags<0) _exit(214);}
+  else if(flags>=0 || errno!=EBADF) _exit(215);
+ }
+ for(int fd=20;fd<28;fd++) {
+  int keep=fd==20+(int)slot || (fd==24 && slot==2 && definition_at(index).vector==5);
+  int flags=fcntl(fd,F_GETFD);
+  if(keep ? flags<0 : flags>=0 || errno!=EBADF) _exit(216);
+ }
+ struct definition c=definition_at(index);char answer='A';
+ACTUAL_NESTED_BRANCH
+ if(write(5,slot==4 ? "N" : "L",1)!=1) _exit(218);
+ _exit(0);
+}
+int main(int argc,char **argv) {
+ image=argv[0];memset(binary_hash,'a',64);binary_hash[64]=0;
+ACTUAL_S_FIRST
+ACTUAL_LS_BRANCH
+ if(argc!=2) return 219;
+ alarm(8);
+ for(int fd=3;fd<64;fd++) if(close(fd)<0 && errno!=EBADF) return 228;
+ int mode=numeric(argv[1],0,4),data[2];
+ if(pipe(data)<0 || dup2(data[1],5)!=5 || close(data[1])<0) return 220;
+ for(int fd=20;fd<28;fd++) prepare_ack(fd,mode==2 ? 2 : 1);
+ if(dup2(2,6)!=6 || dup2(2,7)!=7) return 221;
+ if(mode==3) {if(dup2(5,8)!=8) return 222;}
+ else if(close(8)<0 && errno!=EBADF) return 223;
+ int times=mode==2 ? 2 : 1;
+ for(int i=0;i<times;i++) {
+  int index=mode==4 ? 9 : mode==1 ? 2 : 0;
+  pid_t child=launch_child(index,0,2,mode==1);
+  wait_success(child);
+ }
+ if(reservations!=times || marker_pipes!=times || events!=times) return 224;
+ char bytes[3]={0};int wanted=mode==4 ? 2 : times;
+ if(all_read(data[0],bytes,(size_t)wanted) || memcmp(bytes,mode==4 ? "NL" : "LL",(size_t)wanted)) return 225;
+ if(close(5)<0 || close(data[0])<0) return 226;
+ printf("fd8_ok mode=%d launches=%d\n",mode,times);return 0;
+}
+'''
+
+def descriptor_probe_source(source):
+    main=source.index("int main(int argc,char **argv) {")
+    tail=source[main:]
+    first=re.search(r' if\(argc==6 && !strcmp\(argv\[1\],"S"\)\) \{.*?\n \}',tail,re.S)
+    branch=re.search(r' if\(argc==6 && \(!strcmp\(argv\[1\],"L"\).*?\n \}',tail,re.S)
+    if first is None or branch is None:
+        raise AssertionError("actual S-first/L-S branch unavailable")
+    definitions=re.search(r"^struct definition .*?(?=^struct event )",source,re.M|re.S)
+    nested=re.search(r" if\(c\.vector==5 && slot==2\) \{.*?\n \}",function(source,"leaf"),re.S)
+    if definitions is None or nested is None:
+        raise AssertionError("actual case definitions/nested launch unavailable")
+    actual=definitions[0]+function(source,"definition_at")
+    if "static int leaf_ack_fd(" in source:
+        actual+=function(source,"leaf_ack_fd")
+    actual+="".join(function(source,name) for name in
+                    ("require_ack","block_diagnostic_sigpipe","launch_failure","launch_child"))
+    return FD_PRELUDE+actual+FD_TRAILER.replace("ACTUAL_S_FIRST",first[0]).replace(
+        "ACTUAL_LS_BRANCH",branch[0]).replace("ACTUAL_NESTED_BRANCH",nested[0])
 
 if __name__=="__main__":
     unittest.main()

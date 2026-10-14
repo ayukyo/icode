@@ -163,12 +163,15 @@ static _Noreturn void launch_failure(int index,unsigned slot,unsigned child_slot
  if(n>0 && n<(int)sizeof(line)) (void)write(2,line,(size_t)n);
  _exit(85);
 }
+static int leaf_ack_fd(int fd,int index,unsigned slot) {
+ /* leaf(vector 5,slot 2) alone launches the fixed descendant slot 4. */
+ return fd==20+(int)slot ||
+        (slot==2 && fd==20+4 && definition_at(index).vector==5);
+}
 static pid_t launch_child(int index,unsigned slot,unsigned child_slot,int spawning) {
  int marker[2];
- int reserved=open("/dev/null",O_RDWR|O_CLOEXEC);
- if(reserved<0) launch_failure(index,slot,child_slot,"open",errno);
- if(reserved!=8 && dup2(reserved,8)<0) launch_failure(index,slot,child_slot,"dup2",errno);
- if(reserved!=8 && close(reserved)<0) launch_failure(index,slot,child_slot,"close",errno);
+ /* Occupy 8 before pipe allocation without opening a new sandbox path. */
+ if(dup2(2,8)<0) launch_failure(index,slot,child_slot,"dup2",errno);
  if(fcntl(8,F_SETFD,FD_CLOEXEC)<0) launch_failure(index,slot,child_slot,"fcntl8",errno);
  if(pipe(marker)<0) launch_failure(index,slot,child_slot,"pipe",errno);
  if(fcntl(marker[0],F_SETFD,FD_CLOEXEC)<0) launch_failure(index,slot,child_slot,"fcntl_read",errno);
@@ -197,7 +200,8 @@ static pid_t launch_child(int index,unsigned slot,unsigned child_slot,int spawni
    if(all_read(20+(int)child_slot,&go,1) || go!='C') _exit(90);
    if(close(marker[0])<0 || close(marker[1])<0) _exit(91);
    for(int fd=0;fd<65536;fd++)
-    if(fd!=2 && fd!=5 && fd!=20+(int)child_slot && close(fd)<0 && errno!=EBADF) _exit(92);
+    if(fd!=2 && fd!=5 && !leaf_ack_fd(fd,index,child_slot) &&
+       close(fd)<0 && errno!=EBADF) _exit(92);
    execve(image,args,env);_exit(93);
   }
  }
@@ -685,7 +689,8 @@ int main(int argc,char **argv) {
    if(all_read(20+(int)slot,&go,1) || go!='C' || close(8)<0) _exit(139);
   }
   for(int fd=0;fd<65536;fd++)
-   if(fd!=2 && fd!=5 && fd!=20+(int)slot && close(fd)<0 && errno!=EBADF) _exit(140);
+   if(fd!=2 && fd!=5 && !leaf_ack_fd(fd,index,slot) &&
+      close(fd)<0 && errno!=EBADF) _exit(140);
   leaf(index,slot,parent);return 2;
  }
  if(argc!=4 || getuid()!=0 || geteuid()!=0 || !hex_string(argv[1],40) || !hex_string(argv[2],64)) die("root-fixed-arguments");

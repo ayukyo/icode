@@ -2,6 +2,12 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+026终态新增Python3.11全套SIGSEGV，3.12虽3369通过也不能覆盖。2026-10-15独立只读研究并由root亲读[CPython v3.11.17 faulthandler.c](https://github.com/python/cpython/blob/v3.11.17/Modules/faulthandler.c)、[3.11官方说明](https://docs.python.org/3.11/library/faulthandler.html)：周期watchdog与fatal-handler enable独立；前者全局每120s采样不是单测超时，也不能据最后emit帧归根因。**采纳：**复用stdlib，先真实TEST三Assertion RED，再CI runner仅一行显式enable，五项局部GREEN；无新依赖权限或源码复制。**暂缓：**SIGSEGV归因／修复信用，待新SHA原始fatal证据；**不适配：**加超时、skip、取消重跑刷绿或把诊断增强当根因修复。单collector本机未复现只授该次软件结果；与开源Agent结果分账原则一致，不刷新20名单。
+
+WFP已发布待验026932cf；真实双Windows新strict10通过并给出固定ETL/other计数，原IPv4正控仍超时，不把观察补全授网络隔离通过。Mac FD方案正式TDD已落：12方法先取得3红父／16Assertion，独立双审后不同SOURCE仅checked dup2与两处窄ACK传承；实际12＋13＋12软件项绿、原cap2 APIAssertion保持，SOURCE双审零但未同SHA双Darwin验收。**采纳：**复用既有描述符和既有ACK，机制与固定Apple研究一致；**暂缓：**Darwin策略/配额/清理信用；**不适配：**放宽profile、宽留ACK或以软件GREEN替原生。无依赖／权限／许可变化，不复制上游代码。
+
+2026-10-15独立只读清点Skill CP e70474c8并复核一个官方固定主源：[Codex registry.rs／27065a91](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/core/src/tools/registry.rs)。代码区分pre-hook拒绝、handler执行及post-hook结果接受，后者不撤销已发生执行；Apache-2.0沿用既有许可记录，本轮未重读LICENSE或刷新20名单。ICODE当前typed端口原语已具备，step/output/finalgate未传播且dispatch明确阻断。**拟采纳、仅下一片候选：**先闭合无事件写入的action-policy准入→真实读取→返回前复核，成本限现有canonical provider传播和正负控，无新权限依赖。**暂缓：**step start/check的event-only发布、finish/inspection/writer及宿主C2；**不适配：**post-hook冒回滚、两种动态provider ABI直接互换、只加kwargs便授全链。root三步思考已实际完成，独立计划与测试/源码尚未实施；研究不替代验收。
+
 本轮补充：WFP八路径独立QUALITY用真实WinPS5.1揭露“失败status仍发布有效类别计数”，虽旧提取已拒绝，观测仍不可信。**采纳：**同一真实消费者的成功状态门，先新增断言取得9绿／1Assertion，再只收紧类别日志赋值条件；关联59全绿、SOURCE与全片双审及线上待验。保留原明确失败状态，不改网络策略／提取目标／依赖；已有固定Codex结果分账机制足够，不引入新架构或复制源码。Skill6e双平台实际strict21及三个pytest消费者现通过，Windows旧103通过／4既有POSIX skip；只授本片软件，未触发inspection且未升级Agent pin。下文“6e待线上”是发布时历史快照。
 
 5bde候选现三run全部终态，实际57项＝50成功／4失败／3占位skip；双full各3359项、零FAILURE／ERROR、99既有skip，双Mac新snapshot12均在Darwin编译通过。双Mac B原件首拒绝为sandbox后重开`/dev/null`的EPERM，随后read==0映射EPIPE；不是cap2 RED或snapshot API根因。独立只读研究复核固定Apple XNU `xnu-12377.1.9` 的[dup2实现](https://raw.githubusercontent.com/apple-oss-distributions/xnu/xnu-12377.1.9/bsd/kern/kern_descrip.c)与[spawn动作](https://raw.githubusercontent.com/apple-oss-distributions/xnu/xnu-12377.1.9/bsd/kern/kern_exec.c)：复用既有fileglob仍受MAC检查，不能保证实际runner策略允许。**采纳、仅计划：**借已保留FD2占位FD8，保持CLOEXEC／marker协议；两处关闭循环精确保留vector5／slot2合法后代slot4所需的既有ACK。**暂缓：**正式TDD、双Mac原生、完整quota及清理信用；**不适配：**放宽profile、保留全部ACK、软件临时补缺失ACK冒真实代际成功。成本限vectors／TEST及controller一行来源绑定，无新依赖权限；APSL2.0机制研究不复制实现。唯一PLAN `2a65f403` 已fresh双审零，共用CI的批准增量使输入账本需同步复核，尚未实施。

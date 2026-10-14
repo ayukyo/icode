@@ -6,6 +6,40 @@
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 
+### 2026-10-15 WFP候选已推，Mac FD修复进入全片审查
+
+最新终态由root逐API亲核：026三run全部completed、同SHA／push／attempt1，实际57job＝49成功／5失败／3占位skip（CI50为42／5／3，provenance5与Pages2成功），没有取消重跑；下一候选现在可发布，但R2/R3仍未通过。root亲读3.12原log794058字符：3369／590.157s、零FAILURE／ERROR、99既有skip，后置两guard通过；3.11原log409438字符为exit139、无fullfooter且后置guard跳过，不能借3.12或签装成功覆盖。
+
+#### Python3.11 exit139：故障基线与结论上限
+
+|基线项|本次证据与边界|
+|---|---|
+|identity|GitHub托管VM，物理SN/MAC不可得且不适用本次软件复现；以run38627785514／job116071258922及026精确SHA绑定，解释器路径含x64。|
+|time_window|2026-10-14 UTC：full始19:56:13.388；每120s周期采样共6次；collector约20:08:13.24开始，采样20:08:13.423，shell20:08:17.181报139。该方法开始约0.18s即采样，不是挂了120s。|
+|repo_matrix|runtime为Agent026、vendor21566；analysis为WSL同HEAD加未提交Mac/诊断/DOCS；verification为专用CPython3.11.17／Clang22.1.3／WSL x86_64，不是同一个GitHub解释器二进制或内核。Skill main6e单独维护，未提前升级vendor。|
+|artifact_identity|线上CPython3.11.17位于/opt/hostedtoolcache/Python/3.11.17/x64；精确解释器二进制SHA与faulting native模块未知，不把当前checkout或相同版本号冒部署工件。|
+|evidence_sources|root dc68fb完整job原log；collector TEST逐字等026，SHA f924880a；独立核run_vectors/collect_ledger/bounded_native/unique四函数AST等026，controller只多来源绑定。单collector外部timeout30，.355s通过44模式，只说明未复现。|
+|unresolved|faulting native栈／线程／模块、线上初始fatal-handler状态未知；root负责下一候选保留正常CI门并收新原始诊断，不改collector行为或臆断watchdog导致崩溃。|
+|conclusion_ceiling|observation_only：确认3.11全套进程SIGSEGV、无footer及显式fatal诊断覆盖不足；不能称根因定位或139已修。|
+
+|Claim|类别|依据与状态|
+|---|---|---|
+|3.11 full退出139且无全量结果|事实|原log与job失败；仍开放。|
+|collector卡了120s|反驳|全局周期与方法起始时间已核，前五次采样后仍继续运行。|
+|emit或watchdog就是根因|未观察|最后周期栈不是faulting native栈，不作归因。|
+|旧runner没有显式enable fatal handler|事实|原脚本与官方v3.11.17机制；线上初始是否启用未记录，不能推断一定关闭。|
+|新增诊断修复了SIGSEGV|未观察|局部GREEN只证明诊断契约，须保留原失败并等新SHA全量。|
+
+root7816a1实际sequential-thinking三步accepted／exit0后，独立只读调查与官方CPython核查确认周期watchdog和fatal enable是两项能力。不同TEST作者仅在既有5方法增加9行观察真实enable状态/绑定stderr/all_threads/先于ARM：209行／3a3b8a07；362c54正式5为4父绿、一父3子Assertion、零ERRORskip，root2f0f09 actualTEST SPEC零，不同QUALITY独立复取3Assertion／0ERRORskip。不同SOURCE root仅在dump之前加enable(file=sys.stderr, all_threads=True)，runner31行／2c8e5115，c85574严格5／2.507s全绿。未改120s周期／25min预算／发现/退出/argv/path/cancel，不制造segfault/core，不读取locals、不改CI或产品权限；这不是139根因修复。Mac六路径actual全片双审原已零，因新增诊断两路径，最终候选现为八路径，须重新全片独立SPEC→不同QUALITY，不拿六路径结论覆盖扩展范围。
+
+WFP八路径最终actual SPEC与不同globalQUALITY均C0/I0/M0，真实WinPS失败状态保持unavailable；4cb450核精确八索引／100644／父5bde／AST／密钥与pin守护后提交main：026932cfde58c2916501ac6cbb6d49ee00a85b01，八路径927增8删。七个非PLAN路径raw cached whitespace0；全cached原始exit2恰14处冻结diff空上下文，已逐项分类，不冒全路径raw0。039fbd／1914a3推送明确exit0，d1e467远端同SHA。新push／attempt1：CI38627785514、provenance38627785531、Pages38627785461，动态展开中，不预填总数，下一同仓候选须等全部终态。
+
+独立观察026真实双Windows新CAB strict10均通过／.072s，类别行均target0/state0/etl1/other1/unknown0，2成员／1XML／0exact目标，未extract；原IPv4正控仍timeout，双Reviewer各1FAILURE，不能把诊断成功授网络DENY或整体通过。双Mac A snapshot12通过且原baseline RED→SOURCE protocol5/native5绿；双B仍旧open EPERM→data read32基础设施失败，未到正式cap2断言，完整失败保留。本轮026不包含下面Mac FD修复，其原生失败不当新修复失败或已修成功。
+
+Mac输入账本由618/f82仅因共享CI单条件漂移更新至620／39201字节／37785881，当前原26摘要060d350b5f51003e8152fd9c47de093fcd03f2a289354efcb04fe89bb0d8ba34；独立DOCS双审零，A/B/C资产和输出保持。root仅实施TEST A（568／f6e8cd6b），65012c正式12中3红父／16Assertion、零ERRORskip，完整补取日志摘要77cff6d2；actualTEST独立SPEC与不同QUALITY均零。不同SOURCE作者复RED后仅实施B/C（vectors741／b1d4b3f9、controller331／0ba85855），12＋13＋12项软件全绿，默认vectors9P6skip，opt-in9P1既有cap2 APIAssertion／5native skip／零ERROR保留；actualSOURCE独立SPEC→不同QUALITY均零，独立37全绿与12全绿分别留证。root16ef76亲读diff、2f53f3实际12／.674s全绿。未改CI／profile／helper／limit／case表或vendor，不授Darwin/quota/cleanup。下一候选仅Mac三实现、其已审PLAN与两份进度文档共六路径，全片双审及026全部终态前不提交推送；B3d ignored PLAN仍排除。
+
+受保护Git后续只读清点：Skill6e的CP e70474c8已具备resolve_port/capture_step_inputs原语，但业务仍未传播；main明确只开放candidate/build-start/record-verification，step/output/writer/finalgate保持pending，并非这些入口已支持。action-policy在6131消费capture_step_inputs且无事件发布，可作为下一最小只读闭合候选；step start/check涉及event-only发布、finish及inspection更有独立ABI/receipt事务，不能只加kwargs冒完整支持。root182a44实际sequential-thinking三步accepted／exit0，已分解显式传播、返回前上下文/截止及None兼容风险，后续必须独立完整计划/真实RED/不同SOURCE和同SHA双平台；尚未实施或修改Skill。首轮8e4c82虽收到三MCP响应，但helper stderr默认GBK解码线程报错保留；第二轮仅内存helper显式UTF-8，无产品/配置改动。
+
 ### 2026-10-15 5bde 全部终态，后续片继续推进
 
 最新补审阻断与修复：八路径fresh QUALITY在真实WinPS5.1发现exit0且失败status带完整数字时仍发布类别日志（提取仍拒绝），记I1而非沿用59绿授完整通过。不同TEST作者只在原方法补四行紧邻精确listed门断言，168行／90c7d8ab；197850正式10为9绿＋新断言唯一Assertion、零ERRORskip，actual TEST独立SPEC→不同QUALITY均零。root随后仅将类别赋值条件加status -ceq 'listed'，CI2539行／289b2193；420e90关联59／1.527s全绿，原失败状态分支／exact提取／helper保持。PLAN追加Asset F保留历史批准资产；SOURCE及全片实际双审仍待，不提前发布。Mac618／f82账本的共享CI已由c3e再次漂移，正式实施前必须重核。
