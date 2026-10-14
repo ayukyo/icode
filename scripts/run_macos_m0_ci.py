@@ -149,6 +149,106 @@ def process_groups_binding(repo, build, binary, variant, output):
     write_json(output / "process-groups-binding.json", record)
     return hashlib.sha256((output / "process-groups-binding.json").read_bytes()).hexdigest()
 
+def require_w1_groups(metadata):
+    record=metadata.get("groups_native")
+    keys={"result","candidate_sha","arch","binary_sha256","ledger_sha256","binding_sha256","native_exit","cleanup_scope"}
+    if (not isinstance(record,dict) or set(record)!=keys
+            or record.get("result")!="native_groups_verified"
+            or record.get("candidate_sha")!=metadata.get("candidate_sha")
+            or record.get("arch")!=metadata.get("arch")
+            or type(record.get("native_exit")) is not int or record["native_exit"]!=0
+            or record.get("cleanup_scope")!="owned_root_only_identities_retained"
+            or any(not isinstance(record.get(k),str) or not re.fullmatch("[0-9a-f]{64}",record[k])
+                   for k in ("binary_sha256","ledger_sha256","binding_sha256"))):
+        raise RuntimeError("W1_GROUPS same-candidate native evidence required")
+
+def run_w1_groups(repo,build,output,sha,arch):
+    binary=build/"icode_m0a1_groups_native"
+    if binary.is_symlink() or not binary.is_file() or not os.access(binary,os.X_OK):
+        raise RuntimeError("W1_GROUPS native TEST binary unavailable; not semantic RED")
+    binary=binary.resolve(strict=True)
+    if binary.parent!=build:
+        raise RuntimeError("W1_GROUPS binary escaped build")
+    size=binary.stat().st_size
+    if not 0<size<=16*1024*1024:
+        raise RuntimeError("W1_GROUPS binary size invalid")
+    image=binary.read_bytes();digest=hashlib.sha256(image).hexdigest()
+    (output/"icode_m0a1_groups_native").write_bytes(image)
+    binding=output/"w1-binding";binding.mkdir(mode=0o700)
+    binding_sha=process_groups_binding(repo,build,binary,"groups_native",binding)
+    argv=["/usr/bin/sudo","-n","--","/usr/bin/env","-i","PATH=/usr/bin:/bin",str(binary),sha,digest]
+    try:
+        actual=subprocess.run(argv,cwd="/",capture_output=True,timeout=50,check=False)
+    except subprocess.TimeoutExpired as exc:
+        (output/"w1-native.stdout.json").write_bytes((exc.stdout or b"")[:512])
+        (output/"w1-native.stderr.log").write_bytes((exc.stderr or b"")[:256])
+        write_json(output/"w1-execution.json",{"candidate_sha":sha,"arch":arch,"binary_sha256":digest,
+            "native_exit":"timeout","cleanup":"unknown","raw_complete":False})
+        raise RuntimeError("W1_GROUPS timeout; identities retained cleanup unknown") from exc
+    (output/"w1-native.stdout.json").write_bytes(actual.stdout[:512])
+    (output/"w1-native.stderr.log").write_bytes(actual.stderr[:256])
+    write_json(output/"w1-execution.json",{"candidate_sha":sha,"arch":arch,"binary_sha256":digest,
+        "native_exit":actual.returncode,"stdout_bytes":len(actual.stdout),"stderr_bytes":len(actual.stderr),
+        "stdout_sha256":hashlib.sha256(actual.stdout).hexdigest(),
+        "stderr_sha256":hashlib.sha256(actual.stderr).hexdigest(),
+        "raw_complete":len(actual.stdout)<=512 and len(actual.stderr)<=256})
+    if actual.returncode or len(actual.stdout)>512 or len(actual.stderr)>256 or actual.stderr:
+        raise RuntimeError("W1_GROUPS infrastructure failure/overflow; never quota RED")
+    testpath=repo/"tests/test_macos_process_groups_native.py"
+    spec=importlib.util.spec_from_file_location("w1_frozen_observer",testpath)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("W1_GROUPS independent TEST unavailable")
+    tests=importlib.util.module_from_spec(spec);spec.loader.exec_module(tests)
+    def unique(pairs):
+        value={}
+        for key,item in pairs:
+            if key in value:raise ValueError("W1_GROUPS duplicate JSON key")
+            value[key]=item
+        return value
+    manifest=json.loads(actual.stdout,object_pairs_hook=unique)
+    if (not isinstance(manifest,dict) or set(manifest)!={"version","root_directory","ledger_sha256"}
+            or type(manifest["version"]) is not int or manifest["version"]!=1
+            or not isinstance(manifest["root_directory"],str)
+            or not re.fullmatch(r"/private/var/icode-m0a1-groups\.[A-Za-z0-9]+",manifest["root_directory"])
+            or not isinstance(manifest["ledger_sha256"],str)
+            or not re.fullmatch("[0-9a-f]{64}",manifest["ledger_sha256"])):
+        raise RuntimeError("W1_GROUPS root manifest invalid")
+    directory=Path(manifest["root_directory"])
+    st=directory.lstat()
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid!=0 or stat.S_IMODE(st.st_mode)!=0o755:
+        raise RuntimeError("W1_GROUPS protected directory invalid")
+    fd=os.open(directory/"groups.jsonl",os.O_RDONLY|os.O_NOFOLLOW|os.O_CLOEXEC)
+    try:
+        before=os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid!=0 or before.st_nlink!=1
+                or stat.S_IMODE(before.st_mode)!=0o444 or not 0<before.st_size<=16384):
+            raise RuntimeError("W1_GROUPS protected ledger invalid")
+        raw=bytearray()
+        while len(raw)<=16384:
+            chunk=os.read(fd,min(4096,16385-len(raw)))
+            if not chunk:break
+            raw.extend(chunk)
+        after=os.fstat(fd)
+        if (len(raw)>16384 or (before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns)
+                !=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns)):
+            raise RuntimeError("W1_GROUPS ledger changed/exceeded")
+    finally:
+        os.close(fd)
+    raw=bytes(raw)
+    if hashlib.sha256(raw).hexdigest()!=manifest["ledger_sha256"]:
+        raise RuntimeError("W1_GROUPS root ledger digest differs")
+    (output/"w1-native.audit.jsonl").write_bytes(raw)
+    if not raw.endswith(b"\n") or len(raw.splitlines())!=5:
+        raise RuntimeError("W1_GROUPS complete fixed ledger required")
+    rows=[json.loads(line,object_pairs_hook=unique) for line in raw.splitlines()]
+    if not tests.verify_groups(rows,sha,digest,arch):
+        raise RuntimeError("W1_GROUPS independent TEST failed")
+    record={"result":"native_groups_verified","candidate_sha":sha,"arch":arch,
+            "binary_sha256":digest,"ledger_sha256":manifest["ledger_sha256"],"binding_sha256":binding_sha,
+            "native_exit":0,"cleanup_scope":"owned_root_only_identities_retained"}
+    write_json(output/"w1-result.json",record)
+    return record
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--build-dir", type=Path, required=True)
@@ -192,6 +292,9 @@ def main():
             "native/mac/tests/icode_m0a1_driver.c",
             "native/mac/icode_m0a1_process_groups.h",
             "native/mac/icode_m0a1_process_groups.c",
+            "native/mac/tests/icode_m0a1_identity_lease.inc",
+            "native/mac/tests/icode_m0a1_process_groups_native.c",
+            "tests/test_macos_process_groups_native.py",
             "tests/test_macos_process_groups.py",
             "tests/test_macos_task_quota_probe.py",
             "native/mac/CMakeLists.txt",
@@ -217,6 +320,7 @@ def main():
             raise RuntimeError("Intel target is explicitly macOS 15")
         metadata["process_groups_binding_sha256"] = process_groups_binding(
             repo, build, binary, variant, output)
+        metadata["groups_native"] = run_w1_groups(repo,build,output,sha,arch)
         write_json(output / "metadata.json", metadata)
         argv = ["/usr/bin/sudo", "-n", "--", "/usr/bin/env", "-i",
                 "PATH=/usr/bin:/bin", str(binary), sha, digest]
@@ -294,6 +398,7 @@ def main():
             "errors": len(formal.errors), "skipped": len(formal.skipped),
             "root_ledger_sha256": audit["ledger_sha256"], "root_directory": audit["root_directory"],
         }
+        require_w1_groups(metadata)
         if formal.errors or formal.skipped or formal.testsRun != 5:
             raise RuntimeError("formal native suite incomplete; not RED")
         if args.phase == "red":

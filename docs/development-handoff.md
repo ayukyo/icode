@@ -8,7 +8,60 @@
 
 ### 2026-10-14 最新终态与接续（优先于下方在途历史）
 
-#### 最新已推送：Agent2c59304 / Skilla3999a2（阶段仍未通过）
+#### 最新已推送：Agent67cf60e / Skille3f91dd（阶段仍未通过）
+
+- e3f新增reuse失败已由独立Windows单方法真实复现：25.323s唯一AssertionRED/0ERRORskip；base source为10B/LF/SHA585c9366，所谓恢复后为11B/CRLF/SHAf05a6541，产品正确拒绝真实非文档变化。仅RAM两处写入显式UTF8/LF后1/26.725s通过且字节相等；首RAM采样hook在清理后读Git失败128不计完整GREEN，改到方法返回前再取得正式证据。root不同作者只apply该两行，WSL3f336e1/1.076s及Windows3445fd1/24.810s实际GREEN，原断言/生产不变，未提交待实际双审及新SHA线上。Windows本机3.11.4/线上3.10.11差异保留；其它四个平台失败另独立完整PLAN，不整组skip。
+
+##### 已取得的候选终态及W1待发布状态
+
+- e3f91dd已触发的两条工作流均终态：candidate38561607896 Linux105＋5subtests通过；Windows115843782171为105collected→5failed/100passed/3subtestsPassed/380.94s（12:15:50Z），wire3/trigger3/provider20均过，两个路径/产物目标及三个same-content方法执行映射通过；不追认原A/B因果。site38561608051动态三job全success；inspection本SHA未触发。五失败为mode、两FIFO、换行文件名，以及新出现的test_reuse_ignores_unrelated_simulated_and_other_source_failures（reuse permits only documentation changes）。后一项的最小字节诊断与两行实际修正见上条，不追改本SHA线上失败，不把本机GREEN冒充新SHA验收。阶段/pin仍未通过。
+- W1实际源码已fresh SPEC→不同QUALITY均C0/I0/M0。root3fce44独立落地28/8.064s/0F/E/skip通过（SPEC另28/7.644s），含实际runner50与reservation7；e46005全文diff、c9948c原生418行已读。de6407核三新增完整资产含LF精确等PLAN、formal/helper原样、limit.c无；前592951只是只读检查脚本的PowerShell反引号正则误解析，修成chr(96)后PASS，不记作产品RED。准备精确待验候选，新的双架构SDK/组/exec/原七case全部仍待线上，未解锁quota SOURCE。
+##### 发布与实施时快照（以下“等待/已派”均为当时状态，以上终态优先）
+
+- Skill单文件fixture待验候选 `e3f91dd16795f7b5ed9c7df49fd78950622964a3` 已c973aa提交/8edea8推送main/exit0，父3fb9；精确13a17587字节/mode100644/索引、AST、秘密形态/whitespace通过。root逐个API重核旧3fb9三run共9job已全终态后才push。自动candidate38561607896、site38561608051/attempt1已触发；inspection未因本次路径触发，不借旧绿充新同SHA结果。两个目标及原105完整回归等待线上。
+- W1独立TEST已落地，root24fb0d正式重跑缺证据旧接受门1/.013s唯一RuntimeError notraised AssertionRED、0ERROR/skip，79c04a observer＋inverse2/.002sGREEN。472行批准fence含末LF为1ed2b2d8；先前交接d3d0b7c恰为去末LF摘要，已逐字exact比对而非改TEST消差。四原资产哈希仍原样；Task2–4已派不同SOURCE作者，只实施批准五路径并跑Linux28定点，不native/sudo/身份/Git，quota源码仍禁。
+
+##### 前一候选的终态与本轮准备证据
+
+- 3fb9三run现全终态/attempt1：candidate38560440941失败，Windows115839906474为105collected→9failed/96passed/3subtestsPassed/288.02s（12:04:31Z），Linux105＋5subtests通过。新wire3双平台逐名通过；Windows原physical-failure及四consumer目标在完整105执行映射均通过，无reader-thread解码警告。inspection38560440891四job全success：Windows162/315.37s，generic133P/3skip/109subtests；site38560440764动态三job全success。只关闭两项编码小修及timer软件问题，不关闭Windows兼容或阶段。
+- 新Windows fixture小片PLANc0bf5fc8/176L已全文回读及fresh双审0，root按冻结patch只改VerificationTests.setUp与hello编译方法（实际13a17587），两目标WSL bec5f2严格2/1.447s/0skip通过；实际fresh SPEC→不同QUALITY又均0。产品/其它方法/helper/ctime负控原样，未提交，新SHA Windows两目标与原105待；三个same-content仍不得追认历史根因，原始A/B另保留。
+- W1 PLANb2c0f03c/1267L补齐实际runner50软件场景，fresh SPEC→不同QUALITY均C0/I0/M0。SPEC匿名RAM投影50/50、唯一success和49目标拒绝分支/FD关闭/失败不发布过，仅授软件资产可执行性，不授落地28或native。已交独立TEST作者，仅落地冻结TEST及真实旧controller语义RED；不同SOURCE随后实施，limit.c仍禁止提前创建。
+- C1b开始独立只读接口/调用链设计与研究：root2fc57c以显式UTF-8、ASCII摘要实际调用sequential-thinking三步成功，需求为全部source-identity入口的可信上下文传播；方案复用typed查询且软件传播与C2私有通道/epoch/attrs/cleanup分离；风险为动态模块实例、未可信工单输入、复用/provenance/前后capture与stale身份。首次351fab传输关闭不计成功；第二次仅给MCP子进程PATH补其已配置node目录即成功，未改系统PATH/项目/全局配置。C1b设计不提前启用宿主通道或升级pin。
+
+##### 本轮较早中途观察（以下不替代以上终态）
+
+- 3fb9关键线上中途结果：Windows generic115839907718已success，133passed/3skip/109subtestsPassed/91.11s（12:01:10Z），原timeout失败未出现，目标逐项执行映射仍待最终日志核对。Linux candidate115839906640已success：strict wire3逐名通过、trigger3/provider20通过，原105collected→105P＋5subtests/106.59s、shell17P（12:01:22Z）。Windows完整105及inspection Windows162尚在途，不能宣布软件兼容片全部通过。
+- Skill新待验候选 `3fb9cce7f8fe8116ef57cd5b8a6badd28a5590e4` 已932031提交、147ab3推送main/exit0，父 `fc4d358f064600bf4c0578428eff10a893af3792` 为独立timer测试小修，再父b88。timer精确一文件、standalone精确三文件/mode100644/索引字节均核过，无branch/tag或vendor变更。SOURCE与CI分别fresh SPEC→不同QUALITY全C0/I0/M0；实际wire3、trigger3及provider20定点通过，秘密模式/AST/whitespace通过。CI只新增source literal path和严格3项入口，原105/矩阵/权限/环境/预算保持。
+- 新SHA已触发candidate38560440941、inspection38560440891、site38560440764/attempt1；首观察in_progress/queued/in_progress，全部必要线上结果待收。新源码3bd65f66、TESTeb0aaec3、workflowc2f2ac59；不借b88四消费目标已绿授新SHA通过，不因主分支推送报告R2/R3完成。
+
+- b88三run现均终态/attempt1：candidate38557889221 Linux105＋5subtests通过，Windows115831450703为10failed/95passed/3subtestsPassed/454.56s；四个UTF-8消费目标及forged三个子例已通过，原reader-thread五warnings本次无，但不能称整套通过。剩余含POSIX mode/FIFO/换行文件名、build路径、三项same-content未归因及standalone空JSON。inspection38557889204四job为3成功/Windows generic1失败；site38557889278三成功。不得借其它SHA绿覆盖。
+- timeout小修已实际fresh SPEC→不同QUALITY均C0/I0/M0，测试文件15c400ac，逆还原等HEAD，生产parser逐字未改；独立精确ReportTests24项各0skip，patch退出恢复真实时钟。尚未提交，新同SHA Windows generic仍必要。
+- standalone UTF-8 PLAN89ab5617已独立双审零问题，独立TEST作者仅新增冻结eb0aaec3三方法；root39f669正式复跑取得唯一cp1252空stdout AssertionRED、0ERROR/skip。不同SOURCE作者root仅加io及原生CLI TextIOWrapper stdout.reconfigure UTF-8，751b55严格3/1.258s全通过：真实物理失败仍阻断、import及StringIO不重配、argparse参数失败保留stderr/rc2。SOURCE实际独立审查在途，CI尚未接新增门，不授线上通过。
+- W1新版6b137ce1共1049行的未知进程扫描即时拒绝及七场景获fresh SPEC零问题；不同QUALITY发现I1：新增run_w1_groups的99行生产采集路径缺实际软件正负控。作者继续只补PLAN，需执行真实函数并覆盖工具/文件边界拒绝及失败不发布结果；原生与quota源码仍未实施，不以observer测试替代该路径。
+- Agent67 Py3.11原footer已收：115823169651为3294/577.341s/OK(skip93)，3.12为3294/869.845s/OK(skip93)。签装四cell各69＋9软件项成功，但实际chain/consumer均compatibility_accepted、launch_authorized、protected_observed=false；owner_untrusted拒绝、13资源全部确认close只授观察，不授WP0b晋升。
+
+##### 以下为本次实施过程的较早快照，以以上终态为准
+
+- b88线上Linux候选原105/89.33s＋5subtests、provider20/trigger3/shell17通过，Windows105仍在途；site3成功。inspection Windows162/355.95s通过，但generic本次因原极小timeout断言1F/132P/3skip/105subtests，非consumer新增回归定论。root40570e/6e969c已读全测试与真实parser，851f77 Windows固定不前进clock运行旧方法取得唯一ReportError not raised AssertionRED；仅改测试为显式clock0→2秒、budget1秒，6a04d1同刺激单项GREEN，8c2361 WSL准确load ReportTests类24/.052s/0skip全过。生产parser、timeout规则及原四invalid limits断言未改，未提交/独立审查。
+- 一次Windows本机选择器 `-k ReportTests.test_` 意外匹配VerificationReportTests集成类（be5db0）；为遵守本机最小资源范围已主动中断786013，不授全套结果，原已见符号链WinError1314 skip不当通过。随后改准确loadTestsFromTestCase，只跑24个parser方法获得上述正式结果；未重跑/取消线上CI来掩盖失败。
+- W1 PLAN初稿b46aa2a2共947行已root11a92a/92be63全文读取；fresh SPEC C0/I1/M0：新增supplementary扫描后的process_count=-1被当作碰撞烧lease并继续，可能隐去unknown。作者仅修PLAN为未知立即拒绝并加真实函数软件边界负控，未实施W1。root另直接核固定XNU fill_user64_eproc1045–1047，cr_ngroups完整值与NGROUPS数组结合的公开机制支持原超界拒绝；不冒称实际runner内核逐字版本。
+
+- Skill最新待验候选 `b88b1933cbb6ffb39736b0d3512a85f40d7ba464` 已commitdee7ec/pushe7378f/exit0，父a3999a2；精确两文件各1增1删，只给VerificationTests.call与Markdown.read_text明确UTF-8，默认strict及原argv/env/fixture/断言原样。PLAN1b709b4d及实际SOURCE分别fresh SPEC→不同QUALITY均零问题；root75288f AST/exactinverse、秘密模式/索引字节/mode100644通过。原CI02四target/forged3/reader5warnings作历史RED，新同SHA四目标及完整105尚未收GREEN。自动inspection38557889204、candidate38557889221、site38557889278/attempt1已触发，不用a399其它7jobs绿替代。生产linter编码另起PLAN，未混入此两行候选。
+- Agent67三run已全终态：CI38555403276为43success/2Reviewerfailure/3退役skip（48），provenance38555403303五success、Pages38555403256两success。Py3.12实际3294/869.845s/OK(skip93)，Py3.11已success待补原footer；跳过不授信用。Reviewer两格仍exit78/cleanuptrue/receipt缺失，v4/v6 10035等待到期、deniedfalse，正控105/IPv4超时，不把无事件当DENY。W0双Mac原生门通过，但Windows隔离、受保护晋升、完整安装、host/C1b–C4和R3六步/90%仍开放。
+
+- 结构化工具传输校正：root d4734f确认Windows PowerShell5默认管道OutputEncoding=us-ascii；前19f361/fd0ed2调用虽然工具返回成功，不能因此确认其中文payload完整。已用显式UTF-8管道、逐条验证无问号替换的ASCII摘要重新实际调用sequential-thinking（a7c396，W1与UTF8生产边界各需求/方案/风险三步，六步均isErrorfalse）。前次工具成功状态保留，但后续设计推演信用以本次完整传输为准；源码/TEST字节经apply_patch及哈希检查，不受此脚本传输问题影响。
+
+- Windows独立linter编码诊断：本机原test_current_physical_failure_not_hidden_by_simulation单项17.040s通过（b9792a/c0d93c），不覆盖原CI失败。root随后只在同一匿名真实fixture的两个子进程分别设PYTHONIOENCODING=cp1252:strict与utf-8:strict（a47879/4dcc4b），前者rc1/stdout0/stderr751且UnicodeEncodeError/cp1252可见，后者rc1/stdout891/stderr0并为strict UTF-8 JSON dict。没有改父环境/系统/源码，fixture已清理。这证明受控编码差异，不冒充原runner唯一根因；仍需独立新TEST语义RED及不同SOURCE的standalone wire修正。两行consumer子计划另写，不混生产修复；整体旧16F尚未关闭。
+
+- W0双架构门现均真实通过：ARM job115823169998/artifact11890446569为arm64/macOS26.6.2/25G83/kernel25.6.0、SDK26.5；普通getgroups声明及object/final唯一 `_getgroups`、14raw摘要/binding/audit摘要均由独立观察员RAM核过，实际binary bytehash b0f043d60e5284a4968475260d2de29f21f03654816f435807b8862b855a00a7与metadata及binding一致。ZIP5c9abc3c/33350bytes。native_exit0/resultsemantic_RED_confirmed/truncatedfalse、协议5PASS/正式5唯一quota断言失败/0ERRORskip，7case原始audit全保留。Intel实际binary dd6a336e亦由观察员逐字节核过。此只关闭W0，不授quotaGREEN、完整组接口设计或R2/R3。root fd0ed2实际三步结构化推演后已派W1完整PLAN作者；W1同新SHA原生双组/同PIDexec及重跑原RED仍硬门，limit.c继续禁止。
+- Skilla3999a2已触发的inspection38555208517（4/4）与site38555208510（3/3）全success/attempt1；Windows162/360.92s，Linux162、双generic及安装23/3.943s均已核原footer。原两generic KeyError在本SHA原suite通过；candidate未触发，旧16失败不折绿。新Windows兼容路线文档仅PLAN，仍需逐片完整资产和独立审查后实施。
+
+- Mac Intel W0 job115823170211已success，root7cd885纯内存独立核artifact11889367248：zip9742e2aa与API一致；metadata actual67cf60e/x86_64/macOS15.7.9/24G830、native_exit0/truncatedfalse/result=semantic_RED_confirmed，协议5PASS、正式5仅quota断言1F/0ERRORskip。SDK15.5、实际声明ordinary getgroups、object/final均唯一 `_getgroups`，binding摘要及14份raw摘要与metadata逐一一致。helper object7d6dcf7d、final dd6a336e为记录值，root此项尚未独立散列二进制bytes。owned_root_reaped仅本根回收；保留UID/目标，不授整树清理。ARM结果尚待，不把Intel单格当W0完整或quotaGREEN；W1仍硬门。
+
+- Agent `67cf60ed457c7ab264c4d4c5c498b2826b6e4bcc` 已提交b06cd9、推送f5bfaa/exit0，父2c59304，精确11路径/mode100644/暂存与审查字节一致；05fa6d秘密与0ea083固定子仓原单门通过。旧2c三run由root独立API重核全终态后才push，无并发取消。实际触发CI38555403276、provenance38555403303、Pages38555403256（首次queued/attempt1），新SHA双原生结果待收，W1及quotaSOURCE禁令不变。三份批准新设计/计划随候选发布，没有混入C1a其它草稿或更新vendor。
+- Skilla3999a2新线上只读观察：Windows generic115822531262 success，133passed/3skip/109subtests/64.71s，原两KeyError本次未再出现；Linux generic134passed/2skip、software162passed。Windows software162与site尚在途，candidate未触发，旧16失败仍开放。极小timeout断言单次通过不作稳定性或修复信用。
+
+##### 实施过程历史快照（以下保留当时状态，以上最新状态优先）
 
 - Skill最小两行fixture修正已经不同SPEC→QUALITY均C0/I0/M0及AST/精确逆差分审查后，提交ea6509并推送35c1ed/exit0为 `a3999a2cfa1050fc3f189f59c9a04e4f67fbbc0c`，父02f419d；精确两路径/mode100644/字节一致及定点密钥模式检查通过。只规范临时根，不改生产/断言/权限，不安装本机缺失依赖，真实新Windows结果待CI。02三个run现全终态：inspection双平台162通过但Windows generic2失败；candidate Windows旧16失败；site3成功。旧失败保留，最终pin仍不更新。
 
@@ -17,8 +70,6 @@
 
 - 最新Skill待验候选为 `02f419d449f3ba9ba87717a928f740b6ce17e327`：root精确四路径暂存字节/mode100644、定点密钥模式及diff检查通过，commit283b68/push6e2a2e均exit0，父96b8979；工作树clean。实际fresh SPEC→不同QUALITY均C0/I0/M0。新配置三方法root d1f0cf真实3 AssertionError/0ERRORskip→2fb47b三GREEN/.005s；原provider20由57895c实跑20/1.724s/0skip，两workflow逆消除3ebc28逐字节等HEAD、SOURCE/providerTEST原样。site一行仅补预期资源，单项真实RED→完整23GREEN证据见下条。
 - 同02f419d三自动push运行：inspection38554148379、candidate38554148462、site38554148568，首次均in_progress/attempt1；原门终于在同SHA触发，但全部终态待收。Windows旧16失败和generic3失败尚未修复，不能称兼容片通过；不取消/重跑隐去失败、vendor仍215不更新。
-##### 实施过程历史快照（以下保留当时状态，以上最新状态优先）
-
 - Mac W0旧PLAN9d4af7e8的QUALITY C0/I2/M0保留：REAL负常量触发glibc access/Werror、Darwin临时目录未canonicalize。root仅修嵌入TEST三处，新PLAN18d76185共625行，fresh SPEC→不同QUALITY均C0/I0/M0；独立TEST作者开始仅新增测试和正式旧predicate软件RED。生产TU/driver/CMake/controller尚未修改，W1真实双组/exec和quotaSOURCE禁令仍完整。
 
 - 接续刷新：Skill candidate run38551938879已终态失败：Linux成功（provider20、legacy105＋5subtests、shell17），Windows provider20成功但legacy16failed/92passed/5warnings、exit1。Windows旧套无同选择父基线，三项same-content失败仍未归因；cp1252真实reader-thread解码错误及POSIX FIFO/文件名fixture不适配分别保留，不以吞stdout None或跳过旧门补绿。固定vendor不更新。
