@@ -901,6 +901,7 @@ class TestVectorsLimitPortable(unittest.TestCase):
         repo=Path(__file__).resolve().parents[1]
         source=(repo/"native/mac/icode_m0a1_limit.c").read_text()
         probe=r"""
+#define _DARWIN_C_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
 #include <errno.h>
 #include <stdio.h>

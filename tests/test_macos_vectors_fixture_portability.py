@@ -58,6 +58,30 @@ class TestVectorsFixturePortability(unittest.TestCase):
             case.test_actual_quota_source_cap2_and_exact_readback()
         self.assertEqual(len(injected), 1)
 
+    def test_quota_fixture_selects_darwin_extensions_before_system_headers(self):
+        original_run = subprocess.run
+        injected = []
+
+        def run(command, *args, **kwargs):
+            source = kwargs.get("input")
+            if isinstance(source, str) and "#include <sys/resource.h>" in source:
+                # Model the feature-selection prerequisite on any POSIX host.
+                # This is not a substitute for compiling the actual Darwin SDK.
+                marker = "#include <errno.h>\n"
+                self.assertIn(marker, source)
+                guard = ("#ifndef _DARWIN_C_SOURCE\n"
+                         '#error "quota fixture must select Darwin extensions before headers"\n'
+                         "#endif\n")
+                kwargs["input"] = source.replace(marker, guard + marker, 1)
+                injected.append(tuple(command))
+            return original_run(command, *args, **kwargs)
+
+        case = vectors.TestVectorsLimitPortable(
+            "test_actual_quota_source_cap2_and_exact_readback")
+        with mock.patch.object(subprocess, "run", side_effect=run):
+            case.test_actual_quota_source_cap2_and_exact_readback()
+        self.assertEqual(len(injected), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

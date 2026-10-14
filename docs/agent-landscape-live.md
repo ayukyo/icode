@@ -2,6 +2,12 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+本次更新：Skill B3f exact5全片双审零后已推待验main `cd9889f2ae4cb1090963338ad72412f526342ea5`，新candidate38646355366/inspection38646355535/site38646355662均push/attempt1，尚未授线上通过或Agent pin升级。末guard与CI直接依赖两个I1均保留历史，修复各有正式RED；仅采纳既有typed provider/发布前检查和结果分账机制，无新依赖权限，不重刷20名单。
+
+Mac feature小修研究（2026-10-15，71bde77）：双B原log确认软件探针RLIMIT_NPROC编译不可见、原生未执行。已亲查固定Apple XNU xnu-12377.1.9的[resource.h](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/sys/resource.h#L487-L491)和[cdefs.h](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/sys/cdefs.h#L966-L980)。采纳头前显式Darwin namespace，与既有真实入口一致；独立可移植TEST先2绿1Assertion，再不同SOURCE补一行，TEST/SOURCE均双审零，strict3软件通过。暂缓真实SDK、双Mac配额及清理信用；不适配自造RLIMIT数值、放宽编译或跳门。未复制上游实现、增加依赖/权限或改变配额。另71全套3.11再现周期采样后exit139、3.12成功不能覆盖；fatal handler已enable但无完整fatal栈，根因未证，诊断与此夹具修复分账。
+
+此前观察（非当前动态）：Mac夹具候选71bde77已exact7双审零后推main；现三run全终态，CI50=42成功/5失败/3skip、provenance五成功、Pages两成功，合57=49成功/5失败/3skip。父d9已57job全终态50成功/4失败/3skip。B3f的I1修订299a3522已重新全文双审零、正式TEST语义RED且独立双审零；不同SOURCE的CODE真实回合/同宇宙factory/末hook实现双审零，root接CI后strict23及共享消费者合53P零skip，standalone Skill现已提交，见上方新SHA。下方“B3f未实施/阻断”只保留其历史窗口，不授宿主Git上下文传输、Agent pin或整体验收。
+
 Mac B当前接续：d9双A及新live/zombie/reap原生门已成功；双B却在前置软件门失败，原生向量没有执行/没有artifact。正式可移植回归复现临时路径别名和gets名称冲突后，TEST及不同作者fixture修复各双审零；仅root.resolve(strict=True)和局部计数名变化，不松生产containment、不改配额。root已接新strict2 B门及来源绑定，5窄回归与密钥/固定子仓守护通过；整片审查及上一候选终态待收齐，尚未推新候选，不授native quota信用。该测试夹具小修复用已有机制，不额外引入开源架构依赖。
 
 Windows 网络正控拓扑复核（2026-10-15，代码基线d9eae5d，独立只读研究）：当前脚本固定127.0.0.1/::1，native选本机RFC1918网卡地址仍非外部peer，配置采样没有设置豁免。[Microsoft原生防火墙排障](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/troubleshooting-uwp-firewall)区分loopback与实际private网络分类，RFC1918不能单独证明能力适用。采纳“宿主、独立capability正控、零能力Reviewer绑定同端点/nonce/窗口”的验收分账；暂缓执行[GitHub larger runner＋Azure VNet](https://docs.github.com/en/organizations/managing-organization-settings/about-azure-private-networking-for-github-hosted-runners-in-your-organization)及[独立双VM私网peer](https://learn.microsoft.com/en-us/azure/virtual-network/quickstart-create-virtual-network)，因需额外组织/付费/Azure权限，标准hosted不能直接使用该VNet功能。不适配[ACI](https://learn.microsoft.com/en-us/azure/container-instances/container-instances-virtual-network-concepts)替代双栈门（当前无IPv6），也不采纳本机网卡回连、代理、公网冒私网。未启用资源、修改策略或授network DENY信用；loopback临时正控SID豁免仍待用户授权，外部peer不得偷换原loopback合同。

@@ -277,6 +277,7 @@ def main():
             "tests/test_macos_process_groups.py","tests/test_macos_m0a2_vectors.py",
             "tests/test_macos_vectors_fixture_portability.py",
             "docs/nbl/plans/2026-10-15-macos-vectors-fixture-portability.md",
+            "docs/nbl/plans/2026-10-15-macos-quota-fixture-feature-mode.md",
             "tests/test_macos_m0a2_event_diagnostics.py",
             "tests/test_macos_identity_snapshot_diagnostics.py",
             "tests/test_macos_identity_zombie_native.py",
