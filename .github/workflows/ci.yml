@@ -63,7 +63,7 @@ jobs:
       - name: Compile Python sources
         run: python -m compileall -q src tests scripts
       - name: Run the full unit test suite
-        run: python -m unittest
+        run: python -u scripts/run_full_suite_ci.py
       # The full-suite step above is the tests gate. Do not run it a second
       # time through the composite preflight; keep the other two gates explicit.
       - name: Run the secret delivery guard
