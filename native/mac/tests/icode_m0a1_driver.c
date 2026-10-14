@@ -371,6 +371,41 @@ static void setup_fail(unsigned index,unsigned stage,int error,int detail,int co
     _exit(code);
 }
 /* M0A1_DIAGNOSTIC_EMITTER_END */
+/* M0A1_GATE_OBSERVER_BEGIN */
+static void emit_gate_observation(unsigned index,unsigned slot,uint32_t expected_uid,
+                                  int received,const struct gate_record *r) {
+    int saved=errno;
+    char row[512],group[11];
+    int n;
+    if(!received) {
+        n=snprintf(row,sizeof(row),
+            "M0A1_GATE_DIAG format_version=1 case_index=%u slot=%u received=0 "
+            "raw_magic=unknown wire_version=unknown length=unknown pid=unknown "
+            "phase=unknown error=unknown expected_uid=%" PRIu32 " uid=unknown euid=unknown "
+            "gid=unknown egid=unknown groups=unknown group_observed=0 group=unknown\n",
+            index,slot,expected_uid);
+    } else {
+        /* group is meaningful only when the existing wire reports one group. */
+        const char *observed_group="unknown";
+        if(r->groups==1) {
+            int g=snprintf(group,sizeof(group),"%" PRIu32,r->group);
+            if(g>0 && (size_t)g<sizeof(group)) observed_group=group;
+        }
+        n=snprintf(row,sizeof(row),
+            "M0A1_GATE_DIAG format_version=1 case_index=%u slot=%u received=1 "
+            "raw_magic=%" PRIu32 " wire_version=%" PRIu32 " length=%" PRIu32
+            " pid=%" PRId32 " phase=%" PRIu32 " error=%" PRId32
+            " expected_uid=%" PRIu32 " uid=%" PRIu32 " euid=%" PRIu32
+            " gid=%" PRIu32 " egid=%" PRIu32 " groups=%" PRIu32
+            " group_observed=%d group=%s\n",
+            index,slot,r->magic,r->version,r->length,r->pid,r->phase,r->error,
+            expected_uid,r->uid,r->euid,r->gid,r->egid,r->groups,
+            r->groups==1,observed_group);
+    }
+    if(n>0 && (size_t)n<sizeof(row)) (void)fwrite(row,1,(size_t)n,stderr);
+    errno=saved;
+}
+/* M0A1_GATE_OBSERVER_END */
 static void worker_fail(int error) { send_gate(FAILED,error); _exit(94); }
 static void trampoline(unsigned index,uid_t uid,const char *hash) {
     if(getuid()!=0 || protected_image(hash)) worker_fail(EPERM);
@@ -612,6 +647,8 @@ static void run_case(unsigned index,uid_t uid,int ledger,const char *sha,const c
         WIFSIGNALED(status) ? WTERMSIG(status) : 0);
     emit_diagnostic(index,107,0,registered,released);
     emit_diagnostic(index,108,0,configured_ok,ready_ok);
+    emit_gate_observation(index,1,(uint32_t)uid,configured_read_errno==0,&configured);
+    emit_gate_observation(index,2,(uint32_t)uid,ready_attempted && ready_read_errno==0,&ready);
     if(kq>=0) close(kq);
     unsigned char raw[sizeof(late)+1]; size_t used=0;
     for(;;) {

@@ -8,6 +8,19 @@
 
 ### 2026-10-14 最新终态与接续（优先于下方在途历史）
 
+#### 接续刷新：1421197 / 5be9dee（以下旧在途记录保留历史）
+
+- 下一 Agent 候选为最小 [gate观察补丁](nbl/plans/2026-10-14-macos-m0a1-gate-observation.md)：原PLAN8153545与实际SOURCE分别fresh SPEC→不同QUALITY均C0/I0/M0；只追加TEST130行、driver37行两hunk。作者与root各自取得正式软件10方法/8assert RED，再各15项GREEN；root10/1.320s+5/.001s零失败/错误/跳过，driver1fe2b712、TEST8d953ccc，原child/wire/release/formal/controller/CI/pin逐字保留，limit.c仍无。秘密/固定子仓原单门通过；当前尚待精确索引提交及新SHA原生结果，不授quota或阶段通过。C1a另已修falsey数组类型到20方法，fresh SPEC又检出Windows `.git` 大小写别名遗漏，仍仅修PLAN，不混入本候选。
+
+- Agent 已推送 `14211972bb1e824bbd993dbe423bceafa882693f`，本机 main 同 SHA、工作树在本次文档刷新前 clean。主 [CI 38499980473](https://github.com/ayukyo/icode/actions/runs/38499980473) 完整48 job均终态：41成功、4失败、3退役条件跳过。Python3.11 job115644377642 实际3281/536.502s/OK(skip93)，3.12 job115644377505 实际3281/838.718s/OK(skip93)；skip不给验收信用。Pages38499980490两job成功；没有取消或重跑掩盖失败。
+- Skill 后续最小修复 `5be9deebfb2c0eb3f0e7cc7b760c199d368bdae0` 已推 main：Windows crosscheck匿名fixture只增加 `USERPROFILE=HOME`，不继承真实用户家目录，不改产品或断言。[software38501080292](https://github.com/ayukyo/icode-skill/actions/runs/38501080292) Windows115647923392与Ubuntu115647923639均成功，各provider9、compatibility8、legacy收集及实际运行162全过；Linux inspection shell PASS、crosscheck shell17passed/0failed。Windows条件跳过Linux shell不代Linux执行。[site38501080307](https://github.com/ayukyo/icode-skill/actions/runs/38501080307) renderer/build/deploy成功，安装契约23测试通过。仅关闭本次软件兼容片，Agent固定vendor仍21566a5，未授整pin或R2/R3完成。
+- 1421197 provenance38499980466五job成功；四架构/Python签装cell各69必需软件测试及9签名fixture测试通过、历史RED1断言失败/0ERROR/skip、实际Sigstore签名与离线/密码学负控通过。然而实际installed-chain及installed-source仍 `observation_complete=true / compatibility_accepted=false / launch_authorized=false / protected_observed=false`，owner拒绝不等于WP0b/UAC/受保护晋升验收。validate旧15分钟已曾成功，本次25分钟预算只称有限余量，不宣称已证明超时根因修复。
+- macOS Intel job115644377476/artifact11865402519、ARM job115644377568/artifact11864929441：编译链接成功，但native_exit2、ERROR_or_unaccepted_failure、cleanup未知、truncatedfalse，正式RED仍未取得，SOURCE/GREEN步骤未执行。root已独立内存核原artifact：stage101实际 `configured_read_errno=0 / phase=3 / error=1`，结合当前源码仅证明完整收到了FAILED/EPERM首record；stage106为exit94，七case均未release。末尾errno60不是已证明的首故障原因。现阶段无法区分镜像/root门、身份切换、组读回或getrlimit覆盖；下一片只观察现有已接收gate字段，不改child、release、正式分类或quota，`limit.c`仍禁止实施。
+- Windows Reviewer双架构仍失败：candidate exit78、cleanup_ok=true、child_token_receipt缺失；普通订阅API5/unavailable。管理员历史窗口无匹配、连接10035超时及正控105仍不证明DENY，不以无事件当隔离成功。
+- 独立只读研究补充正控scope：`windows_job.py` 的privateNetwork固定探针先IPv4，失败105后立即退出，因此本次正控IPv6是未尝试，不是已测失败；candidate的独立profile历史不能归因正控105。下一候选可先只读精确正控SID现有loopback配置，成功/不可观察及unknown分账，不调用Set、不增豁免或网络权限；目前仅研究输入，尚无设计/实施/配置读回或因果证明。
+- 历史C1a未发布草稿7a23a444的fresh SPEC C0/I1/M0：metadata路径校验不能覆盖显式code_files，Windows实际capture可读取匿名fixture的ADS；该历史版本17方法GREEN反映覆盖缺口，不授计划通过。后续修订进度以上条为准；生产candidate仍c3a15eff未改，不更新vendor。C1b/C2/C3/C4、合法HEAD刷新、标准LFS、真实模型六步与≥90%完整兼容门仍开放。
+- 复杂改动前实际sequential-thinking三步a0baab：先绑定原生首record与退出证据；优先root-only利用既有字段并保留unsigned/unknown；审全部候选路径入口且None/POSIX兼容不变。不是仅检查MCP配置。并行只读研究继续，结论不能替代本项目原生验收。
+
 - 下一Agent待验收候选仅九路径：诊断driver/新TEST、provenance预算workflow/新TEST、三份最小计划及live/handoff。两实现片实际freshSPEC→不同QUALITY均C0/I0/M0；root已独立API重核b8所有55 job终态（48主CI/5签装/2Pages）、无active，秘密与固定子仓原单门通过58ec67，五文档链接扫描raw0。未混入C1a尚未过审草稿、未创建limit.c；stage/新SHA线上结果待收，不称阶段完成。
 
 - 最新Skill已推送 `29634bc70cf0bcf6837bb0bbf5997641c73e6e71`：五路径11+/1-，root实际native Windows1个rooted测试RED→新8 GREEN、Linux新8及安装1 GREEN，freshSPEC→不同QUALITY各C0/I0/M0，五文件AST/秘密/精确索引及100644通过，无branch/tag/force。线上software `38498758288` Linux `115640454159` 已通过provider9/new8/旧162（99.26s）及两shell；Windows `115640453739`旧162在途；site `38498758246` 安装23项/3.774s已通过，整体部署终态待收，不预报完整兼容通过。
