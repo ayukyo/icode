@@ -12,7 +12,7 @@ class TestCiDeliveryJob(unittest.TestCase):
         job = workflow.split("  test:\n", 1)[1].split("\n  verification-output-lifecycle:", 1)[0]
         commands = (
             "run: python -m compileall -q src tests scripts",
-            "run: python -m unittest\n",
+            "run: python -u scripts/run_full_suite_ci.py\n",
             "run: python scripts/preflight.py --only secrets\n",
             "run: python scripts/preflight.py --only submodule\n",
         )

@@ -24,7 +24,7 @@ class TestFullSuiteCiBudget(unittest.TestCase):
         self.assertEqual(commands, [
             'python -m pip install "setuptools>=80"',
             "python -m compileall -q src tests scripts",
-            "python -m unittest",
+            "python -u scripts/run_full_suite_ci.py",
             "python scripts/preflight.py --only secrets",
             "python scripts/preflight.py --only submodule",
         ])

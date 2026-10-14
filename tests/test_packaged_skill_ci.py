@@ -41,7 +41,7 @@ class TestPackagedSkillCi(unittest.TestCase):
         self.assertEqual(metadata["build-system"]["requires"], ["setuptools>=80"])
         job = _job(self.ci, "test")
         self.assertIn(BUILD_STEP, job)
-        self.assertLess(job.index(BUILD_STEP), job.index("run: python -m unittest\n"))
+        self.assertLess(job.index(BUILD_STEP), job.index("run: python -u scripts/run_full_suite_ci.py\n"))
 
     def test_readonly_validate_installs_backend_before_preflight(self) -> None:
         job = _job(self.provenance, "validate")
