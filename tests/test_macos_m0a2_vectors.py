@@ -664,7 +664,7 @@ class TestVectorsCollectorPortable(unittest.TestCase):
         self.assertEqual(len(modes),44)
         for mode in modes:
             with self.subTest(mode=mode),tempfile.TemporaryDirectory(prefix="m0a2-software-") as temporary:
-                root=Path(temporary);build=root/"build";build.mkdir();output=root/"green";output.mkdir()
+                root=Path(temporary).resolve(strict=True);build=root/"build";build.mkdir();output=root/"green";output.mkdir()
                 binary=build/"icode_m0a1_vectors_source";binary.write_bytes(b"binary");binary.chmod(0o700)
                 meta,rows=software_fixture()
                 meta["deadline_ns"]=500_000_000_000
@@ -907,7 +907,7 @@ class TestVectorsLimitPortable(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
-static unsigned sets,gets,checks;
+static unsigned sets,quota_get_calls,checks;
 static int set_error,get_error,read_mode;
 static struct rlimit stored;
 static int fake_set(int resource,const struct rlimit *value) {
@@ -917,7 +917,7 @@ static int fake_set(int resource,const struct rlimit *value) {
 }
 static int fake_get(int resource,struct rlimit *value) {
  if(resource!=RLIMIT_NPROC) abort();
- gets++;if(get_error) { errno=get_error;return -1; }
+ quota_get_calls++;if(get_error) { errno=get_error;return -1; }
  *value=stored;
  if(read_mode==1) value->rlim_cur--;
  if(read_mode==2) value->rlim_max++;
@@ -926,24 +926,24 @@ static int fake_get(int resource,struct rlimit *value) {
 #define setrlimit fake_set
 #define getrlimit fake_get
 """ + source + r"""
-#define RESET() do { sets=gets=0;set_error=get_error=read_mode=0;stored=(struct rlimit){2,2}; } while(0)
-#define EXPECT(condition) do { checks++;if(!(condition)) { printf("failed software check=%u sets=%u gets=%u\n",checks,sets,gets);return 42; } } while(0)
+#define RESET() do { sets=quota_get_calls=0;set_error=get_error=read_mode=0;stored=(struct rlimit){2,2}; } while(0)
+#define EXPECT(condition) do { checks++;if(!(condition)) { printf("failed software check=%u sets=%u quota_get_calls=%u\n",checks,sets,quota_get_calls);return 42; } } while(0)
 int main(void) {
  RESET();int cap2=m0_apply_limit(2,1);
- EXPECT(cap2==0 && sets==1 && gets==1 && stored.rlim_cur==2 && stored.rlim_max==2);
- RESET();errno=EBUSY;EXPECT(m0_apply_limit(0,0)==0 && !sets && !gets && errno==EBUSY);
- RESET();errno=EBUSY;EXPECT(m0_check_limit(2,0)==0 && !sets && !gets && errno==EBUSY);
- RESET();EXPECT(m0_apply_limit(1,1)==0 && sets==1 && gets==1 && stored.rlim_cur==1 && stored.rlim_max==1);
+ EXPECT(cap2==0 && sets==1 && quota_get_calls==1 && stored.rlim_cur==2 && stored.rlim_max==2);
+ RESET();errno=EBUSY;EXPECT(m0_apply_limit(0,0)==0 && !sets && !quota_get_calls && errno==EBUSY);
+ RESET();errno=EBUSY;EXPECT(m0_check_limit(2,0)==0 && !sets && !quota_get_calls && errno==EBUSY);
+ RESET();EXPECT(m0_apply_limit(1,1)==0 && sets==1 && quota_get_calls==1 && stored.rlim_cur==1 && stored.rlim_max==1);
  const rlim_t invalid[]={0,3,4,8};
- for(unsigned i=0;i<4;i++) { RESET();EXPECT(m0_apply_limit(invalid[i],1)==EINVAL && !sets && !gets); }
- RESET();set_error=EACCES;EXPECT(m0_apply_limit(2,1)==EACCES && sets==1 && !gets);
- RESET();get_error=EIO;EXPECT(m0_apply_limit(2,1)==EIO && sets==1 && gets==1);
- RESET();read_mode=1;EXPECT(m0_apply_limit(2,1)==ERANGE && sets==1 && gets==1);
- RESET();read_mode=2;EXPECT(m0_apply_limit(2,1)==ERANGE && sets==1 && gets==1);
- RESET();EXPECT(m0_check_limit(2,1)==0 && !sets && gets==1);
- RESET();read_mode=1;EXPECT(m0_check_limit(2,1)==ERANGE && !sets && gets==1);
- RESET();read_mode=2;EXPECT(m0_check_limit(2,1)==ERANGE && !sets && gets==1);
- RESET();get_error=EIO;EXPECT(m0_check_limit(2,1)==EIO && !sets && gets==1);
+ for(unsigned i=0;i<4;i++) { RESET();EXPECT(m0_apply_limit(invalid[i],1)==EINVAL && !sets && !quota_get_calls); }
+ RESET();set_error=EACCES;EXPECT(m0_apply_limit(2,1)==EACCES && sets==1 && !quota_get_calls);
+ RESET();get_error=EIO;EXPECT(m0_apply_limit(2,1)==EIO && sets==1 && quota_get_calls==1);
+ RESET();read_mode=1;EXPECT(m0_apply_limit(2,1)==ERANGE && sets==1 && quota_get_calls==1);
+ RESET();read_mode=2;EXPECT(m0_apply_limit(2,1)==ERANGE && sets==1 && quota_get_calls==1);
+ RESET();EXPECT(m0_check_limit(2,1)==0 && !sets && quota_get_calls==1);
+ RESET();read_mode=1;EXPECT(m0_check_limit(2,1)==ERANGE && !sets && quota_get_calls==1);
+ RESET();read_mode=2;EXPECT(m0_check_limit(2,1)==ERANGE && !sets && quota_get_calls==1);
+ RESET();get_error=EIO;EXPECT(m0_check_limit(2,1)==EIO && !sets && quota_get_calls==1);
  EXPECT(!strcmp(m0_variant(),"source"));
  if(checks!=17) return 43;
  puts("quota software boundary: 17 checks");return 0;

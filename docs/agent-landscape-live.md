@@ -2,7 +2,15 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+Mac B当前接续：d9双A及新live/zombie/reap原生门已成功；双B却在前置软件门失败，原生向量没有执行/没有artifact。正式可移植回归复现临时路径别名和gets名称冲突后，TEST及不同作者fixture修复各双审零；仅root.resolve(strict=True)和局部计数名变化，不松生产containment、不改配额。root已接新strict2 B门及来源绑定，5窄回归与密钥/固定子仓守护通过；整片审查及上一候选终态待收齐，尚未推新候选，不授native quota信用。该测试夹具小修复用已有机制，不额外引入开源架构依赖。
+
+Windows 网络正控拓扑复核（2026-10-15，代码基线d9eae5d，独立只读研究）：当前脚本固定127.0.0.1/::1，native选本机RFC1918网卡地址仍非外部peer，配置采样没有设置豁免。[Microsoft原生防火墙排障](https://learn.microsoft.com/en-us/windows/security/operating-system-security/network-security/windows-firewall/troubleshooting-uwp-firewall)区分loopback与实际private网络分类，RFC1918不能单独证明能力适用。采纳“宿主、独立capability正控、零能力Reviewer绑定同端点/nonce/窗口”的验收分账；暂缓执行[GitHub larger runner＋Azure VNet](https://docs.github.com/en/organizations/managing-organization-settings/about-azure-private-networking-for-github-hosted-runners-in-your-organization)及[独立双VM私网peer](https://learn.microsoft.com/en-us/azure/virtual-network/quickstart-create-virtual-network)，因需额外组织/付费/Azure权限，标准hosted不能直接使用该VNet功能。不适配[ACI](https://learn.microsoft.com/en-us/azure/container-instances/container-instances-virtual-network-concepts)替代双栈门（当前无IPv6），也不采纳本机网卡回连、代理、公网冒私网。未启用资源、修改策略或授network DENY信用；loopback临时正控SID豁免仍待用户授权，外部peer不得偷换原loopback合同。
+
 最新状态：cap2最小四路径双审零后推Agent待验436751c，三run已终态，56job=49成功/3失败/4skip，双full各3369通过/99原skip，Mac B占位未运行；Intel A在SOURCE reserve新UID阶段因proc_pidinfo返回0/ESRCH而kill仍成功，快照unknown失败，未到完整green formal，不授quota通过或认定PID污染。只读复核公开XNU“列举zombproc但TBSDINFO arg0不查zombie”的机制，仍待匹配平台合同和正式测试，不跳未知/改配额/重跑刷绿。Skill B3e42f三run九job现全部成功，双平台新22及新旧消费者通过；仅关闭action-policy软件片，原skip保留，inspection整链/host/vendor仍未验收。此前“动态/待全片”均为历史窗口。 快照新候选现已完成正式TEST语义RED及不同SOURCE修复为聚合arg1，TEST/SOURCE各自双审零，13窄回归通过；已接真实live/zombie/reap原生门，待全片双审及同SHA双Mac验证，尚未授原生或配额信用。
+
+新候选已发布：exact10全片fresh SPEC和不同QUALITY均C0/I0/M0，root限定13回归、full预算3及密钥/固定子仓守护通过；013a84核精确十索引字节和100644后提交`d9eae5d9e9d433eeb311a5b2c0556f3038984a14`，父436751，1136增7删，提交后status空。69585e推main，API核远端同SHA：CI38640792140/provenance38640792422/Pages38640792313均push/attempt1，当前queued，未全终态前不推下一Agent候选。只待验候选，不授native/SDK/全机可观察或quota信用。
+
+B3f当前阻断：PLAN59d21a66全文SPEC及匿名20+55投影通过后，不同QUALITY发现I1并用新独立语义oracle真实RED确认：CODE finish before_publish末的_code_guard之后，原事务helper还有一次无deadline的context guard，其返回时已过31秒但仍append success，最外层拒绝输出不能代替发布前截止。与真正postappend失效保留历史不同。root15db19实际MCP三步accepted，已仅授PLAN修订为原顺序后、append入口前可选before_append回调及新负控，保持None和已写事实不撤回。实际Skill TEST/SOURCE/CI继续未实施，旧零审仅历史窗口；不授物理I/O硬截止或host epoch信用。
 
 Mac描述符/ACK修复及fatal诊断最小片已双审零后发布6dbc8b5，三run57项现全部终态52成功/2失败/3占位skip；双full各3369项通过，双Mac B已到唯一cap2真实baseline RED，剩余失败仍双Windows网络正控。不反推026的139根因，不授SOURCE配额或整体验收。受保护Git B3e action-policy的正式TEST取得17红父/44Assertion/零ERRORskip并actual双审零，不同SOURCE只改两个函数；业务21、原端口21及旧消费者4通过，root接CI后22全绿，全片双审零后推待验main42f5556。candidate38634827865/inspection38634827863/site38634827894仍动态，Agent pin未改。下方“仅PLAN／未实施”是历史窗口。
 

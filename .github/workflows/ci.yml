@@ -2527,6 +2527,9 @@ jobs:
         if: env.M0A2_SOURCE == '1'
         shell: bash
         run: ICODE_M0A2_LIMIT_SOFTWARE=1 python -m unittest discover -s tests -p test_macos_m0a2_vectors.py -v
+      - name: Portable fixture alias and stdio compatibility
+        shell: bash
+        run: python -B -c "import unittest; s=unittest.defaultTestLoader.discover('tests', pattern='test_macos_vectors_fixture_portability.py'); assert s.countTestCases()==2, s.countTestCases(); r=unittest.TextTestRunner(verbosity=2).run(s); raise SystemExit(not r.wasSuccessful() or bool(r.skipped))"
       - name: Shared B deadline and strict native oracle
         shell: bash
         run: >-

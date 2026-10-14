@@ -2,7 +2,15 @@
 
 更新：2026-10-15（北京时间）。已在 Windows / WSL2 接力续跑；下列历史发布及线上结果只授其实际候选证据，不作为本轮新增能力验收。
 
+Mac B夹具候选准备：正式新TEST b8066d25（2有效Assertion/0ERRORskip）和PLAN81057a19各独立双审零后，不同作者只修原fixture两方法，990行/56334B/SHA256 0a00504676cc1c4f575d000d3e305d7a434d7c71c11fe41239487555b89b17eb；唯一逆回原f924880a完整字节，原44场景/17checks/所有方法及成功footer不变。SOURCE fresh SPEC与不同QUALITY均C0/I0/M0，新2P、旧optin15=10软件P/5原native skip。root仅加B strict2零skip CI门和新TEST/PLAN两来源绑定，6c0ec0新2+预算3共5P，b3e9fb密钥扫描及a87142固定子仓守护通过。内层五项是synthetic ledger observer，不能冒native GREEN；生产collector/limit不改、权限/预算不变。待exact7全片双审及d9所有同仓run终态后才推main下一候选，无取消重跑或额外分支/标签。
+
+最新线上观察：d9eae5d 的双Mac A均成功。root亲取ARM46453字符、Intel46208字符原log：新native均strict1通过，counts[1,1,0,0]/query_arg1/live2/zombie5/正常exit0/owned_child_reaped；两A原baseline唯一quota RED与SOURCE原生5P成立。独立原件核ARM11930565237/133235B/ZIP SHA256 0bcf40e7735abc6e204ebd89b4a94edda4925baec2e7586cded7073467451052，Intel11930730632/128347B/dc465258a194f0685d46a34e5942ec2dd120bb2f10a9705982ccf8ad43a4936d，117项原件各来源/二进制/raw/audit/hash匹配。B已真实展开Intel116116803016与ARM116116803155，均在前置软件门失败（15方法/6FAIL/1ERROR/5原native skip）：原夹具未规范化临时root导致binary路径拒绝，C软件探针gets计数器和Darwin stdio冲突。原生B未运行、无artifact，不授配额信用。root918594真实MCP三步后先落新可移植正式TEST，122b56取得2有效Assertion/0ERRORskip，双审零后交不同作者仅修原fixture。不放宽生产containment；不授全机PID观察或配额整体信用。Winx64 Reviewer116115461004仍exit78/正控105 IPv4超时，root亲取183273字符原log；正控与不同SID后置WFP无匹配不能授DENY。网络替代拓扑只读研究已记持续对照：真实外部peer需额外云资源授权，不偷换原loopback门；本机、产品SID及CI系统豁免均未修改。
+
 当前权威工作区：`/home/orbbec/projects/icode`（Windows可读 `\\wsl.localhost\Ubuntu-22.04\home\orbbec\projects\icode`）。用户已授权将开发工作区迁到此WSL原生目录，原 `D:\Projects\icode` 及其67个Junction保留不清理。以下旧日志只授其实际结果；当前交付顺序以本节线上优先约定为准，不借旧诊断副本的clean替代检查。
+
+新候选已发布：exact10全片fresh SPEC和不同QUALITY均C0/I0/M0，root限定13回归、full预算3及密钥/固定子仓守护通过；013a84核精确十索引字节和100644后提交`d9eae5d9e9d433eeb311a5b2c0556f3038984a14`，父436751，1136增7删，提交后status空。69585e推main，API核远端同SHA：CI38640792140/provenance38640792422/Pages38640792313均push/attempt1，当前queued，未全终态前不推下一Agent候选。只待验候选，不授native/SDK/全机可观察或quota信用。
+
+B3f当前阻断：PLAN59d21a66全文SPEC及匿名20+55投影通过后，不同QUALITY发现I1并用新独立语义oracle真实RED确认：CODE finish before_publish末的_code_guard之后，原事务helper还有一次无deadline的context guard，其返回时已过31秒但仍append success，最外层拒绝输出不能代替发布前截止。与真正postappend失效保留历史不同。root15db19实际MCP三步accepted，已仅授PLAN修订为原顺序后、append入口前可选before_append回调及新负控，保持None和已写事实不撤回。实际Skill TEST/SOURCE/CI继续未实施，旧零审仅历史窗口；不授物理I/O硬截止或host epoch信用。
 
 ## 当前交付顺序：线上优先（2026-10-13 用户明确确认）
 

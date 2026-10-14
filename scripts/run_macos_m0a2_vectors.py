@@ -275,6 +275,8 @@ def main():
             "native/mac/icode_m0a1_process_groups.h","native/mac/icode_m0a1_process_groups.c",
             "tests/test_macos_task_quota_probe.py","tests/test_macos_process_groups_native.py",
             "tests/test_macos_process_groups.py","tests/test_macos_m0a2_vectors.py",
+            "tests/test_macos_vectors_fixture_portability.py",
+            "docs/nbl/plans/2026-10-15-macos-vectors-fixture-portability.md",
             "tests/test_macos_m0a2_event_diagnostics.py",
             "tests/test_macos_identity_snapshot_diagnostics.py",
             "tests/test_macos_identity_zombie_native.py",
