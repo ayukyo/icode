@@ -21,7 +21,7 @@ EXPECTED_BADGES = {
         "[![Pages](https://github.com/ayukyo/icode/actions/workflows/pages.yml/badge.svg?branch=main)]"
         "(https://github.com/ayukyo/icode/actions/workflows/pages.yml)",
         "[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)",
-        "[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)]"
+        "[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)]"
         "(pyproject.toml)",
     ),
     "README.zh-CN.md": (
@@ -30,7 +30,7 @@ EXPECTED_BADGES = {
         "[![Pages](https://github.com/ayukyo/icode/actions/workflows/pages.yml/badge.svg?branch=main)]"
         "(https://github.com/ayukyo/icode/actions/workflows/pages.yml)",
         "[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)",
-        "[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)]"
+        "[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)]"
         "(pyproject.toml)",
     ),
 }
@@ -80,7 +80,7 @@ def check_workflow_contracts() -> list[str]:
                 "pull_request:",
                 "push:",
                 "submodules: recursive",
-                'python-version: ["3.11", "3.12"]',
+                'python-version: ["3.12"]',
                 "python -m compileall",
                 "python -m unittest",
                 "python scripts/preflight.py",

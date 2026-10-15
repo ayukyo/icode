@@ -7,7 +7,7 @@ name = "icode-agent"
 version = "0.1.0"
 description = "ICODE 的自主 Agent 运行时：过程可审计，消费 icode-skill 的流程真源与控制面"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 keywords = ["agent", "icode", "audit", "workflow", "ai-coding"]
 

@@ -7,7 +7,7 @@
 [![CI](https://github.com/ayukyo/icode/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ayukyo/icode/actions/workflows/ci.yml)
 [![Pages](https://github.com/ayukyo/icode/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/ayukyo/icode/actions/workflows/pages.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](pyproject.toml)
 
 **Manage software work as tickets, with AI handling requirements, code changes, and checks.**
 
@@ -53,7 +53,7 @@ The agent never calls `/icode plan` or another host agent to do its job. It read
 
 ## Quick start
 
-Running an installation package requires Python 3.11+. The pinned core workflow resources are bundled; no separate ICODE-SKILL installation or path setting is needed. Offline checks do not require a model key.
+Running an installation package requires Python 3.12+. The pinned core workflow resources are bundled; no separate ICODE-SKILL installation or path setting is needed. Offline checks do not require a model key.
 
 The source-development example below requires Git and the initialized submodule; Linux source builds also need a C compiler. These are not requirements for users installing a wheel.
 

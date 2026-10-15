@@ -50,7 +50,7 @@ class NativeWheel(bdist_wheel):
     def get_tag(self) -> tuple[str, str, str]:
         python_tag, abi_tag, platform_tag = super().get_tag()
         if sys.platform.startswith("linux"):
-            # 助手是独立静态 ELF，不链接 CPython ABI；一个 wheel 支持 3.11+。
+            # 助手是独立静态 ELF，不链接 CPython ABI；一个 wheel 支持 3.12+。
             return "py3", "none", platform_tag
         if sys.platform == "win32" and os.environ.get(_WINDOWS_HELPER_ENV):
             arch = windows_arch_from_platform(sysconfig.get_platform())

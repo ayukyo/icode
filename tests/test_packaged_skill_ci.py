@@ -56,12 +56,12 @@ class TestPackagedSkillCi(unittest.TestCase):
             r'- os: ([a-zA-Z0-9.-]+)\n\s+python-version: "([0-9.]+)"', job,
         )
         self.assertEqual(set(pairs), {
-            (os_name, "3.11") for os_name in (
+            (os_name, "3.12") for os_name in (
                 "ubuntu-latest", "macos-latest", "macos-15-intel",
                 "windows-latest", "windows-11-arm",
             )
-        } | {("windows-latest", "3.12"), ("windows-11-arm", "3.12")})
-        self.assertEqual(len(pairs), 7)
+        })
+        self.assertEqual(len(pairs), 5)
         self.assertIn("runs-on: ${{ matrix.os }}", job)
         self.assertIn("fail-fast: false", job)
 

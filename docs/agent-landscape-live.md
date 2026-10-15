@@ -2,6 +2,30 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+312实际进展：用户支持范围决定已正式TDD，actualTEST8/旧配置108为15失败父与46Assertion、0ERRORskip，经独立双审；不同SOURCE仅12版本相关路径，strict108全绿、实际SOURCE独立SPEC及不同QUALITY零。root扩大132软件回归、治理/站点/密钥/pin通过。采纳最低版本与受测安装通道分账已落配置；真实312运行/安装仍待同候选线上。首次误环境3.10含ERROR与日志工具截断均保留为无效/不完整尝试，不伪装有效RED或完整原件，不借移除311宣称139根因消除或R2/R3通过。
+
+Python基线新决定（2026-10-15）：用户已明确“去掉3.11”，Agent最低要求收敛为`>=3.12`，当前CI/安装观察通道选3.12；不是将所有未来minor锁死或宣称已验收。只读复核[Aider固定5dc9490安装文档](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/website/docs/install.md#L9-L57)与[uv0.13.0固定4ecd0ef版本机制](https://github.com/astral-sh/uv/blob/4ecd0eff2a81e3ffdcd7cfee10d08936e4747c17/docs/concepts/python-versions.md#L16-L113)：采纳应用运行时显式选择与宿主解释器分离；暂缓新增安装器/系统PATH变化，本轮不安装解释器。不适配用pip的兼容筛选参数冒真正3.12运行，或把Requires-Python当已测试版本清单（[pip](https://pip.pypa.io/en/stable/cli/pip_install/#cmdoption-python-version)、[元数据规范](https://packaging.python.org/en/latest/specifications/core-metadata/#requires-python)）。仅机制借鉴，无代码复制/新依赖；Aider Apache-2.0、uv MIT/Apache-2.0。历史311记录/技术fixture及Skill支持不改，剩余平台/安全门全部保留；实际3.12由新候选线上核验，当前本机软件诊断解释器不能冒目标运行信用。
+
+1ce最终窗口：root逐run核三条同SHA/push/attempt1均终态，provenance五S、CI45S/2ReviewerF/3skip、Pages两S，合57=52S/2F/3skip。签装绿色仍只证明已有验证/拒绝边界，owner_untrusted及launch_authorized=false未被解除；下一Agent候选可在自身审查/必要回归后推送，整体验收仍开放。当前Python双版本矩阵未因讨论自动删减。
+
+1ce诊断片线上结果：root亲核3.11/3.12各3377项成功、100原skip（844.824s/874.048s），各7次Python线程周期采样、未见本轮SIGSEGV，后置密钥/pin门成功。CI50已终态45S/2ReviewerF/3skip；provenance四安装仍在途、Pages两S，尚不推下一候选。采纳同步采样已获本轮全量运行证据，但不将一次通过当全部间歇性139根因/永久修复证明；Windows正控超时仍inconclusive，不授DENY或R2/R3通过。
+
+### 2026-10-15：CI测试权限与资源恢复（只读并行研究）
+
+本次复用已有Codex条目，再核两个固定源码版本；在检查范围内未发现与本工程“临时runner、同一positive SID、完整映射校验、精确移除”完全等价的现成实现，不据此扩大授权。
+
+| 固定来源 | 观察与适用性 | 决策及本工程验收 |
+| --- | --- | --- |
+| Codex `27065a91ccbf5ba8532844be3777fcf83b77820d`，[fixture finally](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/windows-sandbox-rs/sandbox_smoketests.py#L214-L230)、[真实代理正控](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/windows-sandbox-rs/sandbox_smoketests.py#L470-L530) | 独立测试端点、实际响应及finally清理值得借鉴；不是单SID临时豁免先例，清理调用本身不证明恢复 | 采纳显式所有权和实际nonce响应。ICODE额外保留配置前后完整映射/Attributes、异常接管及unknown门；同SHA x64/ARM双原生验证，不照搬可选失败或忽略删除异常的宽松判据 |
+| 同版Codex，[专用账户防火墙初始化](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/windows-sandbox-rs/src/setup_provisioning/firewall.rs#L82-L167) | 属产品策略初始化，和本次CI测试授权不同 | 不适配本片；不复制账户/防火墙策略，不给产品Reviewer豁免，不新增服务/权限依赖 |
+| OpenHands SDK `3934349da2db0433238621542173a00a8af7439c`，[基础生命周期](https://github.com/OpenHands/software-agent-sdk/blob/3934349da2db0433238621542173a00a8af7439c/openhands-sdk/openhands/sdk/workspace/base.py#L80-L153)、[LocalWorkspace](https://github.com/OpenHands/software-agent-sdk/blob/3934349da2db0433238621542173a00a8af7439c/openhands-sdk/openhands/sdk/workspace/local.py#L15-L40) | completion回调与cleanup存在先后，完成信号不等于资源恢复 | 采纳证据分账原则，暂缓通用回调/资源框架迁移。ICODE分别记录执行结束、清理尝试、恢复观察；缺最后证据不通过 |
+
+成本/兼容：仅借鉴机制和反例，无代码复制、新依赖或权限变更；固定版本许可分别为[Codex Apache-2.0](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/LICENSE)与[OpenHands SDK MIT](https://github.com/OpenHands/software-agent-sdk/blob/3934349da2db0433238621542173a00a8af7439c/LICENSE)。本工程现有DESIGN已要求intent/receipt、finally＋always、完整映射及Reviewer不变；软件核心PLAN和实际OS接线仍未完成，本条不授恢复、DENY或阶段通过。仅本次相关条目复核，不冒充20项目完整名单刷新。
+
+Windows单SID设计更新：修订DESIGN `62f1ffa9` fresh SPEC及不同QUALITY均零，关闭负控SID授权歧义I1；仅同一manifest positive SID及对应setup归属，绝不给Reviewer另加豁免。root全文核验后推进独立软件核心PLAN，系统执行/恢复/真实双平台仍未实现。继续只读核开源Agent测试资源生命周期，研究不替代同候选原生证据；当前1ce x64正控timeout仍为inconclusive，不授网络DENY。
+
+GIL候选现已发布 `1ce4c2a4896b4b56f87a08dc6fe347425a93524b`，exact7最终双审零、12项零skip及守护/索引通过，CI38669168583/provenance38669168582/Pages38669168640均push/attempt1待验；不以本机软件结果授同SHA full或全部139修复。C DESIGN已双审零但完整PLAN任务被平台安全机制拒绝且文件不存在，不换工具绕过，不减C/D/E/M0b/M1门。Windows CI临时豁免设计仅拟同一positive SID，负控额外SID歧义I1正在收紧；用户授权仍仅CI单SID＋精确恢复，尚未执行任何系统操作。
+
 GIL诊断片现已正式TDD：新旧TEST安全selector6为6失败父/28有效Assertion/零ERRORskip且独立双审零，不同SOURCE仅runner改Python线程同步dump；actualSOURCE双审零、限定9全绿，root12项及密钥/固定子仓守护通过。采纳固定CPython主源支持的同步读栈机制，无复制/新依赖/权限；保留120秒/fatal/默认发现/真实退出及25分钟外限，明确永久持GIL和blocked stderr盲区。隔离I1及退出分类/中断I2修复有独立反例历史，不作隐藏重跑。暂缓同SHA full与139整体修复信用，未改产品或native门；下一候选待整片双审/提交。
 
 2026-10-15授权更新：已获用户明确允许“仅GitHub临时runner的独立网络正控AppContainer SID临时loopback豁免＋精确移除及恢复验证”，产品Reviewer SID、本机及持久策略不改。此前待授权文字仅作历史保留。拟采纳此最小拓扑验证，不把超时或WFP零匹配授DENY；仍先设计、正负控及同候选回执，当前尚未实施。没有获得额外云资源或外部peer授权。

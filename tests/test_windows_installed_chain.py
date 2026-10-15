@@ -409,7 +409,7 @@ class InstalledProbeTests(unittest.TestCase):
     def run_probe(self, backends, identity=None, source=SHA):
         m = module()
         identity = identity or SimpleNamespace(capture=lambda: HOST, cleanup_unconfirmed=False)
-        with patch.object(m.sys, "platform", "win32"), patch.object(m.sys, "getwindowsversion", return_value=SimpleNamespace(major=10, minor=0, build=123), create=True), patch.object(m, "_installed_resources", return_value=("x64", (("helper", PureWindowsPath("C:\\a\\b\\start.exe")), ("verifier", PureWindowsPath("C:\\a\\b\\start.exe"))))), patch.object(m, "WindowsStartupHostIdentity", return_value=identity), patch.object(m, "WindowsStartupPinBackend", side_effect=backends) as factory:
+        with patch.object(m.sys, "platform", "win32"), patch.object(m.sys, "version_info", SimpleNamespace(major=3, minor=12)), patch.object(m.sys, "getwindowsversion", return_value=SimpleNamespace(major=10, minor=0, build=123), create=True), patch.object(m, "_installed_resources", return_value=("x64", (("helper", PureWindowsPath("C:\\a\\b\\start.exe")), ("verifier", PureWindowsPath("C:\\a\\b\\start.exe"))))), patch.object(m, "WindowsStartupHostIdentity", return_value=identity), patch.object(m, "WindowsStartupPinBackend", side_effect=backends) as factory:
             self.backend_factory = factory
             return m.probe(source)
 
@@ -433,6 +433,18 @@ class InstalledProbeTests(unittest.TestCase):
                 identity.assert_not_called()
                 backend.assert_not_called()
 
+    def test_only_python312_producer_can_reach_native_apis(self):
+        m = module()
+        for minor in (10, 11, 13):
+            with self.subTest(minor=minor), patch.object(m.sys, "platform", "win32"), \
+                 patch.object(m.sys, "version_info", SimpleNamespace(major=3, minor=minor)), \
+                 patch.object(m, "_installed_resources") as locator, \
+                 patch.object(m, "WindowsStartupHostIdentity") as identity:
+                with self.assertRaises(ValueError):
+                    m.probe(SHA)
+                locator.assert_not_called()
+                identity.assert_not_called()
+
     def test_identity_refusal_or_unconfirmed_prevents_opens(self):
         for unconfirmed in (False, True):
             capture = unittest.mock.Mock(side_effect=RuntimeError("PRIVATE")) if not unconfirmed else unittest.mock.Mock(return_value=HOST)
@@ -447,7 +459,7 @@ class InstalledProbeTests(unittest.TestCase):
         data = self.run_probe([ObservationBackend(security=raw), ObservationBackend(security=raw)])
         encoded = wire(data)
         self.assertEqual(module().validate_wire(encoded, SHA, "x64",
-                                              expected_python=[sys.version_info.major, sys.version_info.minor],
+                                              expected_python=[3, 12],
                                               expected_windows=[10, 0, 123]), data)
         for private in (HOST.encode(), b"987654321", b"start.exe", b"file_id", b"HANDLE", b"PRIVATE"):
             self.assertNotIn(private, encoded)
@@ -502,14 +514,14 @@ def enrich_receipt(data):
 
 def validate(value, source, arch):
     return module().validate_wire(value, source, arch,
-                                  expected_python=[3, 11], expected_windows=[10, 0, 123])
+                                  expected_python=[3, 12], expected_windows=[10, 0, 123])
 
 
 def receipt():
     node = {"index": 0, "kind": "root", "directory": True, "metadata_observed_equal": True, "descriptor_observed_equal": True, "parser_result": "supported", "policy_result": "pass", "owner": "admin", "entries": [{"allowed": True, "flags": 0, "mutation": 2, "trustee": "admin"}]}
     last = dict(copy.deepcopy(node), index=1, kind="file", directory=False)
     resources = [{"resource": r, "role": "source", "image_sha256": "b" * 64, "chain": copy.deepcopy([node, last]), "owned_handles": 2, "confirmed_closes": 2, "unconfirmed_closes": 0} for r in ("helper", "verifier")]
-    data = {"schema_version": 2, "scope": "installed_source_chain_observation", "source_sha": SHA, "architecture": "x64", "python": [3, 11], "windows": [10, 0, 123], "observation_complete": True, "source_policy_all_passed": True, "protected_observed": False, "compatibility_accepted": False, "launch_authorized": False, "resources": resources}
+    data = {"schema_version": 2, "scope": "installed_source_chain_observation", "source_sha": SHA, "architecture": "x64", "python": [3, 12], "windows": [10, 0, 123], "observation_complete": True, "source_policy_all_passed": True, "protected_observed": False, "compatibility_accepted": False, "launch_authorized": False, "resources": resources}
     return enrich_receipt(data)
 
 
@@ -568,9 +580,9 @@ class InstalledWireTests(unittest.TestCase):
         self.assertEqual(accepted, original)
         with self.assertRaises(TypeError):
             module().validate_wire(wire(original), SHA, "x64")
-        for python, windows in (([3, 12], [10, 0, 123]), ([3, 11], [10, 0, 124]),
-                                ([3, True], [10, 0, 123]), ((3, 11), [10, 0, 123]),
-                                ([3, 11], [10, 0, True]), ([3, 11], [10, 0, -1])):
+        for python, windows in (([3, 13], [10, 0, 123]), ([3, 12], [10, 0, 124]),
+                                ([3, True], [10, 0, 123]), ((3, 12), [10, 0, 123]),
+                                ([3, 12], [10, 0, True]), ([3, 12], [10, 0, -1])):
             with self.subTest(python=python, windows=windows), self.assertRaises(ValueError):
                 module().validate_wire(wire(original), SHA, "x64",
                                        expected_python=python, expected_windows=windows)
@@ -589,6 +601,15 @@ class InstalledWireTests(unittest.TestCase):
                     del entry["direct_operation_candidates"]
         with self.assertRaises(ValueError):
             validate(wire(old), SHA, "x64")
+
+    def test_matching_unsupported_python_receipts_are_rejected(self):
+        self.assertEqual(validate(wire(receipt()), SHA, "x64"), receipt())
+        for minor in (10, 11, 13):
+            data = receipt()
+            data["python"] = [3, minor]
+            with self.subTest(minor=minor), self.assertRaises(ValueError):
+                module().validate_wire(wire(data), SHA, "x64",
+                                       expected_python=[3, minor], expected_windows=[10, 0, 123])
 
     def test_byte_limit_inclusive_and_actual_large_wire_refused(self):
         m = module()
@@ -732,7 +753,9 @@ class InstalledCliTests(unittest.TestCase):
 
     def test_one_safe_json_success_after_validation(self):
         out, err = io.StringIO(), io.StringIO()
-        with patch.object(module(), "probe", return_value=receipt()), redirect_stdout(out), redirect_stderr(err):
+        with patch.object(module(), "probe", return_value=receipt()), \
+             patch.object(module().sys, "version_info", SimpleNamespace(major=3, minor=12)), \
+             redirect_stdout(out), redirect_stderr(err):
             code = module().main(["--source-sha", SHA])
         self.assertEqual(code, 0)
         self.assertEqual(out.getvalue().encode(), wire(receipt()))

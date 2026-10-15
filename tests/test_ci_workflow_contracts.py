@@ -701,13 +701,9 @@ class TestCrossPlatformWorkspaceEvidenceCi(unittest.TestCase):
       matrix:
         include:
           - os: ubuntu-latest
-            python-version: "3.11"
+            python-version: "3.12"
           - os: macos-latest
-            python-version: "3.11"
-          - os: windows-latest
-            python-version: "3.11"
-          - os: windows-11-arm
-            python-version: "3.11"
+            python-version: "3.12"
           - os: windows-latest
             python-version: "3.12"
           - os: windows-11-arm
@@ -723,7 +719,7 @@ class TestCrossPlatformWorkspaceEvidenceCi(unittest.TestCase):
         with:
           python-version: ${{ matrix.python-version }}
 """, job)
-        self.assertEqual(job.count("          - os:"), 6)
+        self.assertEqual(job.count("          - os:"), 4)
         for required in (
             "          persist-credentials: false\n          submodules: recursive\n",
             "      PYTHONPATH: src\n      PYTHONIOENCODING: utf-8\n      PYTHONUTF8: \"1\"\n",

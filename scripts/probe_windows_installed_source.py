@@ -47,7 +47,7 @@ def _text(value, choices):
 def _versions(python, windows):
     _require(type(python) is list and len(python) == 2)
     _integer(python[0], 3, 3)
-    _integer(python[1], 11, 12)
+    _integer(python[1], 12, 12)
     _require(type(windows) is list and len(windows) == 3)
     for value in windows:
         _integer(value, 0, 2**32 - 1)

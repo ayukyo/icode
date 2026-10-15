@@ -177,7 +177,7 @@ def _observe_resource(resource, path, host_sid, budget):
 def probe(source_sha):
     if sys.platform != "win32" or type(source_sha) is not str or re.fullmatch("[0-9a-f]{40}", source_sha) is None:
         raise ValueError("invalid_installed_observation_input")
-    if (sys.version_info.major, sys.version_info.minor) not in ((3, 11), (3, 12)):
+    if (sys.version_info.major, sys.version_info.minor) != (3, 12):
         raise ValueError("invalid_installed_observation_input")
     arch, resources = _installed_resources()
     identity = WindowsStartupHostIdentity()
@@ -237,7 +237,7 @@ def _runtime(value, *, python):
     _require(type(value) is list and len(value) == (2 if python else 3))
     if python:
         _exact_int(value[0], 3, 3)
-        _exact_int(value[1], 11, 12)
+        _exact_int(value[1], 12, 12)
     else:
         for component in value:
             _exact_int(component, 0, 2**32 - 1)

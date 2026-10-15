@@ -2,6 +2,20 @@
 
 更新：2026-10-15（北京时间）。已在 Windows / WSL2 接力续跑；下列历史发布及线上结果只授其实际候选证据，不作为本轮新增能力验收。
 
+Python3.12候选已完成正式TDD和实际源码独立审查：actualTEST精确8文件，严格108在旧配置为15失败父/46Assertion/0ERRORskip；root完整398538B RED SHA09a6e858892a350e5a126d2d06e4ca550cbbaa078547f58eef2d84fa2e1b267a，独立SPEC及不同QUALITY均零。不同SOURCE作者仅12批准路径，先亲证正确venv RED再改；首次误用系统3.10的117项含ERROR仅环境错误，保留不授RED。actualSOURCE独立SPEC/不同QUALITY均C0/I0/M0，独立strict108全绿；root扩大132（完整CI契约22及GIL4）0FAIL/ERRORskip，完整23991B SHA befbc0adf52e9f317776e7a93c5ddb86482faf49818f06cc0e5fa17f3c0a7ea1。root两次完整日志捕获前各有输出额度截断尝试，未当完整证据。治理/站点/密钥/pin/whitespace检查通过；CI b4e10208、provenance0be6f70a，原job/命令/权限/timeout不变、仅版本cell去重。只授既有WSL3.11软件诊断，新候选真实3.12/安装/双平台仍待线上；未改Skill或原Windows系统，未启用loopback豁免。待exact24整片审查后提交推送main，所有原R2/R3非版本门继续开放。
+
+用户随后明确确认“OK，去掉3.11”：以`2026-10-15-python312-runtime-design.md`/同名PLAN执行Agent最低>=3.12、当前hostCI/安装观察通道312的支持范围收紧。只去重复版本cell，所有原job/平台/安全门/权限/超时保留，预计主CI45/provenance3/Pages2（仍待实际展开）。当前唯一actualTEST作者先落正负控并取旧配置RED，SOURCE未改；Windows临时豁免软件核心PLAN965行/55772B/5f3f6150已完成匿名资产，仅文档，等312候选重绑定后再审/实施，不借本次版本变更启用系统写入。本机无现成312，沿既有WSL311只做软件诊断，不安装解释器，真正312证据由线上取得。Skill子仓/固定pin/历史311证据不改。
+
+1ce三run最终终态：root再次逐run API核同SHA/push/attempt1及provenance五job全部成功；结合此前完整CI50与Pages2，实际57唯一job=52成功/2Reviewer失败/3原skip，下一Agent候选等待条件解除，无取消或重跑。独立观察员已亲取四安装原log，验证器/加密负控通过，但实际来源链仍owner_untrusted拒绝、launch_authorized=false；不能把签装绿色当WP0b或R2/R3通过。Python版本讨论仅建议官方运行环境统一3.12并保留必要兼容回归，未获明确缩减验收指令，当前>=3.11合同及既有矩阵不改。
+
+1ce线上新结果：root独立核CI完整50job已终态45成功/2Reviewer失败/3原占位skip；亲取Python3.11 job116207933942原log813260字符、3377项/844.824s，3.12 job116207933943原log809718字符、3377项/874.048s，均OK/100原skip、各7次新Periodic采样、未见旧C周期头或SIGSEGV/fatal/sampler错误，后置密钥及固定子仓门成功。本次同SHA全量通过支持诊断片，但不证明所有间歇性139已消除。两Reviewer仍原78断言/正控105 IPv4超时，x64原log183274字符已由root核验，不能授DENY。provenance现五job为validate成功/四安装进行、Pages两成功；全终态前不推下一Agent候选，不授R2/R3完成。
+
+Windows CI 正控授权接续：DESIGN 收紧后为109行/20640B/SHA256 `62f1ffa91d51ea837371a392f807d7bd325cf64c0e7cb1fc277030413324606c`，root全文及第93行精确逆向核验，fresh SPEC、不同QUALITY均C0/I0/M0。原I1历史保留；负控也只使用同一manifest positive SID及其setup账本，Reviewer预有豁免仅软件/被动观察。开始按独立可交付子片编写完整PLAN，首片仅typed授权/完整映射/owned状态机软件核心，不启用系统写入；原件读取、固定系统执行、ACL/fallback及真实调用链另需完整资产与审查。尚无任何豁免系统操作或原生通过信用。当前1ce三run经root独立API仍CI/provenance进行、Pages成功；x64 Reviewer原正控超时失败保留，不授DENY。
+
+最新发布：GIL exact7 GLOBAL SPEC零审后，原最终QUALITY代理句柄不再存活且无完成回执，root未将其当通过，另取独立 `gil_candidate_quality` 最终QUALITY C0/I0/M0（targeted12零skip）。七文件索引逐字节/100644/whitespace核验后提交 `1ce4c2a4896b4b56f87a08dc6fe347425a93524b`（父b341，996增37删，提交后status空），已推main、远端API同SHA。新push/attempt1：CI38669168583、provenance38669168582、Pages38669168640，全部终态前不推下一Agent候选；同SHA full/原生仍待验，不授139整体解决或R2R3通过。
+
+后续两设计：Mac C DESIGN `1e17cec8` 已全文及独立SPEC/不同QUALITY零审，仅22实例/24身份的设计信用；完整C PLAN任务被平台安全机制拒绝，root确认目标文件不存在，未改源码/系统，不改工具绕过，C/D/E/M0b/M1继续未验。Windows CI单正控SID临时豁免DESIGN `5fd974c9` 的freshSPEC为C0/I1/M0：负控“假正控SID”必须明确同一manifest positive SID及setup自有归属，不能另建SID或原生给Reviewer加豁免；正在只修设计措辞，尚无PLAN/实际变更/原生信用。该工具限制不扩大或撤销用户已有的CI单SID授权，也不解除验收门。
+
 GIL诊断待验候选已完成actual TEST/SOURCE双审：SPEC8e197181、PLAN181c6aa3全文经fresh SPEC和不同QUALITY零审，保留隔离I1及退出/中断I2历史。root正式两TEST（new199/9164/9f6fa9fc、old206/10346/fb2a6fb6）安全selector6取得6失败父/28有效Assertion/0ERRORskip，原log23309B/d6f913af完整压缩留存；两实际TEST独立审查同样RED且零审。不同作者只落runner71/2526/cfef3f0e，亲RED后新4+旧5九方法全绿，actualSOURCE fresh SPEC/不同QUALITY均C0/I0/M0。root随后12项（九诊断＋三CI预算）0失败/错误/跳过，6.814s，完整log2216B/SHA b60281bacd892fa48c5e04bbb62e2bfb433d43ffe97be7bb7ad252ade37903bf；密钥、固定子仓及whitespace守护通过。此片仅替换诊断机制，保留默认discovery/真实退出/fatal/120秒/固定stderr/25分钟预算；Python线程无法采样永久持GIL的C扩展，blocked stderr/损坏运行时亦不保证采样。CI/产品/native/Skill pin不改；整片双审、提交及同SHA全量尚待，不授139整体解决或R2R3通过。
 
 新增明确授权（2026-10-15）：用户已允许仅在GitHub临时runner，为网络正控的独立AppContainer SID临时配置loopback豁免，并精确移除、验证恢复；产品Reviewer SID绝不加入，本机系统不改。此前“待授权”均为历史窗口。仍须先完成设计和真实正负控，SID/候选/端点/nonce/窗口/配置前后原始回执绑定；恢复失败或观察未知不能算通过。授权不是已实施或网络DENY已证，不扩为持久豁免、其它SID/安全策略、外部云资源或产品网络能力变更。

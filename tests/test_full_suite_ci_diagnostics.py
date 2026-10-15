@@ -194,7 +194,7 @@ class FullSuiteDiagnosticsTests(unittest.TestCase):
         text = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
         self.assertEqual(full_command(), NEW)
         self.assertIn("timeout-minutes: 25", text)
-        self.assertIn('python-version: ["3.11", "3.12"]', text)
+        self.assertIn('python-version: ["3.12"]', text)
         full = text.index("- name: Run the full unit test suite")
         secret = text.index("run: python scripts/preflight.py --only secrets", full)
         submodule = text.index("run: python scripts/preflight.py --only submodule", secret)

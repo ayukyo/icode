@@ -33,7 +33,7 @@ class TestFullSuiteCiBudget(unittest.TestCase):
         ])
 
     def test_matrix_and_failure_semantics_remain_required(self):
-        self.assertIn('python-version: ["3.11", "3.12"]', self.job)
+        self.assertIn('python-version: ["3.12"]', self.job)
         self.assertIn("fail-fast: false", self.job)
         self.assertIn("persist-credentials: false", self.job)
         self.assertIn("submodules: recursive", self.job)

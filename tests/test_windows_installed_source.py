@@ -15,7 +15,7 @@ from tests.test_windows_startup_native import Function
 
 
 SHA = 'a' * 40
-PYTHON = [3, 11]
+PYTHON = [3, 12]
 WINDOWS = [10, 0, 26100]
 PROBE = Path(__file__).resolve().parents[1] / 'scripts/probe_windows_installed_source.py'
 
@@ -90,7 +90,7 @@ class SourceReceiptTests(unittest.TestCase):
     def test_exact_keys_types_versions_and_authority(self):
         data = receipt()
         changes = [('schema_version', True), ('scope', 'other'), ('source_sha', 'b' * 40),
-                   ('architecture', 'arm64'), ('python', [3, 12]), ('windows', [10, 0, 26200]),
+                   ('architecture', 'arm64'), ('python', [3, 13]), ('windows', [10, 0, 26200]),
                    ('observation_complete', 1), ('reverse_close_confirmed', False),
                    ('compatibility_accepted', True), ('launch_authorized', True),
                    ('protected_observed', True), ('security_reads', True), ('allocations', 0),
@@ -162,12 +162,21 @@ class SourceReceiptTests(unittest.TestCase):
         except ValueError:
             self.fail('valid CRLF receipt was rejected')
         self.assertEqual(result, receipt())
-        for expected in (None, (3, 11), [3, True], [3, 10]):
+        for expected in (None, (3, 12), [3, True], [3, 10], [3, 11], [3, 13]):
             with self.assertRaises(ValueError):
                 self.m.validate_wire(valid, SHA, 'x64', expected_python=expected, expected_windows=WINDOWS)
         for expected in (None, (10, 0, 26100), [True, 0, 26100], [10, -1, 26100]):
             with self.assertRaises(ValueError):
                 self.m.validate_wire(valid, SHA, 'x64', expected_python=PYTHON, expected_windows=expected)
+
+    def test_matching_unsupported_python_receipts_are_rejected(self):
+        self.assertEqual(self.accepted(receipt()), receipt())
+        for minor in (10, 11, 13):
+            data = receipt()
+            data['python'] = [3, minor]
+            with self.subTest(minor=minor), self.assertRaises(ValueError):
+                self.m.validate_wire(wire(data), SHA, 'x64',
+                                     expected_python=[3, minor], expected_windows=WINDOWS)
 
     def test_maximum_counts_ready_and_rejected_terminal(self):
         data = receipt(False, 32)
@@ -276,7 +285,7 @@ class ConsumerFixture:
         stack = ExitStack()
         m = self.module
         stack.enter_context(patch.object(m.sys, 'platform', 'win32'))
-        stack.enter_context(patch.object(m.sys, 'version_info', SimpleNamespace(major=3, minor=11)))
+        stack.enter_context(patch.object(m.sys, 'version_info', SimpleNamespace(major=3, minor=12)))
         stack.enter_context(patch.object(m.sys, 'getwindowsversion', create=True,
                                         return_value=SimpleNamespace(major=10, minor=0, build=26100)))
         stack.enter_context(patch.object(m.sysconfig, 'get_platform', return_value='win-amd64'))
@@ -325,6 +334,18 @@ class SourceConsumerObservationTests(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             self.m.probe(value)
             entry.assert_not_called()
+
+    def test_unsupported_python_producer_stops_before_consumers(self):
+        fixture = ConsumerFixture(self.m)
+        for minor in (10, 11, 13):
+            with self.subTest(minor=minor), fixture.environment(), \
+                 patch.object(self.m.sys, 'version_info', SimpleNamespace(major=3, minor=minor)), \
+                 patch.object(self.m.source, 'pin_installed_startup_sources') as entry, \
+                 patch.object(self.m, '_observe_consumer') as observe:
+                with self.assertRaises(ValueError):
+                    self.m.probe(SHA)
+                entry.assert_not_called()
+                observe.assert_not_called()
 
     def test_observed_native_faults_restore_bindings_and_preserve_interrupts(self):
         for kind in (RuntimeError, KeyboardInterrupt, SystemExit):

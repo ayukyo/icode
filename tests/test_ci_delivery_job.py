@@ -23,7 +23,7 @@ class TestCiDeliveryJob(unittest.TestCase):
         self.assertNotIn("continue-on-error:", job)
         self.assertNotIn("if:", job)
         self.assertIn("submodules: recursive", job)
-        self.assertIn('python-version: ["3.11", "3.12"]', job)
+        self.assertIn('python-version: ["3.12"]', job)
 
     def test_posix_native_lifecycle_runs_broker_resource_cleanup(self) -> None:
         workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text(

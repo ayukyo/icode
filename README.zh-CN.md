@@ -7,7 +7,7 @@
 [![CI](https://github.com/ayukyo/icode/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ayukyo/icode/actions/workflows/ci.yml)
 [![Pages](https://github.com/ayukyo/icode/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/ayukyo/icode/actions/workflows/pages.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-blue.svg)](pyproject.toml)
+[![Python](https://img.shields.io/badge/Python-3.12-blue.svg)](pyproject.toml)
 
 **用工单管理软件研发，让 AI 处理需求、修改代码和执行检查。**
 
@@ -53,7 +53,7 @@
 
 ## 快速开始
 
-运行安装包需要 Python 3.11+。固定版本的核心工作流资源随包携带，无需另装 ICODE-SKILL 或配置其路径；离线检查不需要模型密钥。
+运行安装包需要 Python 3.12+。固定版本的核心工作流资源随包携带，无需另装 ICODE-SKILL 或配置其路径；离线检查不需要模型密钥。
 
 下面是开发者源码安装示例，需要 Git 和已初始化的子模块；Linux 源码构建还需要 C 编译器。它不代表用户安装 wheel 时也需要这些开发工具。
 

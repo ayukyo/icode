@@ -29,7 +29,7 @@ if(ICODE_BUILD_WINDOWS_BOOTSTRAP)
      NOT EXISTS "${ICODE_WINDOWS_PROVENANCE_VERIFIER}")
     message(FATAL_ERROR "Bootstrap requires an explicit existing Go verifier")
   endif()
-  find_package(Python3 3.11 REQUIRED COMPONENTS Interpreter)
+  find_package(Python3 3.12 REQUIRED COMPONENTS Interpreter)
   set(ICODE_BINDING_HEADER "${CMAKE_CURRENT_BINARY_DIR}/icode_windows_verifier_binding.h")
   # A phony target runs on every build, including unchanged size/mtime inputs.
   # Nonzero generation blocks compilation and signing even with an old EXE.

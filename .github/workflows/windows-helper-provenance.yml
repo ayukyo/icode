@@ -31,7 +31,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.11"
+          python-version: "3.12"
       - name: Install the declared build backend for package tests
         run: python -m pip install "setuptools>=80"
       - name: Set up build-only Go toolchain
@@ -68,14 +68,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            cmake-architecture: x64
-            helper-architecture: x64
-            python-version: "3.11"
-          - os: windows-11-arm
-            cmake-architecture: ARM64
-            helper-architecture: arm64
-            python-version: "3.11"
           - os: windows-latest
             cmake-architecture: x64
             helper-architecture: x64
