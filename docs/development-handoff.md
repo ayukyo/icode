@@ -2,6 +2,177 @@
 
 更新：2026-10-15（北京时间）。已在 Windows / WSL2 接力续跑；下列历史发布及线上结果只授其实际候选证据，不作为本轮新增能力验收。
 
+## 最新跨仓库授权边界（2026-10-15 用户确认）
+
+后续清理已完成（用户明确要求提交推送后移除临时工作区）：root 4c421a/dc4477重新逐文件核44项，37与远端相同、7与已上游祖先相同，无独有代码；额外忽略项只有两份设计记录和缓存。两份记录先逐字节哈希核对备份至系统临时目录 `icode-skill-hardening-records-20261015`，再通过 `git worktree remove --force` 精确移除 `generic-skill-hardening`；960bd3验证目录不存在、worktree登记无该条目。没有删除主仓库、其它工作区或当前五个R2 TEST；下方“未删除”只描述清理前历史状态。
+
+用户要求后续每批 ICODE-SKILL 修改须先取得明确同意，获批后由本助手完成验证、提交和推送；普通自动续跑不构成新授权。该要求已写入本工程 AGENTS，且已移除其中机器专属绝对路径。下一批受保护 Git 传播 SOURCE/TEST/CI 的授权问题已向用户提出，尚未收到明确答复；不得继续修改 Skill。当前已落五个 R2 TEST 是此前授权下的实际TEST-only批，全部保留，未提交，源码及CI仍原字节、index空；actualTEST SPEC/不同QUALITY均零审及root核心4方法10Assertion RED不等于下一批SOURCE授权。Agent自身Windows DOC修订可继续。
+
+用户另授权收尾旧generic-skill-hardening工作区。root与独立审计者读取44个相关文件：37与远端相同，另7全文与已提交 `b9696c6f49b4b09cf136bd9ce6c804576a23ae2a` 一致（仅换行归一）；该提交是远端 `cd9889f2ae4cb1090963338ad72412f526342ea5` 的祖先（5f8ea4），7处差异均上游后续改进，没有旧独有hunk。不得回推旧版本撤销provider、UTF-8及路径/时钟测试修复。root9138d0对明确远端SHA执行main推送确认，exit0/Everything up-to-date，随后ls-remote仍cd9889；无新增或空提交。旧工作区未删除或清理，不冒称干净，也未混入当前五个R2 TEST。未来Skill SOURCE仍须上述新批授权。
+
+## 当前管理员组件跨层审计（2026-10-15，审查中）
+
+本批actualSOURCE双审已C0/I0/M0：SPEC独立真实152P（c7fa11→9929f1），不同QUALITY独立真实152P（9ffed7→def5ed），二者均既有3.11.17，非native。root f02950另跑原policy模块20P、零错误/跳过；dd975d核20个实际变更文件常见凭据模式零命中、固定vendor checkout与gitlink均21566且干净，两SPEC补扫描亦零命中。准备以待验收候选提交main触发线上；不称阶段完成。WSL原配置ls-remote读操作未返回，root6462d4中断该自有诊断会话；Windows Git从同一WSL原生仓库用HTTPS核远端main仍619ed777（f2fa93）。允许使用这一Git传输通道，不迁回Windows旧工作树、不改远端URL或仓库内容来绕过验收。
+
+实际SOURCE已落地（actualTEST SPEC及不同QUALITY先零审）：不同作者apply_patch新增7Python+C，唯一旧CMake只追加冻结内容，未改8真实TEST。root8fa67b核8新增逐字节等SOURCE0aa81围栏、CMake整体0956a4且EOF追加一致；初次969139把CMake误当第9个Asset标题而count断言失败，是root验证脚本分类错误，纠正后全通过，不计产品失败。
+
+root642509/761aed独立运行八个实际模块：152P、零失败/错误/跳过、exit0，明确既有3.11.17，12.152s；内存runner日志31166B SHA `488a201fde61d564d340bb07bcbdcd20d6f175b1a3dc3d892243da9716af5cd5`，汇总保存 `windows-actual-root-152-green-summary`，预期非法argv的两条usage在runner流外，不当测试ERROR。作者实际CLI完整合并输出31757B SHA `d2dd0aae9d552394a17797e1de1b600287ff5faed62265d104dbde4de18ea6ee`，同152P、exit0。actualSOURCE SPEC已开始；其后不同QUALITY、针对性保护/密钥检查与候选main推送，当前尚未提交或线上运行此批。软件GREEN不授目标3.12/SDK编译/双Windows原生/consumer接线或R2R3通过，Skill及CI仍未动。
+
+实际TEST-only独立SPEC现已C0/I0/M0（75c060亦独立复现152预期缺组件setUp Assertion／零ERROR/skip／exit1）；不同实际TEST QUALITY正在回审，SOURCE仍只读准备。独立SOURCE作者已核八个新增目标不存在、九资产可精确落，唯一旧CMake before `6b7049f6cebc4a689efa47519dbdecd86686fd072a9d53fbce94d235699ffa31`，只EOF追加冻结18行及一个空行，计划after `0956a4d69338c37bafea1a442f0898ff766e3d9d1c2be19818ffc3b152a8f2ce`；未获提前写授权。
+
+已进入实际TEST-only：最终152版DOC的SPEC及不同QUALITY均C0/I0/M0后，不同TEST作者通过apply_patch新增八个真实测试文件。root b50193逐文件核字节等于最终TEST8d473围栏、AST与13/7/15/16/17/16/58/10共152方法；无SOURCEstub。作者实际CLI152个setUp Assertion FAIL、零ERROR/skip、exit1，完整131359B原输出SHA `ad217b6f4643a4349b0460236f84ca2afb377ddd07598a2a30ae932da7df011e`。root6c5d70另独立直接加载八个实际模块（无RAM投影）复现152/152预期缺组件setUp Assertion、零ERROR/skip、exit1；其内存runner原131359B SHA `57e4f578134a77e1cc3b1b1c073346ef4c3ed551b0639e418e457e265090eb10`，耗时等日志不同不冒同原件。仍明确既有3.11.17，仅实际软件RED，不授3.12或Windows/native。actualTEST SPEC已启动，之后不同QUALITY；actualSOURCE作者只读准备，尚无写授权。Skill及CI不变。
+
+最终152版已冻结：SOURCE `0aa81aa5cb216fcb0edc76a75a6edb4e42435dceb7491b2da68b251d36cdffcc`，TEST `8d473397fcd5fec57586c0287575d6e905135d9e592859b03eb595eb3ebc836f`；root bf20f5再次实读哈希、15Python AST及152方法。root仅纠正TEST三处历史/当前计数metadata，CODE与最终RED→GREEN围栏不变。同根SPEC回审已C0/I0/M0；不同QUALITY回审进行中，尚不放行真实TEST-only，作者仅只读准备目标路径及命令。实际源码、CI、Skill固定版本均未变化。
+
+attach同根修订最新结果：独立TEST作者最终e29884在原SOURCE26dfbd／TEST `7cdac7a19acb967dd9334359c747697c6b580bbf05270d64b51e9d98a704d1bd` 实测完整152方法11Assertion失败、零ERROR/skip、exit1；其中实际成员正控及transfer归Store正控通过，八个未认证stage、未入组、多失败及已退出分支暴露原缺陷。不同SOURCE作者随后仅修改Native.attach_parent围栏，新增本地authenticated/transfer状态，先核存活/token/有效64位creation，补偿依据精确held process实际退出/Job归属，未认证只释放，转交后由Store/上层负责；没有新协议、权限或依赖。
+
+修后root bfeee6/1f7dd6独立完整152P、零失败/错误/跳过、exit0，11.221s，SOURCE `c35d140264186a3a1d47ece71a49c6cf86484fe56f1ab4e6d028995be8bede86`／TEST `3c0bd0d314d5b5de896851f5150a27f076370985f5a3fed80da34eae3e16f890`，完整日志 `windows-root-152-green-raw`；后者仅metadata变动，TEST围栏同最终7cdac7 RED。Native围栏SHA `d4761232e46876996d077bcab796e96935bcb40395618c19bb171c9e30e81012`，其它8SOURCE围栏未变。明确既有3.11.17，仅DOC RAM，不授正式TDD、3.12或Windows native；当前metadata收尾及同根SPEC/不同QUALITY回审未完成，尚不实施实际TEST/SOURCE，Skill未动。
+
+不同QUALITY新增真实阻断（26dfbd/71079，尚未正式实施）：`Native.attach_parent`在Job创建成功但Assign失败时，只终止空Job、等Job空、等待父进程，没有终止尚未入组的挂起父进程。独立TEST作者只读确认对应fixture的terminate无视Job成员而直接把父进程设为dead，遮蔽此路径；公共Boundary的按成员终止模型才符合语义。因此旧146P不能授此回收路径信用，实际TEST-only放行暂停。root a63d6b实际sequential-thinking三步固定先用真实成员语义取DOC语义RED，再由不同SOURCE作者补偿；同时核未认证PID不因获取句柄获得终止authority，原异常与cleanup unknown独立保留。不降低整树回收或原生验收要求，Skill未动。
+
+该QUALITY已正式C0/I1/M0，独立971cb3和root a1c289分别执行原冻结Native方法的纯RAM诊断。root实见foreign token验证失败后仍被TerminateProcess、alive=False；合法父在Assign抛错后只Terminate空Job、alive=True，持有两个句柄均关闭且原异常附attach_reap note。它们证明软件算法双面缺口，不是Windows native结果，也不是正式测试RED。独立DOC TEST作者已获仅该owner真实成员/认证/transfer边界修订授权，必须先在26dfbd取语义RED；不同SOURCE作者当前仅只读准备，未获提前修改权限。
+
+后续ROOT1d5b79独立测试RED：原SOURCE26dfbd／修正TEST `4fff14efd39185c51133b29b4af67ae832d843ad150ed4b06fecb4681f62e1ed`，5方法7Assertion失败、0ERROR/skip、exit1，0.023s，完整日志 `windows-root-attach-red`；含五个未认证stage误终止、认证未入组残留及多失败未尝试直接终止，已入组真实成员正控通过。该DOC因果成立，但作者仍需完成membership故障仅首次、Assign失败已退出及transfer边界的最终TEST。root已批准不同SOURCE作者在最终TEST RED后，仅修本地authenticated/transfer状态及真实退出/Job成员补偿；未获认证只释放句柄，认证后既有时间/身份合同不变，所有等待/close独立尝试、未知不当回收。未授权落实际实现。
+
+当前最终冻结（覆盖以下历史快照的“当前”措辞）：主PLAN `26dfbd2748e47a193bb8bd4b9eb4c9703c0d9d087200848ae8eabb7b1739ed40`，TEST PLAN `71079ebdfec0754498f0476b3444dc2ba42e9cdf4750fb9549fcf8e9042d6684`，两作者STOP；b06fa8 root实读核绑定及两CI原字节未变。fresh完整SPEC已C0/I0/M0，审全部9SOURCE/8TEST、15Python AST、146方法及资产索引；不同fresh QUALITY已启动，尚未放行实际TEST/SOURCE。正式TEST-only RED仍须随后在真实文件执行，DOC RAM不能替代。
+
+最新全 owner 修订进展：DOC SOURCE 的七个 Python 资产使用既有 Win32 模块内窄私有 `_release_owned`，独立尝试各已拥有资源的释放，保留 body 原异常，并以 `cleanup_unknown` notes 记录释放失败；未新增权限、依赖或账本字段。作者505e3e先得146P；三处立即LocalFree失败notes收尾后，root e2a885/2452a1独立复跑全部146方法、零失败/错误/跳过、exit0，11.204s（读取时主DOC `10e1bedb316bc84b22f6705dc393791bbd1ed2be3265916464da1a059f640ba2`、TEST DOC `3d4e199674e6c15335a5f212163e8bf4a3e25cf9b7bd04536fc1b6b8940d0e42`，原输出保存 `windows-root-146-final-raw`）。明确既有3.11.17，仅DOC RAM诊断，非目标3.12、Windows原生或正式TDD信用。fresh SPEC已启动；最终冻结及不同QUALITY尚未通过，不能据此放行实现。
+
+回归期间纠正的fixture问题必须保留：新增独立wait路径暴露固定monotonic不能推进，已改为有限递进；entry的sys facade补真实exception委托；unittest.assertRaises会清空异常traceback，因此改用底API实际进入标记，不拿空traceback证明未进入body。原949与后续修正TEST未按同字节完整重跑，不能追认最终146的精确原RED；既有root实际Store两方法10Assertion RED仍仅授其原快照信用。ctypes DLL引用按固定管理员进程生命周期处理，不用丢引用或盲FreeLibrary冒充释放；实际进程退出/reap仍需原生证明。Skill继续冻结，未获下一批跨仓库授权。
+
+**最新审查停点（覆盖下方历史进行时）：** 管理员主 PLAN 已冻结为 `f68bdea3aad642db88d6f01ba6c90fb1a898f81105de2c7c6a5bfb83c1a2006e`，TEST PLAN 原冻结为 `821d9afa74011d42f8a3adf2ecaab9773f9ee843059c297727a3515412b4805d`。root 用明确的既有 WSL3.11.17 对完整 Python 资产独立 RAM 预演110项通过、零失败/错误/跳过；这不是正式 TDD、3.12 或 Windows 原生证据。fresh SPEC 随后发现实际调用链缺口，故不可按此通过结果放行实现。
+
+本轮实际 sequential-thinking MCP 三步（4a7a91）固定修复边界：区分可信既有祖先与禁止覆盖的既有叶，完整保留句柄和异常清理；重复恢复必须维持持久账本不变量且重新观察完整映射，不以无观察早退冒充精确恢复。新增 Store 三项回归后 TEST DOC 为 `51a0f0b05d07b00f7127d37c15afc8ad4cbcc91d2d329041fc3fb76e49d15ea1`；作者指定3.11.17实测 Store13项12通过/1语义Assertion失败/0错误/0跳过，原SOURCE未改，总资产113方法，不能继承旧110项通过信用。
+
+管理员完整 fresh SPEC 已返回 C0/I5/M0，不通过，绑定上述 f68 SOURCE、821d原TEST及51a新增Store增量。五项为：嵌套目录创建必失败；成功后always重复恢复破坏cleaned/exact账本不变量；`create_job` 描述符LocalFree失败取消return而遗失Job（`Win32.open_file`同结构须核）；`serve`等待外围异常未持久保存首错，清理收据反而精确成功；`ledger`接受owned_intent但baseline含预有positive SID的矛盾状态。reviewer已用真实算法复现，仍仅软件、不授实际Windows删除或恢复。共享System32 loader的PE/version/hash字段另须按根合同核齐。已交不同DOC SOURCE/TEST作者分别修订及补负控；不得只修前两项、绕账本、放宽祖先或通过删测试折绿。全部修订须重新冻结、双审、正式TDD及线上验收，现无实际管理员SOURCE/TEST实施。
+
+root 后续独立完整 RAM（7baafb）绑定 f68 SOURCE / TEST `29749020c2325ae67524020dd9f5a3046de43467dfe05f8cbccb444281a14422`：明确既有 Python3.11.17，121方法，14 Assertion失败（含subtest）、0ERROR、0skip、实际exit1；组件方法数12/7/12/14/13/14/40/9。失败覆盖嵌套目录、两处LocalFree丢句柄、serve四个外围边界、baseline/after_add跨字段，以及真实第一次cleanup成功产物→独立第二cleanup；后者不再仅用手工cleaned态。真实系统句柄/配置仍由底层模型替代，故只是有效缺陷回归，不是正式落盘TDD或Windows验收。root已亲读两处句柄return/finally代码（b59513），并核主PLAN3090确实要求每个共享System32 image的PE/version/hash，不能删要求规避loader缺项。
+
+首批 DOC 修订已有独立定点验证：root2c7c0f 绑定 SOURCE `b5e441f77c611da5abf63c68546c0ecdc0a190405b9ef2db82867cdf35cf6e71` / TEST `d9f04d3e7c646d01dddbd3f7a3cec75d331d81a8fd54a8c5e42e45c1019264cb`，Win32原12＋Job原14共26方法通过、0失败/错误/跳过、exit0，明确既有3.11.17。真实算法在LocalFree成功后才转移handle，finally关闭尚未转移的file/Job；root已亲读（5d4e94）。这是同一失败回归的DOC软件修复证据，不是全121通过、正式TDD或原生证明。原f68失败不删除；I5/共享OSimage及完整资产仍在修订。官方 [LocalFree](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-localfree) 的NULL成功/非NULL失败和 [CloseHandle](https://learn.microsoft.com/en-us/windows/win32/api/handleapi/nf-handleapi-closehandle) 的独立资源语义已核，不以关闭process handle冒充终止进程。
+
+后续 root a84821 在相同b5e441/d9f04快照独立Admin14P/0失败错误跳过，包含四个外围异常subtest。TEST作者在e6b051 SOURCE / 25c0cd TEST报告122P，但完整日志补跑前SOURCE已更新为 `d65a95ac1a6356f3417cbba2e26bbc5d31bba241db8212b180f76a99e91be953` 的OSimage新schema。root e1ac86实际读取d65/25c0cd：122方法0Assertion失败/22ERROR/0skip/exit1，输出预算截断；这些是尚未同步的admission_record_schema夹具错误，不是有效SOURCE RED，也不授完整日志或GREEN。两作者已协调新合法producer fixture，待明确冻结后再独立复跑，不继承旧schema通过信用。主CODE仍仅DOC资产，实际源码与CI未实施。
+
+一致版本随后由root严格assert SHA独立全跑（f4aeeb）：d65 SOURCE / TEST `534c0080a2461d8b5ee5754e44676348340ded1ddac66f16964992a518a25c73`，明确既有3.11.17，123方法全部通过、0失败/错误/跳过、exit0，完整原log未截断并保存在本会话`admin-root-123-raw`。仍是DOC RAM，不授正式TDD/原生。之后root955d37审查发现系统image可用nullable字段降格为private，作者只读确认；新增独立TEST保留原123，总124。root0d494c在原d65 / TEST `b3ce623190278ce4d5e6f9f03c714db5d32050cacec8a43abc936402351a1497` 实跑该方法：admission与verify_store两Assertion失败、0错误/跳过、exit1；同System32/kernel32.dll单link模型先完整proof成功，再清proof并损坏MZ仍被接受。root另eceab0独立复现parser降格。已授权DOC SOURCE最小修复为实际路径＋冻结批准集合绑定角色，不能由file_info是否None自授角色，不删旧失败或放宽来源门。此缺口闭合前不解冻正式实施。
+
+本片最终冻结：主PLAN `a8d439041767efd04b34caa3eff91664d2900912966fdca3b6688e685185060f`（205907B/3317LF），TEST PLAN `9f770761142819d2fb5935b694e4bea7858c9070bd5e547744ff7192939c8915`（196560B/2956LF），两作者已STOP。root64c308逐围栏核9SOURCE＋8TEST；rootbdfc90独立完整124P/0失败错误跳过/exit0（12/7/12/14/13/14/43/9），明确既有3.11.17，仅DOC RAM；读取时主DOC4aae/TESTa8a1，最终仅metadata变化，代码保持，Native SHA `1199917522bb3a7b5ebb0ccb27e473bbdd8ef7268ba5c9450fb822ce6c6e5879`。原log未截断并保存`admin-root-124-raw`。fresh独立Windows SPEC已启动，未授正式实施、native或阶段通过。
+
+Git消费者修订PLAN也已STOP：`1ff4cfc8cad25546e5135f1e0a9a564cfe7caf0350492d94d9b80b6dabd62dae`，13文件完整资产，rootdb4a1c三diff只读精确可应用且无whitespace错误；fresh SPEC正在核。原contract预检实际会fetch及clone merge模拟，超出只读CandidateRead：本片只授C3 source-consumer软件信用，无contract的合法sourcecheck须通过，有contract明确pending且不得rawfallback；完整host-preflight仍是全C3必要未完成项，第6节保留原目标门与后续负控，不以阶段拆分取消要求。worker20实际新进程尚未运行。AGENTS已按用户要求仅移除机器绝对路径并加本地环境不进协作规范约束，两工作区相应文档修改尚未提交；原Windows其它既有变更保留。
+
+Git后续SPEC发现公开build_report在required但tracking缺失/disabled时仍可pass；作者原CODE新增语义RED后仅guard两行修订，通用CP guard未改。新最终PLAN `128ea190198f6e9756b7c56214003d6a32abfb1080fe11e8d792e7650104f0b4`（214422B；实际splitlines3628）已STOP；同轮SPEC回审C0/I0/M0，已交不同fresh QUALITY。root7d891a独立13diff逐hunk内存投影并核全部afterhash，真实canonical调用链的新方法（missing/disabled负控与enabled/None精确兼容）1P/0失败错误跳过/exit0，明确既有3.11.17；SourceFileLoader仅对投影字节compile，无实际SOURCE/TEST写，之后Skill status空（03ff73）。不把该方法成功扩大成本版80整跑或worker20；原79仍历史信用。
+
+Windows最终a8d/9f77的fresh完整SPEC另报C0/I1/M0：effective_access、verify_security、_canaries顺序finally在首释放失败后跳过其余拥有资源并可能覆盖body首因。原124未覆盖此边界；rootf5c8ae亲读确认，reviewer已有底API软件复现。已交独立TEST原资产先取语义RED，再由不同DOC SOURCE作者三方法局部attempt-all修订；body原异常对象/args保留，cleanup_unknown以既有异常notes另记，body正常但cleanup失败不得成功。不新建通用框架或账本字段，实际源码仍未实施。该I闭合前不进入Windows QUALITY。
+
+后续该三方法修订已由root13c954独立127P（SOURCE b046f25/TEST981a325，明确既有3.11.17），最终主PLAN `949e38c22b613d7011525dcb737ffb863cbfdc87fddcc5386cd94e7d0902ce0e` / TEST `4af43d910c04c3031de5953340014112e84d902891e988942d1337b9264cfc0a`，仅metadata晚变、围栏相同。同SPEC回审C0/I0/M0，但不同QUALITY全文审后仍C0/I1/M0：其它owner的多资源finally会漏后续释放，或释放异常覆盖body。完整同根清单涉及Store.create/copytree、Native.copy/source_tree/attach_parent/verify_parent/stop_parent/reap、run_fixed及单资源finally首因传播；Admin.serve Python顶层会被cleanup覆盖，但持久first_error正确，不谎称账本首因丢失。已要求不同DOC TEST/SOURCE作者一次按全部owner修订，保留127和已有RED，不再只修三个方法折绿；实际Windows源码仍未落。
+
+Git已正式进入TEST-only：五TEST实际通过apply_patch落独立Skill，root8dfd49核全部afterhash，八SOURCE/CI仍before或null、index空。root220535独立实际核心4方法=10Assertion失败/0ERROR/0skip、真实exit1（deepcheck/audit与公开linter6缺上下文＋2missing/disabled），原log保存`git-actual-root-core-red-raw`。作者逐套business15有10FAIL、closure21有26失败记录、derived9有4FAIL/2ERROR、原CODE23有1FAIL；worker仅loader1ERROR，20方法未观测，不将ERROR或诊断循环exit0当语义RED。actualTEST独立SPEC已C0/I0/M0并复现同4/10；不同actualTEST QUALITY进行中，尚未授权differentSOURCE。PLAN仍128ea，实际Skill HEAD仍cd9889，Agent pin不变。
+
+root 已独立复现（bb71bd）：抽取原样 `Store.create_directory`，仅替换底层 Win32 创建为临时目录 mkdir，顺序调用 `trusted`、`trusted/scripts`，第二次因已有祖先抛 `directory_exists`；真实 `Native.freeze` 正是此顺序。现有测试未覆盖真实嵌套消费者。独立 TEST 作者正在补回归，保留拒绝不可信祖先和既有叶目录的安全要求；未修改实际 SOURCE/TEST，也未调用 Windows API。另有成功账本重复 cleanup 的状态一致性问题由 SPEC reviewer 复现，待 root 核验及完整报告，不提前称已修复。
+
+并行 C1b/C3 完整计划已冻结：`docs/nbl/plans/2026-10-15-protected-git-business-consumers.md`，SHA256 `602cd1e9369ec11857b6bfded46c27f44c8ff03d77f34b586563f06f5d397054`。root 对其三组 literal TEST/CODE/CI diff 在干净 Skill `cd9889f2ae4cb1090963338ad72412f526342ea5` 上分别执行只读 `git apply --check`，均退出0（af71d6）；CODE diff 有末尾空白行警告，尚待清理。fresh 独立 SPEC 审查已启动，实际 Skill 文件、Agent pin 与 CI 未改。其软件 IPC 不授 C2 原生、整链 pin 或 R2/R3 完成信用。
+
+该 Git PLAN 后续 fresh SPEC 结论为 C0/I3/M0，不通过：W02 `cmd_submit_check` 的 inventory/review/verification 未传播；C3 原合同要求的主动 crosscheck start/read/validate/resume、snapshot/worklist/compare 被漏掉，不能把范围缩成已有容器 freshness；新增 linter `build_report` 在不含 delivery gate 时不校验 required context。reviewer投影复现 readme+required=True+无API/provider仍 blocked0/passTrue（afd1d7）；不代表有前后guard的 fixed worker 已被绕过。root亲读原提交/交叉检查源码（d7ef50）及完整 linter literal diff（081fb2），确认漏接位置，已退回原DOC作者补齐全部原范围与成对测试，修订后重新冻结审查。正式 SOURCE、TEST、CI 和 pin 均未实施。
+
+**诊断环境更正（本节各独立作者RAM历史适用）：** 独立TEST作者从traceback确认此前DOC RAM harness实际调用WSL默认Python3.10，并非既有3.11；C1b DOC作者早期RAM23也是默认3.10。原结果/失败不删除，但只授该真实解释器上的算法观察，不能称3.11、3.12、正式TDD或产品支持。root自己明确调用`/home/orbbec/icode-r2r3-env.DL2JQJ/bin/python`的23项Skill回归、context复现和布局诊断仍为真实3.11.17，不被此更正混写。两作者后续均已要求固定该既有解释器、先打印executable/version、绑定完整DOChash及真实总退出；不得为省事新装解释器。正式产品要求>=3.12和线上实际3.12验收不变。
+
+**619全部线上终态，覆盖本节之后的在途描述。** root逐run API亲核CI38682951338、provenance38682951358、Pages38682951556均同619ed7771d9741eab11cb8a333965521d0c8d228/push/attempt1/completed；独立观察者已读47个执行原log，另3条件skip无执行log。合50项45成功/2Reviewer失败/3skip；CI45项40成功/2失败/3skip、provenance三成功、Pages两成功。root又亲取ARM sign116255327593完整133741字符，实际71项/5.738秒＋9项/0.195秒通过，仍compatibility/launch/protected=false；双签名不授WP0b。下一候选等待条件解除，没有取消或重跑掩盖失败。仍须完整admin资产、独立双审和正式TDD后才能推新实现，当前仅接力文档有普通tracked改动。
+
+后续终态更新：619的full job116251346007已成功；root亲取完整原日志822708字符，`Ran 3442 tests in 818.607s / OK (skipped=100)`，新增purecore20项逐项ok。CI现45项全终态40成功/2Reviewer失败/3原skip；provenance validate116251345489仍待终态，全部工作流终态门尚未解除。上述100项skip不授通过，full成功不关闭真实网络或R2/R3缺口。
+
+本节覆盖旧进行时描述，不授实施或原生验收信用。root 本轮亲查 `619ed7771d9741eab11cb8a333965521d0c8d228` 三组 jobs：CI 38682951338 为39成功、2失败、3跳过、1运行；full 116251346007 仍在完整测试步骤。provenance 38682951358 的 validate 116251345489 仍运行；Pages 38682951556 两项成功。继续观察同一 handles，不取消、重启或提前推下一候选。
+
+### boundary / contract_matrix
+
+### 恢复生命周期审计（scope / state_inventory）
+
+采用 `state-lifecycle-replay-audit` 核管理员单次 session：入口为冻结/授权准备，终态为完整配置精确恢复或明确 unknown；SID、session、命令序号及不可重置时钟域限定轮次。持久边界为受保护账本与命令记录，外部副作用为 owned positive SID 临时豁免和受控进程；不能用下一轮业务请求代替本轮收敛。这里尚未执行 Windows 原生副作用，也不涉及硬件故障注入。
+
+| state_inventory | 生命周期/所有者 | 写入/读取/恢复 | 不变量 |
+| --- | --- | --- | --- |
+| phase、first_error、exact_restoration、operation_completed_ms | 单 session，管理员协调器 | Admin 写；Native ledger 校验；always 从持久账本恢复 | exact 只能关联合法成功时钟和 cleaned；首错不得因重试丢失 |
+| baseline、observations、owned_intent | 单 session，管理员协调器 | 完整 Get 观察后落账；cleanup 重读 | 预有目标不接管；未知账本不猜删除权；外来条目不覆盖 |
+| Job、PID/creation、resume 状态与句柄 | 单命令，创建方即时拥有 | 固定启动器写账；恢复方核身份并回收 | 先持久记录再 Resume；实际回收后才判无晚到 add |
+
+| transition_matrix：from→event→to | 轮次/副作用与补偿 | 证据/状态 |
+| --- | --- | --- |
+| ready→正常cleanup→cleaned | 同 session/完整 Get；owned 删除后重新 Get | 原资产软件通过不能证明真实 Windows；unobserved |
+| cleaned→独立always→cleaned 或 unknown | 原时钟不重置；重新观察；无必要时不再变更配置 | root6a702a复现账本不变量失败；fail |
+| 任意阶段→外围异常→有首错的恢复状态 | 保留原错，再回收命令/父进程并核完整映射 | fresh SPEC 发现首错遗漏；fail |
+
+| replay_matrix | 初态/刺激 | 预期与观察 | 清理/判定 |
+| --- | --- | --- | --- |
+| immediate | cleaned/exact 后再次进入 cleanup | 下一次 full_get 前保持合法持久状态；原资产失败 | 仅软件夹具；fail |
+| converged | 命令退出但可能有后代或晚到 add | 不发新业务请求，实际 Job 清空后再观察 | 原生未执行；unobserved |
+| restart | 成功账本后新管理员进程 reopen | 真实首次成功产物可重新校验并恢复 | 当前仅手工成功态夹具，已要求真实 producer 测试；unobserved |
+| replay | 同 session 重复 always | 不重置时钟、不重复无权删除、不复用旧 exact 信用 | root6a702a两项失败；fail |
+| rollback | 命令/描述符/Flush/Close 各边界失败 | 所有已拥有资源回收或明确 unknown，首错保留 | SPEC 发现 LocalFree 后句柄遗失；fail |
+| failure | wait_request 读取异常/坏账本 | 拒绝成功型收据，保留原因，不猜所有权 | SPEC 发现首错与baseline校验缺口；fail |
+
+**leaks_and_conflicts / verdict：fail。** 已有同 session 的状态冲突和句柄漏风险；跨进程恢复、异步收敛及实际系统回滚仍未观察。下一判别项是真实第一次 cleanup 产物→新控制器 reopen→重复 always，并补失败注入负控。以上不授整生命周期、Windows 原生或 R2/R3 通过信用。
+
+边界是 CI 管理员协调器 → 受保护持久账本 → Win32 句柄/进程/网络配置 → 标准用户实际正控。候选已发布的纯模型不是系统授权凭据；后续管理员组件仍仅存在于未冻结文档资产。没有修改公开库 API，公开库导出、旧二进制兼容矩阵不适用；内部 ctypes 对 Windows SDK 的布局、调用约定及内存所有权仍必须独立验证。
+
+| 维度 | 生产侧合同 | 消费侧合同 | 当前行为/证据 | 判定 |
+| --- | --- | --- | --- | --- |
+| ABI | Windows SDK 固定宽度和真实布局 | ctypes 参数、结果、结构布局一致 | root 实测既有 Linux 3.11.17 的 wintypes DWORD/LONG/BOOL 各8字节、FILETIME16、WORD2、HANDLE8（06906c）；同结构 fake 只能验证算法 | 目标 ABI 未观察，不能由 Linux 通过外推 |
+| 加载边界 | 创建标准用户前冻结可信解释器、库和脚本 | 管理员加载不得重回可写 checkout/toolcache | Store/SDK 文档资产已写，Native facade 尚未完整 | 未完成 |
+| 路径稳定性 | 祖先及叶对象身份、权限、加载来源分别核验 | stduser 不能修改关键路径或受保护对象 | 旧原生来源链 volume_root ownerother、Authenticated Users add_subdirectory4；无共享删除不能单独证明属性/重解析点不可改 | 入场规则待真实只读正负控，不猜 owner |
+| 操作时序 | bootstrap180秒与新增操作≤60秒为独立不可变域 | 不重置截止、不把 bootstrap 当 CLI 授权 | 双 parser 文档资产已有，实际完整消费者未落 | 设计候选，未原生验证 |
+| 增删与恢复 | 完整 SID→attributes 映射；仅已拥有 positive SID | 外来条目保留；可能晚到的 add 先回收再判定 delete | 固定命令 Job、durable ready-to-resume 状态及恢复 facade 未完整 | 未完成，intent 本身不证明 add 已尝试 |
+
+### classification / skill_routes
+
+| 问题 | 主分类与路由 | 触发证据 | 所需输出及当前状态 |
+| --- | --- | --- | --- |
+| host fake 与目标布局混淆 | cross-layer-contract-audit：内部 OS 绑定 | 06906c 实测宽度 | 同候选 x64/ARM Windows3.12 的 SDK sizeof/offsetof 与 Python 独立比对；未观察 |
+| 可信来源与实际加载不一致 | multi-repo-artifact-provenance | 旧来源链 owner_untrusted，草稿冻结资产尚无真实消费 | artifact_matrix 绑定实际冻结文件、ID/hash、目标架构及实际加载路径；未完成 |
+| 模型成功被提升为原生成功 | field-verification-boundary | 纯 core35软件通过，不存在实际管理员组件 | verification_matrix 分开软件、原生准备、临时豁免、网络响应、恢复；当前只有软件证据 |
+
+### artifact_matrix / verification_matrix
+
+| 对象/层次 | 当前可确认事实 | 缺口及最小下一步 |
+| --- | --- | --- |
+| Agent候选与固定资源 | HEAD619ed77；固定 Skill21566；本轮未更改 pin | 下一候选仍须精确字节、密钥与固定子仓门 |
+| 目标管理员运行资产 | 只有 DOC 中的协调器/Get/Win32/Store/SDK 资产 | 补齐 Job、Native、SDK Python消费者和 readonlyprepare 完整源，独立 TEST 资产同步后再冻结/双审 |
+| 软件层 | core既有正式35项通过；新 admin 无实际 TEST/SOURCE | 完整计划通过后正式 TEST→RED→不同 SOURCE→GREEN，不用 RAM 代替 |
+| 双 Windows 原生准备 | 未观察 | 任意豁免 CLI 写前，同 SHA x64/ARM 的 ABI、角色权限、工具来源及加载链真实正负控 |
+| 网络与恢复 | Reviewer严格ACL恢复已在旧候选双架构观察通过；网络正控仍105/未知 | 真实 nonce 响应、完整配置观察、精确 owned 删除和 always 恢复全部待实现验证 |
+
+### gaps / verdict
+
+后续实际审查发现并复现 Store 草稿缺口（dc8c43）：`copy_private_tree` 的 `os.walk` 未指定 `onerror`；仅在内存 patch `os.scandir` 抛 PermissionError，真实默认 walk 返回空列表而不报错，显式 onerror 才传播失败。没有读写文件或调用原生接口。这会使冻结清单在目录枚举错误时静默不完整，已要求 DOC SOURCE 作者修订并由独立 TEST 作者补真实算法负控；不得用后来恰好 import 失败代替冻结完整性门。新增 Job 资产1312–1507已由root全文读取，仍须补账本Flush失败不Resume、根退出/后代存活、Resume未知、最终Flush与Close失败、无lateadd后才窄删的完整测试。
+
+独立 TEST 作者随后对已完整读取的六组件做纯 RAM 预演，首轮60项绑定 SOURCE DOC摘要49ad7aa9 / TEST DOC摘要220d4e73（完整摘要和原失败由作者保留，尚非冻结资产）：Get12、binding7通过；Win32 HANDLE normalize、协调模型新增has_add_attempt、Job fake初始None产生的失败/错误归TEST夹具，作者修订中；Store枚举吞错与source root重解析未拒的两Assertion归实际草稿缺口，不放松负控。root另指出先resolve会消去原入口身份，要求检查原路径及句柄而非只检查解析后的目标。Native缺失部分仅用不可实例化import哨兵加载协调器，绝不授Native覆盖。未落实际源码/TEST、未调用Windows/API/CLI，此为诊断而非正式RED/GREEN。
+
+619后续来源观察：root亲取x64 sign116255327459完整133985字符，71项/5.332秒＋9项/0.141秒通过；安装来源完整但owner_untrusted，compatibility/launch/protected均false，不能授WP0b。ARM sign116255327593仍在运行；不把validate成功或单架构成功当工作流全终态。冻结SPEC72/74行明确坏/缺失账本禁止猜SID、恢复unknown且候选失败，保持此故障语义，不声称拒绝解析即恢复成功。
+
+第二轮RAM（独立作者工具696cb3）精确绑定SOURCE `49ad7aa935cf402a93dba2def37869474ac6621b5b9a9f67667be9a9c8c384bf` / TEST `cebaf4983d70d02af183d587cd7a82affbb275e0c1ad605202627899152997f8`，61项59通过/2 Assertion失败/0ERRORskip。两原断言分别为`test_copytree_child_enumeration_failure_rejects_partial_records`的`(OSError, Failure) not raised`和root重解析负控的`Failure not raised`；夹具错误已修，两个真实负控保留。上述是作者原输出，由root复核失败信息及对应草稿算法，不冒充root重跑或正式TDD。
+
+第三轮RAM（独立作者fed12e）：SOURCE `301e0496487b1443a6e69e10ae710f3e261e85a2a03e8cde7708dd2de0c30cf7` / TEST `0e13b22da12ee7c4d6dd91f5016ec5438a0cdd3cbf546e1ae9b02dfe375af8a1`，原两Store负控保留后61项全通过、0FAIL/ERRORskip。主PLAN随后继续补SDK全字段资产，摘要已变化，不冒同字节或全片冻结。完整Native/readonlyprepare/Python消费仍须补齐，root已要求作者继续同一任务而非以局部完成停下。独立CPython v3.12.10运行路径研究及root亲读主源结论已更新持续竞品对照，明确cfg/._pth/zip及实际DLL/pyd加载不能由-I/-S单独证明。
+
+并行受保护Git链核查（root实际读独立Skill main `cd9889f2ae4cb1090963338ad72412f526342ea5`，工作树干净，Agent pin仍21566）：`tools/icode_control.py`1811–1812明确拒绝noncode，6765–6771外层dispatch也只准code；499–511行的code-provider单测刻意禁止catalog静默启用final linter。root定向运行现有`test_candidate_code_inspection_provider_unit.py`，23项/9.600秒/OK（6f39fd+c54127），仅既有WSL3.11软件诊断。下一C1b不能只删step限制：必须逐实际消费验证review/coverage/worklist、事件与候选新鲜度、final linter及archive/delivery；coverage当前直接核CODE文件hash并不因此自动缺Git能力，需要按真实消费者决定传递边界，不盲给所有函数加provider参数。未修改Skill、未升级pin，不把code23通过当C1b/C2/S2c/R3六步或90%一致性。
+
+root实际 sequential-thinking MCP三步收据dca1ea后，已启动独立DOC作者编写`docs/nbl/plans/2026-10-15-protected-git-business-consumers.md`：沿既有受保护Git交付DESIGN形成C1b剩余全消费者的完整CODE/TEST资产，不另设计新架构。该DOC与Windows主PLAN/TEST DOC互不重叠；实际源码写者仍为零。所有计划仍须root全文、fresh双审和正式TDD，绝不通过环境或暴露.git绕开C2，也不提前更新pin。
+
+后续具体决策（root实际MCP2647a9三步）：原final workflow linter有180秒subprocess硬超时及13项旧合同，不能改同进程软deadline。选择固定受监督worker＋封闭只读软件IPC，父CP持canonical provider、每次query/result前后guard，不收argv/path/env/pickle，不用预计算selection改变独立重证oracle。C1b软件传播与原DESIGN的C3库存/交付分别列任务；INVENTORY三固定kind属于原DESIGN78合同。软件worker180秒回收不证明父同步provider callback也可被socket deadline抢占，C2原生bounded query/身份/snapshot/父死亡仍需真实验证。原None/custom、UTF8/JSON/exit/中断语义及原安全门均保留，未执行新IPC实现。
+
+Windows后续主PLAN已出现首版完整Native围栏，root亲读1620–2478（693ad0/efb4b6/2e344d），后续版本仍在变动，未冻结。新增真实审查项：固定entry源码尚缺；工具仅PE/hash不够来源/版本/权限准入；loader的完整目录清单/精确sys.path与未声明文件拒绝仍缺；新拥有句柄在require前未登记或finally导致异常漏。root已撤回“append pins本身必然导致zip遗漏”的过度推断：原前N句柄顺序未变，root另核，不能加会拒正常append的盲目长度门。OS文件硬链接与private副本single-link门的兼容性仅为待原生观察风险，不猜测放宽。
+
+root亲复现Native.context枚举错误44e0ea：仅抽真实context/require/integer、合成环境，不改宿主ENV、不调用native；官方RUNNER_ARCH=X64被拒、错误小写x64反而接受。已核[GitHub官方变量枚举](https://docs.github.com/en/actions/reference/workflows-and-actions/variables#default-environment-variables)，要求显式matrix x64→X64、ARM64→ARM64映射及严格未知拒绝。独立TEST正在补真实正负控。
+
+该映射缺口随后由root真实函数RAM复核修订（1bc3fb，主DOC fba20db7617ae295f82678f0bfbd5a9950851021c184a041fed6d61fa609ca8d）：x64/X64与ARM64/ARM64接受，错误小写及交叉架构均拒绝；实际CI job key553也匹配固定绑定（b21814）。root又完整读固定entry118行（07d275），要求readonly完整退出和finally成功后才授结果，不凭先发ready行；下一片真实suspended标准父接线仍待。SDK字段键机械核查c97a81为77/77、无缺/多/重复，仅静态结构键，不授sizeof/offset值或目标ABI；首诊断未处理IO listcomp的KeyError是诊断器错误，不当产品失败。
+
+主PLAN当前已修持久has_add_attempt语义（root亲核fb6126）：permitted且attempted非False及PID/creation完整才是可能执行；已知未Resume不授删除，崩溃None保守保留。OS共享文件的raw metadata角色化准入候选沿已有角色边界：private副本single-link门不变，固定System32对象需真实token无mutation、持有全窗口及版本/PE/hash/ID/来源证据，不能由links数或owner猜测授信。Microsoft硬链接底层file共用security descriptor合同已核；同SHA双Windows实际正负控仍为前置硬门，不涉及本机系统操作。
+
+第五轮局部RAM65P/0ERRORskip（803d7f，SOURCE60328cac6b33f32c7f5d4c579207147d0d2c7e63511d1458be0c0151090bf407 / TESTe0c58c4ed1ef67d7c2c6d88f1b92cf035c471186ed197bfafdf3f58879416b5e），包含新增wait_empty递进时钟/持续后代/query不完整/terminate失败/wait超时，有限步测试不再用固定时钟掩盖挂起。随后首次真实Native资产RAM（ac9561，SOURCE38d5ce841464f6b210cd6853341be0070683d25eeccfc3daa5a78072d0636b0b / TEST6091f1f868f2d67fa53dd2c96f4f3e456ec6b41bfddf08c072e26531971c62cc）：83方法，前六65通过，Native18方法出现7 Assertion失败、0ERRORskip。跨字段ledger绑定及route/process句柄泄漏为实际草稿缺口；root另定位verify_parent、stop_parent_job同类try外首次acquire风险，已要求整体修。早期13ERROR来自fixture追赶接口，保留且不授有效SOURCE RED。真实Native已替换不可实例化import哨兵，但这些仍是DOC RAM，不是正式TDD或原生信用。
+
+ABI 跨宿主推断风险为 supported；新祖先策略能否在正常 runner 安全入场为 unresolved；两域绑定与受保护加载方案为 candidate；“纯模型或未共享删除即证明完整管理员链安全”为 refuted。修复归属分别是内部 Win32 绑定、Native 准备/加载和 Job/账本消费者，不以一个宽松白名单统一修复。独立作者继续补完整 DOC 资产，未执行任何系统豁免、本机权限操作或实际管理员源码。R2/R3 全局仍未验收。
+
+【架构级自检报告】本次仅接力文档：语法/格式经 diff 检查；依赖/调用链按上述边界分账；逻辑/边界保留未知；异常包括晚到add与不完整回收；关联生产代码及固定子仓未修改；兼容安全未放宽权限或验收门；可运行性不适用于文档，新管理员实现及原生验证仍缺失，不报告100%。
+
+619接续推进：独立observer持续确认具体run/job存活，没有因观察等待重启；双Reviewer ARM116251346326/x64116251346430已原生终态失败，仍primed6/6、严格snapshot/runtime恢复true、cleanup=true，失败边界仍网络正控105/未知，不新增canary故障。其余full/workspace/来源链在途。root预读未冻结adminPLAN至Win32低层，发现真实compat风险：草稿所有祖先只信admin/SYSTEM/当前user，且一律拒绝非trusted ADD_SUBDIRECTORY；e94完整签名源链实际volume_root ownerother/authenticated_users directadd_subdir4且下级protected，原owner_untrusted仍在。root真实MCP6316f7三步后要求任何CLI写前先完成同SHA双Windows只读nativeprepare/工具来源/加载正控和负控，不猜TI、不盲加owner白名单、不删安全门；这是待证admission风险，不是已证明新组件失败或安全例外。两DOC作者正在共同冻结真实Native接口与ctypes底层负控，仍无实际admin TEST/SOURCE/系统操作。
+
+最新core候选已推main：`619ed7771d9741eab11cb8a333965521d0c8d228`（父e94，精确六文件1858新增）。root四守护、六路径索引逐字节/whitespace通过后提交（46fc1f，提交后普通status空），push退出0（c38f4e）。root绑定push/attempt1 CI38682951338、provenance38682951358、Pages38682951556；独立observer已接手，新full job116251346007、validate116251345489在运行。全终态前不推下一候选。仅发布purecore和冻结TEST/已审DESIGN/PLAN及进度，不启用系统豁免。保留三个ignored下一片文档：admin-binding DESIGN（SHA8d3f0a749962f8f25b6cc3ee1aab42e613f1d7d27d4851613aa345e4e74726ae，fresh双审零）、未冻结admin实现PLAN和独立admin-tests资产DOC；后二者由不同作者并行编写，仍须root完整阅读/双审/正式TDD。root已另全文读取既有受保护Git候选/交付DESIGN188行（d55f18），未开始其新CODE，不把原code-provider软件片当C2/S2c或R3六步完成。
+
 e94全部线上终态已由root逐run及全部jobs API再次核实：CI38680822889为45项40成功/2Reviewer网络失败/3原skip；provenance38680822937三成功；Pages38680822882两成功，合50项45成功/2失败/3skip。两sign116249351770/116249351783完整原log133989/133733字符，真实3.12.10各71＋9通过，仍owner_untrusted/launch_authorized=false，不授WP0b。下一候选等待条件解除，无取消或重跑；只准将已独立审过的六路径core候选送线上，admin addendum与两份仍未冻结的admin实现/TEST DOC不混入。
 
 网络core actualSOURCE/GLOBAL fresh SPEC与不同fresh QUALITY现均C0/I0/M0，二者独立35P/0skip；软件片可进入候选，本机secret/pin/治理/站点守护已过。e94主CI现45job全部终态40成功/2Reviewer网络失败/3原skip；root亲取full116244739461完整812980字符，真实CPython3.12.15、3422项/667.776秒/100原skip。provenance仍有具体活任务，全部终态前仍不推下一候选。核心模型软件通过不授真实网络豁免/恢复、WP0b或R2/R3完成。

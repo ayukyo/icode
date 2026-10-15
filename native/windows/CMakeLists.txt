@@ -157,3 +157,22 @@ if(ICODE_WINDOWS_BUILD_CONTEXT_DIAGNOSTIC)
   file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/icode-windows-build-context.json"
     CONTENT "${_icode_context_json}")
 endif()
+
+add_executable(icode_positive_loopback_admin_abi EXCLUDE_FROM_ALL
+  icode_positive_loopback_admin_abi.c
+)
+set_target_properties(icode_positive_loopback_admin_abi PROPERTIES
+  OUTPUT_NAME "icode-positive-loopback-admin-abi"
+  C_STANDARD 11
+  C_STANDARD_REQUIRED YES
+  C_EXTENSIONS NO
+)
+target_compile_definitions(icode_positive_loopback_admin_abi PRIVATE
+  UNICODE _UNICODE _WIN32_WINNT=0x0A00
+)
+if(MSVC)
+  set_property(TARGET icode_positive_loopback_admin_abi PROPERTY
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  )
+  target_compile_options(icode_positive_loopback_admin_abi PRIVATE /W4 /WX)
+endif()

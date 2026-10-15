@@ -2,6 +2,24 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+### Windows Job 加入失败与回收权限：官方契约补核
+
+2026-10-15，root重新核Microsoft官方[AssignProcessToJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject)及[TerminateJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject)：存在Job句柄不证明parent已关联；终止Job仅影响实际关联成员。Assign失败既可能留下存活进程，也可能在达到配额等情形下已终止它，不能只从返回失败推断存活或回收。此为既有Agent Windows依赖的契约复核，非新增竞品观察，也不冒充开源20项全量刷新。
+
+**采纳**精确held process认证、实际Job membership、所有权移交、退出观察分别建模；认证前不授终止权限，认证后补偿不能只杀空Job，已退出也不能盲杀误报。**不适配**现DOC测试替身无论成员都杀父进程的捷径。**暂缓**任何新监督服务或扩大权限，仅修现attach与底API故障模型。无复制第三方代码、许可或依赖变化；成本为定点生命周期负控。验收需先在原冻结SOURCE取语义RED，再独立SOURCE修复及双审，之后同SHA双Windows原生回收；当前root纯RAM双面复现只证实软件缺陷，不授原生通过。
+
+### Codex 取消与首错分账：本轮修订参考
+
+2026-10-15，独立只读研究固定 `openai/codex` 提交 `bb64b894fd67158be0f874872e6d7bfe717e7368`（研究者观察06:00:58 UTC），root随后直接读取固定原始源码（27f71f），只刷新此相关机制，不称20项名单全量复核。**采纳** [process.rs 243–288](https://github.com/openai/codex/blob/bb64b894fd67158be0f874872e6d7bfe717e7368/codex-rs/core/src/unified_exec/process.rs#L243-L288) 的首次失败保留，以及终止请求/等待响应的区分；**采纳** [exec.rs 1126–1164](https://github.com/openai/codex/blob/bb64b894fd67158be0f874872e6d7bfe717e7368/codex-rs/core/src/exec.rs#L1126-L1164) 保留原执行期限直至输出收尾。**暂缓**新增TERM宽限或Rust异步框架。**不适配**直接复制其cleanup错误优先级：该drain分支先传播cleanup错误，可能遮蔽原drain失败；方法名带confirmed也不能外推为Windows Job空或资源零残留。
+
+ICODE已有first_error/cleanup_error、持久命令记录和实际Job查询合同，本轮Admin异常外围曾漏记首错，两处handle在LocalFree失败后未转移却遗失；仅借鉴机制修这些既有路径，不复制上游实现、增加依赖或权限。收益是明确所有权及错误分账，成本为现有定点负控与后续双Windows原生证据；固定源码[Apache-2.0许可](https://github.com/openai/codex/blob/bb64b894fd67158be0f874872e6d7bfe717e7368/LICENSE)。验收须业务异常叠加flush/publish/close失败保留首因、移交前后资源有唯一owner、原deadline不重置、重复恢复不覆写错误，并由同候选x64/ARM实际进程/Job/完整配置证明；当前DOC软件通过不授原生或R2/R3通过。
+
+### Windows 管理员 runtime 的独立源码核对
+
+2026-10-15，独立只读研究固定 CPython `v3.12.10`；root亲读[getpath.py](https://github.com/python/cpython/blob/v3.12.10/Modules/getpath.py#L294-L351)及[dynload_win.c](https://github.com/python/cpython/blob/v3.12.10/Python/dynload_win.c#L148-L231)。这是既有Agent机制的运行时依赖核查，不是新增竞品能力。**采纳**冻结清单覆盖exe/DLL、Lib/pyd依赖及启动配置，并验证实际加载位置；`-I -S`不能单独证明可信加载：getpath在site前读取同级/父级cfg，DLL同名`._pth`优先且可启用site，缺席的默认zip仍进入搜索路径。**暂缓**另改embeddable/PyConfig启动架构；**不适配**只复制Lib、只核版本或单次import成功就授管理员可信。收益为避免配置和依赖借用，成本为完整清单与双Windows准入负控；无上游代码复制、新依赖或产品权限变化，若分发CPython文件仍须保留[许可及第三方notices](https://github.com/python/cpython/blob/v3.12.10/LICENSE)。本片只在CI自有受保护副本验证，不改本机Python安装。
+
+验收须同候选x64/ARM实际sys.path、flags、DLL/pyd加载路径/架构/hash与批准清单匹配；cfg/._pth/未批准zip/额外DLL/缺失依赖/外部安装借用均须拒绝，不能从软件fake推原生。当前admin仍仅DOC草稿；第三轮六组件RAM61P只是诊断，两处copytree负控修复已保留原失败，不授正式TDD、管理员操作、网络DENY或R2/R3完成。完整Native、只读准入与Python侧SDK消费者仍缺，继续实现而非以局部通过冻结。
+
 网络正控接续研究（2026-10-15，e94f候选在途）：独立研究与root重读 Microsoft [GetConfig](https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-networkisolationgetappcontainerconfig)、[SetConfig](https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-networkisolationsetappcontainerconfig)及[单SID CLI合同](https://learn.microsoft.com/en-us/previous-versions/windows/apps/hh780593(v=win.10))。采纳固定系统CLI只操作admin预绑定正控SID、完整SID/uint32 Attributes前后映射、原进程回收和持久intent；Get关联内存按各SID及数组配对释放。暂缓全列表Set，不能拿旧快照回滚覆盖foreign。官方CLI未承诺CAS，专用临时runner无其它写者前提及中间不可观测限制仍保留。复用上文固定Codex实际响应/finally机制，不复制产品防火墙策略；正确raw fixture锚仍229–245，不回退旧网页行号214–230。当前已有Get include只有target摘要，不足证明others-preserved；纯policy核仍只是后续受保护账本及Create成功后/launch前、DeleteProfile前实际session接线的依赖，不能当原生完成。无新增第三方依赖、许可代码或本机系统操作；验收须同SHA双Windows nonce/配置原件/各自清理/Reviewer不豁免，网络timeout仍不授DENY。
 
 稳定基线实施进度补记：正式冻结TEST在原实现19 Assertion RED后，由不同作者仅接入测试夹具；root独立新19＋原观察13共32项软件通过、0跳过。生产恢复、双workflow和固定pin未变。此为下段“GREEN尚待”的后续结果，不授真实312/Windows恢复、网络DENY或R2/R3通过；全片审查及同SHA双原生验收仍待。
