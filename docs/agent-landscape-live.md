@@ -2,6 +2,10 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+稳定基线实施进度补记：正式冻结TEST在原实现19 Assertion RED后，由不同作者仅接入测试夹具；root独立新19＋原观察13共32项软件通过、0跳过。生产恢复、双workflow和固定pin未变。此为下段“GREEN尚待”的后续结果，不授真实312/Windows恢复、网络DENY或R2/R3通过；全片审查及同SHA双原生验收仍待。
+
+ca41 后续决策（2026-10-15）：复用本节已核固定 Codex fixture 所有权/清理分账及 Microsoft ACL 合同，不宣称新增竞品能力或刷新上游 HEAD。双 Windows 的事后观察只显示首个 root 的 control XOR1024，其它所报字段不变；根因仍未证明。**采纳**仅 CI 自有临时树在首次 Package SID 授权前建立整树验证基线，保持生产恢复严格等值；**暂缓**生产 control 恢复重设计；**不适配**掩码比较、失败后归一化、延长等待或跳过原断言。收益是消除测试准备状态的不确定性；成本是有界一次原 DACL 设置和整树读取，无代码复制、新依赖、权限或许可变化。验收要求 root 合法而 child 单独漂移也拒绝、失败变更数未知不报零、日志不得阻断清理，以及同候选 x64/ARM64 原生精确恢复；19 项正式软件 RED 已建立，GREEN 和原生结果尚待。详见稳定基线 SPEC/PLAN，原网络等门继续开放。
+
 本片独立Agent主源复核：Codex固定`27065a91ccbf5ba8532844be3777fcf83b77820d`的[fixture原始L229–245](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/windows-sandbox-rs/sandbox_smoketests.py#L229-L245)和[代理/直连原始L506–564](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/windows-sandbox-rs/sandbox_smoketests.py#L506-L564)已重新核原始字节；旧观察的网页显示行号不是源码行锚点，以本条更正。采纳finally释放与实际正控响应检查；ICODE本片A另外将start纳入try并join确认退出，B保留post观察与原restore返回的独立信用。不适配把shutdown/close调用或直连非零退出升级为完整回收、ACL恢复或DENY证明；该fixture没有显式join或本片ACL观察实现。固定源码许可[Apache-2.0](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/LICENSE)，仅机制借鉴，无复制/依赖/权限变更；收益是更可靠回归，成本是少量测试与只读扫描，验收为软件负控＋后续同SHA双Windows原生观察。不冒充20项名单全量刷新。
 
 Windows恢复诊断（2026-10-15）：复用既有观察机制，不新增竞品框架。固定CPython源码对照确认[v3.12.10 mkdir](https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L5342-L5382)在Windows处理0700时设置protected可继承DACL，而[v3.11.9](https://github.com/python/cpython/blob/v3.11.9/Modules/posixmodule.c#L4610-L4627)未传显式安全属性；[Microsoft ACL合同](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setnamedsecurityinfow)说明可继承ACE会向子对象传播。这仅是Reviewer恢复差异的候选机制，尚缺原生失败字段，不能称根因。采纳已有测试observer＋有界脱敏post-restore分类；暂缓任何恢复规范化；不适配降低精确恢复比较、增加超时或将事后snapshot匹配改授成功。仅研究机制，零上游实现复制/依赖；验证需绑定后续候选双Windows原日志，软件fixture不替代native。

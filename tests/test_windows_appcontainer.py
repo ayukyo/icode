@@ -1316,6 +1316,115 @@ def _derive_appcontainer_profile_sid(profile_name: str) -> str:
             )
 
 
+def _prepare_reviewer_acl_baseline(
+    snapshot_call, roots, *, snapshot, temp_parent, workspace, advapi, kernel, report,
+):
+    """Prime only the selected CI-owned fixture before any Package SID grant."""
+    opted_in = all(os.environ.get(key) == value for key, value in (
+        ("GITHUB_ACTIONS", "true"), ("RUNNER_OS", "Windows"),
+        ("ICODE_DIAGNOSTIC_RUNTIME_STAGING", "true"),
+        ("ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT", "true"),
+    ))
+    if not opted_in or roots != (snapshot,):
+        return snapshot_call(roots, workspace=workspace, advapi=advapi, kernel=kernel)
+    started = time.monotonic()
+    deadline = started + windows_appcontainer._MAX_RUNTIME_ACL_SNAPSHOT_SECONDS
+    report.update(phase="pre_grant_baseline", state="failed", objects=None, changed=None)
+    auto_inherited = windows_appcontainer._SE_DACL_AUTO_INHERITED
+
+    def reject():
+        raise _AppContainerSetupError(
+            "reviewer_acl_baseline_failed", "Reviewer fixture baseline validation failed",
+        )
+
+    def checkpoint():
+        if time.monotonic() > deadline:
+            reject()
+
+    try:
+        checkpoint()
+        name = snapshot.name
+        prefix = "icode-reviewer-snapshot-"
+        if (snapshot.parent != temp_parent or not temp_parent.is_absolute()
+                or temp_parent.parent != Path(tempfile.gettempdir()).resolve(strict=True)
+                or not temp_parent.name.startswith("icode-reviewer-appcontainer-probe-")
+                or not name.startswith(prefix) or len(name) != len(prefix) + 32
+                or any(c not in "0123456789abcdef" for c in name[len(prefix):])):
+            reject()
+        # The original validator inspects lexical ancestry for reparse points
+        # before resolve; never replace it by a resolve-only containment test.
+        before = snapshot_call(roots, workspace=workspace, advapi=advapi, kernel=kernel)
+        checkpoint()
+        if (snapshot.resolve(strict=True) != snapshot
+                or temp_parent.resolve(strict=True) != temp_parent
+                or before.roots != (snapshot,) or before.modified_roots
+                or before.advapi is not advapi or before.kernel is not kernel):
+            reject()
+        entries = before.entries
+        if not entries or len(entries) > windows_appcontainer._MAX_RUNTIME_ACL_OBJECTS:
+            reject()
+        paths = tuple(e.path for e in entries)
+        if (paths[0] != snapshot or len(set(paths)) != len(paths)
+                or any(p != snapshot and not p.is_relative_to(snapshot) for p in paths)):
+            reject()
+        for entry in entries:
+            checkpoint()
+            identity = entry.file_identity
+            if (entry.protected or entry.defaulted or not entry.present
+                    or not isinstance(entry.dacl, bytes) or not entry.dacl
+                    or type(entry.revision) is not int or entry.revision < 1
+                    or not isinstance(identity, tuple) or len(identity) != 2
+                    or any(type(value) is not int for value in identity)
+                    or identity[0] < 0 or identity[1] <= 0):
+                reject()
+        report["objects"] = len(entries)
+        if all(entry.control & auto_inherited for entry in entries):
+            checkpoint()
+            report.update(state="already_stable", changed=0)
+            return before
+        original_acl = ctypes.create_string_buffer(entries[0].dacl)
+        checkpoint()
+        windows_appcontainer._set_dacl(
+            snapshot, ctypes.cast(original_acl, ctypes.c_void_p), advapi,
+        )
+        checkpoint()
+        actual_paths = windows_appcontainer._walk_workspace(
+            snapshot, max_entries=len(entries) + 1, deadline=deadline,
+        )
+        checkpoint()
+        if len(actual_paths) != len(paths) or set(actual_paths) != set(paths):
+            reject()
+        after = []
+        changed = 0
+        for old in entries:
+            checkpoint()
+            new = windows_appcontainer._read_dacl_state(old.path, advapi, kernel)
+            checkpoint()
+            if (new.path != old.path or new.dacl != old.dacl
+                    or new.control != (old.control | auto_inherited)
+                    or new.revision != old.revision or new.present != old.present
+                    or new.defaulted != old.defaulted
+                    or new.file_identity != old.file_identity):
+                reject()
+            changed += int(new.control != old.control)
+            after.append(new)
+        checkpoint()
+        result = windows_appcontainer._RuntimeAclTransaction(
+            roots=before.roots, entries=tuple(after), advapi=before.advapi,
+            kernel=before.kernel,
+            snapshot_duration_ms=int((time.monotonic() - started) * 1000),
+        )
+        checkpoint()
+        report.update(state="primed", changed=changed)
+        return result
+    except _AppContainerSetupError:
+        raise
+    except Exception as exc:
+        raise _AppContainerSetupError(
+            "reviewer_acl_baseline_failed", "Reviewer fixture baseline preparation failed",
+        ) from exc
+
+
 class TestWindowsAppContainer(unittest.TestCase):
     def test_appcontainer_profile_sid_comparison_rejects_missing_or_invalid_values(self) -> None:
         compare_sid = globals().get("_appcontainer_profile_sid_matches")
@@ -2141,6 +2250,15 @@ class TestWindowsAppContainer(unittest.TestCase):
             len(encoded), 500,
             f"R2.3 JSON notice {name!r} would be silently truncated",
         )
+        if name == "Windows Reviewer snapshot ACL pre-grant baseline":
+            if (
+                os.environ.get("GITHUB_ACTIONS") == "true"
+                and os.environ.get("RUNNER_OS") == "Windows"
+                and os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_STAGING") == "true"
+                and os.environ.get("ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT") == "true"
+            ):
+                print("reviewer_snapshot_acl_baseline=" + encoded, flush=True)
+            return
         if name == "Windows Reviewer snapshot ACL post-restore observation":
             if (
                 os.environ.get("GITHUB_ACTIONS") == "true"
@@ -2672,6 +2790,23 @@ class TestWindowsAppContainer(unittest.TestCase):
                 (destination / Path(sys.executable).name).write_bytes(b"synthetic staged Python")
                 return {"staged_entries": 1}
 
+            capture_advapi, capture_kernel = object(), object()
+
+            def capture_snapshot(roots, *, workspace, advapi, kernel):
+                paths = windows_appcontainer._walk_workspace(roots[0])
+                entries = []
+                for path in paths:
+                    info = path.lstat()
+                    entries.append(windows_appcontainer._DaclSnapshot(
+                        path=path, dacl=b"synthetic-stable-acl", control=0x404,
+                        revision=1, present=True, defaulted=False,
+                        file_identity=(int(info.st_dev), int(info.st_ino)),
+                    ))
+                return windows_appcontainer._RuntimeAclTransaction(
+                    roots=tuple(roots), entries=tuple(entries), advapi=advapi,
+                    kernel=kernel, snapshot_duration_ms=0,
+                )
+
             def capture_runner(argv: list[str], **_kwargs: object) -> WindowsJobResult:
                 if _kwargs.get("_diagnostic_private_network_capability") is True:
                     script = argv[3]
@@ -2705,9 +2840,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                     json.loads(runner_target_path.read_text(encoding="ascii"))
                 )
                 # Exercise the native-body wrapper at the OS launch seam.
-                transaction = SimpleNamespace(
-                    roots=tuple(_kwargs["_diagnostic_reviewer_snapshot_roots"]),
+                selected_root = tuple(_kwargs["_diagnostic_reviewer_snapshot_roots"])[0]
+                transaction = windows_appcontainer._snapshot_runtime_acl_roots(
+                    (selected_root,), workspace=_kwargs["cwd"],
+                    advapi=capture_advapi, kernel=capture_kernel,
                 )
+                self.assertEqual(transaction.roots, (selected_root,))
+                self.assertTrue(all(e.control & 0x400 for e in transaction.entries))
                 self.assertTrue(windows_appcontainer._restore_runtime_acl_roots(
                     transaction, ctypes.c_void_p(123),
                 ))
@@ -2748,6 +2887,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                      "tests.test_windows_appcontainer.subprocess.run",
                      return_value=mock.Mock(returncode=0),
                 ), mock.patch.object(
+                    windows_appcontainer, "_snapshot_runtime_acl_roots",
+                    side_effect=capture_snapshot,
+                ), mock.patch.object(
                     windows_appcontainer, "_restore_runtime_acl_roots",
                     side_effect=lambda transaction, _sid: (
                         captured_acl_restores.append(transaction) or True
@@ -2781,6 +2923,14 @@ class TestWindowsAppContainer(unittest.TestCase):
 
         notice_names = {name for name, _encoded in captured_notices}
         self.assertEqual(len(captured_acl_restores), 1)
+        baseline_lines = [line for line in wfp_output.getvalue().splitlines()
+                          if line.startswith("reviewer_snapshot_acl_baseline=")]
+        self.assertEqual(len(baseline_lines), 1)
+        baseline_receipt = json.loads(baseline_lines[0].split("=", 1)[1])
+        self.assertEqual(baseline_receipt["phase"], "pre_grant_baseline")
+        self.assertEqual(baseline_receipt["state"], "already_stable")
+        self.assertGreater(baseline_receipt["objects"], 1)
+        self.assertEqual(baseline_receipt["changed"], 0)
         acl_lines = [line for line in wfp_output.getvalue().splitlines()
                      if line.startswith("reviewer_snapshot_acl_observation=")]
         self.assertEqual(len(acl_lines), 1)
@@ -9056,12 +9206,22 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "state": "not_observed", "phase": "post_restore_observation",
                     "restore_returned": None,
                 }
+                baseline_report: dict[str, object] = {
+                    "phase": "pre_grant_baseline", "state": "failed", "objects": None, "changed": None,
+                }
+                original_snapshot = windows_appcontainer._snapshot_runtime_acl_roots
                 original_restore = windows_appcontainer._restore_runtime_acl_roots
                 try:
                     with mock.patch.object(
                         windows_appcontainer, "_restore_runtime_acl_roots",
                         side_effect=lambda transaction, sid: self._observe_reviewer_acl_restore(
                             original_restore, transaction, sid, snapshot, acl_restore_report,
+                        ),
+                    ), mock.patch.object(
+                        windows_appcontainer, "_snapshot_runtime_acl_roots",
+                        side_effect=lambda roots, **kwargs: _prepare_reviewer_acl_baseline(
+                            original_snapshot, roots, snapshot=snapshot,
+                            temp_parent=snapshot.parent, report=baseline_report, **kwargs,
                         ),
                     ):
                         candidate = run_windows_appcontainer(
@@ -9083,6 +9243,9 @@ class TestWindowsAppContainer(unittest.TestCase):
                     wfp_receipt, wfp_exit_code = _stop_wfp_event_probe(
                         wfp_process, wfp_paths,
                     )
+                self._workflow_json_notice(
+                    "Windows Reviewer snapshot ACL pre-grant baseline", baseline_report,
+                )
                 self._workflow_json_notice(
                     "Windows Reviewer snapshot ACL post-restore observation",
                     acl_restore_report,

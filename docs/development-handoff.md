@@ -2,6 +2,18 @@
 
 更新：2026-10-15（北京时间）。已在 Windows / WSL2 接力续跑；下列历史发布及线上结果只授其实际候选证据，不作为本轮新增能力验收。
 
+稳定基线软件全片已由fresh GLOBAL SPEC及不同GLOBAL QUALITY独立审查通过（均C0/I0/M0），QUALITY亲跑同32项软件通过并核最新PLAN执行ledger；root最后四守护/whitespace通过（b7fdfe）。仅准备将六路径候选提交推main，含两份被ignore的SPEC/PLAN；Windows原生严格恢复/网络及R2/R3仍未验收，不把软件GREEN替代它们。
+
+当前实施进度（覆盖下方进行时叙述）：不同SOURCE作者已仅在原测试模块落稳定基线及真实snapshot seam接线，root全文diff复核并独立新19＋旧13合32软件测试通过、0跳过（a4b19a，完整日志SHA784c2078c81bec60eb7ae6632ed01475f18aad01eb3b4edec683f2fb6271dab8）。root逐字节核生产两模块、双workflow、旧observation模块相对HEAD不变，原98方法集合相同，helper与冻结资产精确相同，pin仍21566（4c2802）。实际解释器仍既有WSL3.11.17，仅诊断，不授真实312/native。全片独立审查进行中，尚未提交；下一候选仍须绑定双Windows原日志证明grant前基线和严格restore，不降低网络/WP0b/其它平台/R3门。
+
+当前终态覆盖下方在途叙述：root 重新查询 ca41 三个 run API，均为同 SHA、push/attempt1、completed；CI38678009091失败，provenance38678009046和Pages38678009161成功。独立观察已读取47个实际执行job原日志，合50项为45成功、2Reviewer失败、3原跳过；full真实3.12.15为3403项/834.646秒/100原skip，双sign真实3.12.10各71＋9项通过，不授owner_untrusted启动授权。下一候选等待条件解除，原失败不取消或重跑。稳定基线PLAN全文审查后发现child-only漂移负控不足，正在冻结前补齐；另将失败时未知变更计数保留null，避免Set后失败误报零变化。实际baseline TEST/SOURCE仍未落地，双审通过后正式TDD，生产restore/权限/workflow/pin不变。
+
+上述基线方案现已完成冻结前修订及fresh SPEC/不同QUALITY零审：PLAN659行/37618B/SHA6fa7b56ba4b4e42e0837a5bc062db3ef5f37d82c03515e7cd8523205f08d20b6。独立actual TEST作者仅新建336行/17334B测试，SHA4594d0f48b384bdece7829108812916aadf339acd52976bf6b19793fdbea3d02；root复跑正式19 Assertion RED、0ERROR/skip，全部缺helper固定断言，完整日志SHA7568baf109f84a5a396c561afe6e23d5e1dd569970fe1a6129e54a9520507030（6741ec）。不是RAM预演或真实312/native信用。不同SOURCE作者正在仅改原测试模块接入基线，冻结TEST不可改，实际GREEN与全片双审尚待。
+
+ca41双Reviewer决定性新证据：x64主job116235913042完整183601字符，ARM主116235913232完整183808字符，root和独立调查均亲取；原先按名称含Reviewer过滤误把docker/podman ID当Windows候选的提示已纠正，实际主job以上述为准。UTC03:48:40.0369337/03:50:57.6361563的post JSON逐字段相同：root/object_mismatch、restore_returned=false，DACLbytes/identity/revision/present/defaulted不变、无SID残留，只有control_delta1024。只支持post时首个对象的AI标记差异，不授原21比较瞬间、setter成功或唯一CPython根因。新SPEC `nbl/specs/2026-10-15-reviewer-acl-stable-baseline-design.md`经root真实MCPddf01d及独立SPEC零：仅CI fixture首次Package SID授权前整树same-DACL稳定基线，最多允许0x400单向变化、其它全相等，生产restore/精确门完全不动；无新权限/安装。完整资产PLAN由独立作者编写中，尚无actualTEST/SOURCE，需root全文及双审后再TDD。当前ca41主CI/full/provenance仍在途，不推后续候选。
+
+最新A/B候选已推main：`ca41c78d6f57938f8dd9aa1fb912dad7e44efe9c`（父7978，精确6文件553增29删）。root重跑必要四守护、核六文件索引字节/hash/100644及whitespace后提交，提交后status空（880e9b）；原push进程63420退出0、远端main更新成功（03ebfb），没有重复发起推送。新push/attempt1绑定CI38678009091、provenance38678009046、Pages38678009161，rootAPI已核同SHA。下一步优先读取双Reviewer的固定普通日志`reviewer_snapshot_acl_observation=`，区分post观察字段差异与原restore失败原因；同时核实际312 full/四workspace/双sign。全部终态前不推下一Agent候选，不取消/重跑旧失败；当前不是R2/R3完成。
+
 7978线上已全部终态：CI38675609504为45job/40成功/2Reviewer失败/3既有跳过，provenance38675609502三job均成功，Pages38675609501两job成功，合50job/45成功/2失败/3跳过。root亲取full116228394728完整819907字符：实际CPython3.12.15、3389项/962.492秒/100skip，后置secret/pin通过；四workspace均成功，旧10个计数/哈希失败消失。root亲取双sign116232814194/116232814298完整134025/133737字符，均71 required tests＋9项通过、无skip；只授安装证明/拒绝边界，不授owner_untrusted产物启动或WP0b。双Reviewer仍正控105超时、主cleanup false/snapshot恢复失败，原失败保留。三run均原push/attempt1，无取消或重跑。下一步按已独立双审及针对性守护通过的精确6文件发布A/B候选，绑定新SHA取post-restore诊断，不授R2/R3完成。
 
 下一候选软件片已冻结、GLOBAL独立SPEC/不同QUALITY最终均C0/I0/M0：A为autonomy测试判据修复（生产不改，60相关软件P）；B为Reviewer测试层post-restore观察（正式PLAN见`nbl/plans/2026-10-15-reviewer-acl-post-restore-diagnostics.md`）。B新13方法在旧实现23Assertion/0ERRORskip，作者GREEN13＋关联24；root亲读实际两文件并独立13＋旧10共23P0skip（88d737），补loopback/版本/签名冻结26P0skip（563895）。原98AppContainer方法集合和生产/双workflow字节未变（e52511）；密钥/pin/治理/站点守护通过（68b2ba）。研究链接一度因误用网页显示行号被建议修改，root原始字节复核后恢复正确函数范围，审查者已撤回误报。无原生恢复或根因信用：B只观察原restore返回后的字段差异，原false/异常和后续清理不改；30秒界限仅软件检查点，不能中断阻塞API。当前7978四workspace均成功，双Reviewer仍失败，full/provenance在途；全部终态前不提交推送下一候选。
