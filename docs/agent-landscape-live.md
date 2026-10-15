@@ -2,6 +2,8 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+网络正控接续研究（2026-10-15，e94f候选在途）：独立研究与root重读 Microsoft [GetConfig](https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-networkisolationgetappcontainerconfig)、[SetConfig](https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-networkisolationsetappcontainerconfig)及[单SID CLI合同](https://learn.microsoft.com/en-us/previous-versions/windows/apps/hh780593(v=win.10))。采纳固定系统CLI只操作admin预绑定正控SID、完整SID/uint32 Attributes前后映射、原进程回收和持久intent；Get关联内存按各SID及数组配对释放。暂缓全列表Set，不能拿旧快照回滚覆盖foreign。官方CLI未承诺CAS，专用临时runner无其它写者前提及中间不可观测限制仍保留。复用上文固定Codex实际响应/finally机制，不复制产品防火墙策略；正确raw fixture锚仍229–245，不回退旧网页行号214–230。当前已有Get include只有target摘要，不足证明others-preserved；纯policy核仍只是后续受保护账本及Create成功后/launch前、DeleteProfile前实际session接线的依赖，不能当原生完成。无新增第三方依赖、许可代码或本机系统操作；验收须同SHA双Windows nonce/配置原件/各自清理/Reviewer不豁免，网络timeout仍不授DENY。
+
 稳定基线实施进度补记：正式冻结TEST在原实现19 Assertion RED后，由不同作者仅接入测试夹具；root独立新19＋原观察13共32项软件通过、0跳过。生产恢复、双workflow和固定pin未变。此为下段“GREEN尚待”的后续结果，不授真实312/Windows恢复、网络DENY或R2/R3通过；全片审查及同SHA双原生验收仍待。
 
 ca41 后续决策（2026-10-15）：复用本节已核固定 Codex fixture 所有权/清理分账及 Microsoft ACL 合同，不宣称新增竞品能力或刷新上游 HEAD。双 Windows 的事后观察只显示首个 root 的 control XOR1024，其它所报字段不变；根因仍未证明。**采纳**仅 CI 自有临时树在首次 Package SID 授权前建立整树验证基线，保持生产恢复严格等值；**暂缓**生产 control 恢复重设计；**不适配**掩码比较、失败后归一化、延长等待或跳过原断言。收益是消除测试准备状态的不确定性；成本是有界一次原 DACL 设置和整树读取，无代码复制、新依赖、权限或许可变化。验收要求 root 合法而 child 单独漂移也拒绝、失败变更数未知不报零、日志不得阻断清理，以及同候选 x64/ARM64 原生精确恢复；19 项正式软件 RED 已建立，GREEN 和原生结果尚待。详见稳定基线 SPEC/PLAN，原网络等门继续开放。
