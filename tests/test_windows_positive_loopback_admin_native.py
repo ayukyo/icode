@@ -6,6 +6,7 @@ from ctypes import wintypes as t
 from dataclasses import asdict
 import importlib
 import json
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace as N
 import unittest
@@ -14,6 +15,8 @@ from tests.test_windows_positive_loopback_admin_binding import identity,manifest
 from icode import windows_positive_loopback_policy as policy
 
 NAME="scripts.windows_positive_loopback_admin_native"
+MODEL=Path(tempfile.gettempdir()).resolve(strict=True)/"icode-admin-model"
+SYSTEM=MODEL/"windows/System32"
 try:
     native=importlib.import_module(NAME)
 except ModuleNotFoundError as exc:
@@ -41,7 +44,7 @@ class Boundary:
         self.processes={1234:dict(created=5678,alive=True,user=store.boot["account_sid"]),
                         2234:dict(created=6789,alive=True,user=store.boot["account_sid"])}
         self.jobs={store.data["outer_job"]:[1234]};self.k=self;self.a=self;self.u=self
-        self.system_directory=Path("/windows/System32")
+        self.system_directory=SYSTEM
         self.security_changed=False
         self.mode="ok";self.impersonated=False;self.impersonation_events=[]
         self.buffers={};self.sid_buffers={};self.descriptor_frees=0;self.sid_frees=0
@@ -169,7 +172,7 @@ class NativeStore:
         self.boot=identity();b=self.boot
         ctx={key:b[key] for key in ("repository","source_sha","run_id","run_attempt","job","matrix")}
         import hashlib
-        self.root=Path("/model/icode-positive-admin-"+hashlib.sha256(serialized(ctx)).hexdigest()[:32]);self.root_handle=1
+        self.root=MODEL/("icode-positive-admin-"+hashlib.sha256(serialized(ctx)).hexdigest()[:32]);self.root_handle=1
         self.handles=[];self.pins=[];self.route_records=[];self.files={};self.fail_flush=False
         self.extra_files=[];self.extra_directories=[];self.existing_slots=set()
         self.closed=False
@@ -180,8 +183,8 @@ class NativeStore:
         self.tree_files=[frozen_reader["path"]];self.tree_directories=[".","runtime","trusted","trusted/scripts"]
         security=dict(owner_binary=policy.sid_bytes("S-1-5-18").hex(),dacl_binary="0200080000000000",protected=True)
         access=dict(api_completed=True,access_status=True,granted=0,privilege_bytes=0)
-        route=dict(path="/",identity=[7,1],security=copy.deepcopy(security),effective=copy.deepcopy(access))
-        image=dict(path="/windows/System32/CheckNetIsolation.exe",identity=[7,1],
+        route=dict(path=str(MODEL.anchor),identity=[7,1],security=copy.deepcopy(security),effective=copy.deepcopy(access))
+        image=dict(path=str(SYSTEM/"CheckNetIsolation.exe"),identity=[7,1],
             security=copy.deepcopy(security),effective=copy.deepcopy(access),
             file_info=dict(identity=[7,1],links=2,attributes=0,size=256),
             file_version=[10,0,1,0],product_version=[10,0,1,0])
@@ -248,7 +251,9 @@ class TestAdminNative(unittest.TestCase):
             if str(path).startswith(root_prefix):return iter(Path(value) for value in self.store.existing_slots if Path(value).parent==path and value.endswith("._pth"))
             return original_glob(path,pattern)
         def resolve(path,*args,**options):
-            return path if str(path).startswith((root_prefix,"/windows")) else original_resolve(path,*args,**options)
+            # Synthetic roles stay lexical; unrelated real namespaces still resolve.
+            modeled=any(path==root or root in path.parents for root in (self.store.root,self.store.w.system_directory))
+            return path if modeled else original_resolve(path,*args,**options)
         def walk(path,*args,**options):
             base=Path(path).relative_to(self.store.root).as_posix()
             directories=self.store.tree_directories+self.store.extra_directories
@@ -775,7 +780,7 @@ class TestAdminNative(unittest.TestCase):
         self.assertTrue(self.store.closed)
 
     def source_tree(self,mode):
-        source=Path("/source/Lib");self.store.files["sample.py"]=b"abc"
+        source=MODEL/"source/Lib";self.store.files["sample.py"]=b"abc"
         state={"walks":0};original_read=self.store.w.read
         def walk(root,*args,**options):
             state["walks"]+=1
@@ -1156,11 +1161,11 @@ class TestAdminNative(unittest.TestCase):
                     patches=[patch.object(native,"Win32",lambda:w),
                         patch.object(native,"__file__",str(checkout/"scripts/preflight.py")),
                         patch.dict(native.os.environ,{"GITHUB_WORKSPACE":str(checkout)}),
-                        patch.object(native.sys,"base_prefix","/model/runtime"),
-                        patch.object(native.sys,"executable","/model/runtime/python.exe")]
+                        patch.object(native.sys,"base_prefix",str(MODEL/"runtime")),
+                        patch.object(native.sys,"executable",str(MODEL/"runtime/python.exe"))]
                     def lookup(system,name,sid,size,domain,domain_size,use):w.error=1332;return 0
                     w.LookupAccountNameW=lookup
-                    def temporary(capacity,buffer):buffer.value="/tmp";return len(buffer.value)
+                    def temporary(capacity,buffer):buffer.value=str(Path(tempfile.gettempdir()).resolve(strict=True));return len(buffer.value)
                     w.GetTempPathW=temporary
                     self.store.create_directory=fault
                     factory=N(create=lambda root,data:self.store)

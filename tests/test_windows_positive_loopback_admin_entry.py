@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace as N
 import unittest
@@ -54,7 +55,7 @@ class TestAdminEntry(unittest.TestCase):
         self.assertIsNotNone(entry,"new fixed entry absent; expected facility RED")
         self.admin_module=importlib.import_module("scripts.windows_positive_loopback_admin")
         self.flags=N(isolated=1,no_site=1,dont_write_bytecode=1)
-        self.root=Path("/model/icode-positive-admin-"+"1"*32);self.consumer=Consumer()
+        self.root=Path(tempfile.gettempdir()).resolve(strict=True)/("icode-positive-admin-"+"1"*32);self.consumer=Consumer()
         b=identity()
         self.env=dict(GITHUB_ACTIONS="true",RUNNER_ENVIRONMENT="github-hosted",RUNNER_OS="Windows",
             GITHUB_REPOSITORY=b["repository"],GITHUB_SHA=b["source_sha"],GITHUB_RUN_ID=b["run_id"],

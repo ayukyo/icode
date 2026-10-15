@@ -4,6 +4,40 @@
 
 ## 最新候选与推送停点
 
+### 4fff535 Windows 软件门原始失败基线
+
+三TEST路径修复已获不同QUALITY C0/I0/M0：e695f2确认仅模型路径和canonicalization，原方法/断言/故障注入不变；3752cc核指定三SHA、产品SOURCE/原生/CI/newgate TEST全等HEAD；20de74独立202P/0失败错误跳过/exit0。root dad32e再次核三SHA、四文件密钥模式零命中、vendor21566 clean。准备提交精确3TEST及handoff四文件；当前full job116317764575、provenance validate116317764716仍真实活跃，仅允许本地候选提交，全部原run终态前不push，不创建新branch/tag。
+
+实际三TEST模型修正已落，未改生产guard/helper/CI/newgate TEST/Skill。root4a2f0f完整读取diff；native改为同源host绝对MODEL/SYSTEM/route/image/source_tree、角色resolve及真实canonicaltemp，entry绝对root，store真实临时root/source先resolve(strict=True)与init绝对root；所有旧断言和故障注入保留。作者202P；root c90d1e独立202 tests/0失败错误跳过/exit0，3.11.17诊断，完整runner输出41241B SHA `185e17c4a38901c96ef3c8c6f663f5f3d574c2c48cbdc505ce6e778d512d7efe`，另外两条argparse stderr来自已有非法命令/自由handle负控。独立SPEC C0/I0/M0并202P（02a216/32203d）；不同QUALITY进行中，不把Linux绿称Windows绿。实际20个Windows断言失败作为semantic RED，44个ERROR分开保留，不授RED信用。Windows临时路径lexical/canonical差异的具体成因未打印，不猜称8.3/junction/大小写。
+
+修后SHA256：native `f0bcc8af8695d9d66fddcaac175b4b61edf5a0dacc7a7b7aaf4aa370d760425f`；entry `8ce4910589b136b11619f4dbb7e78a5982429ac048fad2863832b14ff8abbb06`；store `fa78d782b05d689da0a2d3f6a6473ad15b4efbad83a38dc669b905e168e65d8e`。before三个字节仍按4fff535/此前冻结表；仅这3TEST加root进度文档是下个候选范围，旧不完整修复DOC不混入。
+
+ARM job `116317765266` 同样202 tests/4.846s/20F44E/exit1；原201316字符日志 SHA `cfebaf3cac70715dc5ab8e54f666ff30f72ccdf0689a47fe5f1898e8531cfe7e`，新gate30逐项ok，SDK/readonly/WFP/Reviewer全skip。两平台一致前置模型失败，不报告原生执行。当前其余CI/provenance仍活跃，全部终态前不推修复。
+
+root完整读取x64 job `116317765106` 原日志200607字符，SHA256 `06e8abeda664e2612180a95076068e16b805e8d9093d63d5bc58214c47dadcde`。实际202 tests / 5.016s / 20 failures / 44 errors / exit1；新gate30方法逐条ok，失败来自旧store/native/entry模型。SDK build、readonly native、WFP及实际Reviewer全部skipped，不能拿来覆盖原候选网络失败，也不能称本次执行了网络正控。root660cd5实际sequential-thinking三步锁定原日志→精确模型归因→不放宽产品guard。
+
+| 基线项 | 实际对象及边界 |
+| --- | --- |
+| identity | GitHub临时Windows x64 runner；非实体设备，SN/MAC不适用 |
+| time_window | 原UTC日志2026-10-15 08:10:12启动，08:10:23软件门，08:10:31失败；不混合其它候选时钟 |
+| repo_matrix | runtime及analysis均4fff535；verification尚无修复；vendor固定21566，独立Skill不修改 |
+| artifact_identity | windows-2025-vs2026，CPython3.12.10，checkout和执行SHA原日志一致；软件算法不是SDK/ACL/账户实证 |
+| evidence_sources | root完整原log、job steps API及逐条新30ok；未把loader error或截断筛选当全部证据 |
+| unresolved | admission_record_path、entry_private_root、loader_interpreter、untrusted_directory、source_tree绝对路径/relative_to和freeze临时路径逐类归因；独立只读作者核对 |
+| conclusion_ceiling | 已证Windows软件门失败；多数路径模型问题有支持，全部原因尚未闭合；修复/原生/阶段通过均未证明 |
+
+| 声明 | 类型 | 证据 | 信用边界 | 状态 |
+| --- | --- | --- | --- | --- |
+| 新gate30软件方法通过 | fact | 同job逐方法ok | 不是native gate | supported |
+| 原路径修复草案覆盖所有失败 | inference | 旧DOC仅3类，现原log更多类 | 需扩充精确模型定位，不能直接应用 | open |
+| 本次Reviewer网络已通过或执行 | unobserved | steps均skip | 原失败历史保留 | not achieved |
+
+只读Task4接点核查保留：正确created顺序是实际CreateProfile成功并核有效预分配SID之后、payload launch之前，不是profile创建前add。finished必须在wrapper payload finally内、profile delete前；当前TEST wrapper返回后补finished太晚。readonly门parent已终止不可复用；原consumer、受信精确root独立always恢复仍未接入。该调查未完整读完被截断的主PLAN，只依据全文两DESIGN及实际逐段源码，不授设计或实施批准。
+
+**最新远端候选：`4fff53504a0d53c42be1e1c324cd3ed2471dc6c4`，main-only。** 4a7867仅提交批准的6文件，a77db2推送exit0，远端d954840快进至4fff535。root独立API确认同SHA attempt1三run已触发：CI `38703698115`、Windows helper provenance `38703698110`、Public website `38703698139`。独立观察者继续原job；全部终态前不再push。此为待验收Task3候选，不是R2/R3完成，既有Windows测试模型路径风险及原网络失败仍保留。
+
+暂存历史：52162d遇空index.lock；已核无Linux Git进程、Windows仅无关remote-v，adbbc0把精确空锁移动为.git/index.lock.stale-20261015-task3保留，无工作树删除。0a2dca被docs忽略规则exit1但部分暂存；随后只对预期6文件-f add并核精确index集合，4a7867 commit成功。未reset、删用户改动、新branch/tag或改Skill。独立路径修复DOC仍未提交，待线上真实RED后按原日志推进。
+
 ### d954840 最新观察与 Task3 复审
 
 发布前终态复核：root独立API确认d954840三run全部completed，CI failure、provenance success、Pages success；合计50 jobs=45成功/2既有Reviewer失败/3skip，下一push等待门解除。x64签名安装 `116314381565` success，原134022字符日志 SHA `85f09b5427d4ebd36d5658b1562a0de52ea0eb0c23e798f8b0f68d53f69588fd`；同样owner_untrusted，不能授protected launch信用。

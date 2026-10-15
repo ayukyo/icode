@@ -138,7 +138,7 @@ class TestAdminStore(unittest.TestCase):
 
     def test_freeze_nested_trusted_directory_sequence_uses_real_store(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary); model=self.directory_model(root)
+            root=Path(temporary).resolve(strict=True); model=self.directory_model(root)
             # Exact Native.freeze ordering, not a replacement FakeStore method.
             sequence=("trusted","trusted/scripts","trusted/src","trusted/src/icode")
             for relative in sequence:
@@ -155,7 +155,7 @@ class TestAdminStore(unittest.TestCase):
 
     def test_directory_creation_still_rejects_existing_leaf_without_mutation(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary); model=self.directory_model(root)
+            root=Path(temporary).resolve(strict=True); model=self.directory_model(root)
             self.store.create_directory("trusted")
             with self.assertRaises(storage.Failure):self.store.create_directory("trusted")
             self.assertEqual(model.created,[root/"trusted"])
@@ -164,7 +164,7 @@ class TestAdminStore(unittest.TestCase):
 
     def test_directory_creation_rejects_preexisting_untrusted_ancestor(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root=Path(temporary); model=self.directory_model(root)
+            root=Path(temporary).resolve(strict=True); model=self.directory_model(root)
             (root/"foreign").mkdir()  # Not admitted by the private-directory model.
             with self.assertRaises(storage.Failure):self.store.create_directory("foreign/child")
             self.assertFalse((root/"foreign/child").exists())
@@ -249,7 +249,7 @@ class TestAdminStore(unittest.TestCase):
                     with self.assertRaises(storage.Failure) as caught:self.store.close()
                 elif owner=="directory":
                     with tempfile.TemporaryDirectory() as temporary:
-                        root=Path(temporary);model=self.directory_model(root);original_info=model.info
+                        root=Path(temporary).resolve(strict=True);model=self.directory_model(root);original_info=model.info
                         def info(handle,**options):raise body
                         model.info=info;original_close=model.close
                         def fail_close(handle):attempted.append(handle);raise storage.Failure("modeled_directory_close")
@@ -257,7 +257,7 @@ class TestAdminStore(unittest.TestCase):
                         with self.assertRaises(storage.Failure) as caught:self.store.create_directory("one/two")
                         self.assertEqual(len(attempted),2)
                 else:
-                    root=Path("/model/icode-positive-admin-"+"1"*32)
+                    root=Path(tempfile.gettempdir()).resolve(strict=True)/("icode-positive-admin-"+"1"*32)
                     def info(handle,**options):
                         if alive[handle]=="root":raise body
                         return (7,handle)
@@ -316,7 +316,7 @@ class TestAdminStore(unittest.TestCase):
 
     def test_copytree_child_enumeration_failure_rejects_partial_records(self):
         with tempfile.TemporaryDirectory() as temporary:
-            source=Path(temporary)
+            source=Path(temporary).resolve(strict=True)
             with self.assertRaises((OSError,storage.Failure)):
                 self.tree(source,["normal.bin"],enumeration_error=True)
 
@@ -326,14 +326,14 @@ class TestAdminStore(unittest.TestCase):
                 with self.subTest(failed=failed,body_failed=body_failed),tempfile.TemporaryDirectory() as temporary:
                     body=storage.Failure("modeled_copy_body") if body_failed else None
                     faults=dict(failed=failed,body=body)
-                    with self.assertRaises(storage.Failure) as caught:self.tree(Path(temporary),["normal.bin"],faults=faults)
+                    with self.assertRaises(storage.Failure) as caught:self.tree(Path(temporary).resolve(strict=True),["normal.bin"],faults=faults)
                     self.assertEqual(faults["model"].closed,[502,501])
                     if body_failed:self.assertIs(caught.exception,body)
                     self.assertTrue(any(n.startswith("cleanup_unknown:") for n in getattr(caught.exception,"__notes__",())))
 
     def test_copytree_root_or_child_reparse_identity_drift_and_deadline_reject(self):
         with tempfile.TemporaryDirectory() as temporary:
-            source=Path(temporary)
+            source=Path(temporary).resolve(strict=True)
             for reparse in (source,source/"child.bin"):
                 with self.subTest(reparse=reparse),self.assertRaises(storage.Failure):
                     self.tree(source,["child.bin"],reparse=reparse)
@@ -342,7 +342,7 @@ class TestAdminStore(unittest.TestCase):
 
     def test_copytree_actual_count_ceiling_is_not_truncated_success(self):
         with tempfile.TemporaryDirectory() as temporary:
-            source=Path(temporary)
+            source=Path(temporary).resolve(strict=True)
             with self.assertRaises(storage.Failure):
                 self.tree(source,[f"file-{index}.bin" for index in range(100001)])
 
