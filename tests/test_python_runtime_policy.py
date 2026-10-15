@@ -93,13 +93,14 @@ class PythonRuntimePolicyTests(unittest.TestCase):
                 self.assertEqual(len(found), len(jobs))
 
     def test_version_migration_preserves_commands_and_security_policies(self):
-        # Freeze the reviewed 1ce4c2a workflow behavior, excluding version/matrix
-        # declarations and setup labels. The signer count assertions include
-        # the two additional installed-chain tests; all other commands stay fixed.
+        # Freeze reviewed workflow behavior, excluding version/matrix declarations
+        # and setup labels. The CI digest includes the three readonly-admin steps
+        # added in 4fff535; removing their reviewed block exactly restores d954840.
+        # Security policies and the provenance command contract stay unchanged.
         # No native command runs in this test.
         expected = {
             "ci.yml": (
-                "2cbe435c878deb199834e93351ea8b700abb6b34b18feed0164a055fa7d7e2b3",
+                "87e5bedb30438cd74741713bded58e51107da0f443bc245875d95cef7ad99e47",
                 "47953a7c8cdb502d0ced29e9875ecb0964d5a25a3c033dde9b5f93e39c2660bc",
             ),
             "windows-helper-provenance.yml": (

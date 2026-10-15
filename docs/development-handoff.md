@@ -4,6 +4,16 @@
 
 ## 最新候选与推送停点
 
+### 本地修复候选与 4fff535 全部终态
+
+runtime-policy最小修复已独立SPEC1267d8及不同QUALITY83af25/ae07b1均C0/I0/M0，双方各8P/0失败错误跳过。root2d3a7c核仅policy TEST+handoff变更、密钥模式零命中、vendor clean；policy修后SHA `288328acd853f6421198b9ada18280372e72bc7eea3594cc1c585675053c69c5`。准备独立两文件提交，与b6dba5e一并快进main触发下一候选；既有full和Windows失败不取消、不重跑。下一候选仍需实际全量与双Windows软件→SDK→readonly门，不预报通过。
+
+本地HEAD为 `b6dba5efa07a2e5e8e7e3f6c0b3f2830b5028fba`（9b863b），精确3TEST路径修复及handoff四文件，双审零后提交，尚未push；此前远端仍4fff535。root4ec663独立API核对4fff535三run全部completed：CI38703698115 failure（45=39成功/3失败/3skip），provenance38703698110 failure（validate失败/attest跳过），Pages38703698139 success/2成功。下一push等待门已解除，但不是验收通过。
+
+full job `116317764575` 原871809字符日志，SHA `e185c1a2fff8b833de9580f312b02a70147955fc33b8d1c621ef1261fb0e1eca`；root c63e07完整获取并亲读唯一failure：CPython3.12.15，3624 tests/846.936s/1失败/100skip。`test_python_runtime_policy.py` 的CI命令摘要仍旧值，新增3步后不匹配。Provenance validate `116317764716` 同因失败（内部3624/864.767s/1失败/100skip），原35464字符 SHA `a5f688d116575579e24994fd4ddbc2761ccda91f48382d9bc505874ad9e84ec0`。新增30方法在full逐条ok，不能由此替代双Windows原生门。
+
+root59d51d实际复现单方法1个AssertionFailure/0 ERRORskip/exit1，并核当前workflow仅比d954840增加已批准23行block，删除它逐字节恢复旧文件；commands89→92，旧digest2cbe435c仍等旧golden，新digest `87e5bedb30438cd74741713bded58e51107da0f443bc245875d95cef7ad99e47`，security policies逐项不变且digest47953a7c不变。故最小更新runtime-policy测试comment与CI命令golden，保留所有命令/权限解析和断言、provenance摘要不动；不是移除新增步骤来补绿。e1d4ad该模块8P/0失败错误跳过/exit0，3.11.17诊断；独立SPEC/QUALITY待核，未push。单文件少于20行且根因明确，按AGENTS可跳过额外sequential-thinking；前Windows模型复杂归因660cd5三步仍单列。
+
 ### 4fff535 Windows 软件门原始失败基线
 
 三TEST路径修复已获不同QUALITY C0/I0/M0：e695f2确认仅模型路径和canonicalization，原方法/断言/故障注入不变；3752cc核指定三SHA、产品SOURCE/原生/CI/newgate TEST全等HEAD；20de74独立202P/0失败错误跳过/exit0。root dad32e再次核三SHA、四文件密钥模式零命中、vendor21566 clean。准备提交精确3TEST及handoff四文件；当前full job116317764575、provenance validate116317764716仍真实活跃，仅允许本地候选提交，全部原run终态前不push，不创建新branch/tag。
