@@ -157,6 +157,7 @@ if(ICODE_WINDOWS_BUILD_CONTEXT_DIAGNOSTIC)
   file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/icode-windows-build-context.json"
     CONTENT "${_icode_context_json}")
 endif()
+# End CI-only selected build context.
 
 add_executable(icode_positive_loopback_admin_abi EXCLUDE_FROM_ALL
   icode_positive_loopback_admin_abi.c

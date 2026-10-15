@@ -2,6 +2,12 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+### Codex Windows suspended／Job：区分严格链与兼容回退
+
+2026-10-15，独立研究者07:19:26–07:19:39 UTC核固定Codex `bb64b894fd67158be0f874872e6d7bfe717e7368`，root38dca9随后亲读同版[job.rs](https://github.com/openai/codex/blob/bb64b894fd67158be0f874872e6d7bfe717e7368/codex-rs/utils/pty/src/win/job.rs)原始字节SHA `df54d9d966509871403c5237412a3c7ff17cbdb9766b9690438f27c3b683bdcf`。**采纳**125–132的先suspended、194–205持真实child handle后Assign再Resume的顺序，以及69–75在PID复用前获取owned handle；这只是机制参考，不将kill-on-close等同实际Job空或回收确认。
+
+**不适配**默认create的BREAKAWAY_OK（51–53，严格构造62–66才移除）、assign_and_resume在Assign失败后仍Resume（135–169）、spawn_background失败后去掉挂起并无Job重试（183–189）。它们是该通用helper明确的兼容降级，不可笼统宣传为全路径fail-closed，更不能移植到ICODE原硬门。**暂缓**引入Rust框架或替换既有Win32后端；沿用既有Python/SDK窄原语。无源码复制、新依赖、权限或许可变化（固定上游Apache-2.0）；成本为suspended/assign/transfer故障测试及实际双Windows门。验收必须Assign/readonly/flush失败均零Resume、未认证零终止、已认证held process精确回收、已转交不重复释放、完整exit0与Job观察；软件模型不授native。此条不表示20项名单全量刷新。
+
 ### Windows Job 加入失败与回收权限：官方契约补核
 
 2026-10-15，root重新核Microsoft官方[AssignProcessToJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject)及[TerminateJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject)：存在Job句柄不证明parent已关联；终止Job仅影响实际关联成员。Assign失败既可能留下存活进程，也可能在达到配额等情形下已终止它，不能只从返回失败推断存活或回收。此为既有Agent Windows依赖的契约复核，非新增竞品观察，也不冒充开源20项全量刷新。

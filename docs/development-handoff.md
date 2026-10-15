@@ -2,6 +2,52 @@
 
 更新：2026-10-15（北京时间）。已在 Windows / WSL2 接力续跑；下列历史发布及线上结果只授其实际候选证据，不作为本轮新增能力验收。
 
+## 最新候选与推送停点
+
+### 39030d2 全部终态与 CMake 回归修复候选
+
+修复候选已获不同独立SPEC及QUALITY C0/I0/M0；后者2c5432确认CMake去除新增comment后逐字节等HEAD，6e7e34另独立4HostCMake全通过。两文件最终SHA：CMake `e9befa780e9eb058fc788717c787db7a9b0bdeb06b3012950b5fa6c4a6e93817`，TEST `2f11ec7353b56a47a04bbe41540235dca91bd11dedadf51bb94b67a742c2688c`。当前准备仅本两文件与root两份进度/研究文档提交；Task3两个新DOC仍为独立未实施候选，不混入此修复。
+
+三run均attempt1且已全部终态（root独立API复核）：CI38698215974 failure，45jobs=39成功/3失败/3skip；provenance38698215902 failure，validate失败、attest跳过；Pages38698215886 success/2成功。不是阶段通过；下一候选的等待门已解除。full116299753285原862980字符完整日志保存在root `39030d2-full-raw`，SHA `5096b695fb8d0f50be031d6d505fabf9b09dbed861c3afd96858a4e882fd87ce`；实际3594/875.494s/2失败/100skip/exit1。新admin八模块152逐项ok只授实际Linux3.12软件信用。Provenance内部同3594/2失败/100skip，原日志34759字符 SHA `d7324021b4c597f5c7adbf63b580ffe9741deba26d4321adb9eb7a0258a8091e`。两个Reviewer网络原失败另保留，未重跑/取消。
+
+按bug baseline技能固定证据与结论边界：
+
+| 项 | 实际对象与证明范围 |
+| --- | --- |
+| identity | GitHub job116299753285的Linux宿主合成CMake工程；无物理设备验收，设备SN/MAC不适用 |
+| time_window | UTC 2026-10-15 07:21:42 runner开始至07:36:31失败及cleanup；原日志含实际fetch/checkout39030d24 |
+| repo_matrix | runtime/analysis=Agent39030d24、vendor21566；verification=同HEAD加下述两文件未提交修复，非线上候选；Skill独立脏五TEST未触碰 |
+| artifact_identity | project(NONE)临时CMakeLists、合成MSBuild占位文件；只配置/序列化，不执行MSBuild，不授Windows编译或native能力 |
+| evidence_sources | root完整原CI日志、a61ddb当前原代码两方法2Assertion RED/零ERRORskip/exit1、388869实际CMake及fixture全文 |
+| unresolved | 修后线上3.12全量和provenance尚未运行；Reviewer网络正控仍失败；由下一候选CI证明，不能以本机绿替代 |
+| conclusion_ceiling | 根因得到支持、修复仅host验证；不是Windows SDK编译/部署/设备或R2R3通过 |
+
+根因是fixture按start marker截取整个EOF，新增ABI target被带入project(NONE)而缺源。修复不删target或断言：tests新增唯一且有序END_MARKER截取区间，先ebcea0取新boundary Assertion RED；再CMake仅加结束comment（执行语义不变）。root实际MCP e71764三步；9d3bb0整个context模块45P/零失败错误跳过/exit0，configure-only，既有3.11.17，日志8871B SHA `d1dc8150ff8316e65c3d7d0e0025130f80355ba3fe0f9ca79f40126f2a75210e`。独立SPEC C0/I0/M0并复跑4HostCMake通过；不同QUALITY进行中。Task3新计划和独立TEST仍仅DOC，不混入本修复候选。
+
+39030d2线上中间观察（非终态）：Pages38698215886已success/2jobs；CI曾35success/2failure/3skip/5in_progress，provenance仍活。Reviewer x64 job116299753290、ARM116299753274均失败；root独立读取x64完整183578字符原日志（RAM `39030d2-reviewer-x64-raw`），正控exit105/ipv4_connect_timeout/inconclusive/readiness_credit=false，Reviewer exit78，test断言0失败，job exit1。前后配置样本完整、ACL恢复与cleanup成功仍不授网络DENY；write_canary_matches_expected_result=false不是新增破坏。独立观察任务继续收全量/各平台/签名终态，全部结束前不推下一候选，不取消/重跑掩盖失败。
+
+下一原生只读门仅DOC准备：root df59fa实际sequential-thinking三步锁定沿已批准Task3，不启CLI豁免或Task4consumer。实施计划技能用于完整SOURCE/workflow资产及后续不同TEST作者的门序；main-only覆盖默认worktree。root38dca9亲读固定Codex job.rs区分suspended机制与breakaway/Assign失败仍Resume/无Job重试等不适配回退，已记持续对照，无代码复制。唯一新DOC作者只写windows-positive-admin-readonly-gate计划，当前实际源码/CI仍39030d2字节，Skill禁新修改。
+
+**认证已恢复并推送成功（覆盖下方历史认证停点）：** 用户明确要求重新弹出认证后，root重启唯一推送会话88464；c0e5cb终态exit0，远端main从619ed777快进至 `39030d24df39d9bb33dc6f2b5e7957939ac859f1`，ls-remote同SHA，无新branch/tag。连接器已独立观察同SHA三工作流：CI `38698215974` queued；Windows helper provenance `38698215902` in_progress；Public website `38698215886` in_progress。当前进入线上验收观察，未报告阶段通过，不重跑/取消隐藏失败；全部终态前不推下一候选。下方“尚未推送”仅描述第一次认证取消的历史，不是当前状态。
+
+### 推送待认证期间的原生只读门核查（不启用、不实施）
+
+root e83bd0/ab3553/c1668d/17fc88已只读核实际39030d2源码，以下是同一R2/R3原生验收的必要接点，不是新阶段完成或新架构授权：
+
+| 必要接点 | 实际现状与可复用部分 | 尚缺证据／禁止替代 |
+| --- | --- | --- |
+| 双Windows SDK ABI | ci.yml:553已有x64/ARM64与3.12；:589构建WFP observer；新ABI target为EXCLUDE_FROM_ALL | 现workflow不构建新admin ABI target，旧WFP ABI测试不覆盖新77键 |
+| 账号创建前freeze | ci.yml:1259创建账号；现工作流无admin entry调用 | 必须先freeze并由受信parent保存精确root，不从probeRoot或扫描目录取得authority |
+| 标准父suspended／持初始句柄 | windows_standard_user_token_probe.py:4373已有CreateProcessWithLogonW、显式SUSPENDED、独立env与密码buffer清零；:4410以后自行Resume | 可借鉴结构/窄API绑定，但不能调用该整段流程替代新门：它会提前Resume，并有其自身pipe/timeout测试义务；Reviewer现ci.yml:1362仍Start-Process先启动 |
+| readonly完整成功 | admin_entry.py:73–82已有全Get前后等值、stop parent及readonly_ready；:102以后finally实际cleanup/Store.close | JSON先于finally，必须完整exit0及原件，不grep首行；trusted parent自身持有初始process/thread负责失败时回收 |
+| 独立恢复与consumer | 新entry已有固定recover入口，现workflow无调用；Reviewer原账号清理在ci.yml:2127 | 原账号/probeRoot清理不能抵销admin ledger/config未知；实际launch前add／profile delete前finished及always仍需完整设计/TDD/双原生门，不因本批软件绿启用 |
+
+本轮仅整理现有实现及待验收接点，没有修改workflow、进程创建或凭据处理；推送认证未恢复，不重试交互，不冒充线上候选已有job。独立开源机制核对另由只读研究任务进行，结论须固定源码再记入持续对照。
+
+本批已本地提交 `39030d24df39d9bb33dc6f2b5e7957939ac859f1`（355401），23个实际变更文件；父提交619ed777，main-only，无新分支/tag。两阶段实际TEST/SOURCE均经过独立SPEC及不同QUALITY零阻断，root实际新152P及原policy20P。原umbrella SPEC已经与HEAD逐字节一致，故不虚造第24个变更；首次add的docs忽略提示及预期集合含未变文件已精确核对纠正，无reset或额外暂存。
+
+**尚未推送成功、未触发此候选线上验收。** Windows Git从权威WSL仓库向明确HTTPS远端推送时，12511会话终态baf89a为exit1：`User cancelled dialog`，随后身份验证无法读取用户名；不重试交互、不更换或读取其它用途密钥，不冒称远端完成。连接器独立只读确认远端main仍619ed777。候选提交和全部测试保留，需用户完成GitHub推送认证后再推明确SHA；不能用本地152P取代3.12、SDK编译、双Windows原生、consumer或R2/R3整体验收。后续Skill仍须每批新授权。
+
 ## 最新跨仓库授权边界（2026-10-15 用户确认）
 
 后续清理已完成（用户明确要求提交推送后移除临时工作区）：root 4c421a/dc4477重新逐文件核44项，37与远端相同、7与已上游祖先相同，无独有代码；额外忽略项只有两份设计记录和缓存。两份记录先逐字节哈希核对备份至系统临时目录 `icode-skill-hardening-records-20261015`，再通过 `git worktree remove --force` 精确移除 `generic-skill-hardening`；960bd3验证目录不存在、worktree登记无该条目。没有删除主仓库、其它工作区或当前五个R2 TEST；下方“未删除”只描述清理前历史状态。

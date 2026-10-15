@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = "# CI-only selected build context; not product executable authorization."
+END_MARKER = "# End CI-only selected build context."
 NS = "http://schemas.microsoft.com/developer/msbuild/2003"
 
 
@@ -972,7 +973,9 @@ class TestWindowsBuildContextHostCMake(unittest.TestCase):
         self.msbuild.write_bytes(b"owned synthetic tool; never executed")
         source = (ROOT / "native/windows/CMakeLists.txt").read_text()
         self.assertEqual(source.count(MARKER), 1)
-        self.block = source.split(MARKER, 1)[1]
+        self.assertEqual(source.count(END_MARKER), 1)
+        self.assertLess(source.index(MARKER), source.index(END_MARKER))
+        self.block = source.split(MARKER, 1)[1].split(END_MARKER, 1)[0]
 
     def configure(self, **overrides):
         values = dict(ICODE_BUILD_WINDOWS_BOOTSTRAP="ON", MSVC="TRUE", CMAKE_GENERATOR="Visual Studio 17 2022",
