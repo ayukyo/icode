@@ -581,6 +581,29 @@ jobs:
         with:
           python-version: "3.12"
           architecture: ${{ matrix.python-architecture }}
+      - name: Test positive admin software on native Python 3.12
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -m unittest tests.test_windows_positive_loopback_admin_binding tests.test_windows_positive_loopback_admin tests.test_windows_positive_loopback_admin_get tests.test_windows_positive_loopback_admin_win32 tests.test_windows_positive_loopback_admin_store tests.test_windows_positive_loopback_admin_jobs tests.test_windows_positive_loopback_admin_native tests.test_windows_positive_loopback_admin_entry tests.test_windows_positive_admin_readonly_gate tests.test_windows_positive_loopback_policy -v
+          if ($LASTEXITCODE -ne 0) { throw 'positive_admin_software_failed' }
+      - name: Build positive admin readonly SDK oracle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S native/windows -B build/positive-admin-abi -A '${{ matrix.cmake-architecture }}' -DICODE_BUILD_WINDOWS_BOOTSTRAP=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'positive_admin_abi_configure_failed' }
+          cmake --build build/positive-admin-abi --config Release --target icode_positive_loopback_admin_abi --parallel 1
+          if ($LASTEXITCODE -ne 0) { throw 'positive_admin_abi_build_failed' }
+      - name: Prove positive admin readonly admission without exemption
+        shell: pwsh
+        env:
+          ICODE_CI_POSITIVE_LOOPBACK_ADMIN: '1'
+          ICODE_CI_POSITIVE_LOOPBACK_DEDICATED_WRITER: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -I -S -B scripts/windows_positive_admin_readonly_gate.py
+          if ($LASTEXITCODE -ne 0) { throw 'positive_admin_readonly_failed' }
       - name: Build and self-test IPv6 loopback WFP observer
         shell: pwsh
         run: |

@@ -4,6 +4,32 @@
 
 ## 最新候选与推送停点
 
+### d954840 最新观察与 Task3 复审
+
+发布前终态复核：root独立API确认d954840三run全部completed，CI failure、provenance success、Pages success；合计50 jobs=45成功/2既有Reviewer失败/3skip，下一push等待门解除。x64签名安装 `116314381565` success，原134022字符日志 SHA `85f09b5427d4ebd36d5658b1562a0de52ea0eb0c23e798f8b0f68d53f69588fd`；同样owner_untrusted，不能授protected launch信用。
+
+Task3实际SOURCE不同QUALITY C0/I0/M0（3c527b，4ec9f3独立30P/0失败错误跳过）；旧产品、原生/admin源码及9测试全部等HEAD。准备仅提交6文件：helper、新TEST、workflow、两份已双审只读门DOC与本handoff；独立路径修复DOC未完整冻结新增测试，不混入提交。635bc0六文件密钥模式扫描零命中、vendor仍21566。按线上优先把本批作为待验收候选；旧fixture已知Windows路径风险保留，须用真实原日志定位后最小修复，不预报新native门通过，不用其导致的Reviewer skip抵销原网络失败。
+
+Task3实际SOURCE fresh SPEC已C0/I0/M0：9b30b5核helper与批准围栏逐字节相同、workflow严格仅插入23行；bb37f2核既有7模块、CMake及产品AppContainer/Job等HEAD；62ed18独立新30P/0失败错误跳过。不同实际SOURCE QUALITY正在复核。线上d954840 ARM签名安装 `116314381716` 已success，原日志133732字符 SHA `111d25c8e6908a7fbf3e9decd958218739d41e8712c24f4e6b30bf6dd4708937`，71+9测试通过；仍owner_untrusted，protected/compatibility/launch均false，不授WP0b通过。root独立API确认x64 `116314381565` 尚in_progress，等待同一原job，不重启。
+
+Task3实际SOURCE已由不同作者落盘：helper SHA `b53bff1d7991693dabb3cc6b23dc0014c0af5d5dcbf2fcc5c17eebab631187ce`，workflow SHA `d48966cac7c5cb40e219e458dd981ebe0902e030d6552b53ee5db5f385b2da8c`，root789228核对精确批准字节。root dc18dd新30项全通过、0失败错误跳过、exit0，诊断3.11.17，原输出6291B SHA `de6f7a07a4449f352a7b70dd21d53d524ff95f73801a7913888bb83e0fd87335`。作者另完成152旧admin+20policy及合并202项针对性通过，未执行原生；实际SOURCE fresh SPEC进行中。尚未提交推送，不授Windows/阶段通过。
+
+独立只读检查确认旧测试兼容缺口限于：NativeStore根/System32/routes无盘符且resolve斜杠前缀；entry正常private-root样本无盘符；Store init故障样本被root_namespace提前拒绝。其余/model与POSIX相对wire路径不作批量替换，ctypes同host布局无已证问题。已授权另写DOC-only最小测试路径修复计划；未授权改实际旧9测试，禁止放宽生产absolute guard、mock is_absolute或skip。
+
+实际TEST-only已双审C0/I0/M0：SPEC e53746/e91d70确认字节及独立30项预期组件缺失Failure；不同QUALITY 37d773确认compile/AST、30唯一方法、旧9测试等HEAD、helper当时不存在。已派不同SOURCE作者仅实施批准的新helper与精确workflow插入；禁止改旧测试、Skill或原生操作。另只读调查旧152项Windows模型路径及ABI兼容风险，后续必须单列测试模型修复，不能静默放宽产品guard或用skip替代。
+
+provenance validate `116308142518` 现已成功（原日志34054字符，SHA256 `2be7a46a25d14fada13e385a0f41c54c3ec96cac7ee37f314ce3703b1a331524`）。root独立API确认后续签名安装job `116314381565`（x64）、`116314381716`（ARM64）仍in_progress；整个run尚未终态，下一push门仍关闭。守护日志未公开内部测试总数，不据此推算3594。
+
+Task3 DOC不同QUALITY已C0/I0/M0（24ae4c，完整SOURCE/TEST静态编译与workflow投影哈希核对）。root随后仅用apply_patch创建实际新TEST，SHA与批准围栏7a3256a0完全一致；helper及workflow仍未实施。实际fb2cd7明确权威cwd与src导入路径：30 tests / 30预期setUp AssertionFailures / 0 ERROR / 0 skip / exit1，完整runner输出26751B SHA `5faf8dff328d8827edeb76ce827aa69a0c1ec08b9ef91014642cede960d0900a`。这是组件缺失边界，不是行为semantic RED。先前851e89缺src导入及3aad39错cwd均loader ERROR，已作废，不拿来授信。实际TEST-only独立SPEC复核进行中，尚未授权SOURCE作者。
+
+CI `38700774626` 已终态：45 jobs 中40成功、2个既有Windows Reviewer失败、3跳过。full job `116308143431` 的原日志确认 CPython 3.12.15，3594 tests / 629.084s，OK（100 skips）；原两个 HostCMake 方法及新增八模块152方法均逐项通过。完整日志856728字符，UTF-8 SHA256 `970d9ac17f2fef9e782977a83bd7578157ae4d56ba7f999039ac79a70593b71c`，可按job重新获取，不依赖会话内存。Pages同SHA已2/2成功；provenance validate `116308142518` 仍在运行，下一push等待门尚未解除。Windows Reviewer依然正控105/inconclusive、Reviewer78，不把清理成功或超时算网络DENY。
+
+Task3 TEST DOC原e6e634版本被SPEC指出I1完整context环境缺失、I2无盘符路径模型及斜杠字符串不兼容Windows，未实施。修订DOC现SHA `10eae9bd620667cb4a4cd087b8b6d5bcda44af8fa35851da4bc4d7f8ec33bfbc`，完整TEST围栏SHA `7a3256a08c95bc76634ce3b5e44912e4c4d4ba3206b468e2965fa2f281baae55`（515行/30方法）；SOURCE DOC仍78ffa248。独立SPEC复审C0/I0/M0；b1884f仅真实require/validate函数AST切片及既有ledger/parser诊断7方法通过、零失败错误跳过，不是整组件或原生信用。不同QUALITY仍进行中，实际helper/TEST/CI未修改。旧152测试也存在同类Windows模型路径风险，另列待验证，不在本批静默改写受保护旧测试。
+
+**当前远端候选是 `d9548406db35d327f0a25851e107c4c26375393b`，不是下方历史39030d2。** root bf2b37仅提交CMake边界修复两文件及root两份进度/研究文档，03aee1推送exit0、ls-remote同SHA。新attempt1工作流已触发：CI38700774626（full job116308143431活跃）、provenance38700774616（validate116308142518活跃）、Pages38700774681（validate成功、deploy116308188144排队）。当前仍须等全部终态再下一push，不把本机45P或旧152P当线上通过。原390全部失败及日志保留。
+
+Task3只读原生门的两个DOC已分别冻结并交独立SPEC：SOURCE计划SHA `78ffa248f679e6171746b697f86c57d9d9b3b00f3b29c37d4712c2267e3e5fb8`（完整350行SOURCE、23行workflow插入；原workflow before仍b4e10208），不同TEST计划SHA `e6e634121fa76294af0275ac462d15bf945725690edfe805b143f6380d406745`（477行/30方法完整围栏）。root bfdad8/324754完整读取；实际新helper/TEST/CI尚不存在或未改，无RAM伪__file__或native授信。下步必须完成DOC SPEC/不同QUALITY、实际TEST-only、不同SOURCE和真实双Windows门；不会借此跳过原consumer/网络或剩余R2/R3。
+
 ### 39030d2 全部终态与 CMake 回归修复候选
 
 修复候选已获不同独立SPEC及QUALITY C0/I0/M0；后者2c5432确认CMake去除新增comment后逐字节等HEAD，6e7e34另独立4HostCMake全通过。两文件最终SHA：CMake `e9befa780e9eb058fc788717c787db7a9b0bdeb06b3012950b5fa6c4a6e93817`，TEST `2f11ec7353b56a47a04bbe41540235dca91bd11dedadf51bb94b67a742c2688c`。当前准备仅本两文件与root两份进度/研究文档提交；Task3两个新DOC仍为独立未实施候选，不混入此修复。
