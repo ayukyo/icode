@@ -2,6 +2,18 @@
 
 更新：2026-10-15（北京时间）。已在 Windows / WSL2 接力续跑；下列历史发布及线上结果只授其实际候选证据，不作为本轮新增能力验收。
 
+7978线上已全部终态：CI38675609504为45job/40成功/2Reviewer失败/3既有跳过，provenance38675609502三job均成功，Pages38675609501两job成功，合50job/45成功/2失败/3跳过。root亲取full116228394728完整819907字符：实际CPython3.12.15、3389项/962.492秒/100skip，后置secret/pin通过；四workspace均成功，旧10个计数/哈希失败消失。root亲取双sign116232814194/116232814298完整134025/133737字符，均71 required tests＋9项通过、无skip；只授安装证明/拒绝边界，不授owner_untrusted产物启动或WP0b。双Reviewer仍正控105超时、主cleanup false/snapshot恢复失败，原失败保留。三run均原push/attempt1，无取消或重跑。下一步按已独立双审及针对性守护通过的精确6文件发布A/B候选，绑定新SHA取post-restore诊断，不授R2/R3完成。
+
+下一候选软件片已冻结、GLOBAL独立SPEC/不同QUALITY最终均C0/I0/M0：A为autonomy测试判据修复（生产不改，60相关软件P）；B为Reviewer测试层post-restore观察（正式PLAN见`nbl/plans/2026-10-15-reviewer-acl-post-restore-diagnostics.md`）。B新13方法在旧实现23Assertion/0ERRORskip，作者GREEN13＋关联24；root亲读实际两文件并独立13＋旧10共23P0skip（88d737），补loopback/版本/签名冻结26P0skip（563895）。原98AppContainer方法集合和生产/双workflow字节未变（e52511）；密钥/pin/治理/站点守护通过（68b2ba）。研究链接一度因误用网页显示行号被建议修改，root原始字节复核后恢复正确函数范围，审查者已撤回误报。无原生恢复或根因信用：B只观察原restore返回后的字段差异，原false/异常和后续清理不改；30秒界限仅软件检查点，不能中断阻塞API。当前7978四workspace均成功，双Reviewer仍失败，full/provenance在途；全部终态前不提交推送下一候选。
+
+autonomy相关模块60项软件回归通过、0跳过（8273/22cd69）；新确定性门在纯内存“每worker重给完整预算”变体触发1 Assertion，在“耗尽仍join”变体触发2 Assertion，0ERROR/skip，原生产再测GREEN（1e2f42）。首次变体将globals复制导致fakeclock未绑定，不能当合格变体证据；已改为原模块globals并复核上述精确分支。独立只读核实生产字节未变、模块动态发现无需改pinCI/sign计数；最小性建议已采纳，started等待恢复原2秒，不增加原启动阈值。当前这片尚未提交，等待最终审查和7978线上终态。
+
+autonomy测试判据修复在工作树推进：真实MCP三步cdfe6f后，root亲证两个已结束真实Threads调用原生产shutdown，参数和0.0999046但实际0.0001615秒（d71a6f），证明旧sum判据无效，不证明原CI具体竞态。仅修改`tests/test_autonomy.py`：新四场景确定性共享deadline测试；唯一Multi夹具默认3秒不变，仅本例无限等待并finally释放/有界确认退出；保留真实持久化异常、两票状态和仍活着断言，不改生产逻辑。首轮中文命令经PowerShell损坏导致loader ERROR不授RED；动态选择后7个shutdown软件方法通过0skip（ce8808）。新增方法在正确生产实现上应GREEN，不能冒称产品RED；正在用纯内存错误变体验证门槛并跑相关模块，独立实际diff审查待回。仅软件证据，真实312/Windows仍待后续SHA；7978尚有run执行，当前不再推送。
+
+最新候选已发布：`7978ed7d7b08ff09db7217db9e55e4e2d0e94435`（父beb，精确7文件83增13删），提交前索引与工作字节逐一相同、whitespace通过，提交后status空，main推送成功。首次git add返回1但复查7文件已全暂存，未重写/丢弃改动，核准索引后才commit。新push/attempt1绑定CI38675609504、provenance38675609502、Pages38675609501；rootAPI及独立observer均已确认启动，未全部终态前不推下一Agent候选。此为待验收候选，不是R2/R3完成。
+
+Reviewer恢复独立调查：原生beb双架构为snapshot failed/cleanup false，而1ce双架构snapshot verified/cleanup true；staged runtime四者均verified。源码无diff，Python分别3.12.10与3.11.9。CPython固定版本posixmodule Windows mkdir(0700)的protected可继承DACL差异是待验证机制，不能直接称根因；现聚合false尚不能区分Set失败、对象集合、DACL字节/control或identity不一致。后续先增加有界无敏感内容的失败分支诊断，不先normalize Reviewer或放宽精确恢复，亦不把既有105网络超时当此新失败解释。
+
 计数/签名基线修复候选准备：root扩大9模块142项软件回归全部通过、0跳过（316799）；密钥、固定子仓、治理、站点及whitespace均通过（55d00f/6373d9）。不同作者独立从1ce原字节重建批准的312变换和本次两计数assert，当前13682B workflow完全匹配，budget完整哈希无额外归一化，审查C0/I0/M0。线上API再次确认beb三run均completed/attempt1；将仅提交当前7文件修复候选到main，不含Skill pin/Windows系统改动。仍须新SHA真实312线上验证；原失败、autonomy判据和Reviewer恢复问题保留，不授R2/R3整体验收。
 
 最新覆盖下列进行时记录：beb三run均终态，实际49job为37成功/8失败/4跳过；主full3388项/10失败/100跳过，阶段未通过。计数修复两SOURCE共8行替换已独立只读核对，实际签名selection为48/6/3/14、总量及唯一数71，原skip/native/权限/timeout门保留。root另亲证budget冻结哈希3项中2个Assertion失败后，只更新该TEST两个完整哈希及说明，不放宽归一化规则。当前policy8＋pin14＋budget3合25项软件回归通过、0跳过（工具0d6881）；实际解释器3.11.17，driver显式模拟312标签，不授真实312/native证据。全部修改仍未提交；完整候选审查、针对性扩大回归及新SHA线上验证待完成。autonomy错误求和判据与Reviewer ACL恢复失败仍开放，不能因25项通过宣称阶段完成。

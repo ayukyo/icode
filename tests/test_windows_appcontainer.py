@@ -2141,6 +2141,15 @@ class TestWindowsAppContainer(unittest.TestCase):
             len(encoded), 500,
             f"R2.3 JSON notice {name!r} would be silently truncated",
         )
+        if name == "Windows Reviewer snapshot ACL post-restore observation":
+            if (
+                os.environ.get("GITHUB_ACTIONS") == "true"
+                and os.environ.get("RUNNER_OS") == "Windows"
+                and os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_STAGING") == "true"
+                and os.environ.get("ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT") == "true"
+            ):
+                print("reviewer_snapshot_acl_observation=" + encoded, flush=True)
+            return
         loopback_logs = {
             "Windows positive loopback configuration pre": "positive_loopback_config_pre=",
             "Windows positive loopback configuration post": "positive_loopback_config_post=",
@@ -2617,6 +2626,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         captured_network_control_scripts: list[str] = []
         captured_notices: list[tuple[str, str]] = []
         captured_runner_targets: list[dict[str, object]] = []
+        captured_acl_restores: list[object] = []
         wfp_output = StringIO()
 
         class _CaptureAssertions:
@@ -2640,6 +2650,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                 captured_notices.append((name, encoded))
 
             _workflow_json_notice = TestWindowsAppContainer._workflow_json_notice
+            _observe_reviewer_acl_restore = TestWindowsAppContainer._observe_reviewer_acl_restore
+            _observe_runtime_acl_restore = TestWindowsAppContainer._observe_runtime_acl_restore
+            _runtime_acl_restore_categories = staticmethod(
+                TestWindowsAppContainer._runtime_acl_restore_categories,
+            )
 
         with tempfile.TemporaryDirectory(prefix="icode-reviewer-probe-script-") as raw:
             runner_temp_root = Path(raw) / "runner-temp"
@@ -2689,6 +2704,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                 captured_runner_targets.append(
                     json.loads(runner_target_path.read_text(encoding="ascii"))
                 )
+                # Exercise the native-body wrapper at the OS launch seam.
+                transaction = SimpleNamespace(
+                    roots=tuple(_kwargs["_diagnostic_reviewer_snapshot_roots"]),
+                )
+                self.assertTrue(windows_appcontainer._restore_runtime_acl_roots(
+                    transaction, ctypes.c_void_p(123),
+                ))
                 return WindowsJobResult(
                     True, 0, None, True,
                     "reviewer_snapshot_acl_restore_verified=true;runtime_acl_restore_verified=true",
@@ -2725,6 +2747,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                  ), mock.patch(
                      "tests.test_windows_appcontainer.subprocess.run",
                      return_value=mock.Mock(returncode=0),
+                ), mock.patch.object(
+                    windows_appcontainer, "_restore_runtime_acl_roots",
+                    side_effect=lambda transaction, _sid: (
+                        captured_acl_restores.append(transaction) or True
+                    ),
                 ), mock.patch.dict(
                     reviewer_globals,
                     {
@@ -2741,6 +2768,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "GITHUB_ACTIONS": "true",
                         "RUNNER_OS": "Windows",
                         "ICODE_DIAGNOSTIC_WFP_PROBE_PATH": "",
+                        "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
+                        "ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT": "true",
                         "RUNNER_TEMP": str(runner_temp_root),
                         "ICODE_DIAGNOSTIC_WFP_RUNNER_TARGET_FILE": str(runner_target_path),
                         "ICODE_DIAGNOSTIC_WFP_RUNNER_READY_FILE": str(runner_ready_path),
@@ -2751,6 +2780,14 @@ class TestWindowsAppContainer(unittest.TestCase):
                     )
 
         notice_names = {name for name, _encoded in captured_notices}
+        self.assertEqual(len(captured_acl_restores), 1)
+        acl_lines = [line for line in wfp_output.getvalue().splitlines()
+                     if line.startswith("reviewer_snapshot_acl_observation=")]
+        self.assertEqual(len(acl_lines), 1)
+        self.assertEqual(json.loads(acl_lines[0].split("=", 1)[1]), {
+            "state": "restored", "phase": "post_restore_observation",
+            "restore_returned": True,
+        })
         self.assertEqual(len(captured_runner_targets), 1)
         self.assertEqual(
             captured_network_control_scripts,
@@ -4103,8 +4140,18 @@ class TestWindowsAppContainer(unittest.TestCase):
     ) -> dict[str, object]:
         """Classify the first restore mismatch without exposing object paths."""
         try:
+            deadline = time.monotonic() + windows_appcontainer._MAX_RUNTIME_ACL_SNAPSHOT_SECONDS
+
+            def checkpoint() -> None:
+                # A software checkpoint, not a hard timeout for native reads.
+                if time.monotonic() > deadline:
+                    raise TimeoutError("ACL observation deadline")
+
             root = transaction.roots[0]
-            actual_paths = windows_appcontainer._walk_workspace(root)
+            actual_paths = windows_appcontainer._walk_workspace(
+                root, max_entries=len(transaction.entries) + 1, deadline=deadline,
+            )
+            checkpoint()
             expected = {
                 item.path: item for item in transaction.entries
                 if item.path == root or item.path.is_relative_to(root)
@@ -4121,9 +4168,11 @@ class TestWindowsAppContainer(unittest.TestCase):
                 }
 
             for path in actual_paths:
+                checkpoint()
                 current = windows_appcontainer._read_dacl_state(
                     path, transaction.advapi, transaction.kernel,
                 )
+                checkpoint()
                 before = expected[path]
                 dacl_changed = current.dacl != before.dacl
                 metadata_changes = {
@@ -4137,6 +4186,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                 sid_residual = windows_appcontainer._contains_sid(
                     current.dacl, sid, transaction.advapi,
                 )
+                checkpoint()
                 if dacl_changed or metadata_changed or sid_residual:
                     return {
                         "state": "object_mismatch",
@@ -4147,9 +4197,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "control_delta": before.control ^ current.control,
                         "sid_residual": sid_residual,
                     }
+            checkpoint()
             return {"state": "snapshot_match_after_failure", "objects": len(actual_paths)}
-        except _AppContainerSetupError as exc:
-            return {"state": "inspection_failed", "category": exc.error}
+        except _AppContainerSetupError:
+            return {"state": "inspection_failed", "category": "acl_inspection_error"}
         except (OSError, RuntimeError, ValueError):
             return {"state": "inspection_failed", "category": "filesystem_error"}
 
@@ -4165,12 +4216,41 @@ class TestWindowsAppContainer(unittest.TestCase):
         except Exception:
             report.update({"state": "restore_exception"})
             raise
-        report.update(
-            {"state": "restored"}
-            if restored
-            else self._runtime_acl_restore_categories(transaction, sid)
-        )
+        try:
+            report.update(
+                {"state": "restored"}
+                if restored
+                else self._runtime_acl_restore_categories(transaction, sid)
+            )
+        except Exception:
+            # Diagnostics must not change restoration or block remaining cleanup.
+            report.update({"state": "inspection_failed", "category": "observation_error"})
         return restored
+
+    def _observe_reviewer_acl_restore(
+        self,
+        restore: Callable[[windows_appcontainer._RuntimeAclTransaction, ctypes.c_void_p], bool],
+        transaction: windows_appcontainer._RuntimeAclTransaction,
+        sid: ctypes.c_void_p,
+        snapshot: Path,
+        report: dict[str, object],
+    ) -> bool:
+        """Observe only this CI probe's preselected single-root transaction."""
+        if transaction.roots != (snapshot,) or not (
+            os.environ.get("GITHUB_ACTIONS") == "true"
+            and os.environ.get("RUNNER_OS") == "Windows"
+            and os.environ.get("ICODE_DIAGNOSTIC_RUNTIME_STAGING") == "true"
+            and os.environ.get("ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT") == "true"
+        ):
+            return restore(transaction, sid)
+        restored = None
+        try:
+            restored = self._observe_runtime_acl_restore(restore, transaction, sid, report)
+            return restored
+        finally:
+            report.update({
+                "phase": "post_restore_observation", "restore_returned": restored,
+            })
 
     def test_runtime_ACL恢复诊断只报告脱敏的不匹配类别(self) -> None:
         with tempfile.TemporaryDirectory(prefix="icode-runtime-acl-diagnostic-") as raw:
@@ -8102,6 +8182,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             ledger_root = temp_root / "ledger-canary"
             for directory in (snapshot, outside_root, original_workspace, ledger_root):
                 directory.mkdir()
+            # Bind observation to the same canonical root validated by the runner.
+            snapshot = snapshot.resolve(strict=True)
 
             allowed_content = b"def reviewed_value():\n    return 'safe-snapshot'\n"
             approved_file = snapshot / "reviewed.py"
@@ -8970,17 +9052,28 @@ class TestWindowsAppContainer(unittest.TestCase):
                             ipv6_loopback_port,
                             temp_root,
                         )
+                acl_restore_report: dict[str, object] = {
+                    "state": "not_observed", "phase": "post_restore_observation",
+                    "restore_returned": None,
+                }
+                original_restore = windows_appcontainer._restore_runtime_acl_roots
                 try:
-                    candidate = run_windows_appcontainer(
-                        [str(staged_executable), "-I", "-c", script],
-                        # 20s observer gate + 2x10s connect + 5s child-ready,
-                        # with 15s for startup, file probes and receipt writing.
-                        cwd=scratch, timeout_seconds=60, process_limit=8,
-                        _diagnostic_runtime_acl=True,
-                        _diagnostic_runtime_roots=(staged_runtime,),
-                        _diagnostic_reviewer_snapshot_roots=(snapshot,),
-                        _diagnostic_profile_name=reviewer_profile_name,
-                    )
+                    with mock.patch.object(
+                        windows_appcontainer, "_restore_runtime_acl_roots",
+                        side_effect=lambda transaction, sid: self._observe_reviewer_acl_restore(
+                            original_restore, transaction, sid, snapshot, acl_restore_report,
+                        ),
+                    ):
+                        candidate = run_windows_appcontainer(
+                            [str(staged_executable), "-I", "-c", script],
+                            # 20s observer gate + 2x10s connect + 5s child-ready,
+                            # with 15s for startup, file probes and receipt writing.
+                            cwd=scratch, timeout_seconds=60, process_limit=8,
+                            _diagnostic_runtime_acl=True,
+                            _diagnostic_runtime_roots=(staged_runtime,),
+                            _diagnostic_reviewer_snapshot_roots=(snapshot,),
+                            _diagnostic_profile_name=reviewer_profile_name,
+                        )
                 finally:
                     runner_gate_relay_stop.set()
                     if runner_gate_relay_thread is not None:
@@ -8990,6 +9083,10 @@ class TestWindowsAppContainer(unittest.TestCase):
                     wfp_receipt, wfp_exit_code = _stop_wfp_event_probe(
                         wfp_process, wfp_paths,
                     )
+                self._workflow_json_notice(
+                    "Windows Reviewer snapshot ACL post-restore observation",
+                    acl_restore_report,
+                )
                 raw_runner_observer_gate = runner_observer_gate_state.get("state")
                 allowed_runner_observer_gate_states = (
                     "not_requested", "pending", "ready", "unavailable", "invalid",

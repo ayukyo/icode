@@ -2,6 +2,10 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+本片独立Agent主源复核：Codex固定`27065a91ccbf5ba8532844be3777fcf83b77820d`的[fixture原始L229–245](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/windows-sandbox-rs/sandbox_smoketests.py#L229-L245)和[代理/直连原始L506–564](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/codex-rs/windows-sandbox-rs/sandbox_smoketests.py#L506-L564)已重新核原始字节；旧观察的网页显示行号不是源码行锚点，以本条更正。采纳finally释放与实际正控响应检查；ICODE本片A另外将start纳入try并join确认退出，B保留post观察与原restore返回的独立信用。不适配把shutdown/close调用或直连非零退出升级为完整回收、ACL恢复或DENY证明；该fixture没有显式join或本片ACL观察实现。固定源码许可[Apache-2.0](https://github.com/openai/codex/blob/27065a91ccbf5ba8532844be3777fcf83b77820d/LICENSE)，仅机制借鉴，无复制/依赖/权限变更；收益是更可靠回归，成本是少量测试与只读扫描，验收为软件负控＋后续同SHA双Windows原生观察。不冒充20项名单全量刷新。
+
+Windows恢复诊断（2026-10-15）：复用既有观察机制，不新增竞品框架。固定CPython源码对照确认[v3.12.10 mkdir](https://github.com/python/cpython/blob/v3.12.10/Modules/posixmodule.c#L5342-L5382)在Windows处理0700时设置protected可继承DACL，而[v3.11.9](https://github.com/python/cpython/blob/v3.11.9/Modules/posixmodule.c#L4610-L4627)未传显式安全属性；[Microsoft ACL合同](https://learn.microsoft.com/en-us/windows/win32/api/aclapi/nf-aclapi-setnamedsecurityinfow)说明可继承ACE会向子对象传播。这仅是Reviewer恢复差异的候选机制，尚缺原生失败字段，不能称根因。采纳已有测试observer＋有界脱敏post-restore分类；暂缓任何恢复规范化；不适配降低精确恢复比较、增加超时或将事后snapshot匹配改授成功。仅研究机制，零上游实现复制/依赖；验证需绑定后续候选双Windows原日志，软件fixture不替代native。
+
 计数关联修复软件窗口：不同作者独立重建批准的312版本/矩阵及计数变化后逐字节匹配，root142项针对性软件回归0失败/跳过，必要守护通过。采纳现有精确收集与完整哈希门，不引入宽松计数或新框架；暂缓授予真实312/native信用，等待新SHA线上。autonomy参数求和判据及Reviewer ACL恢复问题独立开放，旧失败不取消/重跑掩盖。
 
 beb验收失败修订：线上发现新增TEST后的精确计数消费者遗漏，已将此前零审结论限定为当时已查范围，不授候选通过。当前采纳既有strict collection/skip拒绝机制，仅同步真实数量并增实际sign嵌入门AST回归，不把hardcount改宽松；这是明确小型关联修复，复用既有研究，不扩新竞品/通用框架。Task4正式RED16/10Assertion/0ERRORskip与独立双审零仅软件信用，SOURCE补数及线上仍待；本轮双Reviewer还多主ACL恢复失败，shutdown另有错误计时oracle，均分别调查，不以版本收敛掩盖失败、减少平台或取消重跑。

@@ -268,8 +268,9 @@ class FailOneShutdownTicketService(TicketService):
 class MultiNeverSafePointExecutor:
     """并行启动多个 worker，直到测试统一放行。"""
 
-    def __init__(self, expected: int) -> None:
+    def __init__(self, expected: int, *, release_timeout: float | None = 3) -> None:
         self.expected = expected
+        self.release_timeout = release_timeout
         self.started = threading.Event()
         self.release = threading.Event()
         self._lock = threading.Lock()
@@ -280,7 +281,7 @@ class MultiNeverSafePointExecutor:
             self.calls += 1
             if self.calls == self.expected:
                 self.started.set()
-        self.release.wait(3)
+        self.release.wait(self.release_timeout)
         return ExecutionResult(state="succeeded")
 
 
@@ -1196,6 +1197,44 @@ class TestNativePythonPreset(unittest.TestCase):
                     _executor, result = self.execute_fixture(context, self.control(context), provider, step)
                     self.assertEqual(result.error_code, expected)
                     self.assertNotIn("PRIVATE", repr(result))
+
+
+class TestShutdownJoinBudget(unittest.TestCase):
+    def test_workers_share_one_deadline_including_early_returns(self) -> None:
+        # Exercise the real join loop without scheduler timing or ticket I/O.
+        for costs, expected in (
+            ((0.0, 0.0), (0.05, 0.05)),
+            ((0.02, 0.03), (0.05, 0.03)),
+            ((0.05, 0.0), (0.05,)),
+            ((0.06, 0.0), (0.05,)),
+        ):
+            with self.subTest(costs=costs):
+                clock = [100.0]
+                allowances = []
+
+                def worker(index, cost):
+                    def join(timeout):
+                        allowances.append((index, timeout))
+                        clock[0] += cost
+                    return SimpleNamespace(join=join)
+
+                manager = object.__new__(AutonomyManager)
+                manager._lock = threading.RLock()
+                manager._shutting_down = True
+                manager._workers = {
+                    str(index): worker(index, cost) for index, cost in enumerate(costs)
+                }
+                # Replace only this module's clock, not the shared time module.
+                with patch("icode.autonomy.time", SimpleNamespace(
+                    monotonic=lambda: clock[0],
+                )):
+                    manager.shutdown(timeout=0.05)
+                self.assertEqual(len(allowances), len(expected))
+                self.assertEqual(
+                    [index for index, _ in allowances], list(range(len(expected))),
+                )
+                for (_, actual), limit in zip(allowances, expected):
+                    self.assertAlmostEqual(actual, limit)
 
 
 class TestIntentPayload(unittest.TestCase):
@@ -2295,16 +2334,16 @@ class TestAutonomyManager(unittest.TestCase):
             _payload(service.project_id, "shutdown-failing-ticket"))["ticket"]["ticket_id"]
         second_ticket = service.create_ticket(
             _payload(service.project_id, "shutdown-healthy-ticket"))["ticket"]["ticket_id"]
-        executor = MultiNeverSafePointExecutor(expected=2)
+        executor = MultiNeverSafePointExecutor(expected=2, release_timeout=None)
         manager = AutonomyManager(service, executor=executor, enabled=True)
         self.managers.append(manager)
-        manager.handle_intent(
-            first_ticket, {"intent": "start", "request_id": "shutdown-failing-start"})
-        manager.handle_intent(
-            second_ticket, {"intent": "start", "request_id": "shutdown-healthy-start"})
-        self.assertTrue(executor.started.wait(2))
-        service.fail_ticket_id = first_ticket
         try:
+            manager.handle_intent(
+                first_ticket, {"intent": "start", "request_id": "shutdown-failing-start"})
+            manager.handle_intent(
+                second_ticket, {"intent": "start", "request_id": "shutdown-healthy-start"})
+            self.assertTrue(executor.started.wait(2))
+            service.fail_ticket_id = first_ticket
             # timeout 限定的是落盘之后的 join 阶段；整体 wall time 还含
             # 两张工单的控制面 I/O，不应拿固定 0.5 秒阈值推断 join 越界。
             with ExitStack() as stack:
@@ -2317,9 +2356,9 @@ class TestAutonomyManager(unittest.TestCase):
                 call.args[0] for spy in join_spies for call in spy.call_args_list
             ]
             self.assertTrue(join_timeouts)
-            # deadline 的浮点加减可能比字面 timeout 略大；总预算仍单独约束。
+            # 每个参数是允许等待的上限，不能求和推断实际累计等待；
+            # 共享截止时间由 TestShutdownJoinBudget 确定性验证。
             self.assertTrue(all(0 <= value <= 0.055 for value in join_timeouts))
-            self.assertLessEqual(sum(join_timeouts), 0.055)
             self.assertCountEqual(
                 service.shutdown_update_calls, [first_ticket, second_ticket])
             self.assertIn(
@@ -2332,7 +2371,11 @@ class TestAutonomyManager(unittest.TestCase):
             )
             self.assertTrue(any(worker.is_alive() for worker in manager._workers.values()))
         finally:
+            workers = list(manager._workers.values())
             executor.release.set()
+            for worker in workers:
+                worker.join(ASYNC_TEST_TIMEOUT_SECONDS)
+                self.assertFalse(worker.is_alive())
 
 
 if __name__ == "__main__":  # pragma: no cover
