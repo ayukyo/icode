@@ -2,6 +2,16 @@
 
 更新：2026-10-15（北京时间）。已在 Windows / WSL2 接力续跑；下列历史发布及线上结果只授其实际候选证据，不作为本轮新增能力验收。
 
+计数/签名基线修复候选准备：root扩大9模块142项软件回归全部通过、0跳过（316799）；密钥、固定子仓、治理、站点及whitespace均通过（55d00f/6373d9）。不同作者独立从1ce原字节重建批准的312变换和本次两计数assert，当前13682B workflow完全匹配，budget完整哈希无额外归一化，审查C0/I0/M0。线上API再次确认beb三run均completed/attempt1；将仅提交当前7文件修复候选到main，不含Skill pin/Windows系统改动。仍须新SHA真实312线上验证；原失败、autonomy判据和Reviewer恢复问题保留，不授R2/R3整体验收。
+
+最新覆盖下列进行时记录：beb三run均终态，实际49job为37成功/8失败/4跳过；主full3388项/10失败/100跳过，阶段未通过。计数修复两SOURCE共8行替换已独立只读核对，实际签名selection为48/6/3/14、总量及唯一数71，原skip/native/权限/timeout门保留。root另亲证budget冻结哈希3项中2个Assertion失败后，只更新该TEST两个完整哈希及说明，不放宽归一化规则。当前policy8＋pin14＋budget3合25项软件回归通过、0跳过（工具0d6881）；实际解释器3.11.17，driver显式模拟312标签，不授真实312/native证据。全部修改仍未提交；完整候选审查、针对性扩大回归及新SHA线上验证待完成。autonomy错误求和判据与Reviewer ACL恢复失败仍开放，不能因25项通过宣称阶段完成。
+
+beb线上已暴露真实遗漏，版本片尚未验收：四workspace均因安装测试新增方法而固定计数未同步失败；root亲取Ubuntu116221124134完整33172字符，995项/275.775s/8 Assertion。Winx64另有shutdown把join参数之和当实际总等待的第9失败（独立语义复现已证明判据无效，不证明原CI具体时序或生产超时）；双Reviewer仍正控105超时且本轮另见主cleanup_ok=false/reviewer_snapshot_acl_restore_failed，不能当只有旧网络失败。provenance已失败，实际validate失败/sign仅一个未展开占位skip共2job，未执行双sign；其preflight报告3388/641.105s/10F/100skip，原log仅失败尾部，不能把其它8根因当已核。主CI full仍在运行，原失败不取消/重跑。
+
+计数契约修复正在正式TDD：producer chain/source模块48/35，消费者pinCI仍46/33、四类8/12/7/22仍7/11/6/21，sign tuple及去重总量仍46/69而非48/71。此为应用TEST收集边界，不涉及公开ABI/编译原语；判定supported的同步遗漏，原生恢复/生产计时根因unresolved。跨层核查与实际MCP4bcbd1后，root仅在policy新增真实嵌入门AST/loader回归并更新两count断言的精确命令指纹，未放宽hardcount/skip。16方法软件RED为10Assertion/0ERRORskip（显式模拟312版本标签、实际WSL311，完整11480B/SHA52fe9255）；freshSPEC及不同QUALITY均零。不同SOURCE作者现仅补pinCI常量和sign两assert，待GREEN及独立审查；autonomy判据和Reviewer恢复另有只读调查，不混修或冒已解决。Windows core PLAN51f仅基线文档，继续未实施。
+
+312 exact24已发布：GLOBAL freshSPEC与不同fresh QUALITY均C0/I0/M0，聚合清单2303B/SHA05a7d4a333eacbbf1fb4317cf41eb91d5c0019bdd4f2915992b11dc383a689ee。root复核12SOURCE只允许转换逐字节匹配、必要守护及上一候选三run终态后，将精确24索引字节/100644/whitespace核验，提交`beb499b7380404bac515174821e738ebde760390`（父1ce，352增89删，提交后status空），已推main且远端API同SHA。首次提交包装未获有效JSON，实查HEAD未变/仅22正确路径暂存，明确补齐两新DESIGN/PLAN后重核24才提交，未覆盖其它数据。新push/attempt1：CI38673296112、provenance38673296108、Pages38673296094，预计45+3+2仍待实测，全部终态前不推下一Agent候选。最低>=3.12/当前CI及观察通道312已落代码，尚无本候选真实312完整运行信用；R2/R3及原非版本门仍开放。独立observer在运行，Windows软件核心PLAN继续仅文档，待新基线重绑定审查，不启用任何loopback豁免。
+
 Python3.12候选已完成正式TDD和实际源码独立审查：actualTEST精确8文件，严格108在旧配置为15失败父/46Assertion/0ERRORskip；root完整398538B RED SHA09a6e858892a350e5a126d2d06e4ca550cbbaa078547f58eef2d84fa2e1b267a，独立SPEC及不同QUALITY均零。不同SOURCE作者仅12批准路径，先亲证正确venv RED再改；首次误用系统3.10的117项含ERROR仅环境错误，保留不授RED。actualSOURCE独立SPEC/不同QUALITY均C0/I0/M0，独立strict108全绿；root扩大132（完整CI契约22及GIL4）0FAIL/ERRORskip，完整23991B SHA befbc0adf52e9f317776e7a93c5ddb86482faf49818f06cc0e5fa17f3c0a7ea1。root两次完整日志捕获前各有输出额度截断尝试，未当完整证据。治理/站点/密钥/pin/whitespace检查通过；CI b4e10208、provenance0be6f70a，原job/命令/权限/timeout不变、仅版本cell去重。只授既有WSL3.11软件诊断，新候选真实3.12/安装/双平台仍待线上；未改Skill或原Windows系统，未启用loopback豁免。待exact24整片审查后提交推送main，所有原R2/R3非版本门继续开放。
 
 用户随后明确确认“OK，去掉3.11”：以`2026-10-15-python312-runtime-design.md`/同名PLAN执行Agent最低>=3.12、当前hostCI/安装观察通道312的支持范围收紧。只去重复版本cell，所有原job/平台/安全门/权限/超时保留，预计主CI45/provenance3/Pages2（仍待实际展开）。当前唯一actualTEST作者先落正负控并取旧配置RED，SOURCE未改；Windows临时豁免软件核心PLAN965行/55772B/5f3f6150已完成匿名资产，仅文档，等312候选重绑定后再审/实施，不借本次版本变更启用系统写入。本机无现成312，沿既有WSL311只做软件诊断，不安装解释器，真正312证据由线上取得。Skill子仓/固定pin/历史311证据不改。

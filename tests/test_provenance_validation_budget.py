@@ -17,15 +17,16 @@ class TestProvenanceValidationBudget(unittest.TestCase):
         self.assertEqual(values, [b"25"])
 
     def test_all_validation_commands_and_permissions_unchanged(self):
-        # Normalize only the authorized old budget, not whitespace or commands.
+        # Freeze the approved Python 3.12 baseline; normalize only the old budget.
         normalized = self.prefix.replace(b"    timeout-minutes: 15\n", b"    timeout-minutes: 25\n", 1)
         self.assertEqual(
             hashlib.sha256(normalized).hexdigest(),
-            "b322e73c257fa7271cc50429a16fb940d8296ee08e2cd68c72a44b1d32c0896c",
+            "18becfb47fe72171db12414a4770fb9fe9dac6858033ff3d38e6a8de4b900fb2",
         )
 
     def test_entire_signing_job_unchanged(self):
+        # Includes the reviewed 48/6/3/14 selections and 71 unique required tests.
         self.assertEqual(
             hashlib.sha256(self.sign).hexdigest(),
-            "839f562f965cd95e6a3bda85ec6425d65d5ab352735e10fb6da469cf1b5a7ba6",
+            "d5faaac42bdf34bd2afbf4887878c93560c2b60bf5c10500bdd6539b9dcf2d32",
         )

@@ -2,6 +2,12 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+计数关联修复软件窗口：不同作者独立重建批准的312版本/矩阵及计数变化后逐字节匹配，root142项针对性软件回归0失败/跳过，必要守护通过。采纳现有精确收集与完整哈希门，不引入宽松计数或新框架；暂缓授予真实312/native信用，等待新SHA线上。autonomy参数求和判据及Reviewer ACL恢复问题独立开放，旧失败不取消/重跑掩盖。
+
+beb验收失败修订：线上发现新增TEST后的精确计数消费者遗漏，已将此前零审结论限定为当时已查范围，不授候选通过。当前采纳既有strict collection/skip拒绝机制，仅同步真实数量并增实际sign嵌入门AST回归，不把hardcount改宽松；这是明确小型关联修复，复用既有研究，不扩新竞品/通用框架。Task4正式RED16/10Assertion/0ERRORskip与独立双审零仅软件信用，SOURCE补数及线上仍待；本轮双Reviewer还多主ACL恢复失败，shutdown另有错误计时oracle，均分别调查，不以版本收敛掩盖失败、减少平台或取消重跑。
+
+312候选发布窗口：exact24 GLOBAL双审零、132软件及守护通过后，root发布`beb499b7380404bac515174821e738ebde760390`（父1ce）；远端main已核同SHA，新CI38673296112/provenance38673296108/Pages38673296094均push/attempt1待验，原候选三run已终态才推。仅支持范围收敛和去重，尚不授新SHA实际312/安装或原生完整能力，先前311证据保留历史，所有非版本门继续有效；无Skill pin或本机解释器变更。
+
 312实际进展：用户支持范围决定已正式TDD，actualTEST8/旧配置108为15失败父与46Assertion、0ERRORskip，经独立双审；不同SOURCE仅12版本相关路径，strict108全绿、实际SOURCE独立SPEC及不同QUALITY零。root扩大132软件回归、治理/站点/密钥/pin通过。采纳最低版本与受测安装通道分账已落配置；真实312运行/安装仍待同候选线上。首次误环境3.10含ERROR与日志工具截断均保留为无效/不完整尝试，不伪装有效RED或完整原件，不借移除311宣称139根因消除或R2/R3通过。
 
 Python基线新决定（2026-10-15）：用户已明确“去掉3.11”，Agent最低要求收敛为`>=3.12`，当前CI/安装观察通道选3.12；不是将所有未来minor锁死或宣称已验收。只读复核[Aider固定5dc9490安装文档](https://github.com/Aider-AI/aider/blob/5dc9490bb35f9729ef2c95d00a19ccd30c26339c/aider/website/docs/install.md#L9-L57)与[uv0.13.0固定4ecd0ef版本机制](https://github.com/astral-sh/uv/blob/4ecd0eff2a81e3ffdcd7cfee10d08936e4747c17/docs/concepts/python-versions.md#L16-L113)：采纳应用运行时显式选择与宿主解释器分离；暂缓新增安装器/系统PATH变化，本轮不安装解释器。不适配用pip的兼容筛选参数冒真正3.12运行，或把Requires-Python当已测试版本清单（[pip](https://pip.pypa.io/en/stable/cli/pip_install/#cmdoption-python-version)、[元数据规范](https://packaging.python.org/en/latest/specifications/core-metadata/#requires-python)）。仅机制借鉴，无代码复制/新依赖；Aider Apache-2.0、uv MIT/Apache-2.0。历史311记录/技术fixture及Skill支持不改，剩余平台/安全门全部保留；实际3.12由新候选线上核验，当前本机软件诊断解释器不能冒目标运行信用。

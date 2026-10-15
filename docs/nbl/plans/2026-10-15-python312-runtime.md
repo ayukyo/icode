@@ -52,6 +52,28 @@
 
 ---
 
+### Task 4: beb线上暴露的精确计数关联修复
+
+**Dependencies:** Task 2；Task 3线上失败已观察，不要求失败候选变绿
+**Parallelizable:** No (TEST与SOURCE作者分离；下一推送仍等原三run终态)
+
+`beb499b`工作区995项/8 Assertion失败证实本片漏同步计数消费者；此前零审不是该缺口不存在的证明。原生/权限/运行版本政策不改，不动态放宽数量、不取消skip拒绝。root实际MCP三步回执`4bcbd1`。
+
+| producer/consumer边界 | 旧值 | 当前真实值 |
+| --- | --- | --- |
+| InstalledProbe / InstalledWire | 7 / 11 | 8 / 12 |
+| SourceReceipt / SourceConsumer | 6 / 21 | 7 / 22 |
+| installed_chain / installed_source模块 | 46 / 33 | 48 / 35 |
+| sign四selection与去重总量 | (46,6,3,14) / 69 | (48,6,3,14) / 71 |
+
+- [x] root TEST-only在`test_python_runtime_policy.py`新增解析实际sign嵌入Python的回归：只load四selection以核数量，不执行Windows探针；command指纹仅按后两条计数assert的确切变更更新为`5dbce0bb10c4e9dc55a196a8ebf43b8aa423a3fa81ef7cdbc4ef70f20805570a`，policy指纹不变。
+- [x] 正式RED为新两方法＋原StartupPinCiTests14合16，10 Assertion/0ERRORskip，完整11480B/SHA52fe925542e8dcc948d6cd1f9d0230d48fddec11baf6bd77725d72a201a6a630。既有WSL311仅软件诊断，driver显式模拟312版本标签以运行已不支持311的parent-bound回执fixture；不是实际312运行证据。此前未模拟标签的诊断额外触发unsupported311 fixture失败，不授产品缺陷；首次日志输出截断也不当完整原件。
+- [ ] fresh TEST SPEC与不同QUALITY后，不同SOURCE作者只改`tests/test_windows_startup_pin_ci.py`的上述四类、两模块及对应skip计数常量；原32类/所有14方法/skip注入断言原样。
+- [ ] SOURCE作者只将provenance嵌入门的tuple改`(48, 6, 3, 14)`、双去重总量改71；实际选择、执行命令、旧真实RED探针、权限/超时/架构不改，不修改root TEST补绿。
+- [ ] 同一16方法必须零失败/错误/跳过；补全运行策略及132相关回归并纳入原skip-enforcement模块，软件版标签仿真明确分账。独立实际源码及整片审查、必要守护后才推后续main候选；原beb所有失败保留，不取消/重跑刷绿，真实312仍待新SHA线上核验。
+
 **Execution Mode:** serial
+
+Task 4关联补充：beb线上full的另两项失败来自`tests/test_provenance_validation_budget.py`冻结的旧版本workflow哈希。root在当前候选亲证3项中2个Assertion失败、0ERROR/skip后，仅更新该文件两个完整SHA256基线和说明；保留25分钟预算、完整prefix/sign字节冻结及命令/权限独立策略指纹，不增加归一化规则。此文件纳入本片审查与针对性回归，不能以更新哈希代替原workflow差异审查。
 
 用户已批准该支持范围调整，按既有持续执行授权实施，不新增重复人工审批。计划自审：三项覆盖配置/回执/测试/双语描述与原生平台保留，零新通用框架/外部依赖；实际软件资产在Task1先落并验证，SOURCE严格限定以上机械改动。

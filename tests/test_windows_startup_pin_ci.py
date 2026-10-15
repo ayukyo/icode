@@ -52,8 +52,8 @@ NATIVE_SIBLING_CLASS = "tests.test_windows_private_sibling_window.WindowsPrivate
 NATIVE_CLASSES = (NATIVE_CLASS, NATIVE_SECURITY_CLASS, NATIVE_IDENTITY_CLASS, NATIVE_DACL_CLASS,
                   NATIVE_SIBLING_CLASS)
 NATIVE_COUNTS = (6, 3, 2, 2, 2)
-PORTABLE_COUNTS = (1, 32, 30, 3, 2, 24, 17, 2, 2, 16, 1, 4, 32, 7, 1, 16, 7, 11, 4, 3, 3, 18,
-                   1, 6, 21, 5, 6, 5, 11, 3, 13, 18)
+PORTABLE_COUNTS = (1, 32, 30, 3, 2, 24, 17, 2, 2, 16, 1, 4, 32, 7, 1, 16, 8, 12, 4, 3, 3, 18,
+                   1, 7, 22, 5, 6, 5, 11, 3, 13, 18)
 GUARD_MODULE = "tests.test_windows_startup_pin_ci"
 
 
@@ -194,9 +194,9 @@ class StartupPinCiTests(unittest.TestCase):
 
     def test_real_class_and_module_loader_cannot_hide_required_skip(self):
         for class_id, count in ((PORTABLE_CLASSES[0], 1),
-                                ("tests.test_windows_installed_chain.InstalledProbeTests", 7),
+                                ("tests.test_windows_installed_chain.InstalledProbeTests", 8),
                                 ("tests.test_windows_startup_source.SourceOwnerTests", 18),
-                                ("tests.test_windows_installed_source.SourceConsumerObservationTests", 21),
+                                ("tests.test_windows_installed_source.SourceConsumerObservationTests", 22),
                                 ("tests.test_windows_bootstrap_binding.InstalledSourceCaptureTests", 6),
                                 *zip(PORTABLE_CLASSES[-5:-1], PORTABLE_COUNTS[-5:-1]),
                                 (PORTABLE_CLASSES[-1], 18),
@@ -232,9 +232,9 @@ class StartupPinCiTests(unittest.TestCase):
                                  ("tests.test_windows_startup_pin", 33),
                                  ("tests.test_windows_startup_security", 43),
                                  ("tests.test_windows_startup_security_native", 20),
-                                 ("tests.test_windows_installed_chain", 46),
+                                 ("tests.test_windows_installed_chain", 48),
                                  ("tests.test_windows_startup_source", 24),
-                                 ("tests.test_windows_installed_source", 33)):
+                                 ("tests.test_windows_installed_source", 35)):
             with self.subTest(selection=selection):
                 code, result = self.run_ci((selection,))
                 self.assertEqual(code, 0)

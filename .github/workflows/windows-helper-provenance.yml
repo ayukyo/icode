@@ -161,9 +161,9 @@ jobs:
                         'tests.test_windows_startup_native.WindowsSecurityQueryTests',
                         'tests.test_windows_startup_pin_ci')
           suites = [unittest.defaultTestLoader.loadTestsFromName(name) for name in selections]
-          require(tuple(suite.countTestCases() for suite in suites) == (46, 6, 3, 14))
+          require(tuple(suite.countTestCases() for suite in suites) == (48, 6, 3, 14))
           ids = [case.id() for suite in suites for case in cases(suite)]
-          require(len(ids) == 69 and len(set(ids)) == 69)
+          require(len(ids) == 71 and len(set(ids)) == 71)
           for test_id in ids:
               print('chain-role-required-id=' + test_id)
           raise SystemExit(main(selections))

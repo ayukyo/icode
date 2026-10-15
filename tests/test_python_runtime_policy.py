@@ -1,8 +1,10 @@
 """Python 3.12 support policy without reducing platform or security coverage."""
 
 from pathlib import Path
+import ast
 import hashlib
 import re
+import textwrap
 import tomllib
 import unittest
 
@@ -92,14 +94,16 @@ class PythonRuntimePolicyTests(unittest.TestCase):
 
     def test_version_migration_preserves_commands_and_security_policies(self):
         # Freeze the reviewed 1ce4c2a workflow behavior, excluding version/matrix
-        # declarations and setup labels. No native command runs in this test.
+        # declarations and setup labels. The signer count assertions include
+        # the two additional installed-chain tests; all other commands stay fixed.
+        # No native command runs in this test.
         expected = {
             "ci.yml": (
                 "2cbe435c878deb199834e93351ea8b700abb6b34b18feed0164a055fa7d7e2b3",
                 "47953a7c8cdb502d0ced29e9875ecb0964d5a25a3c033dde9b5f93e39c2660bc",
             ),
             "windows-helper-provenance.yml": (
-                "dd88a8a01432efbe631ca3eb4c2a46b868bf9725442222bc39cd1c888357edcd",
+                "5dbce0bb10c4e9dc55a196a8ebf43b8aa423a3fa81ef7cdbc4ef70f20805570a",
                 "06fb33eb4b3a7fb42101f5b95a24abb2ca48eff2347d21faaad0fcf1de17eeaa",
             ),
         }
@@ -110,6 +114,33 @@ class PythonRuntimePolicyTests(unittest.TestCase):
             for label, values, expected_digest in zip(("commands", "policies"), (commands, policies), digests):
                 with self.subTest(workflow=name, contract=label):
                     self.assertEqual(hashlib.sha256("\n".join(values).encode()).hexdigest(), expected_digest)
+
+    def test_signer_required_counts_match_actual_test_selections(self):
+        # Parse the real embedded gate, but never execute its Windows API probe.
+        job = _job((WORKFLOWS / "windows-helper-provenance.yml").read_text(
+            encoding="utf-8"), "sign")
+        block = job.split("          @'\n", 1)[1].split(
+            "          '@ | python -B -\n", 1)[0]
+        tree = ast.parse(textwrap.dedent(block))
+        selections = [ast.literal_eval(node.value) for node in tree.body
+                      if isinstance(node, ast.Assign) and any(
+                          isinstance(target, ast.Name) and target.id == "selections"
+                          for target in node.targets)]
+        self.assertEqual(len(selections), 1)
+        suites = [unittest.defaultTestLoader.loadTestsFromName(name)
+                  for name in selections[0]]
+        counts = tuple(suite.countTestCases() for suite in suites)
+        declared = [ast.literal_eval(node.args[0].comparators[0])
+                    for node in ast.walk(tree) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name) and node.func.id == "require"
+                    and len(node.args) == 1 and isinstance(node.args[0], ast.Compare)
+                    and isinstance(node.args[0].left, ast.Call)
+                    and isinstance(node.args[0].left.func, ast.Name)
+                    and node.args[0].left.func.id == "tuple"]
+        self.assertEqual(declared, [counts])
+        total = sum(counts)
+        self.assertEqual(block.count(
+            f"require(len(ids) == {total} and len(set(ids)) == {total})"), 1)
 
 
 if __name__ == "__main__":
