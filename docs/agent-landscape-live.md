@@ -2,6 +2,18 @@
 
 ## 2026-10-15 接续观察（优先于下方历史窗口）
 
+GIL诊断片现已正式TDD：新旧TEST安全selector6为6失败父/28有效Assertion/零ERRORskip且独立双审零，不同SOURCE仅runner改Python线程同步dump；actualSOURCE双审零、限定9全绿，root12项及密钥/固定子仓守护通过。采纳固定CPython主源支持的同步读栈机制，无复制/新依赖/权限；保留120秒/fatal/默认发现/真实退出及25分钟外限，明确永久持GIL和blocked stderr盲区。隔离I1及退出分类/中断I2修复有独立反例历史，不作隐藏重跑。暂缓同SHA full与139整体修复信用，未改产品或native门；下一候选待整片双审/提交。
+
+2026-10-15授权更新：已获用户明确允许“仅GitHub临时runner的独立网络正控AppContainer SID临时loopback豁免＋精确移除及恢复验证”，产品Reviewer SID、本机及持久策略不改。此前待授权文字仅作历史保留。拟采纳此最小拓扑验证，不把超时或WFP零匹配授DENY；仍先设计、正负控及同候选回执，当前尚未实施。没有获得额外云资源或外部peer授权。
+
+b341双full本次各3373项通过（3.11 746.128s、3.12 822.429s，均100原skip）；三run现全终态，CI50=45成功/2Reviewer失败/3skip、provenance五成功/Pages两成功，合57=52成功/2失败/3skip。root独立API/双原log核验。间歇性SIGSEGV不能由一次未发生反推解决，前述纯软件采样复现仍成立。GIL计划隔离I1及退出分类/中断优先级I2均修复后重新双审零；正式TEST已取得6失败父/28有效Assertion/0ERRORskip并实际双审零，不同SOURCE作者开始仅runner修复，尚无SOURCE GREEN或线上修复信用。
+
+Skill B3f `cd9889f2ae4cb1090963338ad72412f526342ea5` 三run九唯一job已全终态成功，root独立API与双candidate原log复核；新23在Win/Linux均零skip通过（73.534s/12.308s），旧消费者及双inspection162项保持，Windows旧四POSIX skip和generic原skip不授通过。采纳typed provider/前置检查/发布事实分账已关闭CODE inspection软件片；暂缓host/C2与其余C1b，不升级Agent pin或冒整体验收。此前“动态/待线上”只属历史观察。
+
+b341当前双Mac B真实向量片已通过：各baseline2/唯一quota RED，SOURCE24/正式5P0ERRORskip；Darwin strict3也真实编译通过。两B原件57项及red32/green33来源、raw/binary/binding核真，root另亲核ARM核心原件；完整M0a2/M0b/M1标志仍false、身份保留且combined cleanup unknown。不将owned-root/直接父回收片外推全树清理、逃逸防护或产品自动模式。采纳固定namespace兼容与真实正负控分账已得到该片证据，剩余硬指标不降级。
+
+Mac feature候选现已exact7双审零后发布 `b341cb1f010942d99f56861f9eff0ff60f84fc57`，CI38646841774/provenance38646841818/Pages38646841719待验。139并行研究已从纯Python fixture＋周期采样得到本机同型SIGSEGV复现；无周期同循环通过，Python线程同步dump的collector对照通过。亲查固定[CPython v3.11.17 watchdog](https://github.com/python/cpython/blob/v3.11.17/Modules/faulthandler.c#L564-L592)与[读栈路径](https://github.com/python/cpython/blob/v3.11.17/Python/traceback.c#L1174-L1250)，裸C线程不持GIL读栈的机制与现象相容；上游[#116008](https://github.com/python/cpython/issues/116008)仅作相关案例，不当本项目C栈或修复证明。拟采纳Python线程同步读栈，代价是永久持GIL时不能保证周期采样；保留fatal及CI硬预算。暂缓线上根因和修复验收；不适配删诊断/跳测/提高超时刷绿。无新增依赖或上游源码复制，不刷新20名单。
+
 本次更新：Skill B3f exact5全片双审零后已推待验main `cd9889f2ae4cb1090963338ad72412f526342ea5`，新candidate38646355366/inspection38646355535/site38646355662均push/attempt1，尚未授线上通过或Agent pin升级。末guard与CI直接依赖两个I1均保留历史，修复各有正式RED；仅采纳既有typed provider/发布前检查和结果分账机制，无新依赖权限，不重刷20名单。
 
 Mac feature小修研究（2026-10-15，71bde77）：双B原log确认软件探针RLIMIT_NPROC编译不可见、原生未执行。已亲查固定Apple XNU xnu-12377.1.9的[resource.h](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/sys/resource.h#L487-L491)和[cdefs.h](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.1.9/bsd/sys/cdefs.h#L966-L980)。采纳头前显式Darwin namespace，与既有真实入口一致；独立可移植TEST先2绿1Assertion，再不同SOURCE补一行，TEST/SOURCE均双审零，strict3软件通过。暂缓真实SDK、双Mac配额及清理信用；不适配自造RLIMIT数值、放宽编译或跳门。未复制上游实现、增加依赖/权限或改变配额。另71全套3.11再现周期采样后exit139、3.12成功不能覆盖；fatal handler已enable但无完整fatal栈，根因未证，诊断与此夹具修复分账。

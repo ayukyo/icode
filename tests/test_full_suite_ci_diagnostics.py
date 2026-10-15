@@ -48,42 +48,39 @@ class FullSuiteDiagnosticsTests(unittest.TestCase):
             if active == OLD:
                 return [sys.executable, "-m", "unittest"]
             return [sys.executable, "-u", str(ROOT / "scripts/run_full_suite_ci.py")]
+        path = str(ROOT / "scripts/run_full_suite_ci.py")
         bootstrap = (
-            "import faulthandler,json,runpy,sys\n"
+            "import faulthandler,json,runpy,sys,threading\n"
             "faulthandler.disable()\n"
             "real_enable=faulthandler.enable\n"
             "def enable(file=None,all_threads=True):\n"
             " real_enable(file=file,all_threads=all_threads)\n"
-            " print('FATAL:'+json.dumps([file is sys.stderr,all_threads,faulthandler.is_enabled()]),"
-            "file=sys.stderr,flush=True)\n"
+            " print('FATAL:'+json.dumps([file is sys.stderr,all_threads,faulthandler.is_enabled()]),file=sys.stderr,flush=True)\n"
             "faulthandler.enable=enable\n"
-            "real_arm=faulthandler.dump_traceback_later\n"
-            "def arm(timeout,repeat=False,file=None,exit=False):\n"
-            " print('ARM:'+json.dumps([timeout,repeat,file is sys.stderr,exit]),"
-            "file=sys.stderr,flush=True)\n"
+            "def forbidden(*args,**kwargs):\n"
+            " raise AssertionError('C watchdog forbidden')\n"
+            "faulthandler.dump_traceback_later=forbidden\n"
+            "faulthandler.cancel_dump_traceback_later=forbidden\n"
+            "namespace=runpy.run_path(" + repr(path) + ")\n"
+            "main=namespace['main']\n"
+            "configured=main.__globals__['TRACE_INTERVAL_SECONDS']\n"
+            "real_thread=threading.Thread\n"
+            "class ObservedThread(real_thread):\n"
+            " def start(self):\n"
+            "  print('ARM:'+json.dumps([configured,self.daemon,self.name]),file=sys.stderr,flush=True)\n"
+            "  return super().start()\n"
+            " def join(self,*args,**kwargs):\n"
+            "  result=super().join(*args,**kwargs)\n"
+            "  print('CANCEL:'+json.dumps([not self.is_alive()]),file=sys.stderr,flush=True)\n"
+            "  return result\n"
+            "threading.Thread=ObservedThread\n"
         )
         if instrumentation == "short":
-            bootstrap += " real_arm(0.1,repeat=repeat,file=file,exit=exit)\n"
-        bootstrap += (
-            "def cancel():\n"
-            " faulthandler.cancel_dump_traceback_later=real_cancel\n"
-            " real_cancel()\n"
-            " print('CANCEL',file=sys.stderr,flush=True)\n"
-            "real_cancel=faulthandler.cancel_dump_traceback_later\n"
-            "faulthandler.dump_traceback_later=arm\n"
-            "faulthandler.cancel_dump_traceback_later=cancel\n"
-        )
+            bootstrap += "main.__globals__['TRACE_INTERVAL_SECONDS']=0.1\n"
         if active == OLD:
-            bootstrap += (
-                "sys.argv=['unittest']\n"
-                "runpy.run_module('unittest',run_name='__main__',alter_sys=True)\n"
-            )
+            bootstrap += "sys.argv=['unittest'];runpy.run_module('unittest',run_name='__main__',alter_sys=True)\n"
         else:
-            path = str(ROOT / "scripts/run_full_suite_ci.py")
-            bootstrap += (
-                "sys.argv=[" + repr(path) + "]\n"
-                "runpy.run_path(" + repr(path) + ",run_name='__main__')\n"
-            )
+            bootstrap += "main()\n"
         return [sys.executable, "-u", "-c", bootstrap]
 
     def run_tiny(self, root, command):
@@ -163,11 +160,11 @@ class FullSuiteDiagnosticsTests(unittest.TestCase):
                 result = self.run_tiny(root, self.command("record"))
                 self.assertEqual(result.returncode, code, result.stderr)
                 self.assertEqual(result.stderr.count("FATAL:[true, true, true]"), 1)
+                self.assertEqual(result.stderr.count('ARM:[120, true, "full-suite-stack-sampler"]'), 1)
+                self.assertEqual(result.stderr.count("CANCEL:[true]"), 1)
                 self.assertLess(result.stderr.index("FATAL:"), result.stderr.index("ARM:"))
-                self.assertEqual(result.stderr.count("ARM:[120, true, true, false]"), 1)
-                self.assertEqual(result.stderr.count("CANCEL"), 1)
                 self.assertLess(result.stderr.index("ARM:"), result.stderr.index("Ran 2 tests"))
-                self.assertGreater(result.stderr.index("CANCEL"), result.stderr.index("Ran 2 tests"))
+                self.assertGreater(result.stderr.index("CANCEL:[true]"), result.stderr.index("Ran 2 tests"))
 
     def test_short_hang_emits_periodic_stacks_and_child_is_reaped(self):
         with tempfile.TemporaryDirectory() as name:
@@ -187,8 +184,8 @@ class FullSuiteDiagnosticsTests(unittest.TestCase):
             self.assertIsNotNone(child.returncode)
             self.assertNotEqual(child.returncode, 0)
             self.assertEqual(stdout, "")
-            self.assertIn("ARM:[120, true, true, false]", stderr)
-            self.assertGreaterEqual(stderr.count("Timeout ("), 2, stderr)
+            self.assertIn('ARM:[120, true, "full-suite-stack-sampler"]', stderr)
+            self.assertGreaterEqual(stderr.count("Periodic full-suite stack sample:"), 2, stderr)
             self.assertIn("in test_wait", stderr)
             self.assertNotIn("LOCAL_VALUE_SENTINEL", stderr)
             self.assertNotIn("OK", stderr)
