@@ -51,7 +51,7 @@ def bounded_stage(error):
 
 
 def child_receipt_stage(raw):
-    """Bounded stage from the child's own bounded failure receipt, if any."""
+    """Bounded stage/type/winerror from the child's own failure receipt, if any."""
     try:
         value = json.loads(raw)
     except Exception:
@@ -59,7 +59,16 @@ def child_receipt_stage(raw):
     if type(value) is not dict or value.get("stage") != "failed":
         return None
     code = value.get("error")
-    return None if type(code) is not str else bounded_stage(code)
+    if type(code) is not str:
+        return None
+    detail = dict(stage=bounded_stage(code))
+    kind = value.get("type")
+    if type(kind) is str and EXCEPTION.fullmatch(kind):
+        detail["kind"] = kind
+    winerror = value.get("winerror")
+    if type(winerror) is int and 0 < winerror < 65536:
+        detail["winerror"] = winerror
+    return detail
 
 
 def bounded_child_type(raw):
@@ -76,9 +85,13 @@ def entry_failure(result, raw, stderr):
     """Bounded child failure detail on a nonzero entry exit; never raw output."""
     error = RuntimeError("gate_entry_exit")
     error.add_note("child_exit: %d" % result)
-    stage_code = child_receipt_stage(raw)
-    if stage_code is not None:
-        error.add_note("child_stage: %s" % stage_code)
+    detail = child_receipt_stage(raw)
+    if detail is not None:
+        error.add_note("child_stage: %s" % detail["stage"])
+        if "kind" in detail:
+            error.add_note("child_kind: %s" % detail["kind"])
+        if "winerror" in detail:
+            error.add_note("child_winerror: %d" % detail["winerror"])
         return error
     try:
         stderr.seek(0)
@@ -100,6 +113,14 @@ def failure_receipt(error):
             name = note[len("child_type: "):]
             if EXCEPTION.fullmatch(name):
                 value["child"] = name
+        elif note.startswith("child_kind: "):
+            name = note[len("child_kind: "):]
+            if EXCEPTION.fullmatch(name):
+                value["child_type"] = name
+        elif note.startswith("child_winerror: "):
+            digits = note[len("child_winerror: "):]
+            if digits.isdigit():
+                value["child_winerror"] = int(digits)
         elif note.startswith("child_exit: "):
             digits = note[len("child_exit: "):]
             if digits.isdigit():

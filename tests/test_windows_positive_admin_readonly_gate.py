@@ -511,6 +511,12 @@ class TestReadonlyGate(unittest.TestCase):
         cases = [("bounded_stage", receipt("create_directory"), ["child_stage: create_directory"]),
             ("unknown_stage", receipt("unknown"), ["child_stage: unknown"]),
             ("leaky_stage", receipt("C:\\Users\\runner\\secret"), ["child_stage: unknown"]),
+            ("typed_receipt", gate.wire(dict(schema=1, stage="failed", state="unknown",
+                error="unknown", type="OSError", winerror=5)) + b"\n",
+             ["child_stage: unknown", "child_kind: OSError", "child_winerror: 5"]),
+            ("bad_typed_receipt", gate.wire(dict(schema=1, stage="failed", state="unknown",
+                error="unknown", type="C:\\evil", winerror="x")) + b"\n",
+             ["child_stage: unknown"]),
             ("not_failed_stage", gate.wire(dict(schema=1, stage="frozen", root="C:\\x")) + b"\n", []),
             ("receipt_limit", b'{"schema":1,"stage":"failed","state":"unknown","error":"' + b"x" * 600 + b'"}\n', []),
             ("not_json", b"Traceback (most recent call last):\r\n", []),
@@ -527,7 +533,9 @@ class TestReadonlyGate(unittest.TestCase):
                 self.assertIn("child_exit: 4", notes)
                 for item in expected:
                     self.assertIn(item, notes)
-                self.assertEqual(len([x for x in notes if x.startswith("child_stage: ")]), len(expected))
+                for prefix in ("child_stage: ", "child_kind: ", "child_winerror: "):
+                    self.assertEqual([x for x in notes if x.startswith(prefix)],
+                                     [x for x in expected if x.startswith(prefix)])
                 self.assertTrue(all(x.closed for x in streams))
     def test_entry_crashed_child_reports_bounded_exception_type_without_receipt(self):
         crash = (b"Traceback (most recent call last):\r\n  File \"D:\\a\\icode\\icode\\scripts\\"
@@ -551,12 +559,19 @@ class TestReadonlyGate(unittest.TestCase):
         crashed.add_note("child_exit: 1"); crashed.add_note("child_type: ModuleNotFoundError")
         self.assertEqual(gate.failure_receipt(crashed), dict(schema=1, stage="readonly_failed",
             state="unknown", error="gate_entry_exit", child="ModuleNotFoundError", child_exit=1))
+        typed = RuntimeError("gate_entry_exit")
+        typed.add_note("child_exit: 4"); typed.add_note("child_stage: unknown")
+        typed.add_note("child_kind: OSError"); typed.add_note("child_winerror: 5")
+        self.assertEqual(gate.failure_receipt(typed), dict(schema=1, stage="readonly_failed",
+            state="unknown", error="gate_entry_exit", child="unknown", child_exit=4,
+            child_type="OSError", child_winerror=5))
         self.assertEqual(gate.failure_receipt(RuntimeError("context_fixed")), dict(schema=1,
             stage="readonly_failed", state="unknown", error="context_fixed"))
     def test_failure_receipt_never_admits_unbounded_child_detail(self):
         leaky = RuntimeError("gate_entry_exit")
         leaky.add_note("child_stage: C:\\Users\\runner\\secret"); leaky.add_note("child_type: D")
         leaky.add_note("child_exit: not-a-number")
+        leaky.add_note("child_kind: C:\\evil"); leaky.add_note("child_winerror: -5")
         self.assertEqual(gate.failure_receipt(leaky), dict(schema=1, stage="readonly_failed",
             state="unknown", error="gate_entry_exit", child="unknown"))
         for error in (OSError(3, "C:\\Users\\runner\\secret"), RuntimeError("S-1-5-32-544"),

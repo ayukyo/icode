@@ -17,6 +17,7 @@ def emit(value):
 
 
 STAGE = re.compile(r"[a-z][a-z0-9_]{0,47}")
+TYPE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,47}")
 
 
 def bounded_stage(error):
@@ -27,8 +28,19 @@ def bounded_stage(error):
     return text
 
 
+def bounded_type(error):
+    """Bounded exception class name; never message content."""
+    name = type(error).__name__
+    return name if TYPE.fullmatch(name) else "unknown"
+
+
 def failure_receipt(error):
-    return dict(schema=1, stage="failed", state="unknown", error=bounded_stage(error))
+    value = dict(schema=1, stage="failed", state="unknown", error=bounded_stage(error),
+                 type=bounded_type(error))
+    code = getattr(error, "winerror", None)
+    if type(code) is int and 0 < code < 65536:
+        value["winerror"] = code
+    return value
 
 
 def main(argv=None):

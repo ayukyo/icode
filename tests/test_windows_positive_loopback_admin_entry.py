@@ -193,9 +193,12 @@ class TestAdminEntry(unittest.TestCase):
             with self.subTest(message=message):
                 self.assertEqual(entry.bounded_stage(RuntimeError(message)),expected)
         self.assertEqual(entry.failure_receipt(RuntimeError("entry_freeze_arguments")),
-            dict(schema=1,stage="failed",state="unknown",error="entry_freeze_arguments"))
+            dict(schema=1,stage="failed",state="unknown",error="entry_freeze_arguments",type="RuntimeError"))
         self.assertEqual(entry.failure_receipt(FileNotFoundError(2,"C:\\a\\icode\\icode\\x.py")),
-            dict(schema=1,stage="failed",state="unknown",error="unknown"))
+            dict(schema=1,stage="failed",state="unknown",error="unknown",type="FileNotFoundError"))
+        spoofed=FileNotFoundError(2,"C:\\a\\icode\\icode\\x.py");spoofed.winerror=5
+        self.assertEqual(entry.failure_receipt(spoofed),
+            dict(schema=1,stage="failed",state="unknown",error="unknown",type="FileNotFoundError",winerror=5))
 
     def test_recover_uses_only_exact_trusted_root_and_result_status(self):
         self.assertEqual(self.invoke(self.args("recover")),0)
