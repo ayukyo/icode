@@ -16,6 +16,17 @@ class AdminError(RuntimeError):
     pass
 
 
+STAGE = re.compile(r"[a-z][a-z0-9_]{0,31}")
+
+
+def _parent_stage(error):
+    """Bounded native attach stage; never a path, SID, secret or message body."""
+    text = str(error)
+    if type(error) is not str and STAGE.fullmatch(text):
+        return "parent_failed_" + text
+    return "parent_failed"
+
+
 def _wire(value):
     return json.dumps(value, ensure_ascii=True, sort_keys=True,
                       separators=(",", ":"), allow_nan=False).encode("ascii")
@@ -180,9 +191,10 @@ class Admin:
             raise AdminError("parent_phase")
         try:
             self.native.attach_parent(self.store, pid)
-        except Exception:
+        except Exception as error:
             self._failure("parent_failed")
-            raise AdminError("parent_failed") from None
+            # Native stages stay bounded; the ledger code above stays exact.
+            raise AdminError(_parent_stage(error)) from None
         # PID, creation time, token user and Job membership came from handles.
         self.data["phase"] = "bound"
         self.store.flush()

@@ -159,6 +159,20 @@ class TestAdminCoordinator(unittest.TestCase):
             self.assertEqual(receipt["stage"],"not_owned")
             self.assertIsNone(receipt["native_restoration_verified"])
 
+    def test_attach_parent_failure_reports_bounded_native_stage_and_ledger_code(self):
+        for error, expected in ((RuntimeError("parent_open"), "parent_failed_parent_open"),
+                                (RuntimeError("parent_membership"), "parent_failed_parent_membership"),
+                                (RuntimeError("C:\\Users\\runneradmin\\secret"), "parent_failed"),
+                                (RuntimeError("d6a7a3abbd2c2b29730d8ccc2d1a1c9f5a1c30fd"), "parent_failed")):
+            with self.subTest(error=repr(error)):
+                self.model=ModelNative()
+                controller=admin.Admin.prepare(Path("/model/admin"),self.model.boot["account_sid"])
+                def failed(store,pid): raise error
+                self.model.attach_parent=failed
+                with self.assertRaises(admin.AdminError) as caught: controller.attach_parent(self.model.boot["pid"])
+                self.assertEqual(str(caught.exception),expected)
+                self.assertEqual(controller.data["first_error"],"parent_failed")
+
     def setUpModelForSubcase(self):
         self.model=ModelNative()
         self.controller=admin.Admin.prepare(Path("/model/admin"),self.model.boot["account_sid"])
