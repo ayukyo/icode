@@ -627,7 +627,7 @@ class TestReadonlyGate(unittest.TestCase):
         events.clear()
         def probe_process(argv, **options):
             events.append(("probe", argv, options))
-            options["stdout"].write(b"probe_full_env_ok\n")
+            options["stdout"].write(b"probe_full_env_ok\r\n")
             return N(wait=lambda timeout: 0, poll=lambda: 0, kill=lambda: None,
                      _handle=N(Close=lambda: None))
         with patch.object(gate.tempfile, "TemporaryFile", temporary), \

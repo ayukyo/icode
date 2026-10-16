@@ -456,7 +456,7 @@ class Gate:
                     error.add_note("child_type: %s" % fields[1])
                     error.add_note("child_winerror: %s" % fields[2])
                 raise error
-            require(raw == b"probe_full_env_ok\n", "gate_probe_output")
+            require(raw.replace(b"\r\n", b"\n") == b"probe_full_env_ok\n", "gate_probe_output")
         finally:
             _release_owned(sys.exception(),
                 lambda: stderr.close() if stderr is not None else None,
