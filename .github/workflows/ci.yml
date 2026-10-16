@@ -595,6 +595,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'positive_admin_abi_configure_failed' }
           cmake --build build/positive-admin-abi --config Release --target icode_positive_loopback_admin_abi --parallel 1
           if ($LASTEXITCODE -ne 0) { throw 'positive_admin_abi_build_failed' }
+      - name: Probe host loopback sockets before readonly admission
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.close(); print('host_loopback_ipv4_ok')"
+          if ($LASTEXITCODE -ne 0) { throw 'host_loopback_ipv4_failed' }
+          python -c "import socket; s=socket.socket(socket.AF_INET6, socket.SOCK_STREAM); s.close(); print('host_loopback_ipv6_ok')"
+          if ($LASTEXITCODE -ne 0) { throw 'host_loopback_ipv6_failed' }
       - name: Prove positive admin readonly admission without exemption
         shell: pwsh
         env:
