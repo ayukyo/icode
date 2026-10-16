@@ -31,6 +31,13 @@ from scripts.windows_positive_loopback_admin_win32 import (
 METHOD = "tests.test_windows_appcontainer.TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理"
 READY = dict(schema=1, stage="readonly_ready", sdk=True, loader=True,
              storage=True, standard_token=True, configuration_unchanged=True)
+# PATH is required for winsock provider initialization on hosted runners:
+# third-party catalog providers resolve their dependency DLLs through it.
+ALLOWED_ENVIRONMENT = {"SystemRoot", "SystemDrive", "TEMP", "TMP", "PATH", "GITHUB_ACTIONS",
+                       "GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+                       "GITHUB_JOB", "GITHUB_REF", "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA",
+                       "GITHUB_WORKSPACE", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_ENVIRONMENT",
+                       "ICODE_CI_POSITIVE_LOOPBACK_ADMIN", "ICODE_CI_POSITIVE_LOOPBACK_DEDICATED_WRITER"}
 
 
 def require(value, stage):
@@ -369,12 +376,11 @@ class Gate:
         entry = self.checkout / "scripts/windows_positive_loopback_admin_entry.py" if stage == "frozen" else self.root / "trusted/scripts/windows_positive_loopback_admin_entry.py"
         # The trusted admin needs original binding fields, not workflow output
         # file capabilities. Its fixed context() independently checks them.
-        allowed = {"SystemRoot", "SystemDrive", "TEMP", "TMP", "GITHUB_ACTIONS",
-                   "GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
-                   "GITHUB_JOB", "GITHUB_REF", "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA",
-                   "GITHUB_WORKSPACE", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_ENVIRONMENT",
-                   "ICODE_CI_POSITIVE_LOOPBACK_ADMIN", "ICODE_CI_POSITIVE_LOOPBACK_DEDICATED_WRITER"}
-        environment = {key: value for key, value in os.environ.items() if key in allowed}
+        # Windows normalizes some inherited key spellings (SystemRoot can be
+        # read back as SYSTEMROOT); matching is therefore case-insensitive.
+        lowered = {key.casefold() for key in ALLOWED_ENVIRONMENT}
+        environment = {key: value for key, value in os.environ.items()
+                       if key.casefold() in lowered}
         stdout, stderr = None, None
         try:
             # Before freeze the account does not exist. Afterwards inherit the

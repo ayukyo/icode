@@ -425,6 +425,23 @@ class TestReadonlyGate(unittest.TestCase):
                  patch.object(gate.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
                 with self.subTest(result=result, error=error), self.assertRaises(RuntimeError): value._entry("readonly_ready", [], 180)
             self.assertTrue(all(x.closed for x in streams)); self.assertIn(("handle_close",), events)
+    def test_entry_environment_is_exactly_the_bounded_allowlist_with_path(self):
+        value, events, streams, temporary, process = self.entry_fixture(exit_code=0)
+        seeded = {"PATH": r"C:\Windows\System32", "SystemRoot": r"C:\Windows", "TEMP": r"C:\Temp",
+                  "GITHUB_JOB": "windows-reviewer-snapshot-probe", "GITHUB_TOKEN": "secret-value",
+                  "UNRELATED": "value"}
+        with patch.object(gate.tempfile, "TemporaryFile", temporary), patch.object(gate.subprocess, "Popen", process), \
+             patch.object(gate.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), \
+             patch.dict(gate.os.environ, seeded, clear=True):
+            value._entry("readonly_ready", [], 180)
+        environment = {key.casefold(): value for key, value in events[0][2]["env"].items()}
+        self.assertIn("path", environment)
+        self.assertEqual(environment["path"], r"C:\Windows\System32")
+        self.assertIn("systemroot", environment)
+        self.assertIn("github_job", environment)
+        self.assertNotIn("github_token", environment)
+        self.assertNotIn("unrelated", environment)
+        self.assertTrue(set(environment) <= {key.casefold() for key in gate.ALLOWED_ENVIRONMENT})
     def test_entry_timeout_and_close_failure_preserve_timeout_and_attempt_all_cleanup(self):
         value, events, streams, temporary, process = self.entry_fixture(timeout=True, close_fail=True)
         with patch.object(gate.tempfile, "TemporaryFile", temporary), patch.object(gate.subprocess, "Popen", process), \

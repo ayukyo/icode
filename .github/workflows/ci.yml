@@ -600,7 +600,7 @@ jobs:
         env:
           ICODE_PROBE_CODE: |
             import os, subprocess, sys
-            allowed = {"SystemRoot", "SystemDrive", "TEMP", "TMP", "GITHUB_ACTIONS",
+            allowed = {"SystemRoot", "SystemDrive", "TEMP", "TMP", "PATH", "GITHUB_ACTIONS",
                        "GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
                        "GITHUB_JOB", "GITHUB_REF", "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA",
                        "GITHUB_WORKSPACE", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_ENVIRONMENT",
