@@ -275,7 +275,9 @@ class TestAdminStore(unittest.TestCase):
         def create_file(path,*args): model.opened+=1; return 501
         model.k=SimpleNamespace(CreateFileW=create_file)
         model.create_directory=lambda path,descriptor:model.creates.append(path)
-        model.verify_ancestor=lambda handle:None
+        model.verified=[]
+        def verify_ancestor(handle):model.verified.append(handle)
+        model.verify_ancestor=verify_ancestor
         calls={}
         def info(handle):
             calls[handle]=calls.get(handle,0)+1
@@ -345,6 +347,13 @@ class TestAdminStore(unittest.TestCase):
             source=Path(temporary).resolve(strict=True)
             with self.assertRaises(storage.Failure):
                 self.tree(source,[f"file-{index}.bin" for index in range(100001)])
+
+    def test_copytree_verifies_protected_destination_not_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source=Path(temporary).resolve(strict=True)
+            result,model=self.tree(source,["normal.bin"])
+            self.assertEqual(result[0]["path"],"runtime/normal.bin")
+            self.assertEqual(model.verified,[502])
 
 
 if __name__=="__main__":

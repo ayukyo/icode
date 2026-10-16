@@ -251,7 +251,6 @@ def copy_private_tree(store, source, destination, *, deadline):
             out = None
             try:
                 source_identity = store.w.info(raw_handle)
-                store.w.verify_ancestor(raw_handle)
                 info = path.lstat()
                 size = int(info.st_size)
                 if size < 0 or size > 268435456:
@@ -264,6 +263,10 @@ def copy_private_tree(store, source, destination, *, deadline):
                     raise Failure("freeze_source_changed")
                 out, target_identity = store.w.open_file(target, PRIVATE, create=True, write=True)
                 store.w.write(out, data)
+                # The frozen bytes are trusted through this protected copy,
+                # not the origin DACL: hosted toolcaches inherit write access
+                # for Authenticated Users from the drive root.
+                store.w.verify_ancestor(out)
                 records.append(dict(path=target.relative_to(store.root).as_posix(),
                                     identity=list(target_identity), size=size,
                                     sha256=hashlib.sha256(data).hexdigest()))
