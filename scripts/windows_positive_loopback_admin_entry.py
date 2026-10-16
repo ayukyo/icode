@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import sys
 
 
@@ -13,6 +14,21 @@ def emit(value):
         raise RuntimeError("entry_receipt_limit")
     sys.stdout.buffer.write(encoded + b"\n")
     sys.stdout.buffer.flush()
+
+
+STAGE = re.compile(r"[a-z][a-z0-9_]{0,47}")
+
+
+def bounded_stage(error):
+    """Bounded failure category for the receipt; never a secret, SID, path or command."""
+    text = "" if error is None else str(error)
+    if text != "unknown" and ("_" not in text or not STAGE.fullmatch(text)):
+        return "unknown"
+    return text
+
+
+def failure_receipt(error):
+    return dict(schema=1, stage="failed", state="unknown", error=bounded_stage(error))
 
 
 def main(argv=None):
@@ -110,6 +126,6 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except Exception:
-        emit(dict(schema=1, stage="failed", state="unknown"))
+    except Exception as error:
+        emit(failure_receipt(error))
         raise SystemExit(4)

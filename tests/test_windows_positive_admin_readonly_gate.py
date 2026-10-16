@@ -389,7 +389,7 @@ class TestReadonlyGate(unittest.TestCase):
         parent, model, account = self.parent(); parent.create(account); model.alive = False
         parent.reap(); parent.close()
         self.assertFalse(any(x[0] == "terminate" for x in model.events))
-    def entry_fixture(self, *, exit_code=0, timeout=False, stderr=b"", close_fail=False):
+    def entry_fixture(self, *, exit_code=0, timeout=False, stderr=b"", stdout=None, close_fail=False):
         value = gate.Gate.__new__(gate.Gate)
         value.root, value.checkout = PRIVATE_ROOT, MODEL / "checkout"
         events, streams = [], []
@@ -404,7 +404,7 @@ class TestReadonlyGate(unittest.TestCase):
         class Process:
             def __init__(self, argv, **options):
                 events.append(("popen", argv, options))
-                options["stdout"].write(gate.wire(gate.READY) + b"\n")
+                options["stdout"].write(gate.wire(gate.READY) + b"\n" if stdout is None else stdout)
                 options["stderr"].write(stderr)
                 self.alive = timeout; self.calls = 0
                 def close():
@@ -505,6 +505,66 @@ class TestReadonlyGate(unittest.TestCase):
         self.assertTrue(store.closed); self.assertFalse(account.owned); self.assertFalse(processes.alive)
         self.assertEqual([x[0] for x in accounts.calls], ["add", "delete"])
         self.assertFalse(store.data["exact_restoration"])
+    def test_entry_child_failure_propagates_bounded_child_stage_and_exit(self):
+        def receipt(code):
+            return gate.wire(dict(schema=1, stage="failed", state="unknown", error=code)) + b"\n"
+        cases = [("bounded_stage", receipt("create_directory"), ["child_stage: create_directory"]),
+            ("unknown_stage", receipt("unknown"), ["child_stage: unknown"]),
+            ("leaky_stage", receipt("C:\\Users\\runner\\secret"), ["child_stage: unknown"]),
+            ("not_failed_stage", gate.wire(dict(schema=1, stage="frozen", root="C:\\x")) + b"\n", []),
+            ("receipt_limit", b'{"schema":1,"stage":"failed","state":"unknown","error":"' + b"x" * 600 + b'"}\n', []),
+            ("not_json", b"Traceback (most recent call last):\r\n", []),
+            ("empty", b"", [])]
+        for name, raw, expected in cases:
+            with self.subTest(child=name):
+                value, events, streams, temporary, process = self.entry_fixture(exit_code=4, stdout=raw)
+                with patch.object(gate.tempfile, "TemporaryFile", temporary), \
+                     patch.object(gate.subprocess, "Popen", process), \
+                     patch.object(gate.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+                    with self.assertRaisesRegex(RuntimeError, "gate_entry_exit") as caught:
+                        value._entry("readonly_ready", [], 180)
+                notes = list(caught.exception.__notes__)
+                self.assertIn("child_exit: 4", notes)
+                for item in expected:
+                    self.assertIn(item, notes)
+                self.assertEqual(len([x for x in notes if x.startswith("child_stage: ")]), len(expected))
+                self.assertTrue(all(x.closed for x in streams))
+    def test_entry_crashed_child_reports_bounded_exception_type_without_receipt(self):
+        crash = (b"Traceback (most recent call last):\r\n  File \"D:\\a\\icode\\icode\\scripts\\"
+                 b"windows_positive_loopback_admin_entry.py\", line 52\r\n"
+                 b"ModuleNotFoundError: No module named 'scripts'\r\n")
+        value, events, streams, temporary, process = self.entry_fixture(exit_code=1, stdout=b"", stderr=crash)
+        with patch.object(gate.tempfile, "TemporaryFile", temporary), \
+             patch.object(gate.subprocess, "Popen", process), \
+             patch.object(gate.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+            with self.assertRaisesRegex(RuntimeError, "gate_entry_exit") as caught:
+                value._entry("readonly_ready", [], 180)
+        self.assertIn("child_type: ModuleNotFoundError", caught.exception.__notes__)
+        self.assertIn("child_exit: 1", caught.exception.__notes__)
+        self.assertFalse(any(x.startswith("child_stage: ") for x in caught.exception.__notes__))
+    def test_failure_receipt_emits_bounded_stage_and_bounded_child(self):
+        child = RuntimeError("gate_entry_exit")
+        child.add_note("child_exit: 4"); child.add_note("child_stage: create_directory")
+        self.assertEqual(gate.failure_receipt(child), dict(schema=1, stage="readonly_failed",
+            state="unknown", error="gate_entry_exit", child="create_directory", child_exit=4))
+        crashed = RuntimeError("gate_entry_exit")
+        crashed.add_note("child_exit: 1"); crashed.add_note("child_type: ModuleNotFoundError")
+        self.assertEqual(gate.failure_receipt(crashed), dict(schema=1, stage="readonly_failed",
+            state="unknown", error="gate_entry_exit", child="ModuleNotFoundError", child_exit=1))
+        self.assertEqual(gate.failure_receipt(RuntimeError("context_fixed")), dict(schema=1,
+            stage="readonly_failed", state="unknown", error="context_fixed"))
+    def test_failure_receipt_never_admits_unbounded_child_detail(self):
+        leaky = RuntimeError("gate_entry_exit")
+        leaky.add_note("child_stage: C:\\Users\\runner\\secret"); leaky.add_note("child_type: D")
+        leaky.add_note("child_exit: not-a-number")
+        self.assertEqual(gate.failure_receipt(leaky), dict(schema=1, stage="readonly_failed",
+            state="unknown", error="gate_entry_exit", child="unknown"))
+        for error in (OSError(3, "C:\\Users\\runner\\secret"), RuntimeError("S-1-5-32-544"),
+                      RuntimeError("aA1!"), RuntimeError(""),
+                      RuntimeError("d6a7a3abbd2c2b29730d8ccc2d1a1c9f5a1c30fd")):
+            with self.subTest(error=repr(error)):
+                self.assertEqual(gate.failure_receipt(error), dict(schema=1,
+                    stage="readonly_failed", state="unknown", error="unknown"))
     def test_main_has_no_free_command_or_root_arguments(self):
         with patch.object(gate.sys, "argv", ["fixed", "--root", "/foreign"]), \
              patch.object(gate, "Gate", side_effect=AssertionError("must not construct")):

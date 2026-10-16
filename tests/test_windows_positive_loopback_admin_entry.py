@@ -182,6 +182,21 @@ class TestAdminEntry(unittest.TestCase):
         self.assertLess(self.consumer.events.index(("wait_parent",30000)),self.consumer.events.index("stop_parent"))
         self.assertEqual(self.consumer.events[-1],"close_store")
 
+    def test_failure_receipt_reports_bounded_stage_and_never_details(self):
+        for message,expected in (("entry_freeze_arguments","entry_freeze_arguments"),
+            ("readonly_configuration_changed","readonly_configuration_changed"),
+            ("create_directory","create_directory"),("","unknown"),("unknown","unknown"),
+            ("C:\\Users\\runneradmin\\AppData\\Local\\Temp\\icode-positive-admin-x","unknown"),
+            ("S-1-5-32-544","unknown"),("aA1!secret","unknown"),
+            ("d6a7a3abbd2c2b29730d8ccc2d1a1c9f5a1c30fd","unknown"),
+            ("gate_ledger_binding "+"x"*60,"unknown")):
+            with self.subTest(message=message):
+                self.assertEqual(entry.bounded_stage(RuntimeError(message)),expected)
+        self.assertEqual(entry.failure_receipt(RuntimeError("entry_freeze_arguments")),
+            dict(schema=1,stage="failed",state="unknown",error="entry_freeze_arguments"))
+        self.assertEqual(entry.failure_receipt(FileNotFoundError(2,"C:\\a\\icode\\icode\\x.py")),
+            dict(schema=1,stage="failed",state="unknown",error="unknown"))
+
     def test_recover_uses_only_exact_trusted_root_and_result_status(self):
         self.assertEqual(self.invoke(self.args("recover")),0)
         self.assertEqual(self.consumer.events,["recover"])

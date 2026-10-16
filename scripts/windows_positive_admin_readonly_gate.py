@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import sys
@@ -35,6 +36,75 @@ READY = dict(schema=1, stage="readonly_ready", sdk=True, loader=True,
 def require(value, stage):
     if not value:
         raise RuntimeError(stage)
+
+
+STAGE = re.compile(r"[a-z][a-z0-9_]{0,47}")
+EXCEPTION = re.compile(r"[A-Za-z][A-Za-z0-9_]{3,47}")
+
+
+def bounded_stage(error):
+    """Bounded failure category; never a secret, SID, path or command."""
+    text = "" if error is None else str(error)
+    if text != "unknown" and ("_" not in text or not STAGE.fullmatch(text)):
+        return "unknown"
+    return text
+
+
+def child_receipt_stage(raw):
+    """Bounded stage from the child's own bounded failure receipt, if any."""
+    try:
+        value = json.loads(raw)
+    except Exception:
+        return None
+    if type(value) is not dict or value.get("stage") != "failed":
+        return None
+    code = value.get("error")
+    return None if type(code) is not str else bounded_stage(code)
+
+
+def bounded_child_type(raw):
+    """Bounded exception class of a crashed child from its last stderr line."""
+    try:
+        lines = [item for item in raw.decode("utf-8", "replace").splitlines() if item.strip()]
+        text = lines[-1].split(":", 1)[0].strip()
+    except Exception:
+        return None
+    return text if EXCEPTION.fullmatch(text) else None
+
+
+def entry_failure(result, raw, stderr):
+    """Bounded child failure detail on a nonzero entry exit; never raw output."""
+    error = RuntimeError("gate_entry_exit")
+    error.add_note("child_exit: %d" % result)
+    stage_code = child_receipt_stage(raw)
+    if stage_code is not None:
+        error.add_note("child_stage: %s" % stage_code)
+        return error
+    try:
+        stderr.seek(0)
+        crash = bounded_child_type(stderr.read(65536))
+    except Exception:
+        crash = None
+    if crash is not None:
+        error.add_note("child_type: %s" % crash)
+    return error
+
+
+def failure_receipt(error):
+    """Bounded failure wire: this gate's category plus bounded child detail only."""
+    value = dict(schema=1, stage="readonly_failed", state="unknown", error=bounded_stage(error))
+    for note in getattr(error, "__notes__", ()):
+        if note.startswith("child_stage: "):
+            value["child"] = bounded_stage(note[len("child_stage: "):])
+        elif note.startswith("child_type: "):
+            name = note[len("child_type: "):]
+            if EXCEPTION.fullmatch(name):
+                value["child"] = name
+        elif note.startswith("child_exit: "):
+            digits = note[len("child_exit: "):]
+            if digits.isdigit():
+                value["child_exit"] = int(digits)
+    return value
 
 
 def parse_receipt(raw, stage):
@@ -301,9 +371,10 @@ class Gate:
                 # accepted here. Tests exercise Close failure independently.
                 _release_owned(sys.exception(), stop, lambda: process.wait(timeout=4),
                     lambda: process._handle.Close())
-            require(result == 0, "gate_entry_exit")
             stdout.seek(0)
             raw = stdout.read(502)
+            if result != 0:
+                raise entry_failure(result, raw, stderr)
             stderr.seek(0)
             require(stderr.read(1) == b"", "gate_entry_stderr")
             return parse_receipt(raw, stage)
@@ -344,7 +415,7 @@ def main():
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except Exception:
-        sys.stdout.buffer.write(b'{"schema":1,"stage":"readonly_failed","state":"unknown"}\n')
-        sys.stdout.buffer.flush()
+    except Exception as error:
+        sys.stdout.buffer.write(wire(failure_receipt(error)) + b"\n")
+        sys.stdout.flush()
         raise SystemExit(4)
