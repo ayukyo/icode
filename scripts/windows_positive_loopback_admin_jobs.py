@@ -28,7 +28,12 @@ def create_job(store, name):
         limits = EXTENDED_LIMITS()
         limits.basic.flags = 0x2000  # KILL_ON_JOB_CLOSE; no breakaway flags.
         checked(w.k.SetInformationJobObject(job, 9, c.byref(limits), c.sizeof(limits)), "job_limits")
-        w.verify_security(job, PRIVATE, object_type=6, category="job_security_changed")
+        # Kernel objects ignore the owner carried by the creation descriptor:
+        # the system assigns the token's default owner instead. Taking ownership
+        # still requires WRITE_OWNER, and the private DACL grants it only to
+        # Administrators and SYSTEM, so the owner is not asserted here.
+        w.verify_security(job, PRIVATE, object_type=6, owner=False,
+                          category="job_security_changed")
         allocation, descriptor = descriptor, None
         _release_owned(None, lambda: checked(not w.k.LocalFree(allocation), "free_descriptor"))
         transferred = True

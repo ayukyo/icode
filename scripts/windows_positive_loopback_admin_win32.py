@@ -200,13 +200,15 @@ class Win32:
         return c.string_at(owner, self.a.GetLengthSid(owner)), c.string_at(dacl, size), bool(control.value & 0x1000)
 
     def verify_security(self, handle, expected_sddl, *, object_type=1,
-                        category="security_changed"):
+                        category="security_changed", owner=True):
         descriptor, expected = c.c_void_p(), self.descriptor(expected_sddl)
         try:
             if self.a.GetSecurityInfo(handle, object_type, 5, None, None, None, None, c.byref(descriptor)) != 0:
                 raise Failure("get_security")
             actual, wanted = self.security(descriptor), self.security(expected)
-            if actual != wanted:
+            if owner and actual[0] != wanted[0]:
+                raise Failure(category + "_owner")
+            if actual[1] != wanted[1]:
                 raise Failure(category)
             if not actual[2]:
                 raise Failure(category + "_unprotected")

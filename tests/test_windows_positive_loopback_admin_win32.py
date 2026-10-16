@@ -344,6 +344,34 @@ class TestAdminWin32(unittest.TestCase):
                     self.w.verify_security(90,"private",category="root_security_changed")
                 self.assertEqual(str(caught.exception),expected)
 
+    def test_verify_security_owner_assertion_is_optional_for_kernel_objects(self):
+        actual_owner=c.create_string_buffer(bytes((1,1))+b"\0"*5+b"\5"+struct.pack("<I",18))
+        wanted_owner=c.create_string_buffer(bytes((1,1))+b"\0"*5+b"\5"+struct.pack("<I",32))
+        acl=c.create_string_buffer(struct.pack("<BBHHH",2,0,8,0,0))
+        def install():
+            def descriptor(text,revision,output,size):put(output,c.c_void_p,701);return 1
+            def security(handle,kind,flags,a,b,d,e,output):put(output,c.c_void_p,700);return 0
+            def dacl(pointer,present,output,defaulted):
+                put(present,t.BOOL,1);put(defaulted,t.BOOL,0)
+                put(output,c.c_void_p,c.addressof(acl));return 1
+            def own(pointer,output,defaulted):
+                put(defaulted,t.BOOL,0)
+                put(output,c.c_void_p,c.addressof(actual_owner if pointer.value==700 else wanted_owner));return 1
+            def control(pointer,output,revision):
+                put(output,t.WORD,0x1000);put(revision,t.DWORD,1);return 1
+            self.w.k=N(LocalFree=lambda pointer:0)
+            self.w.a=N(ConvertStringSecurityDescriptorToSecurityDescriptorW=descriptor,
+                GetSecurityInfo=security,GetSecurityDescriptorDacl=dacl,
+                GetSecurityDescriptorOwner=own,GetSecurityDescriptorControl=control,
+                IsValidSid=lambda pointer:1,GetLengthSid=lambda pointer:12)
+        install()
+        with self.assertRaises(native.Failure) as caught:
+            self.w.verify_security(90,"private",category="job_security_changed")
+        self.assertEqual(str(caught.exception),"job_security_changed_owner")
+        install()
+        self.assertIsNone(self.w.verify_security(90,"private",object_type=6,owner=False,
+                                                 category="job_security_changed"))
+
     def test_verify_security_cleanup_attempts_both_descriptors_and_preserves_body(self):
         owner=c.create_string_buffer(bytes((1,1))+b"\0"*5+b"\5"+struct.pack("<I",18))
         acl=c.create_string_buffer(struct.pack("<BBHHH",2,0,8,0,0))
