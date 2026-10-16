@@ -1221,7 +1221,9 @@ class TestAdminNative(unittest.TestCase):
                 self.store.flush()
                 self.store.w.set_root_dacl=lambda *args:None
                 boom=OSError(10106,"modeled provider init")
+                calls=[]
                 def broken(f,*a,**k):
+                    calls.append(f)
                     if f==getattr(native.socket,family):raise boom
                     class Good:
                         def setsockopt(self,*args):pass
@@ -1230,10 +1232,34 @@ class TestAdminNative(unittest.TestCase):
                         def close(self):pass
                     return Good()
                 with patch.object(native,"Store",lambda root:self.store),patch.object(
-                    native.socket,"socket",broken):
+                    native.socket,"socket",broken),patch.object(native.time,"sleep",lambda seconds:None):
                     with self.assertRaises(native.Failure) as caught:self.n.prepare(self.store.root,self.store.boot["account_sid"])
                 self.assertEqual(str(caught.exception),category)
                 self.assertIs(caught.exception.__cause__,boom)
+                self.assertEqual(len(calls),3 if family=="AF_INET" else 4)
+
+    def test_prepare_socket_creation_transient_failure_is_retried(self):
+        self.store=NativeStore()
+        self.store.data.update(phase="frozen",account_sid=None,bootstrap=None,parent=None,outer_job=None,readonly_prepare=None)
+        self.store.flush()
+        self.store.w.set_root_dacl=lambda *args:None
+        boom=OSError(10106,"modeled provider init")
+        calls=[]
+        def flaky(f,*a,**k):
+            calls.append(f)
+            if len(calls)==1:raise boom
+            class Good:
+                def setsockopt(self,*args):pass
+                def bind(self,*args):pass
+                def getsockname(self):return ("127.0.0.1",5000)
+                def close(self):pass
+            return Good()
+        sleeps=[]
+        with patch.object(native,"Store",lambda root:self.store),patch.object(
+            native.socket,"socket",flaky),patch.object(native.time,"sleep",lambda seconds:sleeps.append(seconds)):
+            self.n.prepare(self.store.root,self.store.boot["account_sid"])
+        self.assertEqual(len(calls),3)
+        self.assertEqual(sleeps,[0.2])
 
     def test_source_tree_enumeration_reparse_membership_file_drift_count_reject_and_close(self):
         for mode in ("enumeration_error","reparse","directory_drift","file_drift","count"):

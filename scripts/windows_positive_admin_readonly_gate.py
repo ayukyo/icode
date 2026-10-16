@@ -423,11 +423,16 @@ class Gate:
         environment once; a bounded socket failure category is reported for it
         and the filtered-environment comparison lives in the workflow probe.
         """
-        code = ("import socket\n"
-                "try:\n"
-                "    socket.socket(socket.AF_INET, socket.SOCK_STREAM).close()\n"
-                "except OSError as error:\n"
-                "    print('probe_full_env_failed', type(error).__name__, getattr(error, 'winerror', None))\n"
+        code = ("import socket, time\n"
+                "error = None\n"
+                "for attempt in range(3):\n"
+                "    try:\n"
+                "        socket.socket(socket.AF_INET, socket.SOCK_STREAM).close()\n"
+                "    except OSError as caught:\n"
+                "        error = caught\n"
+                "        time.sleep(0.2 * (attempt + 1))\n"
+                "if error is not None:\n"
+                "    print('probe_full_env_failed', type(error).__name__, getattr(error, 'winerror', None), 3)\n"
                 "    raise SystemExit(1)\n"
                 "print('probe_full_env_ok')\n")
         stdout, stderr = None, None
@@ -445,8 +450,9 @@ class Gate:
             if result != 0:
                 error = RuntimeError("gate_probe_full_env")
                 fields = raw.decode("ascii", "replace").strip().split(" ")
-                if len(fields) == 3 and fields[0] == "probe_full_env_failed" \
-                        and EXCEPTION.fullmatch(fields[1]) and fields[2].isdigit():
+                if len(fields) == 4 and fields[0] == "probe_full_env_failed" \
+                        and EXCEPTION.fullmatch(fields[1]) and fields[2].isdigit() \
+                        and fields[3].isdigit():
                     error.add_note("child_type: %s" % fields[1])
                     error.add_note("child_winerror: %s" % fields[2])
                 raise error

@@ -796,13 +796,20 @@ class Native:
             endpoints = []
             for family, host, category in ((socket.AF_INET, "127.0.0.1", "loopback_socket4"),
                                            (socket.AF_INET6, "::1", "loopback_socket6")):
-                try:
-                    listener = socket.socket(family, socket.SOCK_STREAM)
-                except OSError as error:
-                    # Provider/catalog init failures stay a modeled bounded
-                    # category per address family; the chained OSError keeps
-                    # its winerror.
-                    raise Failure(category) from error
+                # Provider initialization on hosted runners fails transiently
+                # (WSAEPROVIDERFAILEDINIT); observed failures clear on the next
+                # spawn, so retry is bounded and the last error stays chained.
+                last = None
+                for attempt in range(3):
+                    try:
+                        listener = socket.socket(family, socket.SOCK_STREAM)
+                        last = None
+                        break
+                    except OSError as error:
+                        last = error
+                        time.sleep(0.2 * (attempt + 1))
+                if last is not None:
+                    raise Failure(category) from last
                 try:
                     listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
                     listener.bind((host, 0))

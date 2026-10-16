@@ -610,7 +610,7 @@ class TestReadonlyGate(unittest.TestCase):
         events.clear()
         def probe_result(argv, **options):
             events.append(("probe", argv, options))
-            options["stdout"].write(b"probe_full_env_failed OSError 10106\n")
+            options["stdout"].write(b"probe_full_env_failed OSError 10106 3\n")
             return N(wait=lambda timeout: 1, poll=lambda: 1, kill=lambda: None,
                      _handle=N(Close=lambda: None))
         with patch.object(gate.tempfile, "TemporaryFile", temporary), \
