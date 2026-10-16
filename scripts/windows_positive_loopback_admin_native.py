@@ -942,7 +942,7 @@ class Native:
         job = store.w.k.OpenJobObjectW(0x1F003F, False, name)
         require(bool(job), "outer_job_open")
         try:
-            store.w.verify_security(job, PRIVATE, object_type=6)
+            store.w.verify_security(job, PRIVATE, object_type=6, category="outer_job_security_changed")
             return job
         except BaseException:
             _release_owned(sys.exception(), lambda: store.w.close(job))
@@ -988,7 +988,7 @@ class Native:
             if not job:
                 require(c.get_last_error() == 2 and parent is None, "parent_job_unknown")
                 return
-            store.w.verify_security(job, PRIVATE, object_type=6)
+            store.w.verify_security(job, PRIVATE, object_type=6, category="stop_job_security_changed")
             _release_owned(None,
                 lambda: checked(store.w.k.TerminateJobObject(job, 1), "parent_terminate"),
                 lambda: wait_empty(store, job, 2000),
@@ -1018,7 +1018,7 @@ class Native:
                     require(record["pid"] is not None, "command_identity_unknown")
                     # Both the exact process identity and named Job are absent.
                     continue
-                store.w.verify_security(job, PRIVATE, object_type=6)
+                store.w.verify_security(job, PRIVATE, object_type=6, category="reap_job_security_changed")
                 members = store.w.job_pids(job)
                 if process:
                     inside = t.BOOL()

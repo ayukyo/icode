@@ -240,7 +240,7 @@ class Win32:
             identity = self.info(handle, directory=directory)
             if not identity[1]:
                 raise Failure("file_identity")
-            self.verify_security(handle, sddl)
+            self.verify_security(handle, sddl, category="create_directory_security_changed")
             final = c.create_unicode_buffer(32768)
             length = self.k.GetFinalPathNameByHandleW(handle, final, len(final), 0)
             checked(0 < length < len(final), "final_path")
@@ -271,7 +271,7 @@ class Win32:
             )
 
     def set_root_dacl(self, handle, old_sddl, new_sddl):
-        self.verify_security(handle, old_sddl)
+        self.verify_security(handle, old_sddl, category="root_dacl_security_changed")
         descriptor = self.descriptor(new_sddl)
         try:
             dacl, present, defaulted = c.c_void_p(), t.BOOL(), t.BOOL()
@@ -280,7 +280,7 @@ class Win32:
                 raise Failure("root_dacl")
             if self.a.SetSecurityInfo(handle, 1, 0x80000004, None, None, dacl, None) != 0:
                 raise Failure("root_dacl")
-            self.verify_security(handle, new_sddl)
+            self.verify_security(handle, new_sddl, category="root_dacl_security_changed")
         finally:
             _release_owned(sys.exception(),
                 lambda: checked(not self.k.LocalFree(descriptor), 'free_descriptor'),
