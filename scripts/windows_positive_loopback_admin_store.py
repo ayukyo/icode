@@ -13,6 +13,9 @@ from scripts.windows_positive_loopback_admin_win32 import Win32, Failure, _relea
 
 
 PRIVATE = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
+# Kernel objects have no inheritance: the object manager clears the OICI flags
+# from a creation descriptor, so the expected job descriptor omits them.
+KERNEL_PRIVATE = "O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)"
 LEDGER_LIMIT = 8388608
 
 

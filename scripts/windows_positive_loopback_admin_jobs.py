@@ -7,7 +7,7 @@ import subprocess
 import time
 import sys
 
-from scripts.windows_positive_loopback_admin_store import PRIVATE
+from scripts.windows_positive_loopback_admin_store import PRIVATE, KERNEL_PRIVATE
 from scripts.windows_positive_loopback_admin_win32 import (
     SA, STARTUP_EX, PROCESS, EXTENDED_LIMITS, Failure, checked, _release_owned,
 )
@@ -15,7 +15,7 @@ from scripts.windows_positive_loopback_admin_win32 import (
 
 def create_job(store, name):
     w = store.w
-    descriptor = w.descriptor(PRIVATE)
+    descriptor = w.descriptor(KERNEL_PRIVATE)
     job = None
     transferred = False
     try:
@@ -32,7 +32,7 @@ def create_job(store, name):
         # the system assigns the token's default owner instead. Taking ownership
         # still requires WRITE_OWNER, and the private DACL grants it only to
         # Administrators and SYSTEM, so the owner is not asserted here.
-        w.verify_security(job, PRIVATE, object_type=6, owner=False,
+        w.verify_security(job, KERNEL_PRIVATE, object_type=6, owner=False,
                           category="job_security_changed")
         allocation, descriptor = descriptor, None
         _release_owned(None, lambda: checked(not w.k.LocalFree(allocation), "free_descriptor"))

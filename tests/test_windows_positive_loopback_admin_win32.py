@@ -320,16 +320,19 @@ class TestAdminWin32(unittest.TestCase):
     def test_verify_security_reports_caller_category_and_unprotected_flag(self):
         owner=c.create_string_buffer(bytes((1,1))+b"\0"*5+b"\5"+struct.pack("<I",18))
         actual_acl=c.create_string_buffer(struct.pack("<BBHHH",2,0,8,0,0))
+        variant_acl=c.create_string_buffer(struct.pack("<BBHHH",2,1,8,0,0))
         wanted_acl=c.create_string_buffer(struct.pack("<BBHHH",2,0,16,0,0))
-        for control_value,equal,expected in ((0x1000,False,"root_security_changed"),
-                                             (0,False,"root_security_changed"),
-                                             (0,True,"root_security_changed_unprotected")):
-            with self.subTest(control=control_value,equal=equal,expected=expected):
+        for control_value,mode,expected in ((0x1000,"length","root_security_changed_dacl_length"),
+                                            (0x1000,"variant","root_security_changed"),
+                                            (0,"same","root_security_changed_unprotected")):
+            with self.subTest(control=control_value,mode=mode,expected=expected):
                 def descriptor(text,revision,output,size):put(output,c.c_void_p,701);return 1
                 def security(handle,kind,flags,a,b,d,e,output):put(output,c.c_void_p,700);return 0
                 def dacl(pointer,present,output,defaulted):
                     put(present,t.BOOL,1);put(defaulted,t.BOOL,0)
-                    target = actual_acl if (equal or pointer.value == 700) else wanted_acl
+                    target = actual_acl
+                    if pointer.value != 700:
+                        target = {"length":wanted_acl,"variant":variant_acl}.get(mode,actual_acl)
                     put(output,c.c_void_p,c.addressof(target));return 1
                 def own(pointer,output,defaulted):
                     put(defaulted,t.BOOL,0);put(output,c.c_void_p,c.addressof(owner));return 1
