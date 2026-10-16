@@ -53,6 +53,7 @@ class Boundary:
     def info(self,handle,*,directory=False):return (7,1)
     def verify_security(self,handle,sddl,**options):
         if self.security_changed:raise native.Failure("modeled_security_changed")
+    def set_kernel_dacl(self,handle,sddl):pass
     def _handle(self,kind,value):
         self.next+=1;self.handles[self.next]=(kind,value);return self.next
     def close(self,handle):

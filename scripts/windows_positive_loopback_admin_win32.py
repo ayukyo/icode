@@ -76,9 +76,12 @@ def checked(value, stage):
 
 
 def _dacl_failure(category, actual, wanted):
-    """Bounded DACL mismatch; the observed ACL byte length is the only number."""
-    failure = Failure(category if len(actual) == len(wanted) else category + "_dacl_length")
-    failure.winerror = len(actual)
+    """Bounded DACL mismatch; the only number is the first differing offset."""
+    same = len(actual) == len(wanted)
+    offset = next((index for index in range(min(len(actual), len(wanted)))
+                   if actual[index] != wanted[index]), len(actual)) if same else len(actual)
+    failure = Failure(category if same else category + "_dacl_length")
+    failure.winerror = offset
     return failure
 
 
@@ -205,6 +208,26 @@ class Win32:
         if size < 8 or not self.a.IsValidSid(owner):
             raise Failure("descriptor_shape")
         return c.string_at(owner, self.a.GetLengthSid(owner)), c.string_at(dacl, size), bool(control.value & 0x1000)
+
+    def set_kernel_dacl(self, handle, sddl):
+        """Apply the exact protected DACL to a kernel object.
+
+        A creation descriptor leaves the object manager's own ACL revision and
+        padding in place, so the exact descriptor is applied explicitly here.
+        """
+        descriptor = self.descriptor(sddl)
+        try:
+            dacl, present, defaulted = c.c_void_p(), t.BOOL(), t.BOOL()
+            checked(self.a.GetSecurityDescriptorDacl(descriptor, c.byref(present),
+                                                     c.byref(dacl), c.byref(defaulted)), "kernel_dacl")
+            if not present.value or not dacl.value:
+                raise Failure("kernel_dacl")
+            if self.a.SetSecurityInfo(handle, 6, 0x80000004, None, None, dacl, None) != 0:
+                raise Failure("kernel_security")
+        finally:
+            _release_owned(sys.exception(),
+                lambda: checked(not self.k.LocalFree(descriptor), "free_descriptor") if descriptor.value else None,
+            )
 
     def verify_security(self, handle, expected_sddl, *, object_type=1,
                     category="security_changed", owner=True):

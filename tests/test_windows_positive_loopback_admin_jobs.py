@@ -125,6 +125,7 @@ class ModelStore:
         self.w.system_directory=PureWindowsPath(r"C:\Windows\System32")
         self.w.descriptor=lambda sddl:c.c_void_p(700)
         self.w.verify_security=lambda *args,**kwargs:None
+        self.w.set_kernel_dacl=lambda *args,**kwargs:None
         def open_output(*args,**kwargs):
             self.kernel.alive.add(20); return 20,(7,20)
         self.w.open_file=open_output

@@ -32,6 +32,7 @@ def create_job(store, name):
         # the system assigns the token's default owner instead. Taking ownership
         # still requires WRITE_OWNER, and the private DACL grants it only to
         # Administrators and SYSTEM, so the owner is not asserted here.
+        w.set_kernel_dacl(job, KERNEL_PRIVATE)
         w.verify_security(job, KERNEL_PRIVATE, object_type=6, owner=False,
                           category="job_security_changed")
         allocation, descriptor = descriptor, None

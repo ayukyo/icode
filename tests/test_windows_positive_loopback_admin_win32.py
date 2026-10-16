@@ -346,6 +346,8 @@ class TestAdminWin32(unittest.TestCase):
                 with self.assertRaises(native.Failure) as caught:
                     self.w.verify_security(90,"private",category="root_security_changed")
                 self.assertEqual(str(caught.exception),expected)
+                if mode=="variant":
+                    self.assertEqual(getattr(caught.exception,"winerror",None),1)
 
     def test_verify_security_owner_assertion_is_optional_for_kernel_objects(self):
         actual_owner=c.create_string_buffer(bytes((1,1))+b"\0"*5+b"\5"+struct.pack("<I",18))
@@ -371,6 +373,7 @@ class TestAdminWin32(unittest.TestCase):
         with self.assertRaises(native.Failure) as caught:
             self.w.verify_security(90,"private",category="job_security_changed")
         self.assertEqual(str(caught.exception),"job_security_changed_owner")
+        self.assertIsNone(getattr(caught.exception,"winerror",None))
         install()
         self.assertIsNone(self.w.verify_security(90,"private",object_type=6,owner=False,
                                                  category="job_security_changed"))
