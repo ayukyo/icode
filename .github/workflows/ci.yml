@@ -625,9 +625,14 @@ jobs:
             print("base_works", base_works)
             print("full_works", full_works)
             print("extras_count", len(extras))
+            trials = 20
+            base_ok = sum(works(base) for _ in range(trials))
+            full_ok = sum(works(full) for _ in range(trials))
+            print("base_rate", base_ok, "/", trials)
+            print("full_rate", full_ok, "/", trials)
             essential, remaining = [], sorted(extras)
             current = dict(base)
-            while remaining and works({**current, **{key: extras[key] for key in remaining}}):
+            while remaining and base_ok < trials and works({**current, **{key: extras[key] for key in remaining}}):
                 half = remaining[:len(remaining) // 2]
                 rest = remaining[len(remaining) // 2:]
                 if works({**current, **{key: extras[key] for key in half}}):
@@ -637,11 +642,7 @@ jobs:
                     essential.extend(half)
                     remaining = rest
             print("essential:", " ".join(sorted(essential)) if essential else "(none)")
-            catalog = subprocess.run(["netsh", "winsock", "show", "catalog"], env=base,
-                                     capture_output=True, timeout=60)
-            print("netsh_base_rc", catalog.returncode)
-            print("\n".join(catalog.stdout.decode("utf-8", "replace").splitlines()[:30]))
-            if not (base_works is False and full_works is True and essential):
+            if not full_works or full_ok == 0:
                 print("unexpected_probe_shape")
                 raise SystemExit(1)
             raise SystemExit(0)
