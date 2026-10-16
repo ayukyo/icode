@@ -621,7 +621,7 @@ class Native:
         require(store.root.name == "icode-positive-admin-" + hashlib.sha256(wire(store.data["context"])).hexdigest()[:32], "root_name")
         require(list(store.w.info(store.root_handle, directory=True)) == store.data["root_identity"], "root_identity")
         root_sddl = PRIVATE if store.data["account_sid"] is None else PRIVATE + "(A;;0x1200a9;;;" + store.data["account_sid"] + ")"
-        store.w.verify_security(store.root_handle, root_sddl)
+        store.w.verify_security(store.root_handle, root_sddl, category="root_security_changed")
         for item in store.data["frozen_directories"]:
             relative = Path(item["path"])
             require(not relative.is_absolute() and not any(part == ".." for part in relative.parts), "frozen_directory_path")
@@ -629,7 +629,8 @@ class Native:
             try:
                 require(list(store.w.info(handle, directory=True)) == item["identity"], "frozen_directory_identity")
                 # Root alone has explicit traverse; every loaded child is private.
-                store.w.verify_security(handle, root_sddl if relative == Path(".") else PRIVATE)
+                store.w.verify_security(handle, root_sddl if relative == Path(".") else PRIVATE,
+                                        category="directory_security_changed")
             finally:
                 _release_owned(sys.exception(),
                     lambda: store.w.close(handle),
