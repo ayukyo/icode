@@ -409,11 +409,53 @@ class Gate:
                 lambda: stderr.close() if stderr is not None else None,
                 lambda: stdout.close() if stdout is not None else None)
 
+    def _probe(self):
+        """Distinguish a frozen-runtime socket failure from the filtered env.
+
+        The readonly child runs the frozen interpreter with the filtered
+        environment. This probe runs the same frozen interpreter with the full
+        environment once; a bounded socket failure category is reported for it
+        and the filtered-environment comparison lives in the workflow probe.
+        """
+        code = ("import socket\n"
+                "try:\n"
+                "    socket.socket(socket.AF_INET, socket.SOCK_STREAM).close()\n"
+                "except OSError as error:\n"
+                "    print('probe_full_env_failed', type(error).__name__, getattr(error, 'winerror', None))\n"
+                "    raise SystemExit(1)\n"
+                "print('probe_full_env_ok')\n")
+        stdout, stderr = None, None
+        try:
+            stdout = tempfile.TemporaryFile(dir=self.root)
+            stderr = tempfile.TemporaryFile(dir=self.root)
+            process = subprocess.Popen([str(self.root / "runtime/python.exe"), "-I", "-S", "-B",
+                                        "-c", code],
+                cwd=self.checkout, env=dict(os.environ), stdin=subprocess.DEVNULL,
+                stdout=stdout, stderr=stderr, close_fds=True,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            result = process.wait(timeout=30)
+            stdout.seek(0)
+            raw = stdout.read(201)
+            if result != 0:
+                error = RuntimeError("gate_probe_full_env")
+                fields = raw.decode("ascii", "replace").strip().split(" ")
+                if len(fields) == 3 and fields[0] == "probe_full_env_failed" \
+                        and EXCEPTION.fullmatch(fields[1]) and fields[2].isdigit():
+                    error.add_note("child_type: %s" % fields[1])
+                    error.add_note("child_winerror: %s" % fields[2])
+                raise error
+            require(raw == b"probe_full_env_ok\n", "gate_probe_output")
+        finally:
+            _release_owned(sys.exception(),
+                lambda: stderr.close() if stderr is not None else None,
+                lambda: stdout.close() if stdout is not None else None)
+
     def run(self):
         result = None
         try:
             frozen = self._entry("frozen", ["freeze", "--account", self.account.name], 180)
             self.root = Path(frozen["root"])
+            self._probe()
             sid = self.account.create()
             identity = self.parent.create(self.account)
             self.account.clear_secret()

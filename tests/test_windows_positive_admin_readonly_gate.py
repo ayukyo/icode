@@ -499,9 +499,10 @@ class TestReadonlyGate(unittest.TestCase):
             return copy.deepcopy(gate.READY)
         # Only the external fixed entry executable is modeled here; _entry's
         # wire/exit behavior is independently exercised in the preceding tests.
-        with patch.object(value, "_entry", entry): result = value.run()
+        with patch.object(value, "_entry", entry), patch.object(value, "_probe", lambda: events.append("probe")):
+            result = value.run()
         self.assertEqual(result["stage"], "readonly_verified")
-        self.assertEqual(events, ["frozen", "readonly_ready", "reopen"])
+        self.assertEqual(events, ["frozen", "probe", "readonly_ready", "reopen"])
         self.assertTrue(store.closed); self.assertFalse(account.owned); self.assertFalse(processes.alive)
         self.assertEqual([x[0] for x in accounts.calls], ["add", "delete"])
         self.assertFalse(store.data["exact_restoration"])
@@ -587,6 +588,37 @@ class TestReadonlyGate(unittest.TestCase):
             with self.subTest(error=repr(error)):
                 self.assertEqual(gate.failure_receipt(error), dict(schema=1,
                     stage="readonly_failed", state="unknown", error="unknown"))
+    def test_probe_full_env_reports_bounded_socket_failure(self):
+        value, events, streams, temporary, process = self.entry_fixture(exit_code=0)
+        events.clear()
+        def probe_result(argv, **options):
+            events.append(("probe", argv, options))
+            options["stdout"].write(b"probe_full_env_failed OSError 10106\n")
+            return N(wait=lambda timeout: 1, poll=lambda: 1, kill=lambda: None,
+                     _handle=N(Close=lambda: None))
+        with patch.object(gate.tempfile, "TemporaryFile", temporary), \
+             patch.object(gate.subprocess, "Popen", probe_result), \
+             patch.object(gate.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+            with self.assertRaisesRegex(RuntimeError, "gate_probe_full_env") as caught:
+                value._probe()
+        notes = list(caught.exception.__notes__)
+        self.assertIn("child_type: OSError", notes)
+        self.assertIn("child_winerror: 10106", notes)
+        self.assertTrue(all(x.closed for x in streams))
+    def test_probe_full_env_passes_silently_when_socket_works(self):
+        value, events, streams, temporary, process = self.entry_fixture(exit_code=0)
+        events.clear()
+        def probe_process(argv, **options):
+            events.append(("probe", argv, options))
+            options["stdout"].write(b"probe_full_env_ok\n")
+            return N(wait=lambda timeout: 0, poll=lambda: 0, kill=lambda: None,
+                     _handle=N(Close=lambda: None))
+        with patch.object(gate.tempfile, "TemporaryFile", temporary), \
+             patch.object(gate.subprocess, "Popen", probe_process), \
+             patch.object(gate.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True):
+            self.assertIsNone(value._probe())
+        argv = events[0][1]
+        self.assertTrue(any(part == "-c" for part in argv))
     def test_main_has_no_free_command_or_root_arguments(self):
         with patch.object(gate.sys, "argv", ["fixed", "--root", "/foreign"]), \
              patch.object(gate, "Gate", side_effect=AssertionError("must not construct")):

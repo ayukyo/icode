@@ -597,12 +597,34 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'positive_admin_abi_build_failed' }
       - name: Probe host loopback sockets before readonly admission
         shell: pwsh
+        env:
+          ICODE_PROBE_CODE: |
+            import os, subprocess, sys
+            allowed = {"SystemRoot", "SystemDrive", "TEMP", "TMP", "GITHUB_ACTIONS",
+                       "GITHUB_REPOSITORY", "GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+                       "GITHUB_JOB", "GITHUB_REF", "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA",
+                       "GITHUB_WORKSPACE", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_ENVIRONMENT",
+                       "ICODE_CI_POSITIVE_LOOPBACK_ADMIN", "ICODE_CI_POSITIVE_LOOPBACK_DEDICATED_WRITER"}
+            env = {key: value for key, value in os.environ.items() if key in allowed}
+            inner = ("import socket\n"
+                     "try:\n"
+                     "    socket.socket(socket.AF_INET, socket.SOCK_STREAM).close()\n"
+                     "except OSError as error:\n"
+                     "    print('filtered_loopback_ipv4_failed', type(error).__name__, getattr(error, 'winerror', None))\n"
+                     "    raise SystemExit(1)\n"
+                     "print('filtered_loopback_ipv4_ok')\n")
+            result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", inner],
+                                    env=env, capture_output=True, timeout=60)
+            sys.stdout.write(result.stdout.decode("ascii", "replace"))
+            raise SystemExit(result.returncode)
         run: |
           $ErrorActionPreference = 'Stop'
           python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.close(); print('host_loopback_ipv4_ok')"
           if ($LASTEXITCODE -ne 0) { throw 'host_loopback_ipv4_failed' }
           python -c "import socket; s=socket.socket(socket.AF_INET6, socket.SOCK_STREAM); s.close(); print('host_loopback_ipv6_ok')"
           if ($LASTEXITCODE -ne 0) { throw 'host_loopback_ipv6_failed' }
+          python -c "exec(__import__('os').environ['ICODE_PROBE_CODE'])"
+          if ($LASTEXITCODE -ne 0) { throw 'filtered_loopback_ipv4_failed' }
       - name: Prove positive admin readonly admission without exemption
         shell: pwsh
         env:
