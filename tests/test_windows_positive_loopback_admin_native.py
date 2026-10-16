@@ -1287,7 +1287,7 @@ class TestAdminNative(unittest.TestCase):
         self.store.files["CheckNetIsolation.exe"]=bytes(raw)
         words=[0xFEEF04BD,0x10000,10<<16,(1<<16)|2,10<<16,(1<<16)|3,0,0,0,1,0,0,0]
         if mode=="bad_magic":words[0]=0
-        if mode=="bad_type":words[9]=2
+        if mode=="bad_type":words[9]=0
         class Function:
             def __init__(self,body):self.body=body
             def __call__(self,*args):return self.body(*args)
@@ -1301,6 +1301,23 @@ class TestAdminNative(unittest.TestCase):
             self.assertEqual((path,options.get("winmode")),(str(self.store.w.system_directory/"version.dll"),0x800))
             return version
         with patch.object(native.c,"WinDLL",dll,create=True):return self.n._tool(self.store)
+
+    def test_image_provenance_accepts_system_executable_that_self_reports_vft_dll(self):
+        path=self.store.w.system_directory/"CheckNetIsolation.exe"
+        handle=self.store.w.CreateFileW(str(path),0x80020080)
+        try:
+            self.store.w.version_changes[path.name]={9:2}
+            proof=self.n._image_provenance(self.store,handle,path,dll=False)
+            self.assertEqual(proof["file_version"],[10,0,1,0])
+            self.store.w.version_changes={}
+            self.assertEqual(self.n._image_provenance(self.store,handle,path,dll=False)["file_version"],[10,0,1,0])
+            for value in (0,3,4):
+                self.store.w.version_changes[path.name]={9:value}
+                with self.subTest(filetype=value),self.assertRaises(native.Failure) as caught:
+                    self.n._image_provenance(self.store,handle,path,dll=False)
+                self.assertEqual(str(caught.exception),"image_version_resource")
+        finally:
+            self.store.w.close(handle);self.store.w.version_changes={}
 
     def test_tool_reads_actual_pe_version_buffer_and_pins_exact_system_image(self):
         record=self.tool("ok")
@@ -1326,7 +1343,7 @@ class TestAdminNative(unittest.TestCase):
                 if mode=="unknown_machine":
                     raw=bytearray(self.store.files[path.name]);raw[68:70]=(0xffff).to_bytes(2,"little")
                     self.store.files[path.name]=bytes(raw)
-                elif mode=="wrong_version_type":self.store.w.version_changes[path.name]={9:1}
+                elif mode=="wrong_version_type":self.store.w.version_changes[path.name]={9:0}
                 elif mode=="bad_magic":self.store.files[path.name]=b"NO"+self.store.files[path.name][2:]
                 with self.subTest(mode=mode),self.assertRaises(native.Failure):
                     self.n._image_provenance(self.store,handle,path,dll=True)

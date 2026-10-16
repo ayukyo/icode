@@ -756,7 +756,11 @@ class Native:
                 and pointer.value + count.value <= c.addressof(buffer) + len(buffer) and count.value == 52, "image_version_pointer")
         value = c.string_at(pointer, 52)
         words = [int.from_bytes(value[index:index + 4], "little") for index in range(0, 52, 4)]
-        require(words[0] == 0xFEEF04BD and words[1] == 0x10000 and words[9] == (2 if dll else 1), "image_version_resource")
+        # Windows system executables routinely self-report VFT_DLL in their
+        # version resource (CheckNetIsolation.exe does), so the resource must
+        # report a known application or library type, not the caller's guess.
+        require(words[0] == 0xFEEF04BD and words[1] == 0x10000 and words[9] in (1, 2),
+                "image_version_resource")
         require(self._image_info(store, handle, path) == metadata, "image_changed")
         return dict(file_info=metadata, sha256=hashlib.sha256(raw).hexdigest(), machine=machine,
                     file_version=[words[2] >> 16, words[2] & 65535, words[3] >> 16, words[3] & 65535],
