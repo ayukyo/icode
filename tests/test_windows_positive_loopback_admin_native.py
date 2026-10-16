@@ -1213,6 +1213,18 @@ class TestAdminNative(unittest.TestCase):
                 self.assertIs(caught.exception,body)
                 self.assertTrue(any(n.startswith("cleanup_unknown:") for n in getattr(body,"__notes__",())))
 
+    def test_prepare_socket_creation_oserror_becomes_bounded_loopback_failure(self):
+        self.store=NativeStore()
+        self.store.data.update(phase="frozen",account_sid=None,bootstrap=None,parent=None,outer_job=None,readonly_prepare=None)
+        self.store.flush()
+        self.store.w.set_root_dacl=lambda *args:None
+        boom=OSError(10106,"modeled provider init")
+        with patch.object(native,"Store",lambda root:self.store),patch.object(
+            native.socket,"socket",lambda *a:(_ for _ in ()).throw(boom)):
+            with self.assertRaises(native.Failure) as caught:self.n.prepare(self.store.root,self.store.boot["account_sid"])
+        self.assertEqual(str(caught.exception),"loopback_socket")
+        self.assertIs(caught.exception.__cause__,boom)
+
     def test_source_tree_enumeration_reparse_membership_file_drift_count_reject_and_close(self):
         for mode in ("enumeration_error","reparse","directory_drift","file_drift","count"):
             self.store=NativeStore()

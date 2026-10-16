@@ -81,10 +81,11 @@ def bounded_child_type(raw):
     return text if EXCEPTION.fullmatch(text) else None
 
 
-def entry_failure(result, raw, stderr):
+def entry_failure(stage, result, raw, stderr):
     """Bounded child failure detail on a nonzero entry exit; never raw output."""
     error = RuntimeError("gate_entry_exit")
     error.add_note("child_exit: %d" % result)
+    error.add_note("entry_stage: %s" % stage if stage in ("frozen", "readonly_ready") else "entry_stage: unknown")
     detail = child_receipt_stage(raw)
     if detail is not None:
         error.add_note("child_stage: %s" % detail["stage"])
@@ -121,6 +122,10 @@ def failure_receipt(error):
             digits = note[len("child_winerror: "):]
             if digits.isdigit():
                 value["child_winerror"] = int(digits)
+        elif note.startswith("entry_stage: "):
+            name = note[len("entry_stage: "):]
+            if name in ("frozen", "readonly_ready"):
+                value["entry"] = name
         elif note.startswith("child_exit: "):
             digits = note[len("child_exit: "):]
             if digits.isdigit():
@@ -395,7 +400,7 @@ class Gate:
             stdout.seek(0)
             raw = stdout.read(502)
             if result != 0:
-                raise entry_failure(result, raw, stderr)
+                raise entry_failure(stage, result, raw, stderr)
             stderr.seek(0)
             require(stderr.read(1) == b"", "gate_entry_stderr")
             return parse_receipt(raw, stage)

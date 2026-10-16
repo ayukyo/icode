@@ -531,6 +531,7 @@ class TestReadonlyGate(unittest.TestCase):
                         value._entry("readonly_ready", [], 180)
                 notes = list(caught.exception.__notes__)
                 self.assertIn("child_exit: 4", notes)
+                self.assertIn("entry_stage: readonly_ready", notes)
                 for item in expected:
                     self.assertIn(item, notes)
                 for prefix in ("child_stage: ", "child_kind: ", "child_winerror: "):
@@ -549,6 +550,7 @@ class TestReadonlyGate(unittest.TestCase):
                 value._entry("readonly_ready", [], 180)
         self.assertIn("child_type: ModuleNotFoundError", caught.exception.__notes__)
         self.assertIn("child_exit: 1", caught.exception.__notes__)
+        self.assertIn("entry_stage: readonly_ready", caught.exception.__notes__)
         self.assertFalse(any(x.startswith("child_stage: ") for x in caught.exception.__notes__))
     def test_failure_receipt_emits_bounded_stage_and_bounded_child(self):
         child = RuntimeError("gate_entry_exit")
@@ -562,9 +564,14 @@ class TestReadonlyGate(unittest.TestCase):
         typed = RuntimeError("gate_entry_exit")
         typed.add_note("child_exit: 4"); typed.add_note("child_stage: unknown")
         typed.add_note("child_kind: OSError"); typed.add_note("child_winerror: 5")
+        typed.add_note("entry_stage: readonly_ready")
         self.assertEqual(gate.failure_receipt(typed), dict(schema=1, stage="readonly_failed",
             state="unknown", error="gate_entry_exit", child="unknown", child_exit=4,
-            child_type="OSError", child_winerror=5))
+            child_type="OSError", child_winerror=5, entry="readonly_ready"))
+        foreign = RuntimeError("gate_entry_exit")
+        foreign.add_note("entry_stage: serve")
+        self.assertEqual(gate.failure_receipt(foreign), dict(schema=1, stage="readonly_failed",
+            state="unknown", error="gate_entry_exit"))
         self.assertEqual(gate.failure_receipt(RuntimeError("context_fixed")), dict(schema=1,
             stage="readonly_failed", state="unknown", error="context_fixed"))
     def test_failure_receipt_never_admits_unbounded_child_detail(self):

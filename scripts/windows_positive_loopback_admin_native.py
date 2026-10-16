@@ -795,7 +795,12 @@ class Native:
                 )
             endpoints = []
             for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
-                listener = socket.socket(family, socket.SOCK_STREAM)
+                try:
+                    listener = socket.socket(family, socket.SOCK_STREAM)
+                except OSError as error:
+                    # Provider/catalog init failures stay a modeled bounded
+                    # category; the chained OSError keeps its winerror.
+                    raise Failure("loopback_socket") from error
                 try:
                     listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
                     listener.bind((host, 0))

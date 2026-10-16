@@ -38,6 +38,8 @@ def failure_receipt(error):
     value = dict(schema=1, stage="failed", state="unknown", error=bounded_stage(error),
                  type=bounded_type(error))
     code = getattr(error, "winerror", None)
+    if code is None:
+        code = getattr(getattr(error, "__cause__", None), "winerror", None)
     if type(code) is int and 0 < code < 65536:
         value["winerror"] = code
     return value
