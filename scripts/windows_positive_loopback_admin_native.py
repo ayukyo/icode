@@ -794,13 +794,15 @@ class Native:
                     lambda: store.w.close(writable_root),
                 )
             endpoints = []
-            for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+            for family, host, category in ((socket.AF_INET, "127.0.0.1", "loopback_socket4"),
+                                           (socket.AF_INET6, "::1", "loopback_socket6")):
                 try:
                     listener = socket.socket(family, socket.SOCK_STREAM)
                 except OSError as error:
                     # Provider/catalog init failures stay a modeled bounded
-                    # category; the chained OSError keeps its winerror.
-                    raise Failure("loopback_socket") from error
+                    # category per address family; the chained OSError keeps
+                    # its winerror.
+                    raise Failure(category) from error
                 try:
                     listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
                     listener.bind((host, 0))
