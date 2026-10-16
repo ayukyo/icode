@@ -605,18 +605,46 @@ jobs:
                        "GITHUB_JOB", "GITHUB_REF", "GITHUB_WORKFLOW_REF", "GITHUB_WORKFLOW_SHA",
                        "GITHUB_WORKSPACE", "RUNNER_OS", "RUNNER_ARCH", "RUNNER_ENVIRONMENT",
                        "ICODE_CI_POSITIVE_LOOPBACK_ADMIN", "ICODE_CI_POSITIVE_LOOPBACK_DEDICATED_WRITER"}
-            env = {key: value for key, value in os.environ.items() if key in allowed}
+            lowered = {key.casefold() for key in allowed}
+            full = dict(os.environ)
+            base = {key: value for key, value in full.items() if key.casefold() in lowered}
+            extras = {key: value for key, value in full.items() if key.casefold() not in lowered}
             inner = ("import socket\n"
                      "try:\n"
                      "    socket.socket(socket.AF_INET, socket.SOCK_STREAM).close()\n"
                      "except OSError as error:\n"
-                     "    print('filtered_loopback_ipv4_failed', type(error).__name__, getattr(error, 'winerror', None))\n"
-                     "    raise SystemExit(1)\n"
-                     "print('filtered_loopback_ipv4_ok')\n")
-            result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", inner],
-                                    env=env, capture_output=True, timeout=60)
-            sys.stdout.write(result.stdout.decode("ascii", "replace"))
-            raise SystemExit(result.returncode)
+                     "    raise SystemExit(getattr(error, 'winerror', 1) or 1)\n"
+                     "raise SystemExit(0)\n")
+
+            def works(environment):
+                result = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", inner],
+                                        env=environment, capture_output=True, timeout=60)
+                return result.returncode == 0
+
+            base_works, full_works = works(base), works(full)
+            print("base_works", base_works)
+            print("full_works", full_works)
+            print("extras_count", len(extras))
+            essential, remaining = [], sorted(extras)
+            current = dict(base)
+            while remaining and works({**current, **{key: extras[key] for key in remaining}}):
+                half = remaining[:len(remaining) // 2]
+                rest = remaining[len(remaining) // 2:]
+                if works({**current, **{key: extras[key] for key in half}}):
+                    remaining = half
+                else:
+                    current.update({key: extras[key] for key in half})
+                    essential.extend(half)
+                    remaining = rest
+            print("essential:", " ".join(sorted(essential)) if essential else "(none)")
+            catalog = subprocess.run(["netsh", "winsock", "show", "catalog"], env=base,
+                                     capture_output=True, timeout=60)
+            print("netsh_base_rc", catalog.returncode)
+            print("\n".join(catalog.stdout.decode("utf-8", "replace").splitlines()[:30]))
+            if not (base_works is False and full_works is True and essential):
+                print("unexpected_probe_shape")
+                raise SystemExit(1)
+            raise SystemExit(0)
         run: |
           $ErrorActionPreference = 'Stop'
           python -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.close(); print('host_loopback_ipv4_ok')"
@@ -624,7 +652,7 @@ jobs:
           python -c "import socket; s=socket.socket(socket.AF_INET6, socket.SOCK_STREAM); s.close(); print('host_loopback_ipv6_ok')"
           if ($LASTEXITCODE -ne 0) { throw 'host_loopback_ipv6_failed' }
           python -c "exec(__import__('os').environ['ICODE_PROBE_CODE'])"
-          if ($LASTEXITCODE -ne 0) { throw 'filtered_loopback_ipv4_failed' }
+          if ($LASTEXITCODE -ne 0) { throw 'probe_dichotomy_failed' }
       - name: Prove positive admin readonly admission without exemption
         shell: pwsh
         env:
