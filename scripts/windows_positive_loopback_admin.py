@@ -194,7 +194,13 @@ class Admin:
         except Exception as error:
             self._failure("parent_failed")
             # Native stages stay bounded; the ledger code above stays exact.
-            raise AdminError(_parent_stage(error)) from None
+            bounded = AdminError(_parent_stage(error))
+            # A bounded first-differing offset (never a path, SID or message)
+            # rides along on the same receipt field the entry already prints.
+            winerror = getattr(error, "winerror", None)
+            if type(winerror) is int and 0 < winerror < 65536:
+                bounded.winerror = winerror
+            raise bounded from None
         # PID, creation time, token user and Job membership came from handles.
         self.data["phase"] = "bound"
         self.store.flush()

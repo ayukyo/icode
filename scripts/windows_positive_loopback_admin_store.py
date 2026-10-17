@@ -13,9 +13,14 @@ from scripts.windows_positive_loopback_admin_win32 import Win32, Failure, _relea
 
 
 PRIVATE = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"
-# Kernel objects have no inheritance: the object manager clears the OICI flags
-# from a creation descriptor, so the expected job descriptor omits them.
-KERNEL_PRIVATE = "O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)"
+# Kernel objects have no inheritance, so the job descriptor omits OICI flags.
+# Storing a DACL on a Job (SE_KERNEL_OBJECT) also maps every ACE mask through
+# the Job generic mapping: the file-oriented "FA" mask (0x001F01FF) is stored
+# as the Job-specific mask 0x001F003F (JOB_OBJECT_ALL_ACCESS). The expected
+# descriptor therefore names that already-mapped mask explicitly, so the DACL
+# bytes read back from a live Job match these bytes regardless of whether the
+# creation descriptor or SetSecurityInfo carried them.
+KERNEL_PRIVATE = "O:BAD:P(A;;0x1F003F;;;BA)(A;;0x1F003F;;;SY)"
 LEDGER_LIMIT = 8388608
 
 

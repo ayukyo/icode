@@ -372,6 +372,26 @@ class TestAdminNative(unittest.TestCase):
         with self.assertRaises(native.Failure):self.n.parent_only(self.store)
         self.assertEqual(self.store.w.handles,{})
 
+    def test_every_job_verification_uses_the_job_masked_kernel_descriptor(self):
+        seen=[]
+        original=self.store.w.verify_security
+        def verify(handle,sddl,**options):seen.append((sddl,options))
+        self.store.w.verify_security=verify
+        try:
+            self.n._outer(self.store)
+            record=self.ready();self.n.reap_commands(self.store)
+            self.n.stop_parent_job(self.store)
+        finally:
+            self.store.w.verify_security=original
+        jobs_only=[item for item in seen if item[1].get("object_type")==6]
+        self.assertEqual({options.get("category") for sddl,options in jobs_only},
+            {"outer_job_security_changed","stop_job_security_changed","reap_job_security_changed"})
+        for sddl,options in jobs_only:
+            self.assertEqual(sddl,native.KERNEL_PRIVATE)
+        for sddl,options in seen:
+            if options.get("object_type")!=6:
+                self.assertNotEqual(sddl,native.KERNEL_PRIVATE)
+
     def test_durable_ready_unknown_resume_requires_actual_job_termination_and_exit(self):
         record=self.ready()
         self.assertIsNone(json.loads(self.store.durable)["commands"][0]["resume_attempted"])

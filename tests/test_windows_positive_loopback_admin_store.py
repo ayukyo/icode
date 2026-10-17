@@ -62,6 +62,12 @@ class TestAdminStore(unittest.TestCase):
             with self.subTest(bad=bad),self.assertRaises(storage.Failure):
                 storage.decode(bad,100)
 
+    def test_kernel_private_names_the_job_specific_mask_without_inheritance(self):
+        self.assertNotIn("OICI",storage.KERNEL_PRIVATE)
+        self.assertNotIn("FA",storage.KERNEL_PRIVATE)
+        self.assertEqual(storage.KERNEL_PRIVATE.count("0x1F003F"),2)
+        self.assertTrue(storage.KERNEL_PRIVATE.startswith("O:BAD:P(A;;"))
+
     def test_roles_exact_account_binding_and_private_default(self):
         private=self.store.file_descriptor("private")
         self.assertEqual(private,storage.PRIVATE)

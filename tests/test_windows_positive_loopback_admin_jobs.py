@@ -171,6 +171,22 @@ class TestAdminJobs(unittest.TestCase):
         self.assertEqual(self.store.kernel.alive,set(),"failed return must not strand acquired Job")
         self.assertEqual(self.store.kernel.closed,[10])
 
+    def test_create_job_applies_and_verifies_the_job_masked_kernel_descriptor(self):
+        seen=[]
+        self.store.w.set_kernel_dacl=lambda handle,sddl:seen.append(("set",sddl))
+        def verify(handle,sddl,**options):seen.append(("verify",sddl,options))
+        self.store.w.verify_security=verify
+        job=jobs.create_job(self.store,"Local\\ICODE.Positive.test")
+        try:
+            self.assertEqual(len(seen),2)
+            self.assertEqual(seen[0],("set",jobs.KERNEL_PRIVATE))
+            self.assertEqual(seen[1][0],"verify")
+            self.assertEqual(seen[1][1],jobs.KERNEL_PRIVATE)
+            self.assertEqual(seen[1][2].get("object_type"),6)
+            self.assertFalse(seen[1][2].get("owner",True))
+        finally:
+            self.store.kernel.CloseHandle(job)
+
     def test_create_job_body_is_not_replaced_by_descriptor_or_job_cleanup(self):
         for failed in ("descriptor","job"):
             with self.subTest(failed=failed):

@@ -173,6 +173,26 @@ class TestAdminCoordinator(unittest.TestCase):
                 self.assertEqual(str(caught.exception),expected)
                 self.assertEqual(controller.data["first_error"],"parent_failed")
 
+    def test_attach_parent_failure_forwards_only_a_bounded_offset(self):
+        bounded=RuntimeError("job_security_changed");bounded.winerror=12
+        zero=RuntimeError("job_security_changed");zero.winerror=0
+        over=RuntimeError("job_security_changed");over.winerror=65536
+        text=RuntimeError("job_security_changed");text.winerror="12"
+        for error,winerror,message in ((bounded,12,"parent_failed_job_security_changed"),
+                                       (zero,None,"parent_failed_job_security_changed"),
+                                       (over,None,"parent_failed_job_security_changed"),
+                                       (text,None,"parent_failed_job_security_changed"),
+                                       (RuntimeError("parent_open"),None,"parent_failed_parent_open")):
+            with self.subTest(error=repr(error),winerror=winerror):
+                self.model=ModelNative()
+                controller=admin.Admin.prepare(Path("/model/admin"),self.model.boot["account_sid"])
+                def failed(store,pid): raise error
+                self.model.attach_parent=failed
+                with self.assertRaises(admin.AdminError) as caught: controller.attach_parent(self.model.boot["pid"])
+                self.assertEqual(str(caught.exception),message)
+                self.assertEqual(getattr(caught.exception,"winerror",None),winerror)
+                self.assertEqual(controller.data["first_error"],"parent_failed")
+
     def setUpModelForSubcase(self):
         self.model=ModelNative()
         self.controller=admin.Admin.prepare(Path("/model/admin"),self.model.boot["account_sid"])
