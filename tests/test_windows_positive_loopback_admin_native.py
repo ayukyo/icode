@@ -392,6 +392,21 @@ class TestAdminNative(unittest.TestCase):
             if options.get("object_type")!=6:
                 self.assertNotEqual(sddl,native.KERNEL_PRIVATE)
 
+    def test_parent_mutable_route_fails_closed_with_bounded_route_index(self):
+        self.store.data["readonly_prepare"]=None
+        self.store.route_records=[dict(path=str(self.store.root.parent),identity=[7,1],security=dict()),
+            dict(path=str(self.store.root),identity=[7,1],security=dict())]
+        self.store.pins=[201,202]
+        for handle,record in zip((201,202),self.store.route_records):
+            self.store.w.handles[handle]=("route",record["path"])
+        self.store.w.observe_security=lambda handle:dict()
+        clean=dict(api_completed=True,access_status=True,granted=0x120089,privilege_bytes=0)
+        mutable=dict(api_completed=True,access_status=True,granted=0x000D0152,privilege_bytes=0)
+        self.store.w.effective_access=lambda handle,parent:(clean if handle==201 else mutable)
+        with self.assertRaises(native.Failure) as caught:self.n.readonly_prepare(self.store)
+        self.assertEqual(str(caught.exception),"route_mutation_access")
+        self.assertEqual(getattr(caught.exception,"winerror",None),1)
+
     def test_durable_ready_unknown_resume_requires_actual_job_termination_and_exit(self):
         record=self.ready()
         self.assertIsNone(json.loads(self.store.durable)["commands"][0]["resume_attempted"])

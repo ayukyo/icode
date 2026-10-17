@@ -1157,13 +1157,19 @@ class Native:
         parent = self._process(store, store.data["parent"])
         try:
             routes = []
-            for entry, handle in zip(store.route_records, store.pins):
+            for index, (entry, handle) in enumerate(zip(store.route_records, store.pins)):
                 require(store.w.info(handle, directory=True) == tuple(entry["identity"])
                         and store.w.observe_security(handle) == entry["security"], "route_changed")
                 access = store.w.effective_access(handle, parent)
                 routes.append(dict(**entry, effective=access))
-                require(access["api_completed"] is True and access["access_status"] is True
-                        and access["granted"] & ROUTE_MUTATION == 0, "route_mutation_access")
+                if not (access["api_completed"] is True and access["access_status"] is True
+                        and access["granted"] & ROUTE_MUTATION == 0):
+                    # Bounded location of the first parent-mutable route: the
+                    # index rides the existing receipt field and never carries
+                    # a path, SID, mask detail or message body.
+                    failure = Failure("route_mutation_access")
+                    failure.winerror = index
+                    raise failure
             protected = store.w.observe_security(store.root_handle)
             require(protected["protected"] is True, "private_root_unprotected")
             access = store.w.effective_access(store.root_handle, parent)
