@@ -8,6 +8,20 @@
 
 d6a7a3a 之后实测准入链推进两块：43514bd/48c0b0f 修 Job DACL 的 generic mapping 重映射（SDDL "FA" 在 Job 上被存为 0x001F003F，改期望值为已映射掩码并用 hex 原样写入，三处 job 校验同步切换），Windows 日志推进到 `readonly_failed:parent_failed_route_mutation_access`；888d872 加有界索引诊断（收据 `child_winerror` 报首条可变异路线的下标，不携带路径/掩码），双架构一致 `child_winerror=2`。旧 store 根在 `C:\Users\<runner>\AppData\Local\Temp\icode-positive-admin-<hash>`，路线表 = [C:\, C:\Users, C:\Users\<runner>, AppData, Local, Temp]，下标 2 即 `C:\Users\<runner>`——runner 配置目录授予临时账户（icodeprobe_*）继承的可变异权；C:\ 与 C:\Users 实证干净。52ce9b4 将 freeze 的 store 父目录从 GetTempPathW 改为 `w.system_directory.anchor`（系统盘根），路线表只剩 [C:\] 一条且已实证干净；freeze 不再调用 GetTempPathW，脚本内无其他 temp 父目录假设（read probe 的 temp 假设只作用于 WFP observer 的一次性 workspace，与本 store 无关）。本地全家族 237 项与基线零差异（失败集同为 2 个 Linux 专有 `SO_EXCLUSIVEADDRUSE` 环境错误）；CI workflow 契约 22 项不受影响。下一候选预期推进 private_root_mutation_access 或 loader/tool 阶段；双 Windows 软件测试与 SDK 构建仍需先过，不得预报通过。
 
+### 候选 de637ac（52ce9b4+文档）：readonly admission 双架构首过；Reviewer 快照步被既定网络硬门阻断
+
+推送 main de637ac（52ce9b4 代码 + 文档）。CI `39000099220`（CI）、`39000099169`（provenance）、`39000099273`（官网 success）全部 completed。CI 45 job：39 成功 / 3 失败 / 3 跳过。
+
+两个 Windows Reviewer 快照 job（x64 `117301011650`、arm64 `117301011640`）：软件测试、SDK oracle、宿主 loopback 探测均过后，**readonly admission（无豁免）双腿首度成功**（d6a7a3a 起止于 `parent_failed_route_mutation_access`，52ce9b4 盘根迁移后路线表=[C:\] 通过）；随后 WFP observer 四步（观察者构建自测、Windows SDK WFP ABI 交叉核验、Subscribe2 权限探测、严格 CAB 元数据观察契约）全部成功。仅最后一步“Run Reviewer snapshot probe as temporary standard user”双腿失败。
+
+失败收据（双腿一致，原始日志已归档本地 temp）：候选 `exit=78`；隔离事实全真——appcontainer/package_sid 匹配、capabilities=0、未提权、approved_read、outside_snapshot/workspace/home/ledger/write/delete/rename/create/dac-write 全部拒绝、child 启动并退出、快照与 runtime ACL 恢复验证、写 canary 未被改动；`write_canary_matches_expected_result=false` 是写拒绝路径的互斥结果（host 侧写正控 verified=true）。触发 SystemExit(78) 的是负载自检中 `ipv4/ipv6_network_connect_denied=false`：零能力 AppContainer 连 `127.0.0.1:port` 与 `[::1]:port` 均 `connect_ex=10035`（非阻塞 pending）→ `FD_CONNECT` 10 秒等待超时 → `SO_ERROR=0`、TCP 信息不可用、无 canary；outer 合同同样要求 `network_error==10013`（WSAEACCES）且 `connect_denied=True`，双架构均未变绿。privateNetwork 正控仍 inconclusive：capability 注入与父侧 token 核验全部匹配（count=1、SID 匹配、enabled），但带 capability 探针 IPv4 connect 仍超时（exit=105 stage=ipv4_connect_timeout）——capability 不等于 loopback exemption（2026-10-13 记录在案）。
+
+判定：这是既定治理边界，不是本轮新缺陷，也不是可用产品代码修复的门。`agent-landscape-live.md` 2026-10-05“R2 Windows AppContainer / WFP 可行边界复核”已记录零 capability AppContainer 是有效默认拒绝边界、CI 实测为 `10035` 超时而非 `10013`，并明确该轮“不在本轮放宽 10013、不写 WFP/防火墙策略、不加新安装器”。2026-10-14（loopback 配置只读观察 DESIGN）与 2026-10-15（正控 SID 临时豁免实验 DESIGN）两份设计均未实现，且都声明即使实现，原 Reviewer 若仍 exit78 则整体失败如实保留；正控 SID 豁免实验需完整 SPEC/QUALITY 评审与用户授权。已记录“不适配”：把 `10035/timeout/SO_ERROR0` 当 `10013` DENY、给 Reviewer SID 加豁免、盲目延长等待。**下一步需用户决策（选项见下），本轮未擅自放宽任何门。**
+
+Python 3.12 job 与 provenance validate 的 3644 项测试失败集与上一候选 888d872 逐项一致（2 个 Linux 专有 `SO_EXCLUSIVEADDRUSE` 环境错误 + `test_version_migration_preserves_commands_and_security_policies` 既有失败），本轮零回归；官网 success。vendor 未动，未建 branch/tag。
+
+**待用户决策（授权后才能继续）：**（a）推进既定治理路径：先 fresh SPEC+独立 QUALITY 落地 2026-10-14 只读配置观察，再把 2026-10-15 豁免正控实验提交完整 PLAN 评审（注意二者均不改变零能力门，Reviewer 步骤不会仅因此转绿）；（b）明确授权重新定义零能力网络举证（例如“只读配置证明未豁免 + 豁免正控证明双栈通路实测可用 + 候选连接未建立无 canary”三元证据替代“双栈 10013”），再按 RED→GREEN 实施；（c）认定 github-hosted runner 上该门不可达，改验收环境或目标。
+
 ## 最新候选与推送停点
 
 **当前远端及本地HEAD：`d6a7a3abbd2c2b29730d8ccc2d1a1c9f5a1c30fd`。** 71ffa7仅提交已双审policy TEST及handoff；7ebc61将b6dba5e路径修复和d6a7a3a契约修复一起从4fff535快进main，exit0。root API确认同SHA attempt1：CI `38706002261`、Windows helper provenance `38706002204`、Public website `38706002225` 已启动。独立观察者跟踪双Windows software→SDK→readonly→原Reviewer及完整全量/签名终态；未发生则不授信用。全部run终态前不再push，不创建新branch/tag，vendor不变。下方4fff535及本地b6状态是历史定位，不覆盖本行。
