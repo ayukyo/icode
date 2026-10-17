@@ -1,8 +1,16 @@
 # R2 / R3 开发接力
 
-更新：2026-10-15（北京时间）。已在 Windows / WSL2 接力续跑；下列历史发布及线上结果只授其实际候选证据，不作为本轮新增能力验收。
+更新：2026-10-16（北京时间）。**交给另一 AI 请先读 [当前接力入口](ai-handoff-2026-10-16.md)**，机器专属位置见权威仓库 `.git/AI-HANDOFF.local.md`（仅本机）。本文保留历史账，不把后文旧“当前/正在运行/未实施”当最新状态。
+
+本次交接重新核实 d6a7a3a：CI38706002261 全部终态40成功/2失败/3skip；provenance38706002204三成功；Pages38706002225两成功。full116325467105为3624 tests/721.560s/OK(skip100)。双Windows116325467953、116325468334均202软件测试及SDK构建通过，但实际readonly admission返回readonly_failed/unknown，后续WFP/Reviewer跳过。首要任务转为定位该实际准入失败，不能重做已过模型修复，也不能报告R2/R3完成。本次只整理文档，未提交推送或改产品；此前已有两行未提交候选记录保留。
+
+### 候选 52ce9b4：store 根迁到系统盘根（route_mutation_access 定位后）
+
+d6a7a3a 之后实测准入链推进两块：43514bd/48c0b0f 修 Job DACL 的 generic mapping 重映射（SDDL "FA" 在 Job 上被存为 0x001F003F，改期望值为已映射掩码并用 hex 原样写入，三处 job 校验同步切换），Windows 日志推进到 `readonly_failed:parent_failed_route_mutation_access`；888d872 加有界索引诊断（收据 `child_winerror` 报首条可变异路线的下标，不携带路径/掩码），双架构一致 `child_winerror=2`。旧 store 根在 `C:\Users\<runner>\AppData\Local\Temp\icode-positive-admin-<hash>`，路线表 = [C:\, C:\Users, C:\Users\<runner>, AppData, Local, Temp]，下标 2 即 `C:\Users\<runner>`——runner 配置目录授予临时账户（icodeprobe_*）继承的可变异权；C:\ 与 C:\Users 实证干净。52ce9b4 将 freeze 的 store 父目录从 GetTempPathW 改为 `w.system_directory.anchor`（系统盘根），路线表只剩 [C:\] 一条且已实证干净；freeze 不再调用 GetTempPathW，脚本内无其他 temp 父目录假设（read probe 的 temp 假设只作用于 WFP observer 的一次性 workspace，与本 store 无关）。本地全家族 237 项与基线零差异（失败集同为 2 个 Linux 专有 `SO_EXCLUSIVEADDRUSE` 环境错误）；CI workflow 契约 22 项不受影响。下一候选预期推进 private_root_mutation_access 或 loader/tool 阶段；双 Windows 软件测试与 SDK 构建仍需先过，不得预报通过。
 
 ## 最新候选与推送停点
+
+**当前远端及本地HEAD：`d6a7a3abbd2c2b29730d8ccc2d1a1c9f5a1c30fd`。** 71ffa7仅提交已双审policy TEST及handoff；7ebc61将b6dba5e路径修复和d6a7a3a契约修复一起从4fff535快进main，exit0。root API确认同SHA attempt1：CI `38706002261`、Windows helper provenance `38706002204`、Public website `38706002225` 已启动。独立观察者跟踪双Windows software→SDK→readonly→原Reviewer及完整全量/签名终态；未发生则不授信用。全部run终态前不再push，不创建新branch/tag，vendor不变。下方4fff535及本地b6状态是历史定位，不覆盖本行。
 
 ### 本地修复候选与 4fff535 全部终态
 
