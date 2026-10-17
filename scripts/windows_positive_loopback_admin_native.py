@@ -517,10 +517,16 @@ class Native:
         for parent in (runtime, runtime.parent):
             require(not (parent / "pyvenv.cfg").exists(), "runtime_cfg")
             require(not list(parent.glob("*._pth")), "runtime_pth")
-        temp = c.create_unicode_buffer(32768)
-        length = w.k.GetTempPathW(len(temp), temp)
-        require(0 < length < len(temp), "temp_root")
-        parent = Path(temp.value).resolve(strict=True)
+        # The protected store lives directly on the system drive root. The
+        # route admission requires the standard-user account to hold no
+        # mutation rights on any ancestor of the store; on the hosted worker
+        # the profile tree below the drive root (observed at
+        # C:\Users\<runner>) grants that account inherited mutation rights,
+        # while the drive root itself grants only traverse/read. A dedicated
+        # guard directory is unnecessary here: the single route is already
+        # clean and the store root's own descriptor is protected.
+        parent = Path(w.system_directory.anchor)
+        require(parent.is_absolute() and parent.resolve(strict=True) == parent, "drive_root")
         # One protected instance per exact candidate/run/job/matrix. CREATE_NEW
         # directory admission rejects repeat freeze instead of minting a second
         # authority. The independent session inside remains unpredictable.
