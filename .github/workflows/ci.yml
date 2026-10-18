@@ -1174,11 +1174,11 @@ jobs:
             elseif ($sample.Stderr -ne '') { $failure = 'protocol_error' }
             elseif ($sample.Stdout.Length -gt 4096) { $failure = 'protocol_error' }
             else {
-              $lines = $sample.Stdout -split "`n" | Where-Object { $_ -ne '' }
+              $lines = @($sample.Stdout -split "`n" | Where-Object { $_ -ne '' })
               if ($lines.Count -ne 1) { $failure = 'protocol_error' }
               else {
                 try {
-                  $receipt = $lines[0] | ConvertFrom-Json
+                  $receipt = $lines[0].Trim() | ConvertFrom-Json
                 } catch {
                   $failure = 'protocol_error'
                 }

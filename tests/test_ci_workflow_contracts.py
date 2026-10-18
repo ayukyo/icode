@@ -669,6 +669,18 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
         # Only the protected build may serve the admin-side config samples.
         self.assertIn("$helper = $env:ICODE_DIAGNOSTIC_WFP_PROBE_BUILD", candidate_job)
         self.assertNotIn("-MemberDefinition @'", candidate_job)
+        # The single-line sample parse must stay array-forced and trimmed: a
+        # filtered pipeline collapsing to a scalar makes [0] a character and
+        # the trailing CR breaks both JSON parsers.
+        self.assertIn('$lines = @($sample.Stdout -split "`n"', candidate_job)
+        self.assertIn("$lines[0].Trim() | ConvertFrom-Json", candidate_job)
+        # The bounded invocation facts must reach the failure ledger.
+        for diagnostic in ('"exit_code":"', '"timed_out":"', '"stdout_length":"', '"stderr_length":"'):
+            self.assertIn(diagnostic, candidate_job)
+        # A surviving probe process must be stopped before its root removal.
+        self.assertIn("if ($process -and -not $process.HasExited) {", candidate_job)
+        self.assertIn("$process.Kill($true)", candidate_job)
+        self.assertIn("reviewer_probe_root_cleanup_failed", candidate_job)
         recovery_step = workflow.split(
             "      - name: Recover any unfinished loopback exemption experiment\n", 1,
         )[1].split("\n  windows-appcontainer-read-handle-probe:", 1)[0]
