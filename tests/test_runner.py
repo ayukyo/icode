@@ -2120,15 +2120,18 @@ class TestReviewStepReadOnlyContext(unittest.TestCase):
                 deny_read_roots=(workspace / ".icode_output", out_dir),
             )
             hidden_relative = private_ledger.relative_to(workspace).as_posix()
-            probe_code = (
-                "print('ledger-hidden' if not "
-                f"__import__('pathlib').Path({hidden_relative!r}).exists() "
-                "else 'ledger-visible')"
+            # 探针写成工作区脚本再执行：python -c 属于任意代码执行，按命令
+            # 策略需要人工确认，会掩盖这里要验证的 bwrap 账本隐藏。
+            (workspace / "probe.py").write_text(
+                "from pathlib import Path\n"
+                f"print('ledger-hidden' if not Path({hidden_relative!r}).exists() "
+                "else 'ledger-visible')\n",
+                encoding="utf-8",
             )
             backend = FakeBackend([
                 {"content": "", "tool_calls": [
                     {"id": "policy-probe", "name": "run_command", "arguments": {
-                        "argv": ["python3", "-c", probe_code],
+                        "argv": ["python3", "probe.py"],
                     }},
                     {"id": "submit-review", "name": "submit_artifact", "arguments": {
                         "name": "02_review.md", "content": "# Review\n\nNo findings.\n",
