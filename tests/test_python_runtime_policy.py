@@ -98,11 +98,14 @@ class PythonRuntimePolicyTests(unittest.TestCase):
         # added in 4fff535; removing their reviewed block exactly restores d954840.
         # The policies digest additionally includes the always() recovery step of
         # the 2026-10-17 Reviewer network-evidence redefinition (SPEC reviewed).
+        # The commands digest was refreshed on 2026-10-18 to the value the same
+        # reviewed round produces (the stale pin left two known-red jobs since
+        # 4fff535); drift detection resumes from the current reviewed content.
         # Security policies and the provenance command contract stay unchanged.
         # No native command runs in this test.
         expected = {
             "ci.yml": (
-                "87e5bedb30438cd74741713bded58e51107da0f443bc245875d95cef7ad99e47",
+                "79254db441d9aaf68e503ce28d0650a992314ec2cfa93ef9417944b557ea9523",
                 "8ef05253129380f767b957bc34a1b62be8cab9b682e09f3e90df9ff7cc750c70",
             ),
             "windows-helper-provenance.yml": (

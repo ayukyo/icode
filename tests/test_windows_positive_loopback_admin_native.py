@@ -6,6 +6,7 @@ from ctypes import wintypes as t
 from dataclasses import asdict
 import importlib
 import json
+import sys
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace as N
@@ -1249,6 +1250,10 @@ class TestAdminNative(unittest.TestCase):
                 self.assertIs(caught.exception,body)
                 self.assertTrue(any(n.startswith("cleanup_unknown:") for n in getattr(body,"__notes__",())))
 
+    @unittest.skipUnless(
+        sys.platform == "win32",
+        "需 Windows SO_EXCLUSIVEADDRUSE 原生 socket 选项（Linux 无该常量）",
+    )
     def test_prepare_socket_creation_oserror_becomes_bounded_loopback_failure(self):
         for family,category in (("AF_INET","loopback_socket4"),("AF_INET6","loopback_socket6")):
             with self.subTest(family=family):
@@ -1274,6 +1279,10 @@ class TestAdminNative(unittest.TestCase):
                 self.assertIs(caught.exception.__cause__,boom)
                 self.assertEqual(len(calls),3 if family=="AF_INET" else 4)
 
+    @unittest.skipUnless(
+        sys.platform == "win32",
+        "需 Windows SO_EXCLUSIVEADDRUSE 原生 socket 选项（Linux 无该常量）",
+    )
     def test_prepare_socket_creation_transient_failure_is_retried(self):
         self.store=NativeStore()
         self.store.data.update(phase="frozen",account_sid=None,bootstrap=None,parent=None,outer_job=None,readonly_prepare=None)
