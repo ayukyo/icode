@@ -1,6 +1,6 @@
 # R2 / R3 开发接力
 
-更新：2026-10-18（北京时间）。**交给另一 AI 请先读 [当前接力入口](ai-handoff-2026-10-16.md)**，机器专属位置见权威仓库 `.git/AI-HANDOFF.local.md`（仅本机）。本文保留历史账，不把后文旧“当前/正在运行/未实施”当最新状态。**最新：候选 1fdfa41 双腿 Windows Reviewer 快照 job CI 首绿，R2/R3 既定验收目标达成；余下红项全部预存在（见“候选 1fdfa41”节末的待决策项）。**
+更新：2026-10-18（北京时间）。**交给另一 AI 请先读 [当前接力入口](ai-handoff-2026-10-16.md)**，机器专属位置见权威仓库 `.git/AI-HANDOFF.local.md`（仅本机）。本文保留历史账，不把后文旧“当前/正在运行/未实施”当最新状态。**最新：候选 `1fdfa41` 双腿 Windows Reviewer 快照 job CI 首绿，R2/R3 既定验收目标已正式结案；陈旧 `commands` 钉锁已同口径刷新、两个 Linux 环境性错误已加平台守卫，结案后红项预计清零（见“候选 1fdfa41”节）。**
 
 本次交接重新核实 d6a7a3a：CI38706002261 全部终态40成功/2失败/3skip；provenance38706002204三成功；Pages38706002225两成功。full116325467105为3624 tests/721.560s/OK(skip100)。双Windows116325467953、116325468334均202软件测试及SDK构建通过，但实际readonly admission返回readonly_failed/unknown，后续WFP/Reviewer跳过。首要任务转为定位该实际准入失败，不能重做已过模型修复，也不能报告R2/R3完成。本次只整理文档，未提交推送或改产品；此前已有两行未提交候选记录保留。
 
@@ -53,7 +53,7 @@ Runner 实证三元证据闭合（双腿收据一致，以 arm64 为例）：账
 
 **当前远端及本地HEAD：`1fdfa41`（三元证据门，双腿快照 job CI 首绿）。** R2/R3 既定验收目标（两个 snapshot job 全绿并通过 readonly admission、WFP observer、Reviewer 步骤）已达成；余下红项全部为既有环境性/陈旧钉锁失败，处置需用户决策（见下）。all runs 已终态；未创建 branch/tag，vendor 未动。下方 4fff535 及本地 b6 状态是历史定位，不覆盖本行。
 
-**待用户决策：**（a）`commands` 钉锁自 4fff535 起陈旧（本轮实测仅影响 Python 3.12 与 provenance validate 两个 job 的同一断言）——授权按同一口径更新该钉锁并附注，或维持现状继续在文档声明；（b）R2/R3 后续验收口径是否需要在文档正式结案（双腿快照 job 绿 + 契约/证据链记录在案）。
+**待用户决策（已执行，用户授权“按你推荐的来”）：**（a）`commands` 钉锁自 4fff535 起陈旧（仅影响 Python 3.12 与 provenance validate 两个 job 的同一断言）——已按已评审内容同口径刷新为 `79254db441d9aaf68e503ce28d0650a992314ec2cfa93ef9417944b557ea9523` 并在测试内附注（与 CI 在 `1fdfa41` 上实测的实际值逐位一致，`policies` 值复核不变）；（b）两个 Windows 专有 `SO_EXCLUSIVEADDRUSE` socket 测试加 `skipUnless(win32)` 平台守卫（Windows snapshot job 保留真实覆盖，Linux 不再环境性 error）；（c）R2/R3 既定目标（两个 snapshot job 全绿并通过 readonly admission、WFP observer、Reviewer 步骤）已在决策日志与本文档正式结案。结案后如 CI 复跑确认 Python 3.12 与 provenance validate 转绿，则全部 red 项清零。
 
 ### 本地修复候选与 4fff535 全部终态
 
