@@ -59,6 +59,49 @@ _DANGEROUS_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"\bdel\s+/[sq]\b", "递归删除"),
 )
 
+# 参数级否决：白名单命令的破坏型参数不能借白名单整体放行。
+_DESTRUCTIVE_FIND_ARGUMENTS = frozenset({
+    "-delete", "-exec", "-execdir", "-ok", "-okdir",
+})
+
+
+def _argument_verdict(head: str, parts: list[str]) -> Verdict | None:
+    """按程序检查破坏型参数；命中即降级为拒绝或人工确认。"""
+    lowered = [part.lower() for part in parts]
+    if head == "find":
+        if any(token in _DESTRUCTIVE_FIND_ARGUMENTS for token in lowered[1:]):
+            return Verdict(Decision.DENY, "find 破坏型动作：-delete/-exec 系列")
+    elif head == "git":
+        if len(lowered) > 1 and lowered[1] == "clean":
+            flags = [token for token in lowered[2:] if token.startswith("-")]
+            forced = any(
+                token in {"--force", "-f"}
+                or (not token.startswith("--") and "f" in token[1:])
+                for token in flags
+            )
+            if forced:
+                return Verdict(
+                    Decision.REQUIRE_APPROVAL,
+                    "git clean 强制删除工作区内容：按破坏型动作交人工确认",
+                )
+    elif head in {"python", "python3", "py"}:
+        if any(token == "-c" or (not token.startswith("--") and token.startswith("-c"))
+               for token in lowered[1:]):
+            return Verdict(
+                Decision.REQUIRE_APPROVAL,
+                "python -c 任意代码执行：交人工确认",
+            )
+    elif head == "rm":
+        long_recursive = "--recursive" in lowered[1:]
+        long_force = "--force" in lowered[1:]
+        short = [token for token in lowered[1:]
+                 if token.startswith("-") and not token.startswith("--")]
+        short_recursive = any(re.fullmatch(r"-[a-z]*r[a-z]*", token) for token in short)
+        short_force = any(re.fullmatch(r"-[a-z]*f[a-z]*", token) for token in short)
+        if (long_recursive or short_recursive) and (long_force or short_force):
+            return Verdict(Decision.DENY, "递归强制删除")
+    return None
+
 # 默认允许的命令首词（Phase 2 的白名单起点：只读或与验收直接相关）
 _DEFAULT_COMMAND_ALLOWLIST: tuple[str, ...] = (
     "python", "python3", "py",
@@ -183,6 +226,11 @@ class Guard:
         head = (argv.split()[0] if isinstance(argv, str) else argv[0]).strip()
         head = Path(head).name  # 归一化路径形式
         head = head[:-4] if head.lower().endswith(".exe") else head
+        # 白名单只授予“程序”，不授予该程序的破坏型参数。
+        parts = stripped.split() if isinstance(argv, str) else list(argv)
+        argument_verdict = _argument_verdict(head, parts)
+        if argument_verdict is not None:
+            return argument_verdict
         if head in self.scope.command_allowlist:
             return Verdict(Decision.ALLOW, f"命令白名单：{head}")
         return Verdict(Decision.REQUIRE_APPROVAL, f"不在白名单：{head}")

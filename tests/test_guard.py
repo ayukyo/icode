@@ -103,6 +103,34 @@ class TestGuard(unittest.TestCase):
         for cmd in dangerous:
             self.assertEqual(self.guard.check_command(cmd).decision, Decision.DENY, cmd)
 
+    def test_白名单命令的破坏型参数不能借白名单放行(self) -> None:
+        for cmd in (
+            ["find", "/", "-delete"],
+            ["find", ".", "-exec", "rm", "{}", ";"],
+        ):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.guard.check_command(cmd).decision, Decision.DENY)
+        self.assertEqual(
+            self.guard.check_command(["git", "clean", "-fdx"]).decision,
+            Decision.REQUIRE_APPROVAL,
+        )
+        # 干跑不改动工作区，仍按白名单放行。
+        self.assertEqual(
+            self.guard.check_command(["git", "clean", "-n"]).decision,
+            Decision.ALLOW,
+        )
+        self.assertEqual(
+            self.guard.check_command(["python", "-c", "print(1)"]).decision,
+            Decision.REQUIRE_APPROVAL,
+        )
+        self.assertEqual(
+            self.guard.check_command(["python", "-m", "unittest"]).decision,
+            Decision.ALLOW,
+        )
+        for cmd in (["rm", "-r", "-f", "/"], ["rm", "--recursive", "--force", "/"]):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.guard.check_command(cmd).decision, Decision.DENY)
+
     def test_白名单外命令需审批(self) -> None:
         v = self.guard.check_command(["some-unknown-binary", "--go"])
         self.assertEqual(v.decision, Decision.REQUIRE_APPROVAL)
