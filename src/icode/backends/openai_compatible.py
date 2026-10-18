@@ -64,8 +64,15 @@ class Usage:
     reasoning_tokens: int = 0
     calls: int = 1
     retries: int = 0
+    # 运营指标（R4/W5）：延迟与估算费用；成本未知时为 None，绝不冒充 0。
+    latency_ms: int = 0
+    cost_usd: float | None = None
 
     def merge(self, other: Usage) -> Usage:
+        if self.cost_usd is None or other.cost_usd is None:
+            cost: float | None = None
+        else:
+            cost = self.cost_usd + other.cost_usd
         return Usage(
             prompt_tokens=self.prompt_tokens + other.prompt_tokens,
             completion_tokens=self.completion_tokens + other.completion_tokens,
@@ -74,6 +81,8 @@ class Usage:
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
             calls=self.calls + other.calls,
             retries=self.retries + other.retries,
+            latency_ms=self.latency_ms + other.latency_ms,
+            cost_usd=cost,
         )
 
     def as_dict(self) -> dict[str, int]:
@@ -86,6 +95,13 @@ class Usage:
             "cached_tokens": self.cached_tokens,
             "reasoning_tokens": self.reasoning_tokens,
         }
+
+    def as_metrics(self) -> dict[str, object]:
+        """运营指标视图（含延迟/费用）；预算闸门仍只读 as_dict 的计数。"""
+        metrics: dict[str, object] = dict(self.as_dict())
+        metrics["latency_ms"] = self.latency_ms
+        metrics["cost_usd"] = self.cost_usd
+        return metrics
 
 
 def _usage_from(raw: dict[str, Any]) -> Usage:
@@ -240,6 +256,7 @@ class OpenAICompatibleBackend:
         # （retryable_transport），但 4xx 属确定性失败，绝不重试。
         data: dict[str, Any] = {}
         last_error = ""
+        started = time.monotonic()
         for attempt in range(self.max_retries + 1):
             try:
                 with self._opener().open(req, timeout=self.timeout) as resp:  # noqa: S310
@@ -274,6 +291,7 @@ class OpenAICompatibleBackend:
             msg = data["choices"][0]["message"]
 
             self.last_usage = _usage_from(data)
+            self.last_usage.latency_ms = int((time.monotonic() - started) * 1000)
             self.usage = self.usage.merge(self.last_usage)
 
             calls: list[ToolCall] = []
@@ -329,4 +347,46 @@ def build_backend(
             proxy=proxy or llm_proxy(),
             no_proxy=no_proxy or llm_no_proxy(),
         )
-    raise BackendError(f"未知后端：{kind}（可用：fake / openai-compatible）")
+    if kind in ("anthropic", "claude"):
+        from ..config import llm_no_proxy, llm_proxy, resolve_api_key
+
+        from .anthropic import AnthropicBackend
+
+        return AnthropicBackend(
+            api_key=resolve_api_key(key_file),
+            model=model or os.environ.get("ICODE_LLM_MODEL") or "",
+            base_url=base_url or os.environ.get("ICODE_LLM_BASE_URL") or "",
+            proxy=proxy or llm_proxy(),
+            no_proxy=no_proxy or llm_no_proxy(),
+        )
+    if kind in ("gemini", "google"):
+        from ..config import llm_no_proxy, llm_proxy, resolve_api_key
+
+        from .gemini import GeminiBackend
+
+        return GeminiBackend(
+            api_key=resolve_api_key(key_file),
+            model=model or os.environ.get("ICODE_LLM_MODEL") or "",
+            base_url=base_url or os.environ.get("ICODE_LLM_BASE_URL") or "",
+            proxy=proxy or llm_proxy(),
+            no_proxy=no_proxy or llm_no_proxy(),
+        )
+    if kind in ("ollama", "local"):
+        from ..config import llm_no_proxy, llm_proxy, resolve_api_key
+
+        from .ollama import OllamaBackend
+
+        try:
+            api_key = resolve_api_key(key_file)
+        except Exception:  # noqa: BLE001 - 本地模型允许无密钥
+            api_key = ""
+        return OllamaBackend(
+            api_key=api_key,
+            model=model or os.environ.get("ICODE_LLM_MODEL") or "",
+            base_url=base_url or os.environ.get("ICODE_LLM_BASE_URL") or "",
+            proxy=proxy or llm_proxy(),
+            no_proxy=no_proxy or llm_no_proxy(),
+        )
+    raise BackendError(
+        f"未知后端：{kind}（可用：fake / openai-compatible / anthropic / gemini / ollama）"
+    )

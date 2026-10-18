@@ -23,6 +23,7 @@ from typing import Any, Callable
 from .approvals import ApprovalRequest, Approver, DenyAllApprover
 from .backends import AssistantMessage, Backend, ToolCall, Usage
 from .budget import BudgetTracker
+from .compaction import compact_history, history_chars
 from .guard import Decision, Guard, Verdict
 from .operations import OperationRecorder
 from .tools import (
@@ -55,6 +56,8 @@ class LoopConfig:
     required_tool_retry_count: int = 1
     # 已读全白名单后，保留给必需工具提交、纠正和结束的回合。
     required_tool_turn_reserve: int = 0
+    # R4/G2：>0 时在每回合前按字符预算压缩中段（0 = 关闭，保持旧行为）。
+    compact_budget_chars: int = 0
 
 
 @dataclass
@@ -167,6 +170,8 @@ class AgentLoop:
         self.operations = operations
         self.budget = budget or BudgetTracker()
         self.config = config or LoopConfig()
+        # 未闭合副作用的有界标签集：压缩时必须随上下文一起保留。
+        self._unclosed_operations: list[str] = []
         if (self.config.tool_choice not in ("auto", "required")
                 and self.registry.get(self.config.tool_choice) is None):
             raise ValueError("tool_choice 必须是 auto、required 或已注册工具名")
@@ -304,6 +309,9 @@ class AgentLoop:
                     "此前动作的回执不能用于再次执行" if replayed else "副作用歧义，拒绝重放"
                 )
                 self.on_event("operation_ambiguous", {"tool": call_name, "detail": started.detail})
+                self._unclosed_operations = (
+                    self._unclosed_operations + [f"{call_name}:{str(started.detail)[:80]}"]
+                )[-8:]
                 return inv
             op_attempt = started.attempt
 
@@ -333,6 +341,9 @@ class AgentLoop:
                     inv.result.meta["operation_finish_failed"] = True
                 self.on_event("operation_finish_failed",
                               {"tool": call_name, "attempt": op_attempt})
+                self._unclosed_operations = (
+                    self._unclosed_operations + [f"{call_name}:{str(op_attempt)[:80]}"]
+                )[-8:]
         return inv
 
     # ---- 主循环 ----
@@ -448,6 +459,16 @@ class AgentLoop:
                         "content": self.config.force_tool_prompt,
                     })
 
+            if self.config.compact_budget_chars:
+                if history_chars(history) > self.config.compact_budget_chars:
+                    compacted = compact_history(
+                        history,
+                        budget_chars=self.config.compact_budget_chars,
+                        open_operations=self._unclosed_operations,
+                    )
+                    if compacted.compacted:
+                        history[:] = compacted.messages
+                        self.on_event("context_compacted", dict(compacted.digest))
             try:
                 assistant = self.backend.complete(
                     history,

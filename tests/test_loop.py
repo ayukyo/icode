@@ -1021,5 +1021,49 @@ class TestPostResponseBudgetGate(unittest.TestCase):
         self.assertEqual(report.usage.total_tokens, 301)
 
 
+class TestContextCompactionInLoop(unittest.TestCase):
+    """R4/G2：超预算时循环内压缩，且系统门禁与用户约束逐字保留。"""
+
+    def test_超预算压缩并保留门禁与约束(self) -> None:
+        system_text = "【门禁要求（必须遵守）】review 只读；禁止越界写。"
+        requirement = "用户约束：不得修改 src/core.py。"
+        history = [{"role": "system", "content": system_text},
+                   {"role": "user", "content": requirement}]
+        for index in range(40):
+            history.append({"role": "assistant",
+                            "content": f"旧分析 {index} " + "细节" * 200})
+            history.append({"role": "tool", "tool_call_id": f"c{index}",
+                            "content": "旧输出 " + "正文" * 200})
+        events = []
+        backend = FakeBackend(["完成"])
+        with temp_workspace() as root:
+            loop = AgentLoop(
+                backend=backend,
+                registry=default_registry(),
+                guard=Guard(Scope(workspace_root=root)),
+                ctx=ToolContext(root=root),
+                approver=DenyAllApprover(),
+                operations=None,
+                budget=BudgetTracker(),
+                config=LoopConfig(max_turns=2, compact_budget_chars=1500),
+                on_event=lambda name, payload: events.append((name, payload)),
+            )
+            result = loop.run(history)
+
+        self.assertTrue(any(name == "context_compacted" for name, _ in events))
+        digest = next(payload for name, payload in events if name == "context_compacted")
+        self.assertTrue(digest["compacted"])
+        self.assertGreater(digest["dropped"], 0)
+        seen = backend.calls[0]["messages"]
+        self.assertEqual(seen[0]["content"], system_text)
+        self.assertIn(requirement, [item.get("content") for item in seen])
+        # 压缩后注入给模型的内容显著变小，且不含被丢弃的旧正文
+        self.assertLess(sum(len(str(item.get("content") or "")) for item in seen),
+                        sum(len(str(item.get("content") or "")) for item in history))
+        # 被丢弃的中段正文不得再注入；尾部保留回合仍可出现。
+        self.assertFalse(any("旧输出 0" in str(item.get("content") or "") for item in seen))
+        self.assertFalse(any("旧分析 1 " in str(item.get("content") or "") for item in seen))
+
+
 if __name__ == "__main__":
     unittest.main()
