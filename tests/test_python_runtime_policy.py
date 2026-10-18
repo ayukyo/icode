@@ -96,12 +96,14 @@ class PythonRuntimePolicyTests(unittest.TestCase):
         # Freeze reviewed workflow behavior, excluding version/matrix declarations
         # and setup labels. The CI digest includes the three readonly-admin steps
         # added in 4fff535; removing their reviewed block exactly restores d954840.
+        # The policies digest additionally includes the always() recovery step of
+        # the 2026-10-17 Reviewer network-evidence redefinition (SPEC reviewed).
         # Security policies and the provenance command contract stay unchanged.
         # No native command runs in this test.
         expected = {
             "ci.yml": (
                 "87e5bedb30438cd74741713bded58e51107da0f443bc245875d95cef7ad99e47",
-                "47953a7c8cdb502d0ced29e9875ecb0964d5a25a3c033dde9b5f93e39c2660bc",
+                "8ef05253129380f767b957bc34a1b62be8cab9b682e09f3e90df9ff7cc750c70",
             ),
             "windows-helper-provenance.yml": (
                 "5dbce0bb10c4e9dc55a196a8ebf43b8aa423a3fa81ef7cdbc4ef70f20805570a",

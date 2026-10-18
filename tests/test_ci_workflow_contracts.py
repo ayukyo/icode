@@ -637,6 +637,76 @@ class TestWindowsReviewerSnapshotProbeCi(unittest.TestCase):
             with self.subTest(probe=required_probe):
                 self.assertIn(required_probe, appcontainer_tests)
 
+    def test_reviewer_loopback_exemption_experiment_is_admin_only_and_bounded(self) -> None:
+        repository_root = Path(__file__).resolve().parents[1]
+        workflow = (repository_root / ".github/workflows/ci.yml").read_text(
+            encoding="utf-8",
+        )
+        candidate_job = workflow.split(
+            "  windows-reviewer-snapshot-probe:\n", 1,
+        )[1].split("\n  windows-appcontainer-read-handle-probe:", 1)[0]
+        # The test side receives the experiment gate and the fixed handshake root.
+        self.assertIn("$env:ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION = 'true'", candidate_job)
+        self.assertIn(
+            "$env:ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION_ROOT = $probeRoot", candidate_job,
+        )
+        self.assertIn(
+            '"ICODE_EXEMPTION_ADMIN_ROOT=$exemptionAdminRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8',
+            candidate_job,
+        )
+        # The elevated parent derives both SIDs and exempts only the capability one.
+        self.assertIn(
+            "Join-Path $env:SystemRoot 'System32/CheckNetIsolation.exe'", candidate_job,
+        )
+        self.assertIn("Get-DerivedAppContainerSid $exemptionCapabilityProfile", candidate_job)
+        self.assertIn("Get-DerivedAppContainerSid $exemptionReviewerProfile", candidate_job)
+        self.assertIn("'LoopbackExempt', '-a', \"-p=$exemptionCapabilitySid\"", candidate_job)
+        self.assertIn("'LoopbackExempt', '-d', \"-p=$exemptionDerivedSid\"", candidate_job)
+        self.assertNotIn("-p=$exemptionReviewerSid", candidate_job)
+        for forbidden in ("LoopbackExempt', '-c'", "LoopbackExempt', '-is'", "'-n=", "-s="):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, candidate_job)
+        # Only the protected build may serve the admin-side config samples.
+        self.assertIn("$helper = $env:ICODE_DIAGNOSTIC_WFP_PROBE_BUILD", candidate_job)
+        self.assertNotIn("-MemberDefinition @'", candidate_job)
+        recovery_step = workflow.split(
+            "      - name: Recover any unfinished loopback exemption experiment\n", 1,
+        )[1].split("\n  windows-appcontainer-read-handle-probe:", 1)[0]
+        # Profile-name validation must be case-sensitive in both steps.
+        self.assertIn("return ($Name -cmatch '^icode-[0-9a-f]{32}$')", candidate_job)
+        self.assertIn("if ($profile -cnotmatch '^icode-[0-9a-f]{32}$') {", recovery_step)
+        # The admin-only ledger carries the tool identity and sampled profiles.
+        self.assertIn('"tool_file_version":"', candidate_job)
+        self.assertIn('"tool_sha256":"', candidate_job)
+        self.assertIn('"profile":"', candidate_job)
+        # Fail-closed guards around every lifecycle transition.
+        for guard in (
+            "exemption_stale_marker",
+            "exemption_profile_collision",
+            "exemption_capability_pre_exempted",
+            "exemption_reviewer_pre_exempted",
+            "exemption_add_unverified",
+            "exemption_delete_unverified",
+            "exemption_reviewer_post_delete_exempted",
+            "exemption_done_timeout",
+            "exemption_test_exited_before_done",
+            "throw \"loopback exemption experiment failed: $exemptionFailure\"",
+        ):
+            with self.subTest(guard=guard):
+                self.assertIn(guard, candidate_job)
+        # The bounded ledger is echoed to the job log for audit.
+        self.assertIn("loopback_exemption_state=$payload", candidate_job)
+        # An independent always() step recovers an unfinished owned exemption.
+        self.assertIn(
+            "      - name: Recover any unfinished loopback exemption experiment\n"
+            "        if: always()\n",
+            workflow,
+        )
+        self.assertIn("$state.add_verified -ne $true", recovery_step)
+        self.assertIn("state=recovered_removal_verified", recovery_step)
+        self.assertIn("state=recovery_unconfirmed", recovery_step)
+        self.assertIn("state=nothing_pending", recovery_step)
+
 
 class TestWindowsStandardUserSqosProbeCi(unittest.TestCase):
     def test_sqos_probe_is_a_separate_opt_in_on_the_existing_manual_job(self) -> None:
