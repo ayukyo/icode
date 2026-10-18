@@ -1875,19 +1875,17 @@ class TestReviewStepReadOnlyContext(unittest.TestCase):
             workspace_marker = workspace / "review-command-started.txt"
             outside_marker = root / "outside-review-command-started.txt"
             out_dir = next_out_dir(workspace)
-            command_code = (
-                "("
-                f"__import__('pathlib').Path({str(workspace_marker)!r})"
-                ".write_text('started'),"
-                f"__import__('pathlib').Path({str(outside_marker)!r})"
-                ".write_text('started')"
-                ")"
+            # 命令本身必须在应用层放行，才能证明拒绝来自“缺少 OS 隔离”而不是
+            # 命令策略；make 在白名单内且没有参数级禁令（python -c 需人工确认）。
+            (workspace / "Makefile").write_text(
+                "all:\n\t@echo started > review-command-started.txt\n",
+                encoding="utf-8",
             )
             contract = ContractSet.load(settings.gates_json).step("review")
             backend = FakeBackend([
                 {"content": "", "tool_calls": [
                     {"id": "review-command", "name": "run_command", "arguments": {
-                        "argv": ["python", "-c", command_code],
+                        "argv": ["make", "all"],
                     }},
                     {"id": "submit-review", "name": "submit_artifact", "arguments": {
                         "name": "02_review.md", "content": "# Review\n\nNo findings.\n",
