@@ -1,6 +1,6 @@
 # R2 / R3 开发接力
 
-更新：2026-10-17（北京时间）。**交给另一 AI 请先读 [当前接力入口](ai-handoff-2026-10-16.md)**，机器专属位置见权威仓库 `.git/AI-HANDOFF.local.md`（仅本机）。本文保留历史账，不把后文旧“当前/正在运行/未实施”当最新状态。
+更新：2026-10-18（北京时间）。**交给另一 AI 请先读 [当前接力入口](ai-handoff-2026-10-16.md)**，机器专属位置见权威仓库 `.git/AI-HANDOFF.local.md`（仅本机）。本文保留历史账，不把后文旧“当前/正在运行/未实施”当最新状态。**最新：用户已授权重定义 Reviewer 网络门为三元证据，实施完成并全量零回归验证，待提交推送与 CI 验收（见“本轮 2026-10-17/18”节）。**
 
 本次交接重新核实 d6a7a3a：CI38706002261 全部终态40成功/2失败/3skip；provenance38706002204三成功；Pages38706002225两成功。full116325467105为3624 tests/721.560s/OK(skip100)。双Windows116325467953、116325468334均202软件测试及SDK构建通过，但实际readonly admission返回readonly_failed/unknown，后续WFP/Reviewer跳过。首要任务转为定位该实际准入失败，不能重做已过模型修复，也不能报告R2/R3完成。本次只整理文档，未提交推送或改产品；此前已有两行未提交候选记录保留。
 
@@ -22,9 +22,24 @@ Python 3.12 job 与 provenance validate 的 3644 项测试失败集与上一候�
 
 **待用户决策（授权后才能继续）：**（a）推进既定治理路径：先 fresh SPEC+独立 QUALITY 落地 2026-10-14 只读配置观察，再把 2026-10-15 豁免正控实验提交完整 PLAN 评审（注意二者均不改变零能力门，Reviewer 步骤不会仅因此转绿）；（b）明确授权重新定义零能力网络举证（例如“只读配置证明未豁免 + 豁免正控证明双栈通路实测可用 + 候选连接未建立无 canary”三元证据替代“双栈 10013”），再按 RED→GREEN 实施；（c）认定 github-hosted runner 上该门不可达，改验收环境或目标。
 
+### 本轮（2026-10-17/18）：用户授权重定义网络举证——三元证据门实施完成，待 CI 验收
+
+用户在 de637ac 三个选项中授权第二项：把零能力网络门从“可审计双栈 10013”重新定义为三元证据——（1）2026-10-14 只读配置观察（已实现）证明候选运行时不存在任何 loopback 豁免记录；（2）admin 侧一次性受控临时豁免实验证明正控 profile（带 privateNetworkClientServer capability）双栈 loopback 通路实测可用、canary 送达；（3）候选（零 capability、无豁免）连接未建立且无 canary。三者同时成立方记 `loopback_isolation_evidence`；缺任一项 fail-closed。三元举证不删除任何文件系统隔离断言、不给 Reviewer/候选 SID 开豁免、不把超时当拒绝证据。
+
+治理链：fresh SPEC `docs/nbl/specs/2026-10-17-windows-reviewer-network-evidence-redefinition.md`（v2 按独立 QUALITY 评审修订，无 BLOCKER，6 项 MAJOR 全部落实）。实施（TDD RED→GREEN）：
+
+- `tests/test_windows_appcontainer.py`（99→101 项全绿）：模块级握手助手 `_loopback_exemption_profile_names`（garbage/伪造/大小写全部 ValueError）、`_write_loopback_exemption_profiles`、`_wait_loopback_exemption_marker`（只认 `ready\n`/`removed\n`，stale 内容超时）、`_reviewer_network_evidence_state`（单栈正控成功即 capability_control_incomplete）；Reviewer 负载在 `run_windows_appcontainer` 正控前插受控握手（写 profile→等 ready→flip profile→跑豁免正控→写 done→等 removed→后采样），outer 断言切三元证据，exit-78 自检排除集同步更新。缺失 `ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION` 时测试 fail-closed（`test_reviewer_snapshot_requires_the_loopback_exemption_experiment` 锁死）。
+- `.github/workflows/ci.yml`（+448/-9，纯新增）：Reviewer 步 admin 侧协议——只有受保护 build 的 helper 可采配置样本；受控 `CheckNetIsolation LoopbackExempt -a`→配置采样→`-d`→再采样验证，全程 state.json 账本（add_verified/delete_confirmed/tool/tool_file_version/tool_sha256/profile、只用 stage 名做失败类别，不带路径/SID/消息正文）；独立 `if: always()` 恢复步在 admin 侧只在有未完成账本时做受援 remove 并验证，无账本 no-op。env 注入 `ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION[_ROOT]` 仅对该步生效。
+- `tests/test_ci_workflow_contracts.py`（23 项）：锁大写敏感 `cmatch` 校验证、账本字段、无 here-string、恢复步只读账本后行事、失败类别只含阶段名。
+- `tests/test_python_runtime_policy.py`：只把 ci.yml `policies` 钉锁更新为已评审新值（恢复步 `if: always()` 被策略行哈希覆盖）。`commands` 钉锁自 4fff535（三个 readonly-admin 步骤）起就陈旧失败，本轮不代为修补、原样保留并在本记录声明。
+
+本地验证：appcontainer 家族 101 项全绿；loopback 观测+notice 两家族 15 项全绿；CI 契约 23 项全绿；全量 3641 项，剩余 4 项与 6ae841f 基线逐项同源——2 个 Linux 专有 `SO_EXCLUSIVEADDRUSE` socket 错误、1 个 WSL 缺 setuptools 的 `test_packaged_skill` setUpClass 错误、1 个上面声明的 `commands` 预存在失败。中途发现并修复：观测 harness（`test_windows_loopback_config_observation.execute_positive`）以 exec 跑 Reviewer 源块（起于 `loopback_profile = capability_profile_name`），新握手引用的 `exemption_root`/两个助手未注入导致 15 项 ERROR；已给该 harness 注入握手假件（记录到独立 `exemption_events`，不动既有 `events==[pre,launch,post]` 断言）。
+
+状态：本轮提交推送后需前台守 CI；双腿 Reviewer 步转绿的前提是豁免正控在 runner 上真实可用（正控单栈/双栈失败都会如实 fail-closed，不会伪装通过）。未放宽其他任何门。
+
 ## 最新候选与推送停点
 
-**当前远端及本地HEAD：`d6a7a3abbd2c2b29730d8ccc2d1a1c9f5a1c30fd`。** 71ffa7仅提交已双审policy TEST及handoff；7ebc61将b6dba5e路径修复和d6a7a3a契约修复一起从4fff535快进main，exit0。root API确认同SHA attempt1：CI `38706002261`、Windows helper provenance `38706002204`、Public website `38706002225` 已启动。独立观察者跟踪双Windows software→SDK→readonly→原Reviewer及完整全量/签名终态；未发生则不授信用。全部run终态前不再push，不创建新branch/tag，vendor不变。下方4fff535及本地b6状态是历史定位，不覆盖本行。
+**当前远端及本地HEAD：`de637acdd8ab79dbb58ce3e78e79c47ee0abb827f`（三元证据门实施尚未提交，见上一节）。** 71ffa7仅提交已双审policy TEST及handoff；7ebc61将b6dba5e路径修复和d6a7a3a契约修复一起从4fff535快进main，exit0。root API确认同SHA attempt1：CI `38706002261`、Windows helper provenance `38706002204`、Public website `38706002225` 已启动。独立观察者跟踪双Windows software→SDK→readonly→原Reviewer及完整全量/签名终态；未发生则不授信用。全部run终态前不再push，不创建新branch/tag，vendor不变。下方4fff535及本地b6状态是历史定位，不覆盖本行。
 
 ### 本地修复候选与 4fff535 全部终态
 
