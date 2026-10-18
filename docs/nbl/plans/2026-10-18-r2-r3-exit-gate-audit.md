@@ -11,7 +11,7 @@
 | # | 门（原文） | 关键证据 | 结论 |
 |---|---|---|---|
 | R2-1 | 原始工作树、工作区外文件、受保护目录和网络的负向测试全部通过 | 见下 | **通过（OS 层）** |
-| R2-2 | 危险命令即使被模型构造为变体也不能绕过策略 | 见下 | **部分（G1）** |
+| R2-2 | 危险命令即使被模型构造为变体也不能绕过策略 | 见下 | **通过（G1 已收口）** |
 | R2-3 | 沙箱不可用时无裸执行降级 | 见下 | **通过** |
 | R2-4 | 审批只承担业务风险确认，不被当作隔离替代品 | 见下 | **通过** |
 
@@ -53,8 +53,8 @@
 
 | # | 门（原文） | 关键证据 | 结论 |
 |---|---|---|---|
-| R3-1 | 失败分类可以稳定决定 retry、fallback、人工介入或停止 | 契约+桥存在，运行时零调用 | **部分（G2）** |
-| R3-2 | 重复无进展尝试能被检测并终止 | 无实现、无测试 | **待补（G3）** |
+| R3-1 | 失败分类可以稳定决定 retry、fallback、人工介入或停止 | 见下 | **通过（G2 已收口）** |
+| R3-2 | 重复无进展尝试能被检测并终止 | 见下 | **通过（G3 已收口）** |
 | R3-3 | 代码变更后验证证据不会错误复用旧结果 | 见下 | **通过** |
 | R3-4 | Reviewer 与 Executor 使用隔离上下文，Reviewer 不能修改被审对象 | 见下 | **通过** |
 
@@ -85,17 +85,19 @@
 
 ---
 
-## 汇总与 R4 启动前置
+## 汇总
 
-- **R2**：3 通过 + 1 部分（G1 应用层变体）。
-- **R3**：2 通过 + 1 部分（G2 失败分类未接线）+ 1 待补（G3 无进展检测）。
+- **R2**：4/4 通过。
+- **R3**：4/4 通过。
 - **R1 发布门**：六阶段非玩具任务验收仍为独立发布门槛，本核对不涉及。
 
-**建议（启动 R4 前必须收口）**：
+## 收口记录（2026-10-18，用户授权“都做”）
 
-1. **G1**：给 `guard.py` 的白名单加参数级否决（至少 `find -delete`、`git clean -fdx` 等破坏型参数），并为“工作区内破坏”接入 `destructive_risk` 审批；若决定维持现状，须在 R2 规格中显式改成“以 OS 层负控为准”的举证口径，并补一组 OS 层对等负控（工作区内破坏不受 OS 拦的说明）。
-2. **G2**：把 `control.policy()` 接到失败处理路径（至少 code/deepcheck 失败后查策略决定 retry/fallback/停止），并补 RED→GREEN 测试。
-3. **G3**：实现“相同失败证据重复出现 → 终止并交人工”的检测（可用失败指纹 + attempt 计数），补测试。
-4. 三项收口后，再按架构要求为 R4（上下文与多模型）单独出 SPEC + 影响面 + 验收计划；R4 四条退出门槛见 §13.8。
+- **G1（guard 参数级否决）**：`src/icode/guard.py` 增加 `_argument_verdict`。`find -delete/-exec/-execdir/-ok/-okdir` → DENY；`git clean` 含 `f`（`-fdx`/`--force`）→ REQUIRE_APPROVAL（`git clean -n` 仍 ALLOW）；`python -c` → REQUIRE_APPROVAL（`python -m` 仍 ALLOW）；`rm` 的分离写法（`rm -r -f /`、`rm --recursive --force /`）→ DENY。测试：`tests/test_guard.py::test_白名单命令的破坏型参数不能借白名单放行`。
+- **G2（失败分类接线）**：新增 `src/icode/failure_policy.py`（六类映射、`decide_failure` 四态收敛、策略载荷严格解析 fail-closed）；`NativeChainExecutor.failure_decision` 先查 `control.policy` 再决策（无策略通道时降级人工介入）；worker 在失败边界记录有界 `failure_decision`，并仅在策略明确 `retry` 时做一次有界重跑（`_WORKER_RETRY_LIMIT=1`，写入步骤由上游策略改写成先核对回执）。测试：`tests/test_failure_policy.py`（分类/策略/畸形载荷/四态）、`tests/test_autonomy.py::test_策略允许的重试只重跑一次且成功后不留失败决策`。
+- **G3（无进展检测）**：失败指纹 = `step:error_code`，跨 run 有界历史（`HISTORY_LIMIT=8`，新 run 继承，成功后清空）；最近一次与本次相同即判无进展，决策强制 `stop`、`error_code=no_progress_stuck`。测试：`tests/test_failure_policy.py::TestNoProgress`、`tests/test_autonomy.py::test_失败决策有界记录且相同失败证据第二次即判无进展`。
+- 失败决策对外只投影三个稳定字段（`class`/`action`/`stuck`），不含命令、路径、异常正文。
 
-**未做任何产品/门禁改动**：本次核对只读源码、测试与 CI 收据，未修改任何代码或工作流。
+## 后续
+
+三项已收口，R2/R3 八条退出门槛全部有实现与测试证据。下一步可按架构要求为 R4（上下文与多模型）单独出 SPEC + 影响面 + 验收计划（R4 四条退出门槛见 §13.8）。
