@@ -97,6 +97,8 @@
 - **G2（失败分类接线）**：新增 `src/icode/failure_policy.py`（六类映射、`decide_failure` 四态收敛、策略载荷严格解析 fail-closed）；`NativeChainExecutor.failure_decision` 先查 `control.policy` 再决策（无策略通道时降级人工介入）；worker 在失败边界记录有界 `failure_decision`，并仅在策略明确 `retry` 时做一次有界重跑（`_WORKER_RETRY_LIMIT=1`，写入步骤由上游策略改写成先核对回执）。测试：`tests/test_failure_policy.py`（分类/策略/畸形载荷/四态）、`tests/test_autonomy.py::test_策略允许的重试只重跑一次且成功后不留失败决策`。
 - **G3（无进展检测）**：失败指纹 = `step:error_code`，跨 run 有界历史（`HISTORY_LIMIT=8`，新 run 继承，成功后清空）；最近一次与本次相同即判无进展，决策强制 `stop`、`error_code=no_progress_stuck`。测试：`tests/test_failure_policy.py::TestNoProgress`、`tests/test_autonomy.py::test_失败决策有界记录且相同失败证据第二次即判无进展`。
 - 失败决策对外只投影三个稳定字段（`class`/`action`/`stuck`），不含命令、路径、异常正文。
+- 两个既有测试的前提与 G1 冲突，已保持其原验证目标改写：`test_review阶段无隔离沙箱时命令在启动前拒绝且不产生标记`（review-only 拒绝必须来自“缺 OS 隔离”而非命令策略）改用白名单内且无参数禁令的 `make all`；`test_bwrap策略化reviewer由runner派生策略并隐藏宿主账本` 把 `python -c` 探针改为工作区脚本 `python3 probe.py`，继续验证 bwrap deny-read 账本隐藏。
+- CI 终态：候选 `4ae140e` 的 CI run `39129956217` success（45 job / 42 成功 / 0 失败 / 3 跳过，含四个 Linux native probe），provenance `39129956194` 三 job 全 success。
 
 ## 后续
 
