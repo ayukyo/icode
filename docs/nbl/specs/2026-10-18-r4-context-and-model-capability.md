@@ -21,7 +21,7 @@
 - **正面**：`backends/__init__.py` 新增导出与工厂分支；`build_backend` 支持 `anthropic` / `gemini` / `ollama`；`Usage` 增加两个字段（向后兼容：默认 0/None，`as_dict` 追加键，既有测试的值断言不受影响——已核验现有测试只断言 token 类键存在性）。
 - **风险与控制**：新后端全部标准库实现，沿用既有安全姿态（凭据 `repr=False`、固定公开错误说明、拒绝重定向、4xx 不重试）；上下文压缩永不断系统提示与未闭合副作用回执；路由不得写控制面（只读 settings/env）。
 - **不适配**：不引入第三方 SDK（core 零依赖不变）；不做模型侧 embedding/向量库（v1 用符号与变更索引）；不做跨机器索引共享；不改 ICODE-SKILL 契约或事件 schema。
-- **暂缓**：价格表与真实计费对账（`cost_usd` 先只做通道）；Anthropic/Gemini 的真实网络 canary（同 R2/R3 的做法：先离线合同套件，真实调用属后续显式授权项）。
+- **暂缓**：真实计费对账（需要供应商账单接口；当前只做公开标价的静态估算，未知模型为 null）；Anthropic/Gemini/Ollama 的真实网络 canary 需要对应凭据或本地服务，已提供按后端独立门控的用例，缺凭据即跳过并说明原因。
 
 ## 4. 验收计划（逐条对应退出门槛）
 
@@ -52,4 +52,8 @@
 
 **真实模型冒烟（用户授权使用 `models.json`）**：MiniMax-M3（`https://api.minimaxi.com/v1`）单回合成功，1.5s，用量与延迟已记账；测试以 `ICODE_RUN_REAL_MODEL_SMOKE=1` 显式开启，CI 默认跳过。Anthropic/Gemini/Ollama 无凭据，仅离线契约覆盖（与“真实网络 canary 需单独授权”的既定口径一致）。
 
-**已知边界**：W4 路由已具备解析与装配能力，尚未接入 runner 的按步构造（当前 runner 仍是单 backend 注入）；接入属于下一增量，不改变本阶段四条门的证据。
+**补项（2026-10-19，用户“先补”）**：
+
+- **W4 路由接入**：`run_contract_step` 增加 `routes`/`route_builder`，在入口按步骤选后端；`run_chain` 透传；CLI 从 `ICODE_MODEL_ROUTE_<STEP>` 读取并打印生效路由。**配置了路由但构造失败会抛 `RouteError` 失败封闭，绝不悄悄回落主后端**；未配置路由时行为与之前完全一致。测试：`test_model_routing.TestStepBackendSelection` 四项。
+- **W5 价格表**：新增 `backends/pricing.py`，按模型前缀查公开标价并估算 `cost_usd`（未知模型为 null、本地模型为 0），四个后端在用量记账后写入；`as_dict`/预算闸门语义不变。真实账单对账仍需供应商账单接口，明确保留为暂缓。
+- **真实 canary**：`TestRealModelCanary` 拆成四个独立门控用例（OpenAI 兼容 / Anthropic / Gemini / Ollama）。本机以 `models.json` 的 MiniMax-M3 跑通 OpenAI 兼容路径（用量、延迟、`cost_usd` 均记账），其余三项因缺凭据/本地服务跳过并给出原因——**跳过不等于通过**。
