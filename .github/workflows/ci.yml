@@ -945,6 +945,26 @@ jobs:
           $wfpMemberSelfTestExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract-exact-directory'
           $wfpMemberSelfTestWildcardExtractRoot = Join-Path $wfpMemberSelfTestRoot 'extract-wildcard-directory'
           $wfpMemberSelfTestExplicitExtractFile = Join-Path $wfpMemberSelfTestRoot 'extract-exact-file.xml'
+          $exemptionAdminRoot = Join-Path $env:RUNNER_TEMP "icode-loopback-exemption-admin-$suffix"
+          $exemptionStateFile = Join-Path $exemptionAdminRoot 'state.json'
+          $exemptionProfileFile = Join-Path $probeRoot 'loopback-exemption-profile.txt'
+          $exemptionReadyFile = Join-Path $probeRoot 'loopback-exemption-ready.txt'
+          $exemptionDoneFile = Join-Path $probeRoot 'loopback-exemption-done.txt'
+          $exemptionRemovedFile = Join-Path $probeRoot 'loopback-exemption-removed.txt'
+          $exemptionTool = Join-Path $env:SystemRoot 'System32/CheckNetIsolation.exe'
+          $exemptionCapabilityProfile = $null
+          $exemptionReviewerProfile = $null
+          $exemptionDerivedSid = $null
+          $exemptionPreSample = $null
+          $exemptionPostAddSample = $null
+          $exemptionPostDeleteSample = $null
+          $exemptionReviewerSample = $null
+          $exemptionReviewerPostDeleteSample = $null
+          $exemptionAddExit = $null
+          $exemptionDeleteExit = $null
+          $exemptionAddVerified = $false
+          $exemptionDeleteConfirmed = $false
+          $exemptionFailure = $null
           $python = (Get-Command python).Source
           $cabinetMemberProbe = Join-Path $env:GITHUB_WORKSPACE 'scripts/inspect_windows_cabinet_members.py'
           $wfpMatchFile = Join-Path $probeRoot 'wfp-match.json'
@@ -1095,6 +1115,149 @@ jobs:
             } finally {
               if ($process) { $process.Dispose() }
             }
+          }
+          function Test-ExemptionProfileName {
+            param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Name)
+            return ($Name -cmatch '^icode-[0-9a-f]{32}$')
+          }
+          function Get-DerivedAppContainerSid {
+            param([Parameter(Mandatory = $true)][string]$ProfileName)
+            if (-not (Test-ExemptionProfileName $ProfileName)) {
+              throw 'exemption_profile_shape'
+            }
+            $nativeSource = @(
+              '[DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)]',
+              'public static extern int DeriveAppContainerSidFromAppContainerName(string appContainerName, out System.IntPtr appContainerSid);',
+              '[DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]',
+              'public static extern bool ConvertSidToStringSidW(System.IntPtr sid, out System.IntPtr stringSid);',
+              '[DllImport("advapi32.dll", SetLastError = true)]',
+              'public static extern System.IntPtr FreeSid(System.IntPtr sid);',
+              '[DllImport("kernel32.dll", SetLastError = true)]',
+              'public static extern System.IntPtr LocalFree(System.IntPtr hMem);'
+            ) -join "`n"
+            $native = Add-Type -MemberDefinition $nativeSource -Name 'IcLoopbackExemptionNative' -Namespace 'IcCodeDiag' -PassThru
+            $derived = [System.IntPtr]::Zero
+            $text = [System.IntPtr]::Zero
+            try {
+              $status = $native::DeriveAppContainerSidFromAppContainerName($ProfileName, [ref]$derived)
+              if ($status -ne 0 -or $derived -eq [System.IntPtr]::Zero) {
+                throw 'exemption_sid_derivation'
+              }
+              if (-not $native::ConvertSidToStringSidW($derived, [ref]$text)) {
+                throw 'exemption_sid_conversion'
+              }
+              return [System.Runtime.InteropServices.Marshal]::PtrToStringUni($text)
+            } finally {
+              if ($text -ne [System.IntPtr]::Zero) { [void]$native::LocalFree($text) }
+              if ($derived -ne [System.IntPtr]::Zero) { [void]$native::FreeSid($derived) }
+            }
+          }
+          function Invoke-ExemptionConfigSample {
+            param(
+              [Parameter(Mandatory = $true)][string]$ProfileName,
+              [Parameter(Mandatory = $true)][ValidateSet('pre', 'post')][string]$Phase,
+              [Parameter(Mandatory = $true)][ValidateRange(1, 15000)][int]$TimeoutMilliseconds
+            )
+            $failure = $null
+            if (-not (Test-ExemptionProfileName $ProfileName)) { throw 'exemption_profile_shape' }
+            $helper = $env:ICODE_DIAGNOSTIC_WFP_PROBE_BUILD
+            if ([string]::IsNullOrWhiteSpace($helper) -or -not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+              throw 'exemption_helper_missing'
+            }
+            $helperHash = (Get-FileHash -LiteralPath $helper -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+            $arguments = @('--observe-positive-loopback-config', $ProfileName)
+            $sample = Invoke-BoundedDiagnosticCommand -Path $helper -Arguments $arguments `
+              -TimeoutMilliseconds $TimeoutMilliseconds -CaptureStdout -CaptureStderr
+            $text = "$($sample.Stdout)`n$($sample.Stderr)"
+            if ($sample.TimedOut) { $failure = 'timed_out' }
+            elseif ($sample.ExitCode -ne 0) { $failure = "exit_$($sample.ExitCode)" }
+            elseif ($sample.Stderr -ne '') { $failure = 'protocol_error' }
+            elseif ($sample.Stdout.Length -gt 4096) { $failure = 'protocol_error' }
+            else {
+              $lines = $sample.Stdout -split "`n" | Where-Object { $_ -ne '' }
+              if ($lines.Count -ne 1) { $failure = 'protocol_error' }
+              else {
+                try {
+                  $receipt = $lines[0] | ConvertFrom-Json
+                } catch {
+                  $failure = 'protocol_error'
+                }
+                if (-not $failure) {
+                  if ($receipt.schema_version -ne 1 -or $receipt.scope -ne 'positive_loopback_config_sample') {
+                    $failure = 'protocol_error'
+                  } else {
+                    $status = [string]$receipt.status
+                    if ($status -notin @('complete', 'unsupported', 'load_failed', 'api_error', 'invalid_data', 'limit_reached')) {
+                      $failure = 'protocol_error'
+                    } else {
+                      return [pscustomobject]@{
+                        phase = $Phase; profile = $ProfileName; helper_sha256 = $helperHash
+                        status = $status; api_stage = [string]$receipt.api_stage; api_code = $receipt.api_code
+                        entry_count = $receipt.entry_count; target_match = $receipt.target_match
+                        target_attributes = $receipt.target_attributes
+                        array_release = [string]$receipt.array_release
+                        derived_sid_release = [string]$receipt.derived_sid_release
+                        library_release = [string]$receipt.library_release
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            return [pscustomobject]@{
+              phase = $Phase; profile = $ProfileName; helper_sha256 = $helperHash
+              status = $failure; api_stage = 'none'; api_code = $null
+              entry_count = $null; target_match = $null; target_attributes = $null
+              array_release = 'not_acquired'; derived_sid_release = 'not_acquired'
+              library_release = 'not_acquired'
+            }
+          }
+          function Write-ExemptionState {
+            param(
+              [Parameter(Mandatory = $true)][string]$Phase,
+              [Parameter(Mandatory = $true)][bool]$AddVerified,
+              [Parameter(Mandatory = $true)][bool]$DeleteConfirmed,
+              [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Failure
+            )
+            New-Item -ItemType Directory -Path $exemptionAdminRoot -ErrorAction SilentlyContinue | Out-Null
+            $lines = [System.Collections.ArrayList]@(
+              ('"phase":"' + $Phase + '"'),
+              ('"add_verified":' + $(if ($AddVerified) { 'true' } else { 'false' })),
+              ('"delete_confirmed":' + $(if ($DeleteConfirmed) { 'true' } else { 'false' })),
+              ('"failure":"' + $(if ([string]::IsNullOrEmpty($Failure)) { 'none' } else { $Failure }) + '"'),
+              ('"tool":"' + $exemptionTool + '"'),
+              ('"tool_file_version":"' + $(if ($exemptionToolVersion) { [string]$exemptionToolVersion.FileVersion } else { 'unknown' }) + '"'),
+              ('"tool_sha256":"' + $(if ($exemptionToolHash) { $exemptionToolHash } else { 'unknown' }) + '"')
+            )
+            if ($exemptionDerivedSid) {
+              $lines.Add(('"derived_sid_summary":"' + $exemptionDerivedSid.Substring(0, 8) + '..' + $exemptionDerivedSid.Substring($exemptionDerivedSid.Length - 4) + '"')) | Out-Null
+            }
+            foreach ($entry in @(
+              @{ name = 'capability_pre'; sample = $exemptionPreSample },
+              @{ name = 'capability_post_add'; sample = $exemptionPostAddSample },
+              @{ name = 'capability_post_delete'; sample = $exemptionPostDeleteSample },
+              @{ name = 'reviewer_pre'; sample = $exemptionReviewerSample },
+              @{ name = 'reviewer_post_delete'; sample = $exemptionReviewerPostDeleteSample }
+            )) {
+              if ($null -eq $entry.sample) { continue }
+              $value = ('"profile":"' + $(if ($entry.sample.profile) { $entry.sample.profile } else { 'unknown' }) + '"' +
+                ',"status":"' + $entry.sample.status + '"' +
+                ',"api_stage":"' + $entry.sample.api_stage + '"' +
+                ',"entry_count":' + $(if ($null -eq $entry.sample.entry_count) { 'null' } else { [string]$entry.sample.entry_count }) +
+                ',"target_match":' + $(if ($null -eq $entry.sample.target_match) { 'null' } elseif ($entry.sample.target_match) { 'true' } else { 'false' }) +
+                ',"target_attributes":' + $(if ($null -eq $entry.sample.target_attributes) { 'null' } else { [string]$entry.sample.target_attributes }) +
+                ',"helper_sha256":"' + $entry.sample.helper_sha256 + '"')
+              $lines.Add(('"' + $entry.name + '":{' + $value + '}')) | Out-Null
+            }
+            if ($null -ne $exemptionAddExit) { $lines.Add(('"add_exit":' + [string]$exemptionAddExit)) | Out-Null }
+            if ($null -ne $exemptionDeleteExit) { $lines.Add(('"delete_exit":' + [string]$exemptionDeleteExit)) | Out-Null }
+            $payload = '{' + ($lines -join ',') + '}'
+            if ($payload.Length -gt 4096) { throw 'exemption_state_limit' }
+            $temporary = "$exemptionStateFile.tmp"
+            [System.IO.File]::WriteAllText($temporary, $payload, [System.Text.Encoding]::ASCII)
+            [System.IO.File]::Copy($temporary, $exemptionStateFile, $true)
+            [System.IO.File]::Delete($temporary)
+            Write-Output "loopback_exemption_state=$payload"
           }
           function Get-WfpCaptureActivity {
             param([Parameter(Mandatory = $true)][string]$Output)
@@ -1405,6 +1568,11 @@ jobs:
             $env:ICODE_DIAGNOSTIC_WFP_MATCH_FILE = $wfpMatchFile
             $env:ICODE_DIAGNOSTIC_WFP_RUNNER_TARGET_FILE = $wfpRunnerTargetFile
             $env:ICODE_DIAGNOSTIC_WFP_RUNNER_READY_FILE = $wfpRunnerReadyFile
+            # The redefined network gate needs the admin exemption experiment;
+            # the test fails closed when either value is absent.
+            $env:ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION = 'true'
+            $env:ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION_ROOT = $probeRoot
+            "ICODE_EXEMPTION_ADMIN_ROOT=$exemptionAdminRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
             $stdout = Join-Path $probeRoot 'reviewer-probe.stdout.txt'
             $stderr = Join-Path $probeRoot 'reviewer-probe.stderr.txt'
@@ -1446,6 +1614,140 @@ jobs:
               -WorkingDirectory $env:GITHUB_WORKSPACE `
               -RedirectStandardOutput $stdout -RedirectStandardError $stderr `
               -PassThru
+
+            # --- Admin-only loopback exemption experiment -------------------
+            # The standard-user test publishes two preallocated profile names.
+            # This elevated parent derives both SIDs, proves neither profile
+            # was pre-exempted, adds a temporary exemption for the capability
+            # profile only, verifies it, releases the test, removes the
+            # exemption after the positive control and verifies the removal.
+            $exemptionExperimentStage = 'waiting_profile'
+            try {
+              if (-not (Test-Path -LiteralPath $exemptionTool -PathType Leaf)) {
+                throw 'exemption_tool_missing'
+              }
+              $exemptionToolVersion = (Get-Item -LiteralPath $exemptionTool -ErrorAction Stop).VersionInfo
+              if ([string]::IsNullOrWhiteSpace([string]$exemptionToolVersion.FileVersion)) {
+                throw 'exemption_tool_version'
+              }
+              $exemptionToolHash = (Get-FileHash -LiteralPath $exemptionTool -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+              foreach ($marker in @($exemptionProfileFile, $exemptionReadyFile, $exemptionDoneFile, $exemptionRemovedFile)) {
+                if (Test-Path -LiteralPath $marker -PathType Leaf) {
+                  throw 'exemption_stale_marker'
+                }
+              }
+              $exemptionProfileDeadline = [DateTimeOffset]::UtcNow.AddSeconds(120)
+              $exemptionProfileRaw = $null
+              while ([DateTimeOffset]::UtcNow -lt $exemptionProfileDeadline) {
+                $process.Refresh()
+                if ($process.HasExited) { throw 'exemption_test_exited_early' }
+                if (Test-Path -LiteralPath $exemptionProfileFile -PathType Leaf) {
+                  $exemptionProfileRaw = [System.IO.File]::ReadAllBytes($exemptionProfileFile)
+                  break
+                }
+                Start-Sleep -Milliseconds 200
+              }
+              if ($null -eq $exemptionProfileRaw) { throw 'exemption_profile_timeout' }
+              if ($exemptionProfileRaw.Length -gt 128) { throw 'exemption_profile_size' }
+              $exemptionProfileText = [System.Text.Encoding]::ASCII.GetString($exemptionProfileRaw)
+              if (-not $exemptionProfileText.EndsWith("`n") -or $exemptionProfileText.Contains("`r")) {
+                throw 'exemption_profile_newline'
+              }
+              $exemptionProfileLines = $exemptionProfileText.Split("`n") | Where-Object { $_ -ne '' }
+              if ($exemptionProfileLines.Count -ne 2) { throw 'exemption_profile_lines' }
+              foreach ($line in $exemptionProfileLines) {
+                if (-not (Test-ExemptionProfileName $line)) { throw 'exemption_profile_shape' }
+              }
+              if ($exemptionProfileLines[0] -eq $exemptionProfileLines[1]) { throw 'exemption_profile_collision' }
+              $exemptionCapabilityProfile = $exemptionProfileLines[0]
+              $exemptionReviewerProfile = $exemptionProfileLines[1]
+              $exemptionExperimentStage = 'derive_sid'
+              $exemptionCapabilitySid = Get-DerivedAppContainerSid $exemptionCapabilityProfile
+              $exemptionReviewerSid = Get-DerivedAppContainerSid $exemptionReviewerProfile
+              if ($exemptionCapabilitySid -eq $exemptionReviewerSid -or
+                  -not $exemptionCapabilitySid.StartsWith('S-1-15-2-') -or
+                  -not $exemptionReviewerSid.StartsWith('S-1-15-2-')) {
+                throw 'exemption_sid_pair'
+              }
+              $exemptionDerivedSid = $exemptionCapabilitySid
+              $exemptionExperimentStage = 'pre_sample'
+              $exemptionPreSample = Invoke-ExemptionConfigSample -ProfileName $exemptionCapabilityProfile -Phase 'pre' -TimeoutMilliseconds 15000
+              if ($exemptionPreSample.status -ne 'complete') { throw 'exemption_pre_sample' }
+              if ($exemptionPreSample.target_match -ne $false) { throw 'exemption_capability_pre_exempted' }
+              $exemptionReviewerSample = Invoke-ExemptionConfigSample -ProfileName $exemptionReviewerProfile -Phase 'pre' -TimeoutMilliseconds 15000
+              if ($exemptionReviewerSample.status -ne 'complete') { throw 'exemption_reviewer_pre_sample' }
+              if ($exemptionReviewerSample.target_match -ne $false) { throw 'exemption_reviewer_pre_exempted' }
+              Write-ExemptionState -Phase 'pre_sampled' -AddVerified $false -DeleteConfirmed $false -Failure ''
+              $exemptionExperimentStage = 'add'
+              $exemptionAddResult = Invoke-BoundedDiagnosticCommand -Path $exemptionTool `
+                -Arguments @('LoopbackExempt', '-a', "-p=$exemptionCapabilitySid") `
+                -TimeoutMilliseconds 15000 -CaptureStdout -CaptureStderr
+              $exemptionAddExit = $exemptionAddResult.ExitCode
+              if ($exemptionAddResult.TimedOut -or $exemptionAddExit -ne 0) {
+                throw 'exemption_add_failed'
+              }
+              $exemptionExperimentStage = 'verify_add'
+              $exemptionPostAddSample = Invoke-ExemptionConfigSample -ProfileName $exemptionCapabilityProfile -Phase 'post' -TimeoutMilliseconds 15000
+              if ($exemptionPostAddSample.status -ne 'complete') { throw 'exemption_post_add_sample' }
+              if ($exemptionPostAddSample.target_match -ne $true) { throw 'exemption_add_unverified' }
+              $exemptionAddVerified = $true
+              Write-ExemptionState -Phase 'added' -AddVerified $true -DeleteConfirmed $false -Failure ''
+              $exemptionExperimentStage = 'release_test'
+              [System.IO.File]::WriteAllText($exemptionReadyFile, "ready`n", [System.Text.Encoding]::ASCII)
+              $exemptionExperimentStage = 'waiting_done'
+              $exemptionDoneDeadline = [DateTimeOffset]::UtcNow.AddSeconds(120)
+              while ([DateTimeOffset]::UtcNow -lt $exemptionDoneDeadline) {
+                if (Test-Path -LiteralPath $exemptionDoneFile -PathType Leaf) { break }
+                $process.Refresh()
+                if ($process.HasExited) { throw 'exemption_test_exited_before_done' }
+                Start-Sleep -Milliseconds 200
+              }
+              if (-not (Test-Path -LiteralPath $exemptionDoneFile -PathType Leaf)) {
+                throw 'exemption_done_timeout'
+              }
+              $exemptionExperimentStage = 'delete'
+              $exemptionDeleteResult = Invoke-BoundedDiagnosticCommand -Path $exemptionTool `
+                -Arguments @('LoopbackExempt', '-d', "-p=$exemptionDerivedSid") `
+                -TimeoutMilliseconds 15000 -CaptureStdout -CaptureStderr
+              $exemptionDeleteExit = $exemptionDeleteResult.ExitCode
+              if ($exemptionDeleteResult.TimedOut -or $exemptionDeleteExit -ne 0) {
+                throw 'exemption_delete_failed'
+              }
+              $exemptionExperimentStage = 'verify_delete'
+              $exemptionPostDeleteSample = Invoke-ExemptionConfigSample -ProfileName $exemptionCapabilityProfile -Phase 'post' -TimeoutMilliseconds 15000
+              if ($exemptionPostDeleteSample.status -ne 'complete') { throw 'exemption_post_delete_sample' }
+              if ($exemptionPostDeleteSample.target_match -ne $false) { throw 'exemption_delete_unverified' }
+              $exemptionReviewerPostDeleteSample = Invoke-ExemptionConfigSample -ProfileName $exemptionReviewerProfile -Phase 'post' -TimeoutMilliseconds 15000
+              if ($exemptionReviewerPostDeleteSample.status -ne 'complete') { throw 'exemption_reviewer_post_delete_sample' }
+              if ($exemptionReviewerPostDeleteSample.target_match -ne $false) { throw 'exemption_reviewer_post_delete_exempted' }
+              $exemptionDeleteConfirmed = $true
+              Write-ExemptionState -Phase 'removed' -AddVerified $true -DeleteConfirmed $true -Failure ''
+              $exemptionExperimentStage = 'release_candidate'
+              [System.IO.File]::WriteAllText($exemptionRemovedFile, "removed`n", [System.Text.Encoding]::ASCII)
+            } catch {
+              # Bounded category only: the stage never carries a path, SID,
+              # command or OS message body.
+              $exemptionFailure = $exemptionExperimentStage
+              if ($exemptionAddVerified -and -not $exemptionDeleteConfirmed -and $exemptionDerivedSid) {
+                try {
+                  $cleanup = Invoke-BoundedDiagnosticCommand -Path $exemptionTool `
+                    -Arguments @('LoopbackExempt', '-d', "-p=$exemptionDerivedSid") `
+                    -TimeoutMilliseconds 15000 -CaptureStdout -CaptureStderr
+                  $exemptionDeleteExit = $cleanup.ExitCode
+                  $verify = Invoke-ExemptionConfigSample -ProfileName $exemptionCapabilityProfile -Phase 'post' -TimeoutMilliseconds 15000
+                  if (-not $cleanup.TimedOut -and $cleanup.ExitCode -eq 0 -and
+                      $verify.status -eq 'complete' -and $verify.target_match -eq $false) {
+                    $exemptionPostDeleteSample = $verify
+                    $exemptionDeleteConfirmed = $true
+                  }
+                } catch {
+                  # A failed cleanup stays a failed cleanup; never reported as removal.
+                }
+              }
+              Write-ExemptionState -Phase 'failed' -AddVerified $exemptionAddVerified -DeleteConfirmed $exemptionDeleteConfirmed -Failure $exemptionFailure
+              throw "loopback exemption experiment failed: $exemptionFailure"
+            }
+            # --- end admin-only loopback exemption experiment ---------------
 
             # Wait for one exact target tuple from the standard-user test, then
             # observe it from the runner token. The test stages its Python runtime
@@ -2220,6 +2522,151 @@ jobs:
               throw 'runner_wfp_candidate_observer_cleanup_failed'
             }
           }
+      - name: Recover any unfinished loopback exemption experiment
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Independent fallback for the admin-only exemption ledger: if a
+          # verified add was never confirmed deleted, remove it here. Without
+          # the ledger path there is nothing to recover and this step no-ops.
+          $adminRoot = $env:ICODE_EXEMPTION_ADMIN_ROOT
+          if ([string]::IsNullOrWhiteSpace($adminRoot) -or -not (Test-Path -LiteralPath $adminRoot -PathType Container)) {
+            if (Test-Path -LiteralPath $adminRoot) {
+              try { Remove-Item -LiteralPath $adminRoot -Recurse -Force -ErrorAction Stop } catch { }
+            }
+            Write-Output '::notice title=Windows loopback exemption recovery::state=no_ledger'
+            exit 0
+          }
+          $statePath = Join-Path $adminRoot 'state.json'
+          if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+            if (Test-Path -LiteralPath $adminRoot) {
+              try { Remove-Item -LiteralPath $adminRoot -Recurse -Force -ErrorAction Stop } catch { }
+            }
+            Write-Output '::notice title=Windows loopback exemption recovery::state=ledger_empty'
+            exit 0
+          }
+          $raw = [System.IO.File]::ReadAllText($statePath)
+          if ($raw.Length -gt 4096) {
+            if (Test-Path -LiteralPath $adminRoot) {
+              try { Remove-Item -LiteralPath $adminRoot -Recurse -Force -ErrorAction Stop } catch { }
+            }
+            Write-Output '::notice title=Windows loopback exemption recovery::state=oversize'
+            exit 0
+          }
+          try {
+            $state = $raw | ConvertFrom-Json
+          } catch {
+            if (Test-Path -LiteralPath $adminRoot) {
+              try { Remove-Item -LiteralPath $adminRoot -Recurse -Force -ErrorAction Stop } catch { }
+            }
+            Write-Output '::notice title=Windows loopback exemption recovery::state=unparsable'
+            exit 0
+          }
+          if ($state.add_verified -ne $true -or $state.delete_confirmed -eq $true) {
+            if (Test-Path -LiteralPath $adminRoot) {
+              try { Remove-Item -LiteralPath $adminRoot -Recurse -Force -ErrorAction Stop } catch { }
+            }
+            Write-Output '::notice title=Windows loopback exemption recovery::state=nothing_pending'
+            exit 0
+          }
+          $tool = Join-Path $env:SystemRoot 'System32/CheckNetIsolation.exe'
+          if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) {
+            Write-Output '::notice title=Windows loopback exemption recovery::state=tool_missing'
+            exit 1
+          }
+          $profile = [string]$state.capability_pre.profile
+          if ($profile -cnotmatch '^icode-[0-9a-f]{32}$') {
+            Write-Output '::notice title=Windows loopback exemption recovery::state=ledger_profile_invalid'
+            exit 1
+          }
+          $nativeSource = @(
+            '[DllImport("userenv.dll", CharSet = CharSet.Unicode, SetLastError = true)]',
+            'public static extern int DeriveAppContainerSidFromAppContainerName(string appContainerName, out System.IntPtr appContainerSid);',
+            '[DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]',
+            'public static extern bool ConvertSidToStringSidW(System.IntPtr sid, out System.IntPtr stringSid);',
+            '[DllImport("advapi32.dll", SetLastError = true)]',
+            'public static extern System.IntPtr FreeSid(System.IntPtr sid);',
+            '[DllImport("kernel32.dll", SetLastError = true)]',
+            'public static extern System.IntPtr LocalFree(System.IntPtr hMem);'
+          ) -join "`n"
+          $native = Add-Type -MemberDefinition $nativeSource -Name 'IcLoopbackExemptionRecovery' -Namespace 'IcCodeDiag' -PassThru
+          $derived = [System.IntPtr]::Zero
+          $text = [System.IntPtr]::Zero
+          $sid = $null
+          try {
+            $status = $native::DeriveAppContainerSidFromAppContainerName($profile, [ref]$derived)
+            if ($status -ne 0 -or $derived -eq [System.IntPtr]::Zero) { throw 'derivation' }
+            if (-not $native::ConvertSidToStringSidW($derived, [ref]$text)) { throw 'conversion' }
+            $sid = [System.Runtime.InteropServices.Marshal]::PtrToStringUni($text)
+          } catch {
+            Write-Output '::notice title=Windows loopback exemption recovery::state=derivation_failed'
+            exit 1
+          } finally {
+            if ($text -ne [System.IntPtr]::Zero) { [void]$native::LocalFree($text) }
+            if ($derived -ne [System.IntPtr]::Zero) { [void]$native::FreeSid($derived) }
+          }
+          if (-not $sid.StartsWith('S-1-15-2-')) {
+            Write-Output '::notice title=Windows loopback exemption recovery::state=derived_sid_unexpected'
+            exit 1
+          }
+          function Invoke-RecoveryProcess {
+            param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string[]]$Arguments)
+            $startInfo = [Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $Path
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            foreach ($argument in $Arguments) { [void]$startInfo.ArgumentList.Add($argument) }
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            if (-not $process.Start()) { return $null }
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardOutput.ReadToEndAsync()
+            if (-not $process.WaitForExit(15000)) {
+              try { $process.Kill($true) } catch { }
+              [void]$process.WaitForExit(5000)
+              return [pscustomobject]@{ TimedOut = $true; ExitCode = $null; Stdout = '' }
+            }
+            if (-not $stdoutTask.Wait(5000)) { return [pscustomobject]@{ TimedOut = $false; ExitCode = $process.ExitCode; Stdout = '' } }
+            return [pscustomobject]@{ TimedOut = $false; ExitCode = $process.ExitCode; Stdout = $stdoutTask.Result }
+          }
+          $delete = Invoke-RecoveryProcess -Path $tool -Arguments @('LoopbackExempt', '-d', "-p=$sid")
+          if ($null -eq $delete -or $delete.TimedOut -or $delete.ExitCode -ne 0) {
+            Write-Output '::notice title=Windows loopback exemption recovery::state=delete_failed'
+            exit 1
+          }
+          $helper = $env:ICODE_DIAGNOSTIC_WFP_PROBE_BUILD
+          if ([string]::IsNullOrWhiteSpace($helper) -or -not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+            Write-Output '::notice title=Windows loopback exemption recovery::state=helper_missing_after_delete'
+            exit 1
+          }
+          $sample = Invoke-RecoveryProcess -Path $helper -Arguments @('--observe-positive-loopback-config', $profile)
+          if ($null -eq $sample -or $sample.TimedOut -or $sample.ExitCode -ne 0) {
+            Write-Output '::notice title=Windows loopback exemption recovery::state=verify_helper_failed'
+            exit 1
+          }
+          $lines = $sample.Stdout -split "`n" | Where-Object { $_ -ne '' }
+          if ($lines.Count -ne 1) {
+            Write-Output '::notice title=Windows loopback exemption recovery::state=verify_protocol_error'
+            exit 1
+          }
+          try {
+            $receipt = $lines[0] | ConvertFrom-Json
+          } catch {
+            Write-Output '::notice title=Windows loopback exemption recovery::state=verify_protocol_error'
+            exit 1
+          }
+          if ($receipt.status -eq 'complete' -and $receipt.target_match -eq $false) {
+            if (Test-Path -LiteralPath $adminRoot) {
+              try { Remove-Item -LiteralPath $adminRoot -Recurse -Force -ErrorAction Stop } catch { }
+            }
+            Write-Output '::notice title=Windows loopback exemption recovery::state=recovered_removal_verified'
+            exit 0
+          }
+          Write-Output '::notice title=Windows loopback exemption recovery::state=recovery_unconfirmed'
+          exit 1
 
   windows-appcontainer-read-handle-probe:
     if: github.event_name == 'workflow_dispatch' && inputs.run_windows_appcontainer_read_handle_probe
