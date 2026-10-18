@@ -25,6 +25,7 @@ REVIEWER = ROOT / "tests/test_windows_appcontainer.py"
 NATIVE = ROOT / "native/windows/icode_wfp_event_probe.c"
 CORE = ROOT / "native/windows/icode_positive_loopback_config.inc"
 PROFILE = "icode-" + "0" * 32
+REVIEWER_PROFILE = "icode-" + "1" * 32
 OLD_POSITIVE = "                try:\n                    capability_control = run_windows_appcontainer(\n                        capability_argv, cwd=scratch, timeout_seconds=12,\n                        process_limit=2, _diagnostic_profile_name=capability_profile_name,\n                        _diagnostic_runtime_acl=True,\n                        _diagnostic_runtime_roots=(staged_runtime,),\n                        _diagnostic_private_network_capability=True,\n                    )\n                except Exception as exc:  # noqa: BLE001 - diagnostic failure is inconclusive\n                    capability_control = WindowsJobResult(\n                        False, None, \"diagnostic_exception\", False,\n                        type(exc).__name__,\n                    )\n                if not capability_control.cleanup_ok:\n                    self.fail(\n                        \"private-network positive-control Job/profile/ACL cleanup did not verify: \"\n                        f\"{capability_control.detail}\"\n                    )\n"
 C_STUB = r'''#define _POSIX_C_SOURCE 200809L
 #include <stdint.h>
@@ -201,6 +202,7 @@ class TestPositiveLoopbackConfig(unittest.TestCase):
         end = source.index("                expected_capability_payload = json.dumps(", start)
         block = textwrap.dedent(source[start:end])
         events, observed, notices, launches = [], [], [], []
+        exemption_events: list[tuple[str, ...]] = []
         token = N(verified=True, package_sid_match=True)
         result = N(cleanup_ok=clean, child_token_receipt=token, detail="original-first",
                    executed=True, exit_code=105)
@@ -215,9 +217,18 @@ class TestPositiveLoopbackConfig(unittest.TestCase):
         def failed_result(*args):
             return N(cleanup_ok=args[3], child_token_receipt=None, detail=args[4],
                      executed=args[0], exit_code=args[1])
+        def exemption_write(root, capability, reviewer):
+            # Records the admin handshake without touching the real store: the
+            # redefined gate requires the write to precede the exempted launch
+            # and the candidate to follow the removal marker.
+            exemption_events.append(("write", capability, reviewer))
+        def exemption_wait(root, name, seconds):
+            exemption_events.append(("wait", name))
+            return b"ready\n" if "removed" not in name else b"removed\n"
         namespace = dict(Path=Path, os=N(environ={"GITHUB_ACTIONS":"true","RUNNER_OS":"Windows",
             "ICODE_DIAGNOSTIC_WFP_PROBE_PATH":"fixed-helper"}),
-            capability_profile_name=PROFILE, capability_argv=("fixed-positive-argv",),
+            capability_profile_name=PROFILE, reviewer_profile_name=REVIEWER_PROFILE,
+            capability_argv=("fixed-positive-argv",),
             scratch=Path("fixed-scratch"),staged_runtime=Path("fixed-runtime"),
             _observe_positive_loopback_config=observe,
             _positive_loopback_unknown=(unknown if unknown is not None else
@@ -225,14 +236,19 @@ class TestPositiveLoopbackConfig(unittest.TestCase):
             _positive_loopback_comparison=(comparison if comparison is not None else
                 lambda pre,post,**kwargs:{"comparison":"unknown"}),
             run_windows_appcontainer=launch,WindowsJobResult=failed_result,
+            _write_loopback_exemption_profiles=exemption_write,
+            _wait_loopback_exemption_marker=exemption_wait,
             self=N(_workflow_json_notice=(json_notice if json_notice is not None else
                 lambda *args:notices.append(args)),fail=self.fail))
         failure = None
-        try:
-            exec(compile(block, str(REVIEWER), "exec"), namespace)
-        except AssertionError as error:
-            failure = str(error)
-        return N(events=events,observed=observed,notices=notices,launches=launches,failure=failure)
+        with tempfile.TemporaryDirectory(prefix="icode-positive-exemption-") as raw:
+            namespace["exemption_root"] = Path(raw)
+            try:
+                exec(compile(block, str(REVIEWER), "exec"), namespace)
+            except AssertionError as error:
+                failure = str(error)
+        return N(events=events,observed=observed,notices=notices,launches=launches,
+                 exemption_events=exemption_events,failure=failure)
 
     def setUp(self):
         # Old real Reviewer code executes its positive launch, but samples zero

@@ -12,6 +12,7 @@ import json
 import ntpath
 import os
 from pathlib import Path
+import re
 import socket
 import socketserver
 import stat
@@ -1425,6 +1426,92 @@ def _prepare_reviewer_acl_baseline(
         ) from exc
 
 
+_EXEMPTION_PROFILE_NAME = re.compile(r"icode-[0-9a-f]{32}")
+
+
+def _loopback_exemption_profile_names(raw: bytes) -> tuple[str, str]:
+    """Parse the two preallocated profile names the standard user may submit.
+
+    Only two exact lines are accepted: the capability profile and the
+    reviewer profile. Anything else (extra lines, shapes, duplicates,
+    whitespace or non-ASCII content) raises ValueError; the caller fails
+    closed and never derives a SID from a rejected payload.
+    """
+    if type(raw) is not bytes or not raw or len(raw) > 128:
+        raise ValueError("exemption_profile_size")
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        raise ValueError("exemption_profile_encoding") from None
+    if not text.endswith("\n") or "\r" in text:
+        raise ValueError("exemption_profile_newline")
+    lines = text.split("\n")[:-1]
+    if len(lines) != 2:
+        raise ValueError("exemption_profile_lines")
+    for line in lines:
+        if _EXEMPTION_PROFILE_NAME.fullmatch(line) is None:
+            raise ValueError("exemption_profile_shape")
+    if lines[0] == lines[1]:
+        raise ValueError("exemption_profile_collision")
+    return lines[0], lines[1]
+
+
+def _reviewer_network_evidence_state(
+    capability_v4: object, capability_v6: object,
+    candidate_v4: object, candidate_v6: object,
+) -> tuple[bool, str]:
+    """Bounded three-state decision for the redefined Reviewer network gate.
+
+    The exempted capability control must actually deliver the canary on
+    both stacks; the zero-capability candidate must deliver none. A
+    single-stack success is a failed positive control, never a pass.
+    """
+    if capability_v4 is not True or capability_v6 is not True:
+        return False, "capability_control_incomplete"
+    if candidate_v4 is not False or candidate_v6 is not False:
+        return False, "candidate_canary_received"
+    return True, "loopback_isolation_evidence"
+
+
+def _write_loopback_exemption_profiles(
+    root: Path, capability: str, reviewer: str,
+) -> None:
+    """Publish the two preallocated profile names for the admin exemption.
+
+    Validation runs before any filesystem mutation; the marker is written
+    atomically so the admin never reads a partial payload.
+    """
+    payload = (capability + "\n" + reviewer + "\n").encode("ascii")
+    parsed = _loopback_exemption_profile_names(payload)
+    if parsed != (capability, reviewer):
+        raise ValueError("exemption_profile_roundtrip")
+    temporary = root / ("loopback-exemption-profile." + uuid.uuid4().hex + ".tmp")
+    temporary.write_bytes(payload)
+    os.replace(temporary, root / "loopback-exemption-profile.txt")
+
+
+def _wait_loopback_exemption_marker(
+    root: Path, name: str, seconds: float,
+) -> bytes:
+    """Wait for one exact admin marker line; garbage never counts as ready."""
+    if name not in ("ready", "removed"):
+        raise ValueError("exemption_marker_name")
+    if type(seconds) is not float or not 0 < seconds <= 120:
+        raise ValueError("exemption_marker_budget")
+    target = root / ("loopback-exemption-" + name + ".txt")
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            raw = target.read_bytes()
+        except OSError:
+            raw = None
+        if (type(raw) is bytes and raw in (b"ready\n", b"removed\n")):
+            return raw
+        if time.monotonic() >= deadline:
+            raise TimeoutError(name)
+        time.sleep(0.05)
+
+
 class TestWindowsAppContainer(unittest.TestCase):
     def test_appcontainer_profile_sid_comparison_rejects_missing_or_invalid_values(self) -> None:
         compare_sid = globals().get("_appcontainer_profile_sid_matches")
@@ -2791,6 +2878,46 @@ class TestWindowsAppContainer(unittest.TestCase):
                 return {"staged_entries": 1}
 
             capture_advapi, capture_kernel = object(), object()
+            exemption_state = {"reviewer": None}
+            exemption_calls: list[str] = []
+            profile_payloads: list[bytes] = []
+
+            def synthetic_observe_loopback_config(executable, profile_name, phase):
+                exemption_calls.append(str(profile_name))
+                if profile_name == exemption_state["reviewer"]:
+                    return {
+                        "schema_version": 1,
+                        "scope": "positive_loopback_config_sample",
+                        "status": "complete", "api_stage": "query", "api_code": 0,
+                        "entry_count": 0, "target_match": False,
+                        "target_attributes": None,
+                        "sid_frees_attempted": 0, "sid_frees_confirmed": 0,
+                        "array_release": "not_acquired",
+                        "derived_sid_release": "confirmed",
+                        "library_release": "confirmed",
+                    }, False
+                return _positive_loopback_unknown(phase, "not_attempted"), False
+
+            def fake_exemption_admin(root):
+                """Simulate the elevated workflow parent in the handshake."""
+                deadline = time.monotonic() + 60
+                profile_path = root / "loopback-exemption-profile.txt"
+                while time.monotonic() < deadline and not profile_path.is_file():
+                    time.sleep(0.01)
+                raw = profile_path.read_bytes()
+                profile_payloads.append(raw)
+                _capability, _reviewer = _loopback_exemption_profile_names(raw)
+                exemption_state["reviewer"] = _reviewer
+                (root / "loopback-exemption-ready.txt").write_bytes(b"ready\n")
+                done_path = root / "loopback-exemption-done.txt"
+                while time.monotonic() < deadline and not done_path.is_file():
+                    time.sleep(0.01)
+                (root / "loopback-exemption-removed.txt").write_bytes(b"removed\n")
+
+            exemption_thread = threading.Thread(
+                target=fake_exemption_admin, args=(runner_temp_root,), daemon=True,
+            )
+            exemption_thread.start()
 
             def capture_snapshot(roots, *, workspace, advapi, kernel):
                 paths = windows_appcontainer._walk_workspace(roots[0])
@@ -2812,6 +2939,26 @@ class TestWindowsAppContainer(unittest.TestCase):
                     script = argv[3]
                     compile(script, "<private-network-capability-probe-captured>", "exec")
                     captured_network_control_scripts.append(script)
+                    # The exempted capability control must actually deliver
+                    # the fixed nonce payload on both stacks.
+                    expected = json.dumps(
+                        {
+                            "nonce": argv[6],
+                            "appcontainer": True,
+                            "package_sid": argv[7],
+                            "capability_count": 1,
+                            "capability_sid": "S-1-15-3-3",
+                        },
+                        sort_keys=True, separators=(",", ":"),
+                    ).encode("ascii")
+                    for family, host, port in (
+                        (socket.AF_INET, "127.0.0.1", int(argv[4])),
+                        (socket.AF_INET6, "::1", int(argv[5])),
+                    ):
+                        with socket.socket(family, socket.SOCK_STREAM) as connection:
+                            connection.settimeout(3)
+                            connection.connect((host, port))
+                            connection.sendall(expected)
                     parent_token_receipt = (
                         windows_job_module._WindowsAppContainerTokenReceipt(
                             "matched", True, True, 1, True, True, True,
@@ -2901,6 +3048,7 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "_dacl_write_control_succeeds": lambda *_args, **_kwargs: True,
                         "_native_write_canary_control": synthetic_write_canary_control,
                         "_derive_appcontainer_profile_sid": lambda *_args, **_kwargs: "S-1-15-2-123456789",
+                        "_observe_positive_loopback_config": synthetic_observe_loopback_config,
                         "run_windows_appcontainer": capture_runner,
                     },
                 ), mock.patch.dict(
@@ -2912,6 +3060,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                         "ICODE_DIAGNOSTIC_WFP_PROBE_PATH": "",
                         "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
                         "ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT": "true",
+                        "ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION": "true",
+                        "ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION_ROOT": str(runner_temp_root),
                         "RUNNER_TEMP": str(runner_temp_root),
                         "ICODE_DIAGNOSTIC_WFP_RUNNER_TARGET_FILE": str(runner_target_path),
                         "ICODE_DIAGNOSTIC_WFP_RUNNER_READY_FILE": str(runner_ready_path),
@@ -2920,6 +3070,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理.__wrapped__(
                         _CaptureAssertions(),
                     )
+            exemption_thread.join(timeout=10)
+            self.assertFalse(exemption_thread.is_alive(), "fake exemption admin stalled")
 
         notice_names = {name for name, _encoded in captured_notices}
         self.assertEqual(len(captured_acl_restores), 1)
@@ -2957,7 +3109,7 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertIn("network_observations['runner_observer_gate']", captured_scripts[0])
         self.assertIn("sys.excepthook=report_unhandled_probe_exception", captured_scripts[0])
         self.assertIn(
-            "windows_appcontainer_private_network_positive_control=status=inconclusive",
+            "windows_appcontainer_private_network_positive_control=status=observed",
             wfp_output.getvalue(),
         )
         self.assertIn(
@@ -2998,6 +3150,25 @@ class TestWindowsAppContainer(unittest.TestCase):
              _positive_loopback_unknown("post", "not_attempted")),
             ("positive_loopback_config_comparison", {"comparison": "unknown"}),
         ])
+        # The exemption handshake published exactly the two preallocated
+        # profiles, and the reviewer profile was sampled before the candidate.
+        self.assertEqual(len(profile_payloads), 1)
+        capability_profile, reviewer_profile = _loopback_exemption_profile_names(
+            profile_payloads[0],
+        )
+        self.assertNotEqual(capability_profile, reviewer_profile)
+        self.assertIn(reviewer_profile, exemption_calls)
+        self.assertEqual(captured_runner_targets[0]["profile_name"], reviewer_profile)
+        # The payload self-check no longer requires Winsock denial codes.
+        exit78 = captured_scripts[0].split("raise SystemExit(78)")[0]
+        exclusion = exit78[exit78.rindex("if key not in {"):]
+        for key in (
+            "'ipv4_network_connect_denied'", "'ipv6_network_connect_denied'",
+            "'ipv4_network_error'", "'ipv6_network_error'",
+            "'ipv4_network_wait_expired'", "'ipv6_network_wait_expired'",
+            "'ipv4_network_terminal_error'", "'ipv6_network_terminal_error'",
+        ):
+            self.assertIn(key, exclusion)
         self.assertTrue(all(len(encoded) <= 500 for _name, encoded in captured_notices))
         access_notice = json.loads(next(
             encoded
@@ -3021,8 +3192,8 @@ class TestWindowsAppContainer(unittest.TestCase):
         self.assertEqual(capability_notice["stage"], "probe_completed")
         self.assertIn("requested_attributes=0x00000004", wfp_output.getvalue())
         self.assertIs(capability_notice["clean"], True)
-        self.assertIs(capability_notice["v4"], False)
-        self.assertIs(capability_notice["v6"], False)
+        self.assertIs(capability_notice["v4"], True)
+        self.assertIs(capability_notice["v6"], True)
         self.assertIs(capability_notice["credit"], False)
         write_fingerprint_notice = json.loads(next(
             encoded
@@ -3308,7 +3479,8 @@ class TestWindowsAppContainer(unittest.TestCase):
             "if key not in {'child_pid','access_errors','close_errors','write_diagnostics',"
             "'ipv4_network_connected','ipv4_network_error','ipv4_network_wait_expired',"
             "'ipv4_network_terminal_error','ipv6_network_connected','ipv6_network_error',"
-            "'ipv6_network_wait_expired','ipv6_network_terminal_error','network_observations'}",
+            "'ipv6_network_wait_expired','ipv6_network_terminal_error','network_observations',"
+            "'ipv4_network_connect_denied','ipv6_network_connect_denied'}",
             "import ctypes,hashlib,json,os,pathlib,socket,subprocess,sys,time",
             "def network_connect_denied(family,address,port):",
             "connection.setblocking(False)",
@@ -3826,6 +3998,10 @@ class TestWindowsAppContainer(unittest.TestCase):
         )
         self.assertLess(positive_control_assertion, reviewer_candidate_launch)
         self.assertIn('"Windows Reviewer loopback network denial"', reviewer_source)
+        self.assertIn("ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION", reviewer_source)
+        self.assertIn("_write_loopback_exemption_profiles(", reviewer_source)
+        self.assertIn("_wait_loopback_exemption_marker(", reviewer_source)
+        self.assertIn("_reviewer_network_evidence_state(", reviewer_source)
         acceptance_start = reviewer_source.index(
             "self.assertTrue(all(summary[key] is True for key in (",
         )
@@ -3833,6 +4009,9 @@ class TestWindowsAppContainer(unittest.TestCase):
         acceptance_contract = reviewer_source[acceptance_start:acceptance_end]
         self.assertIn('"write_canary_unchanged"', acceptance_contract)
         self.assertNotIn("network_timed_out", acceptance_contract)
+        self.assertNotIn("ipv4_network_connect_denied", acceptance_contract)
+        self.assertNotIn("ipv6_network_connect_denied", acceptance_contract)
+        self.assertNotIn("10013", acceptance_contract)
         self.assertNotIn("write_canary_before_unchanged", acceptance_contract)
         self.assertNotIn("write_canary_matches_expected_result", acceptance_contract)
         self.assertNotIn("write_canary_matches_payload", acceptance_contract)
@@ -4200,6 +4379,132 @@ class TestWindowsAppContainer(unittest.TestCase):
             },
         )
         self.assertEqual(kernel.close_calls, 1)
+
+    def test_reviewer_loopback_exemption_helpers_reject_untrusted_input(self) -> None:
+        capability = "icode-" + "a" * 32
+        reviewer = "icode-" + "b" * 32
+        self.assertEqual(
+            _loopback_exemption_profile_names(
+                (capability + "\n" + reviewer + "\n").encode("ascii"),
+            ),
+            (capability, reviewer),
+        )
+        invalid_payloads = (
+            b"",
+            b"icode-" + b"a" * 32 + b"\n",
+            b"icode-" + b"a" * 32 + b"\n" + b"icode-" + b"b" * 32,
+            b"icode-" + b"a" * 32 + b"\n" + b"icode-" + b"a" * 32 + b"\n",
+            b"icode-" + b"a" * 32 + b"\n" + b"icode-" + b"g" * 32 + b"\n",
+            b"icode-" + b"a" * 31 + b"\n" + b"icode-" + b"b" * 32 + b"\n",
+            b"icode-" + b"a" * 33 + b"\n" + b"icode-" + b"b" * 32 + b"\n",
+            b"icode-" + b"a" * 32 + b"\r\n" + b"icode-" + b"b" * 32 + b"\n",
+            b"icode-" + b"a" * 32 + b"\n" + b"icode-" + b"b" * 32 + b"\nextra\n",
+            "icode-" + "a" * 32 + "\n" + "icode-" + "b" * 32 + "\n",
+            b"icode-" + b"a" * 32 + b"\n" + b"icode-" + b"b" * 32 + b"\n" + b"x" * 200,
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload[:24]):
+                with self.assertRaises(ValueError):
+                    _loopback_exemption_profile_names(payload)
+        with tempfile.TemporaryDirectory(prefix="icode-exemption-handshake-") as raw:
+            root = Path(raw)
+            _write_loopback_exemption_profiles(root, capability, reviewer)
+            self.assertEqual(
+                (root / "loopback-exemption-profile.txt").read_bytes(),
+                (capability + "\n" + reviewer + "\n").encode("ascii"),
+            )
+            self.assertEqual(list(root.glob("loopback-exemption-profile.*.tmp")), [])
+            with self.assertRaises(ValueError):
+                _write_loopback_exemption_profiles(root, capability, capability)
+            for name, content in (
+                ("ready", b"ready\n"),
+                ("removed", b"removed\n"),
+            ):
+                (root / ("loopback-exemption-" + name + ".txt")).write_bytes(content)
+                self.assertEqual(
+                    _wait_loopback_exemption_marker(root, name, 1.0), content,
+                )
+            (root / "loopback-exemption-ready.txt").write_bytes(b"stale\n")
+            with self.assertRaises(TimeoutError):
+                _wait_loopback_exemption_marker(root, "ready", 0.2)
+            with self.assertRaises(ValueError):
+                _wait_loopback_exemption_marker(root, "unknown", 1.0)
+            with self.assertRaises(ValueError):
+                _wait_loopback_exemption_marker(root, "ready", 121.0)
+        self.assertEqual(
+            _reviewer_network_evidence_state(True, True, False, False),
+            (True, "loopback_isolation_evidence"),
+        )
+        for capability_v4, capability_v6, candidate_v4, candidate_v6, reason in (
+            (True, False, False, False, "capability_control_incomplete"),
+            (False, True, False, False, "capability_control_incomplete"),
+            (False, False, False, False, "capability_control_incomplete"),
+            (True, True, True, False, "candidate_canary_received"),
+            (True, True, False, True, "candidate_canary_received"),
+        ):
+            with self.subTest(reason=reason):
+                self.assertEqual(
+                    _reviewer_network_evidence_state(
+                        capability_v4, capability_v6, candidate_v4, candidate_v6,
+                    ),
+                    (False, reason),
+                )
+
+    def test_reviewer_snapshot_requires_the_loopback_exemption_experiment(self) -> None:
+        """The redefined gate fails closed without its exemption experiment."""
+
+        class _CaptureAssertions:
+            def fail(self, message: str = "") -> None:
+                raise AssertionError(message)
+
+            def assertTrue(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            def assertEqual(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+            def assertIs(self, *_args: object, **_kwargs: object) -> None:
+                return None
+
+        reviewer_globals = (
+            TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理
+            .__wrapped__.__globals__
+        )
+        with tempfile.TemporaryDirectory(prefix="icode-reviewer-exemption-gate-") as raw:
+            source_root = Path(raw) / "source-python"
+            source_root.mkdir()
+            (source_root / Path(sys.executable).name).write_bytes(b"synthetic")
+            for exemption, root_value in (
+                ("false", ""),
+                ("true", ""),
+                ("", ""),
+            ):
+                with self.subTest(exemption=exemption, root=root_value):
+                    with mock.patch.object(sys, "prefix", str(source_root)), \
+                         mock.patch.object(sys, "base_prefix", str(source_root)), \
+                         mock.patch.dict(
+                            reviewer_globals,
+                            {
+                                "_current_process_standard_user_status": (
+                                    lambda *_args, **_kwargs: "verified"
+                                ),
+                            },
+                        ), mock.patch.dict(
+                            os.environ,
+                            {
+                                "ICODE_DIAGNOSTIC_STANDARD_USER_SID": "S-1-5-21-1-2-3-1001",
+                                "GITHUB_ACTIONS": "true",
+                                "RUNNER_OS": "Windows",
+                                "ICODE_DIAGNOSTIC_RUNTIME_STAGING": "true",
+                                "ICODE_DIAGNOSTIC_REVIEWER_SNAPSHOT": "true",
+                                "ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION": exemption,
+                                "ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION_ROOT": root_value,
+                            },
+                        ):
+                        with self.assertRaises(AssertionError):
+                            TestWindowsAppContainer.test_Reviewer快照AppContainer只读边界与Job清理.__wrapped__(
+                                _CaptureAssertions(),
+                            )
 
     def test_JSON工作流回执超限时必须显式失败(self) -> None:
         with self.assertRaises(AssertionError):
@@ -8317,6 +8622,24 @@ class TestWindowsAppContainer(unittest.TestCase):
             f"{parent_standard_user_status}",
         )
 
+        # The redefined network gate is three-part evidence: an unexempted
+        # candidate, an exempted dual-stack positive control and a candidate
+        # that never connects. Without the admin exemption experiment the
+        # evidence cannot exist; the test fails closed rather than falling
+        # back to the retired Winsock denial contract.
+        exemption_enabled = os.environ.get("ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION", "")
+        exemption_root_value = os.environ.get(
+            "ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION_ROOT", "",
+        )
+        if exemption_enabled != "true" or not exemption_root_value:
+            self.fail(
+                "loopback exemption experiment is required for the redefined "
+                "Reviewer network gate; missing ICODE_DIAGNOSTIC_LOOPBACK_EXEMPTION"
+            )
+        exemption_root = Path(exemption_root_value)
+        if not exemption_root.is_absolute() or not exemption_root.is_dir():
+            self.fail("loopback exemption root is not an absolute existing directory")
+
         source_root = Path(sys.base_prefix).resolve(strict=True)
         source_executable = source_root / Path(sys.executable).name
         self.assertTrue(source_executable.is_file(), "host Python executable is missing")
@@ -8531,6 +8854,16 @@ class TestWindowsAppContainer(unittest.TestCase):
                         {"comparison": "unknown"},
                     )
                     self.fail("positive loopback pre helper was not reaped; original experiment not run")
+                # Publish the two preallocated profile names and wait for the
+                # elevated workflow parent to add and verify the loopback
+                # exemption for the capability profile only.
+                _write_loopback_exemption_profiles(
+                    exemption_root, capability_profile_name, reviewer_profile_name,
+                )
+                try:
+                    _wait_loopback_exemption_marker(exemption_root, "ready", 120.0)
+                except (TimeoutError, ValueError) as exc:
+                    self.fail(f"loopback exemption add was not confirmed: {exc}")
                 try:
                     capability_control = run_windows_appcontainer(
                         capability_argv, cwd=scratch, timeout_seconds=12,
@@ -8544,6 +8877,13 @@ class TestWindowsAppContainer(unittest.TestCase):
                         False, None, "diagnostic_exception", False,
                         type(exc).__name__,
                     )
+                # The exempted positive control finished; the admin removes the
+                # exemption and verifies the restoration before the candidate.
+                (exemption_root / "loopback-exemption-done.txt").write_bytes(b"done\n")
+                try:
+                    _wait_loopback_exemption_marker(exemption_root, "removed", 120.0)
+                except (TimeoutError, ValueError) as exc:
+                    self.fail(f"loopback exemption removal was not confirmed: {exc}")
                 loopback_post = _positive_loopback_unknown("post", "not_attempted")
                 loopback_post_unreaped = False
                 if capability_control.cleanup_ok:
@@ -9096,7 +9436,8 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "if key not in {'child_pid','access_errors','close_errors','write_diagnostics',"
                     "'ipv4_network_connected','ipv4_network_error','ipv4_network_wait_expired',"
                     "'ipv4_network_terminal_error','ipv6_network_connected','ipv6_network_error',"
-                    "'ipv6_network_wait_expired','ipv6_network_terminal_error','network_observations'})): raise SystemExit(78)\n"
+                    "'ipv6_network_wait_expired','ipv6_network_terminal_error','network_observations',"
+                    "'ipv4_network_connect_denied','ipv6_network_connect_denied'})): raise SystemExit(78)\n"
                 )
                 network_probe_marker = "runner_observer_gate_marker=None\n"
                 if runner_handshake_enabled:
@@ -9202,6 +9543,22 @@ class TestWindowsAppContainer(unittest.TestCase):
                             ipv6_loopback_port,
                             temp_root,
                         )
+                # The reviewer profile must hold no loopback exemption when the
+                # candidate launches; an exempted candidate is a failed gate.
+                reviewer_sample, reviewer_sample_unreaped = _observe_positive_loopback_config(
+                    loopback_helper, reviewer_profile_name, "pre",
+                )
+                if reviewer_sample_unreaped:
+                    self.fail(
+                        "reviewer loopback config helper was not reaped; candidate not run",
+                    )
+                if (reviewer_sample.get("status") != "complete"
+                        or reviewer_sample.get("target_match") is not False):
+                    self.fail(
+                        "reviewer profile loopback exemption observation failed: "
+                        f"status={reviewer_sample.get('status')} "
+                        f"target_match={reviewer_sample.get('target_match')}"
+                    )
                 acl_restore_report: dict[str, object] = {
                     "state": "not_observed", "phase": "post_restore_observation",
                     "restore_returned": None,
@@ -9689,15 +10046,20 @@ class TestWindowsAppContainer(unittest.TestCase):
                     "child_started", "child_exited", "snapshot_acl_restored", "runtime_acl_restored",
                     "write_canary_unchanged", "create_cleanup_ok",
                     "ipv4_host_control", "ipv4_network_attempted",
-                    "ipv4_network_connect_denied", "ipv6_host_control",
-                    "ipv6_network_attempted", "ipv6_network_connect_denied",
+                    "ipv6_host_control", "ipv6_network_attempted",
                 )), summary)
                 self.assertIs(summary["ipv4_network_connected"], False, summary)
-                self.assertEqual(summary["ipv4_network_error"], 10013, summary)
                 self.assertIs(summary["ipv4_canary_received"], False, summary)
                 self.assertIs(summary["ipv6_network_connected"], False, summary)
-                self.assertEqual(summary["ipv6_network_error"], 10013, summary)
                 self.assertIs(summary["ipv6_canary_received"], False, summary)
+                # The redefined network gate: the exempted capability control
+                # actually reached both loopback stacks, and the unexempted
+                # candidate reached neither.
+                network_evidence, network_reason = _reviewer_network_evidence_state(
+                    capability_ipv4_received, capability_ipv6_received,
+                    summary["ipv4_canary_received"], summary["ipv6_canary_received"],
+                )
+                self.assertTrue(network_evidence, f"{network_reason}: {summary}")
                 self.assertEqual(summary["capabilities"], 0, summary)
                 self.assertIs(summary["elevated"], False, summary)
                 self.assertIs(summary["admin_group_enabled"], False, summary)
