@@ -53,6 +53,8 @@ Runner 实证三元证据闭合（双腿收据一致，以 arm64 为例）：账
 
 **当前远端及本地HEAD：`1fdfa41`（三元证据门，双腿快照 job CI 首绿）。** R2/R3 既定验收目标（两个 snapshot job 全绿并通过 readonly admission、WFP observer、Reviewer 步骤）已达成；余下红项全部为既有环境性/陈旧钉锁失败，处置需用户决策（见下）。all runs 已终态；未创建 branch/tag，vendor 未动。下方 4fff535 及本地 b6 状态是历史定位，不覆盖本行。
 
+**最终全绿确认（提交 `2f0ee24`+`de024e0` 后）：** CI run `39114347913`（de024e0）**conclusion=success，45 job / 42 成功 / 0 失败 / 3 跳过**——Python 3.12 转绿（3647 项在 runner 上零失败零错误），双腿 Reviewer 快照 job 保持绿；provenance run `39114347901` 三 job 全部 success（validate + windows-latest/arm 两个 Attest and install bootstrap 均实际运行并通过，此前候选为 skipped）；官网 `39114347906` success。本地全量 3641 项 failures=0（仅剩本地 uv Python 缺 setuptools 的一个环境性 setUpClass 错误，CI runner 无此问题）。**R2/R3 全链路首次全绿，无任何遗留红项。**
+
 **待用户决策（已执行，用户授权“按你推荐的来”）：**（a）`commands` 钉锁自 4fff535 起陈旧（仅影响 Python 3.12 与 provenance validate 两个 job 的同一断言）——已按已评审内容同口径刷新为 `79254db441d9aaf68e503ce28d0650a992314ec2cfa93ef9417944b557ea9523` 并在测试内附注（与 CI 在 `1fdfa41` 上实测的实际值逐位一致，`policies` 值复核不变）；（b）两个 Windows 专有 `SO_EXCLUSIVEADDRUSE` socket 测试加 `skipUnless(win32)` 平台守卫（Windows snapshot job 保留真实覆盖，Linux 不再环境性 error）；（c）R2/R3 既定目标（两个 snapshot job 全绿并通过 readonly admission、WFP observer、Reviewer 步骤）已在决策日志与本文档正式结案。结案后如 CI 复跑确认 Python 3.12 与 provenance validate 转绿，则全部 red 项清零。
 
 ### 本地修复候选与 4fff535 全部终态
