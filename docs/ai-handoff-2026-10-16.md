@@ -1,6 +1,6 @@
 # ICODE Agent：交给另一 AI 的开发接力
 
-核对日期：2026-10-18（北京时间）。这是当前接力入口；旧 `development-handoff.md` 是按时间追加的历史账，不要把其中“当前、尚未实施、正在运行”脱离日期当作最新事实。**2026-10-17/18 最新进展：用户已授权将 Reviewer 零能力网络门重定义为三元证据（只读配置无豁免 + 正控临时豁免实测双栈通路 + 候选无连接无 canary），SPEC/独立评审/实施/本地全量零回归均已完成，待提交推送与 CI 双架构验收；细节见 development-handoff.md “本轮 2026-10-17/18”节。**
+核对日期：2026-10-18（北京时间）。这是当前接力入口；旧 `development-handoff.md` 是按时间追加的历史账，不要把其中“当前、尚未实施、正在运行”脱离日期当作最新事实。**2026-10-18 最新进展：候选 `1fdfa41` 已推送 main，两个 Windows Reviewer 快照 job（windows-latest x64 + windows-11-arm）CI 双腿首绿——readonly admission（无豁免）、WFP observer 四步、Reviewer 快照探针步（三元网络证据：只读配置证实候选零豁免 + 正控临时豁免实测双栈 canary + 候选无连接无 canary）全部通过；R2/R3 既定验收目标达成。余下红项全部预存在（Python 3.12 与 provenance validate 的 version_migration `commands` 陈旧钉锁 + 2 个 Linux 专有 `SO_EXCLUSIVEADDRUSE` 环境错误），与本轮改动零回归，处置待用户决策。证据链与三轮 CI 诊断细节见 development-handoff.md “候选 1fdfa41”节。**
 
 ## 1. 目标和产品定位
 

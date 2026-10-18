@@ -1,6 +1,6 @@
 # R2 / R3 开发接力
 
-更新：2026-10-18（北京时间）。**交给另一 AI 请先读 [当前接力入口](ai-handoff-2026-10-16.md)**，机器专属位置见权威仓库 `.git/AI-HANDOFF.local.md`（仅本机）。本文保留历史账，不把后文旧“当前/正在运行/未实施”当最新状态。**最新：用户已授权重定义 Reviewer 网络门为三元证据，实施完成并全量零回归验证，待提交推送与 CI 验收（见“本轮 2026-10-17/18”节）。**
+更新：2026-10-18（北京时间）。**交给另一 AI 请先读 [当前接力入口](ai-handoff-2026-10-16.md)**，机器专属位置见权威仓库 `.git/AI-HANDOFF.local.md`（仅本机）。本文保留历史账，不把后文旧“当前/正在运行/未实施”当最新状态。**最新：候选 1fdfa41 双腿 Windows Reviewer 快照 job CI 首绿，R2/R3 既定验收目标达成；余下红项全部预存在（见“候选 1fdfa41”节末的待决策项）。**
 
 本次交接重新核实 d6a7a3a：CI38706002261 全部终态40成功/2失败/3skip；provenance38706002204三成功；Pages38706002225两成功。full116325467105为3624 tests/721.560s/OK(skip100)。双Windows116325467953、116325468334均202软件测试及SDK构建通过，但实际readonly admission返回readonly_failed/unknown，后续WFP/Reviewer跳过。首要任务转为定位该实际准入失败，不能重做已过模型修复，也不能报告R2/R3完成。本次只整理文档，未提交推送或改产品；此前已有两行未提交候选记录保留。
 
@@ -37,9 +37,23 @@ Python 3.12 job 与 provenance validate 的 3644 项测试失败集与上一候�
 
 状态：本轮提交推送后需前台守 CI；双腿 Reviewer 步转绿的前提是豁免正控在 runner 上真实可用（正控单栈/双栈失败都会如实 fail-closed，不会伪装通过）。未放宽其他任何门。
 
+### 候选 1fdfa41：三元证据门 CI 双架构首绿（R2/R3 既定验收目标达成）
+
+提交链 e35b8f8（三元门测试）→ 243632c（admin 侧受控豁免实验 workflow）→ e1511ab（契约钉锁+policies 钉锁）→ 0796e8f（SPEC/决策/交接文档）→ c9c46fc（界限诊断+清理）→ 1fdfa41（解析修复）全部推送 main。
+
+三轮 CI 诊断后终局——run `39110200656`（CI）、`39110200608`（provenance）、`39110200668`（官网）全部 completed。CI 45 job：**41 成功 / 1 失败 / 3 跳过**。两个 Windows Reviewer 快照 job（x64 `117624491590`、arm64 `117624491581`）**双腿 success**：软件测试、SDK oracle、readonly admission（无豁免）、WFP observer 四步、Reviewer 快照探针步全过——这是本项目首次双腿走通完整 Reviewer 步骤。官网 success。
+
+Runner 实证三元证据闭合（双腿收据一致，以 arm64 为例）：账本 `phase=removed add_verified=true delete_confirmed=true add_exit=0 delete_exit=0`；`capability_pre` entry_count=0/target_match=false（实验前无豁免）→ `capability_post_add` entry_count=1/**target_match=true**（只读配置观察证实临时豁免对正控 profile 生效）→ `capability_post_delete` entry_count=0/target_match=false（删除后恢复实证）；`reviewer_pre` 与 `reviewer_post_delete` 均 entry_count=0/target_match=false（**候选 profile 全程从未被豁免**）；带 capability 的正控双栈 loopback canary 送达（outer 断言 ipv4/ipv6 host_control+canary_received=true 方通过）；候选侧 `ipv4/ipv6_network_error=10035 wait_expired`（OS 边界如实记录）但 `canary_received=false`、`capabilities=0`，三元举证记为 loopback_isolation_evidence。全程未给 Reviewer/候选 SID 开豁免，未把超时当拒绝。
+
+其余红项均预存在、与本轮改动零回归：Python 3.12 job `Ran 3647 / FAILED (failures=1, errors=2, skipped=100)`——失败集 = version_migration 的 `commands` 陈旧钉锁 + 2 个 Linux 专有 `SO_EXCLUSIVEADDRUSE` 错误（与 888d872、de637ac 逐项一致）；provenance validate 同为 3647/1+2/skipped=100（同源失败集，Attest and install bootstrap 被跳过）。
+
+两轮中间修复记录：c9c46fc 给采样失败账本加界限诊断（exit_code/timed_out/stdout/stderr 长度）并令 finally 先终止残留标准用户进程再有界重试清理（否则 file-in-use 原始错误掩盖收据）；1fdfa41 修复 PowerShell 管道陷阱——单元素过滤结果退化为标量字符串使 `$lines[0]` 取到首字符、行尾 CR 亦被 JSON 解析器拒绝，改为 `@(...)` 强制数组 + `Trim()` 后解析，已锁进契约测试。本地已复现两阶段错误与修复。
+
 ## 最新候选与推送停点
 
-**当前远端及本地HEAD：`de637acdd8ab79dbb58ce3e78e79c47ee0abb827f`（三元证据门实施尚未提交，见上一节）。** 71ffa7仅提交已双审policy TEST及handoff；7ebc61将b6dba5e路径修复和d6a7a3a契约修复一起从4fff535快进main，exit0。root API确认同SHA attempt1：CI `38706002261`、Windows helper provenance `38706002204`、Public website `38706002225` 已启动。独立观察者跟踪双Windows software→SDK→readonly→原Reviewer及完整全量/签名终态；未发生则不授信用。全部run终态前不再push，不创建新branch/tag，vendor不变。下方4fff535及本地b6状态是历史定位，不覆盖本行。
+**当前远端及本地HEAD：`1fdfa41`（三元证据门，双腿快照 job CI 首绿）。** R2/R3 既定验收目标（两个 snapshot job 全绿并通过 readonly admission、WFP observer、Reviewer 步骤）已达成；余下红项全部为既有环境性/陈旧钉锁失败，处置需用户决策（见下）。all runs 已终态；未创建 branch/tag，vendor 未动。下方 4fff535 及本地 b6 状态是历史定位，不覆盖本行。
+
+**待用户决策：**（a）`commands` 钉锁自 4fff535 起陈旧（本轮实测仅影响 Python 3.12 与 provenance validate 两个 job 的同一断言）——授权按同一口径更新该钉锁并附注，或维持现状继续在文档声明；（b）R2/R3 后续验收口径是否需要在文档正式结案（双腿快照 job 绿 + 契约/证据链记录在案）。
 
 ### 本地修复候选与 4fff535 全部终态
 
