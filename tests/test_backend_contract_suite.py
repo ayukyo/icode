@@ -19,7 +19,7 @@ from icode.backends import (
 )
 from icode.backends.transport import _default_open
 
-SECRET = "sk-contract-secret-marker"
+SECRET = "contract-secret-marker-not-a-key"
 
 
 class _Response:
