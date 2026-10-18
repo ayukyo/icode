@@ -25,6 +25,7 @@ from icode.autonomy import (
     normalize_intent_payload,
 )
 from icode.backends import FakeBackend
+from icode.failure_policy import FailureDecision
 from icode.chain import ChainReport
 from icode.runner import StepReport
 from icode.sandbox_policy import NetworkMode, SandboxPolicy
@@ -1261,6 +1262,39 @@ class TestIntentPayload(unittest.TestCase):
             ExecutionResult(state="succeeded", last_step="/tmp/private-step")
 
 
+class FailingExecutor:
+    """每次返回同一个稳定失败，用于无进展检测。"""
+
+    def __init__(self, error_code: str) -> None:
+        self.error_code = error_code
+        self.calls = 0
+
+    def execute(self, context, control) -> ExecutionResult:
+        self.calls += 1
+        return ExecutionResult(state="failed", last_step="plan", error_code=self.error_code)
+
+
+class RetryThenSucceedExecutor:
+    """提供机器策略通道：第一次失败并声明可重试，第二次成功。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def execute(self, context, control) -> ExecutionResult:
+        self.calls += 1
+        if self.calls == 1:
+            return ExecutionResult(
+                state="failed", last_step="deepcheck", error_code="backend_error",
+            )
+        return ExecutionResult(state="succeeded", last_step="deepcheck")
+
+    def failure_decision(self, error_code, step, attempts) -> FailureDecision:
+        return FailureDecision(
+            "retryable_transport", "retry", auto_retry=True, max_attempts=3,
+            conclusion_ceiling="degraded", reason="test-policy",
+        )
+
+
 class TestAutonomyManager(unittest.TestCase):
     def setUp(self) -> None:
         self.settings = require_skill()
@@ -2377,6 +2411,46 @@ class TestAutonomyManager(unittest.TestCase):
                 worker.join(ASYNC_TEST_TIMEOUT_SECONDS)
                 self.assertFalse(worker.is_alive())
 
+
+    def test_失败决策有界记录且相同失败证据第二次即判无进展(self) -> None:
+        ticket_id = self._ticket("failure-policy-ticket")
+        executor = FailingExecutor("chain_failed")
+        manager = self._manager(executor)
+
+        manager.handle_intent(
+            ticket_id, {"intent": "start", "request_id": "failure-policy-start-1"}
+        )
+        first = _wait_state(self.service, ticket_id, "failed")
+        _wait_worker_release(manager, ticket_id)
+        first_run = first["autonomous_run"]
+        self.assertEqual(first_run["error_code"], "chain_failed")
+        self.assertEqual(first_run["failure"], {
+            "class": "deterministic_failure", "action": "manual", "stuck": False,
+        })
+
+        manager.handle_intent(
+            ticket_id, {"intent": "start", "request_id": "failure-policy-start-2"}
+        )
+        second = _wait_state(self.service, ticket_id, "failed")
+        _wait_worker_release(manager, ticket_id)
+        second_run = second["autonomous_run"]
+        self.assertEqual(second_run["error_code"], "no_progress_stuck")
+        self.assertEqual(second_run["failure"], {
+            "class": "deterministic_failure", "action": "stop", "stuck": True,
+        })
+
+    def test_策略允许的重试只重跑一次且成功后不留失败决策(self) -> None:
+        ticket_id = self._ticket("failure-retry-ticket")
+        executor = RetryThenSucceedExecutor()
+        manager = self._manager(executor)
+
+        manager.handle_intent(
+            ticket_id, {"intent": "start", "request_id": "failure-retry-start"}
+        )
+        done = _wait_state(self.service, ticket_id, "succeeded")
+        _wait_worker_release(manager, ticket_id)
+        self.assertEqual(executor.calls, 2)
+        self.assertNotIn("failure", done["autonomous_run"])
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

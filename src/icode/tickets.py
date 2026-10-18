@@ -16,6 +16,8 @@ from typing import Any
 
 from .config import Settings
 from .control import ControlPlane
+from .failure_policy import ACTIONS as _FAILURE_ACTIONS
+from .failure_policy import FAILURE_CLASSES as _FAILURE_CLASSES
 
 SUPPORTED_LOCALES = frozenset({"zh-CN", "en-US"})
 EXECUTION_MODES = frozenset({"interactive", "autonomous"})
@@ -215,6 +217,18 @@ class TicketService:
         error_code = runtime.get("error_code")
         if isinstance(error_code, str) and _RUNTIME_CODE_RE.fullmatch(error_code) is not None:
             public["error_code"] = error_code
+        # 失败决策只投影三个稳定字段：分类、动作、是否无进展。
+        failure = runtime.get("failure_decision")
+        if isinstance(failure, dict):
+            failure_class = failure.get("class")
+            action = failure.get("action")
+            stuck = failure.get("stuck")
+            if (isinstance(failure_class, str) and failure_class in _FAILURE_CLASSES
+                    and isinstance(action, str) and action in _FAILURE_ACTIONS
+                    and isinstance(stuck, bool)):
+                public["failure"] = {
+                    "class": failure_class, "action": action, "stuck": stuck,
+                }
         for field in _AUTONOMOUS_RUN_TIMESTAMP_FIELDS:
             value = runtime.get(field)
             if isinstance(value, str) and _RUNTIME_TIMESTAMP_RE.fullmatch(value) is not None:

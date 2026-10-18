@@ -24,6 +24,16 @@ from .chain import ChainReport, chain_steps, run_chain
 from .config import Settings
 from .contracts import ContractSet
 from .control import ControlPlane
+from .failure_policy import (
+    HISTORY_LIMIT,
+    FailureDecision,
+    classify_failure,
+    decide_failure,
+    failure_fingerprint,
+    is_stuck,
+    record_failure,
+    stop_for_no_progress,
+)
 from .loop import LoopConfig
 from .sandbox_policy import SandboxPolicy
 from .engineering_verification import VerificationPlan
@@ -42,6 +52,10 @@ ACTIVE_STATES = frozenset({
     "starting", "running", "pause_requested", "cancel_requested",
 })
 TERMINAL_RESULT_STATES = frozenset({"succeeded", "failed", "blocked"})
+# 只读步骤可按机器策略做有界重试；写入步骤必须先核对真实状态。
+_READ_ONLY_STEPS = frozenset({"deepcheck", "review"})
+# 同一 worker 内最多自动重试一次，避免整链重放放大副作用。
+_WORKER_RETRY_LIMIT = 1
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,140}$")
 _STABLE_CODE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _STEP_RE = re.compile(r"^[A-Za-z0-9._:-]{1,96}$")
@@ -291,6 +305,26 @@ class NativeChainExecutor:
                 return ExecutionResult(
                     state="failed", last_step=step, error_code="chain_failed")
         return ExecutionResult(state="succeeded", last_step=last_step)
+
+    def failure_decision(
+        self, error_code: object, step: object, attempts: int,
+    ) -> FailureDecision:
+        """失败后先查机器策略再给决策；策略通道不可用时不自行重试。"""
+        failure_class = classify_failure(error_code)
+        payload: object = None
+        if failure_class in {"retryable_transport", "capability_unavailable"}:
+            operation_class = "read_only" if step in _READ_ONLY_STEPS else "managed_write"
+            try:
+                result = ControlPlane(self.settings).policy(
+                    opclass=operation_class,
+                    failure=failure_class,
+                    attempts=attempts,
+                )
+            except Exception:  # noqa: BLE001 - 策略通道故障按“无策略”处理。
+                result = None
+            if result is not None and result.ok:
+                payload = result.data
+        return decide_failure(failure_class, attempts=attempts, policy=payload)
 
 
 class _RunStopped(RuntimeError):
@@ -623,6 +657,15 @@ class AutonomyManager:
                 ticket_id, runtime, intent, request_id
             ),
         }
+        # 失败历史是跨 run 的“证据是否变化”记录；新 run 必须继承，
+        # 否则相同失败永远无法被识别为无进展。
+        previous_history = runtime.get("failure_history")
+        if isinstance(previous_history, list):
+            kept = [
+                item for item in previous_history if isinstance(item, str)
+            ][-HISTORY_LIMIT:]
+            if kept:
+                starting["failure_history"] = kept
         control = RunControl(ticket_id, run_id, self)
         thread = threading.Thread(
             target=self._worker_main,
@@ -750,6 +793,22 @@ class AutonomyManager:
             if executor is None:  # 构造时已 fail-closed；防止未来热替换竞态。
                 raise RuntimeError("executor unavailable")
             result = executor.execute(context, control)
+            # 有界重试：只有执行器提供机器策略通道、决策为 retry 且仍有预算时
+            # 才重跑一次；写入步骤的策略会把 retry 改写成先核对回执。
+            with self._lock:
+                runtime_before = self._raw_runtime(ticket_id)
+            if result.state in TERMINAL_RESULT_STATES and isinstance(result.error_code, str):
+                _, attempts_before, _ = self._failure_history(
+                    runtime_before, result.error_code, result.last_step,
+                )
+                if self._failure_decision_for(result, attempts_before).action == "retry":
+                    with self._lock:
+                        owned = (
+                            not self._shutting_down
+                            and self._controls.get(ticket_id) is control
+                        )
+                    if owned and _WORKER_RETRY_LIMIT > 0:
+                        result = executor.execute(context, control)
             with self._lock:
                 if self._shutting_down or self._controls.get(ticket_id) is not control:
                     return
@@ -776,6 +835,24 @@ class AutonomyManager:
                     terminal["error_code"] = error_code
                 else:
                     terminal.pop("error_code", None)
+                if result.state == "succeeded":
+                    # 成功即进展：清空历史，避免把旧失败当成连续重复。
+                    terminal.pop("failure_decision", None)
+                    terminal["failure_history"] = []
+                if error_code is not None:
+                    history, attempts, fingerprint = self._failure_history(
+                        runtime, error_code, result.last_step,
+                    )
+                    decision = self._failure_decision_for(result, attempts)
+                    stuck = is_stuck(history, fingerprint)
+                    if stuck:
+                        decision = stop_for_no_progress(decision)
+                    terminal["failure_decision"] = {
+                        **decision.to_public(), "stuck": stuck,
+                    }
+                    terminal["failure_history"] = record_failure(history, fingerprint)
+                    if stuck:
+                        terminal["error_code"] = "no_progress_stuck"
                 self.tickets.update_agent_extension(
                     ticket_id,
                     {"autonomous_run": terminal},
@@ -791,6 +868,31 @@ class AutonomyManager:
         finally:
             with self._lock:
                 self._release_worker_locked(ticket_id, control)
+
+    def _failure_history(
+        self, runtime: dict, error_code: str, last_step: str | None,
+    ) -> tuple[list[str], int, str]:
+        """读取有界失败历史并给出本次尝试序号；不含任何正文。"""
+        value = runtime.get("failure_history")
+        history = [item for item in value if isinstance(item, str)] \
+            if isinstance(value, list) else []
+        fingerprint = failure_fingerprint(error_code, last_step)
+        return history, history.count(fingerprint) + 1, fingerprint
+
+    def _failure_decision_for(
+        self, result: ExecutionResult, attempts: int,
+    ) -> FailureDecision:
+        """分类→策略→决策；策略通道异常一律降级为人工介入。"""
+        failure_class = classify_failure(result.error_code)
+        decide = getattr(self.executor, "failure_decision", None)
+        if callable(decide):
+            try:
+                decision = decide(result.error_code, result.last_step, attempts)
+            except Exception:  # noqa: BLE001 - 策略故障不外泄正文
+                decision = decide_failure(failure_class, attempts=attempts)
+            if isinstance(decision, FailureDecision):
+                return decision
+        return decide_failure(failure_class, attempts=attempts)
 
     def _record_executor_failure(self, ticket_id: str, control: RunControl) -> None:
         """异常正文绝不进入 metadata，仅记录稳定错误码。"""
