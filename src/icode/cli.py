@@ -419,6 +419,14 @@ def _build_runner(args: argparse.Namespace):
     )
     approver = CliApprover() if args.approve else DenyAllApprover()
     budget = Budget(expected_tokens=args.budget_tokens)
+    from .model_routing import route_table
+
+    routes = route_table() or None
+    if routes:
+        print("  步骤路由：" + ", ".join(
+            f"{step}={route.backend}{(':' + route.model) if route.model else ''}"
+            for step, route in sorted(routes.items())
+        ))
     if hasattr(backend, "active_proxy"):
         print(f"  代理：{backend.active_proxy()}")  # type: ignore[attr-defined]
 
@@ -478,7 +486,7 @@ def cmd_step_run(args: argparse.Namespace) -> int:
         settings, backend=backend, workspace=Path(args.workspace), step=args.step,
         ticket_id=args.ticket_id, requirement=args.requirement,
         approver=approver, loop_config=LoopConfig(max_turns=args.max_turns),
-        budget=budget, on_event=on_event, sandbox=sandbox,
+        budget=budget, on_event=on_event, sandbox=sandbox, routes=routes,
     )
     print(report.render())
     return 0 if report.ok else 1
@@ -804,6 +812,7 @@ def cmd_chain(args: argparse.Namespace) -> int:
         requirement=args.requirement, ticket_id=args.ticket_id, steps=steps,
         approver=approver, loop_config=LoopConfig(max_turns=args.max_turns),
         budget=budget, on_event=on_event, sandbox=sandbox,
+        routes=routes,
         on_step=lambda name, sr: print(f"\n===== 步骤 {name} 完成："
                                        f"{'OK' if sr.ok else 'FAIL'} =====\n{sr.render()}\n"),
     )

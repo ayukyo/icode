@@ -38,6 +38,7 @@ from types import MappingProxyType
 from typing import BinaryIO, Callable
 
 from .approvals import Approver, DenyAllApprover
+from .model_routing import ModelRoute, RouteError
 from .artifact_broker import ArtifactAccessError, ArtifactBroker
 from .backends import Backend, Usage
 from .budget import Budget, BudgetTracker
@@ -1196,6 +1197,43 @@ def _runtime_budget(budget: Budget | None, tracker: BudgetTracker | None) -> Bud
     return BudgetTracker(budget or Budget())
 
 
+def _route_builder_default(kind: str, model: str) -> Backend:
+    """默认路由构造：走既有 build_backend（未知后端会抛错，不静默回落）。"""
+    from .backends import build_backend
+
+    return build_backend(kind, model=model or None)
+
+
+def _step_backend(
+    step: str,
+    backend: Backend,
+    routes: dict[str, ModelRoute] | None,
+    route_builder: Callable[[str, str], Backend] | None,
+) -> Backend:
+    """按步骤路由选择后端；未配置该步骤时原样使用主后端。
+
+    配置了路由但构造失败时**失败封闭**：抛 RouteError，绝不悄悄用主后端，
+    否则“选了另一个模型”的事实会被掩盖。
+    """
+    if not routes:
+        return backend
+    route = routes.get(step)
+    if route is None:
+        return backend
+    if not isinstance(route, ModelRoute):
+        raise RouteError(f"步骤路由类型非法：{step}")
+    builder = route_builder or _route_builder_default
+    try:
+        built = builder(route.backend, route.model)
+    except RouteError:
+        raise
+    except Exception:  # noqa: BLE001 - 只给稳定错误，不泄露配置细节
+        raise RouteError(f"步骤路由后端构造失败：{step}") from None
+    if built is None:
+        raise RouteError(f"步骤路由后端构造失败：{step}")
+    return built
+
+
 def run_contract_step(
     settings: Settings,
     *,
@@ -1218,6 +1256,8 @@ def run_contract_step(
     extra_instructions: str = "",
     post_write: "Callable[[Path, str, str], None] | None" = None,
     prepared_scope: object | None = None,
+    routes: dict[str, ModelRoute] | None = None,
+    route_builder: Callable[[str, str], Backend] | None = None,
 ) -> StepReport:
     """按契约执行一个步骤，模型通过工具循环完成该步骤的产物。
 
@@ -1227,6 +1267,7 @@ def run_contract_step(
     （用于装配机器可读索引、跑控制面原生自查清单等**非模型**动作）。
     """
     budget_tracker = _runtime_budget(budget, budget_tracker)
+    backend = _step_backend(step, backend, routes, route_builder)
     workspace = Path(workspace).resolve()
     if policy is not None and (
         policy.workspace_root != workspace

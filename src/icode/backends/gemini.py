@@ -8,6 +8,7 @@ from typing import Any
 
 from .base import AssistantMessage, Backend, ToolCall, strip_think
 from .openai_compatible import BackendError, Usage
+from .pricing import estimate_cost
 from .transport import parse_tool_arguments, post_json, tool_specs_openai
 
 DEFAULT_MODEL = "gemini-2.0-flash"
@@ -140,6 +141,7 @@ class GeminiBackend:
             cached_tokens=int(meta.get("cachedContentTokenCount") or 0),
             latency_ms=result.latency_ms,
         )
+        self.last_usage.cost_usd = estimate_cost(self.model, self.last_usage)
         self.usage = self.usage.merge(self.last_usage)
         try:
             candidates = data["candidates"]

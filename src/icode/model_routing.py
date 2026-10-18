@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from typing import Callable, Mapping
 
 READ_ONLY_STEPS = frozenset({"review", "deepcheck"})
+
+
+class RouteError(RuntimeError):
+    """步骤路由配置非法或后端构造失败；失败封闭，不回落到其他模型。"""
 DEFAULT_BACKEND = "openai-compatible"
 
 

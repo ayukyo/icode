@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .base import AssistantMessage, Backend, ToolCall, strip_think
+from .pricing import estimate_cost
 
 DEFAULT_BASE_URL = "https://api.minimaxi.com/v1"
 DEFAULT_MODEL = "MiniMax-M3"
@@ -292,6 +293,7 @@ class OpenAICompatibleBackend:
 
             self.last_usage = _usage_from(data)
             self.last_usage.latency_ms = int((time.monotonic() - started) * 1000)
+            self.last_usage.cost_usd = estimate_cost(self.model, self.last_usage)
             self.usage = self.usage.merge(self.last_usage)
 
             calls: list[ToolCall] = []

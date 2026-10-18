@@ -9,7 +9,8 @@ from icode.backends import FakeBackend
 from icode.contracts import ContractSet
 from icode.handshake import next_out_dir
 from icode.isolation import NoIsolation
-from icode.model_routing import ModelRoute, apply_route, resolve_route, route_table
+from icode.model_routing import (ModelRoute, RouteError, apply_route,
+                                 resolve_route, route_table)
 from icode.runner import _run_agent
 from tests._support import require_skill, temp_workspace
 
@@ -59,6 +60,60 @@ class TestRouteResolution(unittest.TestCase):
             with self.subTest(step=step):
                 with self.assertRaises(ValueError):
                     resolve_route(step)  # type: ignore[arg-type]
+
+
+class TestStepBackendSelection(unittest.TestCase):
+    """runner 按步选后端：未配置不变、配置即生效、构造失败不回落。"""
+
+    def test_未配置路由保持主后端(self) -> None:
+        from icode.runner import _step_backend
+
+        primary = FakeBackend(["x"])
+        self.assertIs(_step_backend("review", primary, None, None), primary)
+        self.assertIs(_step_backend("review", primary, {}, None), primary)
+        self.assertIs(_step_backend("code", primary,
+                                    {"review": ModelRoute("review", "gemini", "g")},
+                                    None), primary)
+
+    def test_配置路由则用构造出的后端(self) -> None:
+        from icode.runner import _step_backend
+
+        primary = FakeBackend(["x"])
+        routed = FakeBackend(["y"])
+        calls = []
+
+        def builder(kind, model):
+            calls.append((kind, model))
+            return routed
+
+        built = _step_backend("review", primary,
+                              {"review": ModelRoute("review", "gemini", "g1")},
+                              builder)
+        self.assertIs(built, routed)
+        self.assertEqual(calls, [("gemini", "g1")])
+
+    def test_构造失败失败封闭且不回落(self) -> None:
+        from icode.model_routing import RouteError
+        from icode.runner import _step_backend
+
+        primary = FakeBackend(["x"])
+
+        def broken(kind, model):
+            raise RuntimeError("boom")
+
+        with self.assertRaises(RouteError):
+            _step_backend("review", primary,
+                          {"review": ModelRoute("review", "gemini", "g1")}, broken)
+        self.assertEqual(primary.calls, [])
+
+    def test_空构造结果也失败封闭(self) -> None:
+        from icode.model_routing import RouteError
+        from icode.runner import _step_backend
+
+        with self.assertRaises(RouteError):
+            _step_backend("review", FakeBackend(["x"]),
+                          {"review": ModelRoute("review", "gemini", "g1")},
+                          lambda kind, model: None)
 
 
 class TestModelSwitchKeepsSingleTruth(unittest.TestCase):

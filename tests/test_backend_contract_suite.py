@@ -300,25 +300,66 @@ class TestBackendContractSuite(unittest.TestCase):
                 self.assertNotIn(SECRET, str(caught.exception))
 
 
-@unittest.skipUnless(
-    os.environ.get("ICODE_RUN_REAL_MODEL_SMOKE") == "1"
-    and os.environ.get("ICODE_LLM_API_KEY"),
-    "需显式 ICODE_RUN_REAL_MODEL_SMOKE=1 与 ICODE_LLM_API_KEY 才跑真实模型冒烟",
-)
-class TestRealModelSmoke(unittest.TestCase):
-    """真实调用只做冒烟：一条消息、一个回合，验证接线与用量记账。"""
+class TestRealModelCanary(unittest.TestCase):
+    """真实网络 canary：每个后端独立门控，缺凭据/端点即跳过并给出原因。"""
 
-    def test_真实模型单回合(self) -> None:
-        from icode.backends import build_backend
+    PROMPT = [{"role": "user", "content": "只回复两个字：收到"}]
 
-        backend = build_backend(
-            "openai-compatible",
-            model=os.environ.get("ICODE_LLM_MODEL") or "",
-            base_url=os.environ.get("ICODE_LLM_BASE_URL") or "",
-        )
-        message = backend.complete(
-            [{"role": "user", "content": "只回复两个字：收到"}], max_tokens=32
-        )
+    def _assert_smoke(self, backend) -> None:
+        message = backend.complete(self.PROMPT, max_tokens=32)
         self.assertIsInstance(message.content, str)
         self.assertGreater(backend.last_usage.total_tokens, 0)
         self.assertGreater(backend.last_usage.latency_ms, 0)
+        metrics = backend.last_usage.as_metrics()
+        self.assertIn("cost_usd", metrics)
+
+    @unittest.skipUnless(
+        os.environ.get("ICODE_RUN_REAL_MODEL_SMOKE") == "1"
+        and os.environ.get("ICODE_LLM_API_KEY"),
+        "需 ICODE_RUN_REAL_MODEL_SMOKE=1 与 ICODE_LLM_API_KEY",
+    )
+    def test_openai兼容真实单回合(self) -> None:
+        from icode.backends import build_backend
+
+        self._assert_smoke(build_backend(
+            "openai-compatible",
+            model=os.environ.get("ICODE_LLM_MODEL") or "",
+            base_url=os.environ.get("ICODE_LLM_BASE_URL") or "",
+        ))
+
+    @unittest.skipUnless(
+        os.environ.get("ANTHROPIC_API_KEY") and os.environ.get("ICODE_RUN_REAL_MODEL_SMOKE") == "1",
+        "需 ANTHROPIC_API_KEY 与 ICODE_RUN_REAL_MODEL_SMOKE=1",
+    )
+    def test_anthropic真实单回合(self) -> None:
+        from icode.backends import AnthropicBackend
+
+        self._assert_smoke(AnthropicBackend(
+            api_key=os.environ["ANTHROPIC_API_KEY"],
+            model=os.environ.get("ANTHROPIC_MODEL") or "",
+        ))
+
+    @unittest.skipUnless(
+        (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+        and os.environ.get("ICODE_RUN_REAL_MODEL_SMOKE") == "1",
+        "需 GEMINI_API_KEY/GOOGLE_API_KEY 与 ICODE_RUN_REAL_MODEL_SMOKE=1",
+    )
+    def test_gemini真实单回合(self) -> None:
+        from icode.backends import GeminiBackend
+
+        key = os.environ.get("GEMINI_API_KEY") or os.environ["GOOGLE_API_KEY"]
+        self._assert_smoke(GeminiBackend(
+            api_key=key, model=os.environ.get("GEMINI_MODEL") or "",
+        ))
+
+    @unittest.skipUnless(
+        os.environ.get("ICODE_OLLAMA_URL") and os.environ.get("ICODE_RUN_REAL_MODEL_SMOKE") == "1",
+        "需 ICODE_OLLAMA_URL 指向本地 Ollama 与 ICODE_RUN_REAL_MODEL_SMOKE=1",
+    )
+    def test_ollama本地真实单回合(self) -> None:
+        from icode.backends import OllamaBackend
+
+        backend = OllamaBackend(base_url=os.environ["ICODE_OLLAMA_URL"],
+                                model=os.environ.get("OLLAMA_MODEL") or "")
+        self._assert_smoke(backend)
+        self.assertEqual(backend.last_usage.cost_usd, 0.0, "本地模型无 API 计费")

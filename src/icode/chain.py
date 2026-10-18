@@ -305,6 +305,8 @@ def run_chain(
     on_step=None,
     out_dir: Path | None = None,
     prepared_scope: object | None = None,
+    routes: dict | None = None,
+    route_builder=None,
 ) -> ChainReport:
     """串起完整链路。**任一步骤被门禁拒绝即停步**，并如实报告。"""
     budget_tracker = _runtime_budget(budget, budget_tracker)
@@ -400,6 +402,7 @@ def run_chain(
                                else policy_session),
             change_baseline=before if policy is not None else None,
             extra_instructions=instructions, post_write=post,
+            routes=routes, route_builder=route_builder,
             **prepared_options,
         )
         report.steps.append(step_report)
