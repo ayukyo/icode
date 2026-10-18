@@ -1210,6 +1210,10 @@ jobs:
               entry_count = $null; target_match = $null; target_attributes = $null
               array_release = 'not_acquired'; derived_sid_release = 'not_acquired'
               library_release = 'not_acquired'
+              exit_code = $(if ($null -eq $sample.ExitCode) { 'null' } else { [string]$sample.ExitCode })
+              timed_out = [string]$sample.TimedOut
+              stdout_length = [string]$sample.Stdout.Length
+              stderr_length = [string]$sample.Stderr.Length
             }
           }
           function Write-ExemptionState {
@@ -1246,7 +1250,11 @@ jobs:
                 ',"entry_count":' + $(if ($null -eq $entry.sample.entry_count) { 'null' } else { [string]$entry.sample.entry_count }) +
                 ',"target_match":' + $(if ($null -eq $entry.sample.target_match) { 'null' } elseif ($entry.sample.target_match) { 'true' } else { 'false' }) +
                 ',"target_attributes":' + $(if ($null -eq $entry.sample.target_attributes) { 'null' } else { [string]$entry.sample.target_attributes }) +
-                ',"helper_sha256":"' + $entry.sample.helper_sha256 + '"')
+                ',"helper_sha256":"' + $entry.sample.helper_sha256 + '"' +
+                ',"exit_code":"' + $(if ($null -eq $entry.sample.exit_code) { 'none' } else { [string]$entry.sample.exit_code }) + '"' +
+                ',"timed_out":"' + $(if ($null -eq $entry.sample.timed_out) { 'none' } else { [string]$entry.sample.timed_out }) + '"' +
+                ',"stdout_length":"' + $(if ($null -eq $entry.sample.stdout_length) { 'none' } else { [string]$entry.sample.stdout_length }) + '"' +
+                ',"stderr_length":"' + $(if ($null -eq $entry.sample.stderr_length) { 'none' } else { [string]$entry.sample.stderr_length }) + '"')
               $lines.Add(('"' + $entry.name + '":{' + $value + '}')) | Out-Null
             }
             if ($null -ne $exemptionAddExit) { $lines.Add(('"add_exit":' + [string]$exemptionAddExit)) | Out-Null }
@@ -2513,8 +2521,22 @@ jobs:
                 throw 'temporary_reviewer_account_cleanup_failed'
               }
             }
+            if ($process -and -not $process.HasExited) {
+              try { $process.Kill($true) } catch { }
+              try { [void]$process.WaitForExit(5000) } catch { }
+            }
             if (Test-Path -LiteralPath $probeRoot) {
-              Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction Stop
+              $probeRootRemoved = $false
+              foreach ($probeRootAttempt in 1..3) {
+                try {
+                  Remove-Item -LiteralPath $probeRoot -Recurse -Force -ErrorAction Stop
+                  $probeRootRemoved = $true
+                  break
+                } catch {
+                  Start-Sleep -Milliseconds 500
+                }
+              }
+              if (-not $probeRootRemoved) { throw 'reviewer_probe_root_cleanup_failed' }
             }
             if ($securePassword) { $securePassword.Dispose() }
             $passwordText = $null
