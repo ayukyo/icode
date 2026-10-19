@@ -16,7 +16,7 @@
 | W2 | 区域写租约（防未检测写冲突） | `src/icode/write_lease.py`：区域（工作区相对路径前缀）→ 持有者租约；进程内区域表 + 跨进程文件锁（POSIX `flock` / Windows `_locking`，与既有 `TicketLease` 同一纪律）；重叠区域（相等或前缀相关）冲突、相异区域并行；`LeaseBusy` 稳定码，绝不静默放行 |
 | W3 | 角色上下文派生 | `agent_scope.py`（或并入 W1）：按角色派生沙箱策略与 Guard 作用域——reviewer/verifier/auditor 走 `write_roots=()` + deny 追加 + 网络 DENY，并过 `tighten_policy` 只紧判定（复用 `derive_read_only_reviewer_policy` 的纪律，不限于 review 步）；executor 写范围收敛到其分配区域 |
 | W4 | 结论账本（可追溯） | `src/icode/agent_conclusion.py`：`AgentConclusion` 冻结记录（agent_id/role/ticket_id/step/context_digest/evidence/outcome/detail + 自描述 digest）；缺身份、缺上下文边界或空证据一律拒绝入账；账本有界、只增；公开投影只含稳定字段 |
-| W5 | 编排器与门禁 | `src/icode/multi_agent.py`：`AgentTeam`（spawn/run/run_parallel/step_gate）；run 在身份校验、（按需）写租约、结论入账三段保护下执行调用方注入的角色逻辑；`step_gate(required_roles)` 只有全部所需角色都有 `completed` 结论才放行——任一代理失败/拒绝即 blocked（G4）；角色分离：executor 结论不能满足 reviewer 要求（不自审） |
+| W5 | 编排器与门禁 | `src/icode/multi_agent.py`：`AgentTeam`（spawn/run/run_parallel/step_gate）；run 在身份校验、（executor 必须申报区域且策略收敛到该区域）、（按需）写租约、结论入账多段保护下执行调用方注入的角色逻辑——executor 的结论边界摘要即收敛后策略指纹；`step_gate(required_roles)` 只有全部所需角色都有 `completed` 结论才放行——任一代理失败/拒绝即 blocked（G4）；角色分离：executor 结论不能满足 reviewer 要求（不自审） |
 | W6 | 证据接入 | 结论 digest 与 agent 身份经既有 `attach_evidence`（R5）进入证据绑定；控制面侧沿用既有 `record_verification`/`step_finish`/回执通道。**不修改 vendor/icode-skill**：gates.json 角色契约键与 `record-agent-spawn/result` 包装列为暂缓（需用户对 ICODE-SKILL 的明确授权，见 §5） |
 
 ## 3. 影响面与安全边界
@@ -46,4 +46,11 @@
 
 ## 6. 实施记录
 
-（实施后填写：逐工作项落地、测试锚点、CI 结果。）
+- **W1 角色契约**：`src/icode/roles.py`。封闭五角色词表（`AgentRole` 冻结，`may_delegate` 恒 False 属性）；`spawn` 分配 `role#ticket#ordinal` 稳定身份（`parse_agent_id` 可独立校验形态）；`assert_may_write`（未发放身份/只读角色 → 稳定码）、`assert_conclusion_kind`（跨角色顶替拒绝）。测试 `tests/test_roles.py` 12 项。
+- **W2 区域写租约**：`src/icode/write_lease.py`。`normalize_region` 接受字符串或段元组（拒绝绝对路径/父目录逃逸/控制面目标，与 R5 同一黑名单）；`regions_overlap` 前缀相关即重叠；`WriteLeaseBoard` 进程内区域表（线程互斥）+ 跨进程文件锁（POSIX flock / Windows msvcrt，先锁后写零长 inode，TicketLease 同纪律）；**租约释放自动从区域表除名**（`WriteLease` 回连所属板，with 块/直接 release 均安全）。测试 `tests/test_write_lease.py` 10 项（含子进程跨进程竞争实测）。踩坑修复：`BufferedReader.read(n)` 类似问题未犯，但 `read1` 教训沿用为有界读；释放不除名曾导致幽灵占用（已修）。
+- **W3 上下文派生**：`src/icode/agent_scope.py`。`derive_agent_policy`（只读角色 `write_roots=()` + deny 追加 + 网络 DENY，过 `tighten_policy` 只紧判定，不绑定 review 步）；`derive_agent_guard_scope`（只读角色 `allowed_write_roots=()`）；`scope_fingerprint` 用解析后绝对路径+白名单计算边界摘要（边界算出来，不自报）；策略侧直接用既有 `policy_hash`。测试 `tests/test_agent_scope.py` 8 项。
+- **W4 结论账本**：`src/icode/agent_conclusion.py`。`AgentConclusion` 冻结（身份形态/角色-结论类型一致/`context_digest` 必须 sha256/`outcome` 封闭/`completed` 必须带非空标量证据且 ≤4KB、`failed`/`refused` 以稳定码为内容——不伪造不存在的工作产物证据）；自描述 digest（canonical sha256，幂等重录）；`ConclusionLedger` 只增有界（写满 fail-closed）、线程安全、按 role+kind+step 查询。测试 `tests/test_agent_conclusion.py` 10 项。
+- **W5 编排器**：`src/icode/multi_agent.py`。`AgentTeam.spawn`（无策略/作用域即拒——没有边界就没有独立上下文）；`run` 三段保护：身份核对 →（executor 且给定区域）租约 → 结论入账；**run 不抛执行异常**——工作异常/空证据/区域竞争都记 `failed`/`refused` 结论（稳定码，正文不外泄），只有编程错误（未知身份、只读角色申请写区域）抛 RoleError；`run_parallel` 线程有界、线程内异常必须浮出（曾修复静默丢结果的缺陷：LeaseBusy 处理时 `kind` 未赋值的 UnboundLocalError 被线程吞掉）；`step_gate` 只认本步骤内所需角色的 completed 结论，无 force/override 参数（源码结构断言）。测试 `tests/test_multi_agent.py` 17 项。
+- **W6 证据接入**：结论 digest/agent_id 进入证据载荷（`run` 把 `agent_id`/`context_digest` 注入 completed 证据）；控制面入账沿用既有事件与回执通道；gates.json 角色键与 `record-agent-spawn/result` 包装按 §5 暂缓（待 ICODE-SKILL 授权）。
+
+**本机测试台账**：新增 57 项（12/10/8/10/17）全绿；密钥扫描通过；全量套件结果见 CI 验收记录。
