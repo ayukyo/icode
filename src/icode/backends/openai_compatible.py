@@ -56,7 +56,12 @@ def _transport_error_label(exc: Exception) -> str:
 
 @dataclass
 class Usage:
-    """一次调用的用量（运营指标，用于预算闸门，不作为质量指标）。"""
+    """一次调用的用量（运营指标，用于预算闸门，不作为质量指标）。
+
+    聚合约定：后端聚合器初始 cost_usd=0.0（费用求和的加法单位元），
+    merge 的"任一未知即未知"语义只作用于真实观测——真实调用费用未知
+    时聚合仍正确地传播为 None，零观测不会把估算污染为未知。
+    """
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -141,7 +146,7 @@ class OpenAICompatibleBackend:
     max_retries: int = 2
     retry_backoff: float = 1.5
     name: str = "openai-compatible"
-    usage: Usage = field(default_factory=lambda: Usage(calls=0))
+    usage: Usage = field(default_factory=lambda: Usage(calls=0, cost_usd=0.0))  # 0.0 是费用求和的单位元：零观测不污染首次估算（W2 发现）
     last_usage: Usage = field(default_factory=Usage, repr=False)
 
     def __post_init__(self) -> None:

@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ICODE 工单工作台 · 静态原型</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --line: #e2e5ea; --ink: #23272e;
+  --ink-2: #5b6470; --accent: #2563eb; --ok: #15803d; --warn: #b45309;
+  --danger: #b91c1c; --chip: #eef2f7; --focus: #1d4ed8;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.65 "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+a { color: var(--accent); }
+button {
+  font: inherit; cursor: pointer; border-radius: 6px; padding: 8px 16px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+}
+button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible {
+  outline: 2px solid var(--focus); outline-offset: 2px;
+}
+.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.deny { color: var(--danger); border-color: #e4b6b6; }
+
+/* 语言切换（纯 CSS：复选框hack；实现期由后端映射契约驱动） */
+#lang-en-view { display: none; }
+#lang-toggle:checked ~ .page #lang-en-view { display: block; }
+#lang-toggle:checked ~ .page #lang-zh-view { display: none; }
+.lang-switch {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
+  color: var(--ink-2); cursor: pointer; user-select: none;
+}
+.lang-switch b { padding: 2px 8px; border-radius: 10px; background: var(--chip); }
+
+header.top {
+  display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+  background: var(--panel); border-bottom: 1px solid var(--line);
+}
+header.top .brand { font-weight: 700; letter-spacing: 1px; }
+header.top .search { flex: 1; }
+header.top input {
+  width: 100%; max-width: 420px; padding: 7px 12px; border: 1px solid var(--line);
+  border-radius: 6px; font: inherit; background: var(--bg);
+}
+
+.page { display: grid; grid-template-columns: 220px 1fr 260px; gap: 14px;
+        padding: 14px 20px 40px; max-width: 1280px; margin: 0 auto; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+         padding: 14px 16px; margin-bottom: 14px; }
+.panel h2 { font-size: 14px; margin: 0 0 10px; color: var(--ink-2); font-weight: 600; }
+.panel h3 { font-size: 15px; margin: 14px 0 6px; }
+
+nav.tickets a {
+  display: block; padding: 7px 10px; border-radius: 6px; color: var(--ink);
+  text-decoration: none; margin: 2px 0;
+}
+nav.tickets a:hover { background: var(--chip); }
+nav.tickets .count { float: right; color: var(--ink-2); }
+nav.tickets a.active { background: var(--chip); font-weight: 600; }
+
+ul.ticket-list { list-style: none; margin: 0; padding: 0; }
+ul.ticket-list li { border: 1px solid var(--line); border-radius: 8px;
+                    padding: 10px 12px; margin-bottom: 10px; background: var(--panel); }
+ul.ticket-list li.selected { border-color: var(--accent); }
+.tid { font-weight: 700; margin-right: 8px; }
+.meta { color: var(--ink-2); font-size: 13px; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 10px;
+         font-size: 12px; background: var(--chip); margin-left: 6px; }
+.badge.warn { color: var(--warn); }
+.badge.ok { color: var(--ok); }
+.badge.accent { color: var(--accent); }
+
+.status-card { display: flex; flex-direction: column; gap: 4px; }
+.raw-status { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+              color: var(--ink-2); }
+.stage { font-size: 19px; font-weight: 700; }
+.assist { color: var(--warn); }
+
+ol.steps { list-style: none; display: flex; gap: 6px; padding: 0; margin: 10px 0 0;
+           flex-wrap: wrap; }
+ol.steps li { font-size: 12.5px; padding: 3px 10px; border-radius: 12px;
+              background: var(--chip); color: var(--ink-2); }
+ol.steps li.done { background: #dcf3e3; color: var(--ok); }
+ol.steps li.now { background: #dbe9fe; color: var(--accent); font-weight: 600; }
+
+.approval { border: 1px solid #e8d3b0; background: #fdf8ee; }
+.approval .impact { color: var(--ink-2); font-size: 13.5px; }
+.approval .actions { display: flex; gap: 10px; margin-top: 10px; }
+
+details.tech { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px;
+               margin-top: 10px; background: var(--bg); }
+details.tech summary { cursor: pointer; color: var(--accent); font-size: 14px; }
+details.tech table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+details.tech th, details.tech td {
+  border: 1px solid var(--line); font-size: 12.5px; padding: 4px 8px;
+  text-align: left; font-family: ui-monospace, Consolas, monospace;
+}
+details.tech pre { background: var(--panel); border: 1px solid var(--line);
+                   padding: 8px 10px; overflow-x: auto; font-size: 12.5px; }
+
+.digest { font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+          word-break: break-all; }
+.sign-ok { color: var(--ok); }
+.unlink-note { color: var(--warn); }
+
+.complete-box { border: 1px solid #cfe6d6; background: #f2faf4; }
+.complete-box ul { margin: 6px 0; padding-left: 20px; }
+.boundary { color: var(--warn); }
+
+footer.note { color: var(--ink-2); font-size: 12.5px; padding: 0 20px 30px;
+              max-width: 1280px; margin: 0 auto; }
+</style>
+</head>
+<body>
+<input type="checkbox" id="lang-toggle" hidden>
+
+<div class="page" role="main">
+
+  <!-- ═══ zh-CN ═══ -->
+  <div id="lang-zh-view" style="grid-column: 1 / -1;">
+
+  <header class="top">
+    <span class="brand">ICODE</span>
+    <span class="search"><input type="search" placeholder="搜索工单（编号、标题、需求正文）"
+      aria-label="搜索工单"></span>
+    <label class="lang-switch" for="lang-toggle">中文 <b>zh</b> / <b>EN</b>（切换示例）</label>
+    <button class="primary">＋ 新建工单</button>
+  </header>
+
+  <div style="display:grid; grid-template-columns: 220px 1fr 260px; gap:14px;">
+
+    <!-- 左：主导航（§14.6） -->
+    <nav class="panel tickets" aria-label="主导航">
+      <h2>我的工单</h2>
+      <a href="#" class="active">需要我处理 <span class="count">2</span></a>
+      <a href="#">处理中 <span class="count">5</span></a>
+      <a href="#">已完成 <span class="count">18</span></a>
+      <a href="#">全部工单</a>
+    </nav>
+
+    <!-- 中：工单列表 + 当前工单（§14.7 / 14.10 / 14.11） -->
+    <div>
+      <section class="panel">
+        <h2>需要我处理</h2>
+        <ul class="ticket-list">
+          <li class="selected">
+            <a href="#ticket-detail"><span class="tid">IC-142</span>设备断线恢复后任务没有继续</a>
+            <div class="meta">需要你确认 · 割草机管理系统 · 2 分钟前 · 会话模式
+              <span class="badge accent">需要确认</span></div>
+          </li>
+          <li>
+            <span class="tid">IC-141</span>新增交付记录签名
+            <div class="meta">需要补充信息 · ICODE · 18 分钟前 · 自动模式
+              <span class="badge warn">缺：正式发布环境的验证方式</span></div>
+          </li>
+          <li>
+            <span class="tid">IC-139</span>修复 Windows 路径识别
+            <div class="meta">已完成 · ICODE · 昨天
+              <span class="badge ok">检查通过 · 验收记录已生成</span></div>
+          </li>
+        </ul>
+      </section>
+
+      <section class="panel" id="ticket-detail">
+        <h2>当前工单</h2>
+        <p><span class="tid">IC-142</span>设备断线恢复后任务没有继续
+           <span class="meta">割草机管理系统 · 会话模式</span></p>
+
+        <!-- 状态三段模型（§14.11）：原始状态 / 用户可见阶段 / 辅助状态 -->
+        <div class="status-card">
+          <span class="raw-status">控制面状态：review_in_progress</span>
+          <span class="stage">正在检查方案</span>
+          <span class="assist">辅助状态：等待用户确认（下方行动区）</span>
+        </div>
+
+        <!-- 阶段进度：不依赖颜色单通道（图标+文字） -->
+        <ol class="steps" aria-label="阶段进度">
+          <li class="done">✓ 已提交</li>
+          <li class="done">✓ 正在理解需求</li>
+          <li class="now">● 正在检查方案</li>
+          <li>○ 方案准备完成</li>
+          <li>○ 正在处理</li>
+          <li>○ 正在全面检查</li>
+          <li>○ 正在整理交付结果</li>
+        </ol>
+
+        <h3>沟通记录</h3>
+        <div class="panel" style="margin:6px 0;">
+          <p><strong>ICODE：</strong>设备重连后任务未继续的原因初步定位为会话恢复逻辑。
+          我准备在<strong>隔离的测试环境</strong>运行完整检查以确认修复方向。</p>
+          <p><strong>你：</strong>可以，别动线上。</p>
+        </div>
+
+        <!-- 双层信息架构（§14.3 / 14.10）：事实折叠不删除 -->
+        <details class="tech">
+          <summary>技术详情（原始事实，面向开发/审计）</summary>
+          <table>
+            <tr><th>ICODE-SKILL 步骤</th><td>review（review_in_progress）</td></tr>
+            <tr><th>修改文件</th><td>src/task/resume.py（diff 见审查视图）</td></tr>
+            <tr><th>命令与退出码</th><td>python -B -m unittest → 0（首轮失败 → 退出码 2，已修复）</td></tr>
+            <tr><th>模型与工具</th><td>write_file ×2 · run_command ×3 · read_file ×4</td></tr>
+            <tr><th>门禁 / operation</th><td>受保护动作 1 项待审批；operation 记录已入账</td></tr>
+            <tr><th>事件链 / 证据包</th><td>event_count=37 · 证据包待完成后生成</td></tr>
+          </table>
+        </details>
+      </section>
+
+      <!-- 完成页示例（§14.13）：未验证边界与成功项同等可见 -->
+      <section class="panel complete-box">
+        <h2>工单已完成 · IC-139 修复 Windows 路径识别</h2>
+        <h3>完成内容</h3>
+        <ul>
+          <li>修复路径识别对反斜杠的误判</li>
+          <li>新增回归用例覆盖混合分隔符</li>
+        </ul>
+        <h3>检查结果</h3>
+        <ul>
+          <li>自动检查全部通过（独立跑测试，退出码 0）</li>
+          <li class="boundary">尚未在真实设备上验证——此边界与成功项同等可见</li>
+        </ul>
+        <h3>需要你做什么</h3>
+        <ul><li>请在测试设备上模拟一次断网恢复</li></ul>
+        <h3>验收记录（证据包）</h3>
+        <ul style="list-style:none; padding-left:0;">
+          <li>包摘要 <span class="digest">pack_digest：9f2c…（点击展开完整值与逐文件清单）</span></li>
+          <li>签名状态：<span class="sign-ok">已验签（Ed25519）</span>
+              —— <span class="digest">fingerprint 3ab1…</span></li>
+          <li>外部锚定：<span class="digest">anchor/9f2c81d4e5a60b17</span>
+              （公开仓库 git tag，可独立核查）</li>
+        </ul>
+        <div class="actions">
+          <button class="primary">确认结果</button>
+          <button class="deny">发现问题，重新处理</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- 右：用户行动区（§14.5 / 14.12） -->
+    <aside>
+      <section class="panel approval">
+        <h2>需要你的确认</h2>
+        <p>ICODE 准备在<strong>隔离的测试环境</strong>中运行完整检查。<br>
+        这<strong>不会发布代码</strong>，也不会修改正式环境。</p>
+        <p class="impact">预计耗时：约 5 分钟<br>影响范围：仅当前工单的临时工作区</p>
+        <div class="actions">
+          <button class="deny">暂不允许</button>
+          <button class="primary">允许本次执行</button>
+        </div>
+        <details class="tech">
+          <summary>查看技术详情</summary>
+          <table>
+            <tr><th>真实工具</th><td>run_command</td></tr>
+            <tr><th>命令</th><td>python -B -m unittest discover</td></tr>
+            <tr><th>隔离后端</th><td>OS sandbox（网络默认拒绝）</td></tr>
+            <tr><th>风险分类</th><td>受保护动作 · 可逆</td></tr>
+          </table>
+        </details>
+      </section>
+      <section class="panel">
+        <h2>风险提示</h2>
+        <p class="meta">审批只承担业务风险确认；即使误点"允许本次执行"，
+        也无法超出当前步骤契约的权限（Guard / OS Sandbox 独立生效）。</p>
+      </section>
+    </aside>
+  </div>
+  </div>
+
+  <!-- ═══ en-US ═══ -->
+  <div id="lang-en-view" style="grid-column: 1 / -1;">
+  <header class="top">
+    <span class="brand">ICODE</span>
+    <span class="search"><input type="search" placeholder="Search tickets (id, title, request)"
+      aria-label="Search tickets"></span>
+    <label class="lang-switch" for="lang-toggle">中文 <b>zh</b> / <b>EN</b></label>
+    <button class="primary">＋ New ticket</button>
+  </header>
+  <div style="display:grid; grid-template-columns: 220px 1fr 260px; gap:14px;">
+    <nav class="panel tickets" aria-label="Main navigation">
+      <h2>My tickets</h2>
+      <a href="#" class="active">Needs my action <span class="count">2</span></a>
+      <a href="#">In progress <span class="count">5</span></a>
+      <a href="#">Completed <span class="count">18</span></a>
+      <a href="#">All tickets</a>
+    </nav>
+    <div>
+      <section class="panel">
+        <h2>Needs my action</h2>
+        <ul class="ticket-list">
+          <li class="selected">
+            <span class="tid">IC-142</span>Tasks not resumed after device reconnect
+            <div class="meta">Confirmation required · Mower System · 2 min ago · Interactive
+              <span class="badge accent">Confirmation required</span></div>
+          </li>
+          <li>
+            <span class="tid">IC-141</span>Add delivery record signature
+            <div class="meta">Information needed · ICODE · 18 min ago · Autonomous
+              <span class="badge warn">Missing: production verification method</span></div>
+          </li>
+          <li>
+            <span class="tid">IC-139</span>Fix Windows path detection
+            <div class="meta">Completed · ICODE · yesterday
+              <span class="badge ok">Checks passed · Acceptance record generated</span></div>
+          </li>
+        </ul>
+      </section>
+      <section class="panel">
+        <h2>Current ticket</h2>
+        <p><span class="tid">IC-142</span>Tasks not resumed after device reconnect</p>
+        <div class="status-card">
+          <span class="raw-status">Control-plane status: review_in_progress</span>
+          <span class="stage">Reviewing plan</span>
+          <span class="assist">Auxiliary: awaiting your confirmation</span>
+        </div>
+        <details class="tech">
+          <summary>Technical details (raw facts)</summary>
+          <table>
+            <tr><th>ICODE-SKILL step</th><td>review (review_in_progress)</td></tr>
+            <tr><th>Changed files</th><td>src/task/resume.py</td></tr>
+            <tr><th>Command / exit code</th><td>python -B -m unittest → 0</td></tr>
+          </table>
+        </details>
+      </section>
+
+      <section class="panel complete-box">
+        <h2>Ticket completed · IC-139 Fix Windows path detection</h2>
+        <h3>What was done</h3>
+        <ul>
+          <li>Fixed backslash mis-detection in path recognition</li>
+          <li>Added regression tests for mixed separators</li>
+        </ul>
+        <h3>Check results</h3>
+        <ul>
+          <li>Automated checks all passed (independent test run, exit code 0)</li>
+          <li class="boundary">Not yet verified on real devices — shown equally with successes</li>
+        </ul>
+        <h3>What you need to do</h3>
+        <ul><li>Simulate a disconnect/reconnect on a test device</li></ul>
+        <h3>Acceptance record (evidence pack)</h3>
+        <ul style="list-style:none; padding-left:0;">
+          <li>Pack digest <span class="digest">pack_digest: 9f2c… (click to expand full value)</span></li>
+          <li>Signature: <span class="sign-ok">Verified (Ed25519)</span>
+              — <span class="digest">fingerprint 3ab1…</span></li>
+          <li>External anchoring: <span class="digest">anchor/9f2c81d4e5a60b17</span>
+              (public repo git tag, independently checkable)</li>
+        </ul>
+        <div class="actions">
+          <button class="primary">Accept result</button>
+          <button class="deny">Found issues, rework</button>
+        </div>
+      </section>
+    </div>
+    <aside>
+      <section class="panel approval">
+        <h2>Confirmation required</h2>
+        <p>ICODE will run full checks in an <strong>isolated test environment</strong>.
+        This will <strong>not publish code</strong> or touch production.</p>
+        <p class="impact">Estimated time: ~5 min<br>Scope: this ticket's temp workspace only</p>
+        <div class="actions">
+          <button class="deny">Not now</button>
+          <button class="primary">Allow this run</button>
+        </div>
+      </section>
+    </aside>
+  </div>
+  </div>
+
+</div>
+
+<footer class="note">
+静态设计原型（R7 后收束 · UI 设计包 D2）：单文件、零 JS、零 CDN、零网络调用。
+语言切换为 CSS 演示；实现期状态映射由后端契约驱动（§14.11），浏览器只提交枚举意图与受控标识（§14.14）。
+原始数据在"技术详情"中折叠展示，不被改写或删除（§14.3）。
+</footer>
+</body>
+</html>

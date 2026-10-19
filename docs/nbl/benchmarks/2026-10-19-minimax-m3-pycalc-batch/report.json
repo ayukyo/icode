@@ -1,0 +1,143 @@
+{
+  "rates": {
+    "first_pass_gate_rate": {
+      "denominator": "全部 run（门禁一次通过，无重试后通过）",
+      "value": 0.0
+    },
+    "intervention_rate": {
+      "denominator": "全部 run",
+      "value": 0.0
+    },
+    "recovery_rate": {
+      "denominator": "经历过失败的 run（非 first_pass）；recovered 指其中最终成功者",
+      "value": 0.2
+    },
+    "success_rate": {
+      "denominator": "全部 run",
+      "value": 0.2
+    }
+  },
+  "run_count": 5,
+  "runs": [
+    {
+      "backend": "openai-compatible",
+      "budget": {
+        "max_cost_usd": null,
+        "max_minutes": null,
+        "max_tokens": 120000
+      },
+      "commit": "unknown",
+      "completion_tokens": 3983,
+      "cost_usd": 36.4902,
+      "first_pass": false,
+      "latency_ms": 73589,
+      "model": "MiniMax-M3",
+      "prompt_tokens": 105702,
+      "recovered": false,
+      "repo": "ayukyo/icode",
+      "result": "failed",
+      "run_id": "minimax-m3-pycalc-01",
+      "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
+      "task_id": "pycalc/default",
+      "total_tokens": 109685
+    },
+    {
+      "backend": "openai-compatible",
+      "budget": {
+        "max_cost_usd": null,
+        "max_minutes": null,
+        "max_tokens": 120000
+      },
+      "commit": "unknown",
+      "completion_tokens": 7657,
+      "cost_usd": 24.599400000000003,
+      "first_pass": false,
+      "latency_ms": 94328,
+      "model": "MiniMax-M3",
+      "prompt_tokens": 51370,
+      "recovered": true,
+      "repo": "ayukyo/icode",
+      "result": "success",
+      "run_id": "minimax-m3-pycalc-02",
+      "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
+      "task_id": "pycalc/default",
+      "total_tokens": 59027
+    },
+    {
+      "backend": "openai-compatible",
+      "budget": {
+        "max_cost_usd": null,
+        "max_minutes": null,
+        "max_tokens": 120000
+      },
+      "commit": "unknown",
+      "completion_tokens": 10095,
+      "cost_usd": 47.510999999999996,
+      "first_pass": false,
+      "latency_ms": 121541,
+      "model": "MiniMax-M3",
+      "prompt_tokens": 117990,
+      "recovered": false,
+      "repo": "ayukyo/icode",
+      "result": "failed",
+      "run_id": "minimax-m3-pycalc-03",
+      "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
+      "task_id": "pycalc/default",
+      "total_tokens": 128085
+    },
+    {
+      "backend": "openai-compatible",
+      "budget": {
+        "max_cost_usd": null,
+        "max_minutes": null,
+        "max_tokens": 120000
+      },
+      "commit": "unknown",
+      "completion_tokens": 5422,
+      "cost_usd": 41.4036,
+      "first_pass": false,
+      "latency_ms": 69181,
+      "model": "MiniMax-M3",
+      "prompt_tokens": 116324,
+      "recovered": false,
+      "repo": "ayukyo/icode",
+      "result": "failed",
+      "run_id": "minimax-m3-pycalc-04",
+      "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
+      "task_id": "pycalc/default",
+      "total_tokens": 121746
+    },
+    {
+      "backend": "openai-compatible",
+      "budget": {
+        "max_cost_usd": null,
+        "max_minutes": null,
+        "max_tokens": 120000
+      },
+      "commit": "unknown",
+      "completion_tokens": 4357,
+      "cost_usd": 41.8251,
+      "first_pass": false,
+      "latency_ms": 58918,
+      "model": "MiniMax-M3",
+      "prompt_tokens": 121989,
+      "recovered": false,
+      "repo": "ayukyo/icode",
+      "result": "failed",
+      "run_id": "minimax-m3-pycalc-05",
+      "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
+      "task_id": "pycalc/default",
+      "total_tokens": 126346
+    }
+  ],
+  "schema_version": 1,
+  "scope_note": "范围声明：单靶场任务（pycalc/DEFAULT_TASK）、单一模型、隔离工作区；这是 R7 benchmark 口径的端到端统计，不是多仓库公开评测。n=5 的样本量不足以支撑任何泛化结论。cost_usd 为 pricing 表静态估算价，不是账单。循环参数：max_turns=24、max_output_tokens=8192、max_repairs=2、预算硬停=120K tokens（hard_ratio=1.0）。已知失真：pricing 表 minimax 条目（0.30/1.20 per 1K）与 MiniMax M3 公开标价量级不符（约 0.30/1M 输入），cost 字段高估约两个数量级，仅作口径演示；pricing 表数据修正列为后续项。驱动只产出 success/failed 两态；refused/human_intervention 为保留态。",
+  "totals": {
+    "completion_tokens": 31514,
+    "cost_usd": 191.8293,
+    "cost_usd_note": null,
+    "latency_ms": 417557,
+    "prompt_tokens": 513375,
+    "total_tokens": 544889
+  }
+}

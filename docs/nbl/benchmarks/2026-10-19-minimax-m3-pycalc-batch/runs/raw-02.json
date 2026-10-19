@@ -1,0 +1,26 @@
+{
+  "run_id": "minimax-m3-pycalc-02",
+  "result": "success",
+  "first_pass": false,
+  "recovered": false,
+  "exit_code": 0,
+  "error_code": "",
+  "repairs": 1,
+  "changed_files": [
+    "calc.py",
+    "test_calc.py"
+  ],
+  "usage": {
+    "calls": 13,
+    "retries": 0,
+    "prompt_tokens": 51370,
+    "completion_tokens": 7657,
+    "total_tokens": 59027,
+    "cached_tokens": 41840,
+    "reasoning_tokens": 4869,
+    "latency_ms": 94328,
+    "cost_usd": 24.599400000000003
+  },
+  "ok_detail": true,
+  "error_text": ""
+}

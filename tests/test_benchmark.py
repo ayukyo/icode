@@ -121,39 +121,44 @@ class LedgerTests(unittest.TestCase):
 
 class AggregateTests(unittest.TestCase):
     def _sample_ledger(self) -> RunLedger:
+        """四态样本：r2 为"经历失败后恢复"（recovered 口径，评审 M-B 统一后）。"""
         ledger = RunLedger()
         ledger.append(_raw_run(run_id="r1", result="success", first_pass=True))
-        ledger.append(_raw_run(run_id="r2", result="failed", first_pass=False,
+        ledger.append(_raw_run(run_id="r2", result="success", first_pass=False,
                                recovered=True, cost_usd=None))
-        ledger.append(_raw_run(run_id="r3", result="human_intervention",
+        ledger.append(_raw_run(run_id="r3", result="failed", first_pass=False,
+                               recovered=False))
+        ledger.append(_raw_run(run_id="r4", result="human_intervention",
                                first_pass=False, recovered=False))
         return ledger
 
     def test_rates_with_explicit_denominators(self):
         report = aggregate(self._sample_ledger())
         rates = report["rates"]
-        self.assertAlmostEqual(rates["success_rate"]["value"], 1 / 3)
-        self.assertAlmostEqual(rates["first_pass_gate_rate"]["value"], 1 / 3)
-        self.assertAlmostEqual(rates["recovery_rate"]["value"], 1 / 2)
-        self.assertAlmostEqual(rates["intervention_rate"]["value"], 1 / 3)
+        self.assertAlmostEqual(rates["success_rate"]["value"], 2 / 4)
+        self.assertAlmostEqual(rates["first_pass_gate_rate"]["value"], 1 / 4)
+        self.assertAlmostEqual(rates["recovery_rate"]["value"], 1 / 3)
+        self.assertAlmostEqual(rates["intervention_rate"]["value"], 1 / 4)
         for entry in rates.values():
             self.assertIn("denominator", entry)
+        self.assertIn("非 first_pass", rates["recovery_rate"]["denominator"])
 
     def test_cost_null_discipline(self):
         report = aggregate(self._sample_ledger())
         self.assertIsNone(report["totals"]["cost_usd"])
         self.assertIn("成本未知", report["totals"]["cost_usd_note"])
-        self.assertEqual(report["totals"]["total_tokens"], 450)
+        self.assertEqual(report["totals"]["total_tokens"], 600)
 
     def test_byte_stability(self):
         ledger = self._sample_ledger()
         self.assertEqual(render_report_json(ledger), render_report_json(ledger))
         copy = RunLedger()
         for raw in (
-            _raw_run(run_id="r1"), _raw_run(run_id="r2", result="failed",
-                                            first_pass=False, recovered=True,
-                                            cost_usd=None),
-            _raw_run(run_id="r3", result="human_intervention",
+            _raw_run(run_id="r1"),
+            _raw_run(run_id="r2", first_pass=False, recovered=True,
+                     cost_usd=None),
+            _raw_run(run_id="r3", result="failed", first_pass=False),
+            _raw_run(run_id="r4", result="human_intervention",
                      first_pass=False),
         ):
             copy.append(raw)
@@ -169,7 +174,7 @@ class AggregateTests(unittest.TestCase):
 
     def test_report_lists_all_runs_including_failures(self):
         markdown = render_report_markdown(self._sample_ledger())
-        for run_id in ("r1", "r2", "r3"):
+        for run_id in ("r1", "r2", "r3", "r4"):
             self.assertIn(run_id, markdown)
         self.assertIn("human_intervention", markdown)
         self.assertIn("failed", markdown)

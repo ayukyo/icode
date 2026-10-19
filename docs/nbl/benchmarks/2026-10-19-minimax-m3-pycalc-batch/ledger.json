@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "records": [
+    {
+      "run_id": "minimax-m3-pycalc-01",
+      "task_id": "pycalc/default",
+      "repo": "ayukyo/icode",
+      "commit": "unknown",
+      "backend": "openai-compatible",
+      "model": "MiniMax-M3",
+      "result": "failed",
+      "first_pass": false,
+      "recovered": false,
+      "prompt_tokens": 105702,
+      "completion_tokens": 3983,
+      "total_tokens": 109685,
+      "latency_ms": 73589,
+      "cost_usd": 36.4902,
+      "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
+      "budget": {
+        "max_tokens": 120000,
+        "max_cost_usd": null,
+        "max_minutes": null
+      }
+    },
+    {
+      "run_id": "minimax-m3-pycalc-02",
+      "task_id": "pycalc/default",
+      "repo": "ayukyo/icode",
+      "commit": "unknown",
+      "backend": "openai-compatible",
+      "model": "MiniMax-M3",
+      "result": "success",
+      "first_pass": false,
+      "recovered": true,
+      "prompt_tokens": 51370,
+      "completion_tokens": 7657,
+      "total_tokens": 59027,
+      "latency_ms": 94328,
+      "cost_usd": 24.599400000000003,
+      "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
+      "budget": {
+        "max_tokens": 120000,
+        "max_cost_usd": null,
+        "max_minutes": null
+      }
+    },
+    {
+      "run_id": "minimax-m3-pycalc-03",
+      "task_id": "pycalc/default",
+      "repo": "ayukyo/icode",
+      "commit": "unknown",
+      "backend": "openai-compatible",
+      "model": "MiniMax-M3",
+      "result": "failed",
+      "first_pass": false,
+      "recovered": false,
+      "prompt_tokens": 117990,
+      "completion_tokens": 10095,
+      "total_tokens": 128085,
+      "latency_ms": 121541,
+      "cost_usd": 47.510999999999996,
+      "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
+      "budget": {
+        "max_tokens": 120000,
+        "max_cost_usd": null,
+        "max_minutes": null
+      }
+    },
+    {
+      "run_id": "minimax-m3-pycalc-04",
+      "task_id": "pycalc/default",
+      "repo": "ayukyo/icode",
+      "commit": "unknown",
+      "backend": "openai-compatible",
+      "model": "MiniMax-M3",
+      "result": "failed",
+      "first_pass": false,
+      "recovered": false,
+      "prompt_tokens": 116324,
+      "completion_tokens": 5422,
+      "total_tokens": 121746,
+      "latency_ms": 69181,
+      "cost_usd": 41.4036,
+      "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
+      "budget": {
+        "max_tokens": 120000,
+        "max_cost_usd": null,
+        "max_minutes": null
+      }
+    },
+    {
+      "run_id": "minimax-m3-pycalc-05",
+      "task_id": "pycalc/default",
+      "repo": "ayukyo/icode",
+      "commit": "unknown",
+      "backend": "openai-compatible",
+      "model": "MiniMax-M3",
+      "result": "failed",
+      "first_pass": false,
+      "recovered": false,
+      "prompt_tokens": 121989,
+      "completion_tokens": 4357,
+      "total_tokens": 126346,
+      "latency_ms": 58918,
+      "cost_usd": 41.8251,
+      "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
+      "budget": {
+        "max_tokens": 120000,
+        "max_cost_usd": null,
+        "max_minutes": null
+      }
+    }
+  ]
+}

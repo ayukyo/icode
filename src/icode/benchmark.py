@@ -264,10 +264,10 @@ def aggregate(ledger: RunLedger) -> dict:
     successes = sum(1 for r in records if r.result == "success")
     first_passes = sum(1 for r in records if r.first_pass)
     interventions = sum(1 for r in records if r.result == "human_intervention")
-    non_success = total - successes
-    recoveries = sum(
-        1 for r in records if r.result != "success" and r.recovered
-    )
+    # recovered 口径（评审 M-B 统一后）：recovered=True 的 run 必然最终 success
+    # （曾经历失败后恢复）。分母 = 经历过失败的 run（非 first_pass）。
+    experienced_failure = total - first_passes
+    recoveries = sum(1 for r in records if r.recovered)
     rates = {
         "success_rate": {
             "value": (successes / total) if total else None,
@@ -278,8 +278,8 @@ def aggregate(ledger: RunLedger) -> dict:
             "denominator": "全部 run（门禁一次通过，无重试后通过）",
         },
         "recovery_rate": {
-            "value": (recoveries / non_success) if non_success else None,
-            "denominator": "非 success 的 run（failed/refused/human_intervention）",
+            "value": (recoveries / experienced_failure) if experienced_failure else None,
+            "denominator": "经历过失败的 run（非 first_pass）；recovered 指其中最终成功者",
         },
         "intervention_rate": {
             "value": (interventions / total) if total else None,

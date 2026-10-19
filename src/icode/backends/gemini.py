@@ -77,7 +77,7 @@ class GeminiBackend:
     retry_backoff: float = 1.5
     api_version: str = API_VERSION
     name: str = "gemini"
-    usage: Usage = field(default_factory=lambda: Usage(calls=0))
+    usage: Usage = field(default_factory=lambda: Usage(calls=0, cost_usd=0.0))  # 0.0 是费用求和的单位元：零观测不污染首次估算（W2 发现）
     last_usage: Usage = field(default_factory=Usage, repr=False)
 
     def __post_init__(self) -> None:
