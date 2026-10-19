@@ -17,7 +17,9 @@ PRICES_USD_PER_1K_TOKENS: dict[str, tuple[float, float]] = {
     "gemini": (0.10, 0.40),
     "gpt-4o": (2.5, 10.0),
     "gpt": (2.5, 10.0),
-    "minimax": (0.30, 1.20),
+    # MiniMax 官方定价（≤512K 档、永久五折后）：$0.30/M 输入、$1.20/M 输出。
+    # 表口径为 per-1K，故除 1000（旧值曾把 per-M 直接填进 per-1K 表，高估 1000 倍）。
+    "minimax": (0.0003, 0.0012),
     "llama": (0.0, 0.0),
     "qwen": (0.0, 0.0),
 }

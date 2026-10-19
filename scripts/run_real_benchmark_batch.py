@@ -50,9 +50,8 @@ BATCH_SCOPE_NOTE = (
     "n=5 的样本量不足以支撑任何泛化结论。"
     "cost_usd 为 pricing 表静态估算价，不是账单。"
     "循环参数：max_turns=24、max_output_tokens=8192、max_repairs=2、预算硬停=120K tokens（hard_ratio=1.0）。"
-    "已知失真：pricing 表 minimax 条目（0.30/1.20 per 1K）与 MiniMax M3 公开标价"
-    "量级不符（约 0.30/1M 输入），cost 字段高估约两个数量级，仅作口径演示；"
-    "pricing 表数据修正列为后续项。"
+    "pricing 表 minimax 条目已于 2026-10-19 修正（per-M 数字曾填入 per-1K 表，"
+    "高估 1000 倍）；修正后 cost 为 $0.30/$1.20 per M 静态估算价，仍不是账单。"
     "驱动只产出 success/failed 两态；refused/human_intervention 为保留态。"
 )
 
@@ -93,6 +92,8 @@ def main() -> int:
     parser.add_argument("--max-repairs", type=int, default=2)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--task", default=None, help="默认 DEFAULT_TASK")
+    parser.add_argument("--task-id", default=None,
+                        help="任务集标识，默认 <fixture>/default")
     args = parser.parse_args()
     if args.runs < 1 or args.runs > 20:
         print("runs 必须在 1..20", file=sys.stderr)
@@ -105,6 +106,7 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     (out_dir / "runs").mkdir(parents=True, exist_ok=True)
 
+    task_id = args.task_id or f"{args.fixture}/default"
     ledger = RunLedger(max_records=args.runs)
     totals_hint = {"calls": 0, "total_tokens": 0}
     for index in range(1, args.runs + 1):
@@ -152,7 +154,7 @@ def main() -> int:
             repairs = len(report.repair_attempts)
         record = {
             "run_id": run_id,
-            "task_id": f"{args.fixture}/default",
+            "task_id": task_id,
             "repo": "ayukyo/icode",
             "commit": commit,
             "backend": "openai-compatible",

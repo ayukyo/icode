@@ -44,6 +44,10 @@ OLLAMA_RESPONSE = {
 def _expected_cost(prompt: int, completion: int) -> float:
     price = price_for("minimax-m3")
     assert price is not None, "pricing 表应含 minimax 前缀（静态估算价）"
+    assert price == (0.0003, 0.0012), (
+        "MiniMax M3 per-1K 价锁定为 (0.0003, 0.0012)= $0.30/$1.20 per M；"
+        "per-M 数字进 per-1K 表曾造成 1000 倍失真"
+    )
     return (prompt / 1000) * price[0] + (completion / 1000) * price[1]
 
 
