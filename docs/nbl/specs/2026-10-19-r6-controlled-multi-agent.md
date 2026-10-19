@@ -1,6 +1,6 @@
 # R6 规格：受控多 Agent（2026-10-19）
 
-**状态**：v1，实施中。继承 `docs/icode-agent-product-architecture.md` §13.10 与主序规则（前一阶段通过退出门槛后才展开本阶段；R4 四条门已验收通过，R5 六项工作与四条门已实施并通过 CI，规格见 `nbl/specs/2026-10-18-r4-context-and-model-capability.md` 与 `nbl/specs/2026-10-19-r5-open-ecosystem.md`）。
+**状态**：v1.1 验收通过。候选 `02b0f63`：CI run `39199580386` conclusion=success（45 job / 42 成功 / 0 失败 / 3 跳过，Python 3.12 与双腿 Windows Reviewer 快照 job 均 success）；官网 `39199580392` success；Windows helper provenance `39199580381` 三 job 全 success（validate + 双架构 Attest and install bootstrap）。本机全量 3814 项仅剩两个既有环境项（本地缺 setuptools 的 setUpClass、一例 Landlock 环境失败）。继承 `docs/icode-agent-product-architecture.md` §13.10 与主序规则（前一阶段通过退出门槛后才展开本阶段；R4 四条门已验收通过，R5 六项工作与四条门已实施并通过 CI，规格见 `nbl/specs/2026-10-18-r4-context-and-model-capability.md` 与 `nbl/specs/2026-10-19-r5-open-ecosystem.md`）。
 
 ## 1. 目标与边界
 
