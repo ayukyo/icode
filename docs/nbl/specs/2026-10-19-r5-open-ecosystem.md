@@ -36,6 +36,8 @@
 
 **阶段完成判据**：四条门全部绿 + 新增模块单测全绿 + 全量套件零新增失败 + CI 全绿（双腿 Windows 快照、provenance、Linux native probe 等既有项不回退）。失败/跳过不得计为通过。
 
+**本机测试台账（实施后）**：W1 17 + W2 14 + W3 17 + W4 14 + W5 12 + W6 10 = 84 项新增，全部通过；密钥扫描通过。真实连接器 canary（外部 CI/工单/托管平台）与真实 MCP 服务端仍按既定口径暂缓——v1 以回环 HTTP 传输契约与假服务器子进程覆盖，外部 canary 缺凭据即跳过并说明原因，跳过不等于通过。
+
 ## 5. 显式偏离
 
 - MCP 客户端用标准库实现而非官方 SDK：core 零依赖是比“协议一致性”更高的约束；协议面收敛到三个方法，覆盖度以测试声明为准，不宣称完整 MCP 兼容。**JSON-RPC batch 整体拒绝**：逐元素放行需要额外的帧内一致性证明，v1 选择失败封闭并在规格中显式记录。
@@ -55,3 +57,7 @@
 
 - **W1 扩展契约**：`src/icode/extension_contract.py`（manifest 五段声明 + 控制面/账本目标结构性不可声明 + `attach_evidence` 证据缺项拒落账 + `tighten_guard_scope` Guard 侧只紧判定）。测试 `tests/test_extension_contract.py` 17 项全绿。
 - **W2 Hooks**：`src/icode/hooks.py`（三类事件、注册即绑定 manifest、Guard/沙箱双通道只紧、观察者有界、审计记录）。测试 `tests/test_hooks.py` 14 项全绿。
+- **W3 MCP 接入**：`src/icode/extensions/{__init__,mcp_client}.py`。白名单三方法 + **消息分发层强制**（服务端请求回 `-32601`、通知忽略、batch 帧整体拒绝 `batch_not_supported`、id 不匹配即协议错误）；有界读帧（`read1` + 单帧字节上限 + 读超时，跨平台后台读线程）、结果文本截断；`mcp_tool_to_tool` 把远端工具包装为 `Tool` 注册进 `ToolRegistry`，handler 只做一次远程调用、会话不可用/参数不匹配/远端报错均失败封闭。测试 `tests/test_mcp_client.py` 17 项全绿（假服务器子进程），含两条 loop 级证据：Guard `deny` 在 handler 之前截停；opclass 非只读触发 start/finish 回执。踩坑修复：`BufferedReader.read(n)` 阻塞到凑满 n 字节 → 改 `read1`。
+- **W4 ACP 前端**：`src/icode/acp.py`。方法白名单封闭（5 个方法）；`submit_intent` 原样转交 `AutonomyManager.handle_intent`（内部过 `normalize_intent_payload` 同一词表——acp.py 源码无自带意图字面量，测试结构性断言）；控制面异常带 `code` 时翻成稳定码，其余归一 `controller_error`；事件只转发订阅白名单、外发箱有界、载荷超限拒收；`serve` 循环端到端可用且不产生文件。测试 `tests/test_acp_frontend.py` 14 项全绿。
+- **W5 连接器**：`src/icode/connectors.py`。`Connector` 注册时校验 endpoint 主机被 manifest 网络副作用覆盖（子域视为覆盖）；显式启用后才可执行；`ConnectorInvoker` 回执先行（start/finish）、证据经 `evidence`/`check_ref` 通道落账（字段复用工程证据绑定词表，不调 `_public_binding`）；无回执通道/attempt 不可寻址/状态码无效/传输失败/回执终结失败均失败封闭并留稳定码；默认传输复用 R4 的 `post_json`（拒绝重定向、有界重试、成功即 2xx）。测试 `tests/test_connectors.py` 12 项全绿，含**回环 HTTP** 真实 stdlib 传输成功/失败路径。
+- **W6 Recipes**：`src/icode/recipes.py`。recipe 只能引用既有步骤词表与已注册 hook（`unknown_step`/`unknown_hook` fail-closed），必须携带 `kind=recipe` manifest；`run_recipe` 按声明顺序驱动注入的既有步骤链路，fail-fast，步骤异常不外泄正文；源码结构断言无工具旁路。测试 `tests/test_recipes.py` 10 项全绿。
