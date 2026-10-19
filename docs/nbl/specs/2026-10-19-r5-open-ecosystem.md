@@ -1,6 +1,6 @@
 # R5 规格：开放生态（2026-10-19）
 
-**状态**：v1.1（已按独立评审修订）。评审代理误读了过期兄弟检出 `D:\Projects\icode`（HEAD 停在 `7aad12c`），故其 BLOCKER-1“规格不存在”不成立——本文件自提交 `e194149` 起在权威仓库（WSL `/home/orbbec/projects/icode`）。BLOCKER-2/3/4 与各 MAJOR 已逐条落入下文（消息分发层强制、batch 整体拒绝、MCP 工具必须走 ToolRegistry、ACP 不得成为第二 intent 入口、Guard 收紧词表边界、连接器证据通道）。继承 `docs/icode-agent-product-architecture.md` §13.9 与主序规则（前一阶段通过退出门槛后才展开本阶段；R4 四条门已验收通过，候选 `a58c81d`/HEAD `40b37e9` 三 run 全绿，规格见 `nbl/specs/2026-10-18-r4-context-and-model-capability.md`）。
+**状态**：v1.1 验收通过。候选 `76b9fd2`：CI run `39179922923` conclusion=success（45 job / 42 成功 / 0 失败 / 3 跳过，Python 3.12 与双腿 Windows Reviewer 快照 job 均 success）；官网 `39179922931` success；Windows helper provenance `39179922912` 三 job 全 success（validate + 双架构 Attest and install bootstrap）。本机全量 3757 项仅剩两个既有环境项（本地缺 setuptools 的 setUpClass、一例 Landlock 环境失败）。评审代理误读了过期兄弟检出 `D:\Projects\icode`（HEAD 停在 `7aad12c`），故其 BLOCKER-1“规格不存在”不成立——本文件自提交 `e194149` 起在权威仓库（WSL `/home/orbbec/projects/icode`）。BLOCKER-2/3/4 与各 MAJOR 已逐条落入下文（消息分发层强制、batch 整体拒绝、MCP 工具必须走 ToolRegistry、ACP 不得成为第二 intent 入口、Guard 收紧词表边界、连接器证据通道）。继承 `docs/icode-agent-product-architecture.md` §13.9 与主序规则（前一阶段通过退出门槛后才展开本阶段；R4 四条门已验收通过，候选 `a58c81d`/HEAD `40b37e9` 三 run 全绿，规格见 `nbl/specs/2026-10-18-r4-context-and-model-capability.md`）。
 
 ## 1. 目标与边界
 
