@@ -1,6 +1,6 @@
 # R7 规格：可信交付与公开评测（2026-10-19）
 
-**状态**：v1.1（已独立评审并逐条处置）。继承 `docs/icode-agent-product-architecture.md` §13.11 与主序规则。前置阶段退出门槛均已验收：R4（`nbl/specs/2026-10-18-r4-context-and-model-capability.md`）、R5（`nbl/specs/2026-10-19-r5-open-ecosystem.md`）、R6（`nbl/specs/2026-10-19-r6-controlled-multi-agent.md`，HEAD `45c073c` CI `39201336710` 等三 run 全 success）。
+**状态**：v1.1 验收通过。候选 `6eb8cd4`（实现提交）：CI run `39212776845` success（Python 3.12 全量矩阵与双腿 Windows Reviewer 快照 job 均 success）、官网 run `39212776868` success、Windows helper provenance run `39212776838` success（三 run 全 success）。本机全量 3716 passed / 205 skipped / 9201 subtests passed；9 个失败/错误全部为既有环境项（test_packaged_skill setUpClass ×6、Landlock 助手环境 ×1、operation-admission 与 windows-startup-native 各 1 例经基线复跑确认与 R7 无关）。继承 `docs/icode-agent-product-architecture.md` §13.11 与主序规则。前置阶段退出门槛均已验收：R4（`nbl/specs/2026-10-18-r4-context-and-model-capability.md`）、R5（`nbl/specs/2026-10-19-r5-open-ecosystem.md`）、R6（`nbl/specs/2026-10-19-r6-controlled-multi-agent.md`，HEAD `45c073c` CI `39201336710` 等三 run 全 success）。
 
 ## 1. 目标与边界
 
