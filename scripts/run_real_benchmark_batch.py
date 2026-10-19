@@ -109,8 +109,9 @@ def main() -> int:
     task_id = args.task_id or f"{args.fixture}/default"
     ledger = RunLedger(max_records=args.runs)
     totals_hint = {"calls": 0, "total_tokens": 0}
+    slug = re.sub(r"[^a-z0-9]+", "-", args.model.lower()).strip("-")
     for index in range(1, args.runs + 1):
-        run_id = f"minimax-m3-pycalc-{index:02d}"
+        run_id = f"{slug}-{args.fixture}-{index:02d}"
         print(f"=== run {index}/{args.runs} ({run_id}) ===", flush=True)
         try:
             with tempfile.TemporaryDirectory(prefix="icode-bench-") as raw:

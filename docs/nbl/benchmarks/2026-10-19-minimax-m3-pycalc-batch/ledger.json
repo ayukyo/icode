@@ -15,7 +15,7 @@
       "completion_tokens": 3983,
       "total_tokens": 109685,
       "latency_ms": 73589,
-      "cost_usd": 36.4902,
+      "cost_usd": 0.0364902,
       "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
       "budget": {
         "max_tokens": 120000,
@@ -37,7 +37,7 @@
       "completion_tokens": 7657,
       "total_tokens": 59027,
       "latency_ms": 94328,
-      "cost_usd": 24.599400000000003,
+      "cost_usd": 0.0245994,
       "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
       "budget": {
         "max_tokens": 120000,
@@ -59,7 +59,7 @@
       "completion_tokens": 10095,
       "total_tokens": 128085,
       "latency_ms": 121541,
-      "cost_usd": 47.510999999999996,
+      "cost_usd": 0.047511,
       "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
       "budget": {
         "max_tokens": 120000,
@@ -81,7 +81,7 @@
       "completion_tokens": 5422,
       "total_tokens": 121746,
       "latency_ms": 69181,
-      "cost_usd": 41.4036,
+      "cost_usd": 0.0414036,
       "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
       "budget": {
         "max_tokens": 120000,
@@ -103,7 +103,7 @@
       "completion_tokens": 4357,
       "total_tokens": 126346,
       "latency_ms": 58918,
-      "cost_usd": 41.8251,
+      "cost_usd": 0.0418251,
       "task_digest": "382259c4fe3c36cbce34b0b0b7a7c6985aa1cfc81376b6d3d5b1d282c0053ca5",
       "budget": {
         "max_tokens": 120000,

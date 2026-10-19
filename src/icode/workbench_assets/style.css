@@ -37,3 +37,12 @@ form > label, .form-row label { display: grid; gap: 6px; color: #364157; font-we
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 960px) { .workbench { grid-template-columns: 170px 340px 1fr; } .fact-grid { grid-template-columns: 1fr; } .fact-grid > div { border-right: 0; border-bottom: 1px solid var(--line); } .fact-grid > div:last-child { border-bottom: 0; } }
 @media (max-width: 760px) { .topbar { padding: 0 14px; } .brand > div span, .sidebar { display: none; } .workbench { grid-template-columns: 1fr; } .ticket-column { border-right: 0; } .detail-column { padding: 20px; border-top: 1px solid var(--line); } .form-row { grid-template-columns: 1fr; } }
+
+/* §14.11 三段展示 + R7 验收记录（UI 设计包落地） */
+.status-display { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; }
+.stage-label { font-size: 1.05rem; font-weight: 600; }
+.auxiliary { color: var(--warn, #b45309); font-size: 0.9rem; }
+.acceptance-panel { border: 1px solid var(--line, #e2e5ea); border-radius: 8px; background: var(--chip, #eef2f7); }
+.acceptance-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 0.92rem; }
+.acceptance-list code { font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem; }
+.acceptance-note { color: var(--muted, #5b6470); font-size: 0.82rem; margin: 8px 0 0; }

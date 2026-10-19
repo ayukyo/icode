@@ -77,3 +77,9 @@
 **二次评审处置（v1.1 → v1.2，MAJOR×3/MINOR×6）**：M-A（run 01 并非硬停失败，措辞失实）→ 采纳，§7 措辞已改；M-B（recovered 三处口径不一致）→ 采纳，统一为"曾经历失败且最终 success"，`benchmark.aggregate` 恢复率分母改为"经历失败的 run（非 first_pass）"，账本按统一语义从 raw 重建（免重跑模型），测试样本同步更新；M-C（gemini 测试空转）→ 采纳，重写为四后端真实双调用费用聚合回归（`tests/test_usage_cost_aggregation.py` 5 项，ollama 本地计价为 0 的断言同时覆盖）；m1（per-run 增量落盘）→ 采纳，驱动每 run 后即写 ledger；m2（运行树披露）→ 采纳，scope note 注明；m3（包级篡改断言）→ 采纳，整合测试补 manifest 尾字节篡改 → 验签失败；m4（提交完整性）→ 采纳，交付物 `git add -f`；m5（循环参数披露）→ 采纳，scope note 注明 max_turns/max_output_tokens/max_repairs/硬停；m6（Usage 聚合约定与 en-US 视图）→ 采纳，Usage 文档补单位元约定，原型 en-US 视图补完成页/IC-139/R7 三行。
 
 **测试台账**：新增 4 项（native_integration 1 + usage_cost_aggregation 3，其中 usage_cost_aggregation 重写后为 5 项）全绿；契约套件全过；全量套件结果见 CI 验收记录。
+
+### 后续增量（2026-10-19 晚，v1.2 后）
+
+- **pricing 表修正落地**：官网核实 MiniMax M3 为 $0.30/$1.20 per M（永久五折后 ≤512K 档），旧表把 per-M 数字填入 per-1K 表，高估 1000 倍；修正为 (0.0003, 0.0012)。存量 `tests/test_pricing.py` 曾锁定错误值（该测试正是固化了缺陷的测试），同步修正。pycalc 批次报告中 cost 从运行期记录 token 按新价重算（$191.83 → $0.1918），并在 scope note 声明重算口径。CI 首跑因此失败（存量断言），修正后复跑。
+- **评测扩量**：新增第二任务集 `tests/fixtures/textkit`（字符串处理，同样 unittest 独立验证）。textkit 批次：**5/5 成功**，143,959 tokens，估算成本 $0.0597（平均 28.8K/run——该任务的失败模式多为预算内修复而非硬停）。pycalc 最终批（同价格口径）0.2/1.0。两任务集合计 6/10 成功；"多仓库"仍限于仓内靶场（真正多仓库需外部 checkout 网络，暂缓）。
+- **UI 设计包落地（第一片）**：`tickets.py` 新增 §14.11 三段展示契约（`status_display`：原始状态 + stage 标签 + 辅助状态，`STAGE_DISPLAY_LABELS`/`STATUS_DISPLAY_LABELS` 双语封闭，未知回退）与 `acceptance_summary`（证据包摘要/签名状态/预声明锚定投影，不存在不伪造）；`ticket_detail` 输出 `display` 与 `acceptance`。workbench 资产（index.html/app.js/style.css）渲染三段展示与验收记录区（R7 三行事实）。新增 `tests/test_workbench_display.py` 9 项。

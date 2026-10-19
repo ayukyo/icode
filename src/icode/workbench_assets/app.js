@@ -5,7 +5,11 @@
       productSubtitle: "研发工单工作台", language: "语言", newTicket: "新建工单", workspace: "工作台", allTickets: "全部工单", needsAttention: "需要我处理", inProgress: "处理中", completed: "已完成",
       scopeTitle: "当前范围", scopeBody: "单工程研发任务；不会执行通用办公自动化。", currentProject: "当前工程", search: "搜索工单", searchPlaceholder: "搜索编号、标题或内容", ticketList: "工单列表",
       emptyTitle: "还没有工单", emptyBody: "创建第一张研发工单，ICODE 会记录状态和处理证据。", welcomeTitle: "选择一张工单", welcomeBody: "在这里查看当前状态、执行方式、目标和下一步。",
-      executionMode: "执行方式", priority: "紧急程度", updatedAt: "最近更新", problemDescription: "问题或需求", expectedResult: "希望得到的结果", technicalDetails: "技术详情", rawStatus: "控制面状态", completedSteps: "已完成步骤", communicationLanguage: "工单沟通语言",
+      executionMode: "执行方式", priority: "紧急程度", updatedAt: "最近更新", problemDescription: "问题或需求", expectedResult: "希望得到的结果", technicalDetails: "技术详情", rawStatus: "控制面状态",
+      acceptanceTitle: "验收记录", packDigest: "证据包摘要", signatureState: "签名状态",
+      signatureSigned: "已签名（Ed25519）", signatureMissing: "未签名（证据力受限）",
+      signatureUnreadable: "签名记录不可读", anchorState: "外部锚定", anchorsNone: "无预声明锚定",
+      acceptanceNote: "验签与外部锚定核查使用证据包内独立校验器（verify.py）或分发副本 tools/verify_evidence_pack.py；不依赖本工作台。", completedSteps: "已完成步骤", communicationLanguage: "工单沟通语言",
       connecting: "正在连接…", connected: "已连接", unavailable: "工作台暂不可用", softwareRequest: "软件研发需求", project: "业务系统", title: "问题或需求标题",
       priorityLow: "低", priorityNormal: "普通", priorityHigh: "高", priorityUrgent: "紧急", interactiveMode: "会话模式", autonomousMode: "自动模式", autonomousPending: "自动模式（等待激活）",
       interactiveHelp: "适合需要逐步沟通和确认的需求。", autonomousHelp: "建单只记录自动处理意图，不会自动启动；建单后请在工单详情中确认启动。", cancel: "取消", submitTicket: "提交工单", submitting: "正在提交…", created: "工单已创建", noSteps: "暂无", unknown: "未知",
@@ -17,7 +21,11 @@
       productSubtitle: "Software Delivery Workbench", language: "Language", newTicket: "New ticket", workspace: "Workspace", allTickets: "All tickets", needsAttention: "Needs my attention", inProgress: "In progress", completed: "Completed",
       scopeTitle: "Current scope", scopeBody: "Single-project software work; this is not a general office automation tool.", currentProject: "Current project", search: "Search tickets", searchPlaceholder: "Search ID, title, or content", ticketList: "Ticket list",
       emptyTitle: "No tickets yet", emptyBody: "Create the first software ticket; ICODE will track state and evidence.", welcomeTitle: "Select a ticket", welcomeBody: "Review its status, execution mode, goal, and next action here.",
-      executionMode: "Execution mode", priority: "Priority", updatedAt: "Last updated", problemDescription: "Problem or request", expectedResult: "Expected result", technicalDetails: "Technical details", rawStatus: "Control-plane status", completedSteps: "Completed steps", communicationLanguage: "Ticket language",
+      executionMode: "Execution mode", priority: "Priority", updatedAt: "Last updated", problemDescription: "Problem or request", expectedResult: "Expected result", technicalDetails: "Technical details", rawStatus: "Control-plane status",
+      acceptanceTitle: "Acceptance record", packDigest: "Pack digest", signatureState: "Signature",
+      signatureSigned: "Signed (Ed25519)", signatureMissing: "Unsigned (limited evidential strength)",
+      signatureUnreadable: "Signature unreadable", anchorState: "External anchoring", anchorsNone: "No pre-declared anchors",
+      acceptanceNote: "Signature verification and anchor checking use the pack's independent verifier (verify.py) or its distribution copy tools/verify_evidence_pack.py; they do not rely on this workbench.", completedSteps: "Completed steps", communicationLanguage: "Ticket language",
       connecting: "Connecting…", connected: "Connected", unavailable: "Workbench unavailable", softwareRequest: "Software request", project: "Business system", title: "Request title",
       priorityLow: "Low", priorityNormal: "Normal", priorityHigh: "High", priorityUrgent: "Urgent", interactiveMode: "Interactive", autonomousMode: "Autonomous", autonomousPending: "Autonomous (pending activation)",
       interactiveHelp: "Best when the request needs ongoing clarification and confirmation.", autonomousHelp: "Creating the ticket records autonomous intent but does not start it. Confirm Start in the ticket detail afterward.", cancel: "Cancel", submitTicket: "Submit ticket", submitting: "Submitting…", created: "Ticket created", noSteps: "None", unknown: "Unknown",
@@ -110,11 +118,34 @@
       byId("intent-" + intent).disabled = !capability.enabled || !allowed[intent];
     });
   }
+  function renderAcceptance(ticket) {
+    var panel = byId("acceptance-panel");
+    var acceptance = ticket.acceptance;
+    panel.hidden = !acceptance;
+    if (!acceptance) { return; }
+    byId("acceptance-digest").textContent = String(acceptance.pack_digest || "").slice(0, 32);
+    var signature = acceptance.signature;
+    if (signature && signature.state === "signed") {
+      byId("acceptance-signature").textContent = text("signatureSigned") + " · " + String(signature.key_fingerprint || "").slice(0, 16);
+    } else if (signature && signature.state === "unreadable") {
+      byId("acceptance-signature").textContent = text("signatureUnreadable");
+    } else {
+      byId("acceptance-signature").textContent = text("signatureMissing");
+    }
+    var anchors = acceptance.anchors || [];
+    byId("acceptance-anchors").textContent = anchors.length
+      ? anchors.map(function (item) { return item.type + " · " + String(item.anchor_target || "").slice(0, 16); }).join("；")
+      : text("anchorsNone");
+  }
   function renderDetail(ticket) {
     state.selectedTicketId = ticket.ticket_id; state.selectedTicket = ticket; byId("welcome-panel").hidden = true; byId("ticket-detail").hidden = false;
     byId("detail-id").textContent = ticket.ticket_id; byId("detail-title").textContent = ticket.title; byId("detail-status").textContent = stageLabel(ticket); byId("detail-mode").textContent = modeLabel(ticket);
+    var display = ticket.display || {};
+    var stageLabelNode = byId("detail-stage-label"); stageLabelNode.textContent = (display.stage_label || {})[state.locale] || stageLabel(ticket);
+    var auxiliary = byId("detail-auxiliary"); var auxLabel = (display.auxiliary || {})[state.locale];
+    if (auxLabel) { auxiliary.textContent = auxLabel; auxiliary.hidden = false; } else { auxiliary.hidden = true; }
     byId("detail-priority").textContent = priorityLabel(ticket.priority); byId("detail-updated").textContent = ticket.updated_at || "—"; byId("detail-description").textContent = ticket.description || ticket.requirement || "—"; byId("detail-expected").textContent = ticket.expected_result || "—";
-    byId("detail-raw-status").textContent = ticket.status; byId("detail-steps").textContent = (ticket.completed_steps || []).join(", ") || text("noSteps"); byId("detail-locale").textContent = ticket.locale; renderAutonomy(ticket); renderProtection(ticket); renderTickets(state.tickets); scheduleActivePoll(ticket);
+    byId("detail-raw-status").textContent = ticket.status; byId("detail-steps").textContent = (ticket.completed_steps || []).join(", ") || text("noSteps"); byId("detail-locale").textContent = ticket.locale; renderAutonomy(ticket); renderProtection(ticket); renderAcceptance(ticket); renderTickets(state.tickets); scheduleActivePoll(ticket);
   }
   function selectTicket(ticketId) {
     return fetch("/api/v1/tickets/" + encodeURIComponent(ticketId), { credentials: "same-origin" }).then(function (response) { if (!response.ok) { throw new Error("HTTP " + response.status); } return response.json(); }).then(function (payload) { renderDetail(payload.ticket); return payload.ticket; }).catch(function () { setStatus("unavailable"); });

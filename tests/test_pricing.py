@@ -13,7 +13,9 @@ class TestPricing(unittest.TestCase):
         self.assertEqual(price_for("claude-sonnet-4-5"), (3.0, 15.0))
         self.assertEqual(price_for("gemini-2.0-flash"), (0.10, 0.40))
         self.assertEqual(price_for("gpt-4o-mini"), (2.5, 10.0))
-        self.assertEqual(price_for("MiniMax-M3"), (0.30, 1.20))
+        # MiniMax M3：$0.30/$1.20 per M tokens（per-1K 表须除 1000；
+        # 旧值曾把 per-M 数字直接填入 per-1K 表，高估 1000 倍，2026-10-19 修正）
+        self.assertEqual(price_for("MiniMax-M3"), (0.0003, 0.0012))
 
     def test_未知模型返回None且不冒充免费(self) -> None:
         for model in ("unknown-model", "", None, 7):
@@ -31,8 +33,8 @@ class TestPricing(unittest.TestCase):
         # claude: 2000/1000*3 + 500/1000*15 = 6 + 7.5
         self.assertAlmostEqual(estimate_cost("claude-sonnet-4-5", usage), 13.5, places=6)
         usage = Usage(prompt_tokens=1000, completion_tokens=1000)
-        # minimax: 1*0.3 + 1*1.2
-        self.assertAlmostEqual(estimate_cost("MiniMax-M3", usage), 1.5, places=6)
+        # minimax（修正后）：1K tokens 输入 0.0003 + 输出 0.0012 = 0.0015
+        self.assertAlmostEqual(estimate_cost("MiniMax-M3", usage), 0.0015, places=6)
 
     def test_异常token不产生费用(self) -> None:
         for usage in (

@@ -73,3 +73,11 @@
 - 原型为单文件、零 JS、零 CDN、零网络调用（源码无 `<script`、无 `http://`/`https://` 资源引用——文本内容中的 URL 除外）；
 - §14.5 布局四问题、§14.11 状态三段模型、§14.12 审批文案（允许本次执行/暂不允许）、§14.13 完成页与未验证边界、R7 三行事实全部可见；
 - 双层信息架构完整：默认层无内部步骤名/退出码等术语裸露（都在 `<details>` 内）。
+
+## 9. 落地记录（2026-10-19，第一片）
+
+- **后端契约**：`src/icode/tickets.py` 新增 `STATUS_DISPLAY_CONTRACT_VERSION`/`STAGE_DISPLAY_LABELS`/`STATUS_DISPLAY_LABELS`/`_AUXILIARY_DISPLAY` 与 `status_display()`；`_public_ticket` 每个工单带 `display` 三段投影。契约封闭：stage 覆盖 `STATUS_STAGE_KEYS` 全部取值 + unknown；辅助状态仅 awaiting_confirmation/awaiting_information 两键，按原始状态前缀派生（approval*/blocked*）。
+- **R7 行**：`acceptance_summary()` 读取工单目录下惯例位置 `pack/`（manifest.json/signature.json/anchors.json），投影 pack_digest/签名状态/锚定列表；`ticket_detail` 在存在时附 `acceptance`（不存在不伪造）。
+- **前端**：`workbench_assets` 详情头渲染三段展示（badge + stage_label[当前语言] + 辅助状态），验收记录区（digest 截断展示 + 签名状态 + 锚定列表 + 独立校验器提示），i18n 双语键补齐（`signatureSigned`/`signatureMissing`/`anchorsNone`/`acceptanceNote` 等），纯 CSS 无内联脚本。
+- **测试**：`tests/test_workbench_display.py` 9 项（stage 覆盖、双语封闭、辅助派生、未知回退、acceptance 四种形态含损坏 manifest）。
+- **未覆盖（如实）**：真实 HTTP 端到端渲染断言（列表/审批/完成页的浏览器级验证）、语言持久化跨页面一致性的集成测试、原型其余区块（新建工单表单细化、审批动作按钮区）尚未逐项落地。

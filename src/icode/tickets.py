@@ -81,6 +81,117 @@ STATUS_STAGE_KEYS = {
     "debug_done": "completed",
 }
 
+# ── §14.11 状态展示契约（R7 后 UI 设计包落地）────────────────────────────
+# 契约由后端版本化输出；前端只渲染，不按字符串猜测。展示模型三段：
+# 控制面原始状态 + 用户可见阶段（stage 标签）+ 辅助状态。状态不得仅靠
+# 颜色表达（图标/文字由前端结合本契约完成）。
+STATUS_DISPLAY_CONTRACT_VERSION = 1
+STATUS_DISPLAY_LOCALES = ("zh-CN", "en-US")
+
+STAGE_DISPLAY_LABELS: dict[str, dict[str, str]] = {
+    "understanding": {"zh-CN": "正在理解需求", "en-US": "Understanding request"},
+    "submitted": {"zh-CN": "已提交", "en-US": "Submitted"},
+    "reviewing_plan": {"zh-CN": "正在检查方案", "en-US": "Reviewing plan"},
+    "finalizing_plan": {"zh-CN": "方案准备完成", "en-US": "Finalizing plan"},
+    "ready_to_implement": {"zh-CN": "方案已确认", "en-US": "Ready to implement"},
+    "working": {"zh-CN": "正在处理", "en-US": "Working"},
+    "checking": {"zh-CN": "正在全面检查", "en-US": "Running full checks"},
+    "preparing_delivery": {"zh-CN": "正在整理交付结果", "en-US": "Preparing delivery"},
+    "completed": {"zh-CN": "已完成", "en-US": "Completed"},
+    "unknown": {"zh-CN": "状态未知", "en-US": "Status unknown"},
+}
+
+# §14.11 表中控制面最终态的展示标签（细粒度运行时状态用 stage 标签承载）
+STATUS_DISPLAY_LABELS: dict[str, dict[str, str]] = {
+    "completed": {"zh-CN": "已完成", "en-US": "Completed"},
+    "blocked": {"zh-CN": "需要补充信息", "en-US": "Information needed"},
+    "approval required": {"zh-CN": "需要你确认", "en-US": "Confirmation required"},
+    "failed": {"zh-CN": "处理未完成", "en-US": "Not completed"},
+    "unknown": {"zh-CN": "状态未知", "en-US": "Status unknown"},
+}
+
+_AUXILIARY_DISPLAY: dict[str, dict[str, str]] = {
+    "awaiting_confirmation": {
+        "zh-CN": "等待你确认", "en-US": "Awaiting your confirmation",
+    },
+    "awaiting_information": {
+        "zh-CN": "等待你补充信息", "en-US": "Awaiting more information",
+    },
+}
+
+
+def status_display(status: str, stage_key: str) -> dict[str, Any]:
+    """三段展示投影：原始状态 + 阶段标签 + 辅助状态（词表封闭，未知回退）。"""
+    stage = stage_key if stage_key in STAGE_DISPLAY_LABELS else "unknown"
+    stage_label = STAGE_DISPLAY_LABELS[stage]
+    status_label = STATUS_DISPLAY_LABELS.get(status, stage_label)
+    auxiliary = None
+    if status.startswith("approval"):
+        auxiliary = {"key": "awaiting_confirmation", **_AUXILIARY_DISPLAY["awaiting_confirmation"]}
+    elif status.startswith("blocked"):
+        auxiliary = {"key": "awaiting_information", **_AUXILIARY_DISPLAY["awaiting_information"]}
+    return {
+        "contract_version": STATUS_DISPLAY_CONTRACT_VERSION,
+        "status": status,
+        "stage": stage,
+        "stage_label": stage_label,
+        "status_label": status_label,
+        "auxiliary": auxiliary,
+    }
+
+
+def acceptance_summary(out_dir: Path) -> dict[str, Any] | None:
+    """R7 验收记录投影：证据包摘要 / 签名状态 / 预声明锚定（不存在则为 None）。"""
+    pack_dir = Path(out_dir) / "pack"
+    manifest_path = pack_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    digest = manifest.get("pack_digest")
+    if not isinstance(digest, str) or not digest:
+        return None
+    signature: dict[str, Any] | None = None
+    signature_path = pack_dir / "signature.json"
+    if signature_path.is_file():
+        try:
+            record = json.loads(signature_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            signature = {"state": "unreadable"}
+        else:
+            signature = {
+                "state": "signed",
+                "algorithm": record.get("algorithm"),
+                "signed_at": record.get("signed_at"),
+                "key_fingerprint": record.get("key_fingerprint"),
+                "public_key": record.get("public_key"),
+            }
+    anchors: list[dict[str, Any]] = []
+    anchors_path = pack_dir / "anchors.json"
+    if anchors_path.is_file():
+        try:
+            bundle = json.loads(anchors_path.read_text(encoding="utf-8"))
+            if isinstance(bundle, dict) and isinstance(bundle.get("records"), list):
+                for item in bundle["records"][:16]:
+                    if isinstance(item, dict):
+                        anchors.append({
+                            "type": item.get("type"),
+                            "anchor_target": item.get("anchor_target"),
+                        })
+        except (OSError, ValueError):
+            anchors = []
+    return {
+        "pack_digest": digest,
+        "generated_at": manifest.get("generated_at"),
+        "signature": signature,
+        "anchors": anchors,
+        "verifier": "pack/verify.py（包内独立校验器；tools/verify_evidence_pack.py 为分发副本）",
+    }
+
 
 class TicketError(RuntimeError):
     """工单请求或公开投影无法被安全解释。"""
@@ -255,6 +366,9 @@ class TicketService:
             if isinstance(metadata.get("requirement_summary"), str) else "",
             "status": status,
             "stage_key": STATUS_STAGE_KEYS.get(status, "unknown"),
+            "display": status_display(
+                status, STATUS_STAGE_KEYS.get(status, "unknown"),
+            ),
             "priority": agent.get("priority") if agent.get("priority") in PRIORITIES else "normal",
             "locale": agent.get("locale") if agent.get("locale") in SUPPORTED_LOCALES else "zh-CN",
             "requested_execution_mode": agent.get("requested_execution_mode")
@@ -330,6 +444,12 @@ class TicketService:
         public["completed_steps"] = [
             str(item) for item in metadata.get("completed_steps", [])
         ] if isinstance(metadata.get("completed_steps"), list) else []
+        acceptance = acceptance_summary(
+            self._resolve_ticket_record(ticket_id).out_dir
+        )
+        if acceptance is not None:
+            # R7：验收记录（证据包摘要/签名状态/预声明锚定）。不存在时不伪造。
+            public["acceptance"] = acceptance
         return public
 
     def update_agent_extension(

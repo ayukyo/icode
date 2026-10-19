@@ -52,6 +52,20 @@
           <div><span data-i18n="priority">紧急程度</span><strong id="detail-priority"></strong></div>
           <div><span data-i18n="updatedAt">最近更新</span><strong id="detail-updated"></strong></div>
         </div>
+        <div class="status-display">
+          <span id="detail-status" class="badge"></span>
+          <span id="detail-stage-label" class="stage-label"></span>
+          <span id="detail-auxiliary" class="auxiliary" hidden></span>
+        </div>
+        <section id="acceptance-panel" class="detail-section acceptance-panel" hidden>
+          <h3 data-i18n="acceptanceTitle">验收记录</h3>
+          <ul class="acceptance-list">
+            <li><span data-i18n="packDigest">证据包摘要</span><code id="acceptance-digest"></code></li>
+            <li><span data-i18n="signatureState">签名状态</span><strong id="acceptance-signature"></strong></li>
+            <li><span data-i18n="anchorState">外部锚定</span><span id="acceptance-anchors"></span></li>
+          </ul>
+          <p class="acceptance-note" data-i18n="acceptanceNote">验签与外部锚定核查使用证据包内独立校验器（verify.py）或分发副本 tools/verify_evidence_pack.py；不依赖本工作台。</p>
+        </section>
         <section class="detail-section"><h3 data-i18n="problemDescription">问题或需求</h3><p id="detail-description" class="preserve-lines"></p></section>
         <section class="detail-section"><h3 data-i18n="expectedResult">希望得到的结果</h3><p id="detail-expected" class="preserve-lines"></p></section>
         <section id="autonomy-panel" class="autonomy-panel" hidden>

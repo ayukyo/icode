@@ -1,0 +1,143 @@
+{
+  "rates": {
+    "first_pass_gate_rate": {
+      "denominator": "全部 run（门禁一次通过，无重试后通过）",
+      "value": 0.0
+    },
+    "intervention_rate": {
+      "denominator": "全部 run",
+      "value": 0.0
+    },
+    "recovery_rate": {
+      "denominator": "经历过失败的 run（非 first_pass）；recovered 指其中最终成功者",
+      "value": 1.0
+    },
+    "success_rate": {
+      "denominator": "全部 run",
+      "value": 1.0
+    }
+  },
+  "run_count": 5,
+  "runs": [
+    {
+      "backend": "openai-compatible",
+      "budget": {
+        "max_cost_usd": null,
+        "max_minutes": null,
+        "max_tokens": 120000
+      },
+      "commit": "unknown",
+      "completion_tokens": 2695,
+      "cost_usd": 0.012791700000000001,
+      "first_pass": false,
+      "latency_ms": 76686,
+      "model": "MiniMax-M3",
+      "prompt_tokens": 31859,
+      "recovered": true,
+      "repo": "ayukyo/icode",
+      "result": "success",
+      "run_id": "minimax-m3-textkit-01",
+      "task_digest": "86c06ed96341ef1a94f0f10ab6898431b1126e230fce6486e5604bf041260254",
+      "task_id": "textkit/vowel-reverse",
+      "total_tokens": 34554
+    },
+    {
+      "backend": "openai-compatible",
+      "budget": {
+        "max_cost_usd": null,
+        "max_minutes": null,
+        "max_tokens": 120000
+      },
+      "commit": "unknown",
+      "completion_tokens": 2318,
+      "cost_usd": 0.008831100000000001,
+      "first_pass": false,
+      "latency_ms": 38584,
+      "model": "MiniMax-M3",
+      "prompt_tokens": 20165,
+      "recovered": true,
+      "repo": "ayukyo/icode",
+      "result": "success",
+      "run_id": "minimax-m3-textkit-02",
+      "task_digest": "86c06ed96341ef1a94f0f10ab6898431b1126e230fce6486e5604bf041260254",
+      "task_id": "textkit/vowel-reverse",
+      "total_tokens": 22483
+    },
+    {
+      "backend": "openai-compatible",
+      "budget": {
+        "max_cost_usd": null,
+        "max_minutes": null,
+        "max_tokens": 120000
+      },
+      "commit": "unknown",
+      "completion_tokens": 2850,
+      "cost_usd": 0.0110163,
+      "first_pass": false,
+      "latency_ms": 69599,
+      "model": "MiniMax-M3",
+      "prompt_tokens": 25321,
+      "recovered": true,
+      "repo": "ayukyo/icode",
+      "result": "success",
+      "run_id": "minimax-m3-textkit-03",
+      "task_digest": "86c06ed96341ef1a94f0f10ab6898431b1126e230fce6486e5604bf041260254",
+      "task_id": "textkit/vowel-reverse",
+      "total_tokens": 28171
+    },
+    {
+      "backend": "openai-compatible",
+      "budget": {
+        "max_cost_usd": null,
+        "max_minutes": null,
+        "max_tokens": 120000
+      },
+      "commit": "unknown",
+      "completion_tokens": 7686,
+      "cost_usd": 0.0173625,
+      "first_pass": false,
+      "latency_ms": 135566,
+      "model": "MiniMax-M3",
+      "prompt_tokens": 27131,
+      "recovered": true,
+      "repo": "ayukyo/icode",
+      "result": "success",
+      "run_id": "minimax-m3-textkit-04",
+      "task_digest": "86c06ed96341ef1a94f0f10ab6898431b1126e230fce6486e5604bf041260254",
+      "task_id": "textkit/vowel-reverse",
+      "total_tokens": 34817
+    },
+    {
+      "backend": "openai-compatible",
+      "budget": {
+        "max_cost_usd": null,
+        "max_minutes": null,
+        "max_tokens": 120000
+      },
+      "commit": "unknown",
+      "completion_tokens": 2786,
+      "cost_usd": 0.009687600000000001,
+      "first_pass": false,
+      "latency_ms": 49692,
+      "model": "MiniMax-M3",
+      "prompt_tokens": 21148,
+      "recovered": true,
+      "repo": "ayukyo/icode",
+      "result": "success",
+      "run_id": "minimax-m3-textkit-05",
+      "task_digest": "86c06ed96341ef1a94f0f10ab6898431b1126e230fce6486e5604bf041260254",
+      "task_id": "textkit/vowel-reverse",
+      "total_tokens": 23934
+    }
+  ],
+  "schema_version": 1,
+  "scope_note": "范围声明：单靶场任务（pycalc/DEFAULT_TASK）、单一模型、隔离工作区；这是 R7 benchmark 口径的端到端统计，不是多仓库公开评测。n=5 的样本量不足以支撑任何泛化结论。cost_usd 为 pricing 表静态估算价，不是账单。循环参数：max_turns=24、max_output_tokens=8192、max_repairs=2、预算硬停=120K tokens（hard_ratio=1.0）。pricing 表 minimax 条目已于 2026-10-19 修正（per-M 数字曾填入 per-1K 表，高估 1000 倍）；修正后 cost 为 $0.30/$1.20 per M 静态估算价，仍不是账单。驱动只产出 success/failed 两态；refused/human_intervention 为保留态。",
+  "totals": {
+    "completion_tokens": 18335,
+    "cost_usd": 0.059689200000000005,
+    "cost_usd_note": null,
+    "latency_ms": 370127,
+    "prompt_tokens": 125624,
+    "total_tokens": 143959
+  }
+}
