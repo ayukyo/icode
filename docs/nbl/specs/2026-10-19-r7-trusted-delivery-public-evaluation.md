@@ -67,4 +67,14 @@
 
 ## 8. 实施记录
 
-（实施后回填）
+- **W1 签名**：Ed25519 落在 `pack_verify.py` 内部（§3 W1 设计），`pack_signing.py` 提供密钥生成/落盘（O_EXCL 拒绝覆盖、POSIX 0600、权限过宽拒读）与 `sign_pack`（签名后自校验，失败拒发布）；`signature.json` 字段封闭（缺一/多一/坏格式即无效）。
+- **W2 锚定**：`pack_anchor.py` 四类记录构造器 + `attach_anchor_records`（拒绝覆盖）；`.github/workflows/pack-anchor.yml`：digest 形态校验（纯 shell，先于任何 git 操作）→ job summary → 创建并推送 `anchor/<digest 前 16>` annotated tag；顶层 contents:read、仅 tag job contents:write。
+- **W3 验证器**：`tools/verify_evidence_pack.py` 与 `src/icode/pack_verify.py` 逐字节相同（sha256 断言测试）；CLI 新增 `--verify-signature`/`--require-signature`/`--public-key`（坏公钥 = 用法错误退出码 2）；包内 verify.py 副本机制沿用。
+- **W4 评测口径**：`benchmark.py` 封闭 schema（budget 三键 + task_digest 64hex）、RunLedger 只增有界/重复 run_id 拒绝/写满 fail-closed、四率显式分母、cost-null 纪律、零样本明确"无样本，不构成统计结论"、aggregate/render/CLI 无筛选参数（结构断言）。
+- **provenance**：manifest 新增 `provenance` 段（python_version + "core: none" 依赖声明 + 可选 code_commit，经 `build_evidence_pack(code_commit=...)`）。
+- **测试**：新增 50 项全绿（pack_signing 17 / pack_anchor 11 / benchmark 15 / pack_verify_extensions 7，含真实证据包签名-锚定-独立验证全链路集成与 tools 副本 `-I` 隔离子进程验证）。
+
+### 实施期设计细化（相对 v1.1 的偏差，如实记录）
+
+1. **anchors.json 移为清单外豁免文件，其字节直接进入签名消息**（v1.1 表述为"正常列入 manifest.files"）。原因：预声明记录的 `anchor_target` 必须等于最终 `pack_digest`；若 anchors.json 在 manifest 内，则 manifest 摘要依赖 anchors 内容、anchors 内容又依赖 manifest 摘要——循环不可实现（与评审 B1 同构）。现在：签名消息 = 前缀 + manifest 字节 +（声明包含时）`b"\nanchors.json\n" + anchors 字节`；`anchors_included` 布尔声明与实际文件存在性双向校验（缺文件/覆盖不完整均为稳定错误）。换包重贴 anchors.json 由 manifest 摘要不符与验签失败双重拦截（G3②③ 保持成立）。
+2. Ed25519 ctx/ph 变体一并实现并通过 RFC 8032 §7.2 "foo"、§7.3 "TEST abc" 向量（超出 v1.1 G1③ 承诺的 §7.1 范围）；实施期修正两处公式记忆错误（dom4 为三段式 `name‖phflag‖ctxlen‖ctx`；r 需拼接种子扩展前缀），均被 RFC 向量当场捕获——纯实现"以官方向量驱动测试"的纪律正是为此设立。

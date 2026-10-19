@@ -23,6 +23,7 @@ import io
 import json
 import math
 import os
+import platform
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -1010,8 +1011,13 @@ def build_evidence_pack(
     gates_json: Path | None = None,
     verifications: list[dict] | None = None,
     clean: bool = True,
+    code_commit: str | None = None,
 ) -> PackReport:
-    """把一条完成（或部分完成）的工单导出为证据包。"""
+    """把一条完成（或部分完成）的工单导出为证据包。
+
+    R7：``code_commit`` 提供时写入 manifest.provenance（连同 python 版本与
+    零依赖声明）；签名（pack_signing.sign_pack）在包发布后独立进行。
+    """
     out_dir = Path(out_dir).resolve()
     dest = Path(dest).resolve()
     gates_path = Path(gates_json).resolve() if gates_json is not None else None
@@ -1029,6 +1035,7 @@ def build_evidence_pack(
     if not clean:
         return _write_evidence_pack(
             out_dir, dest=dest, gates_path=gates_path, verifications=verifications,
+            code_commit=code_commit,
         )
     if dest.exists() and not dest.is_dir():
         raise EvidenceError("证据包输出目标必须是目录")
@@ -1045,6 +1052,7 @@ def build_evidence_pack(
     try:
         report = _write_evidence_pack(
             out_dir, dest=staged, gates_path=gates_path, verifications=verifications,
+            code_commit=code_commit,
         )
         report.pack_dir = str(dest)
         if not report.ok or not report.selfcheck_ok:
@@ -1098,6 +1106,7 @@ def _write_evidence_pack(
     dest: Path,
     gates_path: Path | None,
     verifications: list[dict] | None,
+    code_commit: str | None = None,
 ) -> PackReport:
     """Build in an empty staging directory, or merge for legacy clean=False."""
     has_gates_file = gates_path is not None and gates_path.is_file()
@@ -1300,11 +1309,18 @@ def _write_evidence_pack(
     except _HashReadBudgetExceeded:
         raise EvidenceError("证据包导出累计摘要读取超过安全上限") from None
     digest = pack_digest(entries)
+    provenance: dict = {
+        "python_version": platform.python_version(),
+        "dependencies": "core: none",
+    }
+    if code_commit:
+        provenance["code_commit"] = code_commit
     manifest = {
         "schema_version": PACK_SCHEMA_VERSION,
         "pack_kind": PACK_KIND,
         "generated_at": _now(),
         "generator": {"name": "icode-agent", "version": __version__},
+        "provenance": provenance,
         "ticket": {
             "ticket_id": ticket_id,
             "status": meta.get("status"),

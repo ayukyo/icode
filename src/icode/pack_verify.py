@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 """证据包独立校验器（零依赖，**不 import 本仓任何代码**）。
 
-这个文件会被原样复制进证据包。它的存在意义是：
+这个文件有两种等价身份（R7 起保持逐字节同源，tools/verify_evidence_pack.py
+是其提交入库的分发副本）：
+  1. 被原样复制进证据包（verify.py，加 BOM）；
+  2. 作为 tools/verify_evidence_pack.py 独立分发给第三方。
+它的存在意义是：
 **审计方不需要安装、也不需要信任 icode-agent，就能独立校验证据包是否被篡改。**
 
-它主要验证五类内容：
+它主要验证七类内容：
     ① 清单完整性 —— manifest.files 里每个文件的 sha256 与实际一致
     ② 事件链与元数据语义 —— 哈希链、镜像、v3 状态机及快照启用时的 execution-model v1 配对
     ③ 正文与链上哈希对应 —— 产物正文快照的 sha256 必须等于事件 payload 里记录的 sha256
     ④ 包摘要 —— 重算 pack_digest 与 manifest 声明值一致
-    ⑤ 包结构 —— 拒绝未登记文件、路径逃逸、链接和超限输入
+    ⑤ 包结构 —— 拒绝未登记文件（signature.json / anchors.json 两个清单外豁免除外）、
+       路径逃逸、链接和超限输入
+    ⑥ Ed25519 签名 —— signature.json 对 manifest 完整字节（及声明纳入的 anchors.json
+       字节）的 RFC 8032 验签（R7）
+    ⑦ 预声明锚定记录 —— anchors.json 类型词表、必填凭据与 anchor_target == pack_digest
+       绑定校验（R7）
 
 用法：
-    python verify.py <证据包目录>
+    python verify.py <证据包目录> [--verify-signature] [--require-signature]
+                     [--public-key <64位hex>]
 退出码：
     0 = 通过；1 = 校验失败（被篡改/缺失）；2 = 用法或结构错误
 """
@@ -80,6 +90,16 @@ _UNSET_COMPLETION_RECEIPT = object()
 GENESIS_HASH = "0" * 64
 MANIFEST_NAME = "manifest.json"
 EVENTS_REL = "ticket/events.jsonl"
+SIGNATURE_NAME = "signature.json"
+ANCHORS_NAME = "anchors.json"
+SIGNATURE_MESSAGE_PREFIX = b"icode-pack-signature-v1\n"
+SIGNATURE_ALGORITHM = "ed25519"
+_SIGNATURE_SCHEMA_VERSION = 1
+_ANCHORS_SCHEMA_VERSION = 1
+_MAX_SIGNATURE_JSON_BYTES = 64 * 1024
+_MAX_ANCHORS_JSON_BYTES = 256 * 1024
+_MAX_ANCHOR_RECORDS = 256
+_ANCHOR_FIELD_VALUE_MAX_CHARS = 512
 
 # 事件链首事件必须属于这两类（与上游一致）
 ALLOWED_FIRST_EVENT = {"ticket_created", "migration_applied"}
@@ -1892,8 +1912,379 @@ def _walk_package_entries(pack: Path):
         pending.extend(reversed(child_directories))
 
 
-def verify_pack(pack_dir: Path) -> list[str]:
-    """返回问题列表；空列表表示校验通过。"""
+# ── ⑥ Ed25519（RFC 8032）与 ⑦ 预声明锚定（R7）───────────────────────────
+# 纯 Python 实现并非常量时间：本文件侧只处理公开材料（公钥/签名/摘要），
+# 私钥侧的环境安全由签名方承担（R7 规格 §4 诚实边界）。曲线参数与公式
+# 遵循 RFC 8032；§7.1/§7.2/§7.3 测试向量由测试套件驱动。
+
+_ED_P = 2**255 - 19
+_ED_L = 2**252 + 27742317777372353535851937790883648493
+_ED_D = (-121665 * pow(121666, _ED_P - 2, _ED_P)) % _ED_P
+_ED_I = pow(2, (_ED_P - 1) // 4, _ED_P)
+_ED_GX = 15112221349535400772501151409588531511454012693041857206046113283949847762202
+_ED_GY = 46316835694926478169428394003475163141307993866256225615783033603165251855960
+_ED_G = (_ED_GX, _ED_GY, 1, _ED_GX * _ED_GY % _ED_P)
+_ED_IDENTITY = (0, 1, 1, 0)
+_DOM4_PREFIX = b"SigEd25519 no Ed25519 collisions"
+
+_HEX64_RE = re.compile(r"[0-9a-f]{64}")
+_HEX_RE = re.compile(r"[0-9a-f]+")
+
+
+def is_hex64(value: object) -> bool:
+    return isinstance(value, str) and _HEX64_RE.fullmatch(value) is not None
+
+
+def _ed_inv(x: int) -> int:
+    return pow(x, _ED_P - 2, _ED_P)
+
+
+def _ed_point_add(p: tuple, q: tuple) -> tuple:
+    """Unified addition (add-2008-hwcd, a=-1) on extended coordinates."""
+    x1, y1, z1, t1 = p
+    x2, y2, z2, t2 = q
+    a = (y1 - x1) * (y2 - x2) % _ED_P
+    b = (y1 + x1) * (y2 + x2) % _ED_P
+    c = 2 * t1 * t2 * _ED_D % _ED_P
+    d = 2 * z1 * z2 % _ED_P
+    e, f, g, h = b - a, d - c, d + c, b + a
+    return (e * f % _ED_P, g * h % _ED_P, f * g % _ED_P, e * h % _ED_P)
+
+
+def _ed_point_mul(scalar: int, point: tuple) -> tuple:
+    result = _ED_IDENTITY
+    addend = point
+    while scalar > 0:
+        if scalar & 1:
+            result = _ed_point_add(result, addend)
+        addend = _ed_point_add(addend, addend)
+        scalar >>= 1
+    return result
+
+
+def _ed_compress(point: tuple) -> bytes:
+    x, y, z, _ = point
+    zinv = _ed_inv(z)
+    x = x * zinv % _ED_P
+    y = y * zinv % _ED_P
+    return (y | ((x & 1) << 255)).to_bytes(32, "little")
+
+
+def _ed_recover_x(y: int, sign: int) -> int | None:
+    if y >= _ED_P:
+        return None
+    x2 = (y * y - 1) * _ed_inv(_ED_D * y * y + 1) % _ED_P
+    if x2 == 0:
+        return None if sign else 0
+    x = pow(x2, (_ED_P + 3) // 8, _ED_P)
+    if (x * x - x2) % _ED_P != 0:
+        x = x * _ED_I % _ED_P
+    if (x * x - x2) % _ED_P != 0:
+        return None
+    if (x & 1) != sign:
+        x = _ED_P - x
+    return x
+
+
+def _ed_decompress(encoded: bytes) -> tuple | None:
+    if len(encoded) != 32:
+        return None
+    val = int.from_bytes(encoded, "little")
+    sign = (val >> 255) & 1
+    y = val & ((1 << 255) - 1)
+    x = _ed_recover_x(y, sign)
+    if x is None:
+        return None
+    return (x, y, 1, x * y % _ED_P)
+
+
+def _ed_secret_expand(seed: bytes) -> tuple:
+    if len(seed) != 32:
+        raise ValueError("Ed25519 种子必须是 32 字节")
+    h = hashlib.sha512(seed).digest()
+    a = int.from_bytes(h[:32], "little")
+    a &= (1 << 254) - 8
+    a |= 1 << 254
+    return a, h[32:]
+
+
+def _ed_dom4(flag_x: int, context: bytes) -> bytes:
+    """RFC 8032 Ed25519 dom4：name || octet(phflag) || octet(OLEN(ctx)) || ctx。"""
+    return _DOM4_PREFIX + bytes([flag_x, len(context)]) + context
+
+
+def ed25519_public_key(seed: bytes) -> bytes:
+    a, _ = _ed_secret_expand(seed)
+    return _ed_compress(_ed_point_mul(a, _ED_G))
+
+
+def ed25519_sign(seed: bytes, message: bytes) -> bytes:
+    a, prefix = _ed_secret_expand(seed)
+    public = _ed_compress(_ed_point_mul(a, _ED_G))
+    r = int.from_bytes(hashlib.sha512(prefix + message).digest(), "little") % _ED_L
+    r_enc = _ed_compress(_ed_point_mul(r, _ED_G))
+    k = int.from_bytes(
+        hashlib.sha512(r_enc + public + message).digest(), "little"
+    ) % _ED_L
+    s = (r + k * a) % _ED_L
+    return r_enc + s.to_bytes(32, "little")
+
+
+def _ed_verify_core(
+    public_key: bytes, message: bytes, signature: bytes, dom: bytes
+) -> bool:
+    if len(public_key) != 32 or len(signature) != 64:
+        return False
+    a_point = _ed_decompress(public_key)
+    if a_point is None:
+        return False
+    r_enc = signature[:32]
+    s = int.from_bytes(signature[32:], "little")
+    if s >= _ED_L:
+        return False  # 非规范 s
+    r_point = _ed_decompress(r_enc)
+    if r_point is None:
+        return False
+    k = int.from_bytes(
+        hashlib.sha512(dom + r_enc + public_key + message).digest(), "little"
+    ) % _ED_L
+    lhs = _ed_point_mul(s, _ED_G)
+    rhs = _ed_point_add(r_point, _ed_point_mul(k, a_point))
+    return _ed_compress(lhs) == _ed_compress(rhs)
+
+
+def ed25519_verify(public_key: bytes, message: bytes, signature: bytes) -> bool:
+    return _ed_verify_core(public_key, message, signature, b"")
+
+
+def ed25519ctx_sign(seed: bytes, context: bytes, message: bytes) -> bytes:
+    return _ed_ctx_sign(seed, context, message, flag_x=0)[1]
+
+
+def ed25519ph_sign(seed: bytes, context: bytes, message: bytes) -> bytes:
+    return _ed_ctx_sign(seed, context, message, flag_x=1)[1]
+
+
+def _ed_ctx_sign(seed: bytes, context: bytes, message: bytes, *, flag_x: int) -> tuple:
+    a, prefix = _ed_secret_expand(seed)
+    public = _ed_compress(_ed_point_mul(a, _ED_G))
+    dom = _ed_dom4(flag_x, context)
+    m = hashlib.sha512(message).digest() if flag_x else message
+    r = int.from_bytes(
+        hashlib.sha512(dom + prefix + m).digest(), "little"
+    ) % _ED_L
+    r_enc = _ed_compress(_ed_point_mul(r, _ED_G))
+    k = int.from_bytes(
+        hashlib.sha512(dom + r_enc + public + m).digest(), "little"
+    ) % _ED_L
+    s = (r + k * a) % _ED_L
+    return public, r_enc + s.to_bytes(32, "little")
+
+
+def ed25519ctx_verify(
+    public_key: bytes, context: bytes, message: bytes, signature: bytes
+) -> bool:
+    return _ed_verify_core(
+        public_key, message, signature, _ed_dom4(0, context)
+    )
+
+
+def ed25519ph_verify(
+    public_key: bytes, context: bytes, message: bytes, signature: bytes
+) -> bool:
+    return _ed_verify_core(
+        public_key, hashlib.sha512(message).digest(), signature, _ed_dom4(1, context)
+    )
+
+
+# ── 签名文件（⑥）─────────────────────────────────────────────────────────
+
+_SIGNATURE_FIELDS = frozenset({
+    "schema_version", "algorithm", "public_key", "signature",
+    "key_fingerprint", "signed_object", "signed_digest",
+    "anchors_included", "signed_at",
+})
+
+
+def _hex_bytes(value: object, byte_len: int) -> bytes | None:
+    if (
+        not isinstance(value, str)
+        or len(value) != byte_len * 2
+        or _HEX_RE.fullmatch(value) is None
+    ):
+        return None
+    return bytes.fromhex(value)
+
+
+def _signature_problems(
+    manifest: dict,
+    signature_path: Path,
+    manifest_path: Path,
+    anchors_path: Path | None,
+    public_key: str | None,
+) -> list[str]:
+    """校验 signature.json（字段封闭 + 对 manifest/anchors 实际字节验签）。"""
+    if not isinstance(public_key, str) or not _HEX64_RE.fullmatch(public_key):
+        return ["包已携带签名但未提供有效的 --public-key（64 位小写 hex），无法验签"]
+    try:
+        sig_record = load_json_value(signature_path, max_bytes=_MAX_SIGNATURE_JSON_BYTES)
+    except (OSError, ValueError, RecursionError) as exc:
+        return [f"签名文件不可解析：{type(exc).__name__}"]
+    if not isinstance(sig_record, dict):
+        return ["签名文件结构无效（必须是 JSON 对象）"]
+    problems: list[str] = []
+    field_names = set(sig_record)
+    if field_names != set(_SIGNATURE_FIELDS):
+        missing = sorted(_SIGNATURE_FIELDS - field_names)
+        extra = sorted(field_names - _SIGNATURE_FIELDS)
+        if missing:
+            problems.append(f"签名记录缺少字段：{','.join(missing)}")
+        if extra:
+            problems.append(f"签名记录含未知字段：{','.join(extra)}")
+        return problems
+    if sig_record["schema_version"] != _SIGNATURE_SCHEMA_VERSION:
+        problems.append("签名记录 schema_version 不受支持")
+    if sig_record["algorithm"] != SIGNATURE_ALGORITHM:
+        problems.append("签名算法不受支持（仅 ed25519）")
+    if sig_record["signed_object"] != MANIFEST_NAME:
+        problems.append("签名对象不受支持（仅 manifest.json）")
+    embedded_key = sig_record["public_key"]
+    if not _HEX64_RE.fullmatch(embedded_key):
+        problems.append("签名记录 public_key 无效（必须 64 位 hex）")
+    elif embedded_key != public_key:
+        problems.append("签名公钥与提供公钥不一致（疑似换钥重签）")
+    try:
+        manifest_bytes = read_bounded_bytes(
+            manifest_path, max_bytes=_MAX_MANIFEST_JSON_BYTES,
+        )
+    except (OSError, ValueError, RecursionError) as exc:
+        return problems + [f"manifest 读取失败：{type(exc).__name__}"]
+    anchors_included = sig_record["anchors_included"]
+    anchors_bytes: bytes | None = None
+    if not isinstance(anchors_included, bool):
+        problems.append("签名记录 anchors_included 无效（必须是布尔）")
+    elif anchors_included:
+        if anchors_path is None or not anchors_path.is_file():
+            problems.append("签名声明包含 anchors.json 但包内缺失")
+        else:
+            try:
+                anchors_bytes = read_bounded_bytes(
+                    anchors_path, max_bytes=_MAX_ANCHORS_JSON_BYTES,
+                )
+            except (OSError, ValueError, RecursionError) as exc:
+                return problems + [f"anchors.json 读取失败：{type(exc).__name__}"]
+    elif anchors_path is not None and anchors_path.is_file():
+        problems.append("包内存在 anchors.json 但签名未声明包含（签名覆盖不完整）")
+    if sig_record["signed_digest"] != manifest.get("pack_digest"):
+        problems.append("签名记录 signed_digest 与清单 pack_digest 不一致")
+    signed_at = sig_record["signed_at"]
+    if not isinstance(signed_at, str) or not signed_at or len(signed_at) > 64:
+        problems.append("签名记录 signed_at 无效")
+    expected_fp = hashlib.sha256(bytes.fromhex(embedded_key)).hexdigest()[:16]
+    if sig_record["key_fingerprint"] != expected_fp:
+        problems.append("签名记录 key_fingerprint 与 public_key 不符")
+    sig_bytes = _hex_bytes(sig_record["signature"], 64)
+    if sig_bytes is None:
+        problems.append("签名记录 signature 无效（必须是 128 位 hex）")
+        return problems
+    if problems:
+        return problems
+    message = SIGNATURE_MESSAGE_PREFIX + manifest_bytes
+    if anchors_bytes is not None:
+        message += b"\nanchors.json\n" + anchors_bytes
+    if not ed25519_verify(bytes.fromhex(public_key), message, sig_bytes):
+        problems.append("签名验证失败（manifest 或 anchors.json 被改动，或签名不匹配）")
+    return problems
+
+
+# ── 预声明锚定记录（⑦）───────────────────────────────────────────────────
+
+ANCHOR_TYPES = ("git-tag", "ci-run", "rfc3161-file", "transparency-log-entry")
+_ANCHOR_RECORD_FIELDS = frozenset({"type", "anchor_target", "anchor_time", "evidence"})
+_ANCHOR_REQUIRED_EVIDENCE = {
+    "git-tag": ("tag", "repository"),
+    "ci-run": ("run_url", "run_id", "conclusion"),
+    "rfc3161-file": ("file_fingerprint", "hash_algorithm"),
+    "transparency-log-entry": ("log_id", "entry_url"),
+}
+_ANCHOR_HTTPS_FIELDS = {"run_url", "entry_url"}
+
+
+def validate_anchor_bundle(bundle: object, pack_digest: object) -> list[str]:
+    """校验预声明锚定记录（类型词表封闭、凭据必填、anchor_target 摘要绑定）。"""
+    problems: list[str] = []
+    if not isinstance(bundle, dict):
+        return ["anchors.json 结构无效（必须是 JSON 对象）"]
+    if bundle.get("schema_version") != _ANCHORS_SCHEMA_VERSION:
+        problems.append("anchors.json schema_version 不受支持")
+    record_list = bundle.get("records")
+    if not isinstance(record_list, list):
+        return problems + ["anchors.json records 结构无效（必须是数组）"]
+    if len(record_list) > _MAX_ANCHOR_RECORDS:
+        return problems + ["anchors.json 记录数量超过安全上限"]
+    if not is_hex64(pack_digest):
+        return problems + ["锚定校验所需的包摘要无效"]
+    for index, record in enumerate(record_list, 1):
+        label = f"第 {index} 条锚定记录"
+        if not isinstance(record, dict):
+            problems.append(f"{label}结构无效（必须是对象）")
+            continue
+        if set(record) != set(_ANCHOR_RECORD_FIELDS):
+            missing = sorted(_ANCHOR_RECORD_FIELDS - set(record))
+            extra = sorted(set(record) - _ANCHOR_RECORD_FIELDS)
+            if missing:
+                problems.append(f"{label}缺少字段：{','.join(missing)}")
+            if extra:
+                problems.append(f"{label}含未知字段：{','.join(extra)}")
+            continue
+        anchor_type = record["type"]
+        if anchor_type not in ANCHOR_TYPES:
+            problems.append(f"{label}类型不在封闭词表内：{anchor_type!r}")
+            continue
+        anchor_time = record["anchor_time"]
+        if (
+            not isinstance(anchor_time, str)
+            or not anchor_time
+            or len(anchor_time) > _ANCHOR_FIELD_VALUE_MAX_CHARS
+        ):
+            problems.append(f"{label}anchor_time 无效")
+        if record["anchor_target"] != pack_digest:
+            problems.append(f"{label}anchor_target 与包摘要不符（疑似换包重贴锚定）")
+        evidence = record["evidence"]
+        if not isinstance(evidence, dict):
+            problems.append(f"{label}evidence 结构无效（必须是对象）")
+            continue
+        required = _ANCHOR_REQUIRED_EVIDENCE[anchor_type]
+        if set(evidence) != set(required):
+            missing = sorted(set(required) - set(evidence))
+            extra = sorted(set(evidence) - set(required))
+            if missing:
+                problems.append(f"{label}evidence 缺少字段：{','.join(missing)}")
+            if extra:
+                problems.append(f"{label}evidence 含未知字段：{','.join(extra)}")
+            continue
+        for key in required:
+            value = evidence[key]
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > _ANCHOR_FIELD_VALUE_MAX_CHARS
+            ):
+                problems.append(f"{label}evidence.{key} 无效（必须是非空且不超限的字符串）")
+        for key in set(required) & _ANCHOR_HTTPS_FIELDS:
+            value = evidence[key]
+            if isinstance(value, str) and value and not value.startswith("https://"):
+                problems.append(f"{label}evidence.{key} 必须是 https URL")
+    return problems
+
+
+def verify_pack(
+    pack_dir: Path,
+    *,
+    public_key: str | None = None,
+    require_signature: bool = False,
+) -> list[str]:
+    """返回问题列表；空列表表示校验通过（R7：可选签名/锚定校验参数）。"""
     pack = Path(pack_dir)
     problems = _ProblemCollector()
 
@@ -2015,12 +2406,39 @@ def verify_pack(pack_dir: Path) -> list[str]:
             rel = path.relative_to(pack).as_posix()
             if kind in ("link", "special"):
                 problems.append(f"证据包包含不允许的链接或特殊文件：{rel}")
-            elif path.name != MANIFEST_NAME and rel not in listed:
+            elif (
+                path.name != MANIFEST_NAME
+                and rel not in listed
+                and rel not in (SIGNATURE_NAME, ANCHORS_NAME)
+            ):
                 problems.append(f"存在未登记的额外文件（清单未覆盖）：{rel}")
     except _PackageEntryLimitExceeded:
         problems.append("证据包目录条目数量超过安全上限")
     except (OSError, RuntimeError, ValueError):
         problems.append("证据包目录无法完整枚举")
+
+    # ⑥⑦ 签名与预声明锚定（R7）：signature.json / anchors.json 为清单外豁免文件
+    signature_path = _package_member_path(pack, SIGNATURE_NAME)
+    anchors_path = _package_member_path(pack, ANCHORS_NAME)
+    has_signature = signature_path is not None and signature_path.is_file()
+    has_anchors = anchors_path is not None and anchors_path.is_file()
+    if has_signature:
+        problems.extend(_signature_problems(
+            manifest,
+            signature_path,
+            manifest_path,
+            anchors_path if has_anchors else None,
+            public_key,
+        ))
+    elif require_signature:
+        problems.append("缺少签名文件 signature.json（--require-signature 要求签名）")
+    if has_anchors and not has_signature:
+        try:
+            anchors_value = load_json_value(anchors_path, max_bytes=_MAX_ANCHORS_JSON_BYTES)
+        except (OSError, ValueError, RecursionError) as exc:
+            problems.append(f"anchors.json 不可解析：{type(exc).__name__}")
+        else:
+            problems.extend(validate_anchor_bundle(anchors_value, manifest.get("pack_digest")))
 
     # ② 工单身份：manifest、metadata 与每条 event 必须指向同一工单。
     manifest_ticket_id: str | None = None
@@ -2708,17 +3126,53 @@ def _print_diagnostic(message: str, *, file=None) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 1:
+    pack_arg: str | None = None
+    public_key: str | None = None
+    require_signature = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--verify-signature":
+            pass  # 有签名 + 提供公钥时验签是强制行为；此开关为显式声明保留
+        elif arg == "--require-signature":
+            require_signature = True
+        elif arg == "--public-key":
+            index += 1
+            if index >= len(args):
+                _print_diagnostic("--public-key 缺少参数", file=sys.stderr)
+                return 2
+            public_key = args[index]
+        elif arg.startswith("--public-key="):
+            public_key = arg.split("=", 1)[1]
+        elif arg.startswith("--"):
+            _print_diagnostic(f"未知选项：{arg}", file=sys.stderr)
+            return 2
+        elif pack_arg is None:
+            pack_arg = arg
+        else:
+            _print_diagnostic("只接受一个证据包目录", file=sys.stderr)
+            return 2
+        index += 1
+    if pack_arg is None:
         _print_diagnostic(__doc__.strip())
-        _print_diagnostic("\n用法：python verify.py <证据包目录>", file=sys.stderr)
+        _print_diagnostic(
+            "\n用法：python verify.py <证据包目录> "
+            "[--verify-signature] [--require-signature] [--public-key <64位hex>]",
+            file=sys.stderr,
+        )
+        return 2
+    if public_key is not None and not _HEX64_RE.fullmatch(public_key):
+        _print_diagnostic("--public-key 必须是 64 位小写 hex", file=sys.stderr)
         return 2
 
-    pack = Path(args[0])
+    pack = Path(pack_arg)
     if not pack.is_dir():
         _print_diagnostic(f"不是目录：{pack}", file=sys.stderr)
         return 2
 
-    problems = verify_pack(pack)
+    problems = verify_pack(
+        pack, public_key=public_key, require_signature=require_signature,
+    )
     manifest_path = _package_member_path(pack, MANIFEST_NAME)
     ticket = ""
     if manifest_path is not None and manifest_path.is_file():
@@ -2743,7 +3197,16 @@ def main(argv: list[str] | None = None) -> int:
 
     _print_diagnostic(f"证据包校验通过：{pack}")
     _print_diagnostic(f"  工单：{ticket or '?'}")
-    _print_diagnostic("  已核验：清单完整性 · 事件链哈希链 · 正文与链上哈希对应 · 包摘要")
+    signature_path = _package_member_path(pack, SIGNATURE_NAME)
+    has_signature = signature_path is not None and signature_path.is_file()
+    checked = "清单完整性 · 事件链哈希链 · 正文与链上哈希对应 · 包摘要"
+    if has_signature and public_key is not None:
+        checked += " · Ed25519 签名"
+    elif has_signature:
+        checked += " · 签名（未验：未提供公钥不应发生）"
+    else:
+        checked += " · 未签名（证据力受限）"
+    _print_diagnostic(f"  已核验：{checked}")
     return 0
 
 

@@ -1,0 +1,64 @@
+name: Pack anchor
+
+# R7/W2：把 pack_digest 锚定进公开仓库历史（轻量透明日志）。
+# 第三方核查：git ls-remote origin refs/tags/anchor/<digest 前 16>，
+# tag message 内含完整 digest；再对照本地证据包 manifest.json 的 pack_digest。
+# 安全边界（规格 §4 / 评审 M3）：digest 形态校验先于任何 git 操作；
+# 顶层 contents: read，仅 tag job 最低需要 contents: write；
+# 不使用 secrets，无其他写路径。
+
+on:
+  workflow_dispatch:
+    inputs:
+      pack_digest:
+        description: "64 位小写 hex 的证据包摘要（manifest.json 的 pack_digest）"
+        required: true
+      repository_url:
+        description: "锚定记录中引用的公开仓库 URL"
+        required: false
+        default: "https://github.com/ayukyo/icode"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pack-anchor-${{ github.event.inputs.pack_digest }}
+  cancel-in-progress: false
+
+jobs:
+  anchor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Validate pack digest (64-hex, before any git mutation)
+        env:
+          PACK_DIGEST: ${{ github.event.inputs.pack_digest }}
+        run: |
+          if ! printf '%s' "$PACK_DIGEST" | grep -qE '^[0-9a-f]{64}$'; then
+            echo "::error::pack_digest 必须是 64 位小写 hex" >&2
+            exit 1
+          fi
+          echo "digest ok: $PACK_DIGEST"
+
+      - name: Write job summary
+        env:
+          PACK_DIGEST: ${{ github.event.inputs.pack_digest }}
+          REPOSITORY_URL: ${{ github.event.inputs.repository_url }}
+        run: |
+          printf '## 证据包锚定\n\n- pack_digest: `%s`\n- repository: %s\n- anchored_at: %s\n- tag: `anchor/%s`\n' \
+            "$PACK_DIGEST" "$REPOSITORY_URL" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${PACK_DIGEST:0:16}" \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create and push anchor tag
+        env:
+          PACK_DIGEST: ${{ github.event.inputs.pack_digest }}
+        run: |
+          git config user.name "icode-anchor-bot"
+          git config user.email "icode-anchor-bot@users.noreply.github.com"
+          git tag -a "anchor/${PACK_DIGEST:0:16}" -m "anchor $PACK_DIGEST"
+          git push origin "anchor/${PACK_DIGEST:0:16}"
