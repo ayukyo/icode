@@ -80,4 +80,5 @@
 - **R7 行**：`acceptance_summary()` 读取工单目录下惯例位置 `pack/`（manifest.json/signature.json/anchors.json），投影 pack_digest/签名状态/锚定列表；`ticket_detail` 在存在时附 `acceptance`（不存在不伪造）。
 - **前端**：`workbench_assets` 详情头渲染三段展示（badge + stage_label[当前语言] + 辅助状态），验收记录区（digest 截断展示 + 签名状态 + 锚定列表 + 独立校验器提示），i18n 双语键补齐（`signatureSigned`/`signatureMissing`/`anchorsNone`/`acceptanceNote` 等），纯 CSS 无内联脚本。
 - **测试**：`tests/test_workbench_display.py` 9 项（stage 覆盖、双语封闭、辅助派生、未知回退、acceptance 四种形态含损坏 manifest）。
-- **未覆盖（如实）**：真实 HTTP 端到端渲染断言（列表/审批/完成页的浏览器级验证）、语言持久化跨页面一致性的集成测试、原型其余区块（新建工单表单细化、审批动作按钮区）尚未逐项落地。
+- **第二片（2026-10-20）**：`tests/test_workbench_landing.py` 5 项——真实服务器 E2E：建单→详情/列表投影携带三段展示契约（stage ≥ 10 值闭集、双语言标签、辅助态可为空）、证据包写入后 acceptance 出现（digest/签名状态/锚定为空数组）、事实不存在时不伪造；i18n 静态契约：index.html 的 52 处 data-i18n 键全部存在于双语词典且两套词典键集合一致。
+- **未覆盖（如实）**：浏览器级渲染断言（DOM 级视觉/交互，需浏览器自动化）、语言持久化跨页面一致性的真实浏览器验证、附件上传（§14.8 附件字段需要后端 multipart 与存储，属新能力）、审批动作按钮区（审批台在独立 webui，工单工作台的审批卡片需跨服务集成，属新能力）。
