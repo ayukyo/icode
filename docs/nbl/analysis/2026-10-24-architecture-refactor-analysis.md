@@ -40,12 +40,13 @@
 
 ## 3. 架构图与代码的漂移（结构债务，按证据排序）
 
-### D1（高）runner.py 4495 行：编排器吸收平台执行细节
+### D1（高）runner.py 约 4.5K 行：编排器吸收平台执行细节（规模本身不是罪）
 
-`runner` 占 ORCH 盒子 63% 代码，fan-out 33（全仓第一）。其内部约 40% 是**平台进程机制**：`_run_posix_bounded_output`、`_cancel_windows_pipe_readers`、`_run_threaded_bounded_output*`、`_PosixVerificationExitMonitor`、`windows_runner_pipe`（956 行）——即"验证执行"横跨 ORCH 与 SANDBOX 两个盒子。后果：
+外部对标（2026-10-24 实测）：OpenHands `acp_agent.py` 4,734 行、Codex `core/src/session/mod.rs` 5,654 行、`chat_composer.rs` 12,750 行——**成熟项目的高内聚"会话主机"同样处于 4K-13K 行量级**，runner 的规模不是异常值。真正的问题是其内部约 40% 是**平台进程机制**：`_run_posix_bounded_output`、`_cancel_windows_pipe_readers`、`_run_threaded_bounded_output*`、`_PosixVerificationExitMonitor`、`windows_runner_pipe`（956 行）——"验证执行"横跨 ORCH 与 SANDBOX 两个盒子，与高内聚大文件的实践相反。后果：
 
 - 改验证行为必须动编排器；编排器无法在无平台环境（纯单测）中完整测试；
-- 与 `isolation` 盒子（9583 行，本应拥有平台执行）职责重叠，两边都可能改同一行为。
+- 与 `isolation` 盒子（9583 行，本应拥有平台执行）职责重叠，两边都可能改同一行为；
+- 拆分的判据是**变化原因/边界**（任务编排 / 验证进程管理 / 门禁交互 / 恢复点写入），不是行数达标。
 
 ### D2（高）架构图缺盒子，14 个模块无分层归属
 
@@ -103,6 +104,7 @@ CI/probe 工具与产品代码分离是好的；但 `windows_positive_loopback_a
 1. R1b（最低风险，先建立"提取模块"的操作先例）→ R1a（最大收益）→ R1c（防再漂移）→ R1d（入口收敛）。
 2. 每步：独立提交、相关测试文件全绿 + 全量套件零新增失败 + CI 三 run success 后进入下一步；任一步失败按 git revert 回退该步。
 3. O2 在 R1a-R1d 完成后以独立 SPEC 评估（本分析不预先拍板）。
+4. A-1（schema 单一权威）并入 R1c 的边界测试交付；A-2/A-3 各自独立 SPEC（触碰 fail-closed 语义与证据投影定义，按仓库纪律走评审）。
 4. 验收度量：runner ≤ 3000 行、pack_verify ≤ 2500 行、`test_architecture_boundaries.py` 存在且 104 模块全部归类、全量 3737+ 零新增失败。
 
 ## 6. 明确不动（重构边界）
@@ -118,9 +120,25 @@ CI/probe 工具与产品代码分离是好的；但 `windows_positive_loopback_a
 - 最大风险是 R1a：验证进程管理横跨平台（posix 组/Windows 管道/线程读取），下沉时行为差异可能只在 CI 的 Windows/macOS 腿暴露。缓解：先补平台差异的固化测试（当前 4 个盲区模块之一正是 `windows_positive_loopback_policy`），再搬迁。
 - 每步独立提交保证回滚粒度；全量套件 + CI 是唯一验收依据，"跳过≠通过"。
 
-## 8. 待补充输入
+## 8. 外部参照（2026-10-24 并行调研，证据分级见调研报告）
 
-- 主流 Agent 项目分层实践对照（并行调研中，到达后补入"外部参照"一节：采纳/暂缓/不适配判定）。
+对标 OpenHands Software Agent SDK（Python，1,439 py 文件）、SWE-agent（68 py 文件）、OpenAI Codex CLI（Rust，约 130 crate、5,498 rs 文件）：
+
+| 维度 | 外部实践 | 对 ICODE 的判定 |
+|---|---|---|
+| 大文件 | 三家大文件集中在"会话主机/协议/TUI"等高内聚模块（4.7K/5.7K/12.8K 行） | runner 规模可接受，**按关注点拆**（D1 已改判据） |
+| 控制面/Agent 面 | OpenHands SDK→OpenAPI 契约→Canvas；Codex protocol 独立 crate | **采纳**：schema 单一权威（见 A-1） |
+| 危险动作 | Codex：sandbox mode（能力）× approval policy（时序）两层正交 + execpolicy 规则带 justification；OpenHands：ConfirmRisky(threshold=HIGH, confirm_unknown=True) | **采纳为候选**（见 A-2，需独立 SPEC） |
+| 状态/证据 | OpenHands EventLog append-only 为唯一事实源，state 是投影；Codex rollout JSONL 为源、SQLite 索引可重建 | **方向采纳**（见 A-3）：ICODE 已有控制面事件链，不建第二日志，明确"投影"关系 |
+| 零审批自治 | SWE-agent 无审批、错误 autosubmit 降级成功；官方已宣布 maintenance-only | **不适配**：与 ICODE 门禁/证据产品定位相反；只借鉴 trajectory/replay 思想 |
+| crate 级拆分 | Codex ~130 crate + Bazel + 云遥测，上百人组织产物 | **不适配**：零依赖单包分发下会把分发/构建面放大一个数量级 |
+| Pydantic 不可变框架重写 | OpenHands V1 "stateless step + 唯一 ConversationState" | **不适配**：ICODE 门禁状态机是长生命周期有状态工作流；只借鉴事件日志思想 |
+
+### 外部参照产生的三个可采纳候选
+
+- **A-1 schema 单一权威**：契约 schema 当前双址（`vendor/icode-skill/schemas/` 7 个 + `src/icode/schemas/sandbox-policy-v1.schema.json`）。收敛为 skill 子仓唯一权威，Python 侧只校验/生成不定义。属 D2 漂移的结构性根因，建议并入 R1c。
+- **A-2 sandbox×approval 双层正交化**：`sandbox_policy`（568 行）只回答"能做什么"，`approvals` 只回答"何时必须问人"（风险阈值 + unknown 从严，对齐 OpenHands `confirm_unknown=True`），`guard` 退化为纯规则评估器（规则=匹配+决策+可进证据包的理由）。触碰 fail-closed 语义边界，**必须独立 SPEC + 评审**，不在 O1 机械步骤内。
+- **A-3 事件日志唯一事实源**：控制面事件链（skill 子仓）保持权威；`checkpoint`（140 行）= 日志上的截断点投影，`evidence pack` = 日志子集 + 签名锚定，`recovery` = 从日志重放。把"恢复与证据双轨"显式定义为投影关系，消除双轨漂移（当前 recovery 437 行 vs evidence 6,685 行的失衡）。方向性工作，随 A-2 的 SPEC 一并评估。
 
 ## 附：度量复算
 
