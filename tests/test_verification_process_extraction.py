@@ -153,6 +153,50 @@ class ExtractionShapeTests(unittest.TestCase):
                 )
 
 
+class PatchObservationPointTests(unittest.TestCase):
+    """既有测试通过 `runner.<stdlib模块>` 观察已下沉的路径。
+
+    stdlib 模块对象在进程内是共享的，`patch.object(runner.selectors, ...)` 实际
+    作用于真实 `selectors` 模块；但只要 `runner` 失去该属性，这些观察点就会
+    `AttributeError`。P2 曾因把它当"失效 import"清理而导致 POSIX 腿全线失败
+    （Windows 上全绿，因为对应测试在 Windows 被 skip）。
+    """
+
+    OBSERVED = ("subprocess", "selectors", "os", "sys")
+
+    def test_runner_keeps_stdlib_observation_points(self) -> None:
+        from icode import runner
+
+        for name in self.OBSERVED:
+            self.assertTrue(
+                hasattr(runner, name),
+                f"runner.{name} 不可解析；既有测试的 patch 观察点会 AttributeError",
+            )
+
+    def test_observation_points_are_the_real_stdlib_modules(self) -> None:
+        """观察点必须是共享的 stdlib 模块本身，patch 才能作用于真实路径。"""
+        import importlib
+
+        from icode import runner, verification_process
+
+        for name in self.OBSERVED:
+            real = importlib.import_module(name)
+            self.assertIs(
+                getattr(runner, name), real,
+                f"runner.{name} 不是共享的 stdlib 模块",
+            )
+            self.assertIs(
+                getattr(verification_process, name, real), real,
+                f"verification_process.{name} 不是共享的 stdlib 模块",
+            )
+
+    def test_patching_runner_selectors_reaches_the_moved_function(self) -> None:
+        """patch runner.selectors 必须能影响 verification_process 的代码路径。"""
+        from icode import runner, verification_process
+
+        self.assertIs(runner.selectors, verification_process.selectors)
+
+
 class ReexportContractTests(unittest.TestCase):
     """C1 / C1b：runner 侧重导出与直接导入的等价性。"""
 

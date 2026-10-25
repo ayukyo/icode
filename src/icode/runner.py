@@ -26,6 +26,12 @@ import shutil
 import stat
 import subprocess
 import sys
+
+# 平台进程执行已下沉到 verification_process，但既有测试仍通过
+# `patch.object(runner.selectors, ...)` 观察该路径（stdlib 模块属性是共享对象，
+# patch 会作用于真实模块）。保留此 import 使那些观察点继续可解析。
+import selectors  # noqa: F401 - 供既有测试的 patch 观察点使用
+
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
