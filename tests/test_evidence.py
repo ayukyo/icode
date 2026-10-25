@@ -4563,6 +4563,7 @@ class TestEvidencePack(unittest.TestCase):
                         None,
                         NoIsolation(),
                         None,
+                        None,
                     ),
                 ),
                 redirect_stdout(task_stdout),

@@ -480,15 +480,17 @@ def _build_runner(args: argparse.Namespace):
     # 未提供 max_turns 的调用方（如只取事件钩子的测试）按默认回路预算处理，
     # 不因缺失字段让装配失败。
     max_turns = getattr(args, "max_turns", None)
+    # 步骤路由表一并返回：调用方需要它传给 run_contract_step，
+    # 否则按步骤路由选模型的能力会被静默丢弃。
     return backend, approver, budget, on_event, sandbox, LoopConfig(
-        max_turns=max_turns if max_turns is not None else LoopConfig.max_turns)
+        max_turns=max_turns if max_turns is not None else LoopConfig.max_turns), routes
 
 
 def cmd_step_run(args: argparse.Namespace) -> int:
     from .runner import run_contract_step
 
     settings = load_settings(args.skill_root)
-    backend, approver, budget, on_event, sandbox, loop_config = _build_runner(args)
+    backend, approver, budget, on_event, sandbox, loop_config, routes = _build_runner(args)
     print(f"契约步骤执行：{args.step}（backend={getattr(backend, 'name', '?')}）")
     report = run_contract_step(
         settings, backend=backend, workspace=Path(args.workspace), step=args.step,
@@ -506,7 +508,7 @@ def cmd_task(args: argparse.Namespace) -> int:
     from .runner import DEFAULT_TASK, prepare_workspace, run_task
 
     settings = load_settings(args.skill_root)
-    backend, approver, budget, on_event, sandbox, loop_config = _build_runner(args)
+    backend, approver, budget, on_event, sandbox, loop_config, routes = _build_runner(args)
 
     if args.workspace:
         workspace = Path(args.workspace)
@@ -674,7 +676,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
 
     from .runner import resume_contract_step
 
-    backend, approver, budget, on_event, sandbox, loop_config = _build_runner(args)
+    backend, approver, budget, on_event, sandbox, loop_config, routes = _build_runner(args)
     print(f"\n恢复执行（backend={getattr(backend, 'name', '?')}）")
     report = resume_contract_step(
         settings, backend=backend, out_dir=out_dir, step=args.step, ticket_id=ticket_id,
@@ -752,7 +754,7 @@ def cmd_workbench(args: argparse.Namespace) -> int:
 
             verification_plan_provider = PythonUnittestPlanProvider(Path(sys.executable))
 
-        backend, approver, budget, on_event, sandbox, loop_config = _build_runner(args)
+        backend, approver, budget, on_event, sandbox, loop_config, routes = _build_runner(args)
         executor = NativeChainExecutor(
             settings,
             backend=backend,
@@ -806,7 +808,7 @@ def cmd_chain(args: argparse.Namespace) -> int:
     from .chain import run_chain
 
     settings = load_settings(args.skill_root)
-    backend, approver, budget, on_event, sandbox, loop_config = _build_runner(args)
+    backend, approver, budget, on_event, sandbox, loop_config, routes = _build_runner(args)
     steps = tuple(x.strip() for x in args.only.split(",") if x.strip()) or None
     if steps:
         print(f"仅执行指定步骤：{steps}")

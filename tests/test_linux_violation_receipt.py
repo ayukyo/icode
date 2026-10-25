@@ -366,7 +366,7 @@ class TestLinuxViolationReceipt(unittest.TestCase):
                 patch("icode.isolation.select_sandbox", return_value=object()),
                 contextlib.redirect_stdout(rendered_output),
             ):
-                _, _, _, cli_on_event, _, _ = _build_runner(cli_args)
+                _, _, _, cli_on_event, _, _, _ = _build_runner(cli_args)
 
                 def tee_event(kind: str, payload: dict) -> None:
                     events.append((kind, payload))

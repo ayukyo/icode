@@ -19,6 +19,7 @@ from __future__ import annotations
 import ast
 import inspect
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -162,6 +163,10 @@ class PatchObservationPointTests(unittest.TestCase):
     （Windows 上全绿，因为对应测试在 Windows 被 skip）。
     """
 
+    # runner 必须保留这些 stdlib 属性。stdlib 模块对象在进程内是共享的
+    # （patch 作用于真实模块），但**属性本身**必须存在，否则
+    # `patch.object(runner.X, ...)` 直接 AttributeError。
+    # `select` 不在其中：kqueue 测试已改为 patch verification_process.select。
     OBSERVED = ("subprocess", "selectors", "os", "sys")
 
     def test_runner_keeps_stdlib_observation_points(self) -> None:
@@ -171,6 +176,23 @@ class PatchObservationPointTests(unittest.TestCase):
             self.assertTrue(
                 hasattr(runner, name),
                 f"runner.{name} 不可解析；既有测试的 patch 观察点会 AttributeError",
+            )
+
+    def test_verification_process_keeps_its_platform_stdlib(self) -> None:
+        """平台执行簇必须保有它用到的 stdlib：select / selectors / os / signal 等。"""
+        import importlib
+
+        from icode import verification_process
+
+        for name in ("select", "selectors", "os", "signal", "subprocess", "sys", "errno"):
+            self.assertTrue(
+                hasattr(verification_process, name),
+                f"verification_process.{name} 缺失；平台分支会 NameError",
+            )
+            self.assertIs(
+                getattr(verification_process, name),
+                importlib.import_module(name),
+                f"verification_process.{name} 不是共享的 stdlib 模块",
             )
 
     def test_observation_points_are_the_real_stdlib_modules(self) -> None:
@@ -447,7 +469,10 @@ class InternalCallPatchTargetTests(unittest.TestCase):
                         continue
                     body = "\n".join(lines[node.lineno - 1:node.end_lineno])
                     code_only = "\n".join(l.split("#")[0] for l in body.split("\n"))
-                    if "verification_process" not in code_only:
+                    # 只认「模块对象被使用」：verification_process 后面必须
+                    # 跟一个非标识符字符（排除 "verification_process.py" 这类
+                    # 文件名，以及字符串字面量里的提及）。
+                    if not re.search(r"\bverification_process\b(?!\.py\b)", code_only):
                         continue
                     if "import verification_process" in body:
                         continue

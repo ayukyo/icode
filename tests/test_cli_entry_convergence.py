@@ -146,5 +146,53 @@ class CliEntryConvergenceTests(unittest.TestCase):
         self.fail(f"找不到函数 {name}")
 
 
+class StepRunRouteBindingTests(unittest.TestCase):
+    """`icode step-run` 必须真的把步骤路由表传下去。
+
+    历史缺陷：`_build_runner` 内部算了 routes，但 `cmd_step_run` / `cmd_chain`
+    引用了一个**并未定义**的 `routes` → 运行即 NameError，整条 step-run 命令
+    不可用。该路径长期未被 CI 覆盖，直到静态名字解析守卫上线才暴露。
+    """
+
+    def test_cmd_step_run_passes_routes_without_name_error(self) -> None:
+        import argparse
+        from unittest.mock import patch
+
+        from icode import cli
+
+        args = argparse.Namespace(
+            backend="fake", key_file="", model="", base_url="", proxy="",
+            no_proxy=None, approve=False, budget_tokens=1000, quiet=False,
+            isolation="auto", max_turns=3, skill_root="", step="plan",
+            ticket_id="T1", workspace=".", requirement="r", out_dir=".",
+        )
+        with patch("icode.backends.build_backend", return_value=object()), \
+             patch("icode.isolation.select_sandbox", return_value=object()), \
+             patch("icode.runner.run_contract_step") as run:
+            cli.cmd_step_run(args)
+        self.assertIn("routes", run.call_args.kwargs,
+                      "step-run 必须把路由表传给 run_contract_step")
+        self.assertIsNone(run.call_args.kwargs["routes"])
+
+    def test_build_runner_returns_routes(self) -> None:
+        """`_build_runner` 必须返回路由表，否则调用方无从取得。"""
+        import argparse
+        from unittest.mock import patch
+
+        from icode import cli
+
+        args = argparse.Namespace(
+            backend="fake", key_file="", model="", base_url="", proxy="",
+            no_proxy=None, approve=False, budget_tokens=1000, quiet=False,
+            isolation="auto", max_turns=3,
+        )
+        with patch("icode.backends.build_backend", return_value=object()), \
+             patch("icode.isolation.select_sandbox", return_value=object()):
+            built = cli._build_runner(args)
+        self.assertEqual(7, len(built),
+                         f"_build_runner 应返回 7 个元素，实际 {len(built)}")
+        self.assertIsNone(built[6], "无路由配置时 routes 应为 None")
+
+
 if __name__ == "__main__":
     unittest.main()
