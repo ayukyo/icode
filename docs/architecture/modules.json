@@ -1,7 +1,7 @@
 {
   "meta": {
     "baseline_sha": "105fc27",
-    "module_count": 104,
+    "module_count": 105,
     "owner": "架构治理",
     "last_reviewed": "2026-10-25",
     "note": "唯一真源。docs/icode-agent-product-architecture.md 的盒子是抽象层，本表把盒子落到具体模块。"
@@ -40,6 +40,7 @@
         "handshake",
         "loop",
         "multi_agent",
+        "orchestration_context",
         "reasoning",
         "recipes",
         "reviewer",

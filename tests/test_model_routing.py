@@ -12,6 +12,7 @@ from icode.isolation import NoIsolation
 from icode.model_routing import (ModelRoute, RouteError, apply_route,
                                  resolve_route, route_table)
 from icode.runner import _run_agent
+from icode.orchestration_context import RunContext, StepRequest
 from tests._support import require_skill, temp_workspace
 
 
@@ -142,20 +143,21 @@ class TestModelSwitchKeepsSingleTruth(unittest.TestCase):
                 return True
 
         report = _run_agent(
-            backend=backend,
+            ctx=RunContext.from_arguments(
+                backend=backend, approver=None, loop_config=None,
+                budget=None, on_event=None,
+                sandbox=NoIsolation(reason="route switch equivalence"),
+            ),
+            request=StepRequest(
+                brief="Review the current changes.",
+                contract=contract,
+                requirement="Keep the Reviewer read-only.",
+                operations=_Operations(),
+            ),
             workspace=workspace,
             out_dir=out_dir,
             ticket_id="ROUTE-SWITCH",
             step="review",
-            brief="Review the current changes.",
-            contract=contract,
-            requirement="Keep the Reviewer read-only.",
-            approver=None,
-            loop_config=None,
-            budget=None,
-            on_event=None,
-            sandbox=NoIsolation(reason="route switch equivalence"),
-            operations=_Operations(),
         )
         self.assertTrue(report.requests_ok if hasattr(report, "requests_ok") else True)
         artifacts: dict[str, bytes] = {}

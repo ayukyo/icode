@@ -16,6 +16,7 @@ from icode.control import ControlPlane, ControlResult, make_request
 from icode.handshake import next_out_dir
 from icode.self_verify import VerificationEvidence, evidence_fingerprint
 from icode.isolation import NoIsolation
+from icode.orchestration_context import RunContext, StepRequest
 from icode.isolation import LandlockSandbox
 from icode.execution_broker import ExecutionResult as BrokerResult
 from icode.budget import BudgetTracker
@@ -813,11 +814,13 @@ class TestContractEngineering(unittest.TestCase):
             "done",
         ]])
         def resumed_model(**kwargs):
-            self.assertEqual(kwargs["checkpointer"].attempt, args["attempt"])
-            self.assertEqual(dict(kwargs["change_baseline"]), {})
+            ctx = kwargs["ctx"]
+            request = kwargs["request"]
+            self.assertEqual(ctx.checkpointer.attempt, args["attempt"])
+            self.assertEqual(dict(request.change_baseline), {})
             args["baseline"]["changed.py"] = runner._snapshot(root)["changed.py"]
             # A caller's subsequent mutation cannot rewrite the admitted base.
-            self.assertEqual(dict(kwargs["change_baseline"]), {})
+            self.assertEqual(dict(request.change_baseline), {})
             (root / "later.py").write_text("value = 2\n", encoding="utf-8")
             return LoopResult(True, "no_tool_calls")
         with patch.object(runner, "_run_agent", side_effect=resumed_model), \
@@ -869,12 +872,19 @@ class TestContractEngineering(unittest.TestCase):
         root, cp, directory, outcome, report, args = self.gate_fixture()
         checkpoint = Checkpointer(directory, ticket_id="ENG-CONTRACT", step="code", attempt=args["attempt"])
         checkpoint.save(turn_index=0, tool_calls=0, history=[], stop_reason="engineering_verification_pending")
-        loop = runner._run_agent(backend=FakeBackend([
-            {"tool_calls": [{"id": "read", "name": "read_file", "arguments": {"path": "changed.py"}}]}, "done"]),
-            workspace=root, out_dir=directory, ticket_id="ENG-CONTRACT", step="code", brief="Read only fixture",
-            contract=ContractSet.load(self.settings.gates_json).step("code"), requirement="Read",
-            approver=None, loop_config=LoopConfig(), budget=None, on_event=None, sandbox=NoIsolation(),
-            policy=args["policy"], checkpointer=checkpoint, operations=args["operations"])
+        loop = runner._run_agent(
+            ctx=RunContext.from_arguments(
+                backend=FakeBackend([
+                    {"tool_calls": [{"id": "read", "name": "read_file", "arguments": {"path": "changed.py"}}]}, "done"]),
+                approver=None, loop_config=LoopConfig(), budget=None, on_event=None,
+                sandbox=NoIsolation(), policy=args["policy"], checkpointer=checkpoint,
+            ),
+            request=StepRequest(
+                brief="Read only fixture",
+                contract=ContractSet.load(self.settings.gates_json).step("code"),
+                requirement="Read", operations=args["operations"],
+            ),
+            workspace=root, out_dir=directory, ticket_id="ENG-CONTRACT", step="code")
         self.assertTrue(loop.ok)
         saved = checkpoint.load()
         self.assertGreater(saved.turn_index, 0)

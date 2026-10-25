@@ -21,6 +21,7 @@ from tests._support import REPO_ROOT, require_skill, temp_workspace
 
 from icode.backends import BackendError, OpenAICompatibleBackend, Usage, build_backend
 from icode.runner import _changed, _snapshot, prepare_workspace, run_unittest
+from icode.orchestration_context import RunContext, StepRequest
 
 
 def _normalize_unittest_elapsed_time(output: str) -> str:
@@ -1903,20 +1904,21 @@ class TestReviewStepReadOnlyContext(unittest.TestCase):
 
             with patch("subprocess.run", wraps=subprocess.run) as process_run:
                 report = _run_agent(
-                    backend=backend,
+                    ctx=RunContext.from_arguments(
+                        backend=backend, approver=None, loop_config=None,
+                        budget=None, on_event=None,
+                        sandbox=NoIsolation(reason="Windows Reviewer boundary integration test"),
+                    ),
+                    request=StepRequest(
+                        brief="Review without changing source or running unisolated commands.",
+                        contract=contract,
+                        requirement="Do not start a Reviewer command without OS isolation.",
+                        operations=_Operations(),
+                    ),
                     workspace=workspace,
                     out_dir=out_dir,
                     ticket_id="REVIEW-NO-ISOLATION",
                     step="review",
-                    brief="Review without changing source or running unisolated commands.",
-                    contract=contract,
-                    requirement="Do not start a Reviewer command without OS isolation.",
-                    approver=None,
-                    loop_config=None,
-                    budget=None,
-                    on_event=None,
-                    sandbox=NoIsolation(reason="Windows Reviewer boundary integration test"),
-                    operations=_Operations(),
                 )
 
         command_call, submit_call = report.turns[0].invocations
@@ -1976,11 +1978,17 @@ class TestReviewStepReadOnlyContext(unittest.TestCase):
                     return True
 
             report = _run_agent(
-                backend=backend, workspace=workspace, out_dir=out_dir,
-                ticket_id="REVIEW-READONLY-1", step="review", brief="Review the plan.",
-                contract=contract, requirement="Review without modifying source.",
-                approver=None, loop_config=None, budget=None, on_event=None,
-                sandbox=NoIsolation(), operations=_Operations(),
+                ctx=RunContext.from_arguments(
+                    backend=backend, approver=None, loop_config=None,
+                    budget=None, on_event=None, sandbox=NoIsolation(),
+                ),
+                request=StepRequest(
+                    brief="Review the plan.", contract=contract,
+                    requirement="Review without modifying source.",
+                    operations=_Operations(),
+                ),
+                workspace=workspace, out_dir=out_dir,
+                ticket_id="REVIEW-READONLY-1", step="review",
             )
             self.assertEqual(source.read_text(encoding="utf-8"), "ORIGINAL = True\n")
             self.assertEqual((out_dir / "02_review.md").read_text(encoding="utf-8"),
@@ -2051,11 +2059,17 @@ class TestReviewStepReadOnlyContext(unittest.TestCase):
                     return True
 
             report = _run_agent(
-                backend=backend, workspace=workspace, out_dir=out_dir,
-                ticket_id="REVIEW-READONLY-2", step="review", brief="Review the plan.",
-                contract=contract, requirement="Review without modifying source.",
-                approver=None, loop_config=None, budget=None, on_event=None,
-                sandbox=NoIsolation(), operations=_Operations(), policy=policy,
+                ctx=RunContext.from_arguments(
+                    backend=backend, approver=None, loop_config=None,
+                    budget=None, on_event=None, sandbox=NoIsolation(), policy=policy,
+                ),
+                request=StepRequest(
+                    brief="Review the plan.", contract=contract,
+                    requirement="Review without modifying source.",
+                    operations=_Operations(),
+                ),
+                workspace=workspace, out_dir=out_dir,
+                ticket_id="REVIEW-READONLY-2", step="review",
             )
             self.assertEqual(source.read_text(encoding="utf-8"), "ORIGINAL = True\n")
             self.assertTrue((out_dir / "02_review.md").is_file())
@@ -2148,21 +2162,21 @@ class TestReviewStepReadOnlyContext(unittest.TestCase):
                     return True
 
             report = _run_agent(
-                backend=backend,
+                ctx=RunContext.from_arguments(
+                    backend=backend, approver=None, loop_config=None,
+                    budget=None, on_event=None, sandbox=BubblewrapSandbox(),
+                    policy=base_policy,
+                ),
+                request=StepRequest(
+                    brief="Review the current changes.",
+                    contract=contract,
+                    requirement="Keep the Reviewer read-only.",
+                    operations=_Operations(),
+                ),
                 workspace=workspace,
                 out_dir=out_dir,
                 ticket_id="REVIEW-RUNNER-POLICY",
                 step="review",
-                brief="Review the current changes.",
-                contract=contract,
-                requirement="Keep the Reviewer read-only.",
-                approver=None,
-                loop_config=None,
-                budget=None,
-                on_event=None,
-                sandbox=BubblewrapSandbox(),
-                operations=_Operations(),
-                policy=base_policy,
             )
 
             self.assertEqual(source.read_text(encoding="utf-8"), "ORIGINAL = True\n")

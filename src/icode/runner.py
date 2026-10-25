@@ -51,6 +51,7 @@ from .guard import Guard, Scope
 from .isolation import NoIsolation, Sandbox, select_sandbox
 from .loop import AgentLoop, LoopConfig, LoopResult, Turn
 from .operations import OperationRecorder
+from .orchestration_context import PreparedCall, RunContext, StepRequest
 from .reasoning import ReasoningGate, TraceRow, append_trace, run_deliberation
 from .recovery import Recoverer
 from .sandbox_policy import NetworkMode, SandboxPolicy, derive_read_only_reviewer_policy, tighten_policy
@@ -1445,18 +1446,26 @@ def run_contract_step(
 
             if boundary == "before_write":
                 loop = _run_agent(
-                    backend=backend, workspace=workspace, out_dir=out_dir,
-                    ticket_id=ticket_id, step=step, brief=brief, contract=contract,
-                    requirement=requirement or DEFAULT_TASK, approver=approver,
-                    loop_config=loop_config, budget=budget, on_event=on_event,
-                    budget_tracker=budget_tracker,
-                    checkpointer=ckpt, extra_instructions=extra_instructions,
-                    operations=step_ops, sandbox=sandbox, policy=policy,
-                    workspace_session=workspace_session,
-                    change_baseline=change_baseline,
-                    inspection_runner=_bound_inspection_runner(
-                        cp, out_dir, ticket_id, step, attempt),
-                    **prepared_options,
+                    ctx=RunContext.from_arguments(
+                        backend=backend, approver=approver, loop_config=loop_config,
+                        budget=budget, on_event=on_event, budget_tracker=budget_tracker,
+                        checkpointer=ckpt, sandbox=sandbox, policy=policy,
+                        workspace_session=workspace_session,
+                        inspection_runner=_bound_inspection_runner(
+                            cp, out_dir, ticket_id, step, attempt),
+                    ),
+                    request=StepRequest(
+                        brief=brief, contract=contract,
+                        requirement=requirement or DEFAULT_TASK,
+                        extra_instructions=extra_instructions, operations=step_ops,
+                        change_baseline=change_baseline,
+                        prepared_call=PreparedCall(
+                            step=prepared_options.get("prepared_step"),
+                            attempt=prepared_options.get("prepared_attempt"),
+                        ),
+                    ),
+                    workspace=workspace, out_dir=out_dir,
+                    ticket_id=ticket_id, step=step,
                 )
                 report.loop = loop
                 if loop.stop_reason == "budget_exceeded":
@@ -1529,21 +1538,26 @@ def run_contract_step(
                         )
                     )
                     repair = _run_agent(
-                        backend=backend, workspace=workspace, out_dir=out_dir,
-                        ticket_id=ticket_id, step=step, brief=brief, contract=contract,
-                        requirement=requirement or DEFAULT_TASK, approver=approver,
-                        loop_config=loop_config, budget=budget, on_event=on_event,
-                        budget_tracker=budget_tracker,
-                        checkpointer=ckpt,
-                        sandbox=sandbox,
-                        policy=policy,
-                        workspace_session=workspace_session,
-                        change_baseline=change_baseline,
-                        inspection_runner=_bound_inspection_runner(
-                            cp, out_dir, ticket_id, step, attempt),
-                        extra_instructions=repair_instructions,
-                        operations=step_ops,
-                        **prepared_options,
+                        ctx=RunContext.from_arguments(
+                            backend=backend, approver=approver, loop_config=loop_config,
+                            budget=budget, on_event=on_event, budget_tracker=budget_tracker,
+                            checkpointer=ckpt, sandbox=sandbox, policy=policy,
+                            workspace_session=workspace_session,
+                            inspection_runner=_bound_inspection_runner(
+                                cp, out_dir, ticket_id, step, attempt),
+                        ),
+                        request=StepRequest(
+                            brief=brief, contract=contract,
+                            requirement=requirement or DEFAULT_TASK,
+                            extra_instructions=repair_instructions, operations=step_ops,
+                            change_baseline=change_baseline,
+                            prepared_call=PreparedCall(
+                                step=prepared_options.get("prepared_step"),
+                                attempt=prepared_options.get("prepared_attempt"),
+                            ),
+                        ),
+                        workspace=workspace, out_dir=out_dir,
+                        ticket_id=ticket_id, step=step,
                     )
                     report.loop = repair
                     if repair.stop_reason == "budget_exceeded":
@@ -2607,17 +2621,39 @@ def _bound_inspection_runner(
 
 
 def _run_agent(
-    *, backend, workspace, out_dir, ticket_id, step, brief, contract, requirement,
-    approver, loop_config, budget, on_event, checkpointer=None, resume_context: str = "",
-    sandbox: Sandbox | None = None, extra_instructions: str = "",
-    policy: SandboxPolicy | None = None,
-    change_baseline: dict[str, str] | None = None,
-    operations: OperationRecorder | None = None,
-    budget_tracker: BudgetTracker | None = None,
-    workspace_session: WorkspaceSession | None = None,
-    inspection_runner=None,
-    prepared_step=None, prepared_attempt=None,
+    *,
+    ctx: RunContext,
+    request: StepRequest,
+    workspace,
+    out_dir,
+    ticket_id,
+    step,
 ) -> LoopResult:
+    """按上下文执行一次 Agent 回合循环。
+
+    协作者来自 `ctx`（环境），本次调用载荷来自 `request`（内容）。
+    旧版 24 参扁平签名已移除；调用点须显式装配上下文。
+    """
+    backend = ctx.backend
+    approver = ctx.approver
+    loop_config = ctx.loop_config
+    budget = ctx.budget
+    budget_tracker = ctx.budget_tracker
+    on_event = ctx.on_event
+    checkpointer = ctx.checkpointer
+    sandbox = ctx.sandbox
+    policy = ctx.policy
+    workspace_session = ctx.workspace_session
+    inspection_runner = ctx.inspection_runner
+    brief = request.brief
+    contract = request.contract
+    requirement = request.requirement
+    change_baseline = request.change_baseline
+    operations = request.operations
+    extra_instructions = request.extra_instructions
+    resume_context = request.resume_context
+    prepared_step = request.prepared_call.step if request.prepared_call is not None else None
+    prepared_attempt = request.prepared_call.attempt if request.prepared_call is not None else None
     read_only_workspace = step == "review"
     deny_read_roots = list(policy.deny_read_roots if policy is not None else ())
     reviewer_hidden_roots: list[Path] = []
@@ -3154,15 +3190,19 @@ def resume_contract_step(
 
         requirement = str(meta.get("requirement") or DEFAULT_TASK)
         loop = _run_agent(
-            backend=backend, workspace=workspace, out_dir=out_dir,
-            ticket_id=ticket_id, step=step, brief=brief, contract=contract,
-            requirement=requirement, approver=approver, loop_config=loop_config,
-            budget=budget, on_event=on_event, checkpointer=checkpointer,
-            resume_context=decision.resume_brief(),
-            sandbox=sandbox, policy=policy, workspace_session=workspace_session,
-            change_baseline=engineering_baseline,
-            operations=step_ops,
-            budget_tracker=budget_tracker,
+            ctx=RunContext.from_arguments(
+                backend=backend, approver=approver, loop_config=loop_config,
+                budget=budget, on_event=on_event, checkpointer=checkpointer,
+                sandbox=sandbox, policy=policy, workspace_session=workspace_session,
+                budget_tracker=budget_tracker,
+            ),
+            request=StepRequest(
+                brief=brief, contract=contract, requirement=requirement,
+                resume_context=decision.resume_brief(),
+                change_baseline=engineering_baseline, operations=step_ops,
+            ),
+            workspace=workspace, out_dir=out_dir,
+            ticket_id=ticket_id, step=step,
         )
         report.loop = loop
         if loop.stop_reason == "budget_exceeded":

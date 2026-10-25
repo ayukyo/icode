@@ -1,0 +1,440 @@
+{
+  "note": "对外编排函数签名的基线快照。P0 实施后必须逐字段不变（SPEC A0.1）。",
+  "baseline_sha": "dc8046f",
+  "signatures": {
+    "icode.runner.run_contract_step": {
+      "param_count": 22,
+      "params": [
+        {
+          "name": "settings",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "backend",
+          "kind": "KEYWORD_ONLY",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "workspace",
+          "kind": "KEYWORD_ONLY",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "step",
+          "kind": "KEYWORD_ONLY",
+          "default": "'plan'",
+          "has_default": true
+        },
+        {
+          "name": "ticket_id",
+          "kind": "KEYWORD_ONLY",
+          "default": "'E2E-1'",
+          "has_default": true
+        },
+        {
+          "name": "requirement",
+          "kind": "KEYWORD_ONLY",
+          "default": "''",
+          "has_default": true
+        },
+        {
+          "name": "approver",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "loop_config",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "budget",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "budget_tracker",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "on_event",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "sandbox",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "policy",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "verification_plan",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "workspace_session",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "change_baseline",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "out_dir",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "extra_instructions",
+          "kind": "KEYWORD_ONLY",
+          "default": "''",
+          "has_default": true
+        },
+        {
+          "name": "post_write",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "prepared_scope",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "routes",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "route_builder",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        }
+      ]
+    },
+    "icode.runner.resume_contract_step": {
+      "param_count": 16,
+      "params": [
+        {
+          "name": "settings",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "backend",
+          "kind": "KEYWORD_ONLY",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "out_dir",
+          "kind": "KEYWORD_ONLY",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "step",
+          "kind": "KEYWORD_ONLY",
+          "default": "'plan'",
+          "has_default": true
+        },
+        {
+          "name": "ticket_id",
+          "kind": "KEYWORD_ONLY",
+          "default": "''",
+          "has_default": true
+        },
+        {
+          "name": "approver",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "loop_config",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "budget",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "budget_tracker",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "on_event",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "sandbox",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "workspace",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "policy",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "workspace_session",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "verification_plan",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "change_baseline",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        }
+      ]
+    },
+    "icode.runner.run_task": {
+      "param_count": 11,
+      "params": [
+        {
+          "name": "settings",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "backend",
+          "kind": "KEYWORD_ONLY",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "workspace",
+          "kind": "KEYWORD_ONLY",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "task",
+          "kind": "KEYWORD_ONLY",
+          "default": "'为 calc.py 新增两个函数并补充单元测试：\\n1) calc_gcd(a, b) —— 整数最大公约数；a=b=0 时返回 0\\n2) calc_lcm(a, b) —— 整数最小公倍数；任一参数为 0 时返回 0；结果溢出 int32 时抛 CalcError(CALC_ERR_OVERFLOW)\\n要求：在 test_calc.py 中补充覆盖正常值与边界（0、负数、溢出）的用例；最后运行 `python -m unittest` 确认全部通过。'",
+          "has_default": true
+        },
+        {
+          "name": "result_commit_sha",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "approver",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "loop_config",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "budget",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "on_event",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "sandbox",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "max_repairs",
+          "kind": "KEYWORD_ONLY",
+          "default": "2",
+          "has_default": true
+        }
+      ]
+    },
+    "icode.chain.run_chain": {
+      "param_count": 20,
+      "params": [
+        {
+          "name": "settings",
+          "kind": "POSITIONAL_OR_KEYWORD",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "backend",
+          "kind": "KEYWORD_ONLY",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "workspace",
+          "kind": "KEYWORD_ONLY",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "requirement",
+          "kind": "KEYWORD_ONLY",
+          "default": null,
+          "has_default": false
+        },
+        {
+          "name": "ticket_id",
+          "kind": "KEYWORD_ONLY",
+          "default": "'CHAIN-1'",
+          "has_default": true
+        },
+        {
+          "name": "steps",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "approver",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "loop_config",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "budget",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "budget_tracker",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "on_event",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "sandbox",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "policy",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "verification_plan",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "workspace_session",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "on_step",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "out_dir",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "prepared_scope",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "routes",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        },
+        {
+          "name": "route_builder",
+          "kind": "KEYWORD_ONLY",
+          "default": "None",
+          "has_default": true
+        }
+      ]
+    }
+  }
+}
