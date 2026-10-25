@@ -433,7 +433,7 @@ class PreparedRunnerTests(unittest.TestCase):
             stack.enter_context(patch.object(ControlPlane, "step_finish", new=terminal))
             selected_agent = runner._run_agent
             def checkpointed_agent(**kwargs):
-                kwargs["checkpointer"].save(turn_index=0, tool_calls=0, history=[])
+                kwargs["ctx"].checkpointer.save(turn_index=0, tool_calls=0, history=[])
                 return selected_agent(**kwargs)
             stack.enter_context(patch.object(runner, "_run_agent", side_effect=checkpointed_agent))
             original_clear = runner.Checkpointer.clear
