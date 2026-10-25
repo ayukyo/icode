@@ -483,7 +483,46 @@ P0/P2/P3 推送后，CI 连续三轮失败，而本机 Windows 全量套件与�
 全量套件线上跑」必须严格执行，且**每轮推送后必须确认 CI 终态**，
 不能以本机绿灯推断验收通过。
 
-### 12.7 SPEC 门限修正
+### 12.7 CI 终态与验收（2026-10-26 凌晨）
+
+**最终候选 `9aff8b9` 的线上结果**：
+
+| run | id | 结论 |
+|---|---|---|
+| CI | `40211518449` | **success** |
+| Windows helper provenance | `40211518477` | **success** |
+| Public website (pages) | — | 未触发：最后三个提交只改 `src/` 与 `tests/`，不满足 `pages.yml` 的路径条件；含 docs 变更的 `3272aae` 上该 run 为 success |
+
+CI 全量 job：41 个 success / 3 个 skipped / 0 个失败。此前三轮失败
+（`65f95c9`、`f059e37`、`6326838`）的失败 job 已全部转绿。
+
+**本机全量套件与基线逐项对比**（`dc8046f` 基线 3778 项 → 改动后 3825 项）：
+
+| 项 | 基线 | 改动后 |
+|---|---:|---:|
+| 失败 (FAIL) | 26 | 27 |
+| 错误 (ERROR) | 42 | 42 |
+| 新增失败 | — | **0** |
+
+唯一在集合 diff 中「新出现」的 `test_landlock_实验性策略路径映射拒绝不可表达合同`
+在基线上同样失败（基线 2 个失败子项，改动后 1 个），属既存的 Windows
+平台项，差异来自子项分组而非回归。
+
+**本轮新增的四道机器防线**（均为「把错误改回去」验证过会失败）：
+
+| 守卫 | 挡住什么 |
+|---|---|
+| `test_verification_process_extraction.PatchObservationPointTests` | runner 失去被观察的 stdlib 属性（`selectors` / `select`） |
+| `test_verification_process_extraction.InternalCallPatchTargetTests` | 把 vp 内部被调者 patch 在 runner 上（静默失效） |
+| `test_verification_process_extraction` 的 import 守卫 | 用了 `verification_process` 却没 import（NameError） |
+| `test_module_name_resolution` | 模块级未定义名（`symtable` 全量扫描，含只在某平台分支触发的） |
+| `test_platform_branch_reachability` | 被平台 skip 掩盖的引用错误（剥掉 skip 后只判 NameError/AttributeError） |
+
+其中最后一道是**决定性**的：Windows 上这些 POSIX 测试一律 skip，
+CI 反馈又慢，剥掉 skip 后在本机跑，才第一次把三轮重复犯的同一类错误
+全部暴露出来。
+
+### 12.8 SPEC 门限修正
 
 A2.1 原写「runner ≤ 3700」，估算基于迁移前 4495 行；因执行顺序为 P0→P2，
 P0 落地后基线为 4535 行，故按实际基线重设为 **≤ 3850**（实测 3803，余量 47）。
