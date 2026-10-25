@@ -451,7 +451,39 @@ P0 完成后复验：9 项边界测试全绿，`orchestration_context` 顶层与
 - 回归：`tests/test_cli` + `tests/test_cli_resume_sandbox` 20 项全绿
   （基线同为全绿）；A3.4 的内部依赖数按观察指标记录，不设硬门限。
 
-### 12.6 SPEC 门限修正
+### 12.6 CI 暴露的回归与「patch 观察点」教训（2026-10-25 深夜）
+
+P0/P2/P3 推送后，CI 连续三轮失败，而本机 Windows 全量套件与基线逐项一致。
+根因全部是同一类问题：**被搬迁代码的观察点（patch 目标）失效**，且受影响
+测试几乎全是 POSIX-only，Windows 上根本不会运行。
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| R1 | Linux 腿 `test_linux_prepared_runner_lifecycle` 失败 | mock 读 `kwargs["checkpointer"]`，P0 后该字段改走 `ctx.checkpointer` | mock 改为读 `kwargs["ctx"]` |
+| R2 | POSIX 腿大面积失败 | P2 把 `import selectors` 当失效 import 清理，但测试经 `patch.object(runner.selectors, ...)` 观察该路径 | 恢复 import 并注释说明为何必须留 |
+| R3 | 三个 POSIX-only 测试失效 | patch 目标是 **vp 内部被调者**（`_darwin_process_group_has_live_members` / `_terminate_posix_verification_group` / `_reap_posix_verification_process` / `_PosixVerificationExitMonitor`），但调用方在 vp 内按 **vp 全局**查找，patch runner 是静默 no-op | 改为 patch 并调用 `verification_process` |
+
+**R3 是评审 D1 的通用形态**：D1 只覆盖了「`run_unittest` 与其被调函数一起搬走」
+这一种；实际更普遍的规则是——
+
+> **重导出保住了 `from X import name` 的导入点，但保不住模块内的调用点。**
+> 函数 A 搬去新模块后，A 内部对 B 的调用按**新模块的全局**解析；
+> 任何 `patch.object(旧模块, "B")` 都会静默失效，测试照绿但隔离丢失。
+
+**新增的机器防线**（`tests/test_verification_process_extraction.py`）：
+
+- `PatchObservationPointTests` —— 断言 `runner.subprocess/selectors/os/sys`
+  仍可解析且是共享的 stdlib 模块（R2 的守卫）；
+- `InternalCallPatchTargetTests` —— 记录 vp 内部调用图，并**静态扫描**
+  `tests/` + `scripts/`，拒绝任何把 vp 内部被调者 patch 在 runner 上的位置
+  （R3 的守卫）。已用「把错误改回去」的方式验证它确实会失败并给出准确行号。
+
+**流程教训**：Windows 单一平台的本地回归**无法**证明跨平台安全。
+本机 3812 项与基线逐项一致，CI 却已红三轮。SPEC §7.3 的「相关测试本机跑 +
+全量套件线上跑」必须严格执行，且**每轮推送后必须确认 CI 终态**，
+不能以本机绿灯推断验收通过。
+
+### 12.7 SPEC 门限修正
 
 A2.1 原写「runner ≤ 3700」，估算基于迁移前 4495 行；因执行顺序为 P0→P2，
 P0 落地后基线为 4535 行，故按实际基线重设为 **≤ 3850**（实测 3803，余量 47）。
