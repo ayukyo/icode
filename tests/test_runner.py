@@ -534,31 +534,31 @@ class TestIndependentVerification(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX killpg cleanup semantics")
     def test_macos进程组EPERM仅在独立确认无存活成员后视为已清理(self) -> None:
-        from icode import runner
+        from icode import verification_process
 
         process = SimpleNamespace(pid=4321, returncode=0)
         with (
-            mock.patch.object(runner, "sys", SimpleNamespace(platform="darwin")),
-            mock.patch.object(runner.os, "killpg", side_effect=PermissionError(1, "denied")),
-            mock.patch.object(runner, "_darwin_process_group_has_live_members", return_value=False),
+            mock.patch.object(verification_process, "sys", SimpleNamespace(platform="darwin")),
+            mock.patch.object(verification_process.os, "killpg", side_effect=PermissionError(1, "denied")),
+            mock.patch.object(verification_process, "_darwin_process_group_has_live_members", return_value=False),
         ):
             self.assertEqual(
-                runner._terminate_posix_verification_group(process, process_exited=True),
+                verification_process._terminate_posix_verification_group(process, process_exited=True),
                 (True, None),
             )
 
     @unittest.skipUnless(os.name == "posix", "POSIX killpg cleanup semantics")
     def test_macos进程组EPERM且仍有存活成员时保持失败(self) -> None:
-        from icode import runner
+        from icode import verification_process
 
         process = SimpleNamespace(pid=4321, returncode=0)
         with (
-            mock.patch.object(runner, "sys", SimpleNamespace(platform="darwin")),
-            mock.patch.object(runner.os, "killpg", side_effect=PermissionError(1, "denied")),
-            mock.patch.object(runner, "_darwin_process_group_has_live_members", return_value=True),
+            mock.patch.object(verification_process, "sys", SimpleNamespace(platform="darwin")),
+            mock.patch.object(verification_process.os, "killpg", side_effect=PermissionError(1, "denied")),
+            mock.patch.object(verification_process, "_darwin_process_group_has_live_members", return_value=True),
         ):
             self.assertEqual(
-                runner._terminate_posix_verification_group(process, process_exited=True),
+                verification_process._terminate_posix_verification_group(process, process_exited=True),
                 (False, 1),
             )
 
@@ -646,7 +646,7 @@ class TestIndependentVerification(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX bounded runner 清理路径")
     def test_selector初始化失败仍终止并回收已启动的验证进程(self) -> None:
-        from icode import runner
+        from icode import verification_process
         from icode.runner import VerificationOutputCaptureError
 
         class FakeProcess:
@@ -659,20 +659,20 @@ class TestIndependentVerification(unittest.TestCase):
 
         process = FakeProcess()
         with (
-            mock.patch.object(runner.subprocess, "Popen", return_value=process),
+            mock.patch.object(verification_process.subprocess, "Popen", return_value=process),
             mock.patch.object(
-                runner.selectors, "DefaultSelector",
+                verification_process.selectors, "DefaultSelector",
                 side_effect=OSError("too many open files"),
             ),
             mock.patch.object(
-                runner, "_terminate_posix_verification_group", return_value=(True, None),
+                verification_process, "_terminate_posix_verification_group", return_value=(True, None),
             ) as terminate,
             mock.patch.object(
-                runner.os, "waitpid", return_value=(process.pid, 0),
+                verification_process.os, "waitpid", return_value=(process.pid, 0),
             ) as waitpid,
         ):
             with self.assertRaises(VerificationOutputCaptureError):
-                runner._run_posix_bounded_output(
+                verification_process._run_posix_bounded_output(
                     ["python", "-m", "unittest"],
                     workspace=REPO_ROOT,
                     timeout=10,
@@ -721,7 +721,7 @@ class TestIndependentVerification(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX group cleanup ordering")
     def test_退出状态丢失后不重复按旧PGID清理(self) -> None:
-        from icode import runner
+        from icode import verification_process
         from icode.runner import VerificationOutputCaptureError
 
         class FakeSelector:
@@ -758,16 +758,16 @@ class TestIndependentVerification(unittest.TestCase):
         )
         try:
             with (
-                mock.patch.object(runner.subprocess, "Popen", return_value=process),
-                mock.patch.object(runner.selectors, "DefaultSelector", FakeSelector),
+                mock.patch.object(verification_process.subprocess, "Popen", return_value=process),
+                mock.patch.object(verification_process.selectors, "DefaultSelector", FakeSelector),
                 mock.patch.object(
-                    runner, "_PosixVerificationExitMonitor", return_value=FakeMonitor(),
+                    verification_process, "_PosixVerificationExitMonitor", return_value=FakeMonitor(),
                 ),
-                mock.patch.object(runner, "_terminate_posix_verification_group", cleanup),
-                mock.patch.object(runner, "_reap_posix_verification_process", reap),
+                mock.patch.object(verification_process, "_terminate_posix_verification_group", cleanup),
+                mock.patch.object(verification_process, "_reap_posix_verification_process", reap),
             ):
                 with self.assertRaises(VerificationOutputCaptureError):
-                    runner._run_posix_bounded_output(
+                    verification_process._run_posix_bounded_output(
                         ["python", "-m", "unittest"],
                         workspace=REPO_ROOT,
                         timeout=10,

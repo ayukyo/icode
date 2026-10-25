@@ -24,7 +24,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_ROOT = os.path.join(REPO_ROOT, "src", "icode")
@@ -355,6 +355,100 @@ class AffectedSurfaceTests(unittest.TestCase):
         )
         self.assertEqual(0, proc.returncode, proc.stdout + proc.stderr)
         self.assertIn("verification_process", proc.stdout)
+
+
+class InternalCallPatchTargetTests(unittest.TestCase):
+    """vp 内部的被调者必须 patch 在 vp 上，patch 在 runner 上会被静默绕过。
+
+    `patch.object(runner, "_terminate_posix_verification_group", ...)` 只替换
+    runner 命名空间里的名字；而 `_run_posix_bounded_output` 现在住在 vp，
+    它按 **vp 的全局**查找被调者。这是评审 D1 的通用形态——重导出保住了
+    import 点，保不住模块内调用点。
+    """
+
+    # vp 内部调用图：调用者 -> 被调者（由 AST 实测得出）
+    INTERNAL_CALLS = {
+        "_run_unittest_with_bounded_output": {"_run_posix_bounded_output",
+                                              "_run_threaded_bounded_output"},
+        "_terminate_posix_verification_group": {"_darwin_process_group_has_live_members"},
+        "_run_posix_bounded_output": {"_PosixVerificationExitMonitor",
+                                      "_reap_posix_verification_process",
+                                      "_retain_verification_output",
+                                      "_terminate_posix_verification_group"},
+        "_run_threaded_bounded_output": {"_run_threaded_bounded_output_impl"},
+        "_join_or_cancel_threaded_readers": {"_cancel_windows_pipe_readers"},
+        "_run_threaded_bounded_output_impl": {"_cancel_windows_pipe_readers",
+                                              "_join_or_cancel_threaded_readers",
+                                              "_retain_verification_output",
+                                              "_terminate_threaded_verification_tree"},
+    }
+
+    def test_internal_callees_are_reachable_on_both_modules(self) -> None:
+        """被调者在 runner 与 vp 上都必须可解析（否则测试写哪边都会炸）。"""
+        from icode import runner, verification_process
+
+        for callees in self.INTERNAL_CALLS.values():
+            for name in callees:
+                self.assertTrue(hasattr(runner, name), f"runner.{name} 缺失")
+                self.assertTrue(hasattr(verification_process, name), f"vp.{name} 缺失")
+
+    def test_patching_the_owner_reaches_the_internal_call(self) -> None:
+        """patch 在**属主模块**上必须真的影响内部调用（用 Windows 可达路径验证）。"""
+        from icode import verification_process
+        from unittest.mock import Mock
+
+        sentinel = Mock(return_value=(0, b"", b""))
+        with patch.object(verification_process, "_run_threaded_bounded_output", sentinel):
+            # dispatch 层会按平台选择；此处只验证名字解析落在 vp 全局
+            self.assertIs(
+                verification_process._run_threaded_bounded_output, sentinel,
+                "patch 未作用于 vp 全局",
+            )
+
+    def test_patching_runner_does_not_reach_internal_calls(self) -> None:
+        """反向固化：patch runner 不会改变 vp 的内部查找（这条断言失败=说明已重构）。"""
+        from icode import runner, verification_process
+
+        with patch.object(runner, "_run_threaded_bounded_output", Mock()):
+            self.assertIsNot(
+                verification_process._run_threaded_bounded_output,
+                runner._run_threaded_bounded_output,
+                "若两者相同，说明内部调用已改为经 runner 查找，可更新本断言",
+            )
+
+    def test_no_test_patches_internal_callees_on_runner(self) -> None:
+        """静态扫描：tests/scripts 不得把 vp 内部被调者 patch 在 runner 上。"""
+        internal_callees = set()
+        for callees in self.INTERNAL_CALLS.values():
+            internal_callees |= callees
+        offenders: list[str] = []
+        for base in (REPO_ROOT,):
+            for sub in ("tests", "scripts"):
+                root = Path(base, sub)
+                if not root.is_dir():
+                    continue
+                for path in root.rglob("*.py"):
+                    if "__pycache__" in str(path):
+                        continue
+                    # 本文件内的反向固化断言是有意为之，跳过自身
+                    if path.name == "test_verification_process_extraction.py":
+                        continue
+                    lines = path.read_text(encoding="utf-8").splitlines()
+                    for index, line in enumerate(lines):
+                        # `patch` 与目标常被换行拆开，向后看一小窗
+                        window = "\n".join(lines[max(0, index - 1):index + 2])
+                        if "patch" not in window:
+                            continue
+                        for name in sorted(internal_callees):
+                            if f'runner, "{name}"' in line:
+                                offenders.append(
+                                    f"{path.relative_to(base)}:{index + 1} {line.strip()}"
+                                )
+        self.assertEqual(
+            [], offenders,
+            "以下位置把 vp 的内部被调者 patch 在 runner 上，会静默失效：\n  "
+            + "\n  ".join(offenders),
+        )
 
 
 if __name__ == "__main__":
