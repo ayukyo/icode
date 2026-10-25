@@ -712,7 +712,7 @@ class TestIndependentVerification(unittest.TestCase):
             wait=mock.Mock(return_value=0),
         )
         with mock.patch.object(
-            runner.os, "waitpid", side_effect=ChildProcessError(),
+            verification_process.os, "waitpid", side_effect=ChildProcessError(),
         ):
             with self.assertRaises(VerificationOutputCaptureError):
                 verification_process._reap_posix_verification_process(process)
@@ -814,7 +814,7 @@ class TestIndependentVerification(unittest.TestCase):
             mock.patch.object(verification_process, "select", fake_select),
             mock.patch.object(verification_process, "sys", SimpleNamespace(platform="darwin")),
             mock.patch.object(
-                runner.os, "waitid", create=True,
+                verification_process.os, "waitid", create=True,
                 side_effect=AssertionError("waitid must not be used"),
             ),
         ):
