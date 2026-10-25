@@ -416,6 +416,49 @@ class InternalCallPatchTargetTests(unittest.TestCase):
                 "若两者相同，说明内部调用已改为经 runner 查找，可更新本断言",
             )
 
+    def test_no_test_uses_verification_process_without_importing_it(self) -> None:
+        """用了 verification_process 的测试必须真的 import 它。
+
+        只改调用目标而漏改 import，测试会以 NameError 失败——但在只跑
+        POSIX/macOS 腿的 CI 上才会暴露，本机 Windows 完全看不到。
+        """
+        offenders: list[str] = []
+        for sub in ("tests", "scripts"):
+            root = Path(REPO_ROOT, sub)
+            if not root.is_dir():
+                continue
+            for path in root.rglob("*.py"):
+                if "__pycache__" in str(path):
+                    continue
+                if path.name == "test_verification_process_extraction.py":
+                    continue
+                text = path.read_text(encoding="utf-8")
+                if "verification_process" not in text:
+                    continue
+                try:
+                    tree = ast.parse(text)
+                except SyntaxError:
+                    continue
+                lines = text.splitlines()
+                for node in ast.walk(tree):
+                    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        continue
+                    if not node.name.startswith("test"):
+                        continue
+                    body = "\n".join(lines[node.lineno - 1:node.end_lineno])
+                    code_only = "\n".join(l.split("#")[0] for l in body.split("\n"))
+                    if "verification_process" not in code_only:
+                        continue
+                    if "import verification_process" in body:
+                        continue
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT)}:{node.lineno} {node.name}"
+                    )
+        self.assertEqual(
+            [], offenders,
+            "以下测试用了 verification_process 但未 import：\n  " + "\n  ".join(offenders),
+        )
+
     def test_no_test_patches_internal_callees_on_runner(self) -> None:
         """静态扫描：tests/scripts 不得把 vp 内部被调者 patch 在 runner 上。"""
         internal_callees = set()

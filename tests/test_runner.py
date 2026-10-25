@@ -601,7 +601,7 @@ class TestIndependentVerification(unittest.TestCase):
     def test_macos进程组审计能识别未回收的退出leader(self) -> None:
         import selectors
 
-        from icode import runner
+        from icode import verification_process
 
         process = subprocess.Popen(
             [sys.executable, "-B", "-c", "pass"],
@@ -624,14 +624,14 @@ class TestIndependentVerification(unittest.TestCase):
             self.assertEqual(os.read(process.stdout.fileno(), 1), b"")
             self.assertIsNone(process.returncode, "不能在测试退出监视前 reap leader")
 
-            monitor = runner._PosixVerificationExitMonitor(process)
+            monitor = verification_process._PosixVerificationExitMonitor(process)
             deadline = time.monotonic() + 2.0
             while time.monotonic() < deadline and not monitor.exited(process):
                 time.sleep(0.01)
 
             self.assertTrue(monitor.exited(process), "测试 leader 应在期限内退出")
             self.assertIs(
-                runner._darwin_process_group_has_live_members(process.pid),
+                verification_process._darwin_process_group_has_live_members(process.pid),
                 False,
                 "ps 必须只查询目标进程组，并确认未回收 zombie leader 无存活同组后代",
             )
@@ -687,7 +687,7 @@ class TestIndependentVerification(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX waitpid reaping")
     def test_POSIX回收保留真实子进程退出码(self) -> None:
-        from icode import runner
+        from icode import verification_process
 
         process = subprocess.Popen(
             [sys.executable, "-B", "-c", "raise SystemExit(7)"],
@@ -698,12 +698,12 @@ class TestIndependentVerification(unittest.TestCase):
             start_new_session=True,
         )
 
-        self.assertEqual(runner._reap_posix_verification_process(process), 7)
+        self.assertEqual(verification_process._reap_posix_verification_process(process), 7)
         self.assertEqual(process.returncode, 7)
 
     @unittest.skipUnless(os.name == "posix", "POSIX ECHILD handling")
     def test_POSIX失去子进程状态时拒绝继续(self) -> None:
-        from icode import runner
+        from icode import verification_process
         from icode.runner import VerificationOutputCaptureError
 
         process = SimpleNamespace(
@@ -715,7 +715,7 @@ class TestIndependentVerification(unittest.TestCase):
             runner.os, "waitpid", side_effect=ChildProcessError(),
         ):
             with self.assertRaises(VerificationOutputCaptureError):
-                runner._reap_posix_verification_process(process)
+                verification_process._reap_posix_verification_process(process)
 
         process.wait.assert_not_called()
 
@@ -782,7 +782,7 @@ class TestIndependentVerification(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX kqueue/waitid 分派")
     def test_macos退出监视使用kqueue且不调用waitid(self) -> None:
-        from icode import runner
+        from icode import verification_process
 
         class FakeKqueue:
             def __init__(self) -> None:
@@ -811,14 +811,14 @@ class TestIndependentVerification(unittest.TestCase):
         )
         process = SimpleNamespace(pid=1234, returncode=None)
         with (
-            mock.patch.object(runner, "select", fake_select),
-            mock.patch.object(runner, "sys", SimpleNamespace(platform="darwin")),
+            mock.patch.object(verification_process, "select", fake_select),
+            mock.patch.object(verification_process, "sys", SimpleNamespace(platform="darwin")),
             mock.patch.object(
                 runner.os, "waitid", create=True,
                 side_effect=AssertionError("waitid must not be used"),
             ),
         ):
-            monitor = runner._PosixVerificationExitMonitor(process)
+            monitor = verification_process._PosixVerificationExitMonitor(process)
             self.assertTrue(monitor.exited(process))
             monitor.close()
 
@@ -828,7 +828,7 @@ class TestIndependentVerification(unittest.TestCase):
     def test_kqueue注册目标已消失时按已退出处理并关闭队列(self) -> None:
         import errno
 
-        from icode import runner
+        from icode import verification_process
 
         class ErrorEvent:
             flags = 32
@@ -856,10 +856,10 @@ class TestIndependentVerification(unittest.TestCase):
         )
         process = SimpleNamespace(pid=1234, returncode=None)
         with (
-            mock.patch.object(runner, "select", fake_select),
-            mock.patch.object(runner, "sys", SimpleNamespace(platform="darwin")),
+            mock.patch.object(verification_process, "select", fake_select),
+            mock.patch.object(verification_process, "sys", SimpleNamespace(platform="darwin")),
         ):
-            monitor = runner._PosixVerificationExitMonitor(process)
+            monitor = verification_process._PosixVerificationExitMonitor(process)
             try:
                 self.assertTrue(monitor.exited(process))
             finally:
@@ -871,7 +871,7 @@ class TestIndependentVerification(unittest.TestCase):
     def test_kqueue轮询阶段的ESRCH仍然失败关闭(self) -> None:
         import errno
 
-        from icode import runner
+        from icode import verification_process
 
         class ErrorEvent:
             flags = 32
@@ -899,10 +899,10 @@ class TestIndependentVerification(unittest.TestCase):
         )
         process = SimpleNamespace(pid=1234, returncode=None)
         with (
-            mock.patch.object(runner, "select", fake_select),
-            mock.patch.object(runner, "sys", SimpleNamespace(platform="darwin")),
+            mock.patch.object(verification_process, "select", fake_select),
+            mock.patch.object(verification_process, "sys", SimpleNamespace(platform="darwin")),
         ):
-            monitor = runner._PosixVerificationExitMonitor(process)
+            monitor = verification_process._PosixVerificationExitMonitor(process)
             try:
                 with self.assertRaises(ProcessLookupError):
                     monitor.exited(process)
@@ -913,7 +913,7 @@ class TestIndependentVerification(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "posix", "POSIX kqueue 错误事件清理")
     def test_kqueue注册错误会关闭监视器并拒绝继续(self) -> None:
-        from icode import runner
+        from icode import verification_process
 
         class ErrorEvent:
             flags = 32
@@ -940,11 +940,11 @@ class TestIndependentVerification(unittest.TestCase):
             KQ_NOTE_EXIT=16,
         )
         with (
-            mock.patch.object(runner, "select", fake_select),
-            mock.patch.object(runner, "sys", SimpleNamespace(platform="darwin")),
+            mock.patch.object(verification_process, "select", fake_select),
+            mock.patch.object(verification_process, "sys", SimpleNamespace(platform="darwin")),
         ):
             with self.assertRaises(OSError):
-                runner._PosixVerificationExitMonitor(SimpleNamespace(pid=1234))
+                verification_process._PosixVerificationExitMonitor(SimpleNamespace(pid=1234))
 
         self.assertTrue(queue.closed)
 
