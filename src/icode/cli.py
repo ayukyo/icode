@@ -404,10 +404,15 @@ def cmd_outline(args: argparse.Namespace) -> int:
 
 
 def _build_runner(args: argparse.Namespace):
-    """构造 backend / approver / 预算 / 事件钩子。"""
+    """构造编排入口所需的全部协作者。
+
+    回路配置在此一次性装配，避免各 `cmd_*` 重复 `LoopConfig(max_turns=...)`
+    导致同一编排知识散落在多处。
+    """
     from .approvals import CliApprover, DenyAllApprover
     from .backends import build_backend
     from .budget import Budget
+    from .loop import LoopConfig
 
     backend = build_backend(
         args.backend,
@@ -472,20 +477,23 @@ def _build_runner(args: argparse.Namespace):
     if hasattr(sandbox, "describe"):
         claim = sandbox.describe().get("claim", "")
         print(f"  隔离：{claim}")
-    return backend, approver, budget, on_event, sandbox
+    # 未提供 max_turns 的调用方（如只取事件钩子的测试）按默认回路预算处理，
+    # 不因缺失字段让装配失败。
+    max_turns = getattr(args, "max_turns", None)
+    return backend, approver, budget, on_event, sandbox, LoopConfig(
+        max_turns=max_turns if max_turns is not None else LoopConfig.max_turns)
 
 
 def cmd_step_run(args: argparse.Namespace) -> int:
-    from .loop import LoopConfig
     from .runner import run_contract_step
 
     settings = load_settings(args.skill_root)
-    backend, approver, budget, on_event, sandbox = _build_runner(args)
+    backend, approver, budget, on_event, sandbox, loop_config = _build_runner(args)
     print(f"契约步骤执行：{args.step}（backend={getattr(backend, 'name', '?')}）")
     report = run_contract_step(
         settings, backend=backend, workspace=Path(args.workspace), step=args.step,
         ticket_id=args.ticket_id, requirement=args.requirement,
-        approver=approver, loop_config=LoopConfig(max_turns=args.max_turns),
+        approver=approver, loop_config=loop_config,
         budget=budget, on_event=on_event, sandbox=sandbox, routes=routes,
     )
     print(report.render())
@@ -495,11 +503,10 @@ def cmd_step_run(args: argparse.Namespace) -> int:
 def cmd_task(args: argparse.Namespace) -> int:
     import tempfile
 
-    from .loop import LoopConfig
     from .runner import DEFAULT_TASK, prepare_workspace, run_task
 
     settings = load_settings(args.skill_root)
-    backend, approver, budget, on_event, sandbox = _build_runner(args)
+    backend, approver, budget, on_event, sandbox, loop_config = _build_runner(args)
 
     if args.workspace:
         workspace = Path(args.workspace)
@@ -513,7 +520,7 @@ def cmd_task(args: argparse.Namespace) -> int:
         settings, backend=backend, workspace=workspace,
         task=args.task or DEFAULT_TASK, approver=approver,
         result_commit_sha=args.result_commit,
-        loop_config=LoopConfig(max_turns=args.max_turns), budget=budget, on_event=on_event,
+        loop_config=loop_config, budget=budget, on_event=on_event,
         sandbox=sandbox, max_repairs=args.max_repairs,
     )
     print(report.render())
@@ -665,14 +672,13 @@ def cmd_recover(args: argparse.Namespace) -> int:
         print("\n拒绝自动恢复：请先人工核对真实状态。", file=sys.stderr)
         return 1
 
-    from .loop import LoopConfig
     from .runner import resume_contract_step
 
-    backend, approver, budget, on_event, sandbox = _build_runner(args)
+    backend, approver, budget, on_event, sandbox, loop_config = _build_runner(args)
     print(f"\n恢复执行（backend={getattr(backend, 'name', '?')}）")
     report = resume_contract_step(
         settings, backend=backend, out_dir=out_dir, step=args.step, ticket_id=ticket_id,
-        approver=approver, loop_config=LoopConfig(max_turns=args.max_turns),
+        approver=approver, loop_config=loop_config,
         budget=budget, on_event=on_event, sandbox=sandbox,
     )
     print(report.render())
@@ -739,20 +745,19 @@ def cmd_workbench(args: argparse.Namespace) -> int:
         if args.budget_tokens < 0:
             raise ConfigError("--budget-tokens 不能小于 0")
         from .autonomy import NativeChainExecutor
-        from .loop import LoopConfig
-
+    
         verification_plan_provider = None
         if verification_preset == "python-unittest":
             from .verification_presets import PythonUnittestPlanProvider
 
             verification_plan_provider = PythonUnittestPlanProvider(Path(sys.executable))
 
-        backend, approver, budget, on_event, sandbox = _build_runner(args)
+        backend, approver, budget, on_event, sandbox, loop_config = _build_runner(args)
         executor = NativeChainExecutor(
             settings,
             backend=backend,
             approver=approver,
-            loop_config=LoopConfig(max_turns=args.max_turns),
+            loop_config=loop_config,
             budget=budget,
             on_event=on_event,
             sandbox=sandbox,
@@ -799,10 +804,9 @@ def cmd_workbench(args: argparse.Namespace) -> int:
 
 def cmd_chain(args: argparse.Namespace) -> int:
     from .chain import run_chain
-    from .loop import LoopConfig
 
     settings = load_settings(args.skill_root)
-    backend, approver, budget, on_event, sandbox = _build_runner(args)
+    backend, approver, budget, on_event, sandbox, loop_config = _build_runner(args)
     steps = tuple(x.strip() for x in args.only.split(",") if x.strip()) or None
     if steps:
         print(f"仅执行指定步骤：{steps}")
@@ -810,7 +814,7 @@ def cmd_chain(args: argparse.Namespace) -> int:
     report = run_chain(
         settings, backend=backend, workspace=Path(args.workspace),
         requirement=args.requirement, ticket_id=args.ticket_id, steps=steps,
-        approver=approver, loop_config=LoopConfig(max_turns=args.max_turns),
+        approver=approver, loop_config=loop_config,
         budget=budget, on_event=on_event, sandbox=sandbox,
         routes=routes,
         on_step=lambda name, sr: print(f"\n===== 步骤 {name} 完成："

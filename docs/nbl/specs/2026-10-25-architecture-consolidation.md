@@ -434,7 +434,24 @@ P0 完成后复验：9 项边界测试全绿，`orchestration_context` 顶层与
   `test_contract_engineering` / 边界测试全部与基线一致，零新增失败。
 - 新模块 `verification_process` 登记入 SANDBOX 盒子，完备性断言即时捕获。
 
-### 12.5 SPEC 门限修正
+### 12.5 P3 —— CLI 入口收敛（本次提交）
+
+按 §6 降级为「P2 之后的顺带清理」，不单独立项、不设独立 CI 门禁。
+
+- `_build_runner` 现在一并装配 `LoopConfig`（`max_turns` 取自 argparse；
+  缺失字段时退回到 `LoopConfig.max_turns` 默认值，使只取事件钩子的调用方
+  不会因装配失败）。
+- `LoopConfig(` 的真实构造从 **5 处收敛到 1 处**；`build_backend(` /
+  `CliApprover(` / `Budget(` 本已只在 `_build_runner` 内，现由断言锁定。
+- `cmd_task` / `cmd_step_run` 不再自行拼装回路或预算；5 个调用点统一按
+  6 元素解包。
+- `tests/test_cli_entry_convergence.py` 6 项，含「构造点只允许一处」
+  「`cmd_task`/`cmd_step_run` 不得自行拼装」「调用点必须解包 loop_config」
+  三条可自动化断言。已用注入真实构造的方式验证断言**确实会失败**。
+- 回归：`tests/test_cli` + `tests/test_cli_resume_sandbox` 20 项全绿
+  （基线同为全绿）；A3.4 的内部依赖数按观察指标记录，不设硬门限。
+
+### 12.6 SPEC 门限修正
 
 A2.1 原写「runner ≤ 3700」，估算基于迁移前 4495 行；因执行顺序为 P0→P2，
 P0 落地后基线为 4535 行，故按实际基线重设为 **≤ 3850**（实测 3803，余量 47）。

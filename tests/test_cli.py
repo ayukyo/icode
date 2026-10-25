@@ -85,7 +85,7 @@ class TestCliToolEvents(unittest.TestCase):
             patch("icode.isolation.select_sandbox", return_value=object()),
             contextlib.redirect_stdout(output),
         ):
-            _, _, _, on_event, _ = _build_runner(args)
+            _, _, _, on_event, _, _ = _build_runner(args)
             on_event("tool_result", {
                 "tool": "read_file",
                 "ok": False,
@@ -108,7 +108,7 @@ class TestCliToolEvents(unittest.TestCase):
             patch("icode.isolation.select_sandbox", return_value=object()),
             contextlib.redirect_stdout(output),
         ):
-            _, _, _, on_event, _ = _build_runner(args)
+            _, _, _, on_event, _, _ = _build_runner(args)
             on_event("tool_result", {
                 "tool": "run_command",
                 "ok": False,
@@ -147,7 +147,7 @@ class TestCliToolEvents(unittest.TestCase):
             patch("icode.isolation.select_sandbox", return_value=object()),
             contextlib.redirect_stdout(output),
         ):
-            _, _, _, on_event, _ = _build_runner(args)
+            _, _, _, on_event, _, _ = _build_runner(args)
             on_event("tool_result", {
                 "tool": "run_command",
                 "ok": False,
@@ -208,7 +208,7 @@ class TestCliToolEvents(unittest.TestCase):
             patch("icode.isolation.select_sandbox", return_value=object()),
             contextlib.redirect_stdout(output),
         ):
-            _, _, _, on_event, _ = _build_runner(args)
+            _, _, _, on_event, _, _ = _build_runner(args)
             on_event("tool_result", {
                 "tool": "run_command",
                 "ok": False,
@@ -233,7 +233,7 @@ class TestCliToolEvents(unittest.TestCase):
             patch("icode.isolation.select_sandbox", return_value=object()),
             contextlib.redirect_stdout(output),
         ):
-            _, _, _, on_event, _ = _build_runner(args)
+            _, _, _, on_event, _, _ = _build_runner(args)
             on_event("tool_result", {
                 "tool": "run_command",
                 "ok": False,
@@ -266,7 +266,7 @@ class TestCliToolEvents(unittest.TestCase):
             patch("icode.isolation.select_sandbox", return_value=object()),
             contextlib.redirect_stdout(output),
         ):
-            _, _, _, on_event, _ = _build_runner(args)
+            _, _, _, on_event, _, _ = _build_runner(args)
             on_event("tool_result", {
                 "tool": "run_command",
                 "ok": False,
