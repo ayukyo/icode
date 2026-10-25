@@ -1,0 +1,247 @@
+{
+  "meta": {
+    "baseline_sha": "105fc27",
+    "module_count": 104,
+    "owner": "架构治理",
+    "last_reviewed": "2026-10-25",
+    "note": "唯一真源。docs/icode-agent-product-architecture.md 的盒子是抽象层，本表把盒子落到具体模块。"
+  },
+  "layers": {
+    "1": "入口与界面",
+    "2": "任务编排",
+    "3": "契约策略基座",
+    "4": "隔离执行与工具实现",
+    "5": "平台专用实现"
+  },
+  "boxes": {
+    "UI": {
+      "desc": "入口与界面 —— CLI、WebUI、工作台、ACP 前端",
+      "layer": 1,
+      "modules": [
+        "__init__",
+        "acp",
+        "cli",
+        "webui",
+        "workbench"
+      ]
+    },
+    "ORCH": {
+      "desc": "任务编排 —— 步骤执行、链路推进、Agent 循环、多角色协作",
+      "layer": 2,
+      "modules": [
+        "agent_conclusion",
+        "agent_scope",
+        "autonomy",
+        "chain",
+        "compaction",
+        "context_index",
+        "engineering_verification",
+        "execution_broker",
+        "handshake",
+        "loop",
+        "multi_agent",
+        "reasoning",
+        "recipes",
+        "reviewer",
+        "roles",
+        "runner",
+        "sequential",
+        "verification_presets"
+      ]
+    },
+    "BASE": {
+      "desc": "契约与策略基座 —— 配置、契约、控制面、门禁、预算、扩展契约",
+      "layer": 3,
+      "modules": [
+        "approvals",
+        "budget",
+        "config",
+        "connect_request",
+        "connectors",
+        "contracts",
+        "control",
+        "disclosure",
+        "extension_contract",
+        "failure_policy",
+        "guard",
+        "hooks",
+        "mcp_gates",
+        "model_routing",
+        "native_helper",
+        "operations",
+        "sandbox_policy",
+        "skill_resources",
+        "tickets"
+      ]
+    },
+    "MODELS": {
+      "desc": "模型后端 —— 厂商适配、传输、计价",
+      "layer": 3,
+      "modules": [
+        "backends",
+        "backends.anthropic",
+        "backends.base",
+        "backends.fake",
+        "backends.gemini",
+        "backends.ollama",
+        "backends.openai_compatible",
+        "backends.pricing",
+        "backends.transport"
+      ]
+    },
+    "BENCH": {
+      "desc": "评测与合规 —— 基准、契约一致性、能力证据",
+      "layer": 3,
+      "modules": [
+        "benchmark",
+        "conformance",
+        "conformance_evidence"
+      ]
+    },
+    "EVIDENCE": {
+      "desc": "证据与恢复 —— 证据包、签名、锚定、自校验、恢复点",
+      "layer": 3,
+      "modules": [
+        "checkpoint",
+        "engineering_evidence",
+        "evidence",
+        "pack_anchor",
+        "pack_signing",
+        "pack_verify",
+        "recovery",
+        "self_verify"
+      ]
+    },
+    "EXT": {
+      "desc": "扩展生态 —— MCP 客户端等可插拔扩展",
+      "layer": 3,
+      "modules": [
+        "extensions",
+        "extensions.mcp_client"
+      ]
+    },
+    "TOOLS": {
+      "desc": "工具层 —— 工具契约与内置工具实现",
+      "layer": 3,
+      "modules": [
+        "tools",
+        "tools.base",
+        "tools.builtin"
+      ]
+    },
+    "SANDBOX": {
+      "desc": "隔离执行 —— 沙箱、工作区、网络管控、Git 与产物代理",
+      "layer": 4,
+      "modules": [
+        "artifact_broker",
+        "git_broker",
+        "git_status",
+        "isolation",
+        "leased_connect",
+        "network_connector",
+        "network_destination",
+        "network_lease",
+        "network_proxy_scope",
+        "network_proxy_server",
+        "workspace",
+        "workspace_snapshot",
+        "write_lease"
+      ]
+    },
+    "PLATFORM": {
+      "desc": "平台专用实现 —— Windows 与 Linux 的内核级隔离实现",
+      "layer": 5,
+      "modules": [
+        "linux_admission_diagnostic",
+        "linux_helper_object",
+        "linux_helper_source",
+        "linux_prepared_control",
+        "linux_prepared_step",
+        "linux_proxy_handoff",
+        "linux_seccomp_notify",
+        "linux_static_helper",
+        "linux_task_resource",
+        "linux_task_scope",
+        "windows_appcontainer",
+        "windows_job",
+        "windows_positive_loopback_policy",
+        "windows_process_tree",
+        "windows_provenance",
+        "windows_runner_pipe",
+        "windows_runner_protocol",
+        "windows_startup_host_identity",
+        "windows_startup_native",
+        "windows_startup_pin",
+        "windows_startup_security",
+        "windows_startup_security_native",
+        "windows_startup_source",
+        "windows_worktree"
+      ],
+      "platform": "platform-specific"
+    }
+  },
+  "platform_module_prefixes": [
+    "windows_",
+    "linux_"
+  ],
+  "hub_modules": [
+    "sandbox_policy",
+    "config",
+    "control",
+    "contracts",
+    "isolation",
+    "tools.base"
+  ],
+  "exempt": [
+    {
+      "module": "engineering_verification",
+      "rule": "no-platform-top-import-in-orch",
+      "target": "linux_task_resource",
+      "reason": "R2 生命周期工作要求在校验器启动前按平台选择清理错误分类；该符号是 cleanup 错误的唯一真源，改成延迟 import 会改变失败语义。P1 只登记不改代码。",
+      "reviewer": "2026-10-25 架构复核",
+      "disposition": "待 P2 后评估"
+    },
+    {
+      "module": "linux_helper_source",
+      "rule": "no-hub-import-from-platform",
+      "target": "sandbox_policy, isolation",
+      "reason": "Linux helper 的源码定位与沙箱类型判定同属平台启动路径；sandbox_policy 是纯策略数据、isolation 提供只读构造，二者均为无副作用读取。",
+      "reviewer": "2026-10-25 架构复核",
+      "disposition": "长期保留"
+    },
+    {
+      "module": "linux_prepared_step",
+      "rule": "no-hub-import-from-platform",
+      "target": "sandbox_policy, isolation",
+      "reason": "prepared step 需要按 sandbox 类型选择准备路径并施加策略约束，属平台执行流程的固有输入，而非反向依赖上层编排。",
+      "reviewer": "2026-10-25 架构复核",
+      "disposition": "长期保留"
+    }
+  ],
+  "deferred_platform_imports": [
+    {
+      "module": "execution_broker",
+      "targets": [
+        "linux_helper_object",
+        "linux_prepared_step",
+        "linux_proxy_handoff",
+        "linux_seccomp_notify",
+        "linux_task_resource",
+        "linux_task_scope"
+      ],
+      "reason": "平台执行路径按后端类型延迟装载，避免 import 期拉起平台模块",
+      "reviewer": "2026-10-25 架构复核"
+    },
+    {
+      "module": "runner",
+      "targets": [
+        "linux_helper_source",
+        "linux_prepared_control",
+        "linux_prepared_step",
+        "windows_process_tree"
+      ],
+      "reason": "平台进程与 prepared 语义按运行平台延迟装载",
+      "reviewer": "2026-10-25 架构复核"
+    }
+  ]
+}
