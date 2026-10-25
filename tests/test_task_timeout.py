@@ -103,7 +103,7 @@ class TestTaskTimeout(unittest.TestCase):
                 stdout, stderr = StringIO(), StringIO()
                 with (
                     patch("icode.cli.load_settings", return_value=self.settings),
-                    patch("icode.cli._build_runner", return_value=(backend, None, None, None, NoIsolation())),
+                    patch("icode.cli._build_runner", return_value=(backend, None, None, None, NoIsolation(), None)),
                     patch("icode.runner.run_unittest", side_effect=private_timeout()),
                     patch("icode.runner._run_task_reviewer") as reviewer,
                     patch("icode.evidence.save_verification_receipt") as save_receipt,

@@ -692,7 +692,7 @@ class TestWorkbenchCLI(unittest.TestCase):
                 if selected:
                     argv += ["--verification-preset", "python-unittest"]
                 with patch("icode.cli.load_settings", return_value=settings), \
-                        patch("icode.cli._build_runner", return_value=(None, None, None, None, sandbox)), \
+                        patch("icode.cli._build_runner", return_value=(None, None, None, None, sandbox, None)), \
                         patch("icode.workbench.WorkbenchServer") as server, \
                         patch("threading.Event") as event, redirect_stdout(StringIO()):
                     server.return_value.start.return_value = "http://127.0.0.1:1234/"
@@ -782,7 +782,7 @@ class TestWorkbenchCLI(unittest.TestCase):
                     del args.verification_preset
                 with (
                     patch("icode.cli.load_settings", return_value=settings),
-                    patch("icode.cli._build_runner", return_value=(None, None, None, None, sandbox)),
+                    patch("icode.cli._build_runner", return_value=(None, None, None, None, sandbox, None)),
                     patch("icode.workbench.WorkbenchServer") as server,
                     patch("threading.Event") as event,
                     redirect_stdout(StringIO()),
@@ -876,7 +876,7 @@ class TestWorkbenchCLI(unittest.TestCase):
                     patch("icode.cli.load_settings", return_value=object()),
                     patch(
                         "icode.cli._build_runner",
-                        return_value=(None, None, None, None, sandbox),
+                        return_value=(None, None, None, None, sandbox, None),
                     ) as build_runner,
                     patch("icode.autonomy.NativeChainExecutor") as executor_class,
                     patch("icode.workbench.WorkbenchServer") as server_class,
@@ -916,7 +916,7 @@ class TestWorkbenchCLI(unittest.TestCase):
         sandbox = SimpleNamespace(is_real_isolation=True, policy_contract_ready=False)
         output = StringIO()
         with patch("icode.cli.load_settings", return_value=object()), \
-             patch("icode.cli._build_runner", return_value=(None, None, None, None, sandbox)), \
+             patch("icode.cli._build_runner", return_value=(None, None, None, None, sandbox, None)), \
              patch("icode.autonomy.NativeChainExecutor"), \
              patch("icode.workbench.WorkbenchServer") as server_class, \
              patch("threading.Event") as event_class, redirect_stdout(output):

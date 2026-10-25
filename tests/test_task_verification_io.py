@@ -135,7 +135,7 @@ class TestTaskVerificationIo(unittest.TestCase):
                     stdout, stderr = StringIO(), StringIO()
                     with (
                         patch("icode.cli.load_settings", return_value=self.settings),
-                        patch("icode.cli._build_runner", return_value=(FakeBackend(["完成"]), None, None, None, NoIsolation())),
+                        patch("icode.cli._build_runner", return_value=(FakeBackend(["完成"]), None, None, None, NoIsolation(), None)),
                         patch("icode.runner.run_unittest", side_effect=private_io_error(kind)),
                         patch("icode.runner._run_task_reviewer") as reviewer,
                         patch("icode.evidence.save_verification_receipt") as save_receipt,

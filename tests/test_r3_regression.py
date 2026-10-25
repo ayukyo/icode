@@ -2420,7 +2420,7 @@ class TestMaxRepairsArgument(unittest.TestCase):
         report = SimpleNamespace(render=lambda: "report", ok=False)
         with (
             patch("icode.cli.load_settings", return_value=object()),
-            patch("icode.cli._build_runner", return_value=(None, None, None, None, None)),
+            patch("icode.cli._build_runner", return_value=(None, None, None, None, None, None)),
             patch("icode.runner.run_task", return_value=report) as run_task,
             redirect_stdout(StringIO()),
         ):
@@ -2447,7 +2447,7 @@ class TestMaxRepairsArgument(unittest.TestCase):
         )
         with (
             patch("icode.cli.load_settings", return_value=object()),
-            patch("icode.cli._build_runner", return_value=(None, None, None, None, None)),
+            patch("icode.cli._build_runner", return_value=(None, None, None, None, None, None)),
             patch("icode.runner.run_task", return_value=report),
             patch("icode.evidence.save_verification_receipt") as save_receipt,
             redirect_stdout(StringIO()),
@@ -2472,7 +2472,7 @@ class TestMaxRepairsArgument(unittest.TestCase):
         report = SimpleNamespace(render=lambda: "passed report", ok=True, verification=object())
         with (
             patch("icode.cli.load_settings", return_value=object()),
-            patch("icode.cli._build_runner", return_value=(None, None, None, None, None)),
+            patch("icode.cli._build_runner", return_value=(None, None, None, None, None, None)),
             patch("icode.runner.run_task", return_value=report),
             patch("icode.evidence.save_verification_receipt", side_effect=EvidenceError("safe failure")),
             redirect_stdout(StringIO()),
@@ -2502,7 +2502,7 @@ class TestMaxRepairsArgument(unittest.TestCase):
             ])
             with (
                 patch("icode.cli.load_settings", return_value=object()),
-                patch("icode.cli._build_runner", return_value=(None, None, None, None, None)),
+                patch("icode.cli._build_runner", return_value=(None, None, None, None, None, None)),
                 patch("icode.runner.run_task", return_value=report),
                 patch("icode.evidence.save_verification_receipt") as save_receipt,
                 redirect_stdout(StringIO()),

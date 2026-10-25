@@ -261,15 +261,16 @@ class TestChainOffline(unittest.TestCase):
                 )
 
             self.assertGreaterEqual(agent.call_count, 2, "必须覆盖首次与补救回合")
+            # 环境协作者经 ctx 透传；载荷经 request 透传。
             self.assertTrue(all(
-                call.kwargs.get("sandbox") is sandbox
-                and call.kwargs.get("policy") is policy
+                call.kwargs["ctx"].sandbox is sandbox
+                and call.kwargs["ctx"].policy is policy
                 for call in agent.call_args_list
             ))
             self.assertIn("submit_artifact",
-                          agent.call_args_list[1].kwargs["extra_instructions"])
+                          agent.call_args_list[1].kwargs["request"].extra_instructions)
             self.assertNotIn("write_file",
-                             agent.call_args_list[1].kwargs["extra_instructions"].split(
+                             agent.call_args_list[1].kwargs["request"].extra_instructions.split(
                                  "不要用 write_file", 1
                              )[0])
 
