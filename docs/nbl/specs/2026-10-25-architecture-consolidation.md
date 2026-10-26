@@ -522,7 +522,34 @@ CI 全量 job：41 个 success / 3 个 skipped / 0 个失败。此前三轮失�
 CI 反馈又慢，剥掉 skip 后在本机跑，才第一次把三轮重复犯的同一类错误
 全部暴露出来。
 
-### 12.8 SPEC 门限修正
+### 12.8 依赖升级 PR 的失败归因（2026-10-26 上午）
+
+dependabot PR #4（`actions/setup-python` 7.0.0 → 7.1.0）在 CI 上失败 3 个 job。
+经完整取证，**与本轮重构零关联**，理由是三条相互独立的证据链：
+
+**证据一：代码字节相同。** `git diff main pr4merge -- src/ tests/ scripts/ native/`
+为空；逐目录树哈希 `src`/`tests`/`scripts`/`native`/`vendor`/`docs` **全部一致**
+（`src=a2879c3dcbab`、`tests=6ce7c3a177b3` …）。全仓树哈希只因 `.github/` 不同而不同。
+子模块指针同为 `21566a58`。
+
+**证据二：三条失败各有独立且正确的成因。**
+
+| 失败 job | 真实原因 | 判定 |
+|---|---|---|
+| `Python 3.12`（ubuntu） | `test_ci_workflow_contracts` 与 `test_provenance_validation_budget` 断言 workflow 的**固定内容**（`setup-python@5fda3b95… # v7.0.0` 字面量、workflow 片段的 SHA256） | 仓库的**workflow 冻结契约**在正确拦截未审阅的 workflow 变更 |
+| `R3 Windows Reviewer snapshot candidate`（windows-latest / windows-11-arm） | `scripts/windows_positive_loopback_admin_native.py:67` 要求 `GITHUB_REF == "refs/heads/main"` 且 `GITHUB_WORKFLOW_SHA == GITHUB_SHA`；`pull_request` 事件下 `GITHUB_REF=refs/pull/4/merge`、`GITHUB_SHA=<merge commit>`，二者皆不满足 → `context_workflow` | 特权正向证据 gate **只允许从 main 触发**的安全护栏，与代码无关 |
+
+**证据三：交叉复现。** 把 main 的 workflow 换成 PR 的 workflow（仅 action SHA 不同）
+后重跑契约测试：`main → 4/4 通过`，`PR workflow → 3 个失败`。判据可复现，
+不是环境噪声。
+
+**流程结论**：仓库把「workflow 内容」当作**受冻结的契约资产**（字面量 + 哈希双锁），
+并把特权证据采集限定在 `refs/heads/main`。因此任何修改 `.github/workflows/` 的 PR
+（包括 dependabot 的 action 升级）都必须在 PR 内同步更新契约常量并经审阅，
+否则 CI 必然红。**看到 dependabot PR 红，不等于主分支红**——归因必须逐条落到
+文件:行号，不能按「同代码」草率推断为无关，也不能按「PR 红了」误判为回归。
+
+### 12.9 SPEC 门限修正
 
 A2.1 原写「runner ≤ 3700」，估算基于迁移前 4495 行；因执行顺序为 P0→P2，
 P0 落地后基线为 4535 行，故按实际基线重设为 **≤ 3850**（实测 3803，余量 47）。
